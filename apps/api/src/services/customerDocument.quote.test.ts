@@ -139,6 +139,26 @@ describe.each(MODES)('%s mode', (mode) => {
     }
   });
 
+  // #9452: public link, logged-in portal and staff customer-view all assemble
+  // through this one function, so one parametrised case covers all three.
+  it('an unparseable contract block leaves as the unavailable variant, never raw (#9452)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const badId = '00000000-0000-4000-8000-00000000bad1';
+    const bad = {
+      ...PIN_QUOTE_BLOCK_ROWS[0]!, id: badId, blockType: 'contract', sortOrder: 99,
+      content: { templateId: 'tmpl-x', variableValues: { k: 'INTERNAL-raw-authoring' } },
+    };
+    setRows({ quote_blocks: [...PIN_QUOTE_BLOCK_ROWS, bad] });
+    const doc = await assembleCustomerQuoteDocument(quote(), mode, { assets: ASSETS });
+    const out = doc.blocks.find((b) => b.id === badId)!;
+    expect(out.content).toEqual({
+      templateName: '', versionNumber: 0, sourceType: 'authored', renderedHtml: null, fileUrl: null,
+    });
+    expect(JSON.stringify(doc)).not.toMatch(INTERNAL_SENTINEL);
+    expect(JSON.stringify(warn.mock.calls)).toContain(badId);
+    warn.mockRestore();
+  });
+
   it('a superseded quote: public refuses with 410 QUOTE_SUPERSEDED; portal and staff serve the raw status', async () => {
     const superseded = quote({ status: 'superseded' });
     if (mode === 'public') {

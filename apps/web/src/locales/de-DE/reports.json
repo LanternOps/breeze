@@ -12,6 +12,7 @@
         "low": "Niedrig",
         "medium": "Mittel"
       },
+      "customRangeIncomplete": "Wählen Sie ein Start- und ein Enddatum (Start zuerst, höchstens 366 Tage auseinander), um einen benutzerdefinierten Zeitraum anzuwenden.",
       "dashboardOptions": {
         "capacity": "Kapazitätsplanung",
         "operations": "Betriebsübersicht",
@@ -40,7 +41,7 @@
           "title": "Warnungsstatistiken"
         },
         "capacity": {
-          "title": "Kapazitätsprognose"
+          "title": "Datenträger-Kapazitätsprognose"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} Policen ausgewertet",
@@ -61,7 +62,7 @@
           "title": "Remote-Sitzungen"
         },
         "uptime": {
-          "label": "Betriebszeit der Flotte",
+          "label": "Jetzt online",
           "title": "Betriebszeit"
         }
       },
@@ -104,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Kritisch {{value}}",
+      "noData": "Keine Compliance-Prüfungen zur Auswertung",
       "warnValue": "Warnung {{value}}"
     },
     "queryBuilder": {
@@ -114,7 +116,8 @@
         "p95": "P95",
         "sum": "Summe"
       },
-      "description": "Konfigurieren Sie Metriken und Aggregation für Ihr Dashboard",
+      "coverageNote": "Abfragen umfassen nur die ersten {{count}} Online-Geräte. Offline-Geräte und der Rest einer größeren Flotte sind nicht enthalten.",
+      "description": "Wählen Sie eine Metrik und Aggregation für die Abfrage Ihrer Online-Geräte",
       "errors": {
         "failedToExecuteQuery": "Die Abfrage konnte nicht ausgeführt werden",
         "noDevicesSelected": "Keine Geräte für die Abfrage ausgewählt"

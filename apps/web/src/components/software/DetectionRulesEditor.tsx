@@ -11,14 +11,16 @@ interface DetectionRulesEditorProps {
   onChange: (rules: DetectionRule[]) => void;
 }
 const REGISTRY_HIVES: RegistryHive[] = ["HKLM", "HKCU", "HKCR", "HKU", "HKCC"];
-const RULE_TYPE_LABELS: Record<DetectionRule["type"], string> = {
+// service_running is not authorable in the UI yet (#6958 PR D adds it).
+type EditableRuleType = Exclude<DetectionRule["type"], "service_running">;
+const RULE_TYPE_LABELS: Record<EditableRuleType, string> = {
   registry: "Registry key/value",
   file_exists: "File or folder exists",
   msi_product_code: "MSI product code",
   file_version: "File version (Windows)",
 };
 // A fresh clause for a given type, with sensible defaults.
-function blankRule(type: DetectionRule["type"]): DetectionRule {
+function blankRule(type: EditableRuleType): DetectionRule {
   switch (type) {
     case "registry":
       return { type: "registry", hive: "HKLM", path: "" };
@@ -94,13 +96,13 @@ export default function DetectionRulesEditor({
                   onChange={(event) =>
                     updateRule(
                       index,
-                      blankRule(event.target.value as DetectionRule["type"]),
+                      blankRule(event.target.value as EditableRuleType),
                     )
                   }
                   className="h-9 rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                 >
                   {(
-                    Object.keys(RULE_TYPE_LABELS) as DetectionRule["type"][]
+                    Object.keys(RULE_TYPE_LABELS) as EditableRuleType[]
                   ).map((type) => (
                     <option key={type} value={type}>
                       {RULE_TYPE_LABELS[type]}

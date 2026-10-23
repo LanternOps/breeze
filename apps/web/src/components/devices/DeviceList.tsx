@@ -93,6 +93,7 @@ import {
   writeVisibleCustomFieldKeys,
 } from "./customFieldColumnVisibility";
 import { useCustomFieldDefinitionsStore } from "../../stores/customFieldDefinitions";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 import {
   densityTableClasses,
   readDensity,
@@ -2730,8 +2731,13 @@ export default function DeviceList({
   // sortValue are keyed by the closed ColumnId union, and threading a
   // per-org dynamic key through them is the same exhaustive-Record problem
   // this design sidesteps.
-  const formatCustomFieldValue = (value: unknown): React.ReactNode => {
+  const formatCustomFieldValue = (
+    def: (typeof visibleCustomFieldDefs)[number],
+    value: unknown,
+  ): React.ReactNode => {
     if (value === null || value === undefined || value === "") return dash;
+    const choiceLabel = dropdownChoiceLabel(def, value);
+    if (choiceLabel !== undefined) return choiceLabel;
     if (typeof value === "boolean") return value ? t("common:labels.yes") : t("common:labels.no");
     if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : dash;
     return String(value);
@@ -2749,7 +2755,7 @@ export default function DeviceList({
         className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground"
         data-testid={`device-${device.id}-custom-${def.fieldKey}`}
       >
-        <span className="block truncate">{formatCustomFieldValue(value)}</span>
+        <span className="block truncate">{formatCustomFieldValue(def, value)}</span>
       </td>
     );
   };

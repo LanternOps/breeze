@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} Position(en) liegen über der inbegriffenen Menge und wurden nicht berechnet: {{names}}",
         "uncoveredDevices": "Rechnung erstellt, aber {{count}} Gerät(e) werden von keiner Position dieses Vertrags abgerechnet: {{breakdown}}",
         "priceBookGaps": "{{count}} Katalogposition(en) zum Vertrags-Snapshot abgerechnet — kein {{currency}}-Preis im Katalog: {{lines}}",
-        "draftDeleted": "Entwurf gelöscht"
+        "draftDeleted": "Entwurf gelöscht",
+        "skipped": {
+          "already_billed": "Keine Rechnung erstellt – dieser Abrechnungszeitraum wurde bereits abgerechnet.",
+          "not_due": "Keine Rechnung erstellt – dieser Vertrag ist noch nicht zur Abrechnung fällig.",
+          "renewal_pending": "Keine Rechnung erstellt – dieser Vertrag hat sein Enddatum überschritten und wartet auf die Verlängerung.",
+          "expired": "Keine Rechnung erstellt – dieser Vertrag ist abgelaufen.",
+          "unknown": "Für diesen Vertrag wurde keine Rechnung erstellt."
+        }
       },
       "cancelConfirm": {
         "title": "Diesen Vertrag kündigen?",
@@ -2437,7 +2444,7 @@
     "documents": "Dokumente",
     "connections": "Verbindungen",
     "rates": "Tarife",
-    "payments": "Payments"
+    "payments": "Zahlungen"
   },
   "billingConnectionsTab": {
     "accounting": {

@@ -41,6 +41,7 @@ vi.mock('./helpers', async () => {
 vi.mock('../../services/securityPosture', () => ({ getSecurityPostureTrend: vi.fn(async () => []) }));
 
 import { db } from '../../db';
+import { getSecurityPostureTrend } from '../../services/securityPosture';
 import { complianceRoutes } from './compliance';
 
 const DEV_ESCROWED = '11111111-1111-4111-8111-111111111111';
@@ -61,13 +62,14 @@ function statusRow(overrides: Record<string, unknown>) {
   };
 }
 
-function buildApp() {
+function buildApp(authOverrides: Record<string, unknown> = {}) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
       scope: 'organization', orgId: null, partnerId: null,
       accessibleOrgIds: [], user: { id: 'u' },
       orgCondition: () => undefined, canAccessOrg: () => true,
+      ...authOverrides,
     } as any);
     await next();
   });
@@ -134,6 +136,41 @@ describe('GET /encryption', () => {
     expect(byName['fallback'].volumes[0].status).toBeNull();
     expect(byName['fallback'].volumes[0]).not.toHaveProperty('size');
   });
+
+  // #9607: Breeze does not collect TPM state, and the method must come from
+  // what the agent reported — not from the OS name.
+  it('never fabricates TPM presence or an OS-derived method', async () => {
+    listStatusRowsMock.mockResolvedValue([
+      statusRow({
+        deviceId: DEV_ESCROWED, deviceName: 'win-reported',
+        encryptionDetails: { source: 'bitlocker', volumes: [{ mount: 'C:', method: '6', protected: true, status: '1', percentEncrypted: 100 }] },
+      }),
+      statusRow({ deviceId: DEV_BARE, deviceName: 'win-no-details' }),
+      statusRow({
+        deviceId: '55555555-5555-4555-8555-555555555555', deviceName: 'win-empty-volumes',
+        encryptionDetails: { source: 'bitlocker', volumes: [] },
+      }),
+      statusRow({ deviceId: '44444444-4444-4444-8444-444444444444', deviceName: 'mac-unencrypted', os: 'macos', encryptionStatus: 'unencrypted' }),
+    ]);
+    mockEscrowRows([]);
+    const res = await buildApp().request('/encryption');
+    const json = await res.json();
+    const byName = Object.fromEntries(json.data.map((d: any) => [d.deviceName, d]));
+
+    for (const d of json.data) expect(d.tpmPresent).toBeNull();
+
+    expect(byName['win-reported'].encryptionMethod).toBe('bitlocker');
+    expect(byName['win-reported'].volumes[0]).toMatchObject({ method: 'xtsaes128', status: 'FullyEncrypted' });
+    expect(byName['win-no-details'].encryptionMethod).toBe('unknown');
+    expect(byName['win-no-details'].volumes[0].method).toBe('Unknown');
+    expect(byName['mac-unencrypted'].encryptionMethod).toBe('none');
+    // Reported BitLocker with no volume rows: the synthesized volume agrees
+    // with the device-level method instead of contradicting it.
+    expect(byName['win-empty-volumes'].encryptionMethod).toBe('bitlocker');
+    expect(byName['win-empty-volumes'].volumes[0].method).toBe('BitLocker');
+
+    expect(json.summary.methodCounts).toEqual({ bitlocker: 2, filevault: 0, luks: 0, none: 1, unknown: 1 });
+  });
 });
 
 describe('GET /firewall — unknown firewall state (#8252)', () => {
@@ -171,5 +208,64 @@ describe('GET /firewall — unknown firewall state (#8252)', () => {
     const res = await buildApp().request('/firewall?status=disabled');
     const json = await res.json();
     expect(json.data.map((d: any) => d.deviceName)).toEqual(['off']);
+  });
+});
+
+// #9639: the header org switcher sends ?orgId=<selected org>. Trends must
+// narrow to it (within the caller's accessible orgs), not aggregate the book.
+describe('GET /trends — selected organization (#9639)', () => {
+  const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const ORG_OTHER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const partnerAuth = {
+    scope: 'partner',
+    orgId: null,
+    accessibleOrgIds: [ORG_A, ORG_B],
+    canAccessOrg: (id: string) => id === ORG_A || id === ORG_B,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('narrows the trend to the selected org', async () => {
+    const res = await buildApp(partnerAuth).request(`/trends?period=7d&orgId=${ORG_A}`);
+
+    expect(res.status).toBe(200);
+    expect(getSecurityPostureTrend).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getSecurityPostureTrend).mock.calls[0]![0]).toMatchObject({ orgIds: [ORG_A], days: 7 });
+  });
+
+  it('returns 403 for an org outside the caller\'s access and reads nothing', async () => {
+    const res = await buildApp(partnerAuth).request(`/trends?orgId=${ORG_OTHER}`);
+
+    expect(res.status).toBe(403);
+    expect(getSecurityPostureTrend).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a malformed orgId', async () => {
+    const res = await buildApp(partnerAuth).request('/trends?orgId=not-a-uuid');
+
+    expect(res.status).toBe(400);
+    expect(getSecurityPostureTrend).not.toHaveBeenCalled();
+  });
+
+  it('denies an org-scoped caller selecting another org (403)', async () => {
+    const res = await buildApp({ orgId: ORG_A, accessibleOrgIds: [ORG_A], canAccessOrg: (id: string) => id === ORG_A })
+      .request(`/trends?orgId=${ORG_B}`);
+
+    expect(res.status).toBe(403);
+    expect(getSecurityPostureTrend).not.toHaveBeenCalled();
+  });
+
+  it('keeps every accessible org when no org is selected', async () => {
+    const res = await buildApp(partnerAuth).request('/trends');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getSecurityPostureTrend).mock.calls[0]![0]).toMatchObject({ orgIds: [ORG_A, ORG_B], days: 30 });
   });
 });

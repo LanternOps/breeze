@@ -340,6 +340,7 @@
     "retry": "Tentar novamente",
     "since": "desde {{time}}",
     "fix": "Corrigir",
+    "remedy": { "reconnect": "Reconecte pelo aplicativo cliente (por exemplo, adicione o servidor MCP novamente). Nenhuma ação no Breeze." },
     "truncated": "Mostrando os primeiros {{count}}",
     "recentlyResolved": "Resolvidos recentemente ({{count}})",
     "resolution": {
@@ -594,7 +595,7 @@
     "hidePassword": "Ocultar a senha",
     "portalLabelToggle": "Mostrar o nome do provedor no portal do cliente",
     "portalLabelHelp": "Desativado por padrão: os clientes veem \"Backup gerenciado em nuvem\" em vez do nome do fabricante.",
-    "credentialsHelp": "Crie um usuário dedicado do console do Cove com função somente leitura, uma senha exclusiva e sem autenticação em duas etapas. O Breeze apenas lê o status e nunca altera nada no Cove.",
+    "credentialsHelp": "Crie um usuário de API do Cove (Management → Users → API Users) no seu cliente de nível superior. Informe o nome desse cliente como nome do parceiro, o nome de login do usuário de API como usuário e o token dele como senha. O Breeze apenas lê o status; nunca altera nada no Cove.",
     "test": "Testar conexão",
     "syncNow": "Sincronizar agora",
     "reauthRequired": "Credenciais recusadas",

@@ -121,6 +121,7 @@ describe('PamSignerGroupsTab', () => {
     const before = fetchWithAuthMock.mock.calls.filter((c) => c[0] === '/pam/signer-groups').length;
 
     rerender(<PamSignerGroupsTab liveTick={1} />);
+    expect(screen.getByTestId('pam-signer-group-row-grp-1')).toBeInTheDocument();
     await waitFor(() => {
       const after = fetchWithAuthMock.mock.calls.filter((c) => c[0] === '/pam/signer-groups').length;
       expect(after).toBe(before + 1);

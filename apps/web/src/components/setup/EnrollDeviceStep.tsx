@@ -1,3 +1,4 @@
+import { setupCompletionDestination } from '../../lib/purchaseHandoff';
 import { useEffect, useState, useCallback } from 'react';
 import { Check, Copy, Loader2, Download, Link, ArrowLeft, Info } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -268,7 +269,7 @@ export default function EnrollDeviceStep({ orgId, siteId, onBack, onFinish: _onF
       localStorage.removeItem('breeze-setup-org');
       localStorage.removeItem('breeze-setup-site');
     } catch { /* ignore */ }
-    window.location.href = '/';
+    window.location.href = setupCompletionDestination(window.location.search);
   };
 
   return (

@@ -332,6 +332,13 @@ export async function decideIntentApproval(
      * the server refuses both), and never caches a grant it mints.
      */
     freshFactor?: boolean;
+    /**
+     * #9658: the caller shows its own, more specific success toast (the
+     * approvals inbox: "Approved {action} for {org}"), so skip the generic one
+     * here — otherwise one click shows two. Errors and the refused-approve
+     * toast are unaffected.
+     */
+    silentSuccess?: boolean;
   },
 ): Promise<IntentDecisionOutcome> {
   const body: Record<string, unknown> = {};
@@ -468,7 +475,7 @@ export async function decideIntentApproval(
       // No success toast for a refused approve: it is reported as an error
       // below, never as "approved".
       successMessage: (result) =>
-        isRefusedDecision(result)
+        isRefusedDecision(result) || opts?.silentSuccess
           ? ''
           : decision === 'approve'
             ? i18n.t('ai:aiApprovalDialog.approvedToast')

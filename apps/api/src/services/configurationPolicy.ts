@@ -84,6 +84,10 @@ import { getPolicyBaselineDefaults } from './policyBaselineDefaults';
 import type { AutomationAction } from './automationRuntime';
 import { scheduleComplianceAlertReconcile } from './complianceAlertReconcileTrigger';
 import {
+  capturePeripheralLinkDeleteScope,
+  schedulePeripheralLinkReconcile,
+} from './peripheralLinkReconcileTrigger';
+import {
   describeQuarantineApproval,
   securityLinkAuthorityColumns,
   withoutFeatureLinkAuthority,
@@ -677,9 +681,31 @@ export async function listConfigPolicies(
     else linksByPolicyId.set(link.configPolicyId, [entry]);
   }
 
+  // #9565: a partner-owned policy (org_id NULL) applies to every organization
+  // only once it has a partner-level assignment; until then it applies to no
+  // organization at all. The list's "Partner-wide" badge keys off this flag.
+  // ADDITIVE and batched like the links read above: one statement per page,
+  // issued only when the page holds a partner-owned row. Tenancy: the
+  // assignment RLS policies are the same EXISTS join back to the parent
+  // policy, so restricting to ids the access-filtered query already returned
+  // adds no visibility.
+  const partnerOwnedIds = rows.filter((row) => row.orgId === null).map((row) => row.id);
+  const partnerWideAssignedIds = new Set<string>();
+  if (partnerOwnedIds.length) {
+    const partnerAssignmentRows = await db
+      .select({ configPolicyId: configPolicyAssignments.configPolicyId })
+      .from(configPolicyAssignments)
+      .where(and(
+        inArray(configPolicyAssignments.configPolicyId, partnerOwnedIds),
+        eq(configPolicyAssignments.level, 'partner'),
+      ));
+    for (const assignment of partnerAssignmentRows) partnerWideAssignedIds.add(assignment.configPolicyId);
+  }
+
   const data = rows.map((row) => ({
     ...row,
     featureLinks: linksByPolicyId.get(row.id) ?? [],
+    hasPartnerWideAssignment: partnerWideAssignedIds.has(row.id),
   }));
 
   return { data, pagination: { page: pagination.page, limit: pagination.limit, total } };
@@ -722,6 +748,9 @@ export async function updateConfigPolicy(
   // is no longer active close through the reconcile.
   if (data.status !== undefined && data.status !== existing.status) {
     scheduleComplianceAlertReconcile({ configPolicyId: id }, 'policy-status');
+    // Only an active config policy's Peripheral Control link governs devices
+    // (#9619); a no-op when the policy carries no peripheral link.
+    schedulePeripheralLinkReconcile({ configPolicyId: id, standalone: true }, 'policy-status');
   }
   return updated;
 }
@@ -752,6 +781,14 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
     .where(eq(configurationPolicies.parentPolicyId, id));
   if (children.length > 0) throw new PolicyHasChildrenError(children);
 
+  // The delete cascades the policy's links and assignments away, so the
+  // devices its Peripheral Control link governed must be captured first (#9619).
+  // Best effort: the periodic peripheral reconciliation sweep is the net.
+  const peripheralScope = await capturePeripheralLinkDeleteScope(id).catch((error) => {
+    console.error('[configurationPolicy] could not capture peripheral link scope before delete:', error);
+    return null;
+  });
+
   try {
     const [deleted] = await db
       .delete(configurationPolicies)
@@ -762,6 +799,9 @@ export async function deleteConfigPolicy(id: string, auth: AuthContext) {
       ? { orgId: existing.orgId }
       : existing.partnerId ? { partnerId: existing.partnerId } : null;
     if (deleted && owner) scheduleComplianceAlertReconcile(owner, 'policy-delete');
+    if (deleted && peripheralScope) {
+      schedulePeripheralLinkReconcile({ ...peripheralScope, standalone: true }, 'policy-delete');
+    }
     return deleted ?? null;
   } catch (err) {
     // Lost the race: a child was created after the check above. The FK is the
@@ -1936,6 +1976,14 @@ export async function addFeatureLink(
   if (added && featureType === 'compliance') {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-add');
   }
+  // #9619: a Peripheral Control link is authoritative for which devices get the
+  // linked peripheral policy; linking moves devices in/out of it.
+  if (added && featureType === 'peripheral_control' && added.featurePolicyId) {
+    schedulePeripheralLinkReconcile(
+      { configPolicyId, peripheralPolicyIds: [added.featurePolicyId], standalone: true },
+      'feature-link-add',
+    );
+  }
   return added;
 }
 
@@ -1965,6 +2013,7 @@ export async function updateFeatureLink(
   }
 
   let updatedComplianceOf: string | null = null;
+  let peripheralLinkChange: { configPolicyId: string; policyIds: string[] } | null = null;
   const result = await executor.transaction(async (tx) => {
     // Fetch current link to get featureType, scoped to configPolicyId when provided
     const conditions = [eq(configPolicyFeatureLinks.id, linkId)];
@@ -2117,12 +2166,31 @@ export async function updateFeatureLink(
       );
     }
     if (existing.featureType === 'compliance') updatedComplianceOf = existing.configPolicyId;
+    if (existing.featureType === 'peripheral_control' && updates.featurePolicyId !== undefined) {
+      // Re-pointing the link moves devices out of the old policy and into the new one.
+      peripheralLinkChange = {
+        configPolicyId: existing.configPolicyId,
+        policyIds: [existing.featurePolicyId, updated.featurePolicyId]
+          .filter((id): id is string => !!id),
+      };
+    }
     return existing.featureType === 'monitors' ? reloadMonitorsInterval(updated, tx) : updated;
   });
   // A renamed or removed rule set never gets another compliance event, so its
   // open alerts close through the reconcile.
   if (updatedComplianceOf) {
     scheduleComplianceAlertReconcile({ configPolicyId: updatedComplianceOf }, 'feature-link-update');
+  }
+  const peripheralChange = peripheralLinkChange as { configPolicyId: string; policyIds: string[] } | null;
+  if (peripheralChange && peripheralChange.policyIds.length > 0) {
+    schedulePeripheralLinkReconcile(
+      {
+        configPolicyId: peripheralChange.configPolicyId,
+        peripheralPolicyIds: peripheralChange.policyIds,
+        standalone: true,
+      },
+      'feature-link-update',
+    );
   }
   return result;
 }
@@ -2153,6 +2221,15 @@ export async function removeFeatureLink(linkId: string, configPolicyId: string) 
   // they raised close through the reconcile.
   if (removed?.featureType === 'compliance') {
     scheduleComplianceAlertReconcile({ configPolicyId }, 'feature-link-remove');
+  }
+  // Unlinking returns the peripheral policy to its own targeting (#9619). A
+  // `kept` row stayed live, so nothing changed for it.
+  if (removed && !('kept' in removed && removed.kept)
+    && removed.featureType === 'peripheral_control' && removed.featurePolicyId) {
+    schedulePeripheralLinkReconcile(
+      { configPolicyId, peripheralPolicyIds: [removed.featurePolicyId], standalone: true },
+      'feature-link-remove',
+    );
   }
   return removed;
 }
@@ -2304,7 +2381,11 @@ export async function assignPolicy(
     .returning();
   // A new assignment can take precedence over the one a device followed until
   // now; alerts raised by rules the device no longer follows close.
-  if (assignment) scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-add');
+  if (assignment) {
+    scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-add');
+    // A new assignment brings a linked peripheral policy to the target's devices (#9619).
+    schedulePeripheralLinkReconcile({ configPolicyId, assignments: [{ level, targetId }] }, 'assignment-add');
+  }
   return assignment ?? null;
 }
 
@@ -2585,7 +2666,13 @@ export async function unassignPolicy(assignmentId: string, configPolicyId: strin
       )
     )
     .returning();
-  if (deleted) scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-remove');
+  if (deleted) {
+    scheduleComplianceAlertReconcile({ configPolicyId }, 'assignment-remove');
+    schedulePeripheralLinkReconcile(
+      { configPolicyId, assignments: [{ level: deleted.level, targetId: deleted.targetId }] },
+      'assignment-remove',
+    );
+  }
   return deleted ?? null;
 }
 

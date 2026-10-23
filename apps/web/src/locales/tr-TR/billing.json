@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} satır dahil edilen miktarı aştı ve faturalandırılmadı: {{names}}",
         "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
-        "draftDeleted": "Taslak silindi"
+        "draftDeleted": "Taslak silindi",
+        "skipped": {
+          "already_billed": "Fatura oluşturulmadı — bu faturalama dönemi zaten faturalandı.",
+          "not_due": "Fatura oluşturulmadı — bu sözleşmenin faturalama zamanı henüz gelmedi.",
+          "renewal_pending": "Fatura oluşturulmadı — bu sözleşme bitiş tarihini geçti ve yenilenmeyi bekliyor.",
+          "expired": "Fatura oluşturulmadı — bu sözleşmenin süresi doldu.",
+          "unknown": "Bu sözleşme için fatura oluşturulmadı."
+        }
       },
       "cancelConfirm": {
         "title": "Bu sözleşme iptal edilsin mi?",
@@ -2437,7 +2444,7 @@
     "documents": "Belgeler",
     "connections": "Bağlantılar",
     "rates": "Ücretler",
-    "payments": "Payments"
+    "payments": "Ödemeler"
   },
   "billingConnectionsTab": {
     "accounting": {

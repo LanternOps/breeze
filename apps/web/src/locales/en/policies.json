@@ -158,7 +158,9 @@
       "of2": "of",
       "itsOwningOrganization": "its owning organization",
       "organizationPolicyTitle": "Organization policy — applies only to {{organization}}",
-      "summary": "{{filtered}} of {{total}} policies"
+      "summary": "{{filtered}} of {{total}} policies",
+      "partnerPolicy": "Partner",
+      "partnerPolicyAppliesOnlyWhereAssigned": "Partner policy — applies only where it is assigned. Assign it to all organizations to make it partner-wide."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Failed to fetch configuration policies",
@@ -739,7 +741,7 @@
         "muteAlertNotificationsDuringWindow": "No new alerts are created during the window.",
         "suppressAlerts2": "suppressAlerts",
         "suppressPatching": "Suppress patching",
-        "delayPatchInstallationsDuringWindow": "Delay patch installations during window.",
+        "delayPatchInstallationsDuringWindow": "Installs scheduled during the window are skipped and run at the next scheduled occurrence.",
         "suppressPatching2": "suppressPatching",
         "suppressAutomations": "Suppress automations",
         "pauseAutomationRunsDuringWindow": "Pause automation runs during window.",
@@ -748,15 +750,16 @@
         "pauseScriptExecutionDuringWindow": "Pause script execution during window.",
         "suppressScripts2": "suppressScripts",
         "rebootIfARebootIsPending": "Reboot if a reboot is pending",
-        "duringTheWindowRebootDevicesThatHave": "During the window, reboot devices that have a pending reboot. Windows warns the signed-in user ~5 minutes before rebooting; Linux schedules the reboot 15 minutes out with a warning to signed-in users. macOS is not supported.",
+        "duringTheWindowRebootDevicesThatHave": "During the window, reboot devices that have a pending reboot. The warning period comes from the device's patch policy reboot delay. macOS is not supported.",
         "rebootIfPending": "rebootIfPending",
-        "maintenanceRebootIfPendingToggle": "maintenance-reboot-if-pending-toggle",
         "notifyOnStart": "Notify on start",
         "sendNotificationWhenWindowOpens": "Send notification when window opens.",
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Notify on end",
         "sendNotificationWhenWindowCloses": "Send notification when window closes.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Weekly windows open every Sunday at the start time, in the selected timezone.",
+        "monthlyOpensOnTheFirst": "Monthly windows open on the 1st of each month at the start time, in the selected timezone."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Agent collection",
@@ -887,7 +890,10 @@
         "noRingManualApprovalHint": "No ring linked — patches install only after manual approval.",
         "unavailableRingOption": "Unavailable ring",
         "ringInvalidTitle": "The linked Update Ring is no longer available.",
-        "ringInvalidBody": "Patches for this policy are held until you choose a ring and save."
+        "ringInvalidBody": "Patches for this policy are held until you choose a ring and save.",
+        "ringDetailsNoHold": "Rollout order {{order}} · no hold before approval",
+        "ringDetailsWithHold_one": "Rollout order {{order}} · {{count}}-day hold before approval",
+        "ringDetailsWithHold_other": "Rollout order {{order}} · {{count}}-day hold before approval"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Link Peripheral Policy",
@@ -1432,6 +1438,8 @@
       "error": "Error",
       "deploymentComplete": "Deployment complete",
       "inProgress": "In progress",
+      "completedWithErrors": "Completed with errors",
+      "scheduledFor": "Scheduled for {{time}}",
       "autoRefreshing": "Auto-refreshing every 5 seconds",
       "queuedOffline": "Queued — device offline",
       "cancelled": "Cancelled",

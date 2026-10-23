@@ -20,6 +20,7 @@
     "state": {
       "met": "Cumplió",
       "notMet": "No cumplido",
+      "metLate": "Cumplido con retraso",
       "breached": "violado",
       "pausedLeft": "En pausa · quedan {{relative}}",
       "left": "Quedan {{relative}}"
@@ -235,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} h trabajadas · {{billed}} h facturadas",
     "includedMinutes": "{{hours}} h incluidas en el contrato",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Cada registro factura sus minutos redondeados a horas (2 decimales) × su tarifa.",
     "missingRateCount_one": "1 entrada no tiene tarifa por hora; no está incluida en el monto anterior",
     "missingRateCount_other": "{{count}} entradas no tienen tarifa por hora; no están incluidas en el monto anterior",
     "deleteEntry": "Eliminar la entrada de tiempo de {{duration}} de {{tech}}",
@@ -333,6 +336,10 @@
     "selectedCount_other": "{{count}} seleccionado",
     "clearSelection": "Limpiar",
     "noSelection": "Seleccione un ticket. Utilice j/k para moverse, Enter para expandir.",
+    "movedToClosed": {
+      "message": "{{status}} — ahora en {{tab}}",
+      "view": "Ver en {{tab}}"
+    },
     "ticketingSettings": "Configuración de gestión de tickets",
     "assignFailed": "La asignación falló. Reintentar.",
     "assignedToYou": "Asignado a usted",

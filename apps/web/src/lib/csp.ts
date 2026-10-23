@@ -100,6 +100,11 @@ export function resolveConnectSrcDirective(options: {
   addSentryOrigin(sources, env.PUBLIC_SENTRY_DSN_WEB ?? env.SENTRY_DSN_WEB);
   addConfiguredConnectHosts(sources, env.CSP_CONNECT_HOSTS);
 
+  // Cloudflare Web Analytics: the beacon script (allowed in script-src from
+  // static.cloudflareinsights.com) POSTs its RUM payload here. Without this
+  // the runtime-tightened connect-src (SOC 2 header hardening) blocks it.
+  sources.add('https://cloudflareinsights.com');
+
   if (options.isDev) {
     sources.add('http://localhost:3001');
     sources.add('ws://localhost:3001');

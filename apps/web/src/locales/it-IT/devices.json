@@ -1035,7 +1035,9 @@
       "label": "approvazione",
       "byRing": "definita dall'anello di aggiornamento collegato",
       "manualOnly": "solo approvazioni manuali (nessun anello di aggiornamento collegato)"
-    }
+    },
+    "chainResolutionRule": "Decide prima il livello: Dispositivo prevale su Gruppo di dispositivi, poi Sito, Organizzazione e Partner. La priorità (vince il numero più basso) decide solo tra criteri dello stesso livello. Le funzionalità barrate sono state sovrascritte da un criterio più vicino.",
+    "featureOverriddenBy": "Sovrascritta da {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossibile recuperare le attività",
@@ -1360,6 +1362,7 @@
     "drive": "Unità",
     "size": "Dimensione",
     "used": "Utilizzato",
+    "usedPercent": "% utilizzato",
     "health": "Integrità",
     "noDiskInventoryReported": "Nessun inventario dei dischi segnalato.",
     "networkAdapters": "Schede di rete",
@@ -2495,7 +2498,7 @@
     "showFindings": "Mostra rilevamenti",
     "stats": {
       "accepted": "Accettate",
-      "kev": "KEV",
+      "kev": "Sfruttata nota",
       "mitigated": "Mitigate",
       "open": "Aperte",
       "patchReady": "Pronte per patch",
@@ -3481,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Non è ancora attivo alcun monitoraggio",
+        "titleWithCheck": "Nessun dato di integrità SNMP",
+        "descriptionWithCheck": "Per questo dispositivo è attivo un controllo di rete, quindi la raggiungibilità è comunque monitorata. Attiva SNMP per raccogliere anche i dati di integrità.",
         "action": "Configura il monitoraggio",
         "benefit": {
           "printer": "Attiva SNMP per visualizzare i livelli di toner e inchiostro, i vassoi della carta, i contatori delle pagine e gli errori della stampante.",

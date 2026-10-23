@@ -8,7 +8,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
-import { minorUnitScaleSql } from '../currencySql';
+import { laborAmountSql, minorUnitScaleSql } from '../currencySql';
 import { technicianTimeConfigSchema, type TechnicianTimeConfig } from '../reportConfigSchemas';
 import type { ReportResult } from '../reportGenerationService';
 import { reportTypeDef } from '../reportRegistry';
@@ -208,7 +208,7 @@ const UNPRICED = sql`
  * disagree. Returned as numeric text; never a JS number.
  */
 const MONEY = sql`
-  COALESCE(SUM(ROUND(ROUND(${BILLED_QUANTITY}::numeric / 60, 2) * e.hourly_rate, ${minorUnitScaleSql(sql`e.currency_code`)})), 0)::numeric(14,2)::text AS billable_value,
+  COALESCE(SUM(${laborAmountSql(BILLED_QUANTITY, sql`e.hourly_rate`, minorUnitScaleSql(sql`e.currency_code`))}), 0)::numeric(14,2)::text AS billable_value,
   ROUND(AVG(e.hourly_rate), 2)::numeric(12,2)::text AS average_rate`;
 const MONEY_ROWS = sql`e.eff_coverage = 'billable' AND e.hourly_rate IS NOT NULL AND e.currency_code IS NOT NULL`;
 

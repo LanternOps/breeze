@@ -35,6 +35,7 @@ import {
   type ManifestKeyDelegation,
 } from '../../services/manifestSigning';
 import { captureException } from '../../services/sentry';
+import { publishEvent } from '../../services/eventBus';
 import {
   disconnectAgentCredentialGeneration,
   publishAgentCredentialRevocation,
@@ -53,6 +54,7 @@ import {
   PartnerDeviceCapacityError,
 } from '../../services/partnerDeviceCapacity';
 import { markTopologyIdentityDirty } from '../../services/topology/identityDirty';
+import { applyOrgDefaultDeviceGroup } from '../../services/enrollmentDefaultGroup';
 
 export const enrollmentRoutes = new Hono();
 
@@ -141,6 +143,7 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         replacedAgentId?: string;
         replacedCredentialHashes?: string[];
         collision?: DeviceIdentityCollisionAlertInput;
+        enrolledEvent: { orgId: string; siteId: string; payload: Record<string, unknown> };
         responseBody: Record<string, unknown>;
       }
   > => {
@@ -949,6 +952,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
         throw new Error('Failed to create device');
       }
 
+      // #9617: org "default device group" — fresh rows only (an in-place
+      // re-enrollment keeps whatever groups the device already has). Never
+      // throws; runs in a savepoint so it cannot abort this transaction.
+      if (insertFreshRow && !isSupportEnrollment) {
+        await applyOrgDefaultDeviceGroup(tx, { orgId: dev.orgId, deviceId: dev.id, siteId: dev.siteId });
+      }
+
       // Quick Support: bind the session to the device it just enrolled. Inside
       // the SAME transaction as the device write so a rolled-back enrollment
       // can never leave a session pointing at a device row that does not exist.
@@ -1200,6 +1210,19 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     return {
       deviceId: device.id,
+      // #9511 — published by the handler AFTER this context resolves.
+      enrolledEvent: {
+        orgId: key.orgId,
+        siteId: device.siteId,
+        payload: {
+          deviceId: device.id,
+          hostname: data.hostname,
+          agentVersion: data.agentVersion,
+          // In-place re-enrollment only: a decom-bypass / hostname-collision
+          // enrollment inserts a brand-new row, so it is a new device here.
+          reenrollment: !insertFreshRow,
+        },
+      },
       // Preserve the pre-update connection key. In-place re-enrollment mints
       // a new agentId, while the stale socket is still indexed by the old one.
       replacedAgentId: !insertFreshRow ? existingDevice?.agentId : undefined,
@@ -1276,6 +1299,20 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
   // committed and the pooled connection has been released. Same fire-and-
   // forget error handling as before — an enqueue failure must never fail
   // enrollment.
+  // #9511 — `device.enrolled` for webhook / automation / event-stream
+  // subscribers. Published only here, after the enrollment context resolved
+  // and the device row committed (a later failure inside the context can no
+  // longer leave a phantom event). Covers first enrollment AND re-enrollment
+  // (payload `reenrollment`); the internal `device.created` group-reevaluation
+  // is not an EventType and reaches no subscribers. Never awaited, never fatal.
+  const { enrolledEvent } = enrollmentOutcome;
+  void Promise.resolve()
+    .then(() => publishEvent('device.enrolled', enrolledEvent.orgId, enrolledEvent.payload, 'agent-enrollment', { siteId: enrolledEvent.siteId }))
+    .catch((err) => {
+      console.error('[Enrollment] Failed to publish device.enrolled:', err instanceof Error ? err.message : err);
+      captureException(err);
+    });
+
   queueWarrantySyncForDevice(enrollmentOutcome.deviceId).catch((err) => {
     console.error('[Enrollment] Failed to queue warranty sync:', err instanceof Error ? err.message : err);
   });

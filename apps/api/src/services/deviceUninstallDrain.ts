@@ -40,7 +40,7 @@
 import { and, arrayContains, eq, gt, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceCommands, devices } from '../db/schema';
-import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
+import { cancelDeviceCommands } from './commandCancelPropagation';
 import { envInt } from '../utils/envInt';
 
 /** The type of a drizzle transaction handle, extracted the same way
@@ -232,9 +232,8 @@ export async function queueDeviceUninstall(
  * is never transitioned to `cancelled` here; it is reported as
  * `alreadyDispatched` instead, after still having `device_remove` stripped
  * so it stops draining. Only a `pending` row with zero reasons left after
- * the strip is cancelled, and every such cancellation includes
- * `terminalPayloadErasureSet()` like every other terminal writer in this
- * codebase.
+ * the strip is cancelled, via `cancelDeviceCommands` (which owns the
+ * `terminalPayloadErasureSet()` write and runs the per-type cancellation hooks).
  *
  * Takes the CALLER's transaction, mirroring `queueDeviceUninstall`'s `tx`
  * parameter — this is not incidental symmetry. #3986 task 8 fix round 1: the
@@ -317,16 +316,18 @@ export async function releaseDeviceRemoveReason(
   }
 
   if (toCancelIds.length > 0) {
-    await tx
-      .update(deviceCommands)
-      .set({
-        status: 'cancelled',
-        completedAt: new Date(),
-        result: { reason },
-        ...terminalPayloadErasureSet(),
-      })
-      .where(inArray(deviceCommands.id, toCancelIds));
-    cancelled = toCancelIds.length;
+    // Shared helper (#9719): UPDATE + per-type cancellation hooks, in the
+    // caller's tx. The `pending` guard means a row claimed since the strip is
+    // neither flipped nor propagated, and `cancelled` counts only real flips.
+    const flipped = await cancelDeviceCommands({
+      executor: tx,
+      result: { reason },
+      where: and(
+        inArray(deviceCommands.id, toCancelIds),
+        eq(deviceCommands.status, 'pending'),
+      )!,
+    });
+    cancelled = flipped.length;
   }
 
   return { cancelled, retainedOtherOwner, alreadyDispatched };

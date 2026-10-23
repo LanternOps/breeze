@@ -1035,7 +1035,9 @@
       "label": "onay",
       "byRing": "bağlı güncelleme halkası tarafından belirlenir",
       "manualOnly": "yalnızca el ile onaylar (bağlı güncelleme halkası yok)"
-    }
+    },
+    "chainResolutionRule": "Önce seviye belirler: Cihaz, Cihaz Grubunu geçer; ardından Site, Kuruluş ve İş Ortağı gelir. Öncelik (düşük sayı kazanır) yalnızca aynı seviyedeki politikalar arasında karar verir. Üstü çizili özellikler daha yakın bir politika tarafından geçersiz kılınmıştır.",
+    "featureOverriddenBy": "{{policy}} tarafından geçersiz kılındı"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",
@@ -1360,6 +1362,7 @@
     "drive": "Sür",
     "size": "Boyut",
     "used": "Kullanılmış",
+    "usedPercent": "Kullanım %",
     "health": "Sağlık",
     "noDiskInventoryReported": "Disk envanteri bildirilmedi.",
     "networkAdapters": "Ağ Bağdaştırıcıları",
@@ -2495,7 +2498,7 @@
     "showFindings": "Bulguları Göster",
     "stats": {
       "accepted": "Kabul edildi",
-      "kev": "Kev",
+      "kev": "Bilinen istismar",
       "mitigated": "Azaltılmış",
       "open": "Aç",
       "patchReady": "Yama Hazır",
@@ -2513,9 +2516,9 @@
     "statusLabel": "Durum Etiketi",
     "table": {
       "actions": "Eylemler",
-      "cve": "Cve",
-      "cvss": "Cvs",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Önem",
       "status": "Durum"
@@ -3481,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Henüz hiçbir şey izlenmiyor",
+        "titleWithCheck": "SNMP sağlık verisi yok",
+        "descriptionWithCheck": "Bu cihaz için etkin bir ağ denetimi var, bu nedenle erişilebilirlik izlenmeye devam ediyor. Ayrıca sağlık verisi toplamak için SNMP'yi açın.",
         "action": "İzlemeyi ayarla",
         "benefit": {
           "printer": "Toner ve mürekkep seviyelerini, kağıt tepsilerini, sayfa sayaçlarını ve yazıcı hatalarını görmek için SNMP’yi açın.",

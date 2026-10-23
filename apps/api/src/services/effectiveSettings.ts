@@ -97,12 +97,47 @@ function asRecord(val: unknown): Record<string, unknown> {
  * Partner fields always win and are added to `locked`.
  * Org fields only fill in fields the partner hasn't set.
  */
+/**
+ * Retired `defaults` keys (#9617). `deviceGroup` is now an ORG-level real group
+ * id (a partner-level value cannot name a per-org group), and `alertThreshold` /
+ * `autoEnrollment.sendWelcome` had no consumer and were removed. Legacy values a
+ * partner already stored must neither lock the org's field nor be advertised as
+ * enforced, so the partner layer is read through this filter.
+ */
+function withoutRetiredPartnerDefaults(
+  category: string,
+  cat: Record<string, unknown>,
+): Record<string, unknown> {
+  if (category !== 'defaults') return cat;
+  const { deviceGroup: _dg, alertThreshold: _at, ...rest } = cat;
+  const auto = rest.autoEnrollment;
+  if (auto && typeof auto === 'object' && !Array.isArray(auto) && 'sendWelcome' in auto) {
+    const { sendWelcome: _sw, ...autoRest } = auto as Record<string, unknown>;
+    rest.autoEnrollment = autoRest;
+  }
+  return rest;
+}
+
+/** Drop the retired `autoEnrollment.sendWelcome` from a submitted patch (old clients still send it). */
+function withoutRetiredPatchFields(
+  category: string,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const auto = patch.autoEnrollment;
+  if (category !== 'defaults' || !auto || typeof auto !== 'object' || Array.isArray(auto) || !('sendWelcome' in auto)) {
+    return patch;
+  }
+  const { sendWelcome: _sw, ...autoRest } = auto as Record<string, unknown>;
+  return { ...patch, autoEnrollment: autoRest };
+}
+
 function mergeCategory(
   category: string,
-  partnerCat: Record<string, unknown>,
+  partnerCatRaw: Record<string, unknown>,
   orgCat: Record<string, unknown>,
   locked: string[],
 ): Record<string, unknown> {
+  const partnerCat = withoutRetiredPartnerDefaults(category, partnerCatRaw);
   const effective: Record<string, unknown> = {};
 
   // Partner fields win
@@ -269,8 +304,9 @@ export async function getEffectiveOrgSettings(
 export async function assertNotLocked(
   orgId: string,
   category: string,
-  patch: Record<string, unknown>,
+  patchRaw: Record<string, unknown>,
 ): Promise<void> {
+  const patch = withoutRetiredPatchFields(category, patchRaw);
   const org = await db
     .select({ partnerId: organizations.partnerId, settings: organizations.settings })
     .from(organizations)
@@ -299,7 +335,7 @@ export async function assertNotLocked(
   }
 
   const partnerSettings = asRecord(partner.settings);
-  const partnerCat = asRecord(partnerSettings[category]);
+  const partnerCat = withoutRetiredPartnerDefaults(category, asRecord(partnerSettings[category]));
   const orgCat = asRecord(asRecord(org.settings)[category]);
 
   // The org editor re-posts its whole settings blob with every stored secret

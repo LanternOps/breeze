@@ -246,7 +246,8 @@ describe('PartnerSettingsPage language control', () => {
     });
     await renderPartner('pt-BR');
 
-    expect(screen.getByText('Configurações regionais')).not.toBeNull();
+    // The panel's own h2 (from the shell) now carries the tab label; the card keeps only its description.
+    expect(screen.getByTestId('partner-settings-panel-heading').textContent).toBe(i18n.t('partnerSettingsPage.tabs.regional.label', { ns: 'settings' }));
     expect(screen.getByLabelText('Fuso horário')).not.toBeNull();
     expect(screen.getAllByText('Horário comercial')).toHaveLength(2);
     expect(screen.getByText('Idioma padrão das configurações do parceiro.')).not.toBeNull();
@@ -586,23 +587,15 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     expect(screen.queryByTestId('partner-settings-ticketing-link')).toBeNull();
   });
 
-  it('the Ticketing tab is a link to /settings/ticketing, not an embedded tab group', async () => {
+  it('the Ticketing rail item is a real link to /settings/ticketing, not an embedded tab group', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
     render(<PartnerSettingsPage />);
 
     await screen.findByText('Partner Settings');
-    const user = userEvent.setup();
-    await user.click(screen.getByTestId('partner-settings-tab-ticketing'));
-
-    const link = await screen.findByTestId('partner-settings-ticketing-link');
-    expect(link).toHaveAttribute('href', '/settings/ticketing');
+    expect(screen.getByTestId('partner-settings-tab-ticketing')).toHaveAttribute('href', '/settings/ticketing');
     expect(screen.queryByTestId('ticketing-settings-tabs')).not.toBeInTheDocument();
-    // Clicking the tab keeps the URL deep-linkable.
-    expect(window.location.hash).toBe('#ticketing');
-    // The inheritance banner is partner-config-only and must be hidden here.
-    expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
   });
 
   it('deep-links #ticketing straight to the Ticketing tab panel on mount', async () => {
@@ -613,6 +606,8 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('partner-settings-ticketing-link')).not.toBeNull();
+    // The inheritance banner is partner-config-only and must be hidden here.
+    expect(screen.queryByText(/enforced across all organizations/i)).toBeNull();
   });
 });
 
@@ -802,7 +797,7 @@ describe('PartnerSettingsPage sidebar nav & save contract', () => {
 
     await screen.findByText('Partner Settings');
     const user = userEvent.setup();
-    await user.click(screen.getByRole('link', { name: /^ticketing$/i }));
+    await user.click(screen.getByRole('link', { name: /^email templates$/i }));
 
     expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
     expect(screen.getByText('This section saves its own changes.')).not.toBeNull();

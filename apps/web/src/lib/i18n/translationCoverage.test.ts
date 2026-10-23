@@ -91,7 +91,8 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +4 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 187,
+    // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
+    'devices.json': 189,
     'discovery.json': 17,
     // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
     // Wave E2b (DEVICE_OFFLINE, AGENT_TIMEOUT, PATH_NOT_FOUND, PATH_CONFLICT,
@@ -175,12 +176,14 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 133,
+    'settings.json': 135,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
-    'tickets.json': 15,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 16,
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
@@ -350,12 +353,14 @@ const namespaceDuplicateBaselines = {
     // occurrence count that localeParity.test.ts:513 pins against English.
     // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
-    'settings.json': 135,
+    'settings.json': 137,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
-    'tickets.json': 15,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 16,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
     // +1 (grouped overview): grouped.mac 'MAC' is an identical es-419 acronym.
@@ -428,7 +433,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 106, // +1 W06: lists.separator ", " is punctuation
+    'common.json': 107, // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -552,13 +557,15 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) fr-FR: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
     // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
-    'settings.json': 185,
+    'settings.json': 186,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
-    'tickets.json': 25,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 26,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-FR cognates.
@@ -629,7 +636,7 @@ const namespaceDuplicateBaselines = {
     // +1: nav.variables — "Variables" is identical in French.
     // +1: nav.sectionAdministration (left-nav reorg, #4202) —
     // "Administration" is identical in French.
-    'common.json': 108, // +1 W06: lists.separator ", " is punctuation
+    'common.json': 109, // +1 #9663: incidents.actors.brain "Breeze AI" is a protected proper noun; // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -754,13 +761,15 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) fr-CA: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
     // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
-    'settings.json': 190,
+    'settings.json': 191,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     // +2 (#7900 W3): ticketType.incident and createTicketPage.type — "Incident"/"Type" are identical in French.
-    'tickets.json': 24,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 25,
     'toolSources.json': 1,
     // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
     // targetFields.port 'Port' are identical fr-CA cognates.
@@ -844,7 +853,7 @@ const namespaceDuplicateBaselines = {
     // rendered is a control that says which account a script runs under.
     // +1 W01 settings consolidation (#6224): nav.ticketing — "Ticketing" is
     // the standard de-DE loanword (matching partnerSettingsPage.tabs.ticketing).
-    'common.json': 109, // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
+    'common.json': 111, // +2 #9663: incidents.actors.brain "Breeze AI" (proper noun) + actors.system "System"; // +1 W06: lists.separator ", " is punctuation; +1 system page W02: nav.system "System"
     // +8 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
     // plus dateFormat.iso "ISO (2026-12-31)" and mapping.fieldKeyPlaceholder
@@ -954,7 +963,7 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) de-DE: aiModels.models.details "Details" and offering.speed.standard "Standard" are spelled identically (+2).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical German term.
-    'settings.json': 201,
+    'settings.json': 203,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1032,7 +1041,8 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5993): reachability.source preserves the names "UniFi" and "SNMP".
     // +1: timeSync.fields.pdc — PDC is the locale-invariant Windows Active Directory role acronym.
     // +3 (#8166 W02 PR-B): EDR provider UI labels that are identical cognates/loanwords in this locale (e.g. Status, Info, Online, Endpoints, Provider).
-    'devices.json': 153,
+    // +2 (#9610): vulnerabilities table.cve/cvss/kev are identical locale-invariant acronyms (CVE, CVSS, KEV).
+    'devices.json': 155,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
@@ -1112,12 +1122,14 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // W04 Task 12 (#7602) it-IT: aiModels.offering.prices.input/output ("Input"/"Output") and speed.standard "Standard" are spelled identically (+3).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical Italian term.
-    'settings.json': 179,
+    'settings.json': 181,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
-    'tickets.json': 8,
+    // +1 (#9561): ticketTimeBilling.laborBreakdown "{{hours}} h × {{rate}} = {{amount}}" is
+    // three interpolations, the SI hour symbol and math signs — no wording to translate.
+    'tickets.json': 9,
     'toolSources.json': 1,
     // +1: topology `counts` "{{nodes}} · {{edges}}" only joins two translated plurals; locale-invariant.
     // +2 (grouped overview): grouped.mac 'MAC' and grouped.gateway 'Gateway' are identical it-IT cognates/acronyms.

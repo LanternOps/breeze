@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} linha(s) excedem a quantidade incluída e não foram faturadas: {{names}}",
         "uncoveredDevices": "Fatura gerada, mas {{count}} dispositivo(s) não são cobrados por nenhuma linha deste contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} linha(s) de catálogo faturada(s) pelo preço salvo no contrato — sem preço em {{currency}} no catálogo: {{lines}}",
-        "draftDeleted": "Rascunho excluído"
+        "draftDeleted": "Rascunho excluído",
+        "skipped": {
+          "already_billed": "Nenhuma fatura gerada — este período de cobrança já foi faturado.",
+          "not_due": "Nenhuma fatura gerada — este contrato ainda não está no prazo de faturamento.",
+          "renewal_pending": "Nenhuma fatura gerada — este contrato passou da data de término e aguarda a renovação.",
+          "expired": "Nenhuma fatura gerada — este contrato expirou.",
+          "unknown": "Nenhuma fatura foi gerada para este contrato."
+        }
       },
       "cancelConfirm": {
         "title": "Cancelar este contrato?",
@@ -2437,7 +2444,7 @@
     "documents": "Documentos",
     "connections": "Conexões",
     "rates": "Tarifas",
-    "payments": "Payments"
+    "payments": "Pagamentos"
   },
   "billingConnectionsTab": {
     "accounting": {

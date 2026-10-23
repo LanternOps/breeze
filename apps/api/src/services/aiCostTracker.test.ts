@@ -7,8 +7,8 @@ import {
   checkBudgetDetailed,
   checkSystemAiRateLimit,
   debitBillingCredits,
-  deductBillingCredits,
   getUsageSummary,
+  getAggregateUsageSummary,
   sumInputTokens,
   updateBudget,
 } from './aiCostTracker';
@@ -30,6 +30,7 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args: unknown[]) => ({ _and: args })),
   desc: vi.fn((...args: unknown[]) => ({ _desc: args })),
   isNotNull: vi.fn((...args: unknown[]) => ({ _isNotNull: args })),
+  inArray: vi.fn((...args: unknown[]) => ({ _inArray: args })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => ({ _sql: strings, values }),
     {},
@@ -1048,11 +1049,12 @@ describe('billing internal route prefix (#5591)', () => {
     );
   });
 
-  it('the deduction posts to /billing/api/internal/partners/:id/ai-credits/deduct', async () => {
+  it('the keyed debit posts to /billing/api/internal/partners/:id/ai-credits/deduct', async () => {
     setupDbMocks(null);
     const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
 
-    await deductBillingCredits('org-1', 40);
+    await debitBillingCredits('org-1', 40, { idempotencyKey: 'ai-compute:run-1:1' });
 
     expect(new URL(fetchMock.mock.calls[0]![0] as string).pathname).toBe(
       '/billing/api/internal/partners/partner-1/ai-credits/deduct',
@@ -1148,9 +1150,9 @@ describe('checkBudgetDetailed', () => {
 //
 // Both billing calls are deliberately FAIL-OPEN: a billing outage must not take
 // AI down for every tenant. The defect was that they were also fail-SILENT —
-// `deductBillingCredits` ignored the HTTP status entirely, so a 500 or a 403
-// from the billing service dropped platform-funded spend on the floor with no
-// console line and no Sentry event, and `checkBillingCredits` returned a bare
+// the (since deleted, #9451) unkeyed deduct ignored the HTTP status entirely,
+// so a 500 or a 403 dropped platform-funded spend on the floor with no console
+// line and no Sentry event, and `checkBillingCredits` returned a bare
 // `null` (= allowed) from four different failure branches. The behaviour stays
 // fail-open; only the silence goes away.
 //
@@ -1159,57 +1161,6 @@ describe('checkBudgetDetailed', () => {
 // make a later assertion pass or fail depending on test ORDER.
 
 describe('billing telemetry', () => {
-  it('deductBillingCredits reports a non-2xx billing response with its status, without throwing', async () => {
-    const fetchMock = enableBillingService();
-    fetchMock.mockResolvedValueOnce(new Response('nope', { status: 502 }));
-    setupDbMocks(null);
-
-    await expect(deductBillingCredits('org-tel-1', 42)).resolves.toBeUndefined();
-
-    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        eventCode: 'ai_billing_credits_deduct_failed',
-        tags: expect.objectContaining({ ai_billing_http_status: '502' }),
-      }),
-    );
-  });
-
-  it('deductBillingCredits stays silent on a 2xx deduction', async () => {
-    const fetchMock = enableBillingService();
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    setupDbMocks(null);
-
-    await deductBillingCredits('org-tel-2', 7);
-
-    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
-    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
-  });
-
-  it('deductBillingCredits reports a transport failure and still does not throw', async () => {
-    const fetchMock = enableBillingService();
-    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-    setupDbMocks(null);
-
-    await expect(deductBillingCredits('org-tel-3', 42)).resolves.toBeUndefined();
-    expect(vi.mocked(captureException)).toHaveBeenCalled();
-  });
-
-  it('deductBillingCredits reports an org with no partner to bill', async () => {
-    enableBillingService();
-    mockDb.select.mockImplementation(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })), // org row absent
-      })),
-    }));
-
-    await expect(deductBillingCredits('org-tel-4', 42)).resolves.toBeUndefined();
-    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ eventCode: 'ai_billing_org_partner_missing' }),
-    );
-  });
-
   it('checkBillingCredits reports a non-2xx credit check but still fails OPEN', async () => {
     const fetchMock = enableBillingService();
     fetchMock.mockResolvedValueOnce(new Response('nope', { status: 500 }));
@@ -1241,7 +1192,7 @@ describe('billing telemetry', () => {
     setupDbMocks(null);
 
     await expect(checkBillingCredits('org-tel-7', 'platform')).resolves.toBeNull();
-    await expect(deductBillingCredits('org-tel-7', 42)).resolves.toBeUndefined();
+    await expect(debitBillingCredits('org-tel-7', 42, { idempotencyKey: 'ai-compute:run-7:1' })).resolves.toEqual({ kind: 'not_configured' });
     // A deployment mode, not a failure — reporting it would be pure noise.
     expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
@@ -1455,5 +1406,70 @@ describe('updateBudget', () => {
 
     expect(mockDb.insert).not.toHaveBeenCalled();
     expect(capture.updateSet?.approvalMode).toBe('action_plan');
+  });
+});
+
+describe('getAggregateUsageSummary (#9667)', () => {
+  function usageRows(daily: Array<Record<string, unknown>>, monthly: Array<Record<string, unknown>>) {
+    const queue = [daily, monthly];
+    const where = vi.fn(() => Promise.resolve(queue.shift() ?? []));
+    mockDb.select.mockImplementation(() => ({ from: vi.fn(() => ({ where })) }));
+    return where;
+  }
+  const row = (cost: number, msgs: number, i = 1, o = 2) =>
+    ({ inputTokens: i, outputTokens: o, totalCostCents: cost, messageCount: msgs });
+
+  it('sums daily and monthly rows across orgs and carries no budget', async () => {
+    usageRows([row(100, 2), row(50, 1)], [row(1000, 20, 10, 20), row(500, 10, 5, 5)]);
+    const res = await getAggregateUsageSummary(['org-a', 'org-b']);
+    expect(res.daily).toEqual({ inputTokens: 2, outputTokens: 4, totalCostCents: 150, messageCount: 3 });
+    expect(res.monthly).toEqual({ inputTokens: 15, outputTokens: 25, totalCostCents: 1500, messageCount: 30 });
+    expect(res.budget).toBeNull();
+    expect(res.credits).toBeNull();
+    expect(res.alerts).toEqual({ fired: [] });
+  });
+
+  it('treats null columns as zero', async () => {
+    usageRows([{ inputTokens: null, outputTokens: null, totalCostCents: 7, messageCount: null }], []);
+    const res = await getAggregateUsageSummary(['org-a']);
+    expect(res.daily).toEqual({ inputTokens: 0, outputTokens: 0, totalCostCents: 7, messageCount: 0 });
+  });
+
+  it('queries the current UTC daily and monthly period keys', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-22T23:30:00Z'));
+    try {
+      const where = usageRows([], []);
+      await getAggregateUsageSummary(['org-a']);
+      const calls = JSON.stringify(where.mock.calls);
+      expect(where).toHaveBeenCalledTimes(2);
+      expect(calls).toContain('{"_eq":["period","daily"]}');
+      expect(calls).toContain('{"_eq":["periodKey","2026-10-22"]}');
+      expect(calls).toContain('{"_eq":["period","monthly"]}');
+      expect(calls).toContain('{"_eq":["periodKey","2026-10"]}');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('filters to the given org ids', async () => {
+    const where = usageRows([], []);
+    await getAggregateUsageSummary(['org-a', 'org-b']);
+    expect(JSON.stringify(where.mock.calls)).toContain('"_inArray":["orgId",["org-a","org-b"]]');
+  });
+
+  it('does not filter by org for unrestricted (null) callers', async () => {
+    const where = usageRows([], []);
+    await getAggregateUsageSummary(null);
+    expect(where).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(where.mock.calls)).not.toContain('_inArray');
+  });
+
+  it('returns zeros without querying when the caller has no accessible orgs', async () => {
+    mockDb.select.mockClear();
+    const res = await getAggregateUsageSummary([]);
+    expect(mockDb.select).not.toHaveBeenCalled();
+    expect(res.daily.totalCostCents).toBe(0);
+    expect(res.monthly.messageCount).toBe(0);
   });
 });

@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "No se encontraron dispositivos.",
     "none": "Ninguno",
+    "unknown": "Desconocido",
+    "tpmNotReported": "No informado por el agente",
     "os": "OS",
     "pageOf": "Página {{page}} de {{totalPages}}",
     "partial": "Parcial",
@@ -443,6 +445,7 @@
     "invalidResponseFromServer": "Respuesta no válida del servidor",
     "low": "Bajo",
     "markComplete": "Marcar completo",
+    "reopen": "Reabrir",
     "medium": "Medio",
     "next": "Siguiente",
     "noRecommendationsMatchYourFilters": "Ninguna recomendación coincide con sus filtros.",
@@ -810,9 +813,10 @@
     "precision": "Precisión",
     "recentEvidence": "Evidencia reciente",
     "refresh": "Actualizar",
+    "refreshing": "Actualizando",
     "repeatSignalUsers": "Usuarios repetidos de señal",
     "retry": "Reintentar",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Revise las puntuaciones de riesgo, la evidencia y las etiquetas de evaluación de las reglas v0.",
+    "reviewUserRiskScoresEvidenceAnd": "Revise las puntuaciones de riesgo de los usuarios, la evidencia que las respalda y sus etiquetas de evaluación.",
     "scoreImpact": "impacto {{value}}",
     "scoresEvidenceAndLabelsWillAppearHere": "Las puntuaciones, la evidencia y las etiquetas aparecerán aquí cuando el productor v0 de riesgo de usuario esté habilitado.",
     "selectAUserToInspectRiskEvidence": "Seleccione un usuario para inspeccionar la evidencia de riesgo.",
@@ -821,7 +825,41 @@
     "truePositive": "Verdadero positivo",
     "truePositiveLabelSaved": "Etiqueta positiva verdadera guardada",
     "userRisk": "Riesgo del usuario",
-    "userRiskScoringIsDisabledForThis": "La puntuación de riesgo del usuario está deshabilitada para esta organización."
+    "userRiskScoringIsDisabledForThis": "La puntuación de riesgo del usuario está deshabilitada para esta organización.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Brechas de autenticación multifactor",
+        "description": "Cuentas que no tienen MFA habilitada."
+      },
+      "authFailureRisk": {
+        "label": "Intentos de inicio de sesión fallidos",
+        "description": "Inicios de sesión fallidos repetidos, que pueden indicar adivinación de contraseñas o relleno de credenciales."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Actividad de sesión inusual",
+        "description": "Inicios de sesión desde ubicaciones o dispositivos desconocidos, o en horarios inusuales."
+      },
+      "threatExposureRisk": {
+        "label": "Exposición a amenazas",
+        "description": "Amenazas detectadas en los dispositivos desde los que trabaja el usuario."
+      },
+      "softwareViolationRisk": {
+        "label": "Infracciones de la política de software",
+        "description": "Software instalado que incumple sus políticas de software."
+      },
+      "deviceSecurityRisk": {
+        "label": "Postura de seguridad del dispositivo",
+        "description": "Estado de seguridad débil en los dispositivos del usuario, como protecciones o parches faltantes."
+      },
+      "staleAccessRisk": {
+        "label": "Acceso obsoleto",
+        "description": "Cuentas o accesos sin usar durante mucho tiempo."
+      },
+      "recentImpactRisk": {
+        "label": "Eventos de riesgo recientes",
+        "description": "Eventos de riesgo registrados para este usuario en los últimos días."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Activo",
@@ -989,7 +1027,13 @@
       "flow": "Flujo",
       "status": "Estado",
       "riskTierTitle": "Nivel de riesgo {{tier}}",
-      "signer": "Firmante: {{signer}}"
+      "signer": "Firmante: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "El dispositivo no pudo actuar: no hay ningún asistente PAM disponible",
+        "sessionUnavailable": "El dispositivo no pudo actuar: la sesión del usuario no está disponible",
+        "helperStartFailed": "El dispositivo no pudo actuar: el asistente PAM no se pudo iniciar",
+        "generic": "El dispositivo no pudo procesar esta solicitud"
+      }
     },
     "actions": {
       "respond": "Responder",
@@ -1908,10 +1952,27 @@
       "status": "Estado",
       "approval": "Aprobación",
       "requested": "Solicitado",
-      "completed": "Terminado"
+      "completed": "Terminado",
+      "decision": "Decisión"
     },
     "loading": "Cargando soluciones...",
-    "empty": "No se encontraron soluciones."
+    "empty": "No se encontraron soluciones.",
+    "decision": {
+      "approve": "Aprobar",
+      "reject": "Rechazar",
+      "approveTitle": "¿Aprobar la corrección?",
+      "rejectTitle": "¿Rechazar la corrección?",
+      "approveMessage": "Esto pone en cola el control CIS {{checkId}} para ejecutarse en {{device}}. El agente cambiará la configuración del dispositivo.",
+      "rejectMessage": "Esto cancela la corrección pendiente del control CIS {{checkId}} en {{device}}. No se ejecutará nada en el dispositivo.",
+      "noteLabel": "Nota (opcional)",
+      "approved": "Corrección de {{checkId}} aprobada y en cola.",
+      "rejected": "Corrección de {{checkId}} rechazada.",
+      "approveFailed": "No se pudo aprobar la corrección",
+      "rejectFailed": "No se pudo rechazar la corrección",
+      "queueFailed": "La aprobación se registró, pero la corrección no se pudo poner en cola. Volvió a estar pendiente de aprobación; inténtalo de nuevo.",
+      "mfaRequired": "Aprobar o rechazar una corrección requiere una sesión iniciada con autenticación multifactor. Cierra sesión y vuelve a iniciarla con MFA.",
+      "ownRequest": "Tú solicitaste esta corrección, así que otro usuario debe aprobarla."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Líneas base de auditoría",

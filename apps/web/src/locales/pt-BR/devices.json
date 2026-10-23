@@ -900,7 +900,7 @@
     "alertHistoryForThisDevice": "Histórico de alertas deste dispositivo",
     "anomalies": "Anomalias",
     "metricAnomalySignalsForThisDevice": "Sinais de anomalias de métricas deste dispositivo",
-    "tickets": "Tickets",
+    "tickets": "Chamados",
     "ticketsLinkedToThisDevice": "Tickets vinculados a este dispositivo",
     "eventLog": "Log de eventos",
     "windowsMacosSystemEventLogs": "Logs de eventos do sistema Windows/macOS",
@@ -1035,7 +1035,9 @@
       "label": "aprovação",
       "byRing": "definida pelo anel de atualização vinculado",
       "manualOnly": "somente aprovações manuais (nenhum anel de atualização vinculado)"
-    }
+    },
+    "chainResolutionRule": "O nível decide primeiro: Dispositivo vence Grupo de dispositivos, depois Site, Organização e Parceiro. A prioridade (vence o menor número) só desempata políticas do mesmo nível. Recursos riscados foram substituídos por uma política mais próxima.",
+    "featureOverriddenBy": "Substituído por {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Falha ao buscar as atividades",
@@ -1360,6 +1362,7 @@
     "drive": "Unidade",
     "size": "Tamanho",
     "used": "Usado",
+    "usedPercent": "% usado",
     "health": "Integridade",
     "noDiskInventoryReported": "Nenhum inventário de disco relatado.",
     "networkAdapters": "Adaptadores de rede",
@@ -2495,7 +2498,7 @@
     "showFindings": "Mostrar ocorrências",
     "stats": {
       "accepted": "Aceitas",
-      "kev": "KEV",
+      "kev": "Explorada conhecida",
       "mitigated": "Mitigadas",
       "open": "Abertas",
       "patchReady": "Com patch disponível",
@@ -3481,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Nada está sendo monitorado ainda",
+        "titleWithCheck": "Sem dados de integridade SNMP",
+        "descriptionWithCheck": "Há uma verificação de rede ativa para este dispositivo, então a acessibilidade continua sendo monitorada. Ative o SNMP para coletar também dados de integridade.",
         "action": "Configurar monitoramento",
         "benefit": {
           "printer": "Ative o SNMP para ver os níveis de toner e tinta, as bandejas de papel, os contadores de páginas e os erros da impressora.",

@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Confirmar aprovação do patch",
-      "selectedOrganization": "a organização selecionada",
-      "messageOne": "Aprovar patch em {{count}} dispositivo em {{org}}?",
-      "messageMany": "Aprovar patch em {{count}} dispositivos em {{org}}?"
+      "selectedRing": "(sem nome)",
+      "messageRingOne": "Aprovar patch em {{count}} dispositivo em todas as organizações no anel {{ring}}?",
+      "messageRingMany": "Aprovar patch em {{count}} dispositivos em todas as organizações no anel {{ring}}?",
+      "messagePartnerWide": "Aprovar patch para todas as organizações do seu parceiro?"
     },
     "checkingAccess": "Verificando seu acesso..."
   },
@@ -613,5 +614,24 @@
     "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
     "removeRuleFor": "Remover regra de {{application}}",
     "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel."
+  },
+  "patchDetails": {
+    "unknown": "Desconhecido",
+    "source": "Origem",
+    "packageId": "KB / ID do pacote",
+    "severity": "Gravidade",
+    "releaseDate": "Data de lançamento",
+    "firstSeen": "Visto pela primeira vez no catálogo",
+    "rings": {
+      "title": "Anéis de atualização",
+      "note": "Quando cada anel aprova automaticamente este patch (regra no nível do anel; as exceções por categoria não são exibidas).",
+      "none": "Nenhum anel de atualização configurado.",
+      "manual": "Sem aprovação automática — requer aprovação manual",
+      "immediate": "Aprovado automaticamente de imediato",
+      "needsDate": "Retido — sem data de lançamento para iniciar a janela de {{count}} dias",
+      "autoApproves": "Aprovado automaticamente em {{date}}",
+      "hold_one": "Atraso de {{count}} dia",
+      "hold_other": "Atraso de {{count}} dias"
+    }
   }
 }

@@ -1035,7 +1035,9 @@
       "label": "approbation",
       "byRing": "définie par l'anneau de mise à jour lié",
       "manualOnly": "approbations manuelles uniquement (aucun anneau de mise à jour lié)"
-    }
+    },
+    "chainResolutionRule": "Le niveau décide d’abord : Appareil l’emporte sur Groupe d’appareils, puis Site, Organisation et Partenaire. La priorité (le plus petit nombre l’emporte) ne départage que les politiques d’un même niveau. Les fonctionnalités barrées ont été remplacées par une politique plus proche.",
+    "featureOverriddenBy": "Remplacée par {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossible de récupérer les activités",
@@ -1360,6 +1362,7 @@
     "drive": "Conduision",
     "size": "Taille",
     "used": "Utilisés",
+    "usedPercent": "% utilisé",
     "health": "Santé",
     "noDiskInventoryReported": "Aucun inventaire de disque signalé.",
     "networkAdapters": "Adaptateurs réseau",
@@ -2495,7 +2498,7 @@
     "showFindings": "Afficher les constats",
     "stats": {
       "accepted": "Accepté",
-      "kev": "Kev",
+      "kev": "Exploitée connue",
       "mitigated": "Atténué",
       "open": "Ouvrir",
       "patchReady": "Prêt à la mise à jour",
@@ -2513,9 +2516,9 @@
     "statusLabel": "Étiquette de statut",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
+      "cve": "CVE",
       "cvss": "CVSS",
-      "kev": "Kev",
+      "kev": "KEV",
       "risk": "Risque",
       "severity": "Gravité",
       "status": "Statut"
@@ -3481,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Aucune surveillance n’est encore en place",
+        "titleWithCheck": "Aucune donnée de santé SNMP",
+        "descriptionWithCheck": "Un contrôle réseau est actif pour cet appareil : la joignabilité reste donc suivie. Activez SNMP pour collecter aussi des données de santé.",
         "action": "Configurer la surveillance",
         "benefit": {
           "printer": "Activez SNMP pour afficher les niveaux de toner et d’encre, les bacs à papier, les compteurs de pages et les erreurs de l’imprimante.",

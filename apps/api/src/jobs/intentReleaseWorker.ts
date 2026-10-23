@@ -1,6 +1,6 @@
 import { Job, Worker } from 'bullmq';
 import { parseSweepTriggerKey, type AiAgentRecipients } from '@breeze/shared';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
 import { aiAgentRuns, aiAgents } from '../db/schema/aiAgents';
@@ -24,6 +24,8 @@ import { recordActionIntentEvent, recordActionIntentMetric } from '../services/a
 import { createNotification } from '../services/userNotifications';
 import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
+import { isMcpOriginIntent } from '../services/mcpIntentEligibility';
+import { beginMcpReleaseLifecycle, writeMcpIntentOutcomeAudit, type McpReleaseLifecycle } from '../services/mcpTier3Lifecycle';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
 import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
@@ -52,7 +54,9 @@ import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
-import { withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
+import { isTopologyAiToolName, withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
+import { compactToolResultForChat } from '../services/aiToolOutput';
+import { isSecretBearingTool } from '../services/actionIntents/secretBearingTools';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
   isHeadlessGoogleTool,
@@ -927,8 +931,14 @@ function userOwnedReleaseKey(intent: ActionIntent): string | null {
 async function failIntent(
   intent: ActionIntent,
   errorCode: string,
-  options: { details?: Record<string, unknown>; executed?: boolean } = {},
+  options: { details?: Record<string, unknown>; executed?: boolean; mcpLifecycleAudited?: boolean } = {},
 ): Promise<void> {
+  // B-W04 (#6158, D-B29): an MCP-origin intent refused before dispatch gets
+  // the uniform `mcp.tool.<name>` failure audit (deduped). An executed failure,
+  // or one the release lifecycle already audited, does not get a second one.
+  if (isMcpOriginIntent(intent) && !options.executed && !options.mcpLifecycleAudited) {
+    await writeMcpIntentOutcomeAudit(intent, 'release_refused', errorCode);
+  }
   // Routed through `terminalizeIntent` so `executed: true` — the ONE
   // attempted-ness discriminator — also writes the `failed` evidence row in
   // the same transaction as the CAS. The non-attempted stops (every
@@ -1379,6 +1389,21 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // the confirmed plaintext leak this change closes.
   const secretAction = GOOGLE_HEADLESS_SECRET_ACTIONS[intent.actionName];
 
+  // B-W04 (#6158, D-B29): an MCP-origin release runs inside the same Tier-3
+  // lifecycle as the direct MCP call — ledger first (fail closed, nothing
+  // dispatched without it), dispatch under the ledger's aiOrigin, then ledger
+  // complete + `mcp.tool.<name>` audit. Wraps every dispatch branch below
+  // (secret-aware Google, Google/M365 headless, external, executeTool).
+  let mcpRelease: McpReleaseLifecycle | null = null;
+  if (isMcpOriginIntent(intent)) {
+    mcpRelease = await beginMcpReleaseLifecycle(intent, auth);
+    if (!mcpRelease) {
+      await failIntent(intent, 'mcp_ledger_unavailable');
+      return;
+    }
+    auth = mcpRelease.auth;
+  }
+
   let carrier: SecretToolResult | null = null;
   let rawResult: string;
   // Tool catalog W01 PR B (#5216): the AUTHORITATIVE failure signal for an
@@ -1459,6 +1484,10 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
           // constant it used to be stamped with.
           () =>
             executeTool(intent.actionName, intent.arguments, auth, {
+              // B-W04: MCP has no session anchor — same binding as the direct path.
+              ...(mcpRelease && isTopologyAiToolName(intent.actionName)
+                ? { topologyBinding: { kind: 'mcp_site_key' as const } }
+                : {}),
               context: {
                 ...verifiedContext,
                 actionIntentId: intent.id,
@@ -1495,6 +1524,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
     }
   } catch (err) {
+    await mcpRelease?.finish({ status: 'failure', error: err });
     // The backend dispatch guard refused right before the outbound mutation:
     // nothing was sent, so this is a clean, non-retried terminal failure that
     // keeps its typed payload (not `executed`, no rethrow).
@@ -1502,6 +1532,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     if (refusal) {
       await failIntent(intent, CALLER_VERIFICATION_REQUIRED_CODE, {
         details: { requiresCallerVerification: refusal.requiresCallerVerification },
+        mcpLifecycleAudited: mcpRelease !== null,
       });
       return;
     }
@@ -1512,6 +1543,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       // was made. Fail closed with a distinct, categorized code.
       await failIntent(intent, 'connection_unavailable', {
         details: { actionName: intent.actionName },
+        mcpLifecycleAudited: mcpRelease !== null,
       });
       return;
     }
@@ -1553,6 +1585,13 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // truncation guard — see its declaration. A truncated external error body is
   // still a failed release; it just stores `{truncated:true}` as its evidence.
   const returnedToolError = externalIsError ?? (!truncated && isReturnedToolError(rawResult));
+  // B-W04: close the MCP-origin lifecycle with the release's own classification.
+  // A secret-bearing result is never recorded on the ledger or the audit.
+  await mcpRelease?.finish(returnedToolError
+    ? { status: 'failure', error: new Error('tool_returned_error') }
+    : carrier || isSecretBearingTool(intent.actionName)
+      ? { status: 'success' }
+      : { status: 'success', ledgerResult: compactToolResultForChat(intent.actionName, rawResult) });
   if (returnedToolError) {
     try {
       assertNoPlaintextSecret(intent.actionName, storedResult);
@@ -1848,6 +1887,34 @@ function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
 }
 
 /**
+ * The approver's free-text deny reason for an intent, or null when none.
+ * Best-effort: it only decorates the notification, so a failed read degrades
+ * to the plain copy rather than throwing the job into retries. A refused
+ * approve (refusal_reason set) is excluded — its decision_reason is the
+ * approve-time note, not a denial reason.
+ */
+async function loadDenyReason(intentId: string): Promise<string | null> {
+  try {
+    const [row] = await withSystemDbAccessContext(() =>
+      db
+        .select({ decisionReason: approvalRequests.decisionReason })
+        .from(approvalRequests)
+        .where(
+          and(
+            eq(approvalRequests.intentId, intentId),
+            eq(approvalRequests.status, 'denied'),
+            isNull(approvalRequests.refusalReason),
+          ),
+        )
+        .limit(1));
+    return row?.decisionReason?.trim() || null;
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return null;
+  }
+}
+
+/**
  * Tell the requester how their intent ended.
  *
  * The point of doing this from the outbox rather than inline at decide time:
@@ -1874,6 +1941,14 @@ async function notifyRequesterOfOutcome(
         approvalScope: actionIntents.approvalScope,
         requestingAgentRunId: actionIntents.requestingAgentRunId,
         requestingClientLabel: actionIntents.requestingClientLabel,
+        source: actionIntents.source,
+        originPrincipalKind: actionIntents.originPrincipalKind,
+        originPrincipalId: actionIntents.originPrincipalId,
+        actionName: actionIntents.actionName,
+        arguments: actionIntents.arguments,
+        riskTier: actionIntents.riskTier,
+        correlationId: actionIntents.correlationId,
+        partnerId: actionIntents.partnerId,
       })
       .from(actionIntents)
       .where(eq(actionIntents.id, intentId))
@@ -1883,6 +1958,14 @@ async function notifyRequesterOfOutcome(
     // Outboxed and then deleted: a genuine anomaly, not an expected case.
     captureException(new Error(`intent ${intentId} not found for outcome notification`));
     return;
+  }
+
+  // B-W04 (#6158, D-B29): an MCP-origin intent that ended without executing
+  // still gets the uniform `mcp.tool.<name>` failure audit the direct MCP path
+  // would have written. Deduped inside the writer (at-least-once delivery).
+  if (isMcpOriginIntent(intent)
+    && (intent.status === 'rejected' || intent.status === 'expired' || intent.status === 'cancelled')) {
+    await writeMcpIntentOutcomeAudit(intent, intent.status);
   }
   // Agent-originated intent (wave 3b): a headless proposal has NO requester,
   // so "the requester was watching" is false at every approval scope — this
@@ -1947,7 +2030,9 @@ async function notifyRequesterOfOutcome(
   // path uses at intentService.ts. Revisit when supervised mcp_api intents
   // exist: those get a 24h window with NO inline channel (computeExpiresAt,
   // intentService.ts), so the "they were watching" rationale won't hold there.
-  if (intent.approvalScope !== 'four_eyes') return;
+  // B-W04 (#6158, D-B28): MCP-origin intents are exactly that case — so a
+  // supervised one notifies its requester too.
+  if (intent.approvalScope !== 'four_eyes' && !isMcpOriginIntent(intent)) return;
 
   // Copy comes from the intent's CURRENT status, not from the event type.
   //
@@ -1963,6 +2048,9 @@ async function notifyRequesterOfOutcome(
   // Outbox delivery is also at-least-once and can land minutes late, by which
   // time an approved intent may well have completed, failed or expired.
   const summary = intent.targetSummary;
+  // #9658: the deny form promises the reason is "shared with the requester".
+  // Only a rejected intent carries one; read it off the denied approval row.
+  const denyReason = intent.status === 'rejected' ? await loadDenyReason(intent.id) : null;
   const copy = ((): { title: string; message: string } => {
     switch (intent.status) {
       case 'approved':
@@ -1974,7 +2062,10 @@ async function notifyRequesterOfOutcome(
         // Approved but did not run. The distinction matters most here.
         return { title: 'Action failed', message: `${summary} was approved but could not run.` };
       case 'rejected':
-        return { title: 'Approval denied', message: `${summary} was denied and will not run.` };
+        return {
+          title: 'Approval denied',
+          message: `${summary} was denied and will not run.${denyReason ? ` Reason: ${denyReason}` : ''}`,
+        };
       case 'cancelled':
         return { title: 'Request cancelled', message: `${summary} was cancelled and will not run.` };
       case 'expired':

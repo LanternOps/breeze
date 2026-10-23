@@ -354,6 +354,7 @@ describe('portalApi customer reports', () => {
       startedAt: '2026-09-02T12:00:00.000Z',
       completedAt: '2026-09-02T12:01:00.000Z',
       rowCount: 4,
+      csvAvailable: true,
       createdAt: '2026-09-02T12:00:00.000Z',
     };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({

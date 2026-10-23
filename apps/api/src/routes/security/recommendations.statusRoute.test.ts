@@ -1,0 +1,122 @@
+/**
+ * #9641 behavioural: GET /security/recommendations with the REAL helpers.
+ * Status is per org (org A completing must not close the recommendation for
+ * org B in the all-organizations view) and a completion reopens when the
+ * problem is observed again afterwards.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
+
+const { auditRows } = vi.hoisted(() => ({ auditRows: { current: [] as unknown[] } }));
+
+vi.mock('../../db', () => ({
+  db: {
+    select: vi.fn(() => ({
+      from: () => ({
+        // getRecommendationStatusMap: from().where().orderBy()
+        where: () => ({ orderBy: () => Promise.resolve(auditRows.current) }),
+        // listThreatRows: from().innerJoin().where().orderBy()
+        innerJoin: () => ({ where: () => ({ orderBy: () => Promise.resolve([]) }) }),
+      }),
+    })),
+  },
+  runOutsideDbContext: vi.fn((fn) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../../services/commandQueue', () => ({ CommandTypes: {}, queueCommand: vi.fn() }));
+vi.mock('../../services/securityPosture', () => ({ listLatestSecurityPosture: vi.fn() }));
+vi.mock('../../middleware/auth', async () => {
+  const actual = await vi.importActual<any>('../../middleware/auth');
+  return {
+    ...actual,
+    requireScope: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
+    requirePermission: vi.fn(() => async (_c: unknown, next: () => Promise<void>) => next()),
+  };
+});
+vi.mock('./readAuthorization', () => ({
+  requireSecurityReadAccess: async (_c: unknown, next: () => Promise<void>) => next(),
+}));
+
+import { listLatestSecurityPosture } from '../../services/securityPosture';
+import { recommendationsRoutes } from './recommendations';
+
+const ORG_A = '11111111-1111-4111-8111-111111111111';
+const ORG_B = '22222222-2222-4222-8222-222222222222';
+const REC = 'rec-enable-firewall';
+const T0 = '2026-10-01T00:00:00.000Z';
+const T1 = '2026-10-02T00:00:00.000Z';
+const T2 = '2026-10-03T00:00:00.000Z';
+
+function app(): Hono {
+  const a = new Hono();
+  a.use('*', async (c, next) => {
+    c.set('auth', {
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'p1',
+      accessibleOrgIds: [ORG_A, ORG_B],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+      user: { id: 'u1', email: 'u@example.com', name: 'U' },
+    } as never);
+    await next();
+  });
+  a.route('/security', recommendationsRoutes);
+  return a;
+}
+
+const failingFirewall = {
+  av_health: { score: 100 }, firewall: { score: 10 }, encryption: { score: 100 },
+  password_policy: { score: 100 }, admin_exposure: { score: 100 }, patch_compliance: { score: 100 },
+  open_ports: { score: 100 }, os_currency: { score: 100 },
+};
+const device = (orgId: string, deviceId: string, capturedAt: string) => ({ orgId, deviceId, capturedAt, factors: failingFirewall });
+const audit = (action: string, orgId: string, timestamp: string) => ({
+  action, orgId, resourceName: REC, details: null, timestamp: new Date(timestamp),
+});
+
+async function firewallStatus(): Promise<string | undefined> {
+  const res = await app().request('/security/recommendations');
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  return body.data.find((r: { id: string }) => r.id === REC)?.status;
+}
+
+describe('GET /security/recommendations status (#9641)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auditRows.current = [];
+  });
+
+  it("org A completing does not close the recommendation for org B", async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([
+      device(ORG_A, 'd1', T0), device(ORG_B, 'd2', T0),
+    ] as never);
+    auditRows.current = [audit('security.recommendation.complete', ORG_A, T1)];
+    expect(await firewallStatus()).toBe('open');
+  });
+
+  it('is completed once every affected org has closed it', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([
+      device(ORG_A, 'd1', T0), device(ORG_B, 'd2', T0),
+    ] as never);
+    auditRows.current = [
+      audit('security.recommendation.complete', ORG_A, T1),
+      audit('security.recommendation.dismiss', ORG_B, T1),
+    ];
+    expect(await firewallStatus()).toBe('completed');
+  });
+
+  it('a completion holds while the problem has not been re-observed', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([device(ORG_A, 'd1', T0)] as never);
+    auditRows.current = [audit('security.recommendation.complete', ORG_A, T1)];
+    expect(await firewallStatus()).toBe('completed');
+  });
+
+  it('a completion reopens when the problem is observed after it', async () => {
+    vi.mocked(listLatestSecurityPosture).mockResolvedValue([device(ORG_A, 'd1', T2)] as never);
+    auditRows.current = [audit('security.recommendation.complete', ORG_A, T1)];
+    expect(await firewallStatus()).toBe('open');
+  });
+});

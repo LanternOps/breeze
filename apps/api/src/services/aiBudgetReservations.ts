@@ -10,6 +10,7 @@ import { TRANSIENT_FAILOVER_CAUSES } from './aiModels/failover';
 import { readConnectionOfferingRate } from './aiModels/connectionOfferingRate';
 import { recordInvocation, type NewInvocation } from './aiModels/invocationLedgerWrite';
 import { stampChargeback } from './aiChargeback/stampChargeback';
+import { insertCreditDebitIntent, invocationDebitIdempotencyKey, type CreditDebitIntent } from './aiCreditDebitOutbox';
 import { parseSdkUsageSnapshot, sdkUsageHighWater, type SdkUsageSnapshot } from './aiModels/invocationUsage';
 import { getPlatformModelByModelId } from './aiModels/platformModels';
 import { platformRateSnapshot, type RateSnapshot } from './aiModels/pricing';
@@ -1444,7 +1445,7 @@ export async function settleAiBudgetReservation(
  * Same derivation as settlement, in its own system transaction; no
  * organization lock (there is no hold to release).
  */
-export async function recordInvocationsWithRollups(input: {
+type RecordInvocationsInput = {
   orgId: string;
   invocations: NewInvocation[];
   sessionId?: string | null;
@@ -1453,8 +1454,32 @@ export async function recordInvocationsWithRollups(input: {
   turnCount?: number;
   sdkUsage?: SettleSdkUsage;
   now?: Date;
-}): Promise<string[]> {
-  if (input.invocations.length === 0) return [];
+};
+
+export async function recordInvocationsWithRollups(input: RecordInvocationsInput): Promise<string[]> {
+  return (await recordInvocationsInternal(input, false)).invocationIds;
+}
+
+/**
+ * #7717 item 2: an UNRESERVED settlement. Same ledger + rollup transaction as
+ * {@link recordInvocationsWithRollups}, and — for platform spend — the keyed
+ * credit debit intent (`ai-invocation:<first ledger row id>`, the summed cost
+ * of exactly these rows) is written in that SAME transaction. The ledger rows
+ * and the debit obligation commit together or not at all, so a crash between
+ * them can no longer leave billed-nowhere spend. The caller delivers the
+ * returned intent; the sweep retries it if that fails.
+ */
+export async function recordUnreservedInvocations(
+  input: RecordInvocationsInput,
+): Promise<{ invocationIds: string[]; debit: CreditDebitIntent | null }> {
+  return recordInvocationsInternal(input, true);
+}
+
+async function recordInvocationsInternal(
+  input: RecordInvocationsInput,
+  withPlatformDebit: boolean,
+): Promise<{ invocationIds: string[]; debit: CreditDebitIntent | null }> {
+  if (input.invocations.length === 0) return { invocationIds: [], debit: null };
   const at = input.now ?? new Date();
   const keys = periodKeys(at);
   const funding = input.invocations[0]!.fundingSource;
@@ -1484,7 +1509,16 @@ export async function recordInvocationsWithRollups(input: {
       at,
     });
     if (input.sdkUsage) await advanceSdkUsageSnapshot(input.orgId, input.sdkUsage);
-    return ids;
+    const debit = withPlatformDebit && funding === 'platform' && Number(cost) > 0 && ids[0]
+      ? await insertCreditDebitIntent({
+        orgId: input.orgId,
+        source: 'invocation',
+        sourceId: ids[0],
+        idempotencyKey: invocationDebitIdempotencyKey(ids[0]),
+        costCents: cost,
+      })
+      : null;
+    return { invocationIds: ids, debit };
   });
 }
 
@@ -1661,6 +1695,70 @@ export async function listDeadPendingSettlements(limit = 100): Promise<DeadPendi
       error: row.error,
       deadAt: row.dead_at,
     })));
+}
+
+export type DeadPendingSettlementReplay =
+  | { kind: 'not_found' }
+  | { kind: 'superseded' }
+  | { kind: 'failed'; error: string }
+  | { kind: 'replayed'; orgId: string; result: SettleAiBudgetReservationResult };
+
+/**
+ * #7717 item 3: operator replay of ONE dead pending settlement, through the
+ * same idempotent settlement the sweep uses. The row is revived (dead stamp
+ * and attempt count cleared) under a row lock, then settled; a failure is
+ * counted like any replay failure, so the sweep keeps retrying it from there.
+ *
+ * Refused (`superseded`) when replaying could bill usage twice: a dead
+ * settlement's SDK snapshot is never merged into the next turn's baseline
+ * (readSdkUsageSnapshot), so any LATER ledger row in the same session was
+ * priced against a baseline that never saw this turn, and its cumulative
+ * delta already covered this turn's usage. Decided conservatively (any later
+ * ledger row in the session); an operator reconciles those by hand.
+ */
+export async function replayDeadPendingSettlementRow(reservationId: string): Promise<DeadPendingSettlementReplay> {
+  const revived = await inReservationTransaction('aiBudgetReservations.reviveDeadPending', async () => {
+    const [row] = rows<{ id: string; org_id: string; pending_settlement: unknown; superseded: boolean }>(await db.execute(sql`
+      SELECT me.id, me.org_id, me.pending_settlement,
+             (me.pending_settlement -> 'sdkUsage' ->> 'sessionId') IS NOT NULL AND EXISTS (
+               SELECT 1 FROM ai_invocations i
+               WHERE i.org_id = me.org_id
+                 AND i.session_id::text = me.pending_settlement -> 'sdkUsage' ->> 'sessionId'
+                 AND i.created_at > me.created_at
+             ) AS superseded
+      FROM ai_budget_reservations me
+      WHERE me.id = ${reservationId}::uuid
+        AND me.pending_settlement IS NOT NULL
+        AND me.pending_settlement_dead_at IS NOT NULL
+        AND me.status <> 'settled'
+      FOR UPDATE OF me
+    `));
+    if (!row) return { kind: 'not_found' as const };
+    if (row.superseded === true) return { kind: 'superseded' as const };
+    await db.execute(sql`
+      UPDATE ai_budget_reservations
+      SET pending_settlement_dead_at = NULL, pending_settlement_attempts = 0, pending_settlement_error = NULL, updated_at = now()
+      WHERE id = ${reservationId}::uuid
+      RETURNING id
+    `);
+    return { kind: 'revived' as const, row };
+  });
+  if (revived.kind !== 'revived') return revived;
+  try {
+    const result = await settleAiBudgetReservation(revivePendingSettlement(revived.row.pending_settlement, revived.row));
+    return { kind: 'replayed', orgId: revived.row.org_id, result };
+  } catch (error) {
+    const message = safeErrorMessage(error);
+    console.error('[AI] operator replay of a dead AI settlement failed; left pending for the sweep', {
+      reservationId, orgId: revived.row.org_id, error: message,
+    });
+    try {
+      await recordPendingSettlementReplayFailure(reservationId, message);
+    } catch (recordError) {
+      captureException(new Error(`dead settlement replay failure not recorded: ${safeErrorMessage(recordError)}`));
+    }
+    return { kind: 'failed', error: message };
+  }
 }
 
 /**

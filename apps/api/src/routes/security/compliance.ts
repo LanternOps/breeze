@@ -17,12 +17,14 @@ import {
 import {
   getPagination,
   paginate,
+  resolveScopedOrgIds,
   listStatusRows,
   toStatusResponse,
   normalizeEncryption,
   parsePasswordPolicySummary,
   parseLocalAdminSummary,
-  parseEncryptionVolumes
+  parseEncryptionVolumes,
+  deriveEncryptionMethod
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
 
@@ -35,14 +37,27 @@ complianceRoutes.get(
   zValidator('query', trendsQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { period } = c.req.valid('query');
+    const { period, orgId } = c.req.valid('query');
     const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
 
-    const orgIds = auth.orgId
-      ? [auth.orgId]
-      : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
-        ? auth.accessibleOrgIds
-        : undefined;
+    // ?orgId= is the header org switcher's selection (#9639); it can only
+    // narrow within the caller's accessible orgs (403 otherwise).
+    let orgIds: string[] | undefined;
+    if (orgId) {
+      const scope = resolveScopedOrgIds(auth, orgId);
+      if (scope.error) {
+        return c.json({ error: scope.error.message }, scope.error.status);
+      }
+      orgIds = scope.orgIds;
+    } else {
+      // Deliberately not resolveScopedOrgIds(auth): that 400s a caller with no
+      // org context, where this route has always fallen back to RLS scoping.
+      orgIds = auth.orgId
+        ? [auth.orgId]
+        : auth.accessibleOrgIds && auth.accessibleOrgIds.length > 0
+          ? auth.accessibleOrgIds
+          : undefined;
+    }
 
     const dataPoints = await getSecurityPostureTrend({
       orgIds,
@@ -163,20 +178,26 @@ complianceRoutes.get(
       : [];
     const escrowedDeviceIds = new Set(escrowRows.map((r) => r.deviceId));
 
-    const methodByOs: Record<'windows' | 'macos' | 'linux', string> = {
-      windows: 'bitlocker',
-      macos: 'filevault',
-      linux: 'luks'
+    const FALLBACK_VOLUME_METHOD_LABELS: Record<string, string> = {
+      bitlocker: 'BitLocker',
+      filevault: 'FileVault',
+      luks: 'LUKS',
+      none: 'None',
+      unknown: 'Unknown'
     };
 
     let devicesData = rows.map((row) => {
       const status = toStatusResponse(row);
       const encStatus = status.encryptionStatus;
-      const method = encStatus === 'unencrypted' ? 'none' : methodByOs[status.os];
+      // What the agent reported, never inferred from the OS (#9607).
+      const method = deriveEncryptionMethod(row.encryptionDetails, encStatus);
+      // No per-volume detail reported: synthesize one row for the system
+      // volume. Its method mirrors the device-level method, which is itself
+      // only what the agent reported.
       const fallbackVolume = {
         drive: status.os === 'windows' ? 'C:' : status.os === 'macos' ? 'Macintosh HD' : '/dev/sda1',
         encrypted: encStatus !== 'unencrypted',
-        method: method === 'bitlocker' ? 'BitLocker' : method === 'filevault' ? 'FileVault' : method === 'luks' ? 'LUKS2' : 'None',
+        method: FALLBACK_VOLUME_METHOD_LABELS[method] ?? method,
         status: null as string | null,
         percentEncrypted: null as number | null
       };
@@ -188,7 +209,9 @@ complianceRoutes.get(
         encryptionMethod: method,
         encryptionStatus: encStatus,
         volumes: parseEncryptionVolumes(row.encryptionDetails) ?? [fallbackVolume],
-        tpmPresent: status.os === 'windows',
+        // The agent does not collect TPM state; null renders as "not
+        // reported" rather than a value guessed from the OS (#9607).
+        tpmPresent: null as boolean | null,
         recoveryKeyEscrowed: escrowedDeviceIds.has(status.deviceId)
       };
     });
@@ -227,7 +250,8 @@ complianceRoutes.get(
           bitlocker: devicesData.filter((device) => device.encryptionMethod === 'bitlocker').length,
           filevault: devicesData.filter((device) => device.encryptionMethod === 'filevault').length,
           luks: devicesData.filter((device) => device.encryptionMethod === 'luks').length,
-          none: devicesData.filter((device) => device.encryptionMethod === 'none').length
+          none: devicesData.filter((device) => device.encryptionMethod === 'none').length,
+          unknown: devicesData.filter((device) => device.encryptionMethod === 'unknown').length
         }
       }
     });

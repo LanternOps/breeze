@@ -12,6 +12,7 @@
         "low": "Baixos",
         "medium": "Médios"
       },
+      "customRangeIncomplete": "Escolha uma data de início e uma de término (início primeiro, no máximo 366 dias de diferença) para aplicar um período personalizado.",
       "dashboardOptions": {
         "capacity": "Planejamento de capacidade",
         "operations": "Visão geral de operações",
@@ -40,7 +41,7 @@
           "title": "Estatísticas de alertas"
         },
         "capacity": {
-          "title": "Previsão de capacidade"
+          "title": "Previsão de capacidade de disco"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} políticas avaliadas",
@@ -61,7 +62,7 @@
           "title": "Sessões remotas"
         },
         "uptime": {
-          "label": "Disponibilidade da frota",
+          "label": "Online agora",
           "title": "Disponibilidade"
         }
       },
@@ -104,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Crítico {{value}}",
+      "noData": "Nenhuma verificação de conformidade para avaliar",
       "warnValue": "Aviso {{value}}"
     },
     "queryBuilder": {
@@ -114,7 +116,8 @@
         "p95": "P95",
         "sum": "Soma"
       },
-      "description": "Configure métricas e agregação para o seu painel",
+      "coverageNote": "As consultas cobrem apenas os primeiros {{count}} dispositivos online. Dispositivos offline e o restante de uma frota maior não são incluídos.",
+      "description": "Escolha uma métrica e uma agregação para consultar seus dispositivos online",
       "errors": {
         "failedToExecuteQuery": "Falha ao executar consulta",
         "noDevicesSelected": "Nenhum dispositivo selecionado para a consulta"

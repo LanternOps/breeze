@@ -20,6 +20,7 @@
     "state": {
       "met": "Met",
       "notMet": "Not met",
+      "metLate": "Met late",
       "breached": "Breached",
       "pausedLeft": "Paused · {{relative}} left",
       "left": "{{relative}} left"
@@ -235,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} h worked · {{billed}} h billed",
     "includedMinutes": "{{hours}} h included in contract",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Each entry bills its minutes rounded to hours (2 decimals) × its rate.",
     "missingRateCount_one": "1 entry has no hourly rate — not counted in the amount above",
     "missingRateCount_other": "{{count}} entries have no hourly rate — not counted in the amount above",
     "deleteEntry": "Delete {{duration}} time entry by {{tech}}",
@@ -333,6 +336,10 @@
     "selectedCount_other": "{{count}} selected",
     "clearSelection": "Clear",
     "noSelection": "Select a ticket. Use j/k to move, Enter to expand.",
+    "movedToClosed": {
+      "message": "{{status}} — now under {{tab}}",
+      "view": "View in {{tab}}"
+    },
     "ticketingSettings": "Ticketing settings",
     "assignFailed": "Assign failed. Retry.",
     "assignedToYou": "Assigned to you",
