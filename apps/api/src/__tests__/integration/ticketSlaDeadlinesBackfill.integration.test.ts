@@ -326,6 +326,63 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     ]);
   });
 
+  runDb('heals a ticket written without deadlines and then stamps its breach (Gate B12)', async () => {
+    // A pre-W3 API instance still serving during the deploy inserts a ticket
+    // with targets but no stored deadlines; the stored-deadline sweep alone
+    // would never breach it.
+    const { org } = await seedFixtures(); // all rows pre-W3-shaped: no stored deadlines
+    const { withSystemDbAccessContext } = await import('../../db');
+    const { sweepTicketSlaBreaches } = await import('../../jobs/ticketSlaWorker');
+
+    const stamped = await withSystemDbAccessContext(() => sweepTicketSlaBreaches());
+
+    const db = getTestDb();
+    const stampedSubjects = async (target: 'response' | 'resolution') => [...await db.execute<{ subject: string }>(sql.raw(`
+      SELECT subject FROM tickets
+       WHERE org_id = '${org.id}' AND '${target}' = ANY(string_to_array(COALESCE(sla_breach_reason, ''), ','))
+       ORDER BY subject`))].map((r) => r.subject);
+    // Exactly the pre-W3 sweep's breach-due sets were stamped this tick; the
+    // two fixtures that already carried a stamp keep it and are not re-stamped.
+    expect(stamped.map((r) => `${r.target}:${r.subject}`).sort()).toEqual([
+      'resolution:reopened',
+      'resolution:responded-resolution-due',
+      'resolution:response-stamped-resolution-due',
+      'response:response-breach-due',
+      'response:response-only-target',
+      'response:resumed-due',
+    ]);
+    expect(await stampedSubjects('response')).toEqual([
+      'both-stamped', 'response-breach-due', 'response-only-target', 'response-stamped-resolution-due', 'resumed-due',
+    ]);
+    expect(await stampedSubjects('resolution')).toEqual([
+      'both-stamped', 'reopened', 'responded-resolution-due', 'response-stamped-resolution-due',
+    ]);
+    // Healed with the wall-clock formula: no ticket with a target is left without a deadline.
+    const missing = await db.execute<{ n: number }>(sql.raw(`
+      SELECT count(*)::int AS n FROM tickets
+       WHERE org_id = '${org.id}'
+         AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
+           OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL))`));
+    expect([...missing][0]!.n).toBe(0);
+    // A second tick stamps nothing more (one-shot rule).
+    expect(await withSystemDbAccessContext(() => sweepTicketSlaBreaches())).toEqual([]);
+  });
+
+  runDb('the heal pass probes the partial missing-deadline index', async () => {
+    await seedFixtures();
+    await applyNoTransaction(INDEXES);
+    const db = getTestDb();
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(sql.raw('SET LOCAL enable_seqscan = off'));
+      return tx.execute<{ 'QUERY PLAN': string }>(sql.raw(`
+        EXPLAIN SELECT id FROM tickets
+         WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
+            OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+         ORDER BY created_at ASC LIMIT 500`));
+    });
+    expect([...rows].map((r) => r['QUERY PLAN']).join('\n')).toContain('tickets_sla_deadlines_missing_idx');
+  });
+
   runDb('the backfill reaches rows only under system scope (FORCE RLS binds breeze_app)', async () => {
     const { org } = await seedFixtures();
     // Control: without the election a breeze_app UPDATE sees no ticket at all.

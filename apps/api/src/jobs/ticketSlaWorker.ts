@@ -15,9 +15,11 @@ import { attachWorkerObservability } from './workerObservability';
  * has passed, then emit ticket.sla_breached per stamped target.
  *
  * Targets are one-shot (D3): sla_breach_reason is a CSV of breached targets and
- * the sweep's WHERE excludes targets already present. Deadlines are wall-clock
- * (D1): created_at + (target_minutes + sla_paused_minutes). Paused tickets
- * (sla_paused_at set / status pending|on_hold) are skipped entirely.
+ * the sweep's WHERE excludes targets already present. Deadlines are the STORED
+ * response_due_at / resolution_due_at (#8973 W3), written by
+ * services/ticketSlaDeadlines.ts at every write point; until W4 adds calendars
+ * they equal the wall-clock created_at + (target + paused minutes). Paused
+ * tickets (sla_paused_at set / status pending|on_hold) are skipped entirely.
  *
  * DB work runs inside withSystemDbAccessContext (one short transaction);
  * event emission happens AFTER the context exits (#1105 pool-poison rule).
@@ -70,8 +72,65 @@ function extractRows<T>(result: unknown): T[] {
   return maybe.rows ?? (result as T[]);
 }
 
+/**
+ * #8973 Gate B12 — rolling-deploy heal. A ticket created (or given a target)
+ * by a pre-W3 API instance still serving during the deploy has a target but
+ * no stored deadline, so the stored-deadline passes below would never breach
+ * it. Fill the missing arms with the wall-clock formula the backfill used
+ * (2027-01-02-190200), at most HEAL_BATCH rows per tick. The partial index
+ * tickets_sla_deadlines_missing_idx (2027-01-02-190300) is empty in steady
+ * state, so this costs one empty index probe per tick.
+ *
+ * W4 adds `sla_calendar_revision_id IS NULL` to the predicate: a ticket on a
+ * calendar always has its deadlines written by the calendar-aware writers.
+ */
+const HEAL_BATCH = 500;
+
+async function healMissingDeadlines(): Promise<number> {
+  const paused = sql.raw('GREATEST(t.sla_paused_business_minutes, COALESCE(t.sla_paused_minutes, 0))');
+  const result = await db.execute<{ id: string }>(sql`
+    WITH missing AS (
+      SELECT id
+      FROM tickets
+      WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
+         OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+      ORDER BY created_at ASC
+      LIMIT ${sql.raw(String(HEAL_BATCH))}
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE tickets t
+    SET sla_paused_business_minutes = ${paused},
+        response_due_at = CASE WHEN t.response_due_at IS NULL AND t.response_sla_minutes IS NOT NULL
+          THEN t.created_at + (t.response_sla_minutes + ${paused}) * interval '1 minute'
+          ELSE t.response_due_at END,
+        response_warn_at = CASE WHEN t.response_due_at IS NULL AND t.response_sla_minutes IS NOT NULL
+          THEN t.created_at + ${paused} * interval '1 minute' + t.response_sla_minutes * interval '1 minute' * 0.8
+          ELSE t.response_warn_at END,
+        resolution_due_at = CASE WHEN t.resolution_due_at IS NULL AND t.resolution_sla_minutes IS NOT NULL
+          THEN t.created_at + (t.resolution_sla_minutes + ${paused}) * interval '1 minute'
+          ELSE t.resolution_due_at END,
+        resolution_warn_at = CASE WHEN t.resolution_due_at IS NULL AND t.resolution_sla_minutes IS NOT NULL
+          THEN t.created_at + ${paused} * interval '1 minute' + t.resolution_sla_minutes * interval '1 minute' * 0.8
+          ELSE t.resolution_warn_at END
+    FROM missing
+    WHERE t.id = missing.id
+    RETURNING t.id;
+  `);
+  const healed = extractRows<{ id: string }>(result).length;
+  if (healed > 0) {
+    console.warn(`[TicketSlaWorker] Healed stored SLA deadlines on ${healed} ticket(s) written without them`);
+  }
+  return healed;
+}
+
+/**
+ * #8973 W3 (spec §4.3 reader 1): compare now() with the STORED deadline. The
+ * WHERE matches the partial indexes tickets_sla_response_due_idx /
+ * tickets_sla_resolution_due_idx exactly (2027-01-02-190300), so the pass is
+ * an index range scan in deadline order.
+ */
 async function stampBreaches(target: 'response' | 'resolution'): Promise<BreachedTicketRow[]> {
-  const targetColumn = target === 'response' ? sql.raw('response_sla_minutes') : sql.raw('resolution_sla_minutes');
+  const dueColumn = target === 'response' ? sql.raw('response_due_at') : sql.raw('resolution_due_at');
   const unmetCondition = target === 'response'
     ? sql.raw('first_response_at IS NULL')
     : sql.raw('resolved_at IS NULL');
@@ -87,11 +146,10 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
         AND work_kind = 'support'
         AND sla_paused_at IS NULL
         AND ${unmetCondition}
-        AND ${targetColumn} IS NOT NULL
+        AND ${dueColumn} IS NOT NULL
         AND NOT (${target} = ANY(string_to_array(COALESCE(sla_breach_reason, ''), ',')))
-        AND now() >= created_at
-          + (${targetColumn} + COALESCE(sla_paused_minutes, 0)) * interval '1 minute'
-      ORDER BY created_at ASC
+        AND now() >= ${dueColumn}
+      ORDER BY ${dueColumn} ASC
       LIMIT ${MAX_BREACHES_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )
@@ -110,6 +168,7 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
 }
 
 export async function sweepTicketSlaBreaches(): Promise<Array<BreachedTicketRow & { target: 'response' | 'resolution' }>> {
+  await healMissingDeadlines();
   const response = await stampBreaches('response');
   const resolution = await stampBreaches('resolution');
   if (response.length === MAX_BREACHES_PER_RUN || resolution.length === MAX_BREACHES_PER_RUN) {

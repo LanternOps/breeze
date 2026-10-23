@@ -114,14 +114,15 @@ describe('ticketSlaWorker', () => {
   });
 
   describe('sweepTicketSlaBreaches', () => {
-    it('runs response and resolution passes and returns rows tagged by target', async () => {
+    it('heals, then runs response and resolution passes and returns rows tagged by target', async () => {
       executeMock
+        .mockResolvedValueOnce({ rows: [] }) // heal pass (#8973 Gate B12)
         .mockResolvedValueOnce({ rows: [breachedRow] }) // response pass
         .mockResolvedValueOnce({ rows: [] }); // resolution pass
 
       const rows = await sweepTicketSlaBreaches();
 
-      expect(executeMock).toHaveBeenCalledTimes(2);
+      expect(executeMock).toHaveBeenCalledTimes(3);
       expect(rows).toHaveLength(1);
       expect(rows[0]?.target).toBe('response');
       expect(rows[0]?.id).toBe('t-1');
@@ -130,11 +131,12 @@ describe('ticketSlaWorker', () => {
     it('sweep SQL excludes paused, already-breached-target, and non-active tickets', async () => {
       executeMock
         .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] });
 
       await sweepTicketSlaBreaches();
 
-      const responseSql = sqlText(executeMock.mock.calls[0]?.[0]);
+      const responseSql = sqlText(executeMock.mock.calls[1]?.[0]);
       expect(responseSql).toContain("status IN ('new', 'open')");
       expect(responseSql).toContain('sla_paused_at IS NULL');
       expect(responseSql).toContain('first_response_at IS NULL');
@@ -143,7 +145,7 @@ describe('ticketSlaWorker', () => {
       expect(responseSql).toContain('= ANY(string_to_array(COALESCE(sla_breach_reason');
       expect(responseSql).toContain('FOR UPDATE SKIP LOCKED');
 
-      const resolutionSql = sqlText(executeMock.mock.calls[1]?.[0]);
+      const resolutionSql = sqlText(executeMock.mock.calls[2]?.[0]);
       expect(resolutionSql).toContain('resolved_at IS NULL');
       expect(resolutionSql).toContain("status IN ('new', 'open')");
       expect(resolutionSql).toContain('sla_paused_at IS NULL');
@@ -153,11 +155,59 @@ describe('ticketSlaWorker', () => {
       expect(responseSql).toContain("work_kind = 'support'");
       expect(resolutionSql).toContain("work_kind = 'support'");
     });
+
+    // #8973 W3 (spec §4.3 reader 1): the sweep compares now() against the
+    // STORED deadline and walks the partial due-at index in deadline order.
+    it('sweeps the stored deadlines, ordered by them, with the index predicate', async () => {
+      executeMock
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await sweepTicketSlaBreaches();
+
+      const flat = (n: number) => sqlText(executeMock.mock.calls[n]?.[0]).replace(/\s+/g, ' ');
+      const responseSql = flat(1);
+      expect(responseSql).toContain('response_due_at IS NOT NULL');
+      expect(responseSql).toContain('now() >= response_due_at');
+      expect(responseSql).toContain('ORDER BY response_due_at ASC');
+      expect(responseSql).not.toContain('created_at');
+      expect(responseSql).not.toContain('sla_paused_minutes');
+
+      const resolutionSql = flat(2);
+      expect(resolutionSql).toContain('resolution_due_at IS NOT NULL');
+      expect(resolutionSql).toContain('now() >= resolution_due_at');
+      expect(resolutionSql).toContain('ORDER BY resolution_due_at ASC');
+      expect(resolutionSql).not.toContain('created_at');
+    });
+
+    // Gate B12: a ticket created by a pre-W3 API instance during a rolling
+    // deploy has a target but no stored deadline, which the stored-deadline
+    // sweep would never breach. Each tick heals up to 500 such rows with the
+    // wall-clock formula BEFORE the stamping passes run.
+    it('heals a ticket written without deadlines and then stamps its breach', async () => {
+      executeMock
+        .mockResolvedValueOnce({ rows: [{ id: 't-1' }] }) // heal
+        .mockResolvedValueOnce({ rows: [breachedRow] }) // response pass sees the healed row
+        .mockResolvedValueOnce({ rows: [] });
+
+      const rows = await sweepTicketSlaBreaches();
+
+      const healSql = sqlText(executeMock.mock.calls[0]?.[0]).replace(/\s+/g, ' ');
+      expect(healSql).toContain('response_due_at IS NULL');
+      expect(healSql).toContain('resolution_due_at IS NULL');
+      expect(healSql).toContain("interval '1 minute' * 0.8");
+      expect(healSql).toContain('LIMIT 500');
+      expect(healSql).toContain('FOR UPDATE SKIP LOCKED');
+      expect(healSql).toContain('ORDER BY created_at ASC');
+      expect(rows.map((r) => r.id)).toEqual(['t-1']);
+    });
   });
 
   describe('worker handler', () => {
     it('emits one ticket.sla_breached per stamped row, after the system DB context resolved', async () => {
       executeMock
+        .mockResolvedValueOnce({ rows: [] }) // heal pass
         .mockResolvedValueOnce({ rows: [breachedRow] }) // response pass
         .mockResolvedValueOnce({ rows: [] }); // resolution pass
 
@@ -209,6 +259,7 @@ describe('ticketSlaWorker', () => {
 
     it('emits nothing when the sweep stamps zero rows', async () => {
       executeMock
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] });
 

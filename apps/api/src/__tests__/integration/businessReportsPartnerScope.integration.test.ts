@@ -162,17 +162,26 @@ type TicketSeed = {
   pausedMinutes?: number;
 };
 
-/** Seeded as the superuser (no RLS), like every db-utils helper. */
+/**
+ * Seeded as the superuser (no RLS), like every db-utils helper. #8973 W3: the
+ * report reads the STORED deadlines, so the seed writes them the way the
+ * write points (and the backfill) do with no calendar:
+ * created_at + (target + paused) minutes.
+ */
 async function seedTicket(orgId: string, partnerId: string, o: TicketSeed): Promise<string> {
   const id = randomUUID();
+  const paused = o.pausedMinutes ?? 0;
   await getTestDb().execute(sql`
     INSERT INTO tickets (id, org_id, partner_id, ticket_number, subject, status, priority,
       work_kind, created_at, first_response_at, resolved_at, response_sla_minutes,
-      resolution_sla_minutes, sla_paused_minutes, deleted_at, sla_breached_at, assigned_to)
+      resolution_sla_minutes, sla_paused_minutes, sla_paused_business_minutes,
+      response_due_at, resolution_due_at, deleted_at, sla_breached_at, assigned_to)
     VALUES (${id}, ${orgId}, ${partnerId}, ${`T-${id.slice(0, 12)}`}, 'seeded', 'open', 'high',
       ${o.workKind ?? 'support'}, ${o.createdAt}, ${o.firstResponseAt ?? null}, ${o.resolvedAt ?? null},
-      ${o.responseSla ?? null}, ${o.resolutionSla ?? null}, ${o.pausedMinutes ?? 0}, ${o.deletedAt ?? null},
-      ${o.slaBreachedAt ?? null}, ${o.assignedTo ?? null})`);
+      ${o.responseSla ?? null}, ${o.resolutionSla ?? null}, ${paused}, ${paused},
+      ${o.createdAt}::timestamp + (${o.responseSla ?? null}::int + ${paused}::int) * interval '1 minute',
+      ${o.createdAt}::timestamp + (${o.resolutionSla ?? null}::int + ${paused}::int) * interval '1 minute',
+      ${o.deletedAt ?? null}, ${o.slaBreachedAt ?? null}, ${o.assignedTo ?? null})`);
   return id;
 }
 

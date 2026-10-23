@@ -277,6 +277,8 @@ export const tickets = pgTable('tickets', {
   // must stay identical to the sweep in jobs/ticketSlaWorker.ts.
   slaResponseDueIdx: index('tickets_sla_response_due_idx').on(table.responseDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL`),
   slaResolutionDueIdx: index('tickets_sla_resolution_due_idx').on(table.resolutionDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND resolved_at IS NULL AND resolution_due_at IS NOT NULL`),
+  // Gate B12 heal pass (empty in steady state).
+  slaDeadlinesMissingIdx: index('tickets_sla_deadlines_missing_idx').on(table.createdAt).where(sql`(response_sla_minutes IS NOT NULL AND response_due_at IS NULL) OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)`),
 }));
 
 export const ticketComments = pgTable('ticket_comments', {

@@ -29,9 +29,7 @@ import {
   type HolidaySet,
 } from '@breeze/shared';
 import type { Database } from '../db';
-
-/** The "breaching soon" point, as a fraction of the target (spec D7). */
-export const SLA_AT_RISK_RATIO = 0.8;
+import { SLA_AT_RISK_RATIO, breachedTargets } from './ticketSla';
 
 export type SlaClockRow = {
   createdAt: Date;
@@ -79,16 +77,12 @@ export function slaClockRowOf(ticket: SlaClockSource): SlaClockRow {
   };
 }
 
-function breachReasons(row: Pick<SlaClockRow, 'slaBreachReason'>): string[] {
-  return (row.slaBreachReason ?? '').split(',');
-}
-
 export function isResponseFrozen(row: Pick<SlaClockRow, 'firstResponseAt' | 'slaBreachReason'>): boolean {
-  return row.firstResponseAt != null || breachReasons(row).includes('response');
+  return row.firstResponseAt != null || breachedTargets(row.slaBreachReason).has('response');
 }
 
 export function isResolutionFrozen(row: Pick<SlaClockRow, 'resolvedAt' | 'slaBreachReason'>): boolean {
-  return row.resolvedAt != null || breachReasons(row).includes('resolution');
+  return row.resolvedAt != null || breachedTargets(row.slaBreachReason).has('resolution');
 }
 
 function cal(calendar: TicketCalendar): [CalendarRevision | null, HolidaySet] {

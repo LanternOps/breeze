@@ -1,6 +1,7 @@
 -- @no-transaction
 -- #8973 W3 (spec §4.3 reader 1): partial indexes for the SLA breach sweep,
--- which now range-scans the stored deadline instead of scanning created_at.
+-- which now range-scans the stored deadline instead of scanning created_at,
+-- plus the (normally empty) index behind the sweep's Gate B12 heal pass.
 -- The WHERE clauses must stay identical to the sweep predicate in
 -- jobs/ticketSlaWorker.ts (and the Drizzle declarations in db/schema/portal.ts).
 --
@@ -33,6 +34,16 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_resolution_due_idx
     AND resolved_at IS NULL
     AND resolution_due_at IS NOT NULL;
 
+-- Gate B12 rolling-deploy heal: rows that have a target but no stored
+-- deadline (written by a pre-W3 API instance during the deploy). Empty once
+-- the backfill above has run, so the sweep's per-tick heal is one empty index
+-- probe instead of a tickets scan. Predicate must match healMissingDeadlines()
+-- in jobs/ticketSlaWorker.ts.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_deadlines_missing_idx
+  ON public.tickets (created_at)
+  WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
+     OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL);
+
 DO $$
 DECLARE
   bad text;
@@ -42,7 +53,7 @@ BEGIN
     FROM pg_index i
     JOIN pg_class c ON c.oid = i.indexrelid
    WHERE i.indrelid = 'public.tickets'::regclass
-     AND c.relname IN ('tickets_sla_response_due_idx', 'tickets_sla_resolution_due_idx')
+     AND c.relname IN ('tickets_sla_response_due_idx', 'tickets_sla_resolution_due_idx', 'tickets_sla_deadlines_missing_idx')
      AND NOT i.indisvalid;
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'tickets SLA due index build left INVALID index: % — DROP INDEX CONCURRENTLY it and re-apply this migration', bad;
