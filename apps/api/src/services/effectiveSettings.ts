@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { eq } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
+import { AI_BUDGET_DEFAULTS, DEFAULT_AI_ALERT_THRESHOLD_PERCENTS } from '@breeze/shared';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, partners } from '../db/schema/orgs';
@@ -31,7 +32,7 @@ interface EffectiveSettingsResult {
 }
 
 /** #4388 — pre-cap alert rungs (1-99). Empty = pre-cap warnings off; 100 is always implicit. */
-export const DEFAULT_AI_ALERT_THRESHOLD_PERCENTS: readonly number[] = Object.freeze([50, 80, 95]);
+export { DEFAULT_AI_ALERT_THRESHOLD_PERCENTS };
 
 export interface EffectiveAiBudget {
   enabled: boolean;
@@ -52,21 +53,11 @@ export interface EffectiveAiBudget {
   toolRateLimitMultiplier: number;
 }
 
-const AI_BUDGET_DEFAULTS: EffectiveAiBudget = {
-  enabled: true,
-  monthlyBudgetCents: null,
-  dailyBudgetCents: null,
-  maxTurnsPerSession: 50,
-  messagesPerMinutePerUser: 20,
-  messagesPerHourPerOrg: 200,
-  approvalMode: 'per_step',
-  // Frozen as a tripwire (#4388 review finding): if a merge site is ever
-  // added that forgets to copy this array before returning it, mutating it
-  // in place (e.g. .push()) throws in strict mode instead of silently
-  // corrupting the default thresholds for every other org, process-wide.
-  alertThresholdPercents: Object.freeze([...DEFAULT_AI_ALERT_THRESHOLD_PERCENTS]) as number[],
-  toolRateLimitMultiplier: 1,
-};
+// AI_BUDGET_DEFAULTS is owned by @breeze/shared (constants/aiBudgetDefaults.ts)
+// so the web and the partner settings catalog read the same values. Its
+// threshold array is frozen as a tripwire (#4388 review finding): a merge site
+// that forgets to copy it throws on an in-place mutation instead of silently
+// corrupting the defaults for every other org, process-wide.
 
 const AI_BUDGET_FIELDS = [
   'enabled',
