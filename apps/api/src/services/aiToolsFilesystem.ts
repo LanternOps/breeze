@@ -125,8 +125,8 @@ async function verifyDeviceAccess(
 type FileCommandResult = Awaited<ReturnType<typeof aiExecuteCommand>>;
 type DescribedDeleteResult = FileCommandResult & {
   outcome?: 'moved_to_trash' | 'permanently_deleted' | 'unverified';
-  spaceReclaimed?: boolean;
-  bytesFreed?: number;
+  spaceReclaimed?: false;
+  bytesRemoved?: number;
   message?: string;
 };
 
@@ -140,6 +140,21 @@ function parseAgentStdoutObject(stdout: string | undefined): Record<string, unkn
   }
 }
 
+// Every message below stays under the tightest chat-compaction tier's
+// maxStringChars (300, aiToolOutput.ts) so the model never reads a cut one.
+const DELETE_TIMEOUT_MESSAGE = 'The delete timed out waiting for the agent. It may still have happened on the device. List the folder to check before retrying or reporting it.';
+const DELETE_UNVERIFIED_MESSAGE = 'The agent reply did not confirm what happened, so it is unknown whether the item was deleted or any space was freed. List the folder and run analyze_disk_usage refresh=true before reporting.';
+
+/**
+ * A timeout may still have acted on the device after the wait ended; say so
+ * instead of passing back a bare timeout the model reads as "nothing happened".
+ */
+function timedOutDelete(result: FileCommandResult): DescribedDeleteResult | null {
+  return result.status === 'timeout'
+    ? { ...result, outcome: 'unverified', message: DELETE_TIMEOUT_MESSAGE }
+    : null;
+}
+
 /**
  * #9853: the agent answers a trash move with `{ deleted: true, trashId }`,
  * which read as "space freed" to the model on a disk that stayed full. The
@@ -147,37 +162,44 @@ function parseAgentStdoutObject(stdout: string | undefined): Record<string, unkn
  * fields added here are API-authored and survive the chat compactor.
  */
 function describeTrashDeleteResult(result: FileCommandResult): DescribedDeleteResult {
+  const timedOut = timedOutDelete(result);
+  if (timedOut) return timedOut;
   if (result.status !== 'completed') return result;
+  const body = parseAgentStdoutObject(result.stdout);
+  if (body?.deleted !== true || typeof body.trashId !== 'string') {
+    return { ...result, outcome: 'unverified', message: DELETE_UNVERIFIED_MESSAGE };
+  }
   return {
     ...result,
     outcome: 'moved_to_trash',
     spaceReclaimed: false,
-    message: 'The item was moved to the agent trash (~/.breeze-trash; trashId in the agent result), not deleted. No disk space was reclaimed: the bytes stay on disk in the trash, on the same volume (an item on another volume is copied onto the trash volume), until trash items are purged after 30 days. To free space use disk_cleanup (preview, then execute), or delete with permanent: true.',
+    message: 'Moved to the agent trash (trashId in the agent result), not deleted. No disk space was reclaimed: the bytes stay in the trash, normally on the same volume, until it is purged after 30 days. To free space use disk_cleanup (preview, then execute) or delete with permanent: true.',
   };
 }
 
 function describePermanentDeleteResult(result: FileCommandResult): DescribedDeleteResult {
+  const timedOut = timedOutDelete(result);
+  if (timedOut) return timedOut;
   if (result.status !== 'completed') return result;
   const body = parseAgentStdoutObject(result.stdout);
-  const bytesFreed = body && typeof body.bytesFreed === 'number' && Number.isFinite(body.bytesFreed)
+  const bytesRemoved = body && typeof body.bytesFreed === 'number' && Number.isFinite(body.bytesFreed)
     ? Math.max(0, body.bytesFreed)
     : null;
-  if (body?.permanent !== true || bytesFreed === null) {
+  if (body?.permanent !== true || bytesRemoved === null) {
     // A gated agent always answers a permanent delete with both fields. If
     // they are missing the API cannot tell a permanent delete from a trash
     // move, so it must not claim either.
-    return {
-      ...result,
-      outcome: 'unverified',
-      message: 'The agent did not confirm a permanent delete, so it is unknown whether any disk space was reclaimed. Check with analyze_disk_usage refresh=true before reporting the space as freed.',
-    };
+    return { ...result, outcome: 'unverified', message: DELETE_UNVERIFIED_MESSAGE };
   }
+  // No `spaceReclaimed: true`: the agent's `bytesFreed` is a link-following
+  // stat of the path, and an unlinked file that a process still holds open (a
+  // runaway log) keeps its blocks until that process closes it. The API cannot
+  // see either, so it reports what the agent removed and how to confirm.
   return {
     ...result,
     outcome: 'permanently_deleted',
-    spaceReclaimed: true,
-    bytesFreed,
-    message: `The item was permanently deleted and cannot be restored. The agent reported ${bytesFreed} bytes freed.`,
+    bytesRemoved,
+    message: `Permanently deleted; cannot be restored. The agent removed ${bytesRemoved} bytes, but space returns only if no process still has the file open (restart it) and the path was not a link. Confirm with analyze_disk_usage refresh=true before reporting space freed.`,
   };
 }
 
@@ -210,7 +232,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           path: { type: 'string', description: 'File or directory path' },
           content: { type: 'string', description: 'File content (for write)' },
           newPath: { type: 'string', description: 'New path (for rename)' },
-          permanent: { type: 'boolean', description: 'delete only: delete now instead of moving to the agent trash. Frees the space; cannot be restored. Needs a current agent; non-empty folders are refused.' }
+          permanent: { type: 'boolean', description: 'delete only: delete now, not to the agent trash; cannot be restored. A file a process holds open frees space when it closes. Non-empty folders refused.' }
         },
         required: ['deviceId', 'action', 'path']
       }

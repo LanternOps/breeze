@@ -163,6 +163,38 @@ describe('file_operations delete — trash move is reported as a trash move (#98
     expect(seen.message).toMatch(/no disk space was reclaimed/i);
   });
 
+  it('every message fits the tightest compaction tier (300 chars) uncut', async () => {
+    const results = [await run({ action: 'delete' })];
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'timeout', error: 'timed out' } as any);
+    results.push(await run({ action: 'delete' }));
+    for (const version of [MIN_AGENT_VERSION_CLEANUP_GUARD, '0.114.9']) {
+      deviceWithAgent(version);
+      vi.mocked(aiExecuteCommand).mockResolvedValue(PERMANENT_RESULT as any);
+      results.push(await run({ action: 'delete', permanent: true }));
+      vi.mocked(aiExecuteCommand).mockResolvedValue(TRASH_RESULT as any);
+      results.push(await run({ action: 'delete', permanent: true }));
+    }
+    for (const result of results) {
+      expect(typeof result.message).toBe('string');
+      expect(result.message.length).toBeLessThanOrEqual(300);
+    }
+  });
+
+  it('a completed reply that does not look like a trash move is not called one', async () => {
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed', stdout: 'ok' } as any);
+    const result = await run({ action: 'delete' });
+    expect(result.outcome).toBe('unverified');
+    expect(result).not.toHaveProperty('spaceReclaimed');
+  });
+
+  it('a delete that timed out says it may still have happened', async () => {
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'timeout', error: 'timed out' } as any);
+    const result = await run({ action: 'delete' });
+    expect(result.status).toBe('timeout');
+    expect(result.outcome).toBe('unverified');
+    expect(result.message).toMatch(/may still have/i);
+  });
+
   it('a failed delete is passed through without a trash claim', async () => {
     vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'failed', error: 'path does not exist' } as any);
     const result = await run({ action: 'delete' });
@@ -195,13 +227,61 @@ describe('file_operations delete — permanent: true (#9853)', () => {
     },
   );
 
-  it('reports the bytes the agent freed', async () => {
+  it('reports the bytes the agent removed without claiming the space is back', async () => {
     deviceWithAgent(MIN_AGENT_VERSION_CLEANUP_GUARD);
     const result = await run({ action: 'delete', permanent: true });
     expect(result.outcome).toBe('permanently_deleted');
-    expect(result.spaceReclaimed).toBe(true);
-    expect(result.bytesFreed).toBe(57_000_000_000);
+    expect(result.bytesRemoved).toBe(57_000_000_000);
+    // The agent's size comes from a link-following stat, and an unlinked file
+    // a process still holds open (a runaway log) keeps its blocks: the API
+    // cannot know the space came back, so it must not say so.
+    expect(result).not.toHaveProperty('spaceReclaimed');
     expect(result.message).toMatch(/cannot be restored/i);
+    expect(result.message).toMatch(/still has the file open/i);
+    expect(result.message).toContain('analyze_disk_usage');
+  });
+
+  it('a failed permanent delete is passed through without an outcome', async () => {
+    deviceWithAgent(MIN_AGENT_VERSION_CLEANUP_GUARD);
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'failed', error: 'directory not empty' } as any);
+    const result = await run({ action: 'delete', permanent: true });
+    expect(result).toEqual({ status: 'failed', error: 'directory not empty' });
+  });
+
+  it('a permanent delete that timed out says it may still have happened', async () => {
+    deviceWithAgent(MIN_AGENT_VERSION_CLEANUP_GUARD);
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'timeout', error: 'timed out' } as any);
+    const result = await run({ action: 'delete', permanent: true });
+    expect(result.status).toBe('timeout');
+    expect(result.outcome).toBe('unverified');
+    expect(result.message).toMatch(/may still have/i);
+  });
+
+  it('the permanent and unverified results survive the compactor with a large agent body', async () => {
+    deviceWithAgent(MIN_AGENT_VERSION_CLEANUP_GUARD);
+    const bulky = {
+      status: 'completed',
+      stdout: JSON.stringify({
+        path: LOG_PATH, deleted: true, permanent: true, bytesFreed: 42,
+        skippedLocked: Array.from({ length: 500 }, (_, i) => `/var/log/runaway/held-${i}.log`),
+      }),
+    };
+    for (const [agentResult, outcome] of [[bulky, 'permanently_deleted'], [TRASH_RESULT, 'unverified']] as const) {
+      vi.mocked(aiExecuteCommand).mockResolvedValue(agentResult as any);
+      const tool = getFileOperationsTool();
+      const raw = await tool.handler({ deviceId: DEVICE_ID, action: 'delete', path: LOG_PATH, permanent: true }, makeAuth());
+      const seen = JSON.parse(compactToolResultForChat('file_operations', raw));
+      expect(seen.outcome).toBe(outcome);
+      expect(seen.message).toBe(JSON.parse(raw).message);
+    }
+  });
+
+  it('a plain delete still works on an agent below the gate', async () => {
+    deviceWithAgent('0.114.9');
+    vi.mocked(aiExecuteCommand).mockResolvedValue(TRASH_RESULT as any);
+    const result = await run({ action: 'delete' });
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe('moved_to_trash');
   });
 
   it.each(['0.114.9', '', null, 'not-a-version'])(
