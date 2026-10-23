@@ -23,7 +23,7 @@ Verified on `origin/main` `afcb08c2d4` (2026-10-23). Re-grep every symbol before
 
 | Seam (as built) | Where | What B-W05 does with it |
 |---|---|---|
-| `McpDispatchContext = { era, correlation, clientCapabilities? }` | `routes/mcpServer.ts:708-715` | Adds `clientExtensions: McpClientExtensions` (both eras) |
+| `McpDispatchContext = { era, correlation, clientCapabilities? }`; built at `:863` (`/message`, era `legacy`), `:1155` (legacy streamable), `:1201` (modern) | `routes/mcpServer.ts:708-715` | Adds `transport`, `resolveClientExtensions` (thunk) and `auditExtras` |
 | `ModernRequestMeta.clientCapabilities` (required in the modern era) | `services/mcpModernEnvelope.ts:41` | Parsed per request |
 | Legacy session mint/verify: Redis `MCP_SESSION_REDIS_PREFIX + sid → principalKey`, `MCP_SESSION_TTL_SECONDS` | `routes/mcpServer.ts:1026-1135` | Side key `mcp:session-ext:<sid>` written on `initialize`, read lazily |
 | `buildInitializeResult(requestedProtocolVersion)` — capabilities `{tools, resources, prompts}`; client `params.capabilities` ignored | `routes/mcpServer.ts:1218` | Gains `extensions` when the flag is on |
@@ -70,7 +70,7 @@ Numbering continues B-W04's D-B25…D-B37.
 
 - **D-B38 — The pilot tool is `get_fleet_health`.**
   - Read-only by construction: one action, tier 1, `readOnlyHint: true`, RBAC `devices.read`. An app attached to a mixed tool would also render that tool's write results; `_meta.ui` is per tool, not per action.
-  - Hot: in the 15-tool `alwaysLoad` set (A-W04) and in A-W01's hot list (baseline doc §7.4).
+  - Hot: one of the 14 `alwaysLoad: true` registry tools (A-W04's 15-tool set adds `propose_action_plan`, `services/aiTools.ts:513`) and in A-W01's hot list (baseline doc §7.4).
   - Visual payoff: it already returns `{ devices: [...], showing, limit, offset, total, totalMode, hasMore, nextCursor, summary: { criticalDevices, poorDevices, fairDevices, goodDevices, degradingDevices, … } }` (`aiToolsUserRisk.ts:131-148`) — a score-band bar plus a worst-first table reads far better than JSON.
   - Rejected: `manage_alerts` (the spec's "alert triage board"; mixed tier 1/2, and a triage board implies acknowledge/resolve buttons, i.e. writes from the view — out of scope for a pilot, Gate B 1); `list_time_entries` (the spec's "timesheet review"; not hot, and review implies approve writes); `query_devices` (plain table, little gain); `get_device_details` (single device, large shaped payload).
   - This **replaces** the spec's two named candidates and defers B-W04 D-B36's "approval card renders `McpActionStatus`" idea: an approval card is a Tier-3 surface whose view would want to act, and it belongs after the go/no-go (D-B44), not in the pilot.
@@ -94,7 +94,7 @@ Numbering continues B-W04's D-B25…D-B37.
 - **D-B42 — Capability negotiation.**
   - `parseMcpClientExtensions(caps: unknown): McpClientExtensions` (pure, `services/mcpClientExtensions.ts`) → `{ ui: boolean }`. `ui` is true only when `caps.extensions["io.modelcontextprotocol/ui"].mimeTypes` is an array containing the exact string `text/html;profile=mcp-app`. Anything else — missing, `{}`, wrong type, other mime types only — is false. B-W06 adds `tasks` to the same type.
   - Modern era: parsed from the request's `clientCapabilities` on every request.
-  - Legacy streamable era: on `initialize`, parse `params.capabilities`; when `ui` is true write `mcp:session-ext:<sid>` = `'{"ui":true}'` with `MCP_SESSION_TTL_SECONDS` immediately after the existing `setex` (same absolute, never-refreshed lifetime as the ownership key, `mcpServer.ts:1033`, `:1077`). It is read only after the session's ownership check has passed, and only when `mcpAppsEnabled()` and the method is `tools/list`, `resources/read` or `tools/call` (the last so D-B44 can count app calls); a miss, a parse failure or any Redis error → `{ ui: false }`. Every failure degrades to the text-only experience, never to an error. With the flag off no side key is ever read or written.
+  - Legacy streamable era: on `initialize`, parse `params.capabilities`; when `ui` is true write `mcp:session-ext:<sid>` = `'{"ui":true}'` with `MCP_SESSION_TTL_SECONDS` immediately after the existing `setex` (same absolute, never-refreshed lifetime as the ownership key, `mcpServer.ts:1033`, `:1077`). It is read only after the session's ownership check has passed, and only when `mcpAppsEnabled()` and the method is `tools/list`, `resources/read` or `tools/call` (the last so D-B44 can count app calls); a miss, a parse failure or any Redis error → `{ ui: false }`. Every failure degrades to the text-only experience, never to an error. With the flag off no side key is ever read or written. Cost: one extra Redis GET on those three legacy methods while the flag is on (the request already does one GET for session ownership); folding the flag into the ownership value instead would change a security-critical key's format, which is why it is a side key.
   - Deprecated HTTP+SSE (`/message`): always `{ ui: false }`.
   - Re-`initialize` mints a new session id, so a client that stops declaring the extension simply has no side key.
 - **D-B43 — Gating: one predicate, `isMcpAppAvailable`.** (Quorum blocking fix.) Tier-1 listing does **not** check RBAC (`mcpServer.ts:1606`), so "the tool is listed" is not enough. The predicate, in `services/mcpApps/registry.ts`, is all of:
@@ -142,7 +142,7 @@ The plan's default is in brackets and is what the tasks implement.
 2. **View interactivity.** [Display-only, `visibility: ["model"]`; paging stays with the model.] Alternative: `visibility: ["model","app"]` and a "next page"/"refresh" button that calls `get_fleet_health` back through the host (no new authority — the host uses the same connection — but the view then needs request/response plumbing and error states).
 3. **Locale.** [English only.] Alternative: ship the 8 locales' strings inline and pick from the host context's `locale` (adds ~6 KiB and a second parity test).
 4. **Legacy era.** [Supported through the Redis side key, because today's Apps hosts mostly connect with `initialize`.] Alternative: modern era only, like URL elicitation — no Redis key, but most hosts would never see the app until they adopt `2026-07-28`.
-5. **Go/no-go threshold.** [≥ 5 distinct principals reading the view in 30 days across EU + US → plan a second app; otherwise leave the pilot on and stop.]
+5. **Go/no-go threshold** (the D-B44 query, over the first 30 days the flag is on in each region, summed): [`ui_tool_callers ≥ 5` **and** `ui_tool_calls ≥ 50` → plan a second app; otherwise leave the pilot on and stop. View fetches are reported but are only a ceiling.]
 6. **Rollout.** [Off in the release that ships it; on in EU after the lab run (Task 7), then US.]
 
 ---
@@ -184,7 +184,7 @@ No table, no column, no RLS change (D-B41). `audit_logs.details` gains one optio
 | `apps/api/src/routes/mcpServer.ts` (modify) | Dispatch-context resolver, legacy side key on `initialize`, transport-aware `extensions` in `buildInitializeResult`, `isToolListedForCaller` extracted from `handleToolsList`, `_meta.ui` merge, exact-URI app branch in `handleResourcesRead`, audit details. |
 | `apps/api/src/services/mcpModernResult.ts` (modify) | `buildDiscoverResult` advertises the extension when the flag is on. |
 | `apps/api/src/services/mcpDomains.ts` (modify) | `MCP_RESOURCE_DOMAINS` row. |
-| `apps/api/src/config/validate.ts`, root `.env.example` (modify) | `MCP_APPS_ENABLED`. |
+| `apps/api/src/config/validate.ts`, root `.env.example`, `docker-compose.yml`, `deploy/docker-compose.prod.yml`, `apps/api/src/system/connections/internalEnvVars.ts` (modify) | `MCP_APPS_ENABLED` validated, documented and passed into the container. |
 | `apps/api/package.json` (modify) | devDependency `jsdom` at the version `apps/web` uses (`^30.0.1`) for the view test. |
 | `apps/docs/src/content/docs/features/mcp-server.mdx` (modify) | "MCP Apps (preview)" section. |
 
@@ -192,7 +192,7 @@ No table, no column, no RLS change (D-B41). `audit_logs.details` gains one optio
 
 ### Task 1: `mcpClientExtensions.ts` and `mcpAppsConfig.ts` — the negotiation parser and the flag
 
-**Files:** Create `services/mcpClientExtensions.ts` + `.test.ts`, `services/mcpAppsConfig.ts` + `.test.ts`. Modify `config/validate.ts` (accept `MCP_APPS_ENABLED` with the boolean vocabulary, as the B-W04 flags), root `.env.example` (after `MCP_APPROVAL_WAITS_PER_PRINCIPAL`), `parkedFanout.contract.test.ts` (classify both files).
+**Files:** Create `services/mcpClientExtensions.ts` + `.test.ts`, `services/mcpAppsConfig.ts` + `.test.ts`. Modify `config/validate.ts` (accept `MCP_APPS_ENABLED` with the boolean vocabulary, as the B-W04 flags), root `.env.example` (after `MCP_APPROVAL_WAITS_PER_PRINCIPAL`), `parkedFanout.contract.test.ts` (classify both files), and the **container passthrough** — without it the flag can never be turned on in a deployed stack or the lab: `docker-compose.yml` (next to `MCP_TIER3_INTENTS_ENABLED`, `:626`) and `deploy/docker-compose.prod.yml` (next to `:595`) get `MCP_APPS_ENABLED: ${MCP_APPS_ENABLED:-}`, and `apps/api/src/system/connections/internalEnvVars.ts` (`:319-322`) gets `MCP_APPS_ENABLED: 'MCP rollout flag'`. The guards are `src/config/envReadComposeCoverage.test.ts` and `src/system/connections/envInventory.test.ts` — run both in Step 4.
 
 **Interfaces — Produces:**
 ```ts
@@ -228,7 +228,7 @@ export function mcpAppsEnabled(): boolean;   // MCP_APPS_ENABLED, default false
   ```
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/services/mcpClientExtensions.test.ts src/services/mcpAppsConfig.test.ts` → FAIL (modules missing).
 - [ ] **Step 3: Implement.** The stored value is parsed back through `parseMcpClientExtensions`-equivalent strict checking (`JSON.parse` then `=== true`), never trusted as an object.
-- [ ] **Step 4:** Same command → PASS. Also `npx vitest run src/config/validate.test.ts`.
+- [ ] **Step 4:** Same command → PASS. Also `npx vitest run src/config/validate.test.ts src/config/envReadComposeCoverage.test.ts src/system/connections/envInventory.test.ts`.
 - [ ] **Step 5:** Commit `feat(mcp): client-extension negotiation parser and MCP_APPS_ENABLED (B-W05 #6159)`.
 
 ### Task 2: Thread negotiated extensions through dispatch (both eras) and advertise the extension
@@ -237,7 +237,7 @@ export function mcpAppsEnabled(): boolean;   // MCP_APPS_ENABLED, default false
 - **`McpDispatchContext` (`:708-715`).** It gains `resolveClientExtensions`. The modern handler (`:1170-1204`) wraps the value it parses from `meta.clientCapabilities`.
 - **Legacy streamable handler.** It parses `initialize` `params.capabilities` and calls `writeLegacySessionExtensions` right after the existing `setex` (`:1033`), only when `mcpAppsEnabled()`. For non-initialize requests its resolver calls `readLegacySessionExtensions(redis, trustedSessionId)` lazily: only after the ownership check, only when the flag is on, and only for `tools/list`, `resources/read` and `tools/call`.
 - **`/message`.** Its resolver returns `NO_MCP_CLIENT_EXTENSIONS`.
-- **`buildInitializeResult` (`:1218`).** It gains `opts: { advertiseApps: boolean }` and adds `extensions: { [MCP_UI_EXTENSION_ID]: {} }` inside `capabilities` only when `opts.advertiseApps && mcpAppsEnabled()`. The streamable path passes `true` and `/message` passes `false`.
+- **`buildInitializeResult` (`:1218`, exported; one dispatch call site at `:1250`).** It gains an optional `opts?: { advertiseApps?: boolean }` (default `false`, so existing one-argument callers are unchanged) and adds `extensions: { [MCP_UI_EXTENSION_ID]: {} }` inside `capabilities` only when `opts.advertiseApps && mcpAppsEnabled()`. Both transports reach `:1250` with `era: 'legacy'`, so `McpDispatchContext` gains `transport: 'http_sse' | 'streamable'` (set at `:863` and `:1155`; modern is always `streamable`) and the call passes `advertiseApps: ctx.transport === 'streamable'`.
 - **`dispatchAndAudit` (`:717`).** It writes `uiExtension: true` in `details` when the request resolved `ui`, plus `mcpApp` per D-B44 (set by Task 4's branches through a small per-request audit-extras object on the context).
 
 Also modify `services/mcpModernResult.ts` (`buildDiscoverResult` advertises the same key when the flag is on). Tests: create `routes/mcpServer.apps.test.ts` (copy the harness from `mcpServer.modern.test.ts` for the modern era and `mcpServer.initialize.test.ts` for legacy) and extend `services/mcpModernResult.test.ts`.
@@ -245,8 +245,9 @@ Also modify `services/mcpModernResult.ts` (`buildDiscoverResult` advertises the 
 **Interfaces:**
 - Consumes Task 1.
 - Produces:
+  - `McpDispatchContext.transport: 'http_sse' | 'streamable'`.
   - `McpDispatchContext.resolveClientExtensions: () => Promise<McpClientExtensions>`, memoised per request and never throwing.
-  - `McpDispatchContext.auditExtras: { mcpApp?: string }`.
+  - `McpDispatchContext.auditExtras: { mcpApp?: string }` — a mutable per-request object; handlers write it and `dispatchAndAudit` reads it **after** `handleJsonRpc` returns (it already writes the audit row after dispatch, `:723-724`).
   - `handleToolsList`, `handleResourcesRead` and `handleToolsCall` receive the resolved `McpClientExtensions` value. They never receive the thunk.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -288,6 +289,7 @@ export function mcpAppResourceContents(app: McpAppDefinition): { contents: [{ ur
       expect(q('[data-testid="fh-band-critical"]').textContent).toContain('1');
       expect(qa('[data-testid="fh-row"]').map(r => r.querySelector('[data-testid="fh-host"]')!.textContent)).toEqual(['ws-01.example.test','ws-02.example.test','ws-03.example.test']);
     });
+    // Inject the hostile strings into EVERY string field the view renders (hostname, trendDirection, osType, status, computedAt), not only hostname.
     it('renders hostile hostnames as text', () => {
       // hostname '<img src=x onerror="window.__pwned=1">' and '</script><script>window.__pwned=1</script>'
       expect(dom.window.document.querySelectorAll('img, script:not([data-view])').length).toBe(0);
@@ -311,7 +313,7 @@ export function mcpAppResourceContents(app: McpAppDefinition): { contents: [{ ur
     The inline `<script>` carries `data-view` so the hostile-input assertion can exclude it.
   - Registry contract:
     ```ts
-    it.each(MCP_APPS)('$toolName is effective tier 1 and read-only for every action', (app) => { /* getToolTier === 1; not in TIER3_ACTIONS / TIER2_ACTIONS for any action; buildMcpToolPresentation(...).annotations.readOnlyHint === true. mcpTierFloor is private to mcpServer.ts — assert the app tool is absent from MCP_APPROVAL_REQUIRED_EXTRA_TOOLS instead */ });
+    it.each(MCP_APPS)('$toolName is effective tier 1 and read-only for every action', (app) => { /* getToolTier === 1; not in TIER3_ACTIONS / TIER2_ACTIONS for any action; buildMcpToolPresentation(...).annotations.readOnlyHint === true. mcpTierFloor and MCP_APPROVAL_REQUIRED_EXTRA_TOOLS (:1332) are private to mcpServer.ts — this task exports MCP_APPROVAL_REQUIRED_EXTRA_TOOLS (read-only) and asserts the app tool is absent from it */ });
     it.each(MCP_APPS)('$resourceUri domain equals the tool domain', (app) => expect(mcpResourceDomain(app.resourceUri)).toBe(mcpToolDomain(app.toolName)));
     it.each(MCP_APPS)('$key permission equals the tool guardrail permission', (app) => expect(app.permission).toEqual(TOOL_PERMISSIONS[app.toolName]));   // aiGuardrails.ts:945; a flat {resource, action} entry, never a per-action map
     it('isMcpAppAvailable is a strict AND', () => { /* 16-row truth table, only all-true → true */ });
@@ -319,7 +321,7 @@ export function mcpAppResourceContents(app: McpAppDefinition): { contents: [{ ur
     it.each(MCP_APPS)('$name html passes the static-safety scan', (app) => {
       expect(Buffer.byteLength(app.html)).toBeLessThanOrEqual(MCP_APP_MAX_HTML_BYTES);
       expect(app.html.startsWith('<!doctype html>')).toBe(true);
-      for (const banned of [/https?:/i, /["'(]\/\//, /\binnerHTML\b/, /\bouterHTML\b/, /insertAdjacentHTML/, /document\.write/, /\beval\s*\(/, /\bFunction\s*\(/, /<script[^>]*\ssrc=/i, /<link\b/i, /<iframe\b/i, /@import/i, /\bfetch\s*\(/, /XMLHttpRequest/, /WebSocket/]) expect(app.html).not.toMatch(banned);
+      for (const banned of [/https?:/i, /["'(]\/\//, /\binnerHTML\b/, /\bouterHTML\b/, /insertAdjacentHTML/, /document\.write/, /\beval\s*\(/, /\bFunction\s*\(/, /<script[^>]*\ssrc=/i, /<link\b/i, /<iframe\b/i, /@import/i, /\bfetch\s*\(/, /XMLHttpRequest/, /WebSocket/, /\bset(Timeout|Interval)\s*\(\s*["'`]/, /javascript:/i, /\bsrcdoc\b/i]) expect(app.html).not.toMatch(banned);
     });
     it('resource URIs are unique and versioned', () => MCP_APPS.forEach(a => expect(a.resourceUri).toMatch(/^ui:\/\/breeze\/[a-z-]+\/v\d+$/)));
     ```
@@ -328,11 +330,11 @@ export function mcpAppResourceContents(app: McpAppDefinition): { contents: [{ ur
   - **Header.** `Fleet reliability · <total> matching devices`, plus `showing <showing> (offset <offset>)` when `offset > 0`.
   - **Band bar.** A stacked bar for critical ≤ 50, poor 51–70, fair 71–85 and good ≥ 86, with counts. These are the bands `summarizeReliabilityDevices` uses (`reliabilityScoring.ts:1942-1945`).
   - **Degrading chip.**
-  - **Table.** Captioned "This page" (or "Worst first" at offset 0), with columns hostname, score, trend, uptime 30 d, crashes, hangs, service failures, hardware errors and `topIssueCount`. `provisional` rows are marked.
+  - **Table.** Captioned "This page" (or "Worst first" at offset 0), with columns from the real row keys (`aiToolsUserRisk.ts:44-52`, `reliabilityScoring.ts:187-212`): `hostname`, `reliabilityScore`, `trendDirection`, `uptime30d`, `crashCount30d`, `hangCount30d`, `serviceFailureCount30d`, `hardwareErrorCount30d`, `topIssueCount`; rows with `provisional: true` are marked. The header's total is the top-level `total` (the `summary` object has no `total`; its `averageScore` is shown beside the bands).
   - **Colours.** CSS variables, with a `prefers-color-scheme: dark` block.
 
-  The `MCP_RESOURCE_DOMAINS` row belongs to Task 4, so the contract's domain case goes green there.
-- [ ] **Step 4:** View tests PASS. The registry domain case stays red until Task 4 (say so in the commit message). Every other case PASSES.
+  Add the exact `MCP_RESOURCE_DOMAINS` row (`{ pattern: /^ui:\/\/breeze\/fleet-health\/v1$/, domain: 'devices' }`, `services/mcpDomains.ts:78`) in this task, so every commit is green.
+- [ ] **Step 4:** `cd apps/api && npx vitest run src/services/mcpApps src/services/mcpDomains.test.ts` → all PASS.
 - [ ] **Step 5:** Commit `feat(mcp): fleet-health MCP App view and app registry (B-W05 #6159)`.
 
 ### Task 4: `tools/list` `_meta.ui` and the gated `resources/read`
@@ -340,12 +342,12 @@ export function mcpAppResourceContents(app: McpAppDefinition): { contents: [{ ur
 **Files:** Modify `routes/mcpServer.ts`:
 - **`isToolListedForCaller`.** Extract the per-tool filter body of `handleToolsList` (`:1590-1625`) into `isToolListedForCaller(tool, ctx: McpListingContext): boolean` with no behaviour change. The existing listing suites are the guard.
 - **`handleToolsList`.** For the app's tool, call `isMcpAppAvailable({ flagOn: mcpAppsEnabled(), declared: ext.ui, listedForCaller: true, permissionGranted: !(await checkPermissionRequirement(auth, app.permission)) })` and, when it holds, merge `mcpAppToolMeta(app)` into the entry's `_meta`. Run the RBAC check only when the first two conditions hold, so flag-off and non-declaring callers pay nothing.
-- **`handleResourcesRead`.** Its first branch: when `findMcpAppByUri(uri)` matches, evaluate the same predicate, with `listedForCaller` from `isToolListedForCaller` on the app's tool. Any failure returns the **existing** unknown-URI error expression. Success sets `auditExtras.mcpApp` and returns `mcpAppResourceContents(app)` before any DB or site code. `MCP_RESOURCE_PERMISSIONS` gets **no** row.
+- **`handleResourcesRead`** (today `(id, params, auth, domainGrant)`, `:3142`) widens to `(id, params, auth, scopes, apiKey, ext)` — the inputs `isToolListedForCaller` needs; its call site (`:1274`) already has them. Its `McpListingContext` comes from the same `buildMcpListingContext(scopes, auth, apiKey)` that `handleToolsList` uses after the extraction above. Its first branch: when `findMcpAppByUri(uri)` matches, evaluate the same predicate, with `listedForCaller` from `isToolListedForCaller` on the app's tool. Any failure returns the **existing** unknown-URI error expression. Success sets `auditExtras.mcpApp` and returns `mcpAppResourceContents(app)` before any DB or site code. `MCP_RESOURCE_PERMISSIONS` gets **no** row.
 - **`handleToolsCall`.** Sets `auditExtras.mcpApp = app.key` when the called tool has an app.
 
-Also modify `services/mcpDomains.ts` with the exact row `{ pattern: /^ui:\/\/breeze\/fleet-health\/v1$/, domain: 'devices' }`. Tests: extend `routes/mcpServer.apps.test.ts`, `routes/mcpServer.resourceRbac.test.ts`, `services/mcpDomains.test.ts`.
+(The `MCP_RESOURCE_DOMAINS` row already landed in Task 3.) Tests: extend `routes/mcpServer.apps.test.ts`, `routes/mcpServer.resourceRbac.test.ts`, `services/mcpDomains.test.ts`.
 
-**Interfaces:** Consumes Tasks 1–3. The merge is `{ ...presentation._meta, ...mcpAppToolMeta(app) }`, which preserves `app.breeze/domain`. Produces `isToolListedForCaller` and `McpListingContext` (the inputs `handleToolsList` already computes: scopes, domain grant, MFA state, unattended flag, `requireExecuteAdmin`, intent eligibility).
+**Interfaces:** Consumes Tasks 1–3. The merge is `{ ...presentation._meta, ...mcpAppToolMeta(app) }`, which preserves `app.breeze/domain`; `McpToolPresentation._meta` (`services/mcpToolPresentation.ts:6`, typed `{ 'app.breeze/domain': string }`) widens to `{ 'app.breeze/domain': string; ui?: { resourceUri: string; visibility: ['model'] } }`. Produces `isToolListedForCaller` and `McpListingContext` (the inputs `handleToolsList` already computes: scopes, domain grant, MFA state, unattended flag, `requireExecuteAdmin`, intent eligibility).
 
 - [ ] **Step 1: Write the failing tests.**
   - `declaring client, flag on: get_fleet_health has _meta.ui {resourceUri, visibility:['model']} and keeps app.breeze/domain; no other entry changes` (deep-equal every other entry against the non-declaring list).

@@ -68,7 +68,7 @@ Verified on `origin/main` `afcb08c2d4` (2026-10-23), pre-B-W05. Re-grep every sy
 | `handleToolsCallContinuation`. Not terminal after the wait → `buildPendingApprovalResult(current)`. Terminal → inline `{content, structuredContent: status, isError?}` | `routes/mcpServer.ts:~2296-2416`, terminal render `:2399-2412` | Not terminal → `CreateTaskResult` when declared. The terminal renderer is extracted (Task 2) and shared |
 | `toMcpActionStatus`, `mapIntentStatus`, `isIntentOutcomeUncertain`, `buildPendingApprovalResult` | `services/mcpActionStatus.ts:71-154` | The only status mapping the task projection uses |
 | `loadOwnedMcpIntent(auth, actionId)`. `cancelOwnedMcpIntent(auth, actionId, appBaseUrl)` → `not_found \| cancelled \| not_cancellable` | `services/mcpIntentCreation.ts:202`, `:231` | `tasks/get` / `tasks/cancel` ownership + cancel |
-| `canOwnMcpIntents(apiKey)`. `handleActionStatusCall` / `handleCancelActionCall` (`ai:read`; cancel `ai:write` or `ai:execute`; `-32602 'Action not found' {reason:'not_found'}`) | `routes/mcpServer.ts:~1350`, `:2418`, `:2437` | The gate template for `tasks/*` |
+| `canOwnMcpIntents(auth, apiKey)` (`:1353`). `handleActionStatusCall` / `handleCancelActionCall` (`ai:read`; cancel `ai:write` or `ai:execute`; `-32602 'Action not found' {reason:'not_found'}`) | `routes/mcpServer.ts:~1350`, `:2418`, `:2437` | The gate template for `tasks/*` |
 | `decorateModernResult` keeps only `input_required` on `tools/call`, otherwise forces `resultType: 'complete'` | `services/mcpModernResult.ts:48-66` | Must also keep `'task'` |
 | SEP-2243 name-bearing methods (`tools/call`, `prompts/get`, `resources/read`) | `services/mcpModernEnvelope.ts:130-137` | Adds `tasks/get|update|cancel` → `params.taskId`, only when Tasks are effective |
 | `action_intents` times: `createdAt`, `decidedAt`, `executionStartedAt`, `executedAt`, `expiresAt` (24 h for `mcp_api`). No `updated_at`. Cancel (`intentService.ts:3332`) and the stale-executing reaper (`jobs/intentExpiryReaper.ts:319`) change only `status`/`error_code` | `db/schema/actionIntents.ts:376-422` | Why D-B50 adds `status_changed_at` |
@@ -78,7 +78,7 @@ Verified on `origin/main` `afcb08c2d4` (2026-10-23), pre-B-W05. Re-grep every sy
 | Per-call MCP knobs kept out of `config/env.ts` | `services/mcpIntentConfig.ts` | New readers |
 | *(B-W05)* `parseMcpClientExtensions`, `resolveClientExtensions`, `extensions` in `buildDiscoverResult` | `services/mcpClientExtensions.ts`, `mcpServer.ts`, `mcpModernResult.ts` | `tasks` added beside `ui` |
 
-**Migration:** one, slot `apps/api/migrations/2027-01-02-220000-action-intents-status-changed-at.sql` (Task 1). That is the first free hour after `main`'s newest (`2027-01-02-190300-ticket-sla-due-indexes.sql`) clear of the `2027-01-02-19xxxx`–`21xxxx` slots in flight. Re-check before committing.
+**Migration:** one, slot `apps/api/migrations/2027-01-03-110000-action-intents-status-changed-at.sql` (Task 1). `origin/main`'s newest on 2026-10-23 is `2027-01-03-100000-ai-credit-debits.sql` (#9491), which already sorts after the `2027-01-02-19xxxx`–`21xxxx` slots in flight. Re-check `git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail` before committing and move the slot past anything newer.
 
 ---
 
@@ -166,7 +166,7 @@ Numbering continues B-W05's D-B38…D-B46.
   - The migration (Task 1) does four things:
     - `ADD COLUMN IF NOT EXISTS status_changed_at timestamptz` (nullable, no default in the ADD, so existing rows stay NULL and nothing is backfilled or rewritten);
     - `ALTER COLUMN status_changed_at SET DEFAULT now()` (new rows);
-    - `CREATE OR REPLACE FUNCTION action_intents_stamp_status_changed_at()`: on `UPDATE`, `NEW.status_changed_at := CASE WHEN NEW.status IS DISTINCT FROM OLD.status THEN now() ELSE OLD.status_changed_at END`. So no application write can forge or clear it;
+    - `CREATE OR REPLACE FUNCTION action_intents_stamp_status_changed_at()`: on `UPDATE`, `NEW.status_changed_at := CASE WHEN NEW.status IS DISTINCT FROM OLD.status THEN clock_timestamp() ELSE OLD.status_changed_at END`. So no application write can forge or clear it. `clock_timestamp()`, not `now()`: `now()` is the transaction start, and a long release-worker transaction could otherwise stamp a time earlier than a transition a client already observed;
     - `DROP TRIGGER IF EXISTS … ; CREATE TRIGGER action_intents_stamp_status_changed_at BEFORE UPDATE ON action_intents FOR EACH ROW EXECUTE FUNCTION action_intents_stamp_status_changed_at()`.
   - There are no row writes, so the migration has no `breeze.scope` line. It is idempotent and has no inner transaction.
   - A trigger rather than an application sweep, because there are many status writers: `transitionIntent`, `cancelActionIntent`'s inlined compare-and-swap, the expiry and stale-executing reapers, the decide path, and the release worker. A sweep would miss the next one.
@@ -193,7 +193,7 @@ Numbering continues B-W05's D-B38…D-B46.
     1. The existing preflight (`ai:read`) runs first.
     2. Does this request declare the extension? If not → `-32021` `Tasks extension required`, `data: { requiredCapabilities: { extensions: { 'io.modelcontextprotocol/tasks': {} } } }`. No DB read.
     3. Is `params.taskId` a string of ≤ 64 characters? If not → the not-found body.
-    4. `canOwnMcpIntents(apiKey)`, else not-found.
+    4. `canOwnMcpIntents(auth, apiKey)`, else not-found.
     5. `tasks/cancel` only: `ai:write` or `ai:execute`, with the exact `cancel_action` scope error.
     6. `tasks/update` only: `inputResponses`, if present, must be a plain object, else `-32602 { reason: 'invalid_input_responses' }`. Its keys are then ignored, because no input request is ever outstanding (D-B49).
     7. `loadOwnedMcpIntent`; null → `-32602 'Task not found' { reason: 'not_found' }`. Unknown, foreign and malformed ids all get the same body (no oracle).
@@ -201,7 +201,7 @@ Numbering continues B-W05's D-B38…D-B46.
        - `tasks/get` → `toMcpTask(intent)`, flat, decorated with `resultType: 'complete'`.
        - `tasks/cancel` → `cancelOwnedMcpIntent`. `cancelled` and `not_cancellable` → `{}` (cooperative: an executing intent keeps running and later reports its real end). `not_found` → the not-found body.
        - `tasks/update` → `{}`.
-    - A DB or infrastructure error anywhere → `-32603 'Internal error'`, logged and sent to Sentry. It is never an empty ack.
+    - A DB or infrastructure error anywhere → the same `-32000` body `get_action_status` / `cancel_action` use today (re-grep the exact strings), logged and sent to Sentry. It is never an empty ack.
   - **Streamable HTTP header:** `classifyMcpRequest` treats `tasks/get|update|cancel` as name-bearing, with `Mcp-Name` mirroring `params.taskId`, **only** when `mcpTasksEffective()`. A mismatch → the existing `400 header_mismatch`. When Tasks are not effective the methods are not name-bearing, and today's `-32601` (HTTP 404, B-W03 D-B16) is unchanged.
   - **Tasks not effective** (flag off, or stateless off): `tasks/*` → today's `-32601`, no `CreateTaskResult`, nothing advertised. `get_action_status` keeps working.
 - **D-B52 — Polling with a request budget; no streaming.**
@@ -212,7 +212,7 @@ Numbering continues B-W05's D-B38…D-B46.
     - `pollIntervalMs = max(base, ceil(liveCount × 60 000 / floor(perMinuteLimit / 2)))`.
     - `base` is 30 000 while pending and 5 000 while running.
     - `liveCount` is the caller origin's live `mcp_api` intents, counted on B-W04's `action_intents_live_origin_idx`.
-    - `perMinuteLimit` is `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` (120).
+    - `perMinuteLimit` is `mcpMessageRateLimitPerMinute()` (`MCP_MESSAGE_RATE_LIMIT_PER_MINUTE`, 120). The limiter is enforced only in production (`mcpServer.ts:594`); the interval is budgeted identically everywhere, so lab numbers match production.
     - So polling uses at most half the credential's message budget. With 20 live tasks, each polls every 20 s.
   - `tasks/*` never charge the per-tool rate limit or the B-W04 creation quotas.
 - **D-B53 — Audit.**
@@ -261,7 +261,7 @@ The plan's default is in brackets and is what the tasks implement.
 - **A handle is a name.** Every `tasks/*` call runs the D-B51 gate order. Unknown and foreign ids get identical answers.
 - **Never weaker than `get_action_status` / `cancel_action`.** Same scopes, same domain, same principal exclusions.
 - **Byte-identity when off or undeclared.** When Tasks are not effective, in the legacy era, or on a request that does not declare the extension, every response equals B-W04 + B-W05 output, SEP-2243 header handling included.
-- **Migration.** Keep `2027-01-02-220000`. `scripts/check-migration-naming.sh` runs pre-commit; if it rejects, take the next free `HHMMSS` and say so in the PR. The migration writes no rows, so no `breeze.scope` line. Then run `pnpm db:check-drift`.
+- **Migration.** Keep `2027-01-03-110000` unless `main` has moved past it. `scripts/check-migration-naming.sh` runs pre-commit; if it rejects, take the next free `HHMMSS` and say so in the PR. The migration writes no rows, so no `breeze.scope` line. Then run `pnpm db:check-drift`.
 - **Public repo.** Test URLs `https://app.example.com`. No customer names.
 - **New services file trap.** Classify `services/mcpTasks.ts` in `parkedFanout.contract.test.ts` (Lint job).
 - **Commits.** Commit after every task. Trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Stage explicitly.
@@ -290,7 +290,7 @@ Run `tenant-export-policy`, `tenantCascade*` and `rls-coverage` on the wave stac
 
 | File | Responsibility |
 |---|---|
-| `apps/api/migrations/2027-01-02-220000-action-intents-status-changed-at.sql` (new) | Column, default, stamping trigger. |
+| `apps/api/migrations/2027-01-03-110000-action-intents-status-changed-at.sql` (new) | Column, default, stamping trigger. |
 | `apps/api/src/db/schema/actionIntents.ts` (modify) | `statusChangedAt`. |
 | `apps/api/src/services/tenantExportPolicyRegistry.ts` (modify) | `status_changed_at` → `included`. |
 | `apps/api/src/services/mcpTasks.ts` (new) | `MCP_TASKS_EXTENSION_ID`, `McpTask`, `toMcpTask`, `budgetedPollIntervalMs`, `MCP_TASK_FOLLOW_UP_TOOLS`, `buildCreateTaskResult`, `MCP_TASK_NOT_FOUND`, `buildTasksExtensionRequiredData`. Pure. |
@@ -301,7 +301,7 @@ Run `tenant-export-policy`, `tenantCascade*` and `rls-coverage` on the wave stac
 | `apps/api/src/services/mcpModernResult.ts` (modify) | Keep `resultType: 'task'`; advertise in `buildDiscoverResult`. |
 | `apps/api/src/services/mcpModernEnvelope.ts` (modify) | `tasks/*` name-bearing when effective. |
 | `apps/api/src/routes/mcpServer.ts` (modify) | Task branches in intent filing + continuation; `tasks/get|update|cancel`; audit details. |
-| `apps/api/src/config/validate.ts`, root `.env.example` (modify) | The four env vars. |
+| `apps/api/src/config/validate.ts`, root `.env.example`, `docker-compose.yml`, `deploy/docker-compose.prod.yml`, `apps/api/src/system/connections/internalEnvVars.ts` (modify) | The four env vars: validated (with the stateless-off warning), documented, passed into the container. |
 | `apps/docs/src/content/docs/features/mcp-server.mdx` (modify) | "Tasks (2026-07-28 clients)". |
 
 ---
@@ -319,7 +319,7 @@ Run `tenant-export-policy`, `tenantCascade*` and `rls-coverage` on the wave stac
   - `a newly created intent has status_changed_at set (column default)`. (That pre-migration rows stay NULL is a property of the `ADD COLUMN` without a default; it is reviewed in the SQL, not tested.)
 - [ ] **Step 2:** On the wave stack (`pnpm wt-stack up`, see Task 6 Step 3 for the env), run `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/actionIntentsStatusChangedAt.integration.test.ts`. Expect FAIL: the column does not exist.
 - [ ] **Step 3: Implement** the migration (D-B50 text), the Drizzle column and the export-policy entry.
-- [ ] **Step 4:** Migrate the stack. Then run the test above, `pnpm db:check-drift`, and `npx vitest run --config vitest.integration.config.ts src/services/tenant-export-policy` (substring; check the file count). All should PASS.
+- [ ] **Step 4:** Migrate the stack. Then run the test above, `pnpm db:check-drift`, and `npx vitest run --config vitest.integration.config.ts src/__tests__/integration/tenant-export-policy.integration.test.ts`. All should PASS.
 - [ ] **Step 5:** Commit `feat(action-intents): status_changed_at stamped on every status change (B-W06 #6160)`.
 
 ### Task 2: Pure layer — `mcpTasks.ts`, `buildTerminalActionResult`, knobs, decoration, envelope
@@ -327,11 +327,13 @@ Run `tenant-export-policy`, `tenantCascade*` and `rls-coverage` on the wave stac
 **Files:** Create `services/mcpTasks.ts` + `mcpTasks.test.ts`. Modify these, each with its test:
 - `services/mcpActionStatus.ts`;
 - `services/mcpClientExtensions.ts`: `tasks` is true iff `extensions['io.modelcontextprotocol/tasks']` is a plain object, `{}` included;
-- `services/mcpIntentConfig.ts`;
+- `services/mcpIntentConfig.ts` (its `mcpIntentConfig.test.ts` does not exist yet — create it);
 - `services/mcpModernResult.ts`;
 - `services/mcpModernEnvelope.ts`;
 - `services/mcpIntentCreation.ts`;
-- `config/validate.ts`, `.env.example`, `parkedFanout.contract.test.ts`.
+- `config/validate.ts` (validate the four vars; **warn at boot** when `MCP_TASKS_ENABLED` is on but `MCP_STATELESS_ENABLED` is off, a silent no-op otherwise), `.env.example`, `parkedFanout.contract.test.ts`;
+- **container passthrough** — without it none of the four vars reach a deployed stack or the lab: `docker-compose.yml` (beside `MCP_TIER3_INTENTS_ENABLED`, `:626`) and `deploy/docker-compose.prod.yml` (beside `:595`) get `MCP_TASKS_ENABLED`, `MCP_TASK_PENDING_POLL_INTERVAL_MS`, `MCP_TASK_POLL_INTERVAL_MS`, `MCP_TASK_TTL_GRACE_MS` as `${VAR:-}`; `apps/api/src/system/connections/internalEnvVars.ts` (`:319-322`) labels them (`'MCP rollout flag'` / `'rate limit knob'`). Guards: `src/config/envReadComposeCoverage.test.ts`, `src/system/connections/envInventory.test.ts`;
+- widening `McpClientExtensions` to `{ ui, tasks }` touches B-W05 code and tests deliberately, in this task: `NO_MCP_CLIENT_EXTENSIONS` gains `tasks: false`; `readLegacySessionExtensions` returns `{ ui, tasks: false }` (legacy never has Tasks); the legacy side-key payload stays `'{"ui":true}'` and is parsed for `ui` only; every B-W05 `toEqual({ ui: … })` assertion gains `tasks: false`.
 
 **Interfaces — Produces:**
 ```ts
@@ -394,7 +396,11 @@ export type McpClientExtensions = { readonly ui: boolean; readonly tasks: boolea
   // mcpClientExtensions.test.ts
   it.each([[{ extensions: { [MCP_TASKS_EXTENSION_ID]: {} } }, true], [{ extensions: { [MCP_TASKS_EXTENSION_ID]: true } }, false], [{}, false]])('tasks declared: %j → %s', ...);
   ```
-- [ ] **Step 2:** `cd apps/api && npx vitest run src/services/mcpTasks.test.ts src/services/mcpActionStatus.test.ts src/services/mcpClientExtensions.test.ts src/services/mcpIntentConfig.test.ts src/services/mcpModernResult.test.ts src/services/mcpModernEnvelope.test.ts src/services/mcpIntentCreation.test.ts` → FAIL.
+  ```ts
+  // config/validate.test.ts
+  it('warns at boot when MCP_TASKS_ENABLED is on without MCP_STATELESS_ENABLED', ...);
+  ```
+- [ ] **Step 2:** `cd apps/api && npx vitest run src/services/mcpTasks.test.ts src/services/mcpActionStatus.test.ts src/services/mcpClientExtensions.test.ts src/services/mcpIntentConfig.test.ts src/services/mcpModernResult.test.ts src/services/mcpModernEnvelope.test.ts src/services/mcpIntentCreation.test.ts src/config/validate.test.ts` → FAIL. (Step 4 adds `src/config/envReadComposeCoverage.test.ts src/system/connections/envInventory.test.ts`.)
 - [ ] **Step 3: Implement.** `classifyMcpRequest` gets the effectiveness as an input (the same way it gets `statelessEnabled`), so it stays pure.
 - [ ] **Step 4:** Same command → PASS.
 - [ ] **Step 5:** Commit `feat(mcp): task projection over action intents, Tasks knobs and header rule (B-W06 #6160)`.
@@ -422,6 +428,7 @@ export type McpClientExtensions = { readonly ui: boolean; readonly tasks: boolea
   - `not declared on this request, legacy era, MCP_TASKS_ENABLED off, or MCP_STATELESS_ENABLED off → today's results byte-identical` (`it.each`).
   - `terminal replay, ineligible call and unattended principal never return a task`.
   - `audit details carry taskResult: true only on task results`; `HTTP 200 for a task result`.
+  - `reload returns null → B-W04 pending_approval result, never an error` (mock `loadOwnedMcpIntent` → `null` after a successful filing).
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/routes/mcpServer.tasks.test.ts` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** Green, plus `src/routes/mcpServer.urlElicitation.test.ts src/routes/mcpServer.approvalGate.test.ts src/routes/mcpServer.actionStatus.test.ts src/routes/mcpServer.modern.test.ts` unchanged and green.
@@ -432,8 +439,8 @@ export type McpClientExtensions = { readonly ui: boolean; readonly tasks: boolea
 **Files:**
 - Modify `routes/mcpServer.ts`. In the `handleJsonRpc` switch, add three cases. They apply only in the modern era when `mcpTasksEffective()`; otherwise they fall through to the existing `default`.
 - Add `handleTasksGet`, `handleTasksUpdate` and `handleTasksCancel` beside `handleActionStatusCall` (`:2418`), each following the D-B51 gate order.
-- For the domain gate, the preflight treats `tasks/*` as `core`, like the B-W04 intrinsics. Re-grep how the preflight resolves a domain for method-level calls. If it consults one, add `mcpMethodDomain('tasks/get'|'tasks/update'|'tasks/cancel') = 'core'` in `services/mcpDomains.ts` and test it.
-- Audit: add `details.taskId`.
+- **Domain gate — decided, not conditional:** `tasks/*` behave exactly like `get_action_status`/`cancel_action`, whose domain is `core` (`mcpDomains.ts:66`), and `isDomainGranted` is always true for `core` (`:55`). So no domain grant can lock a credential out of reading or cancelling its own task, and no grant widens anything (ownership is the gate). `handleJsonRpc` has no method-level domain gate today (only the `ai:read` preflight, `:624`), so nothing is added to `mcpDomains.ts`; the test below pins the parity unconditionally.
+- Audit: add `details.taskId` **only when it matches the UUID regex** `loadOwnedMcpIntent` uses; any other value is omitted (it is caller-controlled text).
 - Extend `routes/mcpServer.tasks.test.ts`.
 
 **Interfaces:** Consumes Task 2, `loadOwnedMcpIntent`, `cancelOwnedMcpIntent`, `countLiveMcpIntentsForOrigin`.
@@ -447,13 +454,15 @@ export type McpClientExtensions = { readonly ui: boolean; readonly tasks: boolea
   - `tasks/cancel on pending → {}`, the intent is cancelled, and the next `tasks/get` → `cancelled`.
   - `cancel during execution acks and does not lie`: for an `executing` intent → `{}`, intent unchanged. Once it later completes, `tasks/get` reports `completed`.
   - `tasks/update acks {} and ignores well-formed inputResponses`, with no write (spies on `cancelActionIntent`/`transitionIntent`). A non-object `inputResponses` → `-32602 invalid_input_responses`.
-  - `a DB failure in tasks/get or tasks/cancel → -32603, never {}`.
+  - `a DB failure in tasks/get or tasks/cancel → the get_action_status -32000 body, never {}`.
   - `MCP_TIER3_INTENTS_ENABLED off: existing tasks remain readable and cancellable; no new task is created`.
   - `Tasks not effective or legacy era: tasks/* are -32601 exactly as today (modern HTTP 404)`.
   - `tasks/* never charge checkToolRateLimit or the intent creation limiter`.
   - `tasks/get pollIntervalMs reflects the caller's live count` (mocks `countLiveMcpIntentsForOrigin` → 20 → ≥ 20 000).
   - `get_action_status({actionId: taskId}) and tasks/get agree on status for every intent status`.
   - `an immediate tasks/get after a task result resolves`.
+  - `a key with mcp_domains=['devices'] can tasks/get and tasks/cancel its own task` (unconditional domain parity with `get_action_status`).
+  - `audit: mcp.tasks.get carries taskId only when it is a UUID` — a valid id → present; a 64-char junk string with newline/markup bytes → `details.taskId` absent.
 - [ ] **Step 2:** `cd apps/api && npx vitest run src/routes/mcpServer.tasks.test.ts` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4:** Green, plus `src/routes/mcpServer.domains.test.ts src/routes/mcpServer.test.ts src/__tests__/mcp-coverage.test.ts`.
@@ -482,6 +491,7 @@ export type McpClientExtensions = { readonly ui: boolean; readonly tasks: boolea
   - **Cancel while pending.** `tasks/cancel` → `cancelled`.
   - **Cancel in the web app.** The intent is cancelled via `cancelActionIntent` as the web app would. `tasks/get` → `cancelled`, with `lastUpdatedAt` advanced.
   - **Second credential.** Another API key of the same user calls `tasks/get` → not found.
+  - **Prove the high-blast-radius scenarios discriminate** (the code they exercise already exists from Tasks 1–4, so red is shown by mutation): temporarily (a) make `handleTasksGet` load the intent by id without `loadOwnedMcpIntent`'s origin match and watch **Second credential** go red; (b) make `toMcpTask` ignore `statusChangedAt` and watch **Cancel in the web app** go red. Restore both; record the two reds in the commit message.
 - [ ] **Step 2: Docs.** Add a "Tasks (2026-07-28 clients)" subsection. It covers:
   - which calls become tasks;
   - the D-B49 status table;
@@ -519,7 +529,7 @@ export type McpClientExtensions = { readonly ui: boolean; readonly tasks: boolea
 - [ ] The migration name was accepted, `pnpm db:check-drift` is clean, and the export-policy suite is green on the stack.
 - [ ] On every Tasks path, the only intent write is `cancelOwnedMcpIntent`. Task status comes only from `toMcpActionStatus`.
 - [ ] Not effective, legacy or undeclared: every response is byte-identical to B-W04 + B-W05, including SEP-2243 header handling.
-- [ ] `tasks/*`: undeclared → `-32021`. Unknown and foreign → identical `-32602`. Infrastructure errors → `-32603`.
+- [ ] `tasks/*`: undeclared → `-32021`. Unknown and foreign → identical `-32602`. Infrastructure errors → the `get_action_status` `-32000` body, never `{}`.
 - [ ] `decorateModernResult` keeps `resultType: 'task'` and never touches the task's `ttlMs`.
 - [ ] Green: conformance, parity, `mcp-coverage`, `mcpServer.urlElicitation`, `mcpServer.actionStatus` and `parkedFanout.contract`. Green on the stack: the round trip, `status_changed_at`, cascade and `rls-coverage`.
 - [ ] Lab recorded; stack torn down.
