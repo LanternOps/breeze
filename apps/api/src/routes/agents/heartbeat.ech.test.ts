@@ -425,11 +425,17 @@ import { __resetHotPathCachesForTests } from '../../services/hotPathCacheRegistr
 
 beforeEach(() => { __resetHotPathCachesForTests(); });
 
+// The beat's own-row read is `.limit(1).for('no key update')` (#8318 §6.4,
+// selectOwnDeviceRowForUpdate); every other read awaits `.limit()` directly.
+function lockableResolved(value: unknown) {
+  return Object.assign(Promise.resolve(value), { for: vi.fn(() => Promise.resolve(value)) });
+}
+
 function selectChainResolving(value: unknown) {
   return {
     from: vi.fn(() => ({
       where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue(value),
+        limit: vi.fn(() => lockableResolved(value)),
         orderBy: vi.fn(() => ({
           limit: vi.fn().mockResolvedValue(value),
         })),

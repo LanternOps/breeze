@@ -19,7 +19,7 @@ import {
   onedriveDeviceState,
   bareMetalRecoveries,
 } from '../../db/schema';
-import { ownDeviceRowChangedHands, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
+import { ownDeviceRowChangedHands, selectOwnDeviceRowForUpdate, updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState, TCCPermissions } from '@breeze/shared';
 import { ERROR_CODES } from '@breeze/shared';
@@ -781,21 +781,38 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
 
   // #8318 §6.4: what the scoped block hands back when this beat turns out to
   // be a stale caller (see `ownDeviceRowChangedHands` below). The rejection is
-  // thrown after the block: the beat's transaction commits what ran before the
-  // device write, as today, and agent auth's own error rendering answers it.
+  // thrown after the block, and agent auth's own error rendering answers it.
   const STALE_CALLER = { staleCaller: true } as const;
 
   const scoped = await withDbAccessContext(
     dbContext,
     async (): Promise<Response | typeof STALE_CALLER | { deviceOrgId: string; deviceSiteId: string; deviceOwnershipEpoch: number; deviceId: string; mainResponse: Record<string, unknown>; remoteManagement: RemoteManagementDecision }> => {
 
-  const [device] = await db
-    .select()
-    .from(devices)
-    .where(eq(devices.id, agent.deviceId))
-    .limit(1);
+  // #8318 §6.4: the beat's FIRST statement reads its own row bound to the
+  // authenticated id + agent_id and locks it (FOR NO KEY UPDATE, see
+  // selectOwnDeviceRowForUpdate). Everything below works from this row — the
+  // bare-metal check-in, the readiness refresh, the role-flip audit, the
+  // watchdog silence event — so a beat that a reattach confirm or an in-place
+  // re-enroll overtook must stop HERE, before any of it, not at the device
+  // write near the end (which would commit those effects onto the new
+  // install's row). The lock makes the answer hold until commit: a confirm
+  // that starts after this read waits for the beat, and one that committed
+  // before it leaves 0 rows. It is also the beat's first row lock, so it
+  // keeps confirm's devices → other-tables order.
+  const device = await selectOwnDeviceRowForUpdate(db, agent);
 
   if (!device) {
+    // 0 rows: the row now carries another agent_id (stale caller, the
+    // stale-credential 401 below, nothing written) or it is gone (today's
+    // not-found answer). The re-read only runs on this path.
+    if (await ownDeviceRowChangedHands(db, agent)) {
+      console.warn('[heartbeat] stale beat: the device row changed hands after auth; refusing it', {
+        deviceId: agent.deviceId,
+        agentId,
+        role: agent.role,
+      });
+      return STALE_CALLER;
+    }
     return c.json({ error: 'Device not found' }, 404);
   }
 
@@ -862,7 +879,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // watchdog write has no status guard, so a 0-row write is that or a
     // vanished row). Same as the main beat below: no silence event, log row,
     // command claim or upgrade target for the retired install — the
-    // stale-credential 401.
+    // stale-credential 401. Defence in depth: the bound read at the top of
+    // the block already holds the row, so this should not fire.
     if (watchdogRowsUpdated === 0 && (await ownDeviceRowChangedHands(db, agent))) {
       console.warn('[heartbeat] stale watchdog beat: the device row changed hands after auth; refusing it', {
         deviceId: agent.deviceId,
@@ -1603,7 +1621,9 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // belongs to a stale caller: no metrics, IP history, child syncs or audit on
   // the new install's row, and no configuration, upgrade or rotation
   // instructions for the retired one. It gets the stale-credential 401 agent
-  // auth gives a token that no longer matches.
+  // auth gives a token that no longer matches. Defence in depth: the bound
+  // read at the top of the block already refused a stale beat and holds the
+  // row until commit, so only the terminal-status half is expected here.
   if (updatedRows.length === 0 && (await ownDeviceRowChangedHands(db, agent))) {
     console.warn('[heartbeat] stale beat: the device row changed hands after auth; refusing it', {
       deviceId: agent.deviceId,

@@ -3,7 +3,12 @@ import { eq, notInArray } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { devices } from '../db/schema';
-import { ownDeviceRowChangedHands, ownDeviceRowCondition, updateOwnDeviceRow } from './agentOwnDeviceRow';
+import {
+  ownDeviceRowChangedHands,
+  ownDeviceRowCondition,
+  selectOwnDeviceRowForUpdate,
+  updateOwnDeviceRow,
+} from './agentOwnDeviceRow';
 
 const DEVICE = '11111111-1111-4111-8111-111111111111';
 const AGENT = 'agent-abc';
@@ -91,3 +96,40 @@ describe('ownDeviceRowChangedHands (#8318 §6.4)', () => {
     expect(await ownDeviceRowChangedHands(reader([]).exec, { deviceId: DEVICE, agentId: AGENT })).toBe(false);
   });
 });
+
+describe('selectOwnDeviceRowForUpdate (#8318 §6.4, review of wave 1b-1)', () => {
+  function lockingReader(rows: unknown[]) {
+    const lock = vi.fn().mockResolvedValue(rows);
+    const limit = vi.fn(() => ({ for: lock }));
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    const select = vi.fn(() => ({ from }));
+    return { exec: { select } as never, select, from, where, limit, lock };
+  }
+
+  it('reads the row bound to devices.id AND devices.agent_id, one row, locked FOR NO KEY UPDATE', async () => {
+    const { exec, select, from, where, limit, lock } = lockingReader([{ id: DEVICE, agentId: AGENT }]);
+    const row = await selectOwnDeviceRowForUpdate(exec, { deviceId: DEVICE, agentId: AGENT });
+    expect(row).toEqual({ id: DEVICE, agentId: AGENT });
+    expect(select).toHaveBeenCalledWith(); // the whole row by default
+    expect(from).toHaveBeenCalledWith(devices);
+    const { sql: text, params } = new PgDialect().sqlToQuery((where.mock.calls[0] as unknown[])[0] as SQL);
+    expect(text).toBe('("devices"."id" = $1 and "devices"."agent_id" = $2)');
+    expect(params).toEqual([DEVICE, AGENT]);
+    expect(limit).toHaveBeenCalledWith(1);
+    // Conflicts with confirm's FOR UPDATE and the re-enroll's key-changing
+    // UPDATE, but not with the KEY SHARE an FK insert elsewhere takes.
+    expect(lock).toHaveBeenCalledWith('no key update');
+  });
+
+  it('passes a column map through', async () => {
+    const { exec, select } = lockingReader([{ id: DEVICE }]);
+    await selectOwnDeviceRowForUpdate(exec, { deviceId: DEVICE, agentId: AGENT }, { id: devices.id });
+    expect(select).toHaveBeenCalledWith({ id: devices.id });
+  });
+
+  it('answers undefined when the identity no longer matches (stale caller or vanished row)', async () => {
+    expect(await selectOwnDeviceRowForUpdate(lockingReader([]).exec, { deviceId: DEVICE, agentId: AGENT })).toBeUndefined();
+  });
+});
+

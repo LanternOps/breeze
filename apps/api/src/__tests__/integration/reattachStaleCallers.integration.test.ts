@@ -10,10 +10,14 @@
  * prove that:
  *
  *  - every own-row `devices` update matches 0 rows (main beat, watchdog beat,
- *    parked beat, one plain REST route), and a beat whose 0-row write found
- *    the row in another install's hands stops there with the stale-credential
- *    401 (no metrics or IP history written); a terminal-status 0-row beat is
- *    answered as before;
+ *    parked beat, one plain REST route), and a beat that finds the row in
+ *    another install's hands stops with the stale-credential 401 (no metrics
+ *    or IP history written); a terminal-status 0-row beat is answered as
+ *    before;
+ *  - the main beat's first read is bound to id + agent_id and locks the row:
+ *    a stale beat checks no bare-metal recovery in and writes no role-flip
+ *    audit, and an identity change that starts while a beat holds the row
+ *    waits for it;
  *  - a claim by a caller authenticated under incarnation n never takes a row
  *    stamped n+1, and a result from it is refused on both transports;
  *  - the server push addresses the agent_id read IN the claim, and its flip
@@ -32,13 +36,14 @@ import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
-import { auditLogs, deviceCommands, deviceIpHistory, deviceMetrics, devices, enrollmentKeys } from '../../db/schema';
+import { auditLogs, bareMetalRecoveries, deviceCommands, deviceIpHistory, deviceMetrics, devices, enrollmentKeys } from '../../db/schema';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import { createAgentWsHandlers, isAgentDeviceStillAuthorized } from '../../routes/agentWs';
 import { commandsRoutes } from '../../routes/agents/commands';
 import { enrollmentRoutes } from '../../routes/agents/enrollment';
 import { heartbeatRoutes } from '../../routes/agents/heartbeat';
 import { uninstallIntentRoutes } from '../../routes/agents/uninstallIntent';
+import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import { claimPendingCommandForDelivery, claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { DRAIN_CLAIM_TYPE_ALLOWLIST } from '../../services/drainClaimAllowlist';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
@@ -57,6 +62,21 @@ vi.mock('../../services/commandClaimEligibility', async (importOriginal) => {
       const out = await actual.partitionClaimable(...args);
       if (claimSeam.afterEligibility) await claimSeam.afterEligibility();
       return out;
+    },
+  };
+});
+
+// A seam inside the main beat's bare-metal check-in (after the recovery row is
+// written, before the beat's device write): the reliability baseline it places
+// in a savepoint. Off unless a test sets it.
+const beatSeam = vi.hoisted(() => ({ inCheckIn: null as null | (() => Promise<void>) }));
+vi.mock('../../services/reliabilityBaselines', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/reliabilityBaselines')>();
+  return {
+    ...actual,
+    createReliabilityBaseline: async (...args: Parameters<typeof actual.createReliabilityBaseline>) => {
+      if (beatSeam.inCheckIn) await beatSeam.inCheckIn();
+      return actual.createReliabilityBaseline(...args);
     },
   };
 });
@@ -332,6 +352,141 @@ describe('own-row devices updates by a stale credential match 0 rows (#8318 §6.
     expect(response.status).toBe(200);
     expect(await response.json()).toHaveProperty('commands');
     expect((await deviceRow(device.deviceId)).status).toBe('quarantined');
+  });
+
+  // Review of wave 1b-1 (must-fix 2): the main beat works FROM its row before
+  // its device write — the bare-metal check-in, the readiness refresh, the
+  // role-flip audit. Its first read is now bound to id + agent_id and locked,
+  // so a stale beat stops before any of them.
+  const RECOVERY_NONCE = 'c'.repeat(64);
+
+  async function seedRebootedRecovery(device: EnrolledDevice): Promise<string> {
+    const [row] = await getTestDb().insert(bareMetalRecoveries).values({
+      orgId: device.orgId, deviceId: device.deviceId, identity: 'original',
+      codeHash: 'd'.repeat(64), codeExpiresAt: new Date(Date.now() + 3_600_000),
+      nonceHash: hashRecoveryNonce(RECOVERY_NONCE), status: 'rebooted',
+    }).returning({ id: bareMetalRecoveries.id });
+    return row!.id;
+  }
+
+  async function recoveryRow(id: string) {
+    const [row] = await getTestDb().select().from(bareMetalRecoveries).where(eq(bareMetalRecoveries.id, id));
+    return row!;
+  }
+
+  async function auditCount(action: string, resourceId: string): Promise<number> {
+    const rows = await getTestDb().select({ id: auditLogs.id }).from(auditLogs)
+      .where(and(eq(auditLogs.action, action), eq(auditLogs.resourceId, resourceId)));
+    return rows.length;
+  }
+
+  /** Audit is fire-and-forget: wait until `action` has `n` rows for the resource. */
+  async function waitForAudit(action: string, resourceId: string, n: number): Promise<void> {
+    for (let attempt = 0; attempt < 500; attempt++) {
+      if ((await auditCount(action, resourceId)) >= n) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`${action} for ${resourceId} never reached ${n} row(s) (5s)`);
+  }
+
+  runDb('a stale main beat stops before its side effects: the recovery is not checked in and no role-flip audit is written', async () => {
+    const org = await seedOrg('main-beat-effects');
+    const device = await enrollDevice(org, 'main-beat-effects');
+    await getTestDb().update(devices).set({ deviceRole: 'workstation', deviceRoleSource: 'auto' })
+      .where(eq(devices.id, device.deviceId));
+    const recoveryId = await seedRebootedRecovery(device);
+    const staleCtx = agentContext(device);
+    const { agentId: newAgentId } = await reattachTarget(device.deviceId);
+    // A privileged role flip is audited (not applied) by the beat; the marker completes the check-in.
+    const body = { ...AGENT_BEAT, deviceRole: 'server', recoveryMarker: { recoveryId, nonce: RECOVERY_NONCE } };
+
+    const stale = await beat(staleCtx, device.agentId, body);
+    expect(stale.status).toBe(401);
+    expect(await stale.text()).toBe('Invalid agent credentials');
+    const afterStale = await recoveryRow(recoveryId);
+    expect(afterStale.status).toBe('rebooted');
+    expect(afterStale.checkedInAt).toBeNull();
+    expect((await deviceRow(device.deviceId)).recoveredAt).toBeNull();
+
+    // Control: the install that now owns the row checks the recovery in and
+    // gets the role-flip audit. Both audits are fire-and-forget, so once the
+    // fresh beat's rows are visible, the stale beat's (sent earlier) would be too.
+    const fresh = await beat(agentContext(device, { agentId: newAgentId, installIncarnation: 2 }), newAgentId, body);
+    expect(fresh.status).toBe(200);
+    expect(await fresh.json()).toMatchObject({ recoveryMarkerAck: true });
+    expect((await recoveryRow(recoveryId)).status).toBe('checked_in');
+    await waitForAudit('bmr.recovery.checked_in', recoveryId, 1);
+    await waitForAudit('device.role.self_reported_privileged_flip_blocked', device.deviceId, 1);
+    expect(await auditCount('bmr.recovery.checked_in', recoveryId)).toBe(1);
+    expect(await auditCount('device.role.self_reported_privileged_flip_blocked', device.deviceId)).toBe(1);
+  });
+
+  runDb('a confirm-like identity change that starts while a beat holds the row waits for it: the beat\'s effects are the old install\'s, the change applies after', async () => {
+    const org = await seedOrg('main-beat-lock');
+    const device = await enrollDevice(org, 'main-beat-lock');
+    const recoveryId = await seedRebootedRecovery(device);
+    const newAgentId = `reattached-${randomUUID()}`;
+    const holder = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
+    let releaseBeat!: () => void;
+    const beatMayContinue = new Promise<void>((resolve) => { releaseBeat = resolve; });
+    let beatPaused!: () => void;
+    const beatIsPaused = new Promise<void>((resolve) => { beatPaused = resolve; });
+    beatSeam.inCheckIn = async () => {
+      beatSeam.inCheckIn = null;
+      beatPaused();
+      await beatMayContinue;
+    };
+    let confirm: Promise<unknown> | undefined;
+    let beatResponse: Promise<Response> | undefined;
+    try {
+      const [pidRow] = await holder<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+      const holderPid = pidRow!.pid;
+
+      // The beat (old identity, still current) reads + locks its row, checks the recovery in, then pauses.
+      beatResponse = Promise.resolve(beat(agentContext(device), device.agentId, {
+        ...AGENT_BEAT, recoveryMarker: { recoveryId, nonce: RECOVERY_NONCE },
+      }));
+      await beatIsPaused;
+
+      // The "confirm": locks the device row FOR UPDATE, then hands it to a new install.
+      confirm = holder.begin(async (tx) => {
+        await tx`SELECT id FROM devices WHERE id = ${device.deviceId}::uuid FOR UPDATE`;
+        await tx`UPDATE devices SET agent_id = ${newAgentId}, install_incarnation = install_incarnation + 1,
+                   incarnation_started_at = now(), last_reattached_at = now()
+                 WHERE id = ${device.deviceId}::uuid`;
+      });
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const [blocked] = await getTestDb().execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE pid = ${holderPid} AND cardinality(pg_blocking_pids(pid)) > 0`);
+        if ((blocked?.n ?? 0) > 0) break;
+        if (Date.now() > deadline) throw new Error('the confirm never blocked on the beat\'s row lock');
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      // While it waits, the row is still the old install's.
+      expect((await deviceRow(device.deviceId)).agentId).toBe(device.agentId);
+
+      releaseBeat();
+      const response = await beatResponse;
+      await confirm;
+
+      // The beat ran as the old install, before the identity change...
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ recoveryMarkerAck: true });
+      expect((await recoveryRow(recoveryId)).status).toBe('checked_in');
+      // ...and the change applied after it, on top of the beat's write.
+      const row = await deviceRow(device.deviceId);
+      expect(row.agentId).toBe(newAgentId);
+      expect(row.installIncarnation).toBe(2);
+      expect(row.status).toBe('online');
+      expect(row.recoveredAt).not.toBeNull();
+    } finally {
+      beatSeam.inCheckIn = null;
+      releaseBeat();
+      await Promise.allSettled([confirm, beatResponse].filter(Boolean) as Promise<unknown>[]);
+      await holder.end({ timeout: 5 });
+    }
   });
 
   runDb('a plain REST route (uninstall-intent): the stamp is not written', async () => {

@@ -102,8 +102,63 @@ export async function updateOwnDeviceRow(
 }
 
 /**
- * After an own-row update matched 0 rows: does the row now belong to a
- * DIFFERENT install? True when the row, re-read once by `id`, carries an
+ * Read the caller's own `devices` row, bound to the authenticated identity
+ * (`id = agent.deviceId AND agent_id = agent.agentId`) and locked
+ * `FOR NO KEY UPDATE` until the caller's transaction ends (#8318 §6.4, the
+ * review of wave 1b-1).
+ *
+ * WHY. A request that works FROM its own row before it writes it (the main
+ * heartbeat: bare-metal check-in, role-flip audit, readiness refresh) must
+ * know it is still that row's install before its first side effect, not at
+ * the write that comes last. A bound read that finds nothing is the stale
+ * caller (or a vanished row; tell them apart with `ownDeviceRowChangedHands`).
+ *
+ * WHY THE LOCK. A reattach confirm locks the device row `FOR UPDATE` before
+ * it changes `agent_id`, and the F3 re-enroll's UPDATE changes the unique
+ * `agent_id`, which takes the same mode. Either this read holds the lock
+ * first (everything the caller does until commit belongs to the old install
+ * and happens before the identity change) or it reads after the change
+ * committed and matches 0 rows. Without the lock the identity could change
+ * between this read and the bound write.
+ *
+ * `FOR NO KEY UPDATE`, not `FOR UPDATE`: it is the weakest mode that still
+ * conflicts with both identity changes (and with any other UPDATE of the row,
+ * which the caller is about to make anyway), and it stays compatible with the
+ * `KEY SHARE` lock a foreign key takes, so other connections inserting rows
+ * that merely REFERENCE this device (metrics, logs, command results) are not
+ * blocked for the length of the caller's transaction (same reasoning as
+ * catalogService and automationRuntime).
+ *
+ * LOCK ORDER. Take it before any other row lock in the transaction: confirm
+ * and the install boundary go devices → other tables, so a caller that
+ * locked another table's row first could invert against them.
+ */
+export function selectOwnDeviceRowForUpdate(
+  exec: OwnDeviceRowReader,
+  agent: OwnDeviceRowIdentity,
+): Promise<typeof devices.$inferSelect | undefined>;
+export function selectOwnDeviceRowForUpdate<TColumns extends SelectedFields>(
+  exec: OwnDeviceRowReader,
+  agent: OwnDeviceRowIdentity,
+  columns: TColumns,
+): Promise<SelectResultFields<TColumns> | undefined>;
+export async function selectOwnDeviceRowForUpdate(
+  exec: OwnDeviceRowReader,
+  agent: OwnDeviceRowIdentity,
+  columns?: SelectedFields,
+): Promise<unknown> {
+  const query = columns ? exec.select(columns) : exec.select();
+  const [row] = await query
+    .from(devices)
+    .where(ownDeviceRowCondition(agent))
+    .limit(1)
+    .for('no key update');
+  return row;
+}
+
+/**
+ * After an own-row update (or `selectOwnDeviceRowForUpdate`) matched 0 rows:
+ * does the row now belong to a DIFFERENT install? True when the row, re-read once by `id`, carries an
  * `agent_id` other than the one the caller authenticated with — a reattach
  * confirm or an in-place F3 re-enroll committed after this request
  * authenticated (#8318 §6.4). False when the row still carries the caller's
