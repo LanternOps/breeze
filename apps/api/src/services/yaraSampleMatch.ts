@@ -24,8 +24,12 @@ import { parseRuleErrors, runYarac, tryAcquireYaracSlot, type YaraPrecheckError 
  * per-scan timeout inside `match` is 15 s.
  */
 export const YARA_MATCH_TIMEOUT_MS = 30_000;
-/** 500 matching rules × 10 strings × ≤ 512 escaped chars fits. */
-const YARA_MATCH_MAX_STDOUT_BYTES = 4 * 1024 * 1024;
+/**
+ * Realistic output is far smaller (500 matching rules × 10 strings × ≤ 512
+ * chars ≈ 2.6 MB); a tag-heavy worst case above this is `stdout_too_large`
+ * (unavailable), never a truncated "fewer matches".
+ */
+const YARA_MATCH_MAX_STDOUT_BYTES = 8 * 1024 * 1024;
 const MAX_TAGS = 32;
 const MAX_MATCHED_STRINGS = 10;
 /** The agent caps matched data at 128 bytes before `\xNN` escaping (≤ 512 chars). */
@@ -96,28 +100,32 @@ function str(v: unknown, max: number): string | null {
   return typeof v === 'string' ? v.slice(0, max) : null;
 }
 
+/**
+ * Any malformed entry fails the WHOLE result (null → unavailable): skipping
+ * it would report "fewer matches", or "no matches", for checker output that
+ * is actually broken (version skew, truncation).
+ */
 function parseMatches(raw: unknown): YaraSampleMatch[] | null {
   if (!Array.isArray(raw)) return null;
   const out: YaraSampleMatch[] = [];
   for (const m of raw) {
-    if (typeof m !== 'object' || m === null) continue;
+    if (typeof m !== 'object' || m === null) return null;
     const r = m as Record<string, unknown>;
     const ruleSetId = str(r.ruleSetId, MAX_IDENT_CHARS);
     const ruleId = str(r.ruleId, MAX_IDENT_CHARS);
     const ruleName = str(r.ruleName, MAX_IDENT_CHARS);
     const severity = str(r.severity, 32);
-    if (ruleSetId === null || ruleId === null || ruleName === null || severity === null) continue;
-    const tags = Array.isArray(r.tags)
-      ? r.tags.filter((t): t is string => typeof t === 'string').slice(0, MAX_TAGS).map((t) => t.slice(0, MAX_IDENT_CHARS))
-      : [];
+    if (ruleSetId === null || ruleId === null || ruleName === null || severity === null) return null;
+    if (!Array.isArray(r.tags) || !r.tags.every((t) => typeof t === 'string')) return null;
+    const tags = (r.tags as string[]).slice(0, MAX_TAGS).map((t) => t.slice(0, MAX_IDENT_CHARS));
+    if (!Array.isArray(r.matchedStrings)) return null;
     const matchedStrings: YaraSampleMatch['matchedStrings'] = [];
-    if (Array.isArray(r.matchedStrings)) {
-      for (const s of r.matchedStrings) {
-        if (matchedStrings.length >= MAX_MATCHED_STRINGS) break;
-        if (typeof s !== 'object' || s === null) continue;
-        const { id, offset, data } = s as Record<string, unknown>;
-        if (typeof id !== 'string' || typeof data !== 'string') continue;
-        if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) continue;
+    for (const s of r.matchedStrings) {
+      if (typeof s !== 'object' || s === null) return null;
+      const { id, offset, data } = s as Record<string, unknown>;
+      if (typeof id !== 'string' || typeof data !== 'string') return null;
+      if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return null;
+      if (matchedStrings.length < MAX_MATCHED_STRINGS) {
         matchedStrings.push({ id: id.slice(0, MAX_IDENT_CHARS), offset, data: data.slice(0, MAX_MATCHED_DATA_CHARS) });
       }
     }

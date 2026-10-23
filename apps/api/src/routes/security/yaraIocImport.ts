@@ -122,7 +122,7 @@ yaraIocImportRoutes.post(
         return { kind: 'ok', rows };
       });
     } catch (err) {
-      if (isPgUniqueViolation(err)) {
+      if (isPgUniqueViolation(err, 'yara_rules_set_name_uniq')) {
         return c.json({
           error: 'A rule with a generated name was created concurrently; refresh the set and try again',
           code: 'IOC_RULE_NAME_TAKEN',

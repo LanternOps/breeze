@@ -636,6 +636,23 @@ describe('GET /threats/:id/details (#6263 W04-5)', () => {
     expect((await res.json()).error).toBe('Access to this site denied');
   });
 
+  it('200 for a site-restricted caller on a device inside their sites', async () => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: [SITE_ALLOWED] });
+    mockThreat([threatRow({ name: 'EICAR' }, SITE_ALLOWED)]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ['an empty site allowlist', [], SITE_ALLOWED],
+    ['a device with no site', [SITE_ALLOWED], null],
+  ])('403 for a site-restricted caller with %s', async (_name, allowed, siteId) => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: allowed });
+    mockThreat([threatRow({ name: 'EICAR' }, siteId as string | null)]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(403);
+  });
+
   it('403 when the caller fails requireSecurityReadAccess (no devices:read), before any DB read', async () => {
     getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'scripts', action: 'read' }], allowedSiteIds: undefined });
     const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);

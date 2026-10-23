@@ -59,7 +59,7 @@ vi.mock('../../services/yaraSampleMatch', () => ({
   matchSample: m.matchMock,
 }));
 
-import { yaraTestRoutes } from './yaraTest';
+import { YARA_TEST_BODY_READ_TIMEOUT_MS, yaraTestRoutes } from './yaraTest';
 import { redactSecretsDeep } from '../../services/secretRedaction';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -205,6 +205,29 @@ describe('POST /yara/rule-sets/:id/test — admission and size', () => {
     expect(m.matchMock).not.toHaveBeenCalled();
   });
 
+  it('408 YARA_TEST_BODY_TIMEOUT and the slot is released when the body never finishes arriving', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      mockPhase1([{ ...setRow, ...ruleCols }]);
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(SAMPLE)); // ...and never close
+        },
+      });
+      const pending = app().request(`/security/yara/rule-sets/${SET}/test?filename=s.bin`, {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body, duplex: 'half',
+      } as RequestInit);
+      await vi.advanceTimersByTimeAsync(YARA_TEST_BODY_READ_TIMEOUT_MS + 1);
+      const res = await pending;
+      expect(res.status).toBe(408);
+      expect((await res.json()).code).toBe('YARA_TEST_BODY_TIMEOUT');
+      expect(reservation.release).toHaveBeenCalledTimes(1);
+      expect(m.matchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('accepts a body of exactly YARA_TEST_SAMPLE_MAX_BYTES', async () => {
     mockPhase1([{ ...setRow, ...ruleCols }]);
     const res = await post(app(), new Uint8Array(YARA_TEST_SAMPLE_MAX_BYTES));
@@ -303,6 +326,21 @@ describe('POST /yara/rule-sets/:id/test — what is tested and what comes back',
     expect(data.matches[0].matchedStrings[0].data).not.toContain('SuperSecret123');
   });
 
+  it('once handed to the runner, the route never releases the slot itself (the runner releases on child exit)', async () => {
+    mockPhase1([{ ...setRow, ...ruleCols }]);
+    const res = await post(app(), SAMPLE);
+    expect(res.status).toBe(200);
+    expect(m.matchMock.mock.calls[0]![0]).toBe(reservation);
+    expect(reservation.release).not.toHaveBeenCalled();
+  });
+
+  it('no audit (and so no filename) on a failed test', async () => {
+    mockPhase1([{ ...setRow, ...ruleCols }]);
+    m.matchMock.mockResolvedValueOnce({ ok: false, unavailable: 'timeout' });
+    await post(app(), SAMPLE, 'filename=secret-report.docm');
+    expect(m.auditMock).not.toHaveBeenCalled();
+  });
+
   it('422 YARA_TEST_COMPILE_FAILED with the compile errors', async () => {
     mockPhase1([{ ...setRow, ...ruleCols }]);
     const errors = [{ ruleId: RULE, name: 'evil_mark', code: 'compile', message: 'syntax error', line: 2 }];
@@ -340,6 +378,7 @@ describe('POST /yara/rule-sets/:id/test — what is tested and what comes back',
     const res = await post(app(), SAMPLE);
     expect(res.status).toBe(503);
     expect((await res.json()).code).toBe('YARA_TEST_UNAVAILABLE');
+    expect(reservation.release).toHaveBeenCalledTimes(1); // never leak the slot
   });
 
   it('audits ids, sizes and counts only — never the filename, bytes or matched strings', async () => {

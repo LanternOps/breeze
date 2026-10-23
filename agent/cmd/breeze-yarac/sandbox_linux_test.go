@@ -97,6 +97,8 @@ func TestSandboxDeniesFilesNetworkPtraceSignalsAndExec(t *testing.T) {
 		"prlimit parent":          "EPERM",
 		"perf_event_open":         "EPERM",
 		"unshare user namespace":  "EPERM",
+		"truncate":                "EPERM",
+		"chmod":                   "EPERM",
 	}
 	got := map[string]string{}
 	for _, pr := range p.Probes {
@@ -124,7 +126,7 @@ func TestSandboxProbesSucceedWithoutSandbox(t *testing.T) {
 	for _, pr := range p.Probes {
 		allowed[pr.Name] = !pr.Denied
 	}
-	for _, name := range []string{"read /proc/self/environ", "write /tmp", "dial udp", "signal parent"} {
+	for _, name := range []string{"read /etc/hostname", "read /proc/self/environ", "write /tmp", "dial udp", "signal parent", "prlimit parent", "exec /bin/sh"} {
 		if !allowed[name] {
 			t.Errorf("control probe %q should succeed unsandboxed: %+v stderr=%s", name, p, stderr)
 		}
@@ -221,6 +223,14 @@ func TestSeccompProgramLogic(t *testing.T) {
 		{"clone with SIGCHLD (fork) is allowed", arch, unix.SYS_CLONE, uint64(unix.SIGCHLD), seccompRetAllow},
 		{"clone into a new user namespace is denied", arch, unix.SYS_CLONE, uint64(unix.CLONE_NEWUSER | unix.SIGCHLD), seccompRetEPERM},
 		{"clone into a new net namespace is denied", arch, unix.SYS_CLONE, threadClone | unix.CLONE_NEWNET, seccompRetEPERM},
+		{"clone into a new mount namespace is denied", arch, unix.SYS_CLONE, uint64(unix.CLONE_NEWNS | unix.SIGCHLD), seccompRetEPERM},
+		{"clone into a new pid namespace is denied", arch, unix.SYS_CLONE, uint64(unix.CLONE_NEWPID | unix.SIGCHLD), seccompRetEPERM},
+		{"clone into a new ipc namespace is denied", arch, unix.SYS_CLONE, uint64(unix.CLONE_NEWIPC | unix.SIGCHLD), seccompRetEPERM},
+		{"clone into a new uts namespace is denied", arch, unix.SYS_CLONE, uint64(unix.CLONE_NEWUTS | unix.SIGCHLD), seccompRetEPERM},
+		{"clone into a new cgroup namespace is denied", arch, unix.SYS_CLONE, uint64(unix.CLONE_NEWCGROUP | unix.SIGCHLD), seccompRetEPERM},
+		{"truncate is denied", arch, unix.SYS_TRUNCATE, 0, seccompRetEPERM},
+		{"fchmodat is denied", arch, unix.SYS_FCHMODAT, 0, seccompRetEPERM},
+		{"setxattr is denied", arch, unix.SYS_SETXATTR, 0, seccompRetEPERM},
 		{"clone3 is ENOSYS (libc falls back to clone)", arch, unix.SYS_CLONE3, 0, seccompRetENOSYS},
 		{"a foreign ABI is denied wholesale", arch ^ 1, unix.SYS_READ, 0, seccompRetEPERM},
 	}
@@ -238,7 +248,7 @@ func TestSeccompProgramLogic(t *testing.T) {
 			t.Errorf("%s: got %#x, want %#x", tc.name, got, tc.want)
 		}
 	}
-	for _, nr := range deniedSyscalls {
+	for _, nr := range append(append([]uint32{}, deniedSyscalls...), legacyDeniedSyscalls[runtime.GOARCH]...) {
 		if got := evalSeccomp(t, prog, arch, nr, 0); got != seccompRetEPERM {
 			t.Errorf("denied syscall %d: got %#x", nr, got)
 		}

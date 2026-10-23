@@ -350,9 +350,9 @@ function ruleHeader(name: string, kind: YaraIocKind, label: string, count: numbe
 
 /**
  * Hash rules bind the digest once per rule (`with digest = hash.<algo>(…)`):
- * without it every literal re-enters the hash module per scanned file, which
- * the W04 benchmark measured at ~1.3 µs per literal per file (the digest
- * itself is cached per scan either way).
+ * without it every literal re-enters the hash module per scanned file
+ * (agent/internal/yarascan/hash_bench_test.go, the `-naive` variant; the
+ * digest itself is cached per scan either way).
  */
 function bodyPrefix(kind: YaraIocKind): string {
   if (PATTERN_KINDS.has(kind)) return '  strings:\n';
@@ -397,7 +397,7 @@ function renderRule(name: string, kind: YaraIocKind, label: string, values: read
 }
 
 /**
- * One rule per kind, IOCs sorted by value and packed into rules of at most
+ * One or more rules per kind, IOCs sorted by value and packed into rules of at most
  * `YARA_IOC_RULE_SOURCE_BUDGET` bytes (`_2`, `_3`, … for later chunks), so the
  * output depends only on the set of IOCs, never on paste order.
  * Throws `YaraIocInputError` on an empty, over-cap, invalid or duplicated batch.

@@ -228,8 +228,8 @@ export function toYaraThreatRuleView(details: unknown, ruleSet: YaraThreatRuleVi
 }
 
 // Two segments, so it cannot collide with GET /threats/:deviceId. The threat
-// comes back in the list-item shape, so ThreatDetail no longer depends on the
-// selected threat being among the first page GET /threats returns.
+// comes back in the list-item shape, so ThreatDetail does not depend on the
+// selected threat being in the first page of GET /threats.
 threatsRoutes.get(
   '/threats/:id/details',
   requireScope('organization', 'partner', 'system'),

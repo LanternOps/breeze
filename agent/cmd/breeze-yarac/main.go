@@ -14,7 +14,8 @@
 //     the image proof);
 //   - version:  engine/policy/format identification for diagnostics.
 //
-// Exit codes: 0 ok, 1 rule/bundle errors (JSON on stdout), 2 usage or I/O,
+// Exit codes: 0 ok, 1 rule/bundle errors (JSON on stdout), 2 usage, I/O, or
+// engine/scan failure,
 // 3 sandbox unavailable (match / sandbox-check: nothing was scanned),
 // 4 sandbox-check: the sandbox applied but a probe was not denied.
 package main
@@ -50,7 +51,7 @@ const (
 	// maxSampleBytes mirrors the API's YARA_TEST_SAMPLE_MAX_BYTES (10 MiB).
 	maxSampleBytes = 10 << 20
 	// matchScanTimeout bounds the engine on one sample (the API kills the
-	// child at 20 s).
+	// child at 30 s, which also covers the ~10 s engine start-up).
 	matchScanTimeout = 15 * time.Second
 	// unsandboxedEnv skips the sandbox for `match`. The API sets it only when
 	// its NODE_ENV is development/test (macOS dev boxes have no Landlock).

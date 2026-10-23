@@ -171,6 +171,7 @@ describe('POST /yara/rule-sets/:id/ioc-import — gates', () => {
     const json = await res.json();
     expect(json.code).toBe('IOC_INVALID');
     expect(json.errors).toEqual([{ index: 0, code: 'bad_hash' }, { index: 2, code: 'duplicate' }]);
+    expect(JSON.stringify(json)).not.toContain('ok.example.com'); // indexes and codes only — never the IOC values
     expect(selectMock).toHaveBeenCalledTimes(1);
     expect(insertMock).not.toHaveBeenCalled();
   });
@@ -279,11 +280,26 @@ describe('POST /yara/rule-sets/:id/ioc-import — writes', () => {
     mockVisibleSet(orgSet);
     mockLockedPhase([]);
     insertMock.mockReturnValueOnce({
-      values: () => ({ returning: () => Promise.reject(Object.assign(new Error('dup'), { code: '23505' })) }),
+      values: () => ({
+        returning: () => Promise.reject(Object.assign(new Error('dup'), { code: '23505', constraint: 'yara_rules_set_name_uniq' })),
+      }),
     });
     const res = await post(app(), body);
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('IOC_RULE_NAME_TAKEN');
+    expect(publishMock).not.toHaveBeenCalled();
+  });
+
+  it('a unique violation on any OTHER constraint is not reported as a name collision', async () => {
+    mockVisibleSet(orgSet);
+    mockLockedPhase([]);
+    insertMock.mockReturnValueOnce({
+      values: () => ({
+        returning: () => Promise.reject(Object.assign(new Error('dup'), { code: '23505', constraint: 'some_other_uniq' })),
+      }),
+    });
+    const res = await post(app(), body);
+    expect(res.status).toBe(500);
     expect(publishMock).not.toHaveBeenCalled();
   });
 

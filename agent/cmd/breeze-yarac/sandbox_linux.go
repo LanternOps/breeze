@@ -294,9 +294,30 @@ var deniedSyscalls = []uint32{
 	// Kernel attack surface nothing in match needs.
 	unix.SYS_PERF_EVENT_OPEN, unix.SYS_BPF, unix.SYS_USERFAULTFD, unix.SYS_KEYCTL, unix.SYS_ADD_KEY,
 	unix.SYS_REQUEST_KEY, unix.SYS_UNSHARE, unix.SYS_SETNS,
-	// File metadata / events Landlock does not mediate.
+	// File changes Landlock does not mediate (mode, owner, times, xattrs —
+	// at every ABI — and truncate below ABI 3), and file events/handles.
+	unix.SYS_TRUNCATE, unix.SYS_FCHMOD, unix.SYS_FCHMODAT, unix.SYS_FCHMODAT2, unix.SYS_FCHOWN, unix.SYS_FCHOWNAT,
+	unix.SYS_UTIMENSAT, unix.SYS_SETXATTR, unix.SYS_LSETXATTR, unix.SYS_FSETXATTR,
+	unix.SYS_REMOVEXATTR, unix.SYS_LREMOVEXATTR, unix.SYS_FREMOVEXATTR,
 	unix.SYS_INOTIFY_INIT1, unix.SYS_INOTIFY_ADD_WATCH, unix.SYS_FANOTIFY_INIT,
 	unix.SYS_NAME_TO_HANDLE_AT, unix.SYS_OPEN_BY_HANDLE_AT,
+	// SysV IPC and POSIX message queues are outside Landlock too.
+	unix.SYS_SHMGET, unix.SYS_SHMAT, unix.SYS_SHMCTL, unix.SYS_MSGGET, unix.SYS_MSGSND, unix.SYS_MSGRCV,
+	unix.SYS_MSGCTL, unix.SYS_SEMGET, unix.SYS_SEMOP, unix.SYS_SEMCTL, unix.SYS_MQ_OPEN,
+}
+
+// legacyDeniedSyscalls: amd64-only path syscalls with the same reach as the
+// *at forms above (arm64 has only the generic table). Raw numbers, because
+// x/sys does not define them for arm64 and this file builds for both.
+var legacyDeniedSyscalls = map[string][]uint32{
+	"amd64": {
+		90,  // chmod
+		92,  // chown
+		94,  // lchown
+		132, // utime
+		235, // utimes
+		261, // futimesat
+	},
 }
 
 // cloneNamespaceFlags: CLONE_NEW* — a new namespace is never needed to scan
@@ -362,7 +383,7 @@ func seccompProgram(pid int) ([]unix.SockFilter, error) {
 		// x32 syscalls are nr | 0x40000000 and would slip past a denylist.
 		prog = append(prog, bpfInsn{code: unix.BPF_JMP | unix.BPF_JGE | unix.BPF_K, k: x32SyscallBit, jt: labelDeny})
 	}
-	for _, nr := range deniedSyscalls {
+	for _, nr := range append(append([]uint32{}, deniedSyscalls...), legacyDeniedSyscalls[runtime.GOARCH]...) {
 		prog = append(prog, jeq(nr, labelDeny, ""))
 	}
 	prog = append(prog,
@@ -435,7 +456,9 @@ func installSeccomp() error {
 
 // runProbes attempts what a compromised engine would try and reports each
 // outcome (`breeze-yarac sandbox-check`). Every probe is harmless when it
-// succeeds; control mode (unsandboxed) skips the ptrace attach.
+// succeeds, except the ones that change process state or touch the file
+// system (ptrace attach, unshare, truncate, chmod — the last two on a path
+// that does not exist), which control mode (unsandboxed) skips.
 func runProbes(control bool) []probeResult {
 	ppid := os.Getppid()
 	tmp := fmt.Sprintf("/tmp/breeze-yarac-sandbox-probe-%d", os.Getpid())
@@ -499,10 +522,20 @@ func runProbes(control bool) []probeResult {
 				return err
 			}},
 			{"unshare user namespace", func() error { return unix.Unshare(unix.CLONE_NEWUSER) }},
+			// On a path that does not exist: unsandboxed these are ENOENT, so
+			// EPERM can only come from the seccomp filter.
+			{"truncate", func() error { return unix.Truncate(tmp+".missing", 0) }},
+			{"chmod", func() error { return unix.Fchmodat(unix.AT_FDCWD, tmp+".missing", 0o777, 0) }},
 		}...)
 	}
 	out := make([]probeResult, 0, len(probes))
 	for _, p := range probes {
+		// As PID 1 (a container entrypoint) there is no parent: pid 0 would
+		// mean "this process" (prlimit) or "my process group" (kill), so the
+		// parent probes prove nothing and are left out.
+		if ppid == 0 && strings.HasSuffix(p.name, " parent") {
+			continue
+		}
 		err := p.fn()
 		r := probeResult{Name: p.name, Denied: err != nil, Errno: errnoName(err)}
 		if err != nil {

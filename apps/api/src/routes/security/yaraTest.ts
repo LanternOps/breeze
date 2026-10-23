@@ -17,9 +17,14 @@
  * then admission (one test per API instance, 429 at once when busy), and only
  * then is the body read.
  *
+ * The body read has its own deadline (YARA_TEST_BODY_READ_TIMEOUT_MS): the
+ * admission slot is held while it runs, so a dripped body must not keep every
+ * other test on this instance at 429.
+ *
  * Tenancy: any set the caller can SEE (own orgs, the partner's partner-wide
  * sets, the built-in pack) with devices:write. No partner-wide or site
- * ceiling gate: the route writes nothing and reaches no device.
+ * ceiling gate: the route changes no rule data and reaches no device (it
+ * writes only its audit row).
  *
  * Audit details: set id, sample sha256, size, match count — never the
  * filename, the bytes or matched strings.
@@ -47,6 +52,19 @@ import { ruleSetAccessCondition } from './yaraAccess';
 import { yaraRuleSetIdParamSchema, yaraTestQuerySchema } from './yaraSchemas';
 
 export const yaraTestRoutes = new Hono();
+
+/** How long the (already admitted) upload may take to arrive. */
+export const YARA_TEST_BODY_READ_TIMEOUT_MS = 15_000;
+
+class BodyReadTimeout extends Error {}
+
+function readBodyWithDeadline(raw: Request, ms: number): Promise<ArrayBuffer> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new BodyReadTimeout('body read timed out')), ms);
+  });
+  return Promise.race([raw.arrayBuffer(), deadline]).finally(() => clearTimeout(timer));
+}
 
 const SANDBOX_UNAVAILABLE_MESSAGE =
   'File tests are not available on this server: the scanning sandbox (Linux Landlock) is not supported here. Your rules and devices are not affected.';
@@ -143,7 +161,15 @@ yaraTestRoutes.post(
     let bundleJson: string;
     const testedVersion = Math.max(loaded.set.currentVersion, 1); // DecodeBundle rejects version 0
     try {
-      sample = Buffer.from(await c.req.arrayBuffer());
+      try {
+        sample = Buffer.from(await readBodyWithDeadline(c.req.raw, YARA_TEST_BODY_READ_TIMEOUT_MS));
+      } catch (err) {
+        if (!(err instanceof BodyReadTimeout)) throw err;
+        reservation.release();
+        // Stop reading what is left of the upload.
+        c.req.raw.body?.cancel().catch(() => {});
+        return c.json({ error: 'The upload took too long. Try again.', code: 'YARA_TEST_BODY_TIMEOUT' }, 408);
+      }
       if (sample.byteLength === 0) {
         reservation.release();
         return c.json({ error: 'The request body must be the file to test' }, 400);

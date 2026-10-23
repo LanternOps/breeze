@@ -138,12 +138,12 @@ describe('matchSample — framing and arguments', () => {
     expect(spawnMock.mock.calls[1]![1]).toEqual(['match', '--filename=a.bin']);
   });
 
-  it('parses matches and drops malformed entries', async () => {
+  it('parses matches and caps matched strings at 10', async () => {
+    const strings = Array.from({ length: 12 }, (_, i) => ({ id: `$s${i}`, offset: i, data: 'x' }));
     respond(0, JSON.stringify({
       ok: true, durationMs: 5, matches: [
         JSON.parse(OK).matches[0],
-        { ruleSetId: 'S', ruleId: 7, ruleName: 'bad' },
-        { ruleSetId: 'S', ruleId: 'r2', ruleName: 'r2', severity: 'low', tags: ['ok', 3], matchedStrings: [{ id: '$a', offset: 'x', data: 'y' }, { id: '$b', offset: 1, data: 'z' }] },
+        { ruleSetId: 'S', ruleId: 'r2', ruleName: 'r2', severity: 'low', tags: [], matchedStrings: strings },
       ],
     }));
     const res = await matchSample(reserve(), { bundleJson: BUNDLE, filename: 'x', sample: SAMPLE });
@@ -152,9 +152,21 @@ describe('matchSample — framing and arguments', () => {
       durationMs: 5,
       matches: [
         { ruleSetId: 'S', ruleId: 'r1', ruleName: 'ioc_x_string_0123456789abcdef', severity: 'high', tags: ['ioc', 'string'], matchedStrings: [{ id: '$i0', offset: 3, data: 'marker' }] },
-        { ruleSetId: 'S', ruleId: 'r2', ruleName: 'r2', severity: 'low', tags: ['ok'], matchedStrings: [{ id: '$b', offset: 1, data: 'z' }] },
+        { ruleSetId: 'S', ruleId: 'r2', ruleName: 'r2', severity: 'low', tags: [], matchedStrings: strings.slice(0, 10) },
       ],
     });
+  });
+
+  it.each([
+    ['a non-object entry', ['junk']],
+    ['a non-string ruleId', [{ ruleSetId: 'S', ruleId: 7, ruleName: 'bad', severity: 'high', tags: [], matchedStrings: [] }]],
+    ['a non-string tag', [{ ruleSetId: 'S', ruleId: 'r', ruleName: 'r', severity: 'high', tags: ['ok', 3], matchedStrings: [] }]],
+    ['missing matchedStrings', [{ ruleSetId: 'S', ruleId: 'r', ruleName: 'r', severity: 'high', tags: [] }]],
+    ['a bad matched-string offset', [{ ruleSetId: 'S', ruleId: 'r', ruleName: 'r', severity: 'high', tags: [], matchedStrings: [{ id: '$a', offset: 'x', data: 'y' }] }]],
+  ])('malformed output (%s) is unavailable, never "fewer matches"', async (_name, matches) => {
+    respond(0, JSON.stringify({ ok: true, durationMs: 5, matches: [JSON.parse(OK).matches[0], ...(matches as unknown[])] }));
+    const res = await matchSample(reserve(), { bundleJson: BUNDLE, filename: 'x', sample: SAMPLE });
+    expect(res).toMatchObject({ ok: false, unavailable: expect.stringContaining('bad_output') });
   });
 });
 
@@ -171,6 +183,13 @@ describe('matchSample — exit codes (D2: every sandbox failure is sandboxUnavai
     await expect(matchSample(reserve(), { bundleJson: BUNDLE, filename: 'x', sample: SAMPLE })).resolves.toEqual({
       ok: false, sandboxUnavailable: true, detail: 'sandbox unavailable: landlock abi: function not implemented',
     });
+  });
+
+  it('exit 3 is sandboxUnavailable even when stdout claims matches', async () => {
+    respond(3, OK);
+    const res = await matchSample(reserve(), { bundleJson: BUNDLE, filename: 'x', sample: SAMPLE });
+    expect(res).toMatchObject({ ok: false, sandboxUnavailable: true });
+    expect(res).not.toHaveProperty('matches');
   });
 
   it('exit 3 is sandboxUnavailable even with garbled stdout', async () => {
