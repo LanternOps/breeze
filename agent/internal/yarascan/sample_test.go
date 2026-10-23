@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/obfuscate"
 	"github.com/breeze-rmm/agent/internal/yarascan/yarac"
 )
 
@@ -111,8 +112,9 @@ func TestScanSampleEscapesMatchedBytes(t *testing.T) {
 
 // The IOC importer's hash rules bind the digest once (`with digest = …`);
 // prove that form MATCHES, not just compiles. The golden's md5/sha1/sha256
-// IOCs are the EICAR test file's digests; the bytes are assembled at run time
-// so no EICAR string sits in the repo.
+// IOCs are the digests of the standard 68-byte AV test file. Its bytes are
+// stored XOR-encoded (internal/obfuscate) and decoded at run time so no
+// plaintext AV test signature sits in agent source (#2797).
 func TestScanSampleIocGoldenHashRulesMatch(t *testing.T) {
 	raw, err := os.ReadFile("testdata/ioc-import.golden.json")
 	if err != nil {
@@ -123,8 +125,15 @@ func TestScanSampleIocGoldenHashRulesMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := compileEntry(t, b)
-	eicar := []byte(`X5O!P%@AP[4\PZX54(P^)7CC)7}$` + "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*")
-	got, err := ScanSample(e, "eicar.com", "", eicar, 15*time.Second)
+	avTestFile := obfuscate.DecodeBytes([]byte{
+		0x02, 0x6f, 0x15, 0x7b, 0x0a, 0x7f, 0x1a, 0x1b, 0x0a, 0x01, 0x6e, 0x06,
+		0x0a, 0x00, 0x02, 0x6f, 0x6e, 0x72, 0x0a, 0x04, 0x73, 0x6d, 0x19, 0x19,
+		0x73, 0x6d, 0x27, 0x7e, 0x1f, 0x13, 0x19, 0x1b, 0x08, 0x77, 0x09, 0x0e,
+		0x1b, 0x14, 0x1e, 0x1b, 0x08, 0x1e, 0x77, 0x1b, 0x14, 0x0e, 0x13, 0x0c,
+		0x13, 0x08, 0x0f, 0x09, 0x77, 0x0e, 0x1f, 0x09, 0x0e, 0x77, 0x1c, 0x13,
+		0x16, 0x1f, 0x7b, 0x7e, 0x12, 0x71, 0x12, 0x70,
+	})
+	got, err := ScanSample(e, "av-test.com", "", avTestFile, 15*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
