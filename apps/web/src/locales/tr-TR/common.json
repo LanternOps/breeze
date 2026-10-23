@@ -1400,6 +1400,12 @@
           "signingSecret": "Webhook imzalarını doğrulamak için bu sırrı kullanın."
         },
         "invalidJsonPreview": "Şablonda geçersiz JSON.",
+        "otherEvents": {
+          "allEvents": "Tüm olaylar (*)",
+          "allEventsHint": "Bu webhook tüm olaylara abone olduğundan aşağıdaki tekil olaylar kullanılmaz. Belirli olayları seçmek için \"Tüm olaylar\" öğesini kaldırın.",
+          "remove": "{{event}} öğesini kaldır",
+          "title": "Diğer abone olunan olaylar"
+        },
         "payload": {
           "previewEmpty": "JSON geçerli olduğunda önizleme görüntülenir.",
           "subtitle": "Hedefinize gönderilen JSON verisi şeklini tanımlayın.",
