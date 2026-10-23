@@ -340,7 +340,9 @@
     "retry": "Yeniden dene",
     "since": "{{time}} beri",
     "fix": "Düzelt",
-    "remedy": { "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok." },
+    "remedy": {
+      "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok."
+    },
     "truncated": "İlk {{count}} gösteriliyor",
     "recentlyResolved": "Yakın zamanda çözülenler ({{count}})",
     "resolution": {
@@ -728,7 +730,10 @@
     "allApplications": "Tüm uygulamalar",
     "searchAllApplicationsFirst2": " (Sahip olunan uygulamalar değil) bölümünde bu tenant’ta mevcut bir Breeze uygulaması arayın. ",
     "tenantIdGuidPlaceholder": "Tenant Kimliği (GUID), ör. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın."
+    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın.",
+    "savingRequiresMfa": " Kaydetmek için MFA doğrulaması gerekir.",
+    "clientSecretPlaceholder": "uygulama istemci sırrı",
+    "clientSecretStoredPlaceholder": "•••••••••• (saklandı, şifrelendi)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Cihaz sağlığı",
