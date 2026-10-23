@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { SCAN_STATUS_COLORS } from './constants';
 import CreateScanModal from './CreateScanModal';
+import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
 
@@ -26,14 +27,21 @@ export default function ScansTab() {
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [forbidden, setForbidden] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   const fetchRecentScans = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
 
       const res = await fetchWithAuth('/sensitive-data/scans');
+      if (res.status === 403) {
+        setScans([]);
+        setForbidden(true);
+        return;
+      }
       if (!res.ok) {
         throw new Error(
           t('sensitiveDataScansTab.errors.fetchScans', { defaultValue: 'Failed to fetch scans' }),
@@ -42,6 +50,7 @@ export default function ScansTab() {
       const json = await res.json();
       setScans(json.data ?? []);
     } catch (err) {
+      setScans([]);
       setError(
         err instanceof Error
           ? err.message
@@ -69,6 +78,8 @@ export default function ScansTab() {
     if (ms < 60000) return `${formatNumber(ms / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}s`;
     return `${Math.round(ms / 60000)}m`;
   };
+
+  if (forbidden) return <SensitiveDataAccessDenied />;
 
   return (
     <div className="space-y-4">

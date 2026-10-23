@@ -700,7 +700,13 @@
         "quality": "Kalite"
       },
       "failovers": "Yedeğe geçişler",
-      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar"
+      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar",
+      "titleBy": {
+        "model": "Modele göre yapay zeka kullanımı",
+        "organization": "Kuruluşa göre yapay zeka kullanımı",
+        "technician": "Teknisyene göre yapay zeka kullanımı",
+        "feature": "Özelliğe göre yapay zeka kullanımı"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "ör. Pazar 02:00-06:00, 02:00-04:00 veya 7/24",
     "maintenanceInvalid": "<first>Sun 02:00-04:00</first> veya <second>02:00-04:00</second> veya <always>24/7</always> gibi bir UTC penceresi kullanın. her zaman açık. Kuruluşların yapılandırmasına izin vermek için boş bırakın.",
     "maintenanceHelp": "Otomatik güncellemeler ve yeniden başlatmalar için zaman penceresi (UTC). Her zaman açık için <always>24/7</always> kullanın veya kuruluşların bunu ayrı ayrı yapılandırması için boş bırakın.",
-    "deviceGroup": "Varsayılan Cihaz Grubu",
-    "alertThreshold": "Varsayılan Uyarı Eşiği",
     "autoEnrollment": {
       "title": "Otomatik Kayıt",
       "enable": "Yeni cihazlar için otomatik kaydı etkinleştirin",
-      "requireApproval": "Yönetici onayı gerektir",
-      "sendWelcome": "Hoş geldiniz bildirimi gönder"
+      "requireApproval": "Yönetici onayı gerektir"
     },
     "enrollment": {
       "title": "Cihaz kaydı",
@@ -1419,7 +1422,10 @@
     "retrySites": "Tekrar dene",
     "createASite": "Bir site oluşturun",
     "maxUsage": "Maksimum Kullanım (isteğe bağlı)",
-    "defaultDeviceLimit": "50 (varsayılan)",
+    "defaultDeviceLimit": "{{count}} (kuruluş varsayılanı)",
+    "expiresAtHelp": "{{duration}} için boş bırakın (kuruluş varsayılanı).",
+    "usageFromDefault": "varsayılan",
+    "usageFromDefaultTitle": "Cihaz sınırı kuruluş varsayılanından geldi.",
     "maxUsageHelp": "Bu anahtarla kaydolabilecek maksimum temsilci sayısı.",
     "expiresAt": "Sona Erme Tarihi (isteğe bağlı)",
     "creating": "Oluşturuluyor...",
@@ -1810,27 +1816,13 @@
     "deviceGroup": {
       "title": "Varsayılan cihaz grubu",
       "description": "Yeni kaydedilen cihazlar bu gruba otomatik olarak eklenir.",
-      "options": {
-        "AllManagedDevices": "Tüm Yönetilen Cihazlar",
-        "CriticalInfrastructure": "Kritik Altyapı",
-        "RemoteStaff": "Uzaktan Personel",
-        "Contractors": "Yükleniciler"
-      }
-    },
-    "alertSeverity": {
-      "title": "Varsayılan uyarı önem derecesi",
-      "description": "Bu önem derecesinin altındaki uyarılar yalnızca özet akışına iletilir.",
-      "options": {
-        "critical": "Yalnızca kritik",
-        "high": "Yüksek ve kritik",
-        "medium": "Orta ve üzeri"
-      }
+      "none": "Yok",
+      "unavailable": "Seçilen grup (kullanılamıyor)"
     },
     "autoEnrollment": {
       "title": "Otomatik kayıt",
       "enable": "Otomatik kaydı etkinleştir",
-      "requireApproval": "Yönetici onayı gerektir",
-      "sendWelcome": "Hoş geldiniz mesajı gönder"
+      "requireApproval": "Yönetici onayı gerektir"
     },
     "agentUpdates": {
       "title": "Temsilci güncelleme politikası",
@@ -1881,7 +1873,7 @@
     "disabledDescription": "Bağlantı ayarlarını yapılandırmak için yukarıda günlük iletmeyi etkinleştirin.",
     "enable": {
       "title": "Günlük iletmeyi etkinleştir",
-      "description": "Etkinleştirildiğinde, olay günlükleri yinelenen bir programa göre günlük deponuza iletilir."
+      "description": "Etkinleştirildiğinde, olay günlükleri her cihaz bunları bildirdikçe günlük deponuza iletilir."
     },
     "connection": {
       "title": "Bağlantı",
@@ -1970,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Müşteri görünümü",
+      "subtitle": "Önizleme: {{who}} neyi görür",
+      "whoOrganization": "müşteriniz",
+      "pickerLabel": "Şu olarak görüntüle",
+      "pickerAll": "Tüm kuruluş",
+      "loading": "Önizleme yükleniyor…",
+      "loadFailed": "Müşteri görünümü yüklenemedi.",
+      "on": "Açık",
+      "off": "Kapalı",
+      "notAvailable": "Bu bölümün ayrıntılı önizlemesi henüz yok.",
+      "permissionWithheld": "Gösterilmiyor: bunu önizlemek için {{permissions}} yetkisi gerekir.",
+      "tilesWithheld": "Bazı kutucuklar gösterilmiyor: bunları önizlemek için {{permissions}} yetkisi gerekir.",
+      "noteNoUser": "Talep kapsamındaki veriler gizlendi. Bu kişinin ne gördüğünü görmek için bir portal kullanıcısı seçin.",
+      "readinessTitle": "Hazırlık kontrolleri",
+      "readinessNone": "Sorun bulunamadı.",
+      "fix": "Düzelt",
+      "readiness": {
+        "documents_empty": "Belgeler açık, ancak portalda Görünür olarak işaretlenmiş belge yok; müşteriniz boş bir kitaplık görür.",
+        "reports_empty": "Raporlar açık, ancak henüz rapor çalıştırması yok; müşteriniz boş bir liste görür.",
+        "service_one_time_visible": "Hizmet açık ve tek seferlik öğeler müşteriniz için hâlâ görünür.",
+        "backups_no_data": "Yedeklemeler açık, ancak gösterilecek yedekleme verisi henüz yok.",
+        "dashboard_security_no_data": "Pano açık, ancak güvenlik puanının henüz verisi yok; bu kutucuk müşteriniz için boş görünür.",
+        "branding_unset": "Portal markası hiç ayarlanmadı (logo, renkler, karşılama mesajı veya destek iletişimi)."
+      }
+    },
     "loading": "Portal ayarları yükleniyor…",
     "save": "Portal ayarlarını kaydet",
     "toasts": {
@@ -2461,7 +2479,11 @@
     "sourceDefault": "Varsayılan",
     "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
     "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
-    "thresholdsOff": "Kapalı"
+    "thresholdsOff": "Kapalı",
+    "todaysCost": "Bugünkü maliyet",
+    "monthlyCost": "Aylık maliyet",
+    "messagesToday": "Bugünkü mesajlar",
+    "tokensThisMonth": "Bu ayki belirteçler"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4728,6 +4750,7 @@
     "actions": "Eylemler",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Hiçbir rol bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "cloneRole": "Klon Rolü: {{name}}",
+    "cloneDescription": "{{name}} kopyası",
     "clone": "Klon",
     "edit": "Düzenle",
     "delete": "Sil",

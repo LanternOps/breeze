@@ -18,8 +18,8 @@ Enrollment keys are short-lived, usage-limited tokens that authorize new agents 
 |---------|-------------|
 | **Enrollment key** | A 64-character hex string (32 random bytes) presented by the agent during the `POST /api/v1/agents/enroll` call. |
 | **SHA-256 + pepper** | The raw key is never stored. It is hashed with a server-side pepper before being written to the database. |
-| **TTL (`expiresAt`)** | Time-to-live. After this timestamp the key is rejected. Default: 30 days from creation (see `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`). |
-| **Max usage (`maxUsage`)** | Maximum number of successful enrollments allowed. Default: 1. Range: 1 -- 100,000. |
+| **TTL (`expiresAt`)** | Time-to-live. After this timestamp the key is rejected. Default: the partner/organization default expiry if one is set in **Device enrollment** settings, otherwise 30 days from creation (see `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES`). |
+| **Max usage (`maxUsage`)** | Maximum number of successful enrollments allowed. Default: the partner/organization default device count if one is set in **Device enrollment** settings, otherwise 1. Range: 1 -- 100,000. |
 | **Usage count (`usageCount`)** | Incremented atomically on each successful enrollment. Once it reaches `maxUsage`, the key is exhausted. |
 | **Site pinning (`siteId`)** | When set, every agent that enrolls with this key is placed into the specified site. The enrollment endpoint requires a `siteId` to be present on the key. |
 | **Enrollment secret** | A separate, static secret (`AGENT_ENROLLMENT_SECRET` environment variable) that gates the enrollment endpoint in production. This is independent of the enrollment key itself. |
@@ -141,16 +141,16 @@ curl -X POST https://breeze.yourdomain.com/api/v1/enrollment-keys \
 | `orgId` | `uuid` | Depends | Inferred for org-scoped users | Target organization. Required for partner and system scopes. |
 | `siteId` | `uuid` | No | `null` | Pin enrolled agents to a specific site. The enrollment endpoint will reject keys without a `siteId`. |
 | `name` | `string` | Yes | -- | Human-readable label (1--255 characters). |
-| `maxUsage` | `integer` | No | `1` | Maximum enrollments allowed (1--100,000). |
+| `maxUsage` | `integer` | No | Partner/org default device count if set, else `1` | Maximum enrollments allowed (1--100,000). |
 | `expiresAt` | `datetime` | No | Now + TTL | ISO 8601 absolute expiration. Must be in the future; a past value is rejected with `400` (`Expiry must be in the future`). Mutually exclusive with `ttlMinutes`. |
 | `ttlMinutes` | `integer` | No | Now + TTL | Lifetime in minutes from creation (1 to 525600, i.e. up to 365 days). Mutually exclusive with `expiresAt`. |
 
-When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 43200 — 30 days). Supplying both is rejected so the resolved expiry is unambiguous.
+When neither `expiresAt` nor `ttlMinutes` is supplied, the key expires after the partner/organization default expiry if one is set in **Device enrollment** settings (capped at the partner maximum); otherwise after `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` (default 43200 — 30 days). The same applies to `maxUsage`: an omitted value uses the configured partner/organization default device count, otherwise 1. Supplying both is rejected so the resolved expiry is unambiguous.
 
 `POST /enrollment-keys` and `POST /enrollment-keys/:id/rotate` reject any field that isn't in the table above — there is no `PATCH` method on enrollment keys; use `rotate` to change `maxUsage`/`expiresAt` on an existing key. A typo like `maxUses` (instead of `maxUsage`) now returns `400 Bad Request` with a precise field-name error rather than silently dropping the value — useful when scripting key creation against earlier API examples that used different field names.
 
 <Aside>
-  The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable. If unset, keys expire 30 days after creation.
+  The default TTL is configurable via the `ENROLLMENT_KEY_DEFAULT_TTL_MINUTES` environment variable (30 days if unset). A partner/organization default expiry set in **Device enrollment** settings takes precedence for keys created with `POST /enrollment-keys`.
 
   Every path now shares that fallback, including keys minted through the partner-provisioning API and installer child keys. `CHILD_ENROLLMENT_KEY_TTL_MINUTES` remains available to give installer child keys a shorter life than the shared default; leave it unset and they inherit the same 30 days.
 </Aside>

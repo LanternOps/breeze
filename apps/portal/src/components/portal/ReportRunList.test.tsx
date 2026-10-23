@@ -386,6 +386,9 @@ describe('ReportRunList', () => {
     { type: 'technician_time_billability', name: 'Technician time & billability' },
     { type: 'ar_aging', name: 'AR aging' },
     { type: 'ai_usage_by_client', name: 'AI usage by client' },
+    { type: 'mrr_renewals', name: 'MRR & renewals' },
+    { type: 'quote_win_rate', name: 'Quote win rate' },
+    { type: 'client_profitability', name: 'Client profitability' },
   ] as const;
   const leakedRun = (type: string, name: string) =>
     ({ ...run, id: `run-${type}`, name, type }) as unknown as PortalRunDto;

@@ -425,6 +425,8 @@
     "osFilterLabel": "Sistema operativo"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "No se pudo actualizar la recomendación.",
+    "affectsOrgs": "Afecta a {{count}} organizaciones",
     "adminAccounts": "Cuentas de administrador",
     "allCategories": "Todas las categorias",
     "allPriorities": "Todas las prioridades",
@@ -433,15 +435,15 @@
     "completed": "Terminado",
     "critical": "Crítico",
     "criticalHigh": "Crítico + Alto",
-    "devices": "Dispositivos:",
+    "devices": "Dispositivos: {{value}}",
     "dismiss": "Descartar",
     "dismissed": "Descartado",
-    "effort": "Esfuerzo:",
+    "effort": "Esfuerzo: {{value}}",
     "encryption": "Cifrado",
     "firewall": "Cortafuegos",
     "hideSteps": "Ocultar pasos",
     "high": "Alto",
-    "impact": "Impacto:",
+    "impact": "Impacto: {{value}}",
     "invalidResponseFromServer": "Respuesta no válida del servidor",
     "low": "Bajo",
     "markComplete": "Marcar completo",
@@ -460,10 +462,13 @@
     "vulnMgmt": "Vuln. gestión",
     "priorityFilterLabel": "Prioridad",
     "categoryFilterLabel": "Categoría",
-    "statusFilterLabel": "Estado de la recomendación"
+    "statusFilterLabel": "Estado de la recomendación",
+    "remediationSteps_one": "{{count}} paso de corrección",
+    "remediationSteps_other": "{{count}} pasos de corrección"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Se generará y custodiará una nueva contraseña de recuperación de BitLocker; la antigua se retira una vez colocada la nueva.",
+    "accessRevealed": "reveló la clave",
     "bitlocker": "BitLocker",
     "cancel": "Cancelar",
     "collectNow": "Recopilar ahora",
@@ -489,6 +494,7 @@
     "rotate": "Rotar",
     "rotateKey": "Rotar clave",
     "rotateRecoveryKey": "Rotar clave de recuperación",
+    "rotateVolume": "Volumen",
     "thisAccessHasBeenRecordedInThe": "Este acceso ha quedado registrado en el registro de auditoría."
   },
   "securityS1ThreatList": {
@@ -611,7 +617,10 @@
     "weakAdmins": "Administradores débiles",
     "accessDeniedMessage": "No tienes permiso para ver los datos de seguridad de esta organización.",
     "someSecurityDataPermissionDenied": "Algunos datos de seguridad no son visibles para ti. Consulta a un administrador si necesitas acceso.",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "bitlockerPartial": "BitLocker parcial",
+    "filevaultPartial": "FileVault parcial",
+    "refreshTooltip": "Vuelve a cargar la última instantánea de seguridad. Las puntuaciones se recalculan según un calendario, no al hacer clic."
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualizar",
@@ -684,10 +693,21 @@
     "noActiveScans": "No hay escaneos activos.",
     "noScanHistoryYet": "Aún no hay historial de escaneo.",
     "quickScan": "Escaneo rápido",
+    "scanClean": "Limpio",
     "scanHistory": "Historial de escaneo",
+    "scanHistoryPartiallyUnavailable": "No se pudo cargar el historial de escaneos de {{failed}} de {{total}} dispositivos: esta lista está incompleta.",
+    "scanHistoryUnavailable": "No se pudo cargar el historial de escaneos.",
+    "scanRequestFailed": "La solicitud de escaneo falló",
+    "scanThreatsFound_one": "{{count}} amenaza encontrada",
+    "scanThreatsFound_other": "{{count}} amenazas encontradas",
+    "scanTimedOut": "Tiempo agotado",
+    "scanTimedOutWithCount": "Tiempo agotado ({{count}} encontradas)",
     "scanType": "Tipo de escaneo",
     "scanTypeLabel": "escaneo {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "Los análisis se ponen en cola inmediatamente en los dispositivos seleccionados.",
+    "scansQueuedCount": "{{count}} escaneo en cola",
+    "scansQueuedCount_one": "{{count}} escaneo en cola",
+    "scansQueuedCount_other": "{{count}} escaneos en cola",
     "securityScanManager": "Administrador de escaneo de seguridad",
     "singleSelect": "selección única",
     "someScanRequestsFailed": "{{failed}} de las solicitudes de escaneo {{total}} fallaron",
@@ -698,16 +718,10 @@
     "startedColumn": "Iniciado",
     "status": "Estado: {{status}}",
     "status2": "Estado",
-    "type": "Tipo",
-    "scanHistoryPartiallyUnavailable": "No se pudo cargar el historial de escaneos de {{failed}} de {{total}} dispositivos: esta lista está incompleta.",
-    "scanHistoryUnavailable": "No se pudo cargar el historial de escaneos.",
-    "scanRequestFailed": "La solicitud de escaneo falló",
-    "scansQueuedCount": "{{count}} escaneo en cola",
-    "scansQueuedCount_one": "{{count}} escaneo en cola",
-    "scansQueuedCount_other": "{{count}} escaneos en cola"
+    "type": "Tipo"
   },
   "securityThreatDetail": {
-    "analystReview": "Revisión del analista",
+    "actionFailed": "La acción falló",
     "detected": "Detectado",
     "device": "Dispositivo",
     "deviceInfo": "Información del dispositivo",
@@ -718,11 +732,14 @@
     "noThreatSelected": "No se seleccionó ninguna amenaza.",
     "otherDetectionsOnThisDevice": "Otras detecciones en este dispositivo.",
     "provider": "Proveedor",
+    "providerUnknown": "Desconocido",
     "quarantine": "Cuarentena",
+    "quarantineQueued": "Cuarentena en cola. El dispositivo informará el resultado.",
     "relatedThreats": "Amenazas relacionadas",
     "remove": "Eliminar",
+    "removeQueued": "Eliminación en cola. El dispositivo informará el resultado.",
     "restore": "Restaurar",
-    "reviewRemediationCompletenessAndEndpointHealth": "Revise la integridad de la corrección y el estado del endpoint.",
+    "restoreQueued": "Restauración en cola. El dispositivo informará el resultado.",
     "severity": "Gravedad",
     "status": "Estado",
     "threatDetail": "Detalle de la amenaza",
@@ -733,11 +750,7 @@
     "threatRemoved": "Amenaza eliminada",
     "threatStatus": "Estado de amenaza",
     "threatWasMovedToQuarantineByPolicy": "La amenaza se movió a cuarentena por política o acción del operador.",
-    "timeline": "Línea de tiempo",
-    "actionFailed": "La acción falló",
-    "quarantineSucceeded": "Amenaza puesta en cuarentena",
-    "restoreSucceeded": "Amenaza restaurada",
-    "removeSucceeded": "Amenaza eliminada"
+    "timeline": "Línea de tiempo"
   },
   "securityThreatList": {
     "active": "Activo",
@@ -1332,17 +1345,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Ingrese al menos un dispositivo ID",
-      "createScan": "No se pudo crear el escaneo"
+      "createScan": "No se pudo crear el escaneo",
+      "devicesRequired": "Selecciona al menos un dispositivo",
+      "devicesNotReady": "La lista de dispositivos aún se está cargando o está incompleta. Espera a que termine e inténtalo de nuevo.",
+      "devicesLoadFailed": "No se pudo cargar la lista de dispositivos. Usa Reintentar en la lista de dispositivos e inténtalo de nuevo."
     },
     "title": "Crear escaneo",
     "form": {
       "policyOptional": "Política (opcional)",
       "noPolicy": "Sin política (configuración manual)",
-      "deviceIds": "ID de dispositivo",
-      "deviceIdsHelp": "Un UUID por línea o separados por comas.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Clases de detección"
+      "detectionClasses": "Clases de detección",
+      "devices": "Dispositivos",
+      "devicesHelp": "Elige los dispositivos que quieres escanear."
     },
     "actions": {
       "creating": "Creando...",
@@ -1407,6 +1421,10 @@
       "showingSearch": "Mostrando {{visible}} de {{pageCount}} en esta página ({{total}} en total)",
       "showingTotal": "Mostrando {{visible}} de los hallazgos de {{total}}",
       "pageOf": "Página {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Riesgo aceptado",
+      "markedFalsePositive": "Marcado como falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1463,18 @@
       "detectionClasses": "Clases de detección",
       "scheduleType": "Tipo de horario",
       "intervalMinutes": "Intervalo (minutos)",
-      "cronExpression": "Expresión cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expresión cron (UTC)",
+      "cronNextRun": "Próxima ejecución (tu hora local): {{time}}",
+      "cronExpressionZone": "Expresión cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Intervalo",
       "cron": "Cron",
-      "everyMinutes": "Cada {{minutes}}m"
+      "everyMinutes": "Cada {{minutes}}m",
+      "paused": "En pausa",
+      "pausedTitle": "La programación está desactivada para esta política, por lo que no se ejecutará automáticamente"
     },
     "table": {
       "name": "Nombre",
@@ -1777,7 +1799,7 @@
     "unknown": "desconocido"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Endurecimiento",
+    "title": "CIS Benchmarks",
     "description": "Líneas base de configuración, puntuación de cumplimiento y seguimiento de soluciones.",
     "messages": {
       "loadFailed": "No se pudieron cargar los datos de CIS"
@@ -1870,6 +1892,11 @@
     "badges": {
       "allOrgs": "Todas las orgs",
       "partnerWideTitle": "Línea base en todo el socio: se aplica a los dispositivos de cada organización"
+    },
+    "scanAll": {
+      "title": "¿Escanear todas las organizaciones?",
+      "message": "«{{name}}» es una línea base de todo el socio. Sin una organización seleccionada, escanea todas las {{orgCount}} organizaciones. Seleccione primero una organización para escanear solo sus dispositivos.",
+      "confirm": "Escanear todas"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +1999,17 @@
       "queueFailed": "La aprobación se registró, pero la corrección no se pudo poner en cola. Volvió a estar pendiente de aprobación; inténtalo de nuevo.",
       "mfaRequired": "Aprobar o rechazar una corrección requiere una sesión iniciada con autenticación multifactor. Cierra sesión y vuelve a iniciarla con MFA.",
       "ownRequest": "Tú solicitaste esta corrección, así que otro usuario debe aprobarla."
+    },
+    "detail": {
+      "toggle": "Alternar detalles",
+      "approvedBy": "Aprobado por",
+      "approvedAt": "Aprobado el",
+      "note": "Nota de aprobación",
+      "beforeState": "Antes",
+      "afterState": "Después",
+      "rollbackHint": "Sugerencia de reversión",
+      "noEvidence": "Aún no hay evidencia registrada para esta corrección.",
+      "unknownApprover": "Usuario desconocido"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2320,8 @@
       "awaitingEvaluation": "En espera de evaluación",
       "vendorOrgMismatch": "El proveedor informa otra organización"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "No tienes acceso a esta organización"
   }
 }

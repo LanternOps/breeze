@@ -13,7 +13,7 @@ import (
 // DetectionRule describes one clause in a software detection rule set.
 // A package is considered detected only when ALL clauses evaluate to true.
 type DetectionRule struct {
-	Type string `json:"type"` // "registry" | "file_exists" | "msi_product_code" | "file_version"
+	Type string `json:"type"` // "registry" | "file_exists" | "msi_product_code" | "file_version" | "service_running"
 
 	// registry fields
 	Hive      string `json:"hive,omitempty"`      // HKLM (default) | HKCU | HKCR | HKU | HKCC
@@ -27,6 +27,10 @@ type DetectionRule struct {
 	// file_version fields
 	Operator string `json:"operator,omitempty"` // ">=" | ">" | "==" | "<=" | "<"
 	Version  string `json:"version,omitempty"`  // dotted numeric target version, e.g. "1.2.3.4"
+
+	// service_running field (#6958): the Windows SCM service name (display
+	// name fallback), macOS launchd label, or Linux systemd unit.
+	ServiceName string `json:"serviceName"`
 }
 
 // DetectionOutcome is the result of evaluating a rule set on this device.
@@ -71,6 +75,7 @@ func parseDetectionRules(payload map[string]any) []DetectionRule {
 			ProductCode: detectionStringField(m, "productCode"),
 			Operator:    detectionStringField(m, "operator"),
 			Version:     detectionStringField(m, "version"),
+			ServiceName: detectionStringField(m, "serviceName"),
 		}
 		if rule.Type == "" {
 			continue
@@ -118,6 +123,7 @@ func evaluateFileExists(path string) (matched bool, supported bool) {
 //   - "registry"         → evaluateRegistryRule       (platform files)
 //   - "msi_product_code" → evaluateMsiProductCodeRule (platform files)
 //   - "file_version"     → evaluateFileVersionRule    (platform files, Windows-only)
+//   - "service_running"  → evaluateServiceRunningRule (software_detection_service*.go)
 //   - anything else      → unsupported
 func EvaluateDetectionRules(rules []DetectionRule) DetectionOutcome {
 	if len(rules) == 0 {
@@ -134,7 +140,7 @@ func EvaluateDetectionRules(rules []DetectionRule) DetectionOutcome {
 			return DetectionOutcome{
 				Detected:  false,
 				Supported: false,
-				Detail:    fmt.Sprintf("unsupported on this platform: %s", rule.Type),
+				Detail:    unsupportedClauseDetail(rule),
 			}
 		}
 		if !matched {
@@ -165,6 +171,8 @@ func evaluateClause(rule DetectionRule) (matched bool, supported bool) {
 		return evaluateMsiProductCodeRule(rule)
 	case "file_version":
 		return evaluateFileVersionRule(rule)
+	case "service_running":
+		return evaluateServiceRunningRule(rule)
 	default:
 		return false, false
 	}
@@ -189,6 +197,9 @@ func ruleNotSatisfiedDetail(rule DetectionRule) string {
 		return "rule not satisfied: msi_product_code " + rule.ProductCode
 	case "file_version":
 		return fmt.Sprintf("rule not satisfied: file_version %s %s %s", rule.Path, rule.Operator, rule.Version)
+	case "service_running":
+		// Only reached for a name validServiceName accepted (no controls).
+		return "rule not satisfied: service_running " + rule.ServiceName
 	default:
 		return "rule not satisfied: " + rule.Type
 	}

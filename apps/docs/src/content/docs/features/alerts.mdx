@@ -17,7 +17,12 @@ according to their configured scope. Correlations remain available when enabled.
 
 Condition-based alerts trace to a monitor. Feature engines such as compliance,
 warranty, security, patching and backup also raise alerts; their configuration
-remains with those features.
+remains with those features. From v0.124.0 a configuration policy's
+[Security Agents](/features/configuration-policies/#security-agents) setting
+raises a medium alert when a device falls into a coverage **Gap** (the required
+Huntress or SentinelOne agent is missing and the vendor does not report it) or
+when the vendor reports the device under a different organization; both resolve
+on their own once coverage is restored.
 
 ## Monitors
 

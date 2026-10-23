@@ -700,7 +700,13 @@
         "quality": "Qualität"
       },
       "failovers": "Failover",
-      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war",
+      "titleBy": {
+        "model": "KI-Nutzung nach Modell",
+        "organization": "KI-Nutzung nach Organisation",
+        "technician": "KI-Nutzung nach Techniker",
+        "feature": "KI-Nutzung nach Funktion"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "z.B. So 02:00-06:00, 02:00-04:00 oder 24/7",
     "maintenanceInvalid": "Verwenden Sie ein UTC-Fenster wie <first>Sonntag 02:00-04:00</first> oder <second>02:00-04:00</second> oder <always>24/7</always> für Always-On. Lassen Sie das Feld leer, damit Organisationen es konfigurieren können.",
     "maintenanceHelp": "Zeitfenster (UTC) für automatische Updates und Neustarts. Verwenden Sie <always>24/7</always> für Always-On oder lassen Sie das Feld leer, damit Organisationen es individuell konfigurieren können.",
-    "deviceGroup": "Standardgerätegruppe",
-    "alertThreshold": "Standardalarmschwelle",
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung für neue Geräte",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensbenachrichtigung senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "enrollment": {
       "title": "Geräteregistrierung",
@@ -1419,7 +1422,10 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "defaultDeviceLimit": "50 (Standard)",
+    "defaultDeviceLimit": "{{count}} (Organisationsstandard)",
+    "expiresAtHelp": "Leer lassen für {{duration}} (Organisationsstandard).",
+    "usageFromDefault": "Standard",
+    "usageFromDefaultTitle": "Das Geräte-Limit stammt aus dem Organisationsstandard.",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
@@ -1810,27 +1816,13 @@
     "deviceGroup": {
       "title": "Standardgerätegruppe",
       "description": "Neu registrierte Geräte werden dieser Gruppe automatisch hinzugefügt.",
-      "options": {
-        "AllManagedDevices": "Alle verwalteten Geräte",
-        "CriticalInfrastructure": "Kritische Infrastruktur",
-        "RemoteStaff": "Remote-Mitarbeiter",
-        "Contractors": "Auftragnehmer"
-      }
-    },
-    "alertSeverity": {
-      "title": "Standardschweregrad der Warnung",
-      "description": "Warnungen unterhalb dieses Schweregrads werden nur an den Zusammenfassungsfeed übermittelt.",
-      "options": {
-        "critical": "Nur kritisch",
-        "high": "Hoch und kritisch",
-        "medium": "Mittel und höher"
-      }
+      "none": "Keine",
+      "unavailable": "Ausgewählte Gruppe (nicht verfügbar)"
     },
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensnachricht senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "agentUpdates": {
       "title": "Agent-Update-Richtlinie",
@@ -1881,7 +1873,7 @@
     "disabledDescription": "Aktivieren Sie oben die Protokollweiterleitung, um die Verbindungseinstellungen zu konfigurieren.",
     "enable": {
       "title": "Aktivieren Sie die Protokollweiterleitung",
-      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle in einem wiederkehrenden Zeitplan an Ihren Protokollspeicher weitergeleitet."
+      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle an Ihren Protokollspeicher weitergeleitet, sobald jedes Gerät sie meldet."
     },
     "connection": {
       "title": "Verbindung",
@@ -1970,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Kundenansicht",
+      "subtitle": "Vorschau: Das sieht {{who}}",
+      "whoOrganization": "Ihr Kunde",
+      "pickerLabel": "Ansicht als",
+      "pickerAll": "Gesamte Organisation",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Kundenansicht konnte nicht geladen werden.",
+      "on": "An",
+      "off": "Aus",
+      "notAvailable": "Eine detaillierte Vorschau dieses Bereichs ist noch nicht verfügbar.",
+      "permissionWithheld": "Nicht angezeigt: Für diese Vorschau benötigen Sie {{permissions}}.",
+      "tilesWithheld": "Einige Kacheln werden nicht angezeigt: Für die Vorschau benötigen Sie {{permissions}}.",
+      "noteNoUser": "Ticketbezogene Daten sind ausgeblendet. Wählen Sie einen Portalbenutzer, um zu sehen, was diese Person sieht.",
+      "readinessTitle": "Bereitschaftsprüfungen",
+      "readinessNone": "Keine Probleme gefunden.",
+      "fix": "Beheben",
+      "readiness": {
+        "documents_empty": "Dokumente ist aktiviert, aber kein Dokument ist als „Im Portal sichtbar“ markiert – Ihr Kunde sieht eine leere Bibliothek.",
+        "reports_empty": "Berichte ist aktiviert, aber es gibt noch keine Berichtsläufe – Ihr Kunde sieht eine leere Liste.",
+        "service_one_time_visible": "Service ist aktiviert und einmalige Einträge sind für Ihren Kunden weiterhin sichtbar.",
+        "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
+        "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
+        "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      }
+    },
     "loading": "Portaleinstellungen werden geladen…",
     "save": "Portaleinstellungen speichern",
     "toasts": {
@@ -2461,7 +2479,11 @@
     "sourceDefault": "Standard",
     "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
     "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
-    "thresholdsOff": "Aus"
+    "thresholdsOff": "Aus",
+    "todaysCost": "Kosten heute",
+    "monthlyCost": "Kosten im Monat",
+    "messagesToday": "Nachrichten heute",
+    "tokensThisMonth": "Token in diesem Monat"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4728,6 +4750,7 @@
     "actions": "Aktionen",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Keine Rollen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "cloneRole": "Klonrolle: {{name}}",
+    "cloneDescription": "Kopie von {{name}}",
     "clone": "Klonen",
     "edit": "Bearbeiten",
     "delete": "Löschen",

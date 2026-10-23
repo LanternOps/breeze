@@ -215,6 +215,16 @@ export const tickets = pgTable('tickets', {
   slaBreachReason: text('sla_breach_reason'),
   slaPausedAt: timestamp('sla_paused_at'),
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
+  // #8973 W3 stored deadlines (2027-01-02-190100, backfilled by 190200).
+  // Written only by services/ticketSlaDeadlines.ts at the write points in spec
+  // §4.3; every SLA reader compares against these instead of re-deriving
+  // created_at + target + paused. Business minutes equal sla_paused_minutes
+  // until a calendar applies (W4). A NULL target leaves its due/warn NULL.
+  slaPausedBusinessMinutes: integer('sla_paused_business_minutes').notNull().default(0),
+  responseDueAt: timestamp('response_due_at'),
+  resolutionDueAt: timestamp('resolution_due_at'),
+  responseWarnAt: timestamp('response_warn_at'),
+  resolutionWarnAt: timestamp('resolution_warn_at'),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   // #7900 (2026-12-26-170000): constant default, so existing rows read as
@@ -262,7 +272,14 @@ export const tickets = pgTable('tickets', {
   // table. Partial index idx_tickets_migration_window (2026-12-25-120100) is
   // not modeled here, like the other partial indexes in this file.
   migrationWindowId: uuid('migration_window_id'),
-});
+}, (table) => ({
+  // #8973 W3 SLA breach sweep (2027-01-02-190300, CONCURRENTLY). Predicates
+  // must stay identical to the sweep in jobs/ticketSlaWorker.ts.
+  slaResponseDueIdx: index('tickets_sla_response_due_idx').on(table.responseDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL`),
+  slaResolutionDueIdx: index('tickets_sla_resolution_due_idx').on(table.resolutionDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND resolved_at IS NULL AND resolution_due_at IS NOT NULL`),
+  // Gate B12 heal pass (empty in steady state).
+  slaDeadlinesMissingIdx: index('tickets_sla_deadlines_missing_idx').on(table.createdAt).where(sql`(response_sla_minutes IS NOT NULL AND response_due_at IS NULL) OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL) OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0)`),
+}));
 
 export const ticketComments = pgTable('ticket_comments', {
   id: uuid('id').primaryKey().defaultRandom(),

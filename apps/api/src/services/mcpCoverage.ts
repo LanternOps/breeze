@@ -216,6 +216,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'accounting/index.ts': { gap: '#6784' },
   'actionIntents.ts': { exempt: 'identity' }, // reveal-secret + GET /:id/status are human-session-only UI; the MCP surface is get_action_status/cancel_action
   'admin/abuse.ts': { exempt: 'platform_admin' },
+  'admin/aiBilling.ts': { exempt: 'platform_admin' },
   'admin/aiModels.ts': { exempt: 'platform_admin' },
   'admin/aiKillState.ts': { exempt: 'platform_admin' },
   'admin/aiPromptVariants.ts': { exempt: 'platform_admin' },
@@ -274,6 +275,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'ai/dataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Org override of the AI data policy (device file read level, tool-output retention) -- the AI must not loosen the limits on what it may read or how long its outputs persist.' },
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },
   'ai/scriptProposals.ts': { tools: ['propose_script', 'get_script_proposal'] },
+  'aiAttach.ts': { exempt: 'ai_transport', note: 'Chat session transport (#9427): a read-only SSE attach to the caller\'s own running chat turn; a browser surface, not an agent action.' },
   'aiAgentSchedules.ts': { gap: '#6780' },
   'aiAgents.ts': { tools: ['list_ai_agents', 'list_ai_agent_runs', 'get_ai_agent_run', 'manage_ai_agents'] },
   'aiArtifacts.ts': { tools: ['read_artifact'] },

@@ -64,6 +64,16 @@ export const reportTypeEnum = pgEnum('report_type', [
   // AI chargeback W10 (#7608): per-client AI usage by org / model with
   // chargeable amounts; see services/businessReports/aiUsageByClientReport.ts.
   'ai_usage_by_client',
+  // Business reports phase 2 W1 (#9828): contract MRR & renewals as of run
+  // time; see services/businessReports/mrrRenewalsReport.ts.
+  'mrr_renewals',
+  // Business reports phase 2 W2 (#9828): quote win rate over revision
+  // lineages; see services/businessReports/quoteWinRateReport.ts.
+  'quote_win_rate',
+  // Business reports phase 2 W3 (#9828): per-client billed revenue, cost
+  // snapshot coverage, hours and an optional labor estimate; see
+  // services/businessReports/clientProfitabilityReport.ts.
+  'client_profitability',
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

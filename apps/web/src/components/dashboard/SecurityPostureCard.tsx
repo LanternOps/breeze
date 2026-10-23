@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 import { getErrorMessage } from '@/lib/errorMessages';
 import { useTranslation } from 'react-i18next';
 import Sparkline from './Sparkline';
+import { DashboardMetric } from './DashboardMetric';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { SecurityOverview } from './types';
 
@@ -51,9 +52,9 @@ export default function SecurityPostureCard({
   if (security.error && !security.data) {
     return (
       <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-security-card">
-        <a href="/security" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="security.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.security.title')}
-        </a>
+        </DashboardMetric>
         <p className="mt-3 text-xs text-muted-foreground">{getErrorMessage(security.error)}</p>
       </div>
     );
@@ -65,9 +66,9 @@ export default function SecurityPostureCard({
   if (data.totalDevices === 0) {
     return (
       <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-security-card">
-        <a href="/security" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="security.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.security.title')}
-        </a>
+        </DashboardMetric>
         <p className="mt-3 text-sm text-muted-foreground">{t('dashboard.security.empty')}</p>
       </div>
     );
@@ -78,9 +79,9 @@ export default function SecurityPostureCard({
   return (
     <div className="rounded-lg border bg-card p-5 shadow-xs" data-testid="dashboard-security-card">
       <div className="mb-3 flex items-center justify-between">
-        <a href="/security" className="text-sm font-semibold transition-colors hover:text-primary">
+        <DashboardMetric metric="security.title" className="text-sm font-semibold no-underline transition-colors hover:text-primary">
           {t('dashboard.security.title')}
-        </a>
+        </DashboardMetric>
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <span className={cn('h-2 w-2 rounded-full', band.dotClass)} aria-hidden="true" />
           {band.tone === 'good'
@@ -92,8 +93,10 @@ export default function SecurityPostureCard({
       </div>
 
       <div className="flex items-baseline gap-1.5">
-        <span className="text-3xl font-semibold tracking-tight">{Math.round(data.securityScore)}</span>
-        <span className="text-sm text-muted-foreground">/100</span>
+        <DashboardMetric metric="security.score">
+          <span className="text-3xl font-semibold tracking-tight">{Math.round(data.securityScore)}</span>
+          <span className="text-sm text-muted-foreground">/100</span>
+        </DashboardMetric>
       </div>
 
       {trendPoints.length >= 2 && (
@@ -105,10 +108,14 @@ export default function SecurityPostureCard({
 
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
         <span className={cn(data.atRiskDevices > 0 && 'text-warning-strong')}>
-          {t('dashboard.security.atRiskCount', { count: data.atRiskDevices })}
+          <DashboardMetric metric="security.atRisk">
+            {t('dashboard.security.atRiskCount', { count: data.atRiskDevices })}
+          </DashboardMetric>
         </span>
         <span className={cn(data.activeThreats > 0 && 'font-medium text-destructive')}>
-          {t('dashboard.security.threatsCount', { count: data.activeThreats })}
+          <DashboardMetric metric="security.threats">
+            {t('dashboard.security.threatsCount', { count: data.activeThreats })}
+          </DashboardMetric>
         </span>
       </div>
     </div>

@@ -291,14 +291,14 @@ describe('audit log routes', () => {
       deviceDisplayName: null,
       deviceSiteId: null,
     });
-    const listChain = () => ({
+    const listChain = (row: ReturnType<typeof secretRow> = secretRow()) => ({
       from: vi.fn().mockReturnValue({
         leftJoin: vi.fn().mockReturnValue({
           leftJoin: vi.fn().mockReturnValue({
             where: vi.fn().mockReturnValue({
               orderBy: vi.fn().mockReturnValue({
                 limit: vi.fn().mockReturnValue({
-                  offset: vi.fn().mockResolvedValue([secretRow()]),
+                  offset: vi.fn().mockResolvedValue([row]),
                 }),
               }),
             }),
@@ -317,8 +317,25 @@ describe('audit log routes', () => {
       const details = JSON.parse(body.entries[0].details);
       expect(details.toolInput.apiToken).toBe('[REDACTED]');
       expect(details.durationMs).toBe(12);
-      expect(body.entries[0].changes.after.toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+      // #9672: a non-update action carries no fabricated "after" snapshot.
+      expect(body.entries[0].changes).toEqual({ before: {}, after: {} });
+      expect(body.entries[0].user.department).toBeUndefined();
       expect(body.entries[0].sessionId).toBe('session-1');
+    });
+
+    it('GET / (viewer shape) keeps a redacted "after" snapshot only for update actions (#9672)', async () => {
+      const upd = secretRow();
+      upd.log.action = 'device.update';
+      vi.mocked(db.select).mockReturnValueOnce(listChain(upd) as never);
+      const text = await (await app.request('/audit-logs?skipCount=true')).text();
+      expect(text).not.toContain(planted);
+      expect(JSON.parse(text).entries[0].changes.after.toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+
+      const notUpd = secretRow();
+      notUpd.log.action = 'device.update_status';
+      vi.mocked(db.select).mockReturnValueOnce(listChain(notUpd) as never);
+      const body = await (await app.request('/audit-logs?skipCount=true')).json();
+      expect(body.entries[0].changes.after).toEqual({});
     });
 
     it('GET /logs (full shape) redacts details', async () => {

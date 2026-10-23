@@ -189,8 +189,25 @@ describe('service_running clause (#6958)', () => {
     ['newline', 'a\nb'],
     ['DEL char', 'a\u007fb'],
     ['257 chars', 'x'.repeat(257)],
+    // Same refusal set as the agent (agent/internal/remote/tools/
+    // software_detection_service.go validServiceName): C1 controls incl. NEL,
+    // and the Unicode line/paragraph separators some tooling treats as breaks.
+    ['C1 start U+0080', 'a\u0080b'],
+    ['NEL U+0085', 'a\u0085b'],
+    ['C1 end U+009F', 'a\u009fb'],
+    ['LINE SEPARATOR U+2028', 'a\u2028b'],
+    ['PARAGRAPH SEPARATOR U+2029', 'a\u2029b'],
+    ['leading C1', '\u0085ctrld'],
+    // The agent bounds the name in UTF-8 bytes, so 129 two-byte chars (258 B)
+    // must be refused here too rather than become an unevaluable clause.
+    ['over 256 UTF-8 bytes', '\u00e9'.repeat(129)],
   ])('rejects %s', (_label, value) => {
     expect(parse(value).success).toBe(false);
+  });
+
+  it('accepts non-ASCII names within 256 UTF-8 bytes', () => {
+    expect(parse('Dienst f\u00fcr \u00dcn\u00efcode').success).toBe(true);
+    expect(parse('\u00e9'.repeat(128)).success).toBe(true);
   });
 
   it('rejects a whitespace-only name (could never match a real service)', () => {

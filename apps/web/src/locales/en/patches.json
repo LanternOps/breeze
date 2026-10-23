@@ -335,6 +335,11 @@
       "showing": "Showing {{shown}} of {{total}}",
       "loadMore": "Load more",
       "lastChecked": "Last checked: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Package version {{version}}",
+      "id": "Catalog ID {{id}}",
+      "title": "Another catalog entry has the same title. Each is approved separately."
     }
   },
   "patchesPage": {
