@@ -293,6 +293,21 @@ describe('device labels (#9679)', () => {
     expect(row).not.toHaveTextContent(CANDIDATE_0_ID);
   });
 
+  it('keeps "unresolved" for a row with no resolved device even when a file label exists', () => {
+    const notFound: AnnotatedValueRow = { ...matched, index: 5, outcome: 'not-found', deviceId: null, method: null };
+    render(
+      <CustomFieldImportPreviewTable
+        rows={[notFound]}
+        selected={new Set()}
+        onSelectedChange={vi.fn()}
+        picks={new Map()}
+        onPick={vi.fn()}
+        rowLabels={new Map([[5, 'WKS-77']])}
+      />,
+    );
+    expect(screen.getByTestId('cf-import-row-5')).not.toHaveTextContent('WKS-77');
+  });
+
   it('shows a caller-supplied label for matched rows instead of the uuid', () => {
     render(
       <CustomFieldImportPreviewTable

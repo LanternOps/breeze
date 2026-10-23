@@ -52,6 +52,18 @@ describe('guessValueColumnRoles', () => {
     expect(fieldKeys['Owner of asset']).toBe('asset_owner');
     expect(roles['asset_owner2']).toBeUndefined();
   });
+  it('maps a field to at most one column and prefers a key match over a name match', () => {
+    const { roles, fieldKeys } = guessValueColumnRoles(['Backup Plan', 'backup_plan'], known);
+    // Both normalize to the same field; only one column may claim it, and the
+    // header that IS the key wins over the one that merely matches the name.
+    expect(roles['backup_plan']).toBe('customField');
+    expect(fieldKeys['backup_plan']).toBe('backup_plan');
+    expect(roles['Backup Plan']).toBeUndefined();
+  });
+  it('does not guess time/multiselect as date/dropdown', () => {
+    expect(guessFieldType('time')).toBe('text');
+    expect(guessFieldType('multiselect')).toBe('text');
+  });
   it('claims each identifier once', () => {
     const { roles } = guessValueColumnRoles(['hostname', 'Host Name'], known);
     expect(roles['hostname']).toBe('identifier:hostname');

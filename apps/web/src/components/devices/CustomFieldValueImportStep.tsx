@@ -247,6 +247,25 @@ export default function CustomFieldValueImportStep({ organizationId, source, onC
     });
   }
 
+  // The field list can land after the file did; fill in guesses for columns the
+  // operator hasn't touched (any explicit choice, including "ignore", is a key in `roles`).
+  useEffect(() => {
+    if (headers.length === 0 || knownFields.length === 0) return;
+    const guessed = guessValueColumnRoles(headers, knownFields);
+    const fresh = headers.filter((h) => guessed.roles[h] !== undefined);
+    if (fresh.length === 0) return;
+    setRoles((prev) => {
+      const next = { ...prev };
+      for (const h of fresh) if (next[h] === undefined) next[h] = guessed.roles[h]!;
+      return next;
+    });
+    setFieldKeys((prev) => {
+      const next = { ...prev };
+      for (const h of fresh) if (next[h] === undefined && guessed.fieldKeys[h]) next[h] = guessed.fieldKeys[h]!;
+      return next;
+    });
+  }, [headers, knownFields]);
+
   function setRole(header: string, role: ColumnRole) {
     setRoles((prev) => ({ ...prev, [header]: role }));
     // The mapping changed; whatever is on screen no longer reflects it until

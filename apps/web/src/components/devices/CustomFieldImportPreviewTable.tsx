@@ -229,6 +229,7 @@ export default function CustomFieldImportPreviewTable({
   /** Hostname-first label for the Device column; the raw id is the last resort. */
   function deviceLabel(row: AnnotatedValueRow, pickedId: string | undefined): string | null {
     const id = row.deviceId ?? pickedId ?? null;
+    if (!id) return null; // unresolved: never imply a device was matched
     const fromCandidate = candidateLabel(row.candidates.find((c) => c.deviceId === id));
     return fromCandidate ?? rowLabels?.get(row.index) ?? id;
   }

@@ -142,6 +142,28 @@ describe('CustomFieldValueImportStep', () => {
     expect(screen.getByTestId('cf-val-map-Other')).toHaveValue('ignore');
   });
 
+  it('pre-maps once the field list arrives after the file was loaded, without touching edited columns (#9679)', async () => {
+    let resolveFields: (v: Response) => void = () => {};
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      url.startsWith('/custom-fields') && !url.includes('/import')
+        ? new Promise<Response>((r) => { resolveFields = r; })
+        : jsonResponse({}, 500),
+    );
+    render(<CustomFieldValueImportStep organizationId="org-1" source="csv" />);
+    await uploadCsv('Hostname,backupPlan,Other\nWKS-01,daily,x\n');
+    expect(screen.getByTestId('cf-val-map-backupPlan')).toHaveValue('ignore');
+    fireEvent.change(screen.getByTestId('cf-val-map-Other'), { target: { value: 'customField' } });
+    resolveFields(
+      new Response(JSON.stringify([{ fieldKey: 'backup_plan', name: 'Backup Plan', type: 'text' }]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('cf-val-map-backupPlan')).toHaveValue('customField'));
+    expect(screen.getByTestId('cf-val-fieldkey-backupPlan')).toHaveValue('backup_plan');
+    expect(screen.getByTestId('cf-val-map-Other')).toHaveValue('customField');
+  });
+
   it('sends the preview POST with coerced values AND the selected source through fetchWithAuth', async () => {
     // The field-type lookup GET fires once, on mount — so the type it needs
     // to know about must be in place BEFORE render, not queued afterward.
