@@ -25,7 +25,7 @@ const alert: Alert = {
 
 beforeEach(() => h.granted.clear());
 
-const renderDrawer = () => render(<AlertDetails alert={alert} isOpen onClose={() => {}} />);
+const renderDrawer = () => render(<AlertDetails alert={alert} isOpen onClose={() => {}} serviceManagementMode="native" />);
 const btn = (re: RegExp) => screen.queryByRole('button', { name: re });
 
 describe('AlertDetails footer actions are permission-gated (#7215)', () => {
