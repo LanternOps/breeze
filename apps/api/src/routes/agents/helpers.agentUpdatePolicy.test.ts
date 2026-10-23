@@ -153,6 +153,7 @@ import {
   agentAcceptsServedEdition,
   __resetMalformedWindowWarnCache,
 } from './helpers';
+import { resolveAgentUpdateConfig } from '../../services/agentUpdateConfig';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { withSystemDbAccessContext } from '../../db';
 import { AGENT_ORG_SETTINGS_CACHE_TTL_MS, invalidateAgentOrgSettingsCaches } from '../../services/agentOrgSettingsCache';
@@ -665,5 +666,44 @@ describe('agentAcceptsServedEdition (#4072)', () => {
     it('withholds from a hosted-build agent — hosted builds hard-refuse self-host artifacts by design', () => {
       expect(agentAcceptsServedEdition({ reportedEdition: 'hosted', agentVersion: '0.107.1' })).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pure core (#9170): getOrgAgentUpdateConfig is a thin loader around
+// resolveAgentUpdateConfig (services/agentUpdateConfig.ts), which the partner
+// settings inheritance read model calls too. Each fixture is asserted on the
+// core, then fed as the mocked join row through the async wrapper.
+// ---------------------------------------------------------------------------
+describe('resolveAgentUpdateConfig (pure core, #9170)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetMalformedWindowWarnCache();
+  });
+
+  const fixtures: { name: string; partner: Record<string, unknown> | null; org: Record<string, unknown> | null; policy: string; window: string | null; agentPin: string | null }[] = [
+    { name: 'neither level configured', partner: null, org: null, policy: 'staged', window: null, agentPin: null },
+    { name: 'org only', partner: null, org: { agentUpdatePolicy: 'manual', maintenanceWindow: 'Sun 02:00-04:00', agentVersionPins: { agent: '0.90.0' } }, policy: 'manual', window: 'Sun 02:00-04:00', agentPin: '0.90.0' },
+    { name: 'partner locks the policy, org pin overrides the partner pin', partner: { agentUpdatePolicy: 'auto', agentVersionPins: { agent: '0.91.0' } }, org: { agentUpdatePolicy: 'manual', agentVersionPins: { agent: '0.90.0' } }, policy: 'auto', window: null, agentPin: '0.90.0' },
+    { name: 'a partner key present as null still locks', partner: { agentUpdatePolicy: null }, org: { agentUpdatePolicy: 'manual' }, policy: 'staged', window: null, agentPin: null },
+  ];
+
+  for (const f of fixtures) {
+    it(`${f.name}: core output`, () => {
+      const result = resolveAgentUpdateConfig(f.partner, f.org);
+      expect(result.settings).toEqual({ policy: f.policy, maintenanceWindow: f.window });
+      expect(result.pins.agent).toBe(f.agentPin);
+    });
+
+    it(`${f.name}: the async wrapper returns the core output`, async () => {
+      seed(f.org === null ? {} : { defaults: f.org }, f.partner === null ? null : { defaults: f.partner });
+      expect(await getOrgAgentUpdateConfig(ORG_ID)).toEqual(resolveAgentUpdateConfig(f.partner, f.org));
+    });
+  }
+
+  it('never throws on malformed stored shapes', () => {
+    for (const junk of [null, undefined, 'x', 5, []]) {
+      expect(resolveAgentUpdateConfig(junk, junk)).toEqual({ settings: { policy: 'staged', maintenanceWindow: null }, pins: { agent: null, watchdog: null } });
+    }
   });
 });

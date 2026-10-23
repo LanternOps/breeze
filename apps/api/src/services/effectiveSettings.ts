@@ -24,7 +24,7 @@ const SETTING_CATEGORIES = [
 
 type SettingCategory = (typeof SETTING_CATEGORIES)[number];
 
-interface EffectiveSettingsResult {
+export interface EffectiveSettingsResult {
   /** Merged settings — partner values win, org fills gaps */
   effective: Record<string, Record<string, unknown>>;
   /** Dot-path list of fields locked by the partner (e.g. "security.requireMfa") */
@@ -112,6 +112,88 @@ function mergeCategory(
   return effective;
 }
 
+/** The `ai_budgets` columns the merge reads; any subset (a missing row is `null`). */
+export type AiBudgetRow = { [K in (typeof AI_BUDGET_FIELDS)[number]]?: unknown };
+
+/**
+ * Pure core of the category merge in {@link getEffectiveOrgSettings}: for each
+ * category (security, notifications, eventLogs, defaults, branding) a partner
+ * key that is present wins and is listed in `locked`; the org value fills only
+ * the keys the partner has not set. Stored session timeouts above the ceiling
+ * are reported clamped. AI budgets are not part of this core (see
+ * {@link resolveEffectiveAiBudgetFromRows}).
+ */
+export function resolveEffectiveCategorySettings(
+  partnerSettingsRaw: unknown,
+  orgSettingsRaw: unknown,
+): EffectiveSettingsResult {
+  const partnerSettings = asRecord(partnerSettingsRaw);
+  const orgSettings = asRecord(orgSettingsRaw);
+
+  const effective: Record<string, Record<string, unknown>> = {};
+  const locked: string[] = [];
+
+  for (const category of SETTING_CATEGORIES) {
+    const partnerCat = asRecord(partnerSettings[category]);
+    const orgCat = asRecord(orgSettings[category]);
+
+    // Only include the category if either side has data
+    if (
+      Object.keys(partnerCat).length > 0 ||
+      Object.keys(orgCat).length > 0
+    ) {
+      effective[category] = mergeCategory(category, partnerCat, orgCat, locked);
+    }
+  }
+
+  // #6111 — a stored session timeout above the 720-minute ceiling (written
+  // before the cap existed) is reported clamped, partner-locked or not.
+  if (effective.security) {
+    effective.security = clampSessionTimeoutInSettings({ security: effective.security }).security;
+  }
+
+  return { effective, locked };
+}
+
+/**
+ * Pure core of {@link getEffectiveAiBudget}: platform defaults, then the org's
+ * `ai_budgets` row (non-null columns), then the partner's `settings.aiBudgets`,
+ * where a property that is present wins even when its value is `null` (an
+ * explicit "no cap"). Always returns a fresh threshold array.
+ */
+export function resolveEffectiveAiBudgetFromRows(
+  partnerAiBudgets: unknown,
+  orgRow: AiBudgetRow | null,
+): EffectiveAiBudget {
+  // #4388 review — `{ ...AI_BUDGET_DEFAULTS }` is a shallow copy: without the
+  // explicit override every org with no override would share one mutable
+  // array reference process-wide.
+  const result: EffectiveAiBudget = {
+    ...AI_BUDGET_DEFAULTS,
+    alertThresholdPercents: [...AI_BUDGET_DEFAULTS.alertThresholdPercents],
+  };
+
+  // Org table row overrides defaults
+  if (orgRow) {
+    for (const field of AI_BUDGET_FIELDS) {
+      const val = orgRow[field];
+      if (val !== null && val !== undefined) {
+        result[field] = val as never;
+      }
+    }
+  }
+
+  // Partner JSONB wins
+  const partnerBudget = asRecord(partnerAiBudgets);
+  for (const field of AI_BUDGET_FIELDS) {
+    if (field in partnerBudget && partnerBudget[field] !== undefined) {
+      result[field] = partnerBudget[field] as never;
+    }
+  }
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // getEffectiveOrgSettings
 // ---------------------------------------------------------------------------
@@ -165,30 +247,7 @@ export async function getEffectiveOrgSettings(
   }
 
   const partnerSettings = asRecord(partner.settings);
-  const orgSettings = asRecord(org.settings);
-
-  const effective: Record<string, Record<string, unknown>> = {};
-  const locked: string[] = [];
-
-  // Merge each category
-  for (const category of SETTING_CATEGORIES) {
-    const partnerCat = asRecord(partnerSettings[category]);
-    const orgCat = asRecord(orgSettings[category]);
-
-    // Only include the category if either side has data
-    if (
-      Object.keys(partnerCat).length > 0 ||
-      Object.keys(orgCat).length > 0
-    ) {
-      effective[category] = mergeCategory(category, partnerCat, orgCat, locked);
-    }
-  }
-
-  // #6111 — a stored session timeout above the 720-minute ceiling (written
-  // before the cap existed) is reported clamped, partner-locked or not.
-  if (effective.security) {
-    effective.security = clampSessionTimeoutInSettings({ security: effective.security }).security;
-  }
+  const { effective, locked } = resolveEffectiveCategorySettings(partnerSettings, org.settings);
 
   // Merge AI budget
   const partnerBudget = asRecord(partnerSettings.aiBudgets);
@@ -356,36 +415,9 @@ export async function getEffectiveAiBudget(
       .then((rows) => rows[0]),
   ]);
 
-  // Start from defaults. #4388 review — same shallow-copy hazard as
-  // getEffectiveOrgSettings above: without the explicit override, every org
-  // with no override would share one mutable array reference process-wide.
-  const result: EffectiveAiBudget = {
-    ...AI_BUDGET_DEFAULTS,
-    alertThresholdPercents: [...AI_BUDGET_DEFAULTS.alertThresholdPercents],
-  };
-
-  // Org table row overrides defaults
-  if (orgBudgetRow) {
-    for (const field of AI_BUDGET_FIELDS) {
-      const val = orgBudgetRow[field];
-      if (val !== null && val !== undefined) {
-        result[field] = val as never;
-      }
-    }
-  }
-
-  // Partner JSONB wins
   if (!partner) {
     throw new HTTPException(404, { message: 'Partner not found' });
   }
-  {
-    const partnerBudget = asRecord(asRecord(partner.settings).aiBudgets);
-    for (const field of AI_BUDGET_FIELDS) {
-      if (field in partnerBudget && partnerBudget[field] !== undefined) {
-        result[field] = partnerBudget[field] as never;
-      }
-    }
-  }
 
-  return result;
+  return resolveEffectiveAiBudgetFromRows(asRecord(partner.settings).aiBudgets, orgBudgetRow ?? null);
 }
