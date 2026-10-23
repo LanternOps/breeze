@@ -207,6 +207,18 @@ function drawRenewals(doc: jsPDF, chrome: PdfChrome, summary: MrrRenewalsSummary
     y = finalY(doc, y);
   }
 
+  // Window contracts past the stored detail cap (not in summary.rows) or past
+  // the table's own row limit are still in the totals; count them out loud.
+  const notListed = summary.renewals.contractIds.length - Math.min(ordered.length, RENEWAL_TABLE_MAX);
+  if (notListed > 0) {
+    y = drawProse(
+      doc, chrome,
+      `${notListed} more renewing contract${notListed === 1 ? ' is' : 's are'} not listed (detail rows are capped); `
+      + `${notListed === 1 ? 'it is' : 'they are'} in the totals below.`,
+      y + 1, 8.6, C.muted,
+    );
+  }
+
   for (const t of summary.renewals.totals) {
     y = drawProse(
       doc,
@@ -272,6 +284,15 @@ export function renderMrrRenewalsReport(
   y = chrome.drawSectionHeading(doc, 'Basis', y + 6);
   for (const note of summary.notes) {
     y = drawProse(doc, chrome, note, y + 1, 8.6, C.muted);
+  }
+
+  // Nothing was queried (site-restricted authority, no organizations): every
+  // section below would print an unmeasured result as "none". Say so instead.
+  // A stored run from before the flag existed has no `measured` and was measured.
+  if (summary.measured === false) {
+    y = chrome.drawSectionHeading(doc, 'Not measured', y + 4);
+    drawProse(doc, chrome, 'Not measured: nothing was queried for this run, for the reason given above. The figures are unknown, not zero.', y + 1, 9, C.muted);
+    return;
   }
 
   // --- Scorecard ---------------------------------------------------------------

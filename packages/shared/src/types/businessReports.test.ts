@@ -61,6 +61,7 @@ describe('emptyAiUsageByClientSummary', () => {
 describe('emptyMrrRenewalsSummary (#9828 W1)', () => {
   it('carries the note, an untruncated empty detail block and no money at all', () => {
     const s = emptyMrrRenewalsSummary(NOTE);
+    expect(s.measured).toBe(false);
     expect(s.notes).toEqual([NOTE]);
     expect(s.byCurrency).toEqual([]);
     expect(s.groups).toEqual([]);

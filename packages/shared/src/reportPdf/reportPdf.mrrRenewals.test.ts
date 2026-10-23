@@ -30,6 +30,7 @@ function totals(currencyCode: string, mrr: string): MrrCurrencyTotals {
 
 const SUMMARY: MrrRenewalsSummary = {
   generatedAt: '2026-10-23T05:00:00.000Z',
+  measured: true,
   asOf: '2026-10-23',
   timeZone: 'UTC',
   scope: { kind: 'organization', orgId: 'o1', orgName: 'Acme Co' },
@@ -96,6 +97,36 @@ describe('buildReportPdf: mrr_renewals', () => {
     const text = extractText(buildReportPdf([], { ...opts, summary: SUMMARY }));
     expect(text).toContain('Mystery Retainer');
     expect(text).toContain('no billing interval');
+  });
+
+  it('an unmeasured run (site-restricted / no organizations) says "not measured", never "no contracts"', () => {
+    const unmeasured: MrrRenewalsSummary = {
+      ...SUMMARY, measured: false, byCurrency: [], groups: [], renewals: { totals: [], contractIds: [] },
+      activeNotInTerm: [], skipped: [], billedRecurring: [], rows: [],
+      detail: { cap: 5000, stored: 0, available: 0, truncated: false },
+      notes: ['This report ran under a site-restricted authority.'],
+    };
+    const text = extractText(buildReportPdf([], { ...opts, summary: unmeasured }));
+    expect(text).toContain('Not measured');
+    expect(text).toContain('site-restricted');
+    expect(text).not.toContain('No in-term contracts');
+    expect(text).not.toContain('Nothing to reconcile');
+    expect(text).not.toContain('No contracts reach their end date');
+  });
+
+  it('a stored run from before the measured flag renders as measured', () => {
+    const legacy = { ...SUMMARY } as Partial<MrrRenewalsSummary>;
+    delete legacy.measured;
+    const text = extractText(buildReportPdf([], { ...opts, summary: legacy as MrrRenewalsSummary }));
+    expect(text).toContain('Managed Services Gold');
+    expect(text).not.toContain('Not measured');
+  });
+
+  it('renewing contracts beyond the stored detail rows are counted, not silently dropped', () => {
+    const capped = { ...SUMMARY, renewals: { ...SUMMARY.renewals, contractIds: ['c1', 'c-beyond-cap-1', 'c-beyond-cap-2'] } };
+    const text = extractText(buildReportPdf([], { ...opts, summary: capped }));
+    expect(text).toContain('Managed Services Gold');
+    expect(text).toContain('2 more renewing contracts are not listed');
   });
 
   it('shape mismatch reports onRendererFallback summary_shape_mismatch', () => {

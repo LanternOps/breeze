@@ -327,6 +327,12 @@ describe('resolveContractMrrRows (#9828 W1)', () => {
   it.each([
     ['invoice_missing', [[{ contractId: 'c1', invoiceId: null }]]],
     ['no_contract_lines', [[{ contractId: 'c1', invoiceId: 'inv1' }], [{ id: 'inv1', status: 'sent', replacedByInvoiceId: null }], [], []]],
+    ['reissue_chain_too_long', [
+      [{ contractId: 'c1', invoiceId: 'invA' }],
+      ...Array.from({ length: 10 }, (_, i) => (i % 2 === 0
+        ? [{ id: 'invA', status: 'void', replacedByInvoiceId: 'invB' }]
+        : [{ id: 'invB', status: 'void', replacedByInvoiceId: 'invA' }])),
+    ]],
   ] as const)('final-term %s is skipped as final_term_<reason>', async (reason, queue) => {
     queueResult([annual()]);
     for (const rows of queue) queueResult([...rows]);

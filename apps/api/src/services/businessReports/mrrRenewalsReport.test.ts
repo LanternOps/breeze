@@ -35,7 +35,7 @@ import type { ReportGenerationAuthority } from '../siteScope';
 import { NO_ORGS_NOTE, PARTNER_ORG_LIST_NOTE, SITE_RESTRICTED_NOTE } from './common';
 import {
   AS_OF_RUN_TIME_NOTE, BILLED_SERIES_NOTE, FINAL_TERM_NOTE, HISTORY_STARTS_NOTE, LIVE_QUANTITIES_NOTE,
-  SUSPENDED_ORGS_MRR_NOTE, excludedContractsNote, generateMrrRenewalsReport,
+  SUSPENDED_ORGS_MRR_NOTE, UNKNOWN_ORG_NOTE, deletedGroupNote, excludedContractsNote, generateMrrRenewalsReport,
 } from './mrrRenewalsReport';
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -92,6 +92,9 @@ const orgScope = { kind: 'organization' as const, orgId: ORG_A };
 const NAMES = [{ id: ORG_A, name: 'Alpha' }, { id: ORG_B, name: 'Bravo' }];
 
 const summaryOf = (r: { summary?: unknown }) => r.summary as MrrRenewalsSummary;
+/** The bound values of every `<column> = $n` in a compiled statement. */
+const boundTo = (c: Call, column: string): unknown[] =>
+  [...c.sql.matchAll(new RegExp(`${column.replace('.', '\\.')} = \\$(\\d+)`, 'g'))].map((m) => c.params[Number(m[1]) - 1]);
 const NOW = new Date('2026-06-15T12:00:00.000Z');
 
 describe('mrrRenewalsConfigSchema', () => {
@@ -141,6 +144,19 @@ describe('generateMrrRenewalsReport', () => {
     // Every statement binds the allowlist; the partner-axis tables also bind partner_id.
     expect(call('org_names').params).toEqual(expect.arrayContaining([ORG_A, ORG_B, PARTNER]));
     expect(call('billed_recurring').params).toEqual(expect.arrayContaining([ORG_A, ORG_B, PARTNER]));
+    // …and the partner id is bound to the partner column, not merely present somewhere.
+    expect(boundTo(call('org_names'), 'o.partner_id')).toEqual([PARTNER]);
+    // In the outer WHERE and in every copy of the CTE's invoice sub-select — each bound to the partner.
+    const billedPartner = boundTo(call('billed_recurring'), 'i.partner_id');
+    expect(billedPartner.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(billedPartner)).toEqual(new Set([PARTNER]));
+  });
+
+  it('the renewal-notice read is fenced by the org allowlist as well as the contract ids', async () => {
+    resolved({ rows: [row({ endDate: '2026-07-01' })] });
+    respond({ org_names: [NAMES[0]] });
+    await generateMrrRenewalsReport(orgScope, {}, orgAuthority);
+    expect(call('renewal_notices').sql).toMatch(/n\.org_id = ANY\(ARRAY\[\$\d+::uuid\]\)/);
   });
 
   it('org scope reads one org and binds no partner id', async () => {
@@ -150,6 +166,7 @@ describe('generateMrrRenewalsReport', () => {
     expect(resolveContractMrrRows).toHaveBeenCalledWith([ORG_A], NOW, { include: ['paused', 'draft'], partnerId: undefined });
     expect(call('billed_recurring').params).toContain(ORG_A);
     expect(call('billed_recurring').params).not.toContain(PARTNER);
+    expect(call('billed_recurring').sql).not.toContain('partner_id =');
     expect(s.scope).toEqual({ kind: 'organization', orgId: ORG_A, orgName: 'Alpha' });
   });
 
@@ -310,8 +327,12 @@ describe('generateMrrRenewalsReport', () => {
     expect(billed.sql).toMatch(/il\.id NOT IN \(SELECT line_id FROM block_overage_lines\)/);
     expect(billed.sql).toContain("il.source_type = 'contract'");
     expect(billed.sql).toContain('il.parent_line_id IS NULL');
-    // Window start − 12 months (2024-07-01) and the end of the run month.
-    expect(billed.params).toEqual(expect.arrayContaining(['2024-07-01', '2026-07-01']));
+    // Window start − 60 months (the longest contract interval) and the end of the run month.
+    expect(billed.params).toEqual(expect.arrayContaining(['2020-07-01', '2026-07-01']));
+    // Only issued invoices count; draft and void never do.
+    expect(billed.sql).toContain("i.status IN ('sent', 'partially_paid', 'overdue', 'paid')");
+    // A reissued invoice takes its billing period through the void → reissue chain.
+    expect(billed.sql).toMatch(/p\.invoice_id IN \(SELECT ancestor_id FROM block_overage_chain WHERE invoice_id = i\.id\)/);
   });
 
   it('USD and EUR contracts in one org produce two currency rows', async () => {
@@ -353,7 +374,7 @@ describe('generateMrrRenewalsReport', () => {
     expect(s.timeZone).toBe('Pacific/Auckland');
     // The billed series' run month is the owner's month.
     expect(s.billedRecurring).toEqual([]);
-    expect(call('billed_recurring').params).toEqual(expect.arrayContaining(['2024-10-01', '2026-10-01']));
+    expect(call('billed_recurring').params).toEqual(expect.arrayContaining(['2020-10-01', '2026-10-01']));
     expect(s.notes).toContain(AS_OF_RUN_TIME_NOTE);
   });
 
@@ -414,5 +435,60 @@ describe('generateMrrRenewalsReport', () => {
       startDate: '2026-01-01', endDate: null, daysRemaining: null, autoRenew: false, renewalTermMonths: null,
       inRenewalWindow: false, advanceNoticeSentAt: null,
     });
+  });
+
+  it('a deleted device group is disclosed in the notes, singular and plural; absent otherwise', async () => {
+    respond({ org_names: [NAMES[0]] });
+    resolved({ rows: [row({ unresolvedGroup: true })] });
+    expect(summaryOf(await generateMrrRenewalsReport(orgScope, {}, orgAuthority)).notes).toContain(deletedGroupNote(1));
+    resolved({ rows: [row({ unresolvedGroup: true }), row({ contractId: 'c2', unresolvedGroup: true })] });
+    expect(summaryOf(await generateMrrRenewalsReport(orgScope, {}, orgAuthority)).notes).toContain(deletedGroupNote(2));
+    expect(deletedGroupNote(2)).toContain('2 contracts bill');
+    resolved({ rows: [row()] });
+    const clean = summaryOf(await generateMrrRenewalsReport(orgScope, {}, orgAuthority));
+    expect(clean.notes.some((n) => n.includes('deleted device group'))).toBe(false);
+  });
+
+  it('an unusable owner timezone falls back to UTC and says so', async () => {
+    ctx.timeZone = 'Not/AZone';
+    resolved();
+    respond({ org_names: [NAMES[0]] });
+    const s = summaryOf(await generateMrrRenewalsReport(orgScope, {}, orgAuthority));
+    expect(s.timeZone).toBe('UTC');
+    expect(s.notes.some((n) => n.includes('Not/AZone') && n.includes('UTC'))).toBe(true);
+  });
+
+  it('an org missing from the name lookup keeps its own group, labelled with its id, and is disclosed', async () => {
+    resolved({ rows: [row({ orgId: ORG_A }), row({ contractId: 'c2', orgId: ORG_B })] });
+    respond({ org_names: [] });
+    const s = summaryOf(await generateMrrRenewalsReport(partnerScope(), {}, partnerAuthority));
+    expect(s.groups.map((g) => g.groupLabel)).toEqual([
+      `Unknown organization (${ORG_A.slice(0, 8)})`, `Unknown organization (${ORG_B.slice(0, 8)})`,
+    ]);
+    expect(s.notes).toContain(UNKNOWN_ORG_NOTE);
+  });
+
+  it('records whether anything was measured: a real run yes; restricted and no-orgs no', async () => {
+    resolved();
+    respond({ org_names: [NAMES[0]] });
+    expect(summaryOf(await generateMrrRenewalsReport(orgScope, {}, orgAuthority)).measured).toBe(true);
+    expect(summaryOf(await generateMrrRenewalsReport(orgScope, {}, restrictedAuthority)).measured).toBe(false);
+    expect(summaryOf(await generateMrrRenewalsReport(partnerScope([]), {}, partnerAuthority)).measured).toBe(false);
+  });
+
+  it.each([
+    // [label, line, expected amounts by month (only the listed months are checked), sum of all window months]
+    ['sub-month period lands whole in its start month', { line_total: '30.00', period_start: '2026-03-01', period_end: '2026-03-15' }, { '2026-03': '30.00', '2026-04': '0.00' }, 3000],
+    ['a credit spreads with the right sign and sums exactly', { line_total: '-100.00', period_start: '2026-01-01', period_end: '2026-04-01' }, { '2026-01': '-33.33', '2026-02': '-33.33', '2026-03': '-33.34' }, -10000],
+    ['a quarter straddling the window start keeps only its in-window months', { line_total: '300.00', period_start: '2025-06-01', period_end: '2025-09-01' }, { '2025-07': '100.00', '2025-08': '100.00' }, 20000],
+    ['a period starting after the run month lands nothing', { line_total: '500.00', period_start: '2026-07-01', period_end: '2026-08-01' }, {}, 0],
+    ['a 24-month prepay issued 18 months back still spreads into the window', { line_total: '2400.00', period_start: '2024-12-01', period_end: '2026-12-01' }, { '2025-07': '100.00', '2026-06': '100.00' }, 120000],
+  ] as const)('billed spread: %s', async (_label, line, expected, windowSum) => {
+    resolved();
+    respond({ org_names: [NAMES[0]], billed_recurring: [{ currency_code: 'USD', issue_date: '2024-12-01', ...line }] });
+    const s = summaryOf(await generateMrrRenewalsReport(orgScope, {}, orgAuthority));
+    const amount = (month: string) => s.billedRecurring.find((m) => m.month === month)?.amount;
+    for (const [month, value] of Object.entries(expected)) expect(amount(month), month).toBe(value);
+    expect(s.billedRecurring.reduce((t, m) => t + Math.round(Number(m.amount) * 100), 0)).toBe(windowSum);
   });
 });

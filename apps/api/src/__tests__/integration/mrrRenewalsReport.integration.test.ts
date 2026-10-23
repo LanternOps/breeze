@@ -19,10 +19,10 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 
 import type { MrrRenewalsSummary } from '@breeze/shared';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
-import { contractLines, contracts, reportRuns, reports } from '../../db/schema';
+import { contractBillingPeriods, contractLines, contractRenewalNotices, contracts, invoices, reportRuns, reports } from '../../db/schema';
 import { buildDbAccessContext, computeAccessibleOrgIds } from '../../middleware/auth';
 import { generateDueInvoice } from '../../services/contractService';
-import { issueInvoice } from '../../services/invoiceService';
+import { issueInvoice, voidInvoice } from '../../services/invoiceService';
 import { generateReport, previousBaselineFor, type ReportResult } from '../../services/reportGenerationService';
 import { organizationScope, reportScopeFromAuthority } from '../../services/reportScope';
 import {
@@ -175,11 +175,52 @@ describe('mrr_renewals — real Postgres (#9828 W1)', () => {
     expect(usd.at(-1)!.partial).toBe(true);
   });
 
-  runDb('the renewal window lists the auto-renewing monthly contract ending inside the horizon', async () => {
+  runDb('the renewal window lists the auto-renewing monthly contract ending inside the horizon, with the notice for THIS end date', async () => {
     const f = await seedFixture();
+    await getTestDb().insert(contractRenewalNotices).values([
+      { contractId: f.acmeMonthly, orgId: f.acme.id, endDate: '2026-07-10', kind: 'advance', sentAt: new Date('2026-06-01T09:00:00Z') },
+      // A previous term's notice must not be read as this term's.
+      { contractId: f.globexMonthly, orgId: f.globex.id, endDate: '2025-07-10', kind: 'advance', sentAt: new Date('2025-06-01T09:00:00Z') },
+    ]);
+    await getTestDb().update(contracts).set({ endDate: '2026-07-05' }).where(eq(contracts.id, f.globexMonthly));
+
     const s = summaryOf(await runPartner(f, { renewalHorizonDays: 30 }));
-    expect(s.renewals.contractIds).toEqual([f.acmeMonthly]);
-    expect(s.renewals.totals).toEqual([{ currencyCode: 'USD', autoRenewMrr: '100.00', autoRenewCount: 1, manualMrr: '0.00', manualCount: 0 }]);
+    expect(s.renewals.contractIds).toEqual([f.globexMonthly, f.acmeMonthly]);
+    expect(s.renewals.totals).toEqual([
+      { currencyCode: 'EUR', autoRenewMrr: '0.00', autoRenewCount: 0, manualMrr: '50.00', manualCount: 1 },
+      { currencyCode: 'USD', autoRenewMrr: '100.00', autoRenewCount: 1, manualMrr: '0.00', manualCount: 0 },
+    ]);
+    const byId = new Map(s.rows.map((r) => [r.contractId, r]));
+    expect(byId.get(f.acmeMonthly)!.advanceNoticeSentAt).toBe('2026-06-01T09:00:00.000Z');
+    expect(byId.get(f.globexMonthly)!.advanceNoticeSentAt).toBeNull();
+  });
+
+  runDb('billed recurring: draft and foreign-partner invoices never count; a reissued annual invoice still spreads over its period', async () => {
+    const f = await seedFixture();
+    await billAnnual(f);
+    // Reissue the annual invoice: the period row keeps pointing at the voided original.
+    const [period] = await getTestDb().select({ invoiceId: contractBillingPeriods.invoiceId })
+      .from(contractBillingPeriods).where(eq(contractBillingPeriods.contractId, f.acmeAnnual));
+    const actor = { userId: f.user.id, partnerId: f.partner.id, accessibleOrgIds: [f.acme.id] };
+    await withSystemDbAccessContext(() => voidInvoice(period!.invoiceId!, 'correction', { reissue: true }, actor));
+    const [voided] = await getTestDb().select({ replacedBy: invoices.replacedByInvoiceId }).from(invoices).where(eq(invoices.id, period!.invoiceId!));
+    await withSystemDbAccessContext(() => issueInvoice(voided!.replacedBy!, actor));
+    // A DRAFT June invoice for Acme's monthly contract: not billed revenue.
+    await getTestDb().update(contracts).set({ nextBillingAt: '2026-06-01' }).where(eq(contracts.id, f.acmeMonthly));
+    const draft = await withSystemDbAccessContext(() => generateDueInvoice(f.acmeMonthly, new Date('2026-06-01T06:00:00Z')));
+    expect(draft.generated).toBe(true);
+    // An ISSUED May invoice in the foreign partner's org.
+    await getTestDb().update(contracts).set({ nextBillingAt: '2026-05-01' }).where(eq(contracts.id, f.foreign));
+    const foreign = await withSystemDbAccessContext(() => generateDueInvoice(f.foreign, new Date('2026-05-01T06:00:00Z')));
+    await withSystemDbAccessContext(() => issueInvoice(foreign.invoiceId!, { userId: null, partnerId: f.otherPartner.id, accessibleOrgIds: [f.foreignOrg.id] }));
+
+    const s = summaryOf(await runPartner(f));
+    const usd = Object.fromEntries(s.billedRecurring.filter((m) => m.currencyCode === 'USD').map((m) => [m.month, m.amount]));
+    expect(usd).toMatchObject({
+      '2025-12': '0.00', '2026-01': '100.00', '2026-02': '100.00', '2026-03': '100.00',
+      '2026-04': '100.00', '2026-05': '100.00', '2026-06': '100.00',
+    });
+    expect(JSON.stringify(s.billedRecurring)).not.toContain('999');
   });
 
   runDb('org scope sees one org', async () => {

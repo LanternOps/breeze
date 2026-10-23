@@ -55,8 +55,9 @@ const DETAIL_ROW_CAP = reportTypeDef('mrr_renewals').detailRowCap;
 const DEFAULT_HORIZON: MrrRenewalsHorizonDays = 90;
 const SERIES_MONTHS = 12;
 /** How far before the series window an invoice can be issued and still spread
- *  into it (an annual period billed in advance). */
-const SPREAD_LOOKBACK_MONTHS = 12;
+ *  into it: the longest contract billing interval the validator allows
+ *  (`intervalMonths` max 60, packages/shared/src/validators/contracts.ts). */
+const SPREAD_LOOKBACK_MONTHS = 60;
 
 export type { MrrRenewalsConfig };
 type GroupBy = MrrRenewalsSummary['groupBy'];
@@ -68,7 +69,9 @@ export const LIVE_QUANTITIES_NOTE =
 export const FINAL_TERM_NOTE =
   'A contract in its final, already-billed term counts at the value its last invoice billed, spread over the billing interval; that value is not split into base and overage.';
 export const BILLED_SERIES_NOTE =
-  'Billed recurring revenue is what issued invoices billed for contracts, not MRR. A billing period\'s line is spread evenly over its months; hour-block overage is usage and is excluded.';
+  'Billed recurring revenue is what issued invoices billed for contracts, not MRR. A billing period\'s line is spread evenly over its months; a contract line added to an invoice by hand counts in the invoice\'s month; hour-block overage is usage and is excluded.';
+export const UNKNOWN_ORG_NOTE =
+  'Some contracts belong to an organization whose name could not be read; they are labelled with the start of the organization\'s id.';
 export const HISTORY_STARTS_NOTE =
   'MRR has no history before this report first ran: the trend starts with the first scheduled run, and each run compares with the previous one.';
 export const SUSPENDED_ORGS_MRR_NOTE =
@@ -330,7 +333,10 @@ export async function generateMrrRenewalsReport(
       LEFT JOIN LATERAL (
         SELECT MIN(p.period_start) AS period_start, MAX(p.period_end) AS period_end
         FROM contract_billing_periods p
-        WHERE p.invoice_id = i.id AND p.contract_id = il.source_contract_id AND p.org_id = i.org_id
+        -- A reissued invoice's period row still points at the voided original:
+        -- take the period through the void → reissue chain (depth 1 is i itself).
+        WHERE p.invoice_id IN (SELECT ancestor_id FROM block_overage_chain WHERE invoice_id = i.id)
+          AND p.contract_id = il.source_contract_id AND p.org_id = i.org_id
       ) cbp ON true
       WHERE ${invoicePredicate}
         AND il.parent_line_id IS NULL
@@ -343,7 +349,7 @@ export async function generateMrrRenewalsReport(
     const byCurrency = [...byCurrencyOf(resolved.rows)].map(([code, rows]) => totalsFor(code, rows));
 
     const groupKeyOf = (r: ContractMrrRow): [string, string] => (groupBy === 'organization'
-      ? [r.orgId, orgNameOf(r.orgId) ?? 'Unknown organization']
+      ? [r.orgId, orgNameOf(r.orgId) ?? `Unknown organization (${r.orgId.slice(0, 8)})`]
       : [r.contractId, r.name]);
     const grouped = new Map<string, { label: string; rows: ContractMrrRow[] }>();
     for (const r of resolved.rows) {
@@ -367,6 +373,8 @@ export async function generateMrrRenewalsReport(
     if (skipped.length > 0) notes.push(excludedContractsNote(skipped.length));
     const unresolvedGroups = resolved.rows.filter((r) => r.unresolvedGroup).length;
     if (unresolvedGroups > 0) notes.push(deletedGroupNote(unresolvedGroups));
+    const everyOrgId = [...resolved.rows, ...resolved.skipped, ...resolved.activeNotInTerm].map((c) => c.orgId);
+    if (everyOrgId.some((id) => orgNameOf(id) === null)) notes.push(UNKNOWN_ORG_NOTE);
 
     // ---- detail rows -------------------------------------------------------
     const windowIds = new Set(windowRows.map((r) => r.contractId));
@@ -396,6 +404,7 @@ export async function generateMrrRenewalsReport(
 
     return toResult({
       ...header,
+      measured: true,
       timeZone,
       scope: scopeMeta(scope, scope.kind === 'organization' ? orgNameOf(scope.orgId) : null),
       byCurrency,

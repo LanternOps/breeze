@@ -303,6 +303,9 @@ export type MrrContractDetailRow = {
 };
 export type MrrRenewalsSummary = {
   generatedAt: string;
+  /** False when nothing was queried (site-restricted authority, or a partner
+   *  with no organizations): every figure below is unmeasured, not zero. */
+  measured: boolean;
   /** UTC calendar date of the run (contract dates are UTC, like billing). */
   asOf: string;
   /** The report owner's timezone (billed-series months and notes only). */
@@ -428,6 +431,7 @@ export function emptyAiUsageByClientSummary(note: string): AiUsageByClientSummar
 export function emptyMrrRenewalsSummary(note: string): MrrRenewalsSummary {
   return {
     generatedAt: new Date().toISOString(),
+    measured: false,
     // A UTC calendar date like every real run's asOf, never a full timestamp.
     asOf: new Date().toISOString().slice(0, 10),
     timeZone: 'UTC',
