@@ -184,3 +184,36 @@ describe('ApiKeysPage destructive confirmations (#3531)', () => {
     });
   });
 });
+
+describe('ApiKeysPage background refresh (#9656)', () => {
+  it('keeps the rows and open modal visible while a refetch is in flight', async () => {
+    let releaseSecond!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let gets = 0;
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && url.startsWith('/api-keys')) {
+        gets += 1;
+        if (gets > 1) await gate;
+        return jsonResponse({ data: [KEY], pagination: { page: 1, limit: 20, total: 1 } });
+      }
+      return jsonResponse({ key: 'brz_new_secret_value' });
+    });
+    await renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate Key' }));
+    await screen.findByDisplayValue('brz_new_secret_value');
+
+    // Refetch is pending: rows + the new-key modal must not blink out.
+    expect(gets).toBe(2);
+    expect(screen.getAllByText('CI deploy key').length).toBeGreaterThan(0);
+    expect(screen.getByDisplayValue('brz_new_secret_value')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeInTheDocument();
+
+    releaseSecond();
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    expect(screen.getAllByText('CI deploy key').length).toBeGreaterThan(0);
+  });
+});

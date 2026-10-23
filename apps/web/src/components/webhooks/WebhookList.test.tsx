@@ -9,3 +9,27 @@ describe('WebhookList status filter select accessible name (#7156)', () => {
     expect(screen.getByRole('combobox', { name: 'Status' })).toBeInTheDocument();
   });
 });
+
+describe('WebhookList delivery stats (#9656)', () => {
+  it('reads lastDeliveryAt and renders success/failed counts', () => {
+    render(
+      <WebhookList
+        webhooks={[
+          {
+            id: 'w1',
+            name: 'Hook',
+            url: 'https://example.com/h',
+            events: ['device.online'],
+            status: 'active',
+            lastDeliveryAt: '2026-02-08T10:00:00.000Z',
+            successCount: 7,
+            failureCount: 2,
+          },
+        ]}
+      />
+    );
+    expect(screen.getByText(/7 success/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 failed/i)).toBeInTheDocument();
+    expect(screen.queryByText('N/A')).not.toBeInTheDocument();
+  });
+});
