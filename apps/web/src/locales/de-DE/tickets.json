@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} ausgewählt",
     "clearSelection": "Auswahl aufheben",
     "noSelection": "Wählen Sie ein Ticket aus. Verwenden Sie j/k zum Verschieben, Enter zum Erweitern.",
+    "ticketNotInView": "Ticket {{number}} ist nicht in dieser Ansicht.",
     "movedToClosed": {
       "message": "{{status}} — jetzt unter {{tab}}",
       "view": "In {{tab}} anzeigen"

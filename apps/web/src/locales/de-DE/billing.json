@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Wer zugestimmt hat",
         "signerEmailLabel": "E-Mail-Adresse (optional)",
         "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
+        "consequenceInvoiceDraft": "Es wird eine Rechnung als Entwurf erstellt. Sie wird noch nicht ausgestellt oder nummeriert.",
         "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
         "consequenceEmail": "Die Rechnung wird per E-Mail an {{recipients}} gesendet.",
         "consequenceEmailNotConfigured": "Es ist kein E-Mail-Dienst konfiguriert; die Rechnung wird nicht per E-Mail gesendet. Teilen Sie sie über die Rechnungsseite.",

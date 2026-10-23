@@ -439,10 +439,68 @@ export default function TicketsPage() {
     setHeldTicket((prev) => (prev && tab === 'closed' && isClosedStatus(prev.status) ? prev : null));
   }, [tab]);
 
+  // Keys of tickets that have appeared in a loaded list this session. A
+  // selection that was once listed (tab switch, filter change) keeps the
+  // original "fall back to the first row" behaviour; a selection that was
+  // NEVER listed is a deep link to a ticket outside this view and must not be
+  // silently swapped for another ticket (sweep G10).
+  const seenKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!listIsCurrent) return;
+    for (const row of tickets) {
+      seenKeysRef.current.add(row.id);
+      if (row.internalNumber) seenKeysRef.current.add(row.internalNumber);
+    }
+  }, [listIsCurrent, tickets]);
+  const deepLinkAbsent = selectedNumber !== null && !selected && !seenKeysRef.current.has(selectedNumber);
+  // null = nothing to look up; 'missing' = lookup finished, caller cannot see it.
+  const [absentLookup, setAbsentLookup] = useState<{ key: string; status: 'pending' | 'missing' } | null>(null);
+  useEffect(() => {
+    if (tab === 'review' || tab === 'archived') return;
+    if (loading || !listIsCurrent || !deepLinkAbsent || selectedNumber === null) return;
+    const key = selectedNumber;
+    let cancelled = false;
+    setAbsentLookup({ key, status: 'pending' });
+    void (async () => {
+      let found: TicketSummary | null = null;
+      try {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+        if (isUuid) {
+          const res = await fetchWithAuth(`/tickets/${key}`);
+          if (res.ok) found = ((await res.json()) as { data?: TicketSummary }).data ?? null;
+        } else {
+          // No by-number endpoint: the list search matches internalNumber; the
+          // exact match is picked client-side. Status-agnostic (no statusGroup).
+          const res = await fetchWithAuth(`/tickets?${new URLSearchParams({ search: key, limit: '5' })}`);
+          if (res.ok) {
+            const rows = ((await res.json()) as { data?: TicketSummary[] }).data ?? [];
+            found = rows.find((r) => r.internalNumber?.toLowerCase() === key.toLowerCase()) ?? null;
+          }
+        }
+      } catch {
+        found = null;
+      }
+      if (cancelled) return;
+      if (found) {
+        setHeldTicket(found);
+        setAbsentLookup(null);
+      } else {
+        setAbsentLookup({ key, status: 'missing' });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, loading, listIsCurrent, deepLinkAbsent, selectedNumber]);
+  const absentNotice = deepLinkAbsent && absentLookup?.key === selectedNumber && absentLookup.status === 'missing'
+    ? selectedNumber
+    : null;
+
   // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
   useEffect(() => {
     // The review + archived tabs have no ticket selection / workbench pane.
     if (tab === 'review' || tab === 'archived') return;
+    // A deep link to an unlisted ticket is resolved by the lookup above, never
+    // by selecting an unrelated row.
+    if (deepLinkAbsent) return;
     // `listIsCurrent`: never auto-select out of a list fetched for other
     // filters — after an external hash change (sidebar entry, back/forward,
     // bookmark) the old rows are still on screen until the refetch lands, and
@@ -452,7 +510,7 @@ export default function TicketsPage() {
       const key = first.internalNumber ?? first.id;
       writeHash(key, sort, typeFilter);
     }
-  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash]);
+  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash, deepLinkAbsent]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -925,7 +983,11 @@ export default function TicketsPage() {
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
-                <p>{t('ticketsPage.noSelection')}</p>
+                {absentNotice ? (
+                  <p role="status" data-testid="tickets-deeplink-absent">{t('ticketsPage.ticketNotInView', { number: absentNotice })}</p>
+                ) : (
+                  <p>{t('ticketsPage.noSelection')}</p>
+                )}
               </div>
             )}
           </div>

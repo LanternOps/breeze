@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Quem concordou",
         "signerEmailLabel": "E-mail dessa pessoa (opcional)",
         "consequenceInvoice": "Uma fatura de {{amount}} será emitida e numerada agora.",
+        "consequenceInvoiceDraft": "Será criada uma fatura em rascunho. Ela ainda não é emitida nem numerada.",
         "consequenceContracts": "Linhas recorrentes viram contratos em rascunho que você ativa depois.",
         "consequenceEmail": "A fatura será enviada por e-mail para {{recipients}}.",
         "consequenceEmailNotConfigured": "Nenhum serviço de e-mail está configurado; a fatura não será enviada por e-mail. Compartilhe-a pela página da fatura.",

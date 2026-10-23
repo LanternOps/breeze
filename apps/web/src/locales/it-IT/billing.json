@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Chi ha dato l'assenso",
         "signerEmailLabel": "La sua e-mail (facoltativa)",
         "consequenceInvoice": "Verrà emessa e numerata subito una fattura di {{amount}}.",
+        "consequenceInvoiceDraft": "Verrà creata una fattura in bozza. Non è ancora emessa né numerata.",
         "consequenceContracts": "Le righe ricorrenti diventano contratti in bozza da attivare in seguito.",
         "consequenceEmail": "La fattura verrà inviata via e-mail a {{recipients}}.",
         "consequenceEmailNotConfigured": "Nessun servizio e-mail è configurato; la fattura non verrà inviata via e-mail. Condividila dalla pagina della fattura.",
