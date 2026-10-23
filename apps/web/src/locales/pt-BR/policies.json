@@ -1595,7 +1595,9 @@
       "registry": "registry",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Serviço em execução",
+      "readOnlyHint": "Criada pela API. Não editável aqui; é mantida sem alterações ao salvar."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Falha ao buscar dispositivos",

@@ -1595,7 +1595,9 @@
       "registry": "Registre",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Service en cours d’exécution",
+      "readOnlyHint": "Créée via l’API. Non modifiable ici ; elle est conservée telle quelle à l’enregistrement."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossible de récupérer les appareils",

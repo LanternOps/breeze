@@ -1595,7 +1595,9 @@
       "registry": "Registrierung",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Dienst läuft",
+      "readOnlyHint": "Über die API erstellt. Hier nicht bearbeitbar; beim Speichern bleibt sie unverändert."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Geräte konnten nicht abgerufen werden",
