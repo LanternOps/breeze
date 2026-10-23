@@ -203,6 +203,7 @@
       "scanQueued": "Discovery scan queued for \"{{name}}\"",
       "profileCreated": "Discovery profile \"{{name}}\" created",
       "profileUpdated": "Discovery profile \"{{name}}\" updated",
+      "profileDeleted": "Discovery profile \"{{name}}\" deleted",
       "profileMoved": "Profile moved to {{site}}.",
       "assetsMoved_one": "{{count}} network device moved",
       "assetsMoved_other": "{{count}} network devices moved",
