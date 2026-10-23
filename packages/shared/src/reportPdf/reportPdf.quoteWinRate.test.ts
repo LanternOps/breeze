@@ -139,3 +139,36 @@ describe('buildReportPdf: quote_win_rate', () => {
     expect(text).toMatch(/at most 5000/);
   });
 });
+
+describe('quote_win_rate pagination', () => {
+  /** Top-down y (mm) of every text run containing `needle`. */
+  function textYs(doc: ReturnType<typeof buildReportPdf>, needle: string): number[] {
+    const pages = (doc.internal as unknown as { pages: Array<string[] | undefined> }).pages;
+    const pageH = doc.internal.pageSize.getHeight();
+    const out: number[] = [];
+    pages.forEach((p) => {
+      if (!Array.isArray(p)) return;
+      const re = /([\d.]+) ([\d.]+) Td\s*\((.*?)\)\s*Tj/g;
+      let m: RegExpExecArray | null;
+      const stream = p.join('\n');
+      while ((m = re.exec(stream))) {
+        if (m[3].includes(needle)) out.push(pageH - Number(m[2]) / doc.internal.scaleFactor);
+      }
+    });
+    return out;
+  }
+
+  it('never strands a section heading at the foot of a page, wherever earlier content ends', () => {
+    // Sweep the amount of preceding prose so some heading lands in the last ~40 pt of a page.
+    for (let n = 0; n <= 30; n++) {
+      const notes = Array.from({ length: n }, (_, i) => `Basis note ${i}.`);
+      const doc = buildReportPdf([], { ...opts, summary: { ...SUMMARY, notes } });
+      for (const needle of ['By organization', 'Value per currency', 'Win rate', 'Opportunities']) {
+        for (const y of textYs(doc, needle)) {
+          // footY is 199 mm; a heading needs room for at least a table row below it.
+          expect(y, `${needle} with ${n} notes`).toBeLessThan(199 - 14);
+        }
+      }
+    }
+  });
+});

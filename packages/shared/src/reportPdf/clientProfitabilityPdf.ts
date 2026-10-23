@@ -105,6 +105,11 @@ function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, need: number): nu
   return chrome.PAGE.bandH + 10;
 }
 
+/** Section heading that never lands in the footer: keeps ~30 mm for what follows. */
+function heading(doc: jsPDF, chrome: PdfChrome, text: string, y: number): number {
+  return chrome.drawSectionHeading(doc, text, ensureSpace(doc, chrome, y, 30));
+}
+
 // --- cell formatters --------------------------------------------------------
 
 const orgLabel = (o: { orgName: string | null; orgId: string }): string => o.orgName ?? o.orgId;
@@ -157,7 +162,7 @@ function drawScorecard(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySumm
 
 function drawByClient(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySummary, startY: number): number {
   const { C, PAGE } = chrome;
-  let y = chrome.drawSectionHeading(doc, 'By client', startY + 2);
+  let y = heading(doc, chrome, 'By client', startY + 2);
   if (s.orgs.length === 0) return drawProse(doc, chrome, 'No clients in the covered scope.', y + 1, 9, C.muted);
   const body: string[][] = [];
   for (const o of s.orgs) {
@@ -191,7 +196,7 @@ function drawByClient(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySumma
 
 function drawBySource(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySummary, startY: number): number {
   const { C, PAGE } = chrome;
-  const y = chrome.drawSectionHeading(doc, 'By revenue source', startY + 2);
+  const y = heading(doc, chrome, 'By revenue source', startY + 2);
   if (s.sources.length === 0) return drawProse(doc, chrome, 'No billed revenue in the covered scope.', y + 1, 9, C.muted);
   autoTable(doc, {
     startY: y + 1,
@@ -220,7 +225,7 @@ function drawInvoices(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySumma
     storedCap: s.detail.cap,
     noun: 'invoices',
   });
-  let y = chrome.drawSectionHeading(doc, disclosure.heading, startY + 2);
+  let y = heading(doc, chrome, disclosure.heading, startY + 2);
   if (disclosure.note) y = drawProse(doc, chrome, disclosure.note, y + 1, 8.6, C.muted);
   if (invoices.length === 0) return drawProse(doc, chrome, 'No invoices issued in this period.', y + 1, 9, C.muted);
   autoTable(doc, {
@@ -256,7 +261,7 @@ function drawMixBars(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySummar
     recurring: C.primary, labor: C.success, product: C.warning, ai: C.danger, other: C.faint,
   };
   let y = ensureSpace(doc, chrome, startY, 24);
-  y = chrome.drawSectionHeading(doc, 'Revenue mix', y + 2);
+  y = heading(doc, chrome, 'Revenue mix', y + 2);
 
   // legend
   let lx = PAGE.mx;
@@ -303,7 +308,7 @@ function drawHours(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySummary,
   const body = s.orgs.map((o: ClientProfitabilityOrgRow) => row(orgLabel(o), o.hours));
   if (s.unattributedHours) body.push(row('Internal / unattributed time', s.unattributedHours));
   if (body.length === 0) return startY;
-  const y = chrome.drawSectionHeading(doc, 'Hours by coverage', startY + 2);
+  const y = heading(doc, chrome, 'Hours by coverage', startY + 2);
   autoTable(doc, {
     startY: y + 1,
     margin: { left: PAGE.mx, right: PAGE.mx, top: PAGE.bandH + 8, bottom: 14 },
@@ -324,7 +329,7 @@ function drawEstimate(
 ): number {
   const { C, PAGE } = chrome;
   let y = ensureSpace(doc, chrome, startY, 30);
-  y = chrome.drawSectionHeading(doc, 'Estimated contribution after labor (uniform rate)', y + 2);
+  y = heading(doc, chrome, 'Estimated contribution after labor (uniform rate)', y + 2);
 
   // "Estimate" badge
   doc.setFont('helvetica', 'bold');
@@ -398,11 +403,11 @@ export function renderClientProfitabilityReport(
   );
 
   // --- Basis (notes verbatim, before any number) ------------------------------
-  y = chrome.drawSectionHeading(doc, 'Basis', y + 6);
+  y = heading(doc, chrome, 'Basis', y + 6);
   for (const note of summary.notes) y = drawProse(doc, chrome, note, y + 1, 8.6, C.muted);
 
   // --- Scorecard --------------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, 'Profitability per currency', y + 4);
+  y = heading(doc, chrome, 'Profitability per currency', y + 4);
   y = drawScorecard(doc, chrome, summary, y);
 
   // --- Main table -------------------------------------------------------------
