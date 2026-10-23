@@ -1719,6 +1719,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // AI Suggested Fixes W3: memory already proves a fix; the proven suggestion
   // is attached instead of a shadow run.
   proven_fix_available: false,
+  // Wisp W02: a delegation grant that is no longer usable (or no longer
+  // reaches the org) is a policy outcome, not an integrity failure.
+  // Unreachable today — automations never pass a grant.
+  grant_inactive: false,
+  grant_org_out_of_ceiling: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
