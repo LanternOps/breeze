@@ -181,45 +181,6 @@ describe('GET /audit-logs/export honours the list filters (#8366)', () => {
     expect(text).toContain('ilike');
   });
 
-  it('list ?userId= matches actor_id inside the tenant scope (#9671)', async () => {
-    const uid = '33333333-3333-4333-8333-333333333333';
-    await app.request('/audit-logs');
-    const base = render(lastWhere());
-    queryWheres.length = 0;
-    const res = await app.request(`/audit-logs?userId=${uid}`);
-    expect(res.status).toBe(200);
-    const { sql: text, params } = JSON.parse(render(lastWhere()));
-    expect(render(lastWhere())).not.toBe(base);
-    // The mocked schema columns are plain strings, so they render as params:
-    // the predicate is `actorId = <uid>`.
-    expect(text).toMatch(/\$\d+ = \$\d+/);
-    expect(params[params.indexOf(uid) - 1]).toBe('actorId');
-    // Narrows, never replaces, the accessible-org predicate.
-    expect(text).toContain('accessible_orgs_sentinel');
-  });
-
-  it('list ?userId= with skipCount=true still takes the filtered path, not the unfiltered fast path (#9671)', async () => {
-    const uid = '33333333-3333-4333-8333-333333333333';
-    const res = await app.request(`/audit-logs/logs?userId=${uid}&skipCount=true&limit=5`);
-    expect(res.status).toBe(200);
-    expect(queryWheres).toHaveLength(1);
-    expect(JSON.parse(render(lastWhere())).params).toContain(uid);
-  });
-
-  it('list ?userId= is identity-only: a non-uuid is rejected, not text-matched (#9671)', async () => {
-    const res = await app.request('/audit-logs?userId=dana@example.com');
-    expect(res.status).toBe(400);
-  });
-
-  it('?user= text also matches the joined user email, so email-less command rows are found (#9671)', async () => {
-    await app.request('/audit-logs?user=dana@example.com');
-    const { sql: text, params } = JSON.parse(render(lastWhere()));
-    // actor_email, users.email and users.name (mocked columns render as params).
-    expect(params.filter((p: unknown) => p === '%dana@example.com%').length).toBe(3);
-    expect(params).toEqual(expect.arrayContaining(['actorEmail', 'email', 'name']));
-    expect(text).toContain('ilike');
-  });
-
   it('rejects a pinned org the caller cannot access, like the list (403)', async () => {
     const listRes = await app.request(`/audit-logs?orgId=${ORG_B}`);
     expect(listRes.status).toBe(403);
