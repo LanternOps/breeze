@@ -712,6 +712,7 @@ cisHardeningRoutes.get(
         baselineCreatedAt: sql<Date>`${cisBaselines.createdAt}`.as('baseline_created_at'),
         baselineUpdatedAt: cisBaselines.updatedAt,
         deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
         deviceStatus: devices.status,
         deviceOsType: sql<string>`${devices.osType}`.as('device_os_type'),
         rn: sql<number>`row_number() over (partition by ${cisBaselineResults.deviceId}, ${cisBaselineResults.baselineId} order by ${cisBaselineResults.checkedAt} desc)`.as('rn'),
@@ -772,6 +773,7 @@ cisHardeningRoutes.get(
         baselineCreatedAt: rankedResults.baselineCreatedAt,
         baselineUpdatedAt: rankedResults.baselineUpdatedAt,
         deviceHostname: rankedResults.deviceHostname,
+        deviceDisplayName: rankedResults.deviceDisplayName,
         deviceStatus: rankedResults.deviceStatus,
         deviceOsType: rankedResults.deviceOsType,
       })
@@ -819,6 +821,7 @@ cisHardeningRoutes.get(
         device: {
           id: row.deviceId,
           hostname: row.deviceHostname,
+          displayName: row.deviceDisplayName ?? null,
           osType: row.deviceOsType,
           status: row.deviceStatus,
         },
@@ -1325,6 +1328,7 @@ cisHardeningRoutes.get(
       .select({
         action: cisRemediationActions,
         deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
         baselineName: cisBaselines.name,
       })
       .from(cisRemediationActions)
@@ -1335,6 +1339,18 @@ cisHardeningRoutes.get(
       .limit(limit)
       .offset(offset);
 
+    // Approver display names for the audit detail row (#9606). Skipped when no
+    // listed action has been decided, so the common pending view costs nothing.
+    const approverIds = [...new Set(rows.map((r) => r.action.approvedBy).filter((id): id is string => !!id))];
+    const approverNames = new Map<string, string>();
+    if (approverIds.length > 0) {
+      const approvers = await db
+        .select({ id: users.id, name: users.name })
+        .from(users)
+        .where(inArray(users.id, approverIds));
+      for (const a of approvers) approverNames.set(a.id, a.name);
+    }
+
     return c.json({
       data: rows.map((row) => ({
         ...row.action,
@@ -1342,6 +1358,8 @@ cisHardeningRoutes.get(
         executedAt: row.action.executedAt?.toISOString() ?? null,
         approvedAt: row.action.approvedAt?.toISOString() ?? null,
         deviceHostname: row.deviceHostname,
+        deviceDisplayName: row.deviceDisplayName ?? null,
+        approverName: row.action.approvedBy ? approverNames.get(row.action.approvedBy) ?? null : null,
         baselineName: row.baselineName,
       })),
       pagination: {
