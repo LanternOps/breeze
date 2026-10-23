@@ -646,7 +646,7 @@ describe('erasure with grants present', () => {
     expect(revs).toEqual([]);
   });
 
-  it('cascadeDeleteOrg succeeds with a run pinned to the org-scoped grant (revision FK clears, pin guard allows the RI action)', async () => {
+  it('cascadeDeleteOrg succeeds with a run pinned to the org-scoped grant (runs go before the grant; no FK blocks erasure)', async () => {
     const t = await seedTenant();
     const g = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgId: t.org.id, orgIds: [t.org.id] });
     const [agent] = await withSystemDbAccessContext(() => db.insert(aiAgents).values({
