@@ -885,6 +885,16 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
             backupReadProtocolVersion: null,
             backupIntegrityProtocolVersion: null,
             backupWriteProtocolVersion: null,
+            // #8318 §6.4 / §5.7 (review of wave 1b-1): the claims the previous
+            // install stamped belong to it, as at a reattach confirm's
+            // boundary (deviceInstallBoundary/handlers/deviceRow.ts). Left
+            // set, the once-per-install edition-migration claim kept
+            // auto-migration off for the new install with nothing logged,
+            // and the old install's uninstall intent stayed armed for the
+            // reaper until the new install's first beat — no longer covered
+            // by the migration-window exemption once that claim is gone.
+            editionMigrationDispatchedAt: null,
+            uninstallIntentAt: null,
             status: 'pending',
             updatedAt: new Date(),
           })

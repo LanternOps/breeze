@@ -1407,6 +1407,13 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       backupIntegrityProtocolVersion: null,
       backupWriteProtocolVersion: null,
     });
+    // #8318 §6.4 / §5.7: the claims the previous install stamped are cleared
+    // in the same UPDATE (the once-per-install edition-migration claim, and
+    // its uninstall intent), as at a reattach confirm's boundary.
+    expect(tx.deviceUpdateValues[0]).toMatchObject({
+      editionMigrationDispatchedAt: null,
+      uninstallIntentAt: null,
+    });
     expect(disconnectAgentCredentialGenerationMock).toHaveBeenCalledWith(
       'agent-id-before-reenroll',
       [validHash],

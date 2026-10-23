@@ -599,7 +599,18 @@ function warnStagedVersionHoldBack(args: {
 
 async function releaseClaim(device: Pick<AutoMigrateDevice, 'id' | 'agentId'>): Promise<void> {
   try {
-    await updateOwnDeviceRow(db, { deviceId: device.id, agentId: device.agentId }, { editionMigrationDispatchedAt: null });
+    const released = await updateOwnDeviceRow(db, { deviceId: device.id, agentId: device.agentId }, { editionMigrationDispatchedAt: null });
+    if (released.length === 0) {
+      // #8318 §6.4: the row no longer carries the agent_id the claim was taken
+      // under (a reattach confirm or an in-place re-enroll since), or it is
+      // gone. Nothing is released here, and nothing needs to be: both of
+      // those clear the previous install's claim themselves. Said once, per
+      // release, so a claim that seems stuck has a trail.
+      console.warn(
+        `[edition-auto-migrate] claim release for device ${device.id} matched no row: it changed hands ` +
+          '(reattach / re-enroll, which clear the claim themselves) or is gone; nothing released',
+      );
+    }
   } catch (releaseErr) {
     // The stale claim just means no second attempt — safe, log and move on.
     console.error(`[edition-auto-migrate] failed to release claim for device ${device.id}:`, releaseErr);
