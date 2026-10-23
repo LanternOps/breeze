@@ -989,7 +989,13 @@
       "flow": "Akış",
       "status": "Durum",
       "riskTierTitle": "Risk katmanı {{tier}}",
-      "signer": "İmzalayan: {{signer}}"
+      "signer": "İmzalayan: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Cihaz işlem yapamadı: kullanılabilir PAM yardımcısı yok",
+        "sessionUnavailable": "Cihaz işlem yapamadı: kullanıcının oturumu kullanılamıyor",
+        "helperStartFailed": "Cihaz işlem yapamadı: PAM yardımcısı başlatılamadı",
+        "generic": "Cihaz bu isteği işleyemedi"
+      }
     },
     "actions": {
       "respond": "Yanıtla",
