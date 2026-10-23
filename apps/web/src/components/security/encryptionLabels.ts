@@ -29,10 +29,10 @@ export function encryptionMethodLabel(
   method: string | null | undefined,
   t: Translate,
 ): string {
-  if (!method) return t(METHOD_KEYS.unknown);
+  if (!method) return t(/* i18n-dynamic */ METHOD_KEYS.unknown);
   const norm = normalize(method);
   const key = METHOD_KEYS[norm];
-  if (key) return t(key);
+  if (key) return t(/* i18n-dynamic */ key);
   if (norm === "dm_crypt") return "dm-crypt";
   return method;
 }
@@ -44,5 +44,5 @@ export function encryptionStatusLabel(
 ): string {
   if (!status) return "-";
   const key = STATUS_KEYS[normalize(status)];
-  return key ? t(key) : sentenceCase(status);
+  return key ? t(/* i18n-dynamic */ key) : sentenceCase(status);
 }
