@@ -31,5 +31,6 @@ describe('WebhookList delivery stats (#9656)', () => {
     expect(screen.getByText(/7 success/i)).toBeInTheDocument();
     expect(screen.getByText(/2 failed/i)).toBeInTheDocument();
     expect(screen.queryByText('N/A')).not.toBeInTheDocument();
+    expect(screen.getByText(/2026/)).toBeInTheDocument();
   });
 });

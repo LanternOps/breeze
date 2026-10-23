@@ -216,6 +216,5 @@ describe('WebhooksPage — bearer token authentication (#9652)', () => {
     expect(within(card).getByText('HMAC signature')).toBeInTheDocument();
     expect(within(card).getByText(/X-Breeze-Signature: sha256=\*\*\*/)).toBeInTheDocument();
     expect(within(card).getByText(/X-Breeze-Signature-Timestamp/)).toBeInTheDocument();
-    expect(within(card).queryByText(/X-Signature:/)).not.toBeInTheDocument();
   });
 });

@@ -216,4 +216,11 @@ describe('ApiKeysPage background refresh (#9656)', () => {
     await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
     expect(screen.getAllByText('CI deploy key').length).toBeGreaterThan(0);
   });
+
+  it('first load shows the full-page spinner, not the inline refresh indicator', async () => {
+    fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+    render(<ApiKeysPage />);
+    expect(await screen.findByText('Loading API keys...')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
 });
