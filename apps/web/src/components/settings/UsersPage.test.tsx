@@ -283,3 +283,44 @@ describe('UsersPage — remove confirmation surfaces failures (#3531)', () => {
     expect(toastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+// #9603: Users page used its own never-dismissing toast stack; it now uses the
+// shared helper (auto-dismiss) and keeps only the manual-invite-link toast sticky.
+describe('UsersPage — shared toasts (#9603)', () => {
+  const toastMock = vi.mocked(showToast);
+  beforeEach(() => vi.clearAllMocks());
+
+  function seedResend(body: unknown) {
+    fetchMock.mockImplementation(async (url, opts) => {
+      const method = (opts as RequestInit | undefined)?.method ?? 'GET';
+      if (url === '/users' && method === 'GET') return jsonResponse({ data: [{ ...TREVOR, status: 'invited' }] });
+      if (url === '/users/roles' && method === 'GET') return jsonResponse({ data: [ROLE_ADMIN, ROLE_TECH] });
+      if (url === '/users/resend-invite') return jsonResponse(body);
+      return jsonResponse({});
+    });
+  }
+
+  it('resend success goes through the shared showToast (auto-dismisses)', async () => {
+    seedResend({ success: true, inviteEmailSent: true });
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+    fireEvent.click(screen.getByRole('button', { name: /resend/i }));
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })),
+    );
+    const call = toastMock.mock.calls.find(([t]) => t.type === 'success')![0];
+    expect(call.duration).not.toBe(0);
+  });
+
+  it('manual-link toast is sticky and carries the link to copy', async () => {
+    seedResend({ success: true, inviteEmailSent: false, inviteUrl: 'https://x.test/invite/abc' });
+    render(<UsersPage />);
+    await screen.findByText('Trevor');
+    fireEvent.click(screen.getByRole('button', { name: /resend/i }));
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'warning', duration: 0, copyValue: 'https://x.test/invite/abc' }),
+      ),
+    );
+  });
+});

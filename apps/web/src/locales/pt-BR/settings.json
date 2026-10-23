@@ -1881,7 +1881,7 @@
     "disabledDescription": "Ative o encaminhamento de logs acima para configurar a conexão.",
     "enable": {
       "title": "Ativar encaminhamento de logs",
-      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs em uma programação recorrente."
+      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs à medida que cada dispositivo os informa."
     },
     "connection": {
       "title": "Conexão",
@@ -1970,6 +1970,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Visão do cliente",
+      "subtitle": "Pré-visualização: o que {{who}} vê",
+      "whoOrganization": "seu cliente",
+      "pickerLabel": "Ver como",
+      "pickerAll": "Organização inteira",
+      "loading": "Carregando pré-visualização…",
+      "loadFailed": "Não foi possível carregar a visão do cliente.",
+      "on": "Ativado",
+      "off": "Desativado",
+      "notAvailable": "Uma pré-visualização detalhada desta seção ainda não está disponível.",
+      "permissionWithheld": "Não exibido: você precisa de {{permissions}} para visualizar isto.",
+      "tilesWithheld": "Alguns blocos não são exibidos: você precisa de {{permissions}} para visualizá-los.",
+      "noteNoUser": "Os dados de chamados estão ocultos. Escolha um usuário do portal para ver o que essa pessoa vê.",
+      "readinessTitle": "Verificações de prontidão",
+      "readinessNone": "Nenhum problema encontrado.",
+      "fix": "Corrigir",
+      "readiness": {
+        "documents_empty": "Documentos está ativado, mas nenhum documento está marcado como Visível no portal, então seu cliente vê uma biblioteca vazia.",
+        "reports_empty": "Relatórios está ativado, mas ainda não há execuções de relatório, então seu cliente vê uma lista vazia.",
+        "service_one_time_visible": "Serviço está ativado e itens pontuais ainda estão visíveis para seu cliente.",
+        "backups_no_data": "Backups está ativado, mas ainda não há dados de backup para mostrar.",
+        "dashboard_security_no_data": "O painel está ativado, mas a pontuação de segurança ainda não tem dados, então esse bloco fica vazio para seu cliente.",
+        "branding_unset": "A marca do portal nunca foi definida (logotipo, cores, mensagem de boas-vindas ou contato de suporte)."
+      }
+    },
     "loading": "Carregando configurações do portal…",
     "save": "Salvar configurações do portal",
     "toasts": {
@@ -4728,6 +4754,7 @@
     "actions": "Ações",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nenhuma função encontrada. Tente ajustar sua pesquisa ou filtros.",
     "cloneRole": "Clonar função: {{name}}",
+    "cloneDescription": "Cópia de {{name}}",
     "clone": "Clonar",
     "edit": "Editar",
     "delete": "Excluir",

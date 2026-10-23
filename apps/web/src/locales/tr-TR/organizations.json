@@ -589,6 +589,7 @@
       "title": "Belgeler",
       "subtitle": "Bu kuruluşa ait runbook'lar, taban çizgileri, politikalar ve teslimat kanıtları.",
       "empty": "Henüz belge yok. Kitaplığı başlatmak için bir runbook, taban çizgisi veya imzalı bir politika yükleyin.",
+      "emptyPortalHint": "Müşteriniz, portalda Görünür olarak işaretlenen belgeleri görür. İmzalı bir teklif veya sözleşme ile bir güvenlik taban çizgisi iyi ilk belgelerdir.",
       "emptyFiltered": "Bu kategoride belge yok.",
       "loadFailed": "Belgeler yüklenemedi.",
       "upload": "Belge yükle",

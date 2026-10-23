@@ -20,6 +20,7 @@
     "state": {
       "met": "Buluştuk",
       "notMet": "Karşılanılmadı",
+      "metLate": "Geç karşılandı",
       "breached": "İhlal edildi",
       "pausedLeft": "Duraklatıldı · {{relative}} kaldı",
       "left": "{{relative}} kaldı"

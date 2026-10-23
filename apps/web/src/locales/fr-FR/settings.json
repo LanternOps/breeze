@@ -1881,7 +1881,7 @@
     "disabledDescription": "Activez le transfert de journal ci-dessus pour configurer les paramètres de connexion.",
     "enable": {
       "title": "Activer le transfert de journaux",
-      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux selon un calendrier récurrent."
+      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux au fur et à mesure que chaque appareil les signale."
     },
     "connection": {
       "title": "Connexion",
@@ -1970,6 +1970,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vue client",
+      "subtitle": "Aperçu : ce que voit {{who}}",
+      "whoOrganization": "votre client",
+      "pickerLabel": "Afficher en tant que",
+      "pickerAll": "Toute l’organisation",
+      "loading": "Chargement de l’aperçu…",
+      "loadFailed": "Impossible de charger la vue client.",
+      "on": "Activé",
+      "off": "Désactivé",
+      "notAvailable": "Un aperçu détaillé de cette section n’est pas encore disponible.",
+      "permissionWithheld": "Non affiché : vous avez besoin de {{permissions}} pour prévisualiser ceci.",
+      "tilesWithheld": "Certaines tuiles ne sont pas affichées : vous avez besoin de {{permissions}} pour les prévisualiser.",
+      "noteNoUser": "Les données liées aux tickets sont masquées. Choisissez un utilisateur du portail pour voir ce que cette personne voit.",
+      "readinessTitle": "Vérifications de préparation",
+      "readinessNone": "Aucun problème détecté.",
+      "fix": "Corriger",
+      "readiness": {
+        "documents_empty": "Documents est activé, mais aucun document n’est marqué Visible dans le portail : votre client voit une bibliothèque vide.",
+        "reports_empty": "Rapports est activé, mais il n’y a pas encore d’exécution de rapport : votre client voit une liste vide.",
+        "service_one_time_visible": "Service est activé et les éléments ponctuels sont toujours visibles pour votre client.",
+        "backups_no_data": "Sauvegardes est activé, mais il n’y a pas encore de données de sauvegarde à afficher.",
+        "dashboard_security_no_data": "Tableau de bord est activé, mais le score de sécurité n’a pas encore de données : cette tuile est vide pour votre client.",
+        "branding_unset": "L’image de marque du portail n’a jamais été définie (logo, couleurs, message d’accueil ou contact du support)."
+      }
+    },
     "loading": "Paramètres de chargement du portail...",
     "save": "Paramètres du portail d’enregistrement",
     "toasts": {
@@ -4728,6 +4754,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Aucun rôle trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
     "cloneRole": "Rôle du clone : {{name}}",
+    "cloneDescription": "Copie de {{name}}",
     "clone": "Cloner",
     "edit": "Modifier",
     "delete": "Supprimer",

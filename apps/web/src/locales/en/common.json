@@ -1383,6 +1383,12 @@
           "signingSecret": "Use this secret to verify webhook signatures."
         },
         "invalidJsonPreview": "Invalid JSON in template.",
+        "otherEvents": {
+          "allEvents": "All events (*)",
+          "allEventsHint": "This webhook is subscribed to all events, so the individual events below are not used. Remove \"All events\" to choose specific ones.",
+          "remove": "Remove {{event}}",
+          "title": "Other subscribed events"
+        },
         "payload": {
           "previewEmpty": "Preview appears once JSON is valid.",
           "subtitle": "Define the JSON payload shape sent to your destination.",
