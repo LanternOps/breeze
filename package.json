@@ -53,6 +53,7 @@
     "overrides": {
       "adm-zip@<0.6.1": ">=0.6.1",
       "axios@>=1.0.0 <1.20.0": ">=1.20.0",
+      "body-parser@>=2.0.0 <2.4.0": "2.4.0",
       "websocket-driver@<0.7.5": ">=0.7.5",
       "fast-xml-parser@<5.5.7": ">=5.5.7",
       "fast-xml-parser@<5.7.0": ">=5.7.0",
