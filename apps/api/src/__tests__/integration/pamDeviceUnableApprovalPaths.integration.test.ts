@@ -218,6 +218,55 @@ async function reportUnable(s: Scenario, elevationId: string) {
   );
 }
 
+// Lock barrier helpers, as in elevationApprovalConcurrency.integration.test.ts.
+async function holdOpen(
+  statement: (tx: postgres.TransactionSql) => Promise<unknown>,
+): Promise<{ pid: number; release: () => Promise<void> }> {
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  let reportPid!: (pid: number) => void;
+  const pidReady = new Promise<number>((resolve) => { reportPid = resolve; });
+  const done = adminSql.begin(async (tx) => {
+    const [row] = await tx<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`;
+    await statement(tx);
+    reportPid(row!.pid);
+    await gate;
+  });
+  const pid = await Promise.race([
+    pidReady,
+    done.then(() => { throw new Error('holder transaction ended before it reported its pid'); }),
+  ]);
+  return {
+    pid,
+    release: async () => {
+      releaseGate();
+      await done;
+    },
+  };
+}
+
+/** Backends waiting, directly or behind another waiter, on a lock holderPid holds. */
+async function blockedBy(holderPid: number): Promise<number> {
+  const [row] = await adminSql<{ n: number }[]>`
+    WITH RECURSIVE waiters(pid) AS (
+      SELECT a.pid FROM pg_stat_activity a WHERE ${holderPid} = ANY(pg_blocking_pids(a.pid))
+      UNION
+      SELECT a.pid FROM pg_stat_activity a JOIN waiters w ON w.pid = ANY(pg_blocking_pids(a.pid))
+    )
+    SELECT count(*)::int AS n FROM waiters
+  `;
+  return row!.n;
+}
+
+async function waitUntil(label: string, check: () => Promise<boolean>, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for: ${label}`);
+}
+
 async function statuses(elevationId: string, approvalIds: string[]) {
   return withSystemDbAccessContext(async () => {
     const [elev] = await db.select({ status: elevationRequests.status, approvedBy: elevationRequests.approvedByUserId })
@@ -262,6 +311,61 @@ describe.skipIf(!RUN)('device-unable elevations cannot be approved (#9517)', () 
     const after = await statuses(elevationId, []);
     expect(after.elevation.status).toBe('expired');
     expect(after.elevation.approvedBy).toBeNull();
+  });
+
+  // The elevation is held so both writers are queued on it before either can
+  // run; the queue order is fixed, so each case has one correct outcome. With
+  // the report's row lock removed, the approval-first case fails: the report
+  // reads 'pending' before the approval commits and its guarded UPDATE then
+  // matches nothing, so the report is lost.
+  it.each(['report', 'approval'] as const)('a device-unable report and a web approval queued together: %s first wins cleanly', async (first) => {
+    const s = await seedScenario();
+    const { elevationId } = await seedElevation(s, [s.approverA]);
+
+    const holder = await holdOpen((tx) => tx`SELECT id FROM elevation_requests WHERE id = ${elevationId} FOR UPDATE`);
+    let reportP!: ReturnType<typeof reportUnable>;
+    let approvalP!: Promise<Response>;
+    try {
+      if (first === 'report') {
+        reportP = reportUnable(s, elevationId);
+        reportP.catch(() => {});
+        await waitUntil('report waiting on the elevation', async () => (await blockedBy(holder.pid)) >= 1);
+        approvalP = respondOnWeb(s, elevationId);
+      } else {
+        approvalP = respondOnWeb(s, elevationId);
+        approvalP.catch(() => {});
+        await waitUntil('approval waiting on the elevation', async () => (await blockedBy(holder.pid)) >= 1);
+        reportP = reportUnable(s, elevationId);
+      }
+      reportP.catch(() => {});
+      approvalP.catch(() => {});
+      await waitUntil('report and approval both waiting on the elevation', async () => (await blockedBy(holder.pid)) >= 2);
+    } finally {
+      await holder.release();
+    }
+    const [report, approval] = await Promise.all([reportP, approvalP]);
+
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select().from(elevationRequests).where(eq(elevationRequests.id, elevationId)),
+    );
+    // Either way the report is recorded on the row.
+    expect(row!.deviceUnableAt).not.toBeNull();
+    expect(row!.deviceUnableReason).toBe('session_unavailable');
+    if (first === 'report') {
+      expect(report).toMatchObject({ kind: 'recorded', priorStatus: 'pending', status: 'expired', closed: true });
+      expect(row!.status).toBe('expired');
+      expect(row!.approvedByUserId).toBeNull();
+      expect(approval.status).toBe(409);
+      // The respond route read the row before the report committed, so its
+      // message can name that earlier status; the 409 is what matters.
+      await expect(approval.json()).resolves.toMatchObject({ error: expect.stringMatching(/^Request is not pending/) });
+    } else {
+      expect(approval.status).toBe(200);
+      expect(report).toMatchObject({ kind: 'recorded', priorStatus: 'approved', status: 'approved', closed: false });
+      expect(row!.status).toBe('approved');
+      expect(row!.expiredAt).toBeNull();
+      expect(row!.approvedByUserId).toBe(s.webDecider.id);
+    }
   });
 
   it('a phone approval of a request the device reported unable loses the race and expires', async () => {

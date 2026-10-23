@@ -54,6 +54,31 @@ describe('OrgDocumentsTab (#5573 W03)', () => {
     expect(orgFetch.mock.calls).toHaveLength(1);
   });
 
+  describe('empty-state portal hint (#9350)', () => {
+    const emptyLibrary = (portalDocs: boolean | 'fail') => {
+      orgFetch.mockImplementation(async (path: string) => {
+        if (path.includes('/portal-settings')) {
+          return portalDocs === 'fail' ? json({ error: 'x' }, 500) : json({ data: { enableDocuments: portalDocs } });
+        }
+        return json({ data: [] });
+      });
+    };
+
+    it('says documents must be marked Visible in portal when portal Documents is on', async () => {
+      emptyLibrary(true);
+      renderTab();
+      expect(await screen.findByTestId('org-documents-empty-portal-hint')).toHaveTextContent('orgRecord.documents.emptyPortalHint');
+    });
+
+    it.each([false, 'fail'] as const)('omits the hint when portal Documents is off or the lookup fails (%s)', async (mode) => {
+      emptyLibrary(mode);
+      renderTab();
+      await screen.findByTestId('org-documents-empty');
+      await waitFor(() => expect(orgFetch.mock.calls.some((c) => String(c[0]).includes('/portal-settings'))).toBe(true));
+      expect(screen.queryByTestId('org-documents-empty-portal-hint')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows the failure message instead of an empty library when the load fails', async () => {
     orgFetch.mockResolvedValue(json({ error: 'boom', code: 'NOT_FOUND' }, 404));
     renderTab();

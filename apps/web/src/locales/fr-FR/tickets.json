@@ -20,6 +20,7 @@
     "state": {
       "met": "Respecté",
       "notMet": "Jamais rencontrés",
+      "metLate": "Respecté en retard",
       "breached": "Violation",
       "pausedLeft": "En pause · temps restant : {{relative}}",
       "left": "Temps restant : {{relative}}"

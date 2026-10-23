@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "No devices found.",
     "none": "None",
+    "unknown": "Unknown",
+    "tpmNotReported": "Not reported by the agent",
     "os": "OS",
     "pageOf": "Page {{page}} of {{totalPages}}",
     "partial": "Partial",
@@ -464,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
+    "accessRevealed": "revealed the key",
     "bitlocker": "BitLocker",
     "cancel": "Cancel",
     "collectNow": "Collect now",
@@ -489,6 +492,7 @@
     "rotate": "Rotate",
     "rotateKey": "Rotate key",
     "rotateRecoveryKey": "Rotate recovery key",
+    "rotateVolume": "Volume",
     "thisAccessHasBeenRecordedInThe": "This access has been recorded in the audit trail."
   },
   "securityS1ThreatList": {
@@ -1332,17 +1336,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Enter at least one device ID",
-      "createScan": "Failed to create scan"
+      "createScan": "Failed to create scan",
+      "devicesRequired": "Select at least one device",
+      "devicesNotReady": "The device list is still loading or incomplete. Wait for it to finish, then try again.",
+      "devicesLoadFailed": "The device list could not be loaded. Use Retry in the device list, then try again."
     },
     "title": "Create Scan",
     "form": {
       "policyOptional": "Policy (optional)",
       "noPolicy": "No policy (manual config)",
-      "deviceIds": "Device IDs",
-      "deviceIdsHelp": "One UUID per line, or comma-separated.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Detection Classes"
+      "detectionClasses": "Detection Classes",
+      "devices": "Devices",
+      "devicesHelp": "Choose the devices to scan."
     },
     "actions": {
       "creating": "Creating...",
@@ -1407,6 +1412,10 @@
       "showingSearch": "Showing {{visible}} of {{pageCount}} on this page ({{total}} total)",
       "showingTotal": "Showing {{visible}} of {{total}} findings",
       "pageOf": "Page {{page}} of {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risk accepted",
+      "markedFalsePositive": "Marked as false positive"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1454,18 @@
       "detectionClasses": "Detection Classes",
       "scheduleType": "Schedule Type",
       "intervalMinutes": "Interval (minutes)",
-      "cronExpression": "Cron Expression",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron Expression (UTC)",
+      "cronNextRun": "Next run (your local time): {{time}}",
+      "cronExpressionZone": "Cron Expression ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Interval",
       "cron": "Cron",
-      "everyMinutes": "Every {{minutes}}m"
+      "everyMinutes": "Every {{minutes}}m",
+      "paused": "Paused",
+      "pausedTitle": "Scheduling is turned off for this policy, so it will not run automatically"
     },
     "table": {
       "name": "Name",
@@ -1777,7 +1790,7 @@
     "unknown": "unknown"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Hardening",
+    "title": "CIS Benchmarks",
     "description": "Configuration baselines, compliance scoring, and remediation tracking.",
     "messages": {
       "loadFailed": "Failed to load CIS data"
@@ -1870,6 +1883,11 @@
     "badges": {
       "allOrgs": "All orgs",
       "partnerWideTitle": "Partner-wide baseline — applies to devices in every organization"
+    },
+    "scanAll": {
+      "title": "Scan all organizations?",
+      "message": "“{{name}}” is a partner-wide baseline. With no organization selected it scans all {{orgCount}} organizations. Select an organization first to scan only its devices.",
+      "confirm": "Scan all"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +1990,17 @@
       "queueFailed": "The approval was recorded but the remediation could not be queued. It is back to pending approval; try again.",
       "mfaRequired": "Approving or rejecting a remediation requires a session signed in with multi-factor authentication. Sign out and sign in again with MFA.",
       "ownRequest": "You requested this remediation, so another user must approve it."
+    },
+    "detail": {
+      "toggle": "Toggle details",
+      "approvedBy": "Approved by",
+      "approvedAt": "Approved at",
+      "note": "Approval note",
+      "beforeState": "Before",
+      "afterState": "After",
+      "rollbackHint": "Rollback hint",
+      "noEvidence": "No evidence recorded for this remediation yet.",
+      "unknownApprover": "Unknown user"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2311,8 @@
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "You don't have access to this organization"
   }
 }

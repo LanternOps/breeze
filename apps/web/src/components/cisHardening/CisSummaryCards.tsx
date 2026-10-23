@@ -30,7 +30,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
               {t('cisHardeningCisSummaryCards.averageScore')}
               <HelpTooltip text={t('cisHardeningCisSummaryCards.averageScoreTooltip')} />
             </p>
-            <p className={cn('text-xl font-semibold', scoreColor)}>{Math.round(score)}%</p>
+            <p data-testid="cis-summary-average-score" className={cn('text-xl font-semibold', scoreColor)}>{Math.round(score)}%</p>
           </div>
         </div>
         <div className="mt-3 h-1.5 w-full rounded-full bg-muted">
@@ -45,7 +45,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
           </div>
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{t('cisHardeningCisSummaryCards.failingDevices')}</p>
-            <p className={cn('text-xl font-semibold', failingDevices > 0 ? 'text-red-600' : 'text-foreground')}>
+            <p data-testid="cis-summary-failing-devices" className={cn('text-xl font-semibold', failingDevices > 0 ? 'text-red-600' : 'text-foreground')}>
               {failingDevices}
             </p>
           </div>
@@ -59,7 +59,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
           </div>
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground">{t('cisHardeningCisSummaryCards.activeBaselines')}</p>
-            <p className="text-xl font-semibold">{baselinesCount}</p>
+            <p data-testid="cis-summary-active-baselines" className="text-xl font-semibold">{baselinesCount}</p>
           </div>
         </div>
       </div>
@@ -74,7 +74,7 @@ export default function CisSummaryCards({ summary, baselinesCount, pendingRemedi
               {t('cisHardeningCisSummaryCards.pendingRemediations')}
               <HelpTooltip text={t('cisHardeningCisSummaryCards.pendingRemediationsTooltip')} />
             </p>
-            <p className={cn('text-xl font-semibold', pendingRemediations > 0 ? 'text-amber-600' : 'text-foreground')}>
+            <p data-testid="cis-summary-pending-remediations" className={cn('text-xl font-semibold', pendingRemediations > 0 ? 'text-amber-600' : 'text-foreground')}>
               {pendingRemediations}
             </p>
           </div>

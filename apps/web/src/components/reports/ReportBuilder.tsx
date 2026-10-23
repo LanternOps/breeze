@@ -259,6 +259,8 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   ar_aging: 'compliance',
   // #7608 W10: AI usage by client — curated, own options form, partner capable.
   ai_usage_by_client: 'activity',
+  // mrr_renewals: curated, own options form, measured at run time.
+  mrr_renewals: 'activity',
   // Backup Status Report (#6013 W05) — same reasoning as Hardware Lifecycle:
   // delivered only via its own curated template and options form
   // (BackupStatusOptionsForm.tsx). Mapping to the devices source keeps this

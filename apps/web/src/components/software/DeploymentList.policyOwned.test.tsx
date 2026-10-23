@@ -47,6 +47,19 @@ const MANUAL = {
   counts: { ...COUNTS, pending: 1, total: 1 },
 };
 
+describe("DeploymentList — no raw id (#9638)", () => {
+  it("does not print the deployment UUID under the name", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: [MANUAL], pagination: { page: 1, limit: 20, total: 1 } }),
+    );
+    render(<DeploymentList />);
+    await waitFor(() =>
+      expect(screen.getByText("Chrome Rollout")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("dep-manual-1")).not.toBeInTheDocument();
+  });
+});
+
 describe("DeploymentList — policy-owned badge (#5509)", () => {
   it("labels a policy-originated deployment as policy-owned", async () => {
     fetchMock.mockResolvedValue(

@@ -8,6 +8,23 @@ export type PartnerDeviceCapacityTx = Parameters<Parameters<typeof db.transactio
 
 export const PARTNER_DEVICE_CAPACITY_LOCK_TIMEOUT_MS = 3_000;
 
+/** A billing allowance can widen admission, never erase the reserved limit. */
+export function effectivePartnerAdmissionLimit(partner: {
+  maxDevices: number | null;
+  plan?: string;
+  billingSubscriptionStatus?: string | null;
+  billingAdmissionLimit?: number | null;
+  billingAdmissionExpiresAt?: Date | string | null;
+}, now = new Date()): number | null {
+  if (partner.maxDevices === null) return null;
+  const expiry = partner.billingAdmissionExpiresAt ? new Date(partner.billingAdmissionExpiresAt).getTime() : NaN;
+  const limit = partner.billingAdmissionLimit;
+  if (partner.plan === 'community' && partner.billingSubscriptionStatus === 'active'
+    && typeof limit === 'number' && Number.isInteger(limit) && limit > 0 && limit <= 1100
+    && Number.isFinite(expiry) && expiry > now.getTime()) return Math.max(partner.maxDevices, limit);
+  return partner.maxDevices;
+}
+
 export type PartnerDeviceCapacityResult =
   | { allowed: true; partnerId: string; maxDevices: number | null; activeCount: number | null }
   | { allowed: false; partnerId: string; maxDevices: number; activeCount: number };
@@ -62,7 +79,9 @@ export async function admitPartnerDeviceCapacity(
   }
 
   const [partner] = await tx
-    .select({ maxDevices: partners.maxDevices })
+    .select({ maxDevices: partners.maxDevices, plan: partners.plan,
+      billingSubscriptionStatus: partners.billingSubscriptionStatus,
+      billingAdmissionLimit: partners.billingAdmissionLimit, billingAdmissionExpiresAt: partners.billingAdmissionExpiresAt })
     .from(partners)
     .where(eq(partners.id, input.expectedPartnerId))
     .limit(1)
@@ -74,7 +93,7 @@ export async function admitPartnerDeviceCapacity(
     await tx.execute(sql`select set_config('lock_timeout', ${`${priorLockTimeout}ms`}, true)`);
   }
 
-  return decideCapacity(tx, input, partner.maxDevices);
+  return decideCapacity(tx, input, effectivePartnerAdmissionLimit(partner));
 }
 
 /**
@@ -96,14 +115,16 @@ export async function previewPartnerDeviceCapacity(
     throw new PartnerDeviceCapacityError('ORG_PARTNER_CHANGED', 'Organization partner changed during device admission');
   }
   const [partner] = await tx
-    .select({ maxDevices: partners.maxDevices })
+    .select({ maxDevices: partners.maxDevices, plan: partners.plan,
+      billingSubscriptionStatus: partners.billingSubscriptionStatus,
+      billingAdmissionLimit: partners.billingAdmissionLimit, billingAdmissionExpiresAt: partners.billingAdmissionExpiresAt })
     .from(partners)
     .where(eq(partners.id, input.expectedPartnerId))
     .limit(1);
   if (!partner) {
     throw new PartnerDeviceCapacityError('PARTNER_NOT_FOUND', 'Partner not found during device admission');
   }
-  return decideCapacity(tx, input, partner.maxDevices);
+  return decideCapacity(tx, input, effectivePartnerAdmissionLimit(partner));
 }
 
 /**

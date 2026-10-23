@@ -387,7 +387,7 @@ describe('AI routes', () => {
       vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
       vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
       vi.mocked(settleBlockedTurnForNewMessage).mockResolvedValue('concluded');
-      vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+      vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any);
 
       const res = await postMessage();
 
@@ -406,7 +406,7 @@ describe('AI routes', () => {
         vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
         vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(activeSession);
         vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
-        vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+        vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any);
 
         const res = await postMessage();
         expect(res.status).toBe(200);
@@ -460,7 +460,7 @@ describe('AI routes', () => {
       vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
       vi.mocked(db.insert).mockImplementation(() => {
         depths.insert = dbCtx.depth;
-        return { values: vi.fn().mockResolvedValue(undefined) } as any;
+        return { values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any;
       });
 
       const res = await postMessage();
@@ -569,7 +569,7 @@ describe('AI routes', () => {
         vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
         vi.mocked(db.insert).mockImplementation(() => {
           depths.insert = dbCtx.depth;
-          return { values: vi.fn().mockResolvedValue(undefined) } as any;
+          return { values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any;
         });
 
         const res = await postMessage();

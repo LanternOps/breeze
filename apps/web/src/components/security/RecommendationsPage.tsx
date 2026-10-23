@@ -100,6 +100,9 @@ export default function RecommendationsPage() {
     patch_compliance: t("securityRecommendationsPage.patchCompliance"),
     vulnerability_management: t("securityRecommendationsPage.vulnMgmt"),
   };
+  // Refetch when the header switcher changes org (#9642); fetchWithAuth reads
+  // the selected org at call time.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
   const fetchData = useCallback(
     async (page = 1) => {
       setError(undefined);
@@ -138,7 +141,7 @@ export default function RecommendationsPage() {
         setLoading(false);
       }
     },
-    [priorityFilter, categoryFilter, statusFilter],
+    [priorityFilter, categoryFilter, statusFilter, currentOrgId],
   );
   useEffect(() => {
     fetchData();
@@ -434,7 +437,7 @@ export default function RecommendationsPage() {
                   >
                     {(rec.orgs ?? []).length > 1 && (
                       <span className="text-xs font-medium">
-                        {orgName(o.orgId)} · {t(`securityRecommendationsPage.${o.status}`)}
+                        {orgName(o.orgId)} · {t(/* i18n-dynamic */ `securityRecommendationsPage.${o.status}`)}
                       </span>
                     )}
                     {o.status !== "open" ? (

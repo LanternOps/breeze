@@ -59,16 +59,16 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 // Multi-currency wave 7 (#3779): the dashboard's per-currency MRR comes from
-// contractService. This file mocks `../db` wholesale, so mock the service
+// contractMrr (#9828). This file mocks `../db` wholesale, so mock the service
 // rather than extending the db.select mock queue with its two reads.
-vi.mock('../services/contractService', () => ({
+vi.mock('../services/contractMrr', () => ({
   summarizeActiveContractMrrByOrg: vi.fn(async () => new Map([
     ['org-123', [{ currencyCode: 'EUR', amount: '410.00' }, { currencyCode: 'USD', amount: '1230.00' }]],
   ])),
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { partnerRoutes } from './partner';
 
 describe('partner routes', () => {

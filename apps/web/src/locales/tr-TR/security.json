@@ -311,6 +311,8 @@
     "no": "Hayır",
     "noDevicesFound": "Cihaz bulunamadı.",
     "none": "Hiçbiri",
+    "unknown": "Bilinmiyor",
+    "tpmNotReported": "Ajan tarafından bildirilmedi",
     "os": "İşletim Sistemi",
     "pageOf": "Sayfa {{page}} / {{totalPages}}",
     "partial": "Kısmi",
@@ -464,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
+    "accessRevealed": "anahtarı gösterdi",
     "bitlocker": "BitLocker",
     "cancel": "İptal",
     "collectNow": "Şimdi topla",
@@ -489,6 +492,7 @@
     "rotate": "Döndür",
     "rotateKey": "Döndürme tuşu",
     "rotateRecoveryKey": "Kurtarma anahtarını döndür",
+    "rotateVolume": "Birim",
     "thisAccessHasBeenRecordedInThe": "Bu erişim denetim takibine kaydedildi."
   },
   "securityS1ThreatList": {
@@ -1332,17 +1336,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "En az bir cihaz kimliğini girin",
-      "createScan": "Tarama oluşturulamadı"
+      "createScan": "Tarama oluşturulamadı",
+      "devicesRequired": "En az bir cihaz seçin",
+      "devicesNotReady": "Cihaz listesi hâlâ yükleniyor veya eksik. Tamamlanmasını bekleyin ve tekrar deneyin.",
+      "devicesLoadFailed": "Cihaz listesi yüklenemedi. Cihaz listesindeki Yeniden dene düğmesini kullanın, ardından tekrar deneyin."
     },
     "title": "Tarama Oluştur",
     "form": {
       "policyOptional": "Politika (isteğe bağlı)",
       "noPolicy": "Politika yok (manuel yapılandırma)",
-      "deviceIds": "Cihaz Kimlikleri",
-      "deviceIdsHelp": "Satır başına bir UUID veya virgülle ayrılmış.",
-      "deviceIdsPlaceholder": "cihaz-uuid-1\ncihaz-uuid-2",
-      "detectionClasses": "Algılama Sınıfları"
+      "detectionClasses": "Algılama Sınıfları",
+      "devices": "Cihazlar",
+      "devicesHelp": "Taranacak cihazları seçin."
     },
     "actions": {
       "creating": "Oluşturuluyor...",
@@ -1407,6 +1412,10 @@
       "showingSearch": "Bu sayfada {{pageCount}} / {{visible}} gösteriliyor (toplam {{total}})",
       "showingTotal": "{{total}} bulgulardan {{visible}} gösteriliyor",
       "pageOf": "Sayfa {{page}} / {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risk kabul edildi",
+      "markedFalsePositive": "Yanlış pozitif olarak işaretlendi"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1454,18 @@
       "detectionClasses": "Algılama Sınıfları",
       "scheduleType": "Zamanlama Türü",
       "intervalMinutes": "Aralık (dakika)",
-      "cronExpression": "Cron İfadesi",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron İfadesi (UTC)",
+      "cronNextRun": "Sonraki çalışma (yerel saatiniz): {{time}}",
+      "cronExpressionZone": "Cron İfadesi ({{zone}})"
     },
     "schedule": {
       "manual": "Manuel",
       "interval": "Aralık",
       "cron": "Cron",
-      "everyMinutes": "Her {{minutes}}m"
+      "everyMinutes": "Her {{minutes}}m",
+      "paused": "Duraklatıldı",
+      "pausedTitle": "Bu ilke için zamanlama kapalı, bu yüzden otomatik olarak çalışmayacak"
     },
     "table": {
       "name": "Ad",
@@ -1777,7 +1790,7 @@
     "unknown": "bilinmiyor"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Sertleştirme",
+    "title": "CIS Benchmarks",
     "description": "Yapılandırma temelleri, uyumluluk puanlaması ve iyileştirme takibi.",
     "messages": {
       "loadFailed": "CIS verileri yüklenemedi"
@@ -1870,6 +1883,11 @@
     "badges": {
       "allOrgs": "Tüm kuruluşlar",
       "partnerWideTitle": "İş ortağı çapında temel — her kuruluştaki cihazlar için geçerlidir"
+    },
+    "scanAll": {
+      "title": "Tüm kuruluşlar taransın mı?",
+      "message": "“{{name}}” iş ortağı genelinde bir temeldir. Kuruluş seçilmediğinde {{orgCount}} kuruluşun tamamını tarar. Yalnızca bir kuruluşun cihazlarını taramak için önce o kuruluşu seçin.",
+      "confirm": "Tümünü tara"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +1990,17 @@
       "queueFailed": "Onay kaydedildi ancak düzeltme kuyruğa alınamadı. Yeniden onay bekliyor; tekrar deneyin.",
       "mfaRequired": "Bir düzeltmeyi onaylamak veya reddetmek için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Çıkış yapıp MFA ile yeniden giriş yapın.",
       "ownRequest": "Bu düzeltmeyi siz istediniz; başka bir kullanıcının onaylaması gerekir."
+    },
+    "detail": {
+      "toggle": "Ayrıntıları aç/kapat",
+      "approvedBy": "Onaylayan",
+      "approvedAt": "Onay zamanı",
+      "note": "Onay notu",
+      "beforeState": "Önce",
+      "afterState": "Sonra",
+      "rollbackHint": "Geri alma ipucu",
+      "noEvidence": "Bu iyileştirme için henüz kanıt kaydedilmedi.",
+      "unknownApprover": "Bilinmeyen kullanıcı"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2311,8 @@
       "awaitingEvaluation": "Değerlendirme bekleniyor",
       "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Bu kuruluşa erişiminiz yok"
   }
 }

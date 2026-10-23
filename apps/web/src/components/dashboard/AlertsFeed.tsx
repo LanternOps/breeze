@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { EntityLink } from '@/components/shared/EntityLink';
 import { fleetPresence } from './fleetPresence';
+import { DashboardMetric } from './DashboardMetric';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AlertRow, AlertsSummary, DeviceStats } from './types';
 
@@ -60,14 +61,14 @@ export default function AlertsFeed({
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-destructive" aria-hidden="true" />
                 <span className="sr-only">{t('dashboard.stats.critical')}</span>
-                {criticalCount}
+                <DashboardMetric metric="alerts.criticalCount">{criticalCount}</DashboardMetric>
               </span>
             )}
             {warningCount > 0 && (
               <span className="inline-flex items-center gap-1.5">
                 <span className="h-2 w-2 rounded-full bg-warning-strong" aria-hidden="true" />
                 <span className="sr-only">{t('dashboard.stats.warnings')}</span>
-                {warningCount}
+                <DashboardMetric metric="alerts.warningCount">{warningCount}</DashboardMetric>
               </span>
             )}
           </span>

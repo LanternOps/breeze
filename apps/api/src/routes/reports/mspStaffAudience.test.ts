@@ -33,10 +33,19 @@ const NO_INVOICES_PERMISSIONS = [
   { resource: 'tickets', action: 'read' },
   { resource: 'time_entries', action: 'read' },
   { resource: 'ai_sessions', action: 'read_all' },
+  { resource: 'contracts', action: 'read' },
 ];
 /** The types NO_INVOICES_PERMISSIONS cannot see: every type that needs
  *  invoices:read. ai_usage_by_client (#7608) needs it too. */
 const INVOICE_GATED_TYPES = ['ar_aging', 'ai_usage_by_client'];
+/** reports:* plus everything a business type needs EXCEPT contracts:read (#9828). */
+const NO_CONTRACTS_PERMISSIONS = [
+  { resource: 'reports', action: '*' },
+  { resource: 'tickets', action: 'read' },
+  { resource: 'time_entries', action: 'read' },
+  { resource: 'ai_sessions', action: 'read_all' },
+  { resource: 'invoices', action: 'read' },
+];
 
 const state = vi.hoisted(() => ({
   auth: null as unknown,
@@ -337,7 +346,7 @@ function orgRun(type: string) {
   };
 }
 
-const BUSINESS = ['ar_aging', 'technician_time_billability', 'ticket_sla_attainment'] as const;
+const BUSINESS = ['ar_aging', 'technician_time_billability', 'ticket_sla_attainment', 'mrr_renewals'] as const;
 
 /** True when `where` carries `reports.type NOT IN (…)` binding every business type. */
 function excludesBusinessTypes(where: unknown): boolean {
@@ -647,5 +656,33 @@ describe('ruling P8b: a caller lacking a business type\'s read permission never 
   it('SLA types stay visible to a caller holding tickets + time_entries read', async () => {
     state.rows = [orgRun('technician_time_billability'), orgRun('technician_time_billability')];
     expect((await app().request(`/reports/runs/${RUN_ID}`)).status).toBe(200);
+  });
+});
+
+describe('#9828: mrr_renewals is gated on contracts:read', () => {
+  beforeEach(() => {
+    state.auth = partnerAuth('selected');
+    state.permissions = { permissions: NO_CONTRACTS_PERMISSIONS };
+  });
+
+  it('without contracts:read: GET /reports/:id → 404 and lists exclude mrr_renewals only', async () => {
+    state.rows = [orgDefinition('mrr_renewals'), orgDefinition('mrr_renewals'), null];
+    const res = await app().request(`/reports/${REPORT_ID}`);
+    expect(notInTypes(state.wheres[0])).toEqual(['mrr_renewals']);
+    expect(res.status).toBe(404);
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    expect(notInTypes(state.wheres[0])).toEqual(['mrr_renewals']);
+  });
+
+  it('positive control: with contracts:read the definition is served and lists are unfiltered', async () => {
+    state.permissions = { permissions: [...NO_CONTRACTS_PERMISSIONS, { resource: 'contracts', action: 'read' }] };
+    state.rows = [orgDefinition('mrr_renewals'), orgDefinition('mrr_renewals'), null];
+    expect((await app().request(`/reports/${REPORT_ID}`)).status).toBe(200);
+    state.wheres = [];
+    state.rows = [{ count: 0 }, null];
+    await app().request('/reports');
+    expect(notInTypes(state.wheres[0])).toEqual([]);
   });
 });

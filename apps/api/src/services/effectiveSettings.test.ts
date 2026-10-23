@@ -49,7 +49,7 @@ function primeSelect(orgRows: unknown[], partnerRows: unknown[]) {
 /** Partner enforces `defaults.autoEnrollment` with everything switched off. */
 const PARTNER_AUTO_ENROLLMENT_OFF = {
   defaults: {
-    autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
+    autoEnrollment: { enabled: false, requireApproval: false },
   },
 };
 
@@ -62,36 +62,57 @@ describe('assertNotLocked', () => {
     primeSelect([{ partnerId: 'partner-1' }], [{ settings: {} }]);
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
+    ).resolves.toBeUndefined();
+  });
+
+  // #9617: the partner-level deviceGroup/alertThreshold/sendWelcome were retired.
+  // Legacy values a partner already stored must not lock the org's real group id
+  // or reject an old client that still re-sends sendWelcome.
+  it('ignores retired partner defaults (deviceGroup, alertThreshold, sendWelcome) when locking', async () => {
+    primeSelect(
+      [{ partnerId: 'partner-1' }],
+      [{ settings: { defaults: {
+        deviceGroup: 'Contractors',
+        alertThreshold: 'high',
+        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: true },
+      } } }],
+    );
+
+    await expect(
+      assertNotLocked('org-1', 'defaults', {
+        deviceGroup: '11111111-1111-4111-8111-111111111111',
+        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
+      }),
     ).resolves.toBeUndefined();
   });
 
   it('rejects a locked field the org is actually changing', async () => {
     primeSelect(
       [{ partnerId: 'partner-1' }],
-      [{ settings: { defaults: { deviceGroup: 'Critical Infrastructure' } } }],
+      [{ settings: { defaults: { agentUpdatePolicy: 'auto' } } }],
     );
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
   it('names every diverging field in the 403 message', async () => {
     primeSelect(
       [{ partnerId: 'partner-1' }],
-      [{ settings: { defaults: { deviceGroup: 'Contractors', alertThreshold: 'high' } } }],
+      [{ settings: { defaults: { agentUpdatePolicy: 'auto', maintenanceWindow: '24/7' } } }],
     );
 
     const err = await assertNotLocked('org-1', 'defaults', {
-      deviceGroup: 'Remote Staff',
-      alertThreshold: 'medium',
+      agentUpdatePolicy: 'manual',
+      maintenanceWindow: 'Sun 02:00-04:00',
     }).catch((e) => e as HTTPException);
 
     expect(err).toBeInstanceOf(HTTPException);
     expect((err as HTTPException).status).toBe(403);
-    expect((err as HTTPException).message).toContain('defaults.deviceGroup');
-    expect((err as HTTPException).message).toContain('defaults.alertThreshold');
+    expect((err as HTTPException).message).toContain('defaults.agentUpdatePolicy');
+    expect((err as HTTPException).message).toContain('defaults.maintenanceWindow');
   });
 
   // Issue #2752 — the core regression. The org settings editors PUT the whole
@@ -103,7 +124,7 @@ describe('assertNotLocked', () => {
 
     await expect(
       assertNotLocked('org-1', 'defaults', {
-        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
+        autoEnrollment: { enabled: false, requireApproval: false },
       }),
     ).resolves.toBeUndefined();
   });
@@ -115,9 +136,7 @@ describe('assertNotLocked', () => {
 
     await expect(
       assertNotLocked('org-1', 'defaults', {
-        autoEnrollment: { enabled: false, requireApproval: false, sendWelcome: false },
-        deviceGroup: 'Contractors',
-        alertThreshold: 'medium',
+        autoEnrollment: { enabled: false, requireApproval: false },
         agentUpdatePolicy: 'manual',
         maintenanceWindow: '24/7',
       }),
@@ -130,7 +149,7 @@ describe('assertNotLocked', () => {
     await expect(
       assertNotLocked('org-1', 'defaults', {
         // Same three booleans, declared in a different order.
-        autoEnrollment: { sendWelcome: false, enabled: false, requireApproval: false },
+        autoEnrollment: { enabled: false, requireApproval: false },
       }),
     ).resolves.toBeUndefined();
   });
@@ -140,7 +159,7 @@ describe('assertNotLocked', () => {
 
     await expect(
       assertNotLocked('org-1', 'defaults', {
-        autoEnrollment: { enabled: true, requireApproval: false, sendWelcome: false },
+        autoEnrollment: { enabled: true, requireApproval: false },
       }),
     ).rejects.toMatchObject({ status: 403 });
   });
@@ -148,10 +167,10 @@ describe('assertNotLocked', () => {
   // A partner value of `false`/`0`/`''` locks just as hard as a truthy one — the
   // guard keys on presence-plus-divergence, never on truthiness.
   it('treats a falsy partner value as enforced', async () => {
-    primeSelect([{ partnerId: 'partner-1' }], [{ settings: { defaults: { deviceGroup: '' } } }]);
+    primeSelect([{ partnerId: 'partner-1' }], [{ settings: { defaults: { agentUpdatePolicy: '' } } }]);
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 403 });
   });
 
@@ -175,7 +194,7 @@ describe('assertNotLocked', () => {
     primeSelect([], []);
 
     await expect(
-      assertNotLocked('missing-org', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('missing-org', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 404 });
   });
 
@@ -183,7 +202,7 @@ describe('assertNotLocked', () => {
     primeSelect([{ partnerId: 'partner-1' }], []);
 
     await expect(
-      assertNotLocked('org-1', 'defaults', { deviceGroup: 'Contractors' }),
+      assertNotLocked('org-1', 'defaults', { agentUpdatePolicy: 'manual' }),
     ).rejects.toMatchObject({ status: 404 });
   });
 

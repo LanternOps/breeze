@@ -1318,6 +1318,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     path: safePath,
     content: z.string().max(1_000_000).optional(),
     newPath: safePath.optional(),
+    // #9853: delete only — bypass the agent trash. The handler refuses it on
+    // any other action and on agents below the cleanupGuard version gate.
+    permanent: z.boolean().optional(),
   }),
 
   analyze_disk_usage: z.object({

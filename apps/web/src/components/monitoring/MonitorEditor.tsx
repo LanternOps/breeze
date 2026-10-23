@@ -289,7 +289,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     setValue,
     getValues,
     reset,
-    formState: { errors, isSubmitting },
+    formState: { errors, isSubmitting, isDirty },
   } = methods;
 
   const watchKind = watch('kind');
@@ -752,7 +752,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
               <button
                 type="button"
                 data-testid="monitor-editor-test-run"
-                disabled={!testDeviceId || testSubmitting}
+                disabled={!testDeviceId || testSubmitting || isDirty}
                 onClick={() => void handleRunTest()}
                 className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
@@ -766,6 +766,12 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 {t('common:actions.close')}
               </button>
             </div>
+            {isDirty && (
+              // The test route evaluates the SAVED definition, not the form (#9625).
+              <p data-testid="monitor-editor-test-dirty-hint" className="mt-2 text-xs text-muted-foreground">
+                {t('monitoring:editor.testDialog.saveToTest')}
+              </p>
+            )}
             {testResult && (
               <p
                 data-testid="monitor-editor-test-result"

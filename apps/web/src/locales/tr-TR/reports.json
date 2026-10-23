@@ -41,7 +41,7 @@
           "title": "Uyarı İstatistikleri"
         },
         "capacity": {
-          "title": "Kapasite Tahmini"
+          "title": "Disk kapasitesi tahmini"
         },
         "complianceGauge": {
           "policiesEvaluated": "{{count}} politikaları değerlendirildi",
@@ -62,7 +62,7 @@
           "title": "Uzaktan Oturumlar"
         },
         "uptime": {
-          "label": "Filonun çalışma süresi",
+          "label": "Şu anda çevrimiçi",
           "title": "Çalışma Süresi"
         }
       },
@@ -105,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Kritik {{value}}",
+      "noData": "Değerlendirilecek uyumluluk denetimi yok",
       "warnValue": "Uyarı {{value}}"
     },
     "queryBuilder": {
@@ -115,7 +116,8 @@
         "p95": "P95",
         "sum": "Toplam"
       },
-      "description": "Gösterge tablonuz için ölçümleri ve toplamayı yapılandırın",
+      "coverageNote": "Sorgular yalnızca ilk {{count}} çevrimiçi cihazı kapsar. Çevrimdışı cihazlar ve daha büyük bir filonun geri kalanı dahil değildir.",
+      "description": "Çevrimiçi cihazlarınızı sorgulamak için bir ölçüm ve toplama seçin",
       "errors": {
         "failedToExecuteQuery": "Sorgu yürütülemedi",
         "noDevicesSelected": "Sorgu için seçili cihaz yok"
@@ -337,6 +339,7 @@
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
         "ar_aging": "Alacak Yaşlandırması (AR Aging)",
         "ai_usage_by_client": "Müşteri Bazında Yapay Zekâ Kullanımı",
+        "mrr_renewals": "MRR ve Yenilemeler",
         "backup_status": "Yedekleme Durumu"
       },
       "threatDetection": {
@@ -440,6 +443,7 @@
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
         "ar_aging": "Alacak Yaşlandırması (AR Aging)",
         "ai_usage_by_client": "Müşteri Bazında Yapay Zekâ Kullanımı",
+        "mrr_renewals": "MRR ve Yenilemeler",
         "backup_status": "Yedekleme Durumu"
       },
       "runsTable": {
@@ -989,6 +993,7 @@
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
         "ar_aging": "Alacak Yaşlandırması (AR Aging)",
         "ai_usage_by_client": "Müşteri Bazında Yapay Zekâ Kullanımı",
+        "mrr_renewals": "MRR ve Yenilemeler",
         "backup_status": "Yedekleme Durumu"
       },
       "schedules": {
@@ -1061,6 +1066,10 @@
         "ai_usage_by_client": {
           "name": "Müşteri Bazında Yapay Zekâ Kullanımı",
           "description": "Dönem için müşteri başına platform yapay zekâ kullanımı: istek sayısı, token, Breeze maliyeti, müşterinin faturalandırma profiline göre tahsil edilecek tutar ve halihazırda faturalanan kısım. Kapsama dahil kullanım ve fiyatı olmayan modeller ayrı gösterilir, asla karıştırılmaz."
+        },
+        "mrr_renewals": {
+          "name": "MRR ve Yenilemeler",
+          "description": "Aktif sözleşmelerden aylık ve yıllık yinelenen gelir; rapor çalıştırıldığı gün ölçülür. Seçilen ufuk içinde yenilenen sözleşmeler ve yinelenen olarak gerçekten faturalanan tutar da yer alır. Para birimi başına bir toplam kümesi, dönüştürme yapılmaz."
         },
         "backup_status": {
           "name": "Yedekleme Durumu Raporu",
@@ -1184,6 +1193,19 @@
       },
       "periodNote": "Ücretler UTC takvim ayına göre faturalandırılır. Başka bir saat diliminde ayarlanan bir dönem, ay sınırlarına yakın kullanım için faturadan farklı olabilir.",
       "unpricedNote": "Müşterinin faturalandırma profilinde fiyatı olmayan bir modelin kullanımı fiyatsız olarak sayılır. Asla ücretsiz kabul edilmez.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Bu rapor her zaman çalıştırıldığı gün ölçülür. Ayarlanacak bir dönem ya da referans tarihi yoktur.",
+      "groupBy": "Gruplandırma",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "contract": "Sözleşme"
+      },
+      "renewalHorizon": "Yenileme ufku",
+      "renewalHorizonOption": "Sonraki {{days}} gün",
+      "renewalHorizonHelp": "Süresi bu aralıkta sona eren sözleşmeler yenileme olarak listelenir.",
       "cancel": "İptal",
       "createReport": "Rapor oluştur"
     },

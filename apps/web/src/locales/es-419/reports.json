@@ -41,7 +41,7 @@
           "title": "Estadísticas de alerta"
         },
         "capacity": {
-          "title": "Previsión de capacidad"
+          "title": "Previsión de capacidad de disco"
         },
         "complianceGauge": {
           "policiesEvaluated": "Políticas {{count}} evaluadas",
@@ -62,7 +62,7 @@
           "title": "Sesiones remotas"
         },
         "uptime": {
-          "label": "Tiempo de actividad de la flota",
+          "label": "En línea ahora",
           "title": "tiempo de actividad"
         }
       },
@@ -105,6 +105,7 @@
     },
     "gaugeWidget": {
       "criticalValue": "Crítico {{value}}",
+      "noData": "No hay comprobaciones de cumplimiento para evaluar",
       "warnValue": "Advertir {{value}}"
     },
     "queryBuilder": {
@@ -115,7 +116,8 @@
         "p95": "P95",
         "sum": "Suma"
       },
-      "description": "Configure métricas y agregación para su panel",
+      "coverageNote": "Las consultas solo cubren los primeros {{count}} dispositivos en línea. Los dispositivos sin conexión y el resto de una flota mayor no se incluyen.",
+      "description": "Elija una métrica y una agregación para consultar sus dispositivos en línea",
       "errors": {
         "failedToExecuteQuery": "No se pudo ejecutar la consulta",
         "noDevicesSelected": "No hay dispositivos seleccionados para la consulta"
@@ -337,6 +339,7 @@
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR y renovaciones",
         "backup_status": "Estado de respaldo"
       },
       "threatDetection": {
@@ -440,6 +443,7 @@
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR y renovaciones",
         "backup_status": "Estado de respaldo"
       },
       "runsTable": {
@@ -989,6 +993,7 @@
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR y renovaciones",
         "backup_status": "Estado de respaldo"
       },
       "schedules": {
@@ -1061,6 +1066,10 @@
         "ai_usage_by_client": {
           "name": "Uso de IA por cliente",
           "description": "Uso de IA de la plataforma por cliente en el período: solicitudes, tokens, costo de Breeze, el monto a cobrar según el perfil de facturación del cliente y lo que ya se facturó. El uso incluido y los modelos sin precio se muestran por separado, nunca mezclados."
+        },
+        "mrr_renewals": {
+          "name": "MRR y renovaciones",
+          "description": "Ingresos recurrentes mensuales y anuales de los contratos activos, medidos el día en que se ejecuta el informe, con los contratos que se renuevan dentro del horizonte elegido y lo que realmente se ha facturado como recurrente. Un conjunto de totales por moneda, sin conversión."
         },
         "backup_status": {
           "name": "Informe de estado de respaldo",
@@ -1184,6 +1193,19 @@
       },
       "periodNote": "Los cargos se facturan por mes calendario UTC. Un período definido en otra zona horaria puede diferir de la factura para el uso cercano a los límites del mes.",
       "unpricedNote": "El uso de un modelo sin tarifa en el perfil de facturación del cliente se cuenta como sin precio. Nunca se trata como gratuito.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Este informe siempre se mide el día en que se ejecuta. No tiene período ni fecha de corte que configurar.",
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "organization": "Organización",
+        "contract": "Contrato"
+      },
+      "renewalHorizon": "Horizonte de renovación",
+      "renewalHorizonOption": "Próximos {{days}} días",
+      "renewalHorizonHelp": "Los contratos cuyo plazo termina dentro de esta ventana se listan como renovaciones.",
       "cancel": "Cancelar",
       "createReport": "Crear informe"
     },

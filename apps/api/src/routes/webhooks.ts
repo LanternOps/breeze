@@ -200,6 +200,8 @@ function sanitizeWebhook(webhook: typeof webhooksTable.$inferSelect) {
     createdAt: webhook.createdAt,
     updatedAt: webhook.updatedAt,
     lastDeliveryAt: webhook.lastDeliveryAt,
+    successCount: webhook.successCount ?? 0,
+    failureCount: webhook.failureCount ?? 0,
     hasSecret: Boolean(webhook.secret),
     authType: webhookAuthType(webhook)
   };

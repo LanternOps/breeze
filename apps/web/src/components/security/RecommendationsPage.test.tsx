@@ -1,19 +1,22 @@
 import '@/lib/i18n';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/stores/auth', async (importOriginal) => ({
-  // orgStore (name lookup for the per-org rows) registers an org-id provider here.
-  ...(await importOriginal<typeof import('@/stores/auth')>()),
-  fetchWithAuth: vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    json: vi.fn().mockResolvedValue({ data: [] }),
-  }),
+const { fetchWithAuth } = vi.hoisted(() => ({ fetchWithAuth: vi.fn() }));
+fetchWithAuth.mockImplementation(async () => ({
+  ok: true,
+  status: 200,
+  statusText: 'OK',
+  json: async () => ({ data: [] }),
 }));
 
-import { fetchWithAuth } from '@/stores/auth';
+vi.mock('@/stores/auth', () => ({
+  fetchWithAuth,
+  registerOrgIdProvider: vi.fn(),
+}));
+
+import { useOrgStore } from '@/stores/orgStore';
+
 import RecommendationsPage from './RecommendationsPage';
 
 describe('RecommendationsPage filter selects accessible name (#7156)', () => {
@@ -33,7 +36,7 @@ describe('RecommendationsPage per-org actions (#9714)', () => {
     category: 'firewall', status: 'open', impact: 'high', effort: 'low', affectedDevices: 3, steps: [], orgs,
   });
   const mockList = (orgs: unknown[]) => {
-    const mock = vi.mocked(fetchWithAuth);
+    const mock = fetchWithAuth;
     mock.mockReset();
     mock.mockImplementation((async (_url: string, init?: { method?: string }) => ({
       ok: true, status: 200, statusText: 'OK',
@@ -91,5 +94,18 @@ describe('RecommendationsPage per-org actions (#9714)', () => {
       expect(post![0]).toBe('/security/recommendations/rec-enable-firewall/dismiss');
       expect(post![1]).toMatchObject({ method: 'POST', orgIdOverride: ORG_A });
     });
+  });
+});
+
+describe('RecommendationsPage org scope (#9642)', () => {
+  it('refetches when the selected org changes', async () => {
+    act(() => useOrgStore.setState({ currentOrgId: 'org-a' }));
+    render(<RecommendationsPage />);
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    const before = fetchWithAuth.mock.calls.length;
+
+    act(() => useOrgStore.setState({ currentOrgId: 'org-b' }));
+
+    await waitFor(() => expect(fetchWithAuth.mock.calls.length).toBeGreaterThan(before));
   });
 });

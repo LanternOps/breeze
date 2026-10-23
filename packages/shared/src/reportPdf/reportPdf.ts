@@ -24,7 +24,8 @@ import * as ticketSlaPdf from './ticketSlaPdf';
 import * as technicianTimePdf from './technicianTimePdf';
 import * as arAgingPdf from './arAgingPdf';
 import * as aiUsageByClientPdf from './aiUsageByClientPdf';
-import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary, AiUsageByClientSummary } from '../types/businessReports';
+import * as mrrRenewalsPdf from './mrrRenewalsPdf';
+import type { TicketSlaSummary, TechnicianTimeSummary, ArAgingSummary, AiUsageByClientSummary, MrrRenewalsSummary } from '../types/businessReports';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -162,7 +163,7 @@ export type BuildOpts = {
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
   summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary
-    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | BackupStatusReportData;
+    | TicketSlaSummary | TechnicianTimeSummary | ArAgingSummary | AiUsageByClientSummary | MrrRenewalsSummary | BackupStatusReportData;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -182,6 +183,7 @@ const DESIGNED_BUSINESS_TYPES: ReadonlySet<string> = new Set([
   'technician_time_billability',
   'ar_aging',
   'ai_usage_by_client',
+  'mrr_renewals',
 ]);
 
 const PAGE = { w: 297, h: 210, mx: 14, bandH: 19, footY: 199 } as const;
@@ -213,6 +215,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   technician_time_billability: 'Technician Time & Billability',
   ar_aging: 'AR Aging',
   ai_usage_by_client: 'AI Usage by Client',
+  mrr_renewals: 'MRR & Renewals',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2376,6 +2379,33 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     aiUsageByClientPdf.renderAiUsageByClientReport(
       doc,
       opts.summary as AiUsageByClientSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'mrr_renewals'
+    && opts.summary
+    && typeof (opts.summary as MrrRenewalsSummary).asOf === 'string'
+    && Array.isArray((opts.summary as MrrRenewalsSummary).byCurrency)
+  ) {
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    mrrRenewalsPdf.renderMrrRenewalsReport(
+      doc,
+      opts.summary as MrrRenewalsSummary,
       {
         generatedAt: opts.generatedAt,
         partnerName: opts.branding?.name ?? null,

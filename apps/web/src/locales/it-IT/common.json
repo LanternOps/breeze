@@ -771,9 +771,9 @@
     },
     "search": {
       "prompt": "Cerca in Breeze",
-      "placeholder": "Cerca dispositivi, script, avvisi, utenti, impostazioni...",
+      "placeholder": "Cerca dispositivi, script, avvisi, impostazioni...",
       "searching": "Ricerca…",
-      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi, utenti e impostazioni.",
+      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi e impostazioni.",
       "noResults": "Nessun risultato trovato. Prova una query diversa.",
       "navigationHint": "Usa le frecce per navigare, Invio per aprire",
       "closeHint": "Esc per chiudere",
@@ -863,6 +863,8 @@
       "cycleSidebar": "Cambia la modalità della barra laterale",
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
+      "orgSwitcher": "Apri il selettore dell'organizzazione",
+      "aiSidebar": "Mostra o nascondi la barra laterale IA",
       "close": "Chiudi una finestra di dialogo o un menu",
       "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
       "create": "Crea",
@@ -1383,6 +1385,12 @@
           "signingSecret": "Utilizza questo segreto per verificare le firme dei webhook."
         },
         "invalidJsonPreview": "JSON non valido nel modello.",
+        "otherEvents": {
+          "allEvents": "Tutti gli eventi (*)",
+          "allEventsHint": "Questo webhook è sottoscritto a tutti gli eventi, quindi gli eventi singoli qui sotto non vengono usati. Rimuovi «Tutti gli eventi» per sceglierne di specifici.",
+          "remove": "Rimuovi {{event}}",
+          "title": "Altri eventi sottoscritti"
+        },
         "payload": {
           "previewEmpty": "L'anteprima viene visualizzata una volta che JSON è valido.",
           "subtitle": "Definisci la forma del payload JSON inviato alla tua destinazione.",
@@ -2373,7 +2381,7 @@
           },
           "search": {
             "title": "Cerca qualsiasi cosa",
-            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi, utenti o impostazioni."
+            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi o impostazioni."
           },
           "switchOrgs": {
             "title": "Cambia organizzazione",

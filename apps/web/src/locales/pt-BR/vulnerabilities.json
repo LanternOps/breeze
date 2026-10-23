@@ -95,7 +95,9 @@
     "high": "Alta",
     "medium": "Média",
     "low": "Baixa",
-    "unknown": "Desconhecida"
+    "unknown": "Desconhecida",
+    "unscored": "Sem pontuação",
+    "unscoredTitle": "Ainda não foi publicada uma pontuação de gravidade do NVD para esta CVE."
   },
   "softwareGroupDrawer": {
     "titleFallback": "Grupo de software",
@@ -190,7 +192,8 @@
       "patch": "Correção"
     },
     "help": {
-      "riskAria": "Sobre a pontuação de risco"
+      "riskAria": "Sobre a pontuação de risco",
+      "patchAria": "Sobre a coluna Correção"
     },
     "actions": {
       "openDetailsAria": "Abrir detalhes de vulnerabilidade de {{name}}"
@@ -314,9 +317,9 @@
       },
       "patchReady": {
         "label": "Correção pronta",
-        "detail": "{{count}} achados abertos com correção disponível",
-        "detail_one": "{{count}} achado aberto com correção disponível",
-        "detail_other": "{{count}} achados abertos com correção disponível"
+        "detail": "{{count}} achados abertos com uma correção aprovada pronta para instalar",
+        "detail_one": "{{count}} achado aberto com uma correção aprovada pronta para instalar",
+        "detail_other": "{{count}} achados abertos com uma correção aprovada pronta para instalar"
       },
       "acceptedExpiring": {
         "label": "Aceitos, vencendo em breve",
@@ -350,13 +353,15 @@
       "cvssAria": "Sobre a pontuação CVSS",
       "riskAria": "Sobre a pontuação de risco",
       "epssAria": "Sobre a pontuação EPSS",
-      "kevAria": "Sobre o sinalizador KEV"
+      "kevAria": "Sobre o sinalizador KEV",
+      "patchAria": "Sobre a coluna Correção"
     },
     "actions": {
       "openDetailsAria": "Abrir detalhes de {{cveId}}"
     },
     "patch": {
-      "ready": "Pronta"
+      "ready": "Pronta",
+      "update": "Atualizar para a versão mais recente"
     },
     "hasMore": "Mostrando as 500 principais CVEs por risco — restrinja os filtros para ver o restante."
   }

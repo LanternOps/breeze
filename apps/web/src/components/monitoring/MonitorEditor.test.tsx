@@ -569,6 +569,26 @@ describe('MonitorEditor (#5289)', () => {
     await waitFor(() => expect(screen.getByTestId('monitor-editor-test-result')).toHaveTextContent('HOST-1'));
   });
 
+  it('edit mode: disables Test while the form has unsaved edits and says why (#9625)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) return json({ data: { ...MONITOR_M1_FIXTURE } });
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      if (input === '/devices') return json({ devices: [{ id: 'dev-1', hostname: 'HOST-1' }] });
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+    fireEvent.click(screen.getByTestId('monitor-editor-test-open'));
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-test-device')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('monitor-editor-test-device'), { target: { value: 'dev-1' } });
+    expect(screen.getByTestId('monitor-editor-test-run')).toBeEnabled();
+    expect(screen.queryByTestId('monitor-editor-test-dirty-hint')).toBeNull();
+
+    fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk very full' } });
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-test-run')).toBeDisabled());
+    expect(screen.getByTestId('monitor-editor-test-dirty-hint')).toHaveTextContent('Save to test your changes');
+  });
+
   it('edit mode: PATCHes the monitor on save and refetches (not POST, not the create-mode navigate)', async () => {
     fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
       if (input === '/monitor-definitions/m1' && !init) return json({ data: MONITOR_M1_FIXTURE });

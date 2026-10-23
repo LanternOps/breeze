@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "No se encontraron dispositivos.",
     "none": "Ninguno",
+    "unknown": "Desconocido",
+    "tpmNotReported": "No informado por el agente",
     "os": "OS",
     "pageOf": "Página {{page}} de {{totalPages}}",
     "partial": "Parcial",
@@ -464,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Se generará y custodiará una nueva contraseña de recuperación de BitLocker; la antigua se retira una vez colocada la nueva.",
+    "accessRevealed": "reveló la clave",
     "bitlocker": "BitLocker",
     "cancel": "Cancelar",
     "collectNow": "Recopilar ahora",
@@ -489,6 +492,7 @@
     "rotate": "Rotar",
     "rotateKey": "Rotar clave",
     "rotateRecoveryKey": "Rotar clave de recuperación",
+    "rotateVolume": "Volumen",
     "thisAccessHasBeenRecordedInThe": "Este acceso ha quedado registrado en el registro de auditoría."
   },
   "securityS1ThreatList": {
@@ -1332,17 +1336,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Ingrese al menos un dispositivo ID",
-      "createScan": "No se pudo crear el escaneo"
+      "createScan": "No se pudo crear el escaneo",
+      "devicesRequired": "Selecciona al menos un dispositivo",
+      "devicesNotReady": "La lista de dispositivos aún se está cargando o está incompleta. Espera a que termine e inténtalo de nuevo.",
+      "devicesLoadFailed": "No se pudo cargar la lista de dispositivos. Usa Reintentar en la lista de dispositivos e inténtalo de nuevo."
     },
     "title": "Crear escaneo",
     "form": {
       "policyOptional": "Política (opcional)",
       "noPolicy": "Sin política (configuración manual)",
-      "deviceIds": "ID de dispositivo",
-      "deviceIdsHelp": "Un UUID por línea o separados por comas.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Clases de detección"
+      "detectionClasses": "Clases de detección",
+      "devices": "Dispositivos",
+      "devicesHelp": "Elige los dispositivos que quieres escanear."
     },
     "actions": {
       "creating": "Creando...",
@@ -1407,6 +1412,10 @@
       "showingSearch": "Mostrando {{visible}} de {{pageCount}} en esta página ({{total}} en total)",
       "showingTotal": "Mostrando {{visible}} de los hallazgos de {{total}}",
       "pageOf": "Página {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Riesgo aceptado",
+      "markedFalsePositive": "Marcado como falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1454,18 @@
       "detectionClasses": "Clases de detección",
       "scheduleType": "Tipo de horario",
       "intervalMinutes": "Intervalo (minutos)",
-      "cronExpression": "Expresión cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expresión cron (UTC)",
+      "cronNextRun": "Próxima ejecución (tu hora local): {{time}}",
+      "cronExpressionZone": "Expresión cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Intervalo",
       "cron": "Cron",
-      "everyMinutes": "Cada {{minutes}}m"
+      "everyMinutes": "Cada {{minutes}}m",
+      "paused": "En pausa",
+      "pausedTitle": "La programación está desactivada para esta política, por lo que no se ejecutará automáticamente"
     },
     "table": {
       "name": "Nombre",
@@ -1777,7 +1790,7 @@
     "unknown": "desconocido"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Endurecimiento",
+    "title": "CIS Benchmarks",
     "description": "Líneas base de configuración, puntuación de cumplimiento y seguimiento de soluciones.",
     "messages": {
       "loadFailed": "No se pudieron cargar los datos de CIS"
@@ -1870,6 +1883,11 @@
     "badges": {
       "allOrgs": "Todas las orgs",
       "partnerWideTitle": "Línea base en todo el socio: se aplica a los dispositivos de cada organización"
+    },
+    "scanAll": {
+      "title": "¿Escanear todas las organizaciones?",
+      "message": "«{{name}}» es una línea base de todo el socio. Sin una organización seleccionada, escanea todas las {{orgCount}} organizaciones. Seleccione primero una organización para escanear solo sus dispositivos.",
+      "confirm": "Escanear todas"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +1990,17 @@
       "queueFailed": "La aprobación se registró, pero la corrección no se pudo poner en cola. Volvió a estar pendiente de aprobación; inténtalo de nuevo.",
       "mfaRequired": "Aprobar o rechazar una corrección requiere una sesión iniciada con autenticación multifactor. Cierra sesión y vuelve a iniciarla con MFA.",
       "ownRequest": "Tú solicitaste esta corrección, así que otro usuario debe aprobarla."
+    },
+    "detail": {
+      "toggle": "Alternar detalles",
+      "approvedBy": "Aprobado por",
+      "approvedAt": "Aprobado el",
+      "note": "Nota de aprobación",
+      "beforeState": "Antes",
+      "afterState": "Después",
+      "rollbackHint": "Sugerencia de reversión",
+      "noEvidence": "Aún no hay evidencia registrada para esta corrección.",
+      "unknownApprover": "Usuario desconocido"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2311,8 @@
       "awaitingEvaluation": "En espera de evaluación",
       "vendorOrgMismatch": "El proveedor informa otra organización"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "No tienes acceso a esta organización"
   }
 }

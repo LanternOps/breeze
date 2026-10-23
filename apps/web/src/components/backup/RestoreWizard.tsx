@@ -31,6 +31,11 @@ import {
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
 import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
+import {
+  LARGE_FOLDER_SELECTION_THRESHOLD,
+  folderCheckState,
+  selectedFolderFileTotal,
+} from './folderSelection';
 import RestoreSnapshotStep, {
   groupSnapshotsByDevice,
   snapshotDeviceKey,
@@ -82,6 +87,8 @@ type SnapshotTreeItem = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
+  /** Directories: indexed files beneath it (#9628). */
+  fileCount?: number;
 };
 
 const ROOT_DIR = '/';
@@ -334,6 +341,32 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       } else {
         next.add(id);
       }
+      return next;
+    });
+  };
+
+  // Selecting a folder stores its tree path; the API expands it to the indexed
+  // files beneath it (#9628). Counts are remembered to gate very large picks.
+  const folderCounts = useRef(new Map<string, number>());
+  const toggleFolder = (item: SnapshotTreeItem) => {
+    const count = item.fileCount ?? 0;
+    folderCounts.current.set(item.path, count);
+    const state = folderCheckState(item.path, selectedFiles);
+    // Covered by a selected ancestor folder: uncheck that one instead.
+    if (state === 'checked' && !selectedFiles.has(item.path)) return;
+    if (state !== 'checked' && count > 0) {
+      const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
+      if (
+        total > LARGE_FOLDER_SELECTION_THRESHOLD &&
+        !window.confirm(t('restoreWizard.confirmLargeFolderSelection', { count: total }))
+      ) {
+        return;
+      }
+    }
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.path)) next.delete(item.path);
+      else next.add(item.path);
       return next;
     });
   };
@@ -633,14 +666,35 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   ) : (
                     currentItems.map((item) => (
                       item.type === 'directory' ? (
-                        <button
+                        <div
                           key={`d:${item.path}`}
-                          type="button"
-                          onClick={() => openDir(item.path)}
-                          className="flex w-full items-center gap-2 rounded-md border bg-muted/20 px-4 py-3 text-left text-sm font-medium text-foreground hover:bg-muted/40"
+                          className="flex w-full items-center gap-2 rounded-md border bg-muted/20 px-4 py-3 text-sm hover:bg-muted/40"
                         >
-                          {item.name}/
-                        </button>
+                          <input
+                            type="checkbox"
+                            aria-label={t('restoreWizard.selectFolder', { name: item.name })}
+                            checked={folderCheckState(item.path, selectedFiles) === 'checked'}
+                            ref={(el) => {
+                              if (el) el.indeterminate = folderCheckState(item.path, selectedFiles) === 'partial';
+                            }}
+                            // Covered by a selected parent folder: uncheck that one instead.
+                            disabled={folderCheckState(item.path, selectedFiles) === 'checked' && !selectedFiles.has(item.path)}
+                            onChange={() => toggleFolder(item)}
+                            className="h-4 w-4"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => openDir(item.path)}
+                            className="flex-1 text-left font-medium text-foreground"
+                          >
+                            {item.name}/
+                          </button>
+                          {typeof item.fileCount === 'number' && (
+                            <span className="text-xs text-muted-foreground">
+                              {t('restoreWizard.folderFileCount', { count: item.fileCount })}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <label
                           key={`f:${item.path}`}

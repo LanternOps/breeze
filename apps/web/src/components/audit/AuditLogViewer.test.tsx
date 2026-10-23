@@ -158,4 +158,56 @@ describe('AuditLogViewer', () => {
       expect(qs.has('skipCount')).toBe(false);
     });
   });
+
+  describe('row presentation (#9672)', () => {
+    const row = (action: string, extra: Record<string, unknown> = {}) => ({
+      id: `log-${action}`,
+      timestamp: '2026-10-01T12:00:00.000Z',
+      user: { name: 'Dana Admin', email: 'dana@example.com', role: 'user' },
+      action,
+      resource: 'Disk cleanup',
+      resourceType: 'script',
+      details: JSON.stringify({ a: 1, b: 2, c: 3 }),
+      ipAddress: '10.0.0.1',
+      userAgent: 'test',
+      sessionId: '',
+      changes: { before: {}, after: {} },
+      ...extra,
+    });
+
+    it('colours badges by the first segment of the dotted code', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ entries: [row('user.login'), row('script.execute')], pagination: { total: 2, totalPages: 1 } }),
+      );
+      render(<AuditLogViewer />);
+      await screen.findAllByTestId('audit-action-badge');
+      const [login, script] = screen.getAllByTestId('audit-action-badge');
+      expect(login.className).not.toBe(script.className);
+      expect(script.className).not.toContain('slate');
+    });
+
+    it('does not claim "N fields updated" when there is no before-state', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('script.execute', { changes: { before: {}, after: { a: 1, b: 2, c: 3 } } })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      fireEvent.click((await screen.findAllByTestId('audit-row-toggle'))[0]);
+      expect(screen.queryByText(/fields? updated/i)).toBeNull();
+    });
+
+    it('counts changed fields when a before-state exists', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('device.update', { changes: { before: { a: 0 }, after: { a: 1, b: 2 } } })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      fireEvent.click((await screen.findAllByTestId('audit-row-toggle'))[0]);
+      expect(screen.getByText(/2 fields updated/i)).toBeTruthy();
+    });
+  });
 });
