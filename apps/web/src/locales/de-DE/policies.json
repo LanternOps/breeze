@@ -1339,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Keine Softwarerichtlinien gefunden. Erstellen Sie zunächst eine Richtlinie.",
       "recentViolations": "Aktuelle Verstöße",
       "noCurrentSoftwareViolations": "Keine aktuellen Softwareverstöße.",
-      "violationS": "Verstoß(e)",
       "remediation": "Abhilfe: {{value}}",
       "checked": "Geprüft: {{date}}",
       "deactivatePolicy": "Richtlinie deaktivieren",
@@ -1377,7 +1376,10 @@
       "coverageVendor": "Hersteller",
       "coverageReason": "Grund",
       "vendorOnlyAgent": "Nur beim Hersteller bekannter Agent",
-      "coverageRowsNote": "{{shown}} von {{total}} angezeigt"
+      "coverageRowsNote": "{{shown}} von {{total}} angezeigt",
+      "violationCount": "{{count}} Verstoß",
+      "violationCount_one": "{{count}} Verstoß",
+      "violationCount_other": "{{count}} Verstöße"
     },
     "deploymentList": {
       "running": "Wird ausgeführt",

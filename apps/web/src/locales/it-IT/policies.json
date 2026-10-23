@@ -1339,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Nessun criterio software trovato. Creane uno per iniziare.",
       "recentViolations": "Violazioni recenti",
       "noCurrentSoftwareViolations": "Nessuna violazione software corrente.",
-      "violationS": "violazione/i",
       "remediation": "Correzione: {{value}}",
       "checked": "Controllato: {{date}}",
       "deactivatePolicy": "Disattiva criterio",
@@ -1377,7 +1376,10 @@
       "coverageVendor": "Fornitore",
       "coverageReason": "Motivo",
       "vendorOnlyAgent": "Agent noto solo al fornitore",
-      "coverageRowsNote": "Visualizzati {{shown}} di {{total}}"
+      "coverageRowsNote": "Visualizzati {{shown}} di {{total}}",
+      "violationCount": "{{count}} violazione",
+      "violationCount_one": "{{count}} violazione",
+      "violationCount_other": "{{count}} violazioni"
     },
     "deploymentList": {
       "running": "In esecuzione",

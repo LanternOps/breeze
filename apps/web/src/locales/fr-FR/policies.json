@@ -1339,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Aucune politique logicielle trouvée. Créez-en un pour commencer.",
       "recentViolations": "Violations récentes",
       "noCurrentSoftwareViolations": "Aucune violation logicielle actuelle.",
-      "violationS": "Violation",
       "remediation": "Assainissement : {{value}}",
       "checked": "Vérifié : {{date}}",
       "deactivatePolicy": "Politique de désactivation",
@@ -1377,7 +1376,10 @@
       "coverageVendor": "Éditeur",
       "coverageReason": "Motif",
       "vendorOnlyAgent": "Agent connu de l'éditeur uniquement",
-      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}"
+      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}",
+      "violationCount": "{{count}} violation",
+      "violationCount_one": "{{count}} violation",
+      "violationCount_other": "{{count}} violations"
     },
     "deploymentList": {
       "running": "En cours",

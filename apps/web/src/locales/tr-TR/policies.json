@@ -1339,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Hiçbir yazılım ilkesi bulunamadı. Başlamak için bir tane oluşturun.",
       "recentViolations": "Son İhlaller",
       "noCurrentSoftwareViolations": "Mevcut yazılım ihlali yok.",
-      "violationS": "ihlalleri",
       "remediation": "Düzeltme: {{value}}",
       "checked": "Kontrol edildi: {{date}}",
       "deactivatePolicy": "Politikayı Devre Dışı Bırak",
@@ -1377,7 +1376,10 @@
       "coverageVendor": "Sağlayıcı",
       "coverageReason": "Neden",
       "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı",
-      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor"
+      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "violationCount": "{{count}} ihlal",
+      "violationCount_one": "{{count}} ihlal",
+      "violationCount_other": "{{count}} ihlal"
     },
     "deploymentList": {
       "running": "Koşuyor",
