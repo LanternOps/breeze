@@ -232,3 +232,15 @@ describe('AssetDetailModal — reachability line never says a bare "Online"', ()
     expect(line).toHaveAttribute('aria-label', 'unknown');
   });
 });
+
+// #9645: the API historically returned the jsonb `{ os }` object; rendering it
+// as a React child threw "Objects are not valid as a React child".
+describe('AssetDetailModal — object os fingerprint (#9645)', () => {
+  it('renders the os name when osFingerprint arrives as { os }', () => {
+    const fingerprinted = { ...asset, osFingerprint: { os: 'Cisco IOS' } } as unknown as AssetDetail;
+
+    render(<AssetDetailModal open asset={fingerprinted} onClose={() => {}} />);
+
+    expect(screen.getByText('Cisco IOS')).toBeInTheDocument();
+  });
+});

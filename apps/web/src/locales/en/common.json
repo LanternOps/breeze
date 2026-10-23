@@ -1151,27 +1151,10 @@
           "basicInformation": "Basic Information",
           "connectionDetails": "Connection Details",
           "credentials": "Credentials",
-          "syncSettings": "Sync Settings"
+          "syncSettings": "Ticket Sync"
         },
         "sync": {
-          "autoClose": "Auto-close PSA tickets",
-          "autoCloseHelp": "Close linked tickets when Breeze alerts are resolved.",
-          "enable": "Enable sync",
-          "enableHelp": "Keep tickets and alert links up to date on a schedule.",
-          "notes": "Sync alert notes",
-          "notesHelp": "Push Breeze comments and updates to the PSA ticket timeline."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirectional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Daily",
-          "every15Minutes": "Every 15 minutes",
-          "every30Minutes": "Every 30 minutes",
-          "every6Hours": "Every 6 hours",
-          "everyHour": "Every hour"
+          "unavailable": "Ticket sync is not available yet. Connections can be tested and used to import companies as organizations; no ticket data moves between Breeze and your PSA."
         },
         "testDirtyHint": "Save first — Test checks the stored credentials, not your unsaved edits.",
         "validation": {
@@ -1195,7 +1178,7 @@
         },
         "connectionCount": "{{filtered}} of {{total}} connections",
         "empty": {
-          "noConnections": "Connect a PSA provider to start syncing tickets.",
+          "noConnections": "Connect a PSA provider to test it and import its companies.",
           "noMatches": "No connections match your search or filters.",
           "title": "No PSA connections configured"
         },
@@ -1229,7 +1212,7 @@
           "tryAgain": "Try again"
         },
         "delete": {
-          "activeWarning": "This connection is active. Ticket syncing will stop immediately.",
+          "activeWarning": "This connection is active. Deleting it removes the connection immediately.",
           "confirm": "Are you sure you want to delete {{name}}?",
           "irreversible": "This action cannot be undone.",
           "title": "Delete PSA Connection",
@@ -1248,10 +1231,10 @@
         "modal": {
           "addDescription": "Set up a new PSA connection for your organization.",
           "addTitle": "Add PSA Connection",
-          "editDescription": "Update the PSA connection details and sync preferences.",
+          "editDescription": "Update the PSA connection details.",
           "editTitle": "Edit PSA Connection"
         },
-        "subtitle": "Connect your PSA to sync tickets and link alerts.",
+        "subtitle": "Test PSA connections and import companies as organizations.",
         "test": {
           "failedMessage": "Unable to connect to the PSA provider.",
           "failedTitle": "Connection failed",
@@ -1266,8 +1249,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "No tickets match your search or filters.",
-          "noTickets": "Sync your first PSA connection to see tickets here.",
-          "title": "No PSA tickets synced"
+          "noTickets": "Ticket sync is not available yet, so PSA tickets are not imported.",
+          "title": "No PSA tickets"
         },
         "filters": {
           "allStatuses": "All statuses",
