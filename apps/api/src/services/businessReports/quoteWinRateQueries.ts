@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import type { QuoteOutcome } from '@breeze/shared';
 import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
 
 /**
@@ -30,7 +31,8 @@ import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
  * silently under-counting. Neither those nor depth-capped lineages feed a rate.
  */
 
-export type QuoteOutcome = 'won' | 'lost' | 'expired' | 'open' | 'anomaly'; // anomaly: terminal 'superseded' (should be impossible)
+/** anomaly: a terminal 'superseded' version (should be impossible). */
+export type { QuoteOutcome };
 
 /** Longest revision chain walked. Bound as a parameter, never interpolated. */
 export const QUOTE_LINEAGE_MAX_DEPTH = 50;

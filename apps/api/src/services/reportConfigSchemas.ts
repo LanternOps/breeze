@@ -334,3 +334,21 @@ export const mrrRenewalsConfigSchema = legacyReportConfigSchema.extend({
   renewalHorizonDays: z.union([z.literal(30), z.literal(60), z.literal(90), z.literal(180)]).optional(),
 });
 export type MrrRenewalsConfig = z.infer<typeof mrrRenewalsConfigSchema>;
+
+/**
+ * #9828 W2 — quote win rate.
+ *
+ * - `period` is the standard business-report period (owner timezone, `[start,
+ *   end)`), applied to each lineage's FIRST send date; absent = the last full
+ *   calendar month, applied by `resolveReportPeriod`.
+ * - `groupBy` has NO `.default()`: the default depends on the owner scope
+ *   (`organization` at partner scope, `author` at org scope) and is applied
+ *   in the generator, exactly like ticket SLA's and AI usage's.
+ * - No org/site/device selector keys (ruling T3e).
+ */
+export const quoteWinRateConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  period: periodSchema.optional(),
+  groupBy: z.enum(['organization', 'author', 'currency']).optional(),
+});
+export type QuoteWinRateConfig = z.infer<typeof quoteWinRateConfigSchema>;

@@ -449,3 +449,72 @@ export function emptyMrrRenewalsSummary(note: string): MrrRenewalsSummary {
     rows: [],
   };
 }
+
+// ---------------------------------------------------------------------------
+// quote_win_rate (#9828 W2): win rate over quote REVISION LINEAGES (one
+// lineage = one opportunity). The headline is decided-only (OD5-A); money is
+// per currency and never summed across currencies.
+// ---------------------------------------------------------------------------
+
+export type QuoteWinRateGroupBy = 'organization' | 'author' | 'currency';
+export type QuoteOutcome = 'won' | 'lost' | 'expired' | 'open' | 'anomaly';
+export type QuoteWinRateCounts = {
+  lineages: number; won: number; lost: number; expired: number; open: number; anomalies: number; viewed: number;
+};
+export type QuoteWinRateRates = {
+  /** won / (won + lost + expired) — the headline (OD5-A). null with no decided lineage, never 0. */
+  winRate: number | null;
+  /** won / lineages */
+  closeRate: number | null;
+  /** viewed / lineages */
+  viewedRate: number | null;
+  medianDaysToWin: number | null;
+  medianDaysToLoss: number | null;
+};
+export type QuoteWinRateMoneyRow = {
+  currencyCode: string;
+  quotedOneTime: string; wonOneTime: string;
+  quotedMonthlyRecurring: string; wonMonthlyRecurring: string;
+  /** (wonOneTime + wonMRV) / (decided one-time + decided MRV), per currency. null when nothing is decided. */
+  valueWinRate: number | null;
+};
+export type QuoteWinRateGroupRow = QuoteWinRateCounts & QuoteWinRateRates & {
+  groupKey: string; groupLabel: string; money: QuoteWinRateMoneyRow[];
+};
+export type QuoteWinRateDetailRow = {
+  rootQuoteId: string; terminalQuoteId: string; quoteNumber: string | null;
+  orgId: string; orgName: string | null; authorName: string;
+  versions: number; firstSentAt: string; outcome: QuoteOutcome; outcomeAt: string | null;
+  currencyCode: string; oneTimeTotal: string; monthlyRecurringValue: string; declineReason: string | null;
+};
+export type QuoteWinRateSummary = {
+  generatedAt: string;
+  period: ReportPeriodMeta;
+  scope: ReportScopeMeta;
+  groupBy: QuoteWinRateGroupBy;
+  overall: QuoteWinRateCounts & QuoteWinRateRates & { money: QuoteWinRateMoneyRow[] };
+  groups: QuoteWinRateGroupRow[];
+  diagnostics: { unreachable: number; depthCapped: number };
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: QuoteWinRateDetailRow[];
+};
+
+export function emptyQuoteWinRateSummary(note: string): QuoteWinRateSummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    period: { kind: 'custom', start: '', end: '', label: '', timeZone: 'UTC' },
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    overall: {
+      lineages: 0, won: 0, lost: 0, expired: 0, open: 0, anomalies: 0, viewed: 0,
+      winRate: null, closeRate: null, viewedRate: null, medianDaysToWin: null, medianDaysToLoss: null,
+      money: [],
+    },
+    groups: [],
+    diagnostics: { unreachable: 0, depthCapped: 0 },
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}
