@@ -357,7 +357,7 @@ describe('role routes — force_mfa (#5317)', () => {
 
     // #9603: the server must not write English "Cloned from …" text (or carry
     // the source's description over); the dialog supplies a localized one.
-    it('does not write an English "Cloned from" description', async () => {
+    it.each([[undefined, null], ['My text', 'My text']])('stores the supplied description (%s -> %s), never English "Cloned from" text', async (sent, stored) => {
       vi.mocked(db.select)
         .mockReturnValueOnce(selectLimit([
           { id: 'role-1', name: 'Scripter', description: 'Can execute scripts', scope: 'partner', isSystem: true, forceMfa: false, partnerId: null, orgId: null }
@@ -374,14 +374,14 @@ describe('role routes — force_mfa (#5317)', () => {
       const res = await app.request('/roles/role-1/clone', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Copy' })
+        body: JSON.stringify({ name: 'Copy', description: sent })
       });
 
       expect(res.status).toBe(201);
       const row = values.mock.calls[0][0] as { description: string | null };
       expect(row.description ?? '').not.toMatch(/Cloned from/);
       expect(row.description ?? '').not.toMatch(/execute scripts/);
-      expect(row.description).toBeNull();
+      expect(row.description).toBe(stored);
     });
   });
 });

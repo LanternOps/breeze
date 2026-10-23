@@ -866,7 +866,10 @@ export function RoleFormModal({
     setOwnerScope(next);
     setFormError(null);
     const parent = availableParentRoles.find((r) => r.id === parentRoleId);
-    if (parent && parent.scope !== next) setParentRoleId(null);
+    if (parent && parent.scope !== next) {
+      setParentRoleId(null);
+      onParentChange?.(null);
+    }
   };
 
   return (

@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import RoleManager, {
   type Role,
   type EffectivePermission,
@@ -124,22 +124,31 @@ export default function RolesPage() {
   // Picking a parent inside Create/Clone/Edit shows that parent's effective
   // permissions as inherited (#9603). They are inherited by definition from the
   // child's side, so every row is marked inherited.
+  const parentRequestSeq = useRef(0);
   const handleParentChange = useCallback(async (parentRoleId: string | null) => {
+    // Only the latest pick may write state: a slower response for an earlier
+    // parent (or one landing after the dialog closed) must be dropped.
+    const seq = ++parentRequestSeq.current;
     if (!parentRoleId) {
       setInheritedPermissions([]);
       return;
     }
     try {
       const response = await fetchWithAuth(`/roles/${parentRoleId}/effective-permissions`);
+      if (seq !== parentRequestSeq.current) return;
       if (!response.ok) {
+        console.error(`[RolesPage] could not load parent permissions (${response.status})`);
         setInheritedPermissions([]);
         return;
       }
       const data = await response.json();
+      if (seq !== parentRequestSeq.current) return;
       setInheritedPermissions(
         (data.permissions ?? []).map((p: EffectivePermission) => ({ ...p, inherited: true }))
       );
-    } catch {
+    } catch (err) {
+      if (seq !== parentRequestSeq.current) return;
+      console.error('[RolesPage] could not load parent permissions', err);
       setInheritedPermissions([]);
     }
   }, []);
@@ -204,6 +213,7 @@ export default function RolesPage() {
   };
 
   const handleCloseModal = () => {
+    parentRequestSeq.current++;
     setModalMode('closed');
     setSelectedRole(null);
     setRoleUsers([]);

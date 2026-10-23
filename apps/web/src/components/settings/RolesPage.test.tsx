@@ -305,6 +305,12 @@ describe('RolesPage — create/clone dialogs (#9603)', () => {
     await waitFor(() =>
       expect(fetchMock.mock.calls.some(([u]) => u === `/roles/${ADMIN.id}/effective-permissions`)).toBe(true),
     );
+    // The matrix actually renders the parent's permission as inherited.
+    await waitFor(() => expect(document.querySelector('[title="Inherited"]')).not.toBeNull());
+
+    // Switching back to no parent clears the inherited marks.
+    fireEvent.change(select, { target: { value: '' } });
+    await waitFor(() => expect(document.querySelector('[title="Inherited"]')).toBeNull());
   });
 
   it('Clone: description is pre-filled with a localized "Copy of <name>"', async () => {
@@ -314,5 +320,37 @@ describe('RolesPage — create/clone dialogs (#9603)', () => {
     fireEvent.click(screen.getByRole('button', { name: /clone/i }));
     const desc = (await screen.findByLabelText('Description')) as HTMLTextAreaElement;
     await waitFor(() => expect(desc.value).toBe('Copy of Admin'));
+  });
+
+  it('Clone: the POST body carries the (edited) description', async () => {
+    seed();
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === `/roles/${ADMIN.id}/clone`) return json({ ...ADMIN, id: 'c1', name: 'Dup' }, true, 201);
+      if (input === '/roles') return json({ data: [ADMIN] });
+      if (input === '/permissions/catalog') {
+        return json({ permissions: [{ resource: 'devices', action: 'read' }], resourceLabels: { devices: 'Devices' }, actionLabels: { read: 'Read' } });
+      }
+      if (input === `/roles/${ADMIN.id}`) return json({ ...ADMIN, permissions: [{ resource: 'devices', action: 'read' }] });
+      return json({}, false, 404);
+    });
+    render(<RolesPage />);
+    await screen.findByText('Admin');
+    fireEvent.click(screen.getByRole('button', { name: /clone/i }));
+    const desc = (await screen.findByLabelText('Description')) as HTMLTextAreaElement;
+    await waitFor(() => expect(desc.value).toBe('Copy of Admin'));
+    fireEvent.change(screen.getByPlaceholderText('e.g., Technician'), { target: { value: 'Dup' } });
+    fireEvent.change(desc, { target: { value: 'My own text' } });
+    const submit = await waitFor(() => {
+      const b = screen.getByRole('button', { name: 'Clone Role' });
+      expect(b).toBeEnabled();
+      return b;
+    });
+    fireEvent.click(submit);
+    const post = await waitFor(() => {
+      const c = fetchMock.mock.calls.find(([u]) => u === `/roles/${ADMIN.id}/clone`);
+      expect(c).toBeTruthy();
+      return c!;
+    });
+    expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({ name: 'Dup', description: 'My own text' });
   });
 });
