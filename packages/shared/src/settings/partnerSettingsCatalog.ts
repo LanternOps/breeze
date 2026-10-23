@@ -259,12 +259,11 @@ const ENTRIES: CatalogEntry[] = [
   // Defaults
   // Open-ended dictionary: one entry for the whole sub-object.
   unclassified('defaults', 'defaults.policyDefaults', ['defaults.policyDefaults']),
-  unclassified('defaults', 'defaults.deviceGroup', ['defaults.deviceGroup']),
-  unclassified('defaults', 'defaults.alertThreshold', ['defaults.alertThreshold']),
+  // `defaults.deviceGroup` is org-level only (#9617): a partner value cannot name a
+  // per-org group and the resolver ignores one, so it is not a partner setting.
   unclassified('defaults', 'defaults.autoEnrollment', [
     'defaults.autoEnrollment.enabled',
     'defaults.autoEnrollment.requireApproval',
-    'defaults.autoEnrollment.sendWelcome',
   ]),
   { id: 'defaults.agentUpdatePolicy', tab: 'defaults', paths: ['defaults.agentUpdatePolicy'], kind: 'locks', platformDefault: 'staged', secret: false, projection: ENUM, orgSettingsHash: 'general' },
   { id: 'defaults.maintenanceWindow', tab: 'defaults', paths: ['defaults.maintenanceWindow'], kind: 'locks', platformDefault: null, secret: false, projection: PRESENCE, orgSettingsHash: 'general' },

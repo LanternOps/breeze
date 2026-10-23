@@ -74,16 +74,16 @@ const LEAVES = {
   } satisfies LeafMap<InheritableEventLogSettings>,
   defaults: {
     policyDefaults: true,
-    deviceGroup: true,
-    alertThreshold: true,
-    autoEnrollment: { enabled: true, requireApproval: true, sendWelcome: true },
+    autoEnrollment: { enabled: true, requireApproval: true },
     agentUpdatePolicy: true,
     maintenanceWindow: true,
     agentVersionPins: { agent: true, watchdog: true },
     defaultEnrollmentTtlMinutes: true,
     defaultEnrollmentDeviceCount: true,
     maxEnrollmentLinkTtlMinutes: true,
-  } satisfies LeafMap<InheritableDefaultSettings>,
+  // `deviceGroup` is org-level only (#9617): the partner tab has no control and the
+  // resolver ignores a partner value, so it has no catalog entry.
+  } satisfies LeafMap<Omit<InheritableDefaultSettings, 'deviceGroup'>>,
   branding: {
     logoUrl: true,
     primaryColor: true,
@@ -179,8 +179,6 @@ describe('partner settings catalog', () => {
         "notifications.pushoverTicketAssignmentFallback",
         "eventLogs",
         "defaults.policyDefaults",
-        "defaults.deviceGroup",
-        "defaults.alertThreshold",
         "defaults.autoEnrollment",
         "defaults.agentUpdatePolicy",
         "defaults.maintenanceWindow",
