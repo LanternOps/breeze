@@ -9,6 +9,7 @@ const shared = vi.hoisted(() => ({
 vi.mock('../../db', () => ({
   db: { select: shared.selectMock },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 

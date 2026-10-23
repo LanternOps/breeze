@@ -53,6 +53,7 @@ const h = vi.hoisted(() => {
 vi.mock('../../db', () => ({
   db: h.db,
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  getCurrentDbAccessContext: vi.fn(() => undefined),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 vi.mock('../mfaStepUpGrant', async (orig) => ({

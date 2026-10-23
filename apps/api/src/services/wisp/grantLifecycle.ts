@@ -20,13 +20,13 @@
  */
 import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { wispEnabled } from '../../config/env';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { wispGrantRevisions, wispGrants } from '../../db/schema';
 import type { WispGrantRow } from '../../db/schema/wisp';
 import { createAuditLogAsync } from '../auditService';
 import { ANONYMOUS_ACTOR_ID } from '../auditEvents';
 import { onPermissionAuthorityChanged } from '../permissions';
-import { computeLiveHumanTerm, wispCeilingSnapshotSchema, type LiveHumanTerm } from './grantAuthority';
+import { computeLiveHumanTerm, inSystemContext, wispCeilingSnapshotSchema, type LiveHumanTerm } from './grantAuthority';
 import { pauseGrant, resumeGrant } from './grants';
 
 export type GrantStanding =
@@ -42,7 +42,7 @@ const SELF_RESUMABLE = new Set(['grantor_access_lost', 'grantor_suspended']);
 const PAGE_SIZE = 200;
 
 function systemContext<T>(fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+  return inSystemContext(fn);
 }
 
 function liveFor(grant: StandingInput, memo?: LiveMemo): Promise<LiveHumanTerm> {

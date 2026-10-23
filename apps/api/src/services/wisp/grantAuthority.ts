@@ -23,7 +23,7 @@
 import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { users, wispGrantRevisions, wispGrants } from '../../db/schema';
 import type { WispCeilingSnapshot, WispGrantStatus } from '../../db/schema/wisp';
 import { computeAccessibleOrgIds } from '../../middleware/auth';
@@ -242,20 +242,31 @@ export function agentDeniedToolNames(): string[] {
 // ---------------------------------------------------------------------------
 
 /**
+ * Run in system scope, reusing an ambient SYSTEM context (admission and the
+ * coordinator already hold one) rather than taking a second pooled connection;
+ * from a request context, exit it first (a nested system wrapper would keep the
+ * narrower context).
+ */
+export function inSystemContext<T>(fn: () => Promise<T>): Promise<T> {
+  if (getCurrentDbAccessContext()?.scope === 'system') return fn();
+  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+}
+
+/**
  * The grantor's LIVE authority inside `partnerId`, read in system context
  * (no ambient request context is required or used). `ok: false` when the user
  * is missing / not `active` (suspended), no longer a member of the partner, no
  * longer holds `ai_sessions:use`, or reaches zero orgs (access lost).
  */
 export async function computeLiveHumanTerm(userId: string, partnerId: string): Promise<LiveHumanTerm> {
-  return runOutsideDbContext(async () => {
-    const [user] = await withSystemDbAccessContext(() =>
-      db
-        .select({ status: users.status, partnerId: users.partnerId })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1),
-    );
+  // One system transaction for the whole term: getUserPermissions and
+  // computeAccessibleOrgIds both reuse an ambient system context.
+  return inSystemContext(async () => {
+    const [user] = await db
+      .select({ status: users.status, partnerId: users.partnerId })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
     if (!user || user.status !== 'active') return { ok: false, reason: 'grantor_suspended' };
     if (user.partnerId !== partnerId) return { ok: false, reason: 'grantor_access_lost' };
 
@@ -301,8 +312,7 @@ export const wispCeilingSnapshotSchema = z.object({
  * function fails closed without writing).
  */
 export async function resolveGrantCeiling(grantId: string, revisionId: string): Promise<GrantCeiling> {
-  const { grant, revision } = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => {
+  const { grant, revision } = await inSystemContext(async () => {
       const [g] = await db
         .select({
           id: wispGrants.id,
@@ -321,8 +331,7 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
         .where(and(eq(wispGrantRevisions.id, revisionId), eq(wispGrantRevisions.grantId, grantId)))
         .limit(1);
       return { grant: g, revision: r };
-    }),
-  );
+  });
 
   if (!grant) throw new GrantInactiveError(grantId, 'revoked', 'grant not found');
   if (!revision || revision.grantId !== grantId) {

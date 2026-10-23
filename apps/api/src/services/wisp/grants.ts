@@ -18,7 +18,7 @@
  */
 import { and, desc, eq, isNull, max, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db } from '../../db';
 import { wispGrantRevisions, wispGrants } from '../../db/schema';
 import type { WispCeilingSnapshot, WispGrantPauseReason, WispGrantRow, WispGrantStatus } from '../../db/schema/wisp';
 import { hasSatisfiedMfa, type AuthContext } from '../../middleware/auth';
@@ -33,6 +33,7 @@ import {
   agentDeniedToolNames,
   ceilingSnapshotHash,
   computeLiveHumanTerm,
+  inSystemContext,
   wispCeilingSnapshotSchema,
   type LiveHumanTerm,
 } from './grantAuthority';
@@ -140,7 +141,7 @@ function pgErrorInfo(err: unknown): { code: string | null; constraint: string | 
 }
 
 function systemContext<T>(fn: () => Promise<T>): Promise<T> {
-  return runOutsideDbContext(() => withSystemDbAccessContext(fn));
+  return inSystemContext(fn);
 }
 
 async function audit(input: {
