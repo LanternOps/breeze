@@ -52,6 +52,10 @@ export function DashboardMetric({
   const href = linked && def.kind !== 'exempt' && def.href ? def.href(data ?? {}) : null;
   const allowed = def.visible ? def.visible(viewer) : true;
 
+  // The text variant keeps only an explicit id (a tile's own test hook): the
+  // registry's default ids name links, and a span must not impersonate one.
+  const explicitTestId = testId;
+
   const body =
     label === undefined ? (
       children
@@ -75,7 +79,7 @@ export function DashboardMetric({
   }
 
   return (
-    <span data-metric={metric} className={className}>
+    <span data-metric={metric} data-testid={explicitTestId} className={className}>
       {body}
     </span>
   );
