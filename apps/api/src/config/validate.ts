@@ -11,6 +11,10 @@ import {
   RELEASE_SOURCE_REPOSITORY_SHAPE,
   isValidReleaseSourceRepository,
 } from '../services/releaseSource';
+import {
+  INSTALL_FALLBACK_SOURCE_SHAPE,
+  parseInstallFallbackSourceValue,
+} from '../services/installFallback/source';
 import { EVENT_SUBSCRIBER_IDS, isSubscriberId } from '../services/eventSubscriberIds';
 import { parsePlayIntegrityServiceAccount } from '../services/attestation/playIntegrity';
 import { parseTunnelOriginConfig } from './tunnelOrigin';
@@ -609,6 +613,21 @@ const envObjectSchema = z
     // the public GitHub release — see the production validation block below
     // and services/binaryEdition.ts / services/binarySync.ts.
     BINARY_EDITION: z.string().optional(),
+    // Install-fallback artifact source (#8874): auto (default) | off |
+    // https://github.com/<owner>/<repo> | (self-host only) an https:// mirror
+    // base. Shape is validated in every environment; the hosted production
+    // rules live in the BINARY_EDITION=hosted block below. Resolved at runtime
+    // by services/installFallback/source.ts, which shares this parser.
+    INSTALLER_FALLBACK_SOURCE: z.preprocess(
+      (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+      z
+        .string()
+        .refine(
+          (v) => parseInstallFallbackSourceValue(v) !== null,
+          `INSTALLER_FALLBACK_SOURCE must be ${INSTALL_FALLBACK_SOURCE_SHAPE}`,
+        )
+        .optional(),
+    ),
     // BYO signing (spec 3a): the release-source repository override consumed by
     // services/releaseSource.ts. Empty string means "unset" — both compose
     // files map it as `${BINARY_GITHUB_REPOSITORY:-}`, which always injects the
@@ -1660,6 +1679,28 @@ const envSchema = envObjectSchema
             path: ['RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS'],
             message:
               'BINARY_EDITION=hosted requires RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS to be set in production, so any release manifest found in the local binaries volume can be verified before being trusted.',
+          });
+        }
+        // Install fallback (#8874): the official public repository carries
+        // the self-host edition, and a hosted deployment may only fall back to
+        // a GitHub distribution repository, never a non-GitHub mirror.
+        const installFallbackSource = parseInstallFallbackSourceValue(data.INSTALLER_FALLBACK_SOURCE);
+        if (
+          installFallbackSource?.kind === 'github' &&
+          installFallbackSource.repository === OFFICIAL_RELEASE_REPOSITORY
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['INSTALLER_FALLBACK_SOURCE'],
+            message:
+              `INSTALLER_FALLBACK_SOURCE must not name the official self-host repository (${OFFICIAL_RELEASE_REPOSITORY}) when BINARY_EDITION=hosted — that repository serves the self-host edition. Use the hosted distribution repository, or off.`,
+          });
+        } else if (installFallbackSource?.kind === 'mirror') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['INSTALLER_FALLBACK_SOURCE'],
+            message:
+              'INSTALLER_FALLBACK_SOURCE must be a https://github.com/<owner>/<repo> repository (or off) when BINARY_EDITION=hosted — a non-GitHub mirror is self-host only.',
           });
         }
       }

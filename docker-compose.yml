@@ -318,6 +318,7 @@ x-api-env: &api-env
   # unchanged behavior) or hosted (production requires
   # BINARY_SOURCE=local + a manifest trust root — see .env.example).
   BINARY_EDITION: ${BINARY_EDITION:-self-host}
+  INSTALLER_FALLBACK_SOURCE: ${INSTALLER_FALLBACK_SOURCE:-auto}
   # Hosted SaaS gate. Compose defaults to false so self-hosters upgrade
   # without touching their .env. Hosted operators must set IS_HOSTED=true
   # in .env so this interpolates to true. The API config validator (#570)

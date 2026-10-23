@@ -1040,6 +1040,86 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('INSTALLER_FALLBACK_SOURCE', () => {
+    const prodBase = {
+      ...validEnv,
+      NODE_ENV: 'production' as const,
+      CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+      TRUST_PROXY_HEADERS: 'true',
+    };
+    const hostedProd = {
+      ...prodBase,
+      BINARY_EDITION: 'hosted',
+      BINARY_SOURCE: 'local',
+      RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS: 'yzx8ftmcls6uBetFC5SYnZhBo+cbur3IX50TbBthTso=',
+    };
+
+    it.each(['', 'auto', 'off', 'https://github.com/example-owner/example-repo', 'https://mirror.example/breeze/'])(
+      'self-host production accepts %j',
+      (value) => {
+        withEnv({ ...prodBase, INSTALLER_FALLBACK_SOURCE: value }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
+
+    it('self-host + explicit mirror is valid', () => {
+      withEnv({ ...validEnv, BINARY_SOURCE: 'local', INSTALLER_FALLBACK_SOURCE: 'https://mirror.example/breeze' }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    });
+
+    it.each([
+      'ftp://mirror.example/',
+      'https://u@x.example/',
+      'https://x.example/?a',
+      'http://mirror.example/',
+      'https://github.com/example-owner/example-repo/releases',
+      'yes',
+    ])('any env: a malformed value (%j) is a boot error', (value) => {
+      withEnv({ ...validEnv, INSTALLER_FALLBACK_SOURCE: value }, () => {
+        expect(() => validateConfig()).toThrow(/INSTALLER_FALLBACK_SOURCE/);
+      });
+      withEnv({ ...prodBase, INSTALLER_FALLBACK_SOURCE: value }, () => {
+        expect(() => validateConfig()).toThrow(/INSTALLER_FALLBACK_SOURCE/);
+      });
+    });
+
+    it.each([
+      'https://github.com/lanternops/breeze',
+      'https://github.com/LanternOps/breeze/',
+      'https://github.com/LANTERNOPS/BREEZE',
+    ])('production: hosted + %j (the official self-host repo) is a boot error', (value) => {
+      withEnv({ ...hostedProd, INSTALLER_FALLBACK_SOURCE: value }, () => {
+        expect(() => validateConfig()).toThrow(/INSTALLER_FALLBACK_SOURCE.*official/s);
+      });
+    });
+
+    it('production: hosted + explicit non-GitHub mirror is a boot error', () => {
+      withEnv({ ...hostedProd, INSTALLER_FALLBACK_SOURCE: 'https://mirror.example/breeze/' }, () => {
+        expect(() => validateConfig()).toThrow(/INSTALLER_FALLBACK_SOURCE.*mirror/s);
+      });
+    });
+
+    it.each(['', 'auto', 'off', 'https://github.com/example-owner/example-dist'])(
+      'production: hosted + %j boots (auto + local resolves to off)',
+      (value) => {
+        withEnv({ ...hostedProd, INSTALLER_FALLBACK_SOURCE: value }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
+
+    it('development: hosted + the official repo is not a boot error (production-only rule; resolution still gives off)', () => {
+      withEnv(
+        { ...validEnv, BINARY_EDITION: 'hosted', BINARY_SOURCE: 'local', INSTALLER_FALLBACK_SOURCE: 'https://github.com/lanternops/breeze' },
+        () => {
+          expect(() => validateConfig()).not.toThrow();
+        },
+      );
+    });
+  });
+
   describe('AGENT_BACKUP_SERVER_URL', () => {
     it('accepts a valid https URL', () => {
       withEnv({ ...validEnv, AGENT_BACKUP_SERVER_URL: 'https://new.example.com' }, () => {

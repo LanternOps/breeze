@@ -286,6 +286,7 @@ x-api-env: &api-env
   # BINARY_SOURCE=local + a manifest trust root — not compatible with the
   # BINARY_SOURCE=github hardcoded above without also changing that).
   BINARY_EDITION: ${BINARY_EDITION:-self-host}
+  INSTALLER_FALLBACK_SOURCE: ${INSTALLER_FALLBACK_SOURCE:-auto}
   # Hosted SaaS gate (#570). This template is for hosted deploys, so
   # IS_HOSTED is required-explicit — operators must set it in .env.
   # Misconfiguration here silently drops new partners to status='active'
