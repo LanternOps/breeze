@@ -206,7 +206,7 @@ export default function RecommendationsPage() {
   const hasData = errorKind !== "other";
   const stat = (value: number) => (hasData ? formatNumber(value) : "—");
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" data-testid="recommendations-page">
       <SecurityPageHeader
         title={t("securityRecommendationsPage.securityRecommendations")}
         subtitle={t(
@@ -338,6 +338,7 @@ export default function RecommendationsPage() {
             return (
               <div
                 key={rec.id}
+                data-testid={`recommendation-card-${rec.id}`}
                 className="rounded-lg border bg-card p-4 shadow-xs"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -371,24 +372,22 @@ export default function RecommendationsPage() {
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-                  <span>
-                    {t("securityRecommendationsPage.impact")}
-                    <span
-                      className={cn(
-                        "font-medium capitalize",
-                        impactColor[rec.impact],
-                      )}
-                    >
-                      {rec.impact}
-                    </span>
+                  <span
+                    className={cn("capitalize", impactColor[rec.impact])}
+                  >
+                    {t("securityRecommendationsPage.impact", {
+                      value: rec.impact,
+                    })}
+                  </span>
+                  <span className="capitalize">
+                    {t("securityRecommendationsPage.effort", {
+                      value: rec.effort,
+                    })}
                   </span>
                   <span>
-                    {t("securityRecommendationsPage.effort")}
-                    <span className="font-medium capitalize">{rec.effort}</span>
-                  </span>
-                  <span>
-                    {t("securityRecommendationsPage.devices")}
-                    <span className="font-medium">{rec.affectedDevices}</span>
+                    {t("securityRecommendationsPage.devices", {
+                      value: rec.affectedDevices,
+                    })}
                   </span>
                 </div>
 
@@ -406,7 +405,9 @@ export default function RecommendationsPage() {
                       )}
                       {isExpanded
                         ? t("securityRecommendationsPage.hideSteps")
-                        : `${rec.steps.length} remediation steps`}
+                        : t("securityRecommendationsPage.remediationSteps", {
+                            count: rec.steps.length,
+                          })}
                     </button>
                     {isExpanded && (
                       <ol className="mt-2 ml-4 list-decimal space-y-1 text-xs text-muted-foreground">

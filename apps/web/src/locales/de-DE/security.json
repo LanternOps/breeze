@@ -433,15 +433,15 @@
     "completed": "Abgeschlossen",
     "critical": "Kritisch",
     "criticalHigh": "Kritisch + Hoch",
-    "devices": "Geräte:",
+    "devices": "Geräte: {{value}}",
     "dismiss": "Schließen",
     "dismissed": "Verworfen",
-    "effort": "Aufwand:",
+    "effort": "Aufwand: {{value}}",
     "encryption": "Verschlüsselung",
     "firewall": "Firewall",
     "hideSteps": "Schritte ausblenden",
     "high": "Hoch",
-    "impact": "Auswirkungen:",
+    "impact": "Auswirkungen: {{value}}",
     "invalidResponseFromServer": "Ungültige Antwort vom Server",
     "low": "Niedrig",
     "markComplete": "Als abgeschlossen markieren",
@@ -460,7 +460,9 @@
     "vulnMgmt": "Vuln. Mgmt",
     "priorityFilterLabel": "Priorität",
     "categoryFilterLabel": "Kategorie",
-    "statusFilterLabel": "Bearbeitungsstatus"
+    "statusFilterLabel": "Bearbeitungsstatus",
+    "remediationSteps_one": "{{count}} Abhilfeschritt",
+    "remediationSteps_other": "{{count}} Abhilfeschritte"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Es wird ein neues BitLocker-Wiederherstellungskennwort generiert und hinterlegt; Der alte wird entfernt, nachdem der neue Schlüssel angebracht wurde.",
@@ -611,7 +613,10 @@
     "weakAdmins": "Schwache Admins",
     "accessDeniedMessage": "Sie haben keine Berechtigung, die Sicherheitsdaten dieser Organisation anzuzeigen.",
     "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen.",
-    "unknown": "Unbekannt"
+    "unknown": "Unbekannt",
+    "bitlockerPartial": "BitLocker teilweise",
+    "filevaultPartial": "FileVault teilweise",
+    "refreshTooltip": "Lädt den neuesten Sicherheits-Snapshot neu. Die Bewertungen werden planmäßig neu berechnet, nicht beim Klicken."
   },
   "securitySecurityPageHeader": {
     "refresh": "Aktualisieren",

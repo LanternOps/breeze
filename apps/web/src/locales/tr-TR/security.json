@@ -433,15 +433,15 @@
     "completed": "Tamamlandı",
     "critical": "Kritik",
     "criticalHigh": "Kritik + Yüksek",
-    "devices": "Cihazlar:",
+    "devices": "Cihazlar: {{value}}",
     "dismiss": "Kapat",
     "dismissed": "Görevden alındı",
-    "effort": "Çaba:",
+    "effort": "Çaba: {{value}}",
     "encryption": "Şifreleme",
     "firewall": "Güvenlik Duvarı",
     "hideSteps": "Adımları gizle",
     "high": "Yüksek",
-    "impact": "Etki:",
+    "impact": "Etki: {{value}}",
     "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
     "low": "Düşük",
     "markComplete": "Tamamlandı Olarak İşaretle",
@@ -460,7 +460,9 @@
     "vulnMgmt": "Vuln. Yönetim",
     "priorityFilterLabel": "Öncelik",
     "categoryFilterLabel": "Kategori",
-    "statusFilterLabel": "Öneri durumu"
+    "statusFilterLabel": "Öneri durumu",
+    "remediationSteps_one": "{{count}} düzeltme adımı",
+    "remediationSteps_other": "{{count}} düzeltme adımı"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
@@ -611,7 +613,10 @@
     "viewDetails": "Ayrıntıları görüntüle",
     "vulnerabilities": "Güvenlik Açıkları",
     "weakAdmins": "Zayıf yöneticiler",
-    "unknown": "Bilinmiyor"
+    "unknown": "Bilinmiyor",
+    "bitlockerPartial": "BitLocker kısmi",
+    "filevaultPartial": "FileVault kısmi",
+    "refreshTooltip": "En son güvenlik anlık görüntüsünü yeniden yükler. Puanlar tıklamayla değil, zamanlanmış olarak yeniden hesaplanır."
   },
   "securitySecurityPageHeader": {
     "refresh": "Yenile",

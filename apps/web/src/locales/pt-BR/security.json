@@ -433,15 +433,15 @@
     "completed": "Concluído",
     "critical": "Crítica",
     "criticalHigh": "Crítica + Alta",
-    "devices": "Dispositivos:",
+    "devices": "Dispositivos: {{value}}",
     "dismiss": "Descartar",
     "dismissed": "Descartado",
-    "effort": "Esforço:",
+    "effort": "Esforço: {{value}}",
     "encryption": "Criptografia",
     "firewall": "Firewall",
     "hideSteps": "Ocultar etapas",
     "high": "Alta",
-    "impact": "Impacto:",
+    "impact": "Impacto: {{value}}",
     "invalidResponseFromServer": "Resposta inválida do servidor",
     "low": "Baixa",
     "markComplete": "Marcar como concluída",
@@ -460,7 +460,9 @@
     "vulnMgmt": "Gestão de vulnerabilidades",
     "priorityFilterLabel": "Prioridade",
     "categoryFilterLabel": "Categoria",
-    "statusFilterLabel": "Status da recomendação"
+    "statusFilterLabel": "Status da recomendação",
+    "remediationSteps_one": "{{count}} etapa de correção",
+    "remediationSteps_other": "{{count}} etapas de correção"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Uma nova senha de recuperação do BitLocker será gerada e colocada em custódia; a antiga será removida depois que a nova chave estiver ativa.",
@@ -611,7 +613,10 @@
     "viewDetails": "Ver detalhes",
     "vulnerabilities": "Vulnerabilidades",
     "weakAdmins": "Administradores fracos",
-    "unknown": "Desconhecido"
+    "unknown": "Desconhecido",
+    "bitlockerPartial": "BitLocker parcial",
+    "filevaultPartial": "FileVault parcial",
+    "refreshTooltip": "Recarrega o último instantâneo de segurança. As pontuações são recalculadas em intervalos agendados, não ao clicar."
   },
   "securitySecurityPageHeader": {
     "refresh": "Atualizar",

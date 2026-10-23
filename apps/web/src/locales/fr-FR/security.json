@@ -433,15 +433,15 @@
     "completed": "Terminées",
     "critical": "Critique",
     "criticalHigh": "Critique + Haut",
-    "devices": "Appareils :",
+    "devices": "Appareils : {{value}}",
     "dismiss": "Ignorer",
     "dismissed": "Ignoré",
-    "effort": "Effort :",
+    "effort": "Effort : {{value}}",
     "encryption": "Chiffrement",
     "firewall": "Pare-feu",
     "hideSteps": "Cacher les marches",
     "high": "Élevée",
-    "impact": "Impact :",
+    "impact": "Impact : {{value}}",
     "invalidResponseFromServer": "Réponse invalide du serveur",
     "low": "Faible",
     "markComplete": "Marque Complète",
@@ -460,7 +460,9 @@
     "vulnMgmt": "Vuln. Direction",
     "priorityFilterLabel": "Priorité",
     "categoryFilterLabel": "Catégorie",
-    "statusFilterLabel": "État de la recommandation"
+    "statusFilterLabel": "État de la recommandation",
+    "remediationSteps_one": "{{count}} étape de correction",
+    "remediationSteps_other": "{{count}} étapes de correction"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Un nouveau mot de passe de récupération BitLocker sera généré et mis en séquestre ; l’ancienne est retirée une fois la nouvelle clé en place.",
@@ -611,7 +613,10 @@
     "weakAdmins": "Administrateurs faibles",
     "accessDeniedMessage": "Vous n'avez pas l'autorisation de consulter les données de sécurité de cette organisation.",
     "someSecurityDataPermissionDenied": "Certaines données de sécurité ne vous sont pas visibles. Demandez à un administrateur si vous avez besoin d'un accès.",
-    "unknown": "Inconnu"
+    "unknown": "Inconnu",
+    "bitlockerPartial": "BitLocker partiel",
+    "filevaultPartial": "FileVault partiel",
+    "refreshTooltip": "Recharge le dernier instantané de sécurité. Les scores sont recalculés selon un planning, pas au clic."
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualiser",

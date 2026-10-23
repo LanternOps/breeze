@@ -433,15 +433,15 @@
     "completed": "Terminado",
     "critical": "Crítico",
     "criticalHigh": "Crítico + Alto",
-    "devices": "Dispositivos:",
+    "devices": "Dispositivos: {{value}}",
     "dismiss": "Descartar",
     "dismissed": "Descartado",
-    "effort": "Esfuerzo:",
+    "effort": "Esfuerzo: {{value}}",
     "encryption": "Cifrado",
     "firewall": "Cortafuegos",
     "hideSteps": "Ocultar pasos",
     "high": "Alto",
-    "impact": "Impacto:",
+    "impact": "Impacto: {{value}}",
     "invalidResponseFromServer": "Respuesta no válida del servidor",
     "low": "Bajo",
     "markComplete": "Marcar completo",
@@ -460,7 +460,9 @@
     "vulnMgmt": "Vuln. gestión",
     "priorityFilterLabel": "Prioridad",
     "categoryFilterLabel": "Categoría",
-    "statusFilterLabel": "Estado de la recomendación"
+    "statusFilterLabel": "Estado de la recomendación",
+    "remediationSteps_one": "{{count}} paso de corrección",
+    "remediationSteps_other": "{{count}} pasos de corrección"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Se generará y custodiará una nueva contraseña de recuperación de BitLocker; la antigua se retira una vez colocada la nueva.",
@@ -611,7 +613,10 @@
     "weakAdmins": "Administradores débiles",
     "accessDeniedMessage": "No tienes permiso para ver los datos de seguridad de esta organización.",
     "someSecurityDataPermissionDenied": "Algunos datos de seguridad no son visibles para ti. Consulta a un administrador si necesitas acceso.",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "bitlockerPartial": "BitLocker parcial",
+    "filevaultPartial": "FileVault parcial",
+    "refreshTooltip": "Vuelve a cargar la última instantánea de seguridad. Las puntuaciones se recalculan según un calendario, no al hacer clic."
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualizar",

@@ -482,7 +482,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',
   // SECURITY_*
-  SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS: 'timing knob',
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',

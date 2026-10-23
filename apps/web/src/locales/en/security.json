@@ -433,15 +433,15 @@
     "completed": "Completed",
     "critical": "Critical",
     "criticalHigh": "Critical + High",
-    "devices": "Devices:",
+    "devices": "Devices: {{value}}",
     "dismiss": "Dismiss",
     "dismissed": "Dismissed",
-    "effort": "Effort:",
+    "effort": "Effort: {{value}}",
     "encryption": "Encryption",
     "firewall": "Firewall",
     "hideSteps": "Hide steps",
     "high": "High",
-    "impact": "Impact:",
+    "impact": "Impact: {{value}}",
     "invalidResponseFromServer": "Invalid response from server",
     "low": "Low",
     "markComplete": "Mark Complete",
@@ -460,7 +460,9 @@
     "vulnMgmt": "Vuln. Mgmt",
     "priorityFilterLabel": "Priority",
     "categoryFilterLabel": "Category",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "remediationSteps_one": "{{count}} remediation step",
+    "remediationSteps_other": "{{count}} remediation steps"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
@@ -611,7 +613,10 @@
     "viewDetails": "View details",
     "vulnerabilities": "Vulnerabilities",
     "weakAdmins": "Weak admins",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "bitlockerPartial": "BitLocker partial",
+    "filevaultPartial": "FileVault partial",
+    "refreshTooltip": "Reloads the latest security snapshot. Scores are recomputed on a schedule, not on click."
   },
   "securitySecurityPageHeader": {
     "refresh": "Refresh",

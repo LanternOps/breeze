@@ -59,7 +59,9 @@ type SecurityOverview = {
   };
   encryption: {
     bitlockerEnabled: number;
+    bitlockerPartial: number;
     filevaultEnabled: number;
+    filevaultPartial: number;
     total: number;
   };
   passwordCompliance: number;
@@ -110,7 +112,13 @@ const defaultOverview: SecurityOverview = {
   securityScore: 0,
   antivirus: { protected: 0, unprotected: 0, unknown: 0 },
   firewall: { enabled: 0, disabled: 0, unknown: 0 },
-  encryption: { bitlockerEnabled: 0, filevaultEnabled: 0, total: 0 },
+  encryption: {
+    bitlockerEnabled: 0,
+    bitlockerPartial: 0,
+    filevaultEnabled: 0,
+    filevaultPartial: 0,
+    total: 0,
+  },
   passwordCompliance: 0,
   adminAudit: {
     defaultAccounts: 0,
@@ -387,6 +395,8 @@ const normalizeOverview = (raw: unknown): SecurityOverview => {
     encryptionRecord.macosEnabled,
     encryptionRecord.filevaultCount,
   );
+  const bitlockerPartial = pickNumber(encryptionRecord.bitlockerPartial);
+  const filevaultPartial = pickNumber(encryptionRecord.filevaultPartial);
   const encryptionTotal = pickOptionalNumber(
     encryptionRecord.total,
     encryptionRecord.devices,
@@ -436,7 +446,9 @@ const normalizeOverview = (raw: unknown): SecurityOverview => {
     },
     encryption: {
       bitlockerEnabled,
+      bitlockerPartial,
       filevaultEnabled,
+      filevaultPartial,
       total: encryptionTotal ?? bitlockerEnabled + filevaultEnabled,
     },
     passwordCompliance,
@@ -657,6 +669,7 @@ export default function SecurityDashboard({
           <button
             type="button"
             onClick={fetchSecurityData}
+            title={t("securitySecurityDashboard.refreshTooltip")}
             className="inline-flex h-9 items-center gap-2 rounded-md border bg-background px-3 text-sm hover:bg-muted"
             disabled={loading}
           >
@@ -772,7 +785,7 @@ export default function SecurityDashboard({
           </div>
         ) : (
           <>
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-score-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">
@@ -844,7 +857,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-8">
+            <div data-testid="security-overview-trend-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-8">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -909,7 +922,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-vulnerabilities-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -970,7 +983,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-antivirus-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -1052,7 +1065,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-firewall-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -1134,7 +1147,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-encryption-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -1163,6 +1176,16 @@ export default function SecurityDashboard({
                         {formatNumber(overview.encryption.bitlockerEnabled)}
                       </span>
                     </div>
+                    {overview.encryption.bitlockerPartial > 0 && (
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          {t("securitySecurityDashboard.bitlockerPartial")}
+                        </span>
+                        <span className="font-medium">
+                          {formatNumber(overview.encryption.bitlockerPartial)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">
                         {t("securitySecurityDashboard.filevaultEnabled")}
@@ -1171,6 +1194,16 @@ export default function SecurityDashboard({
                         {formatNumber(overview.encryption.filevaultEnabled)}
                       </span>
                     </div>
+                    {overview.encryption.filevaultPartial > 0 && (
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          {t("securitySecurityDashboard.filevaultPartial")}
+                        </span>
+                        <span className="font-medium">
+                          {formatNumber(overview.encryption.filevaultPartial)}
+                        </span>
+                      </div>
+                    )}
                     <div className="h-2 w-full rounded-full bg-muted">
                       <div
                         className={cn(
@@ -1200,7 +1233,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-password-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -1254,7 +1287,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
+            <div data-testid="security-overview-admin-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-4">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
@@ -1354,7 +1387,7 @@ export default function SecurityDashboard({
               </div>
             </div>
 
-            <div className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-12">
+            <div data-testid="security-overview-recommendations-card" className="rounded-lg border bg-card p-6 shadow-xs lg:col-span-12">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-sm font-semibold">
