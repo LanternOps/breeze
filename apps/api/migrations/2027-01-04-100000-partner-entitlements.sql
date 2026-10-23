@@ -2,7 +2,7 @@
 -- Wisp W00 slot 2027-01-04-100000, wave #9907). RLS shape 3 (partner-axis). NO org_id: registered in
 -- PARTNER_TENANT_TABLES only; partner purge finds it via information_schema (cascadeDeletePartner).
 -- One row per (partner, feature_key, source); the resolver folds live rows under
--- manual > license > billing > plan default. Writes no rows, so no breeze.scope election.
+-- manual > license > billing > plan default. This migration writes no rows, so no breeze.scope election.
 --
 -- RLS: partner-axis READ, system-only WRITE. A partner can never grant itself an
 -- entitlement, and that has to hold in the database, not only in app code: a
@@ -15,8 +15,8 @@
 --     INSERT/UPDATE/DELETE are governed by this policy alone (partner INSERT →
 --     42501, partner UPDATE/DELETE → 0 rows). The breeze_has_partner_access conjunct
 --     is a no-op under system scope; it keeps the write policy on the partner axis
---     the rls-coverage contract checks (stripe_connect_credentials precedent).
--- Every write goes through services/entitlements.ts, which elects system scope
+--     the rls-coverage contract checks (same conjunct as stripe_connect_credentials).
+-- Every production write goes through services/entitlements.ts, which elects system scope
 -- (runOutsideDbContext + withSystemDbAccessContext); partner purge runs in system scope.
 CREATE TABLE IF NOT EXISTS partner_entitlements (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),

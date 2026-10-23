@@ -308,7 +308,7 @@ END $$;
 GRANT SELECT, INSERT, UPDATE, DELETE ON partner_entitlements TO breeze_app;
 ```
 
-Partner-axis READ, system-only WRITE (amended in review on PR #9924): a single `FOR ALL` partner policy would let a partner-scoped context write its OWN rows, so "a partner cannot self-grant" would hold only in app code. The `breeze_has_partner_access` conjunct on the write policy is a no-op under system scope; it keeps INSERT/UPDATE/DELETE on the partner axis that the strict `rls-coverage` contract checks (same shape as `stripe_connect_credentials`).
+Partner-axis READ, system-only WRITE (amended in review on PR #9924): a single `FOR ALL` partner policy would let a partner-scoped context write its OWN rows, so "a partner cannot self-grant" would hold only in app code. The `breeze_has_partner_access` conjunct on the write policy is a no-op under system scope; it keeps INSERT/UPDATE/DELETE on the partner axis that the `rls-coverage` contract checks (same conjunct as `stripe_connect_credentials`).
 
 No partner-wide SELECT branch (spec §4: partner-AXIS tables have no `org_id IS NULL` shape; org contexts reach it through the service).
 

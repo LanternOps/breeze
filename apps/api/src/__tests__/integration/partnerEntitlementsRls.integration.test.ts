@@ -77,16 +77,10 @@ describe('partner_entitlements — partner-axis RLS', () => {
     expect(await countRows(partnerA)).toBe(1);
   });
 
-  it('partner B cannot UPDATE a partner A row (42501 or 0 rows)', async () => {
-    let affected: number | null = null;
-    try {
-      const res = await withDbAccessContext(partnerContext(partnerB), () => db.execute(sql`
-        UPDATE partner_entitlements SET state = 'enabled' WHERE partner_id = ${partnerA} RETURNING id`));
-      affected = (res as unknown as unknown[]).length;
-    } catch (err) {
-      expect(err).toMatchObject({ cause: { code: '42501' } });
-    }
-    if (affected !== null) expect(affected).toBe(0);
+  it('partner B cannot UPDATE a partner A row (0 rows)', async () => {
+    const updated = await withDbAccessContext(partnerContext(partnerB), () => db.execute(sql`
+      UPDATE partner_entitlements SET state = 'enabled' WHERE partner_id = ${partnerA} RETURNING id`));
+    expect(updated).toHaveLength(0);
     const rows = await withSystemDbAccessContext(() => db.execute(sql`
       SELECT state FROM partner_entitlements WHERE partner_id = ${partnerA}`));
     expect(rows).toEqual([{ state: 'disabled' }]);
@@ -115,7 +109,7 @@ describe('partner_entitlements — partner-axis RLS', () => {
     // The write policy's predicates are a conjunction that requires system scope.
     const write = rows.find((r) => r.policyname === 'partner_entitlements_system_write')!;
     for (const expr of [write.qual, write.with_check]) {
-      expect(expr).toMatch(/breeze_current_scope\(\) = 'system'::text\) AND breeze_has_partner_access\(partner_id\)/);
+      expect(expr).toMatch(/breeze_current_scope\(\) = 'system'::text\) AND (public\.)?breeze_has_partner_access\(partner_id\)/);
       expect(expr).not.toMatch(/\bOR\b/);
     }
   });
