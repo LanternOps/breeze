@@ -108,6 +108,7 @@ const DELIBERATELY_UNPINNED: Record<string, string> = {
       'google_set_forwarding', 'google_disable_forwarding',
       'google_add_mail_delegate', 'google_remove_mail_delegate',
       'google_suspend_user', 'google_offboard_user', 'google_wipe_mobile_device',
+      'google_account_wipe_mobile_device',
       'google_restore_user', 'google_signout', 'google_set_vacation',
       'google_update_user', 'google_share_calendar', 'google_move_ou',
       'google_rename_user', 'google_add_to_group', 'google_remove_from_group',

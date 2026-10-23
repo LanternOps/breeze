@@ -333,11 +333,11 @@ describe('probeGoogleWipeMobileDevice', () => {
 });
 
 describe('registerGoogleEffectProbes', () => {
-  it('registers exactly the eight Google write tools and returns their names', () => {
+  it('registers exactly the nine Google write tools and returns their names', () => {
     __resetEffectProbesForTest();
     const names = registerGoogleEffectProbes();
     const expected = [
-      'google_add_mail_delegate', 'google_remove_from_group', 'google_remove_license',
+      'google_account_wipe_mobile_device', 'google_add_mail_delegate', 'google_remove_from_group', 'google_remove_license',
       'google_set_forwarding', 'google_set_vacation', 'google_signout',
       'google_suspend_user', 'google_wipe_mobile_device',
     ];

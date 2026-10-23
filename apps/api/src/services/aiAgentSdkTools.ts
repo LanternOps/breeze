@@ -60,7 +60,7 @@ import {
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
   googleDisableForwardingHandler,
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
-  googleOffboardUserHandler, googleWipeMobileDeviceHandler,
+  googleOffboardUserHandler, googleWipeMobileDeviceHandler, googleAccountWipeMobileDeviceHandler,
   googleSecurityDriftHandler, googleEmailReportHandler,
   googleListUserGroupsHandler, googleAddToGroupHandler, googleRemoveFromGroupHandler,
   googleMoveOuHandler, googleRenameUserHandler,
@@ -513,6 +513,7 @@ export const TOOL_TIERS = {
   google_share_calendar: 3,
   google_offboard_user: 3,
   google_wipe_mobile_device: 3,
+  google_account_wipe_mobile_device: 3,
   google_security_drift: 1,
   google_email_report: 1,
   google_list_user_groups: 1,
@@ -676,6 +677,7 @@ export const SESSION_TOOL_DESCRIPTIONS = {
   google_share_calendar: "Share a Google Workspace user's calendar with another user. Inserts an ACL rule on the owner's calendar (default: their primary calendar). role is one of freeBusyReader, reader, writer, owner (default reader). Requires approval.",
   google_offboard_user: 'Offboard a Google Workspace user: optional out-of-office, forwarding (no copy kept), revoke OAuth tokens, remove all groups, selective mobile account wipe (corporate data only, never full device wipe), sign-out, suspend. Steps are independent and reported; best-effort. Requires approval.',
   google_wipe_mobile_device: 'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
+  google_account_wipe_mobile_device: 'Offboarding: remove the work account and its data (mail, Drive) from every mobile device enrolled to a user. The device itself is NOT erased. Requires approval.',
   google_security_drift: 'Read-only Google Workspace security posture for the connected domain: counts and lists of users with no 2-step verification, super-admins, suspended accounts, never-logged-in accounts, and accounts stale beyond staleDays (default 90). No changes are made.',
   google_email_report: "Run the Google Workspace security-drift report and email it to the connection's own admin address (recipient is fixed to the admin, not arbitrary). Use when asked to email a Workspace report. staleDays optional (default 90).",
   propose_action_plan: 'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
@@ -1565,6 +1567,12 @@ export function googleToolDefinitions(
       SESSION_TOOL_DESCRIPTIONS.google_wipe_mobile_device,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_account_wipe_mobile_device',
+      SESSION_TOOL_DESCRIPTIONS.google_account_wipe_mobile_device,
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_account_wipe_mobile_device', getAuth, getActiveSession, googleAccountWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_security_drift',
