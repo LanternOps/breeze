@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"go/build"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +32,7 @@ func buildCgoFreeYarac(t *testing.T) string {
 	}
 	goBin, err := exec.LookPath("go")
 	if err != nil {
-		goBin = filepath.Join(runtime.GOROOT(), "bin", "go")
+		goBin = filepath.Join(build.Default.GOROOT, "bin", "go")
 	}
 	out := filepath.Join(t.TempDir(), "breeze-yarac")
 	cmd := exec.Command(goBin, "build", "-o", out, ".")

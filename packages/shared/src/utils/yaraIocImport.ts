@@ -318,8 +318,17 @@ function utf16leHex(value: string): string {
   return out.join(' ');
 }
 
+/** Strip leading and trailing `_` by index (a `/_+$/` regex is quadratic on long runs of `_`). */
+function trimUnderscores(s: string): string {
+  let start = 0;
+  let end = s.length;
+  while (start < end && s.charCodeAt(start) === 0x5f) start++;
+  while (end > start && s.charCodeAt(end - 1) === 0x5f) end--;
+  return s.slice(start, end);
+}
+
 function slugify(label: string): string {
-  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64).replace(/_+$/, '');
+  const slug = trimUnderscores(trimUnderscores(label.toLowerCase().replace(/[^a-z0-9]+/g, '_')).slice(0, 64));
   return slug === '' ? 'batch' : slug;
 }
 
