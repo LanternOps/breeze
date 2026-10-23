@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SiteDetailPage from './SiteDetailPage';
+import { decodeFilterFromHash } from '../devices/filterUrl';
+import { readDeviceClassFromHash } from '../devices/deviceClassFilter';
 import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 
@@ -244,5 +246,45 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     } finally {
       flags.ENABLE_ENDPOINT_MESSAGING = true;
     }
+  });
+});
+
+describe('SiteDetailPage — devices tab count + site-filtered "View all" (#9791)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    granted.clear();
+    window.location.hash = '#devices';
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/orgs/sites/${SITE_ID}`) return makeJsonResponse({ ...SITE_FROM_API, deviceCount: 7 });
+      if (url === `/orgs/organizations/${ORG_ID}`) return makeJsonResponse({ id: ORG_ID, name: 'Acme Corp' });
+      return makeJsonResponse({ data: [] });
+    });
+  });
+
+  it('renders the device count the API returned', async () => {
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    const count = await screen.findByTestId('site-detail-device-count');
+    expect(count.textContent).toBe('7');
+  });
+
+  it('"View all" opens the devices list pinned to this org, agent class, and this site', async () => {
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    const link = await screen.findByTestId('site-detail-devices-view-all-link');
+    const href = link.getAttribute('href')!;
+    expect(href.startsWith(`/devices#orgId=${ORG_ID}&deviceClass=agent&filtersV2=`)).toBe(true);
+    const hash = href.slice(href.indexOf('#'));
+    expect(decodeFilterFromHash(hash)).toEqual({
+      operator: 'AND',
+      conditions: [{ field: 'siteId', operator: 'equals', value: SITE_ID }],
+    });
+    expect(readDeviceClassFromHash(hash)).toBe('agent');
+  });
+
+  it('link has a resting underline and a focus-visible ring', async () => {
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    const cls = (await screen.findByTestId('site-detail-devices-view-all-link')).className;
+    expect(cls).toMatch(/underline/);
+    expect(cls).toMatch(/focus-visible:ring/);
   });
 });
