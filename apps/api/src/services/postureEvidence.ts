@@ -52,7 +52,7 @@ import {
 } from '@breeze/shared';
 import { trustCisFrameworkViewEnabled } from '../config/env';
 import { cisFindingSchema } from '../db/schema/cisHardening';
-import { averageCisScore } from './cisScore';
+import { averageCisScore, cisDeviceScore } from './cisScore';
 
 export interface PostureEvidencePolicy {
   sites: string[];
@@ -534,9 +534,10 @@ export async function loadPostureEvidence(
       if (!withinDays(asOf, r.checkedAt, policy.maxSecurityStatusAgeDays)) continue;
       // A scan that evaluated nothing stores score 100 (summarizeCisFindings); that is
       // absence of evidence, not a pass.
-      if (r.totalChecks <= 0) continue;
+      const pct = cisDeviceScore(r);
+      if (pct === null) continue;
       cisByDevice.set(r.deviceId, {
-        pct: r.score,
+        pct,
         checkedAt: r.checkedAt ?? null,
       });
       if (r.id) cisFreshResultIds.push(r.id);
