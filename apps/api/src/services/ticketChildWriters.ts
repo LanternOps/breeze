@@ -85,7 +85,9 @@ export const TICKET_LOCK_WRAPPERS: Record<string, string> = {
   'services/timeEntryService.ts::lockPartForWrite':
     'part edit / delete: the part\'s ticket via lockTicketRow, then the part FOR UPDATE and the re-check',
   'services/invoiceService.ts::lockInvoiceSourceTickets':
-    'invoice issue / void: the invoice org SHARE, then its time / part sources\' tickets via lockTicketsForWrite',
+    'invoice issue / void: the time / part sources\' tickets via lockTicketsForWrite, after the contracts and before the sources',
+  'services/contractHourBlockClose.ts::lockHourBlockSourceTickets':
+    'hour-block close: every closable period\'s entries\' tickets, one ascending lockTicketsForWrite batch, after the contract row',
   'services/timeEntryService.ts::lockTicketRow':
     'the time-entry 404 mapping around lockTicketForWrite',
   'services/timeEntryService.ts::lockTicketsInOrder':
@@ -113,6 +115,8 @@ export const TICKET_LOCK_HELD_FUNCTIONS: Record<string, string> = {
     'runs settleGatedWrite after a time-entry write; its callers hold the ticket lock',
   'services/ticketApproval/requests.ts::afterEntryLeftRequest':
     'settles a request after one of its entries left it; called by the time-entry writers under their ticket lock',
+  'services/contractHourBlockClose.ts::closeHourBlockPeriods':
+    'runs closeOne per period; the billing run and the close-out sweep call it after lockHourBlockSourceTickets',
 };
 
 const TF = (tables: readonly TicketChildTable[], extra: Partial<TicketChildWriter> = {}): TicketChildWriter => ({
@@ -195,10 +199,10 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/ticketApproval/requests.ts::holdEntryOnRequest': TF(['time_entries'], { lockHeldByCaller: true }),
   'services/ticketApproval/requests.ts::insertApprovalComment': TF(['ticket_comments'], { lockHeldByCaller: true }),
 
-  // ── Billing stampers: several tickets per write (org SHARE, then tickets ascending) ──
+  // ── Billing stampers: several tickets per write, ascending, after the contract rows ──
   'services/invoiceService.ts::issueTx': TF(['time_entries', 'ticket_parts']),
   'services/invoiceService.ts::voidInvoice': TF(['time_entries', 'ticket_parts']),
-  'services/contractHourBlockClose.ts::closeOne': TF(['time_entries']),
+  'services/contractHourBlockClose.ts::closeOne': TF(['time_entries'], { lockHeldByCaller: true }),
 
   // ── Drafts: pre-ticket children (#3778 order: ticket_drafts before tickets) ──
   'services/ticketService.ts::sendTicketDraft': PRE(['ticket_drafts', 'ticket_comments']),

@@ -92,9 +92,11 @@ export async function lockTicketForWrite(
  * (#4617 spec §5.2, generalized from timeEntryService.lockTicketsInOrder):
  *
  *   1. `orgShare` — every named organization `FOR SHARE`, ascending, FIRST
- *      (`organizations` is outermost in the global order). Pass it whenever
- *      the writer stamps billing state, so the order matches the time-entry
- *      creation barrier `organizations SHARE → tickets FOR UPDATE`.
+ *      (`organizations` is outermost in the global order). Pass it only when
+ *      it is the transaction's first lock (the time-entry creation barrier
+ *      `organizations SHARE → tickets FOR UPDATE`). A writer that already
+ *      holds a row below `organizations` (the billing chain: invoice and
+ *      contract rows) must not take it late.
  *   2. the ticket rows `FOR UPDATE` in ascending id order, in ONE statement
  *      (rows are locked in the order the sort emits them), so two writers that
  *      cross the same tickets serialize instead of deadlocking.
