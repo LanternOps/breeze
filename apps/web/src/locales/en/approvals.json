@@ -99,6 +99,7 @@
     "loading": "Loading recent approvals…",
     "error": "Unable to load recent approvals.",
     "retry": "Retry",
+    "decisionReasonLabel": "Reason from approver",
     "empty": "Nothing has finished recently.",
     "status": {
       "failed": "Failed",

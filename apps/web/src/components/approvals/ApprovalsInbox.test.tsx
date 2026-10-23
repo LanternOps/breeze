@@ -298,6 +298,9 @@ describe('ApprovalsInbox', () => {
         'approve',
         undefined,
         'four_eyes',
+        // The inbox shows its own "Approved {action} for {org}" toast, so the
+        // helper's generic one must be suppressed (#9658: two toasts per click).
+        { silentSuccess: true },
       ),
     );
   });

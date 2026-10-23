@@ -98,6 +98,7 @@
     "loading": "Chargement des approbations récentes…",
     "error": "Impossible de charger les approbations récentes.",
     "retry": "Réessayer",
+    "decisionReasonLabel": "Motif de l’approbateur",
     "empty": "Rien ne s’est terminé récemment.",
     "status": {
       "failed": "Échec",

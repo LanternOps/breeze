@@ -438,6 +438,34 @@ describe('decideIntentApproval — an approve the server refused', () => {
     expect(showToast).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Action approved' });
   });
+
+  it('silentSuccess: an approve that took effect shows no success toast (caller owns the message, #9658)', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({ approval: { id: 'ap-1', status: 'approved' }, enforcementStatus: 'pending_dispatch' }),
+        { status: 200 },
+      ),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { silentSuccess: true });
+
+    expect(outcome).toBe('decided');
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it('silentSuccess does not silence a refused approve', async () => {
+    fetchWithAuth.mockResolvedValue(
+      new Response(
+        JSON.stringify({ approval: { id: 'ap-1', status: 'approved' }, enforcementStatus: 'refused', reason: 'nope' }),
+        { status: 200 },
+      ),
+    );
+
+    const outcome = await decideIntentApproval('ap-1', 'approve', undefined, 'four_eyes', { silentSuccess: true });
+
+    expect(outcome).toBe('refused');
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
 });
 
 /**

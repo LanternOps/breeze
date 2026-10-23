@@ -738,9 +738,8 @@ export default function ApprovalsInbox() {
       const scope = knownApprovalScope(approval.approvalScope);
       const outcome =
         decision === 'approve'
-          ? opts
-            ? await decideIntentApproval(approval.id, 'approve', undefined, scope, opts)
-            : await decideIntentApproval(approval.id, 'approve', undefined, scope)
+          // silentSuccess: the toast below is this path's one success message.
+          ? await decideIntentApproval(approval.id, 'approve', undefined, scope, { ...opts, silentSuccess: true })
           : await decideIntentApproval(approval.id, 'deny', reason?.trim() || undefined);
       if (outcome === 'needs_device') {
         setDecisionError(approval.id, 'noApproverDevice');

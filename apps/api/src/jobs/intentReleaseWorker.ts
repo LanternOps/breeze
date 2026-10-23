@@ -1859,6 +1859,17 @@ function agentOutcomeCopy(intent: { targetSummary: string; status: string }): {
  * delivered at-least-once and can be processed well after the fact, so the
  * status on the row is the truth and the event is only a nudge to go look.
  */
+/** The approver's free-text deny reason for an intent, or null when none. */
+async function loadDenyReason(intentId: string): Promise<string | null> {
+  const [row] = await withSystemDbAccessContext(() =>
+    db
+      .select({ decisionReason: approvalRequests.decisionReason })
+      .from(approvalRequests)
+      .where(and(eq(approvalRequests.intentId, intentId), eq(approvalRequests.status, 'denied')))
+      .limit(1));
+  return row?.decisionReason?.trim() || null;
+}
+
 async function notifyRequesterOfOutcome(
   intentId: string,
   eventType: 'intent_approved' | 'intent_rejected' | 'intent_expired' | 'intent_cancelled',
@@ -1963,6 +1974,9 @@ async function notifyRequesterOfOutcome(
   // Outbox delivery is also at-least-once and can land minutes late, by which
   // time an approved intent may well have completed, failed or expired.
   const summary = intent.targetSummary;
+  // #9658: the deny form promises the reason is "shared with the requester".
+  // Only a rejected intent carries one; read it off the denied approval row.
+  const denyReason = intent.status === 'rejected' ? await loadDenyReason(intent.id) : null;
   const copy = ((): { title: string; message: string } => {
     switch (intent.status) {
       case 'approved':
@@ -1974,7 +1988,10 @@ async function notifyRequesterOfOutcome(
         // Approved but did not run. The distinction matters most here.
         return { title: 'Action failed', message: `${summary} was approved but could not run.` };
       case 'rejected':
-        return { title: 'Approval denied', message: `${summary} was denied and will not run.` };
+        return {
+          title: 'Approval denied',
+          message: `${summary} was denied and will not run.${denyReason ? ` Reason: ${denyReason}` : ''}`,
+        };
       case 'cancelled':
         return { title: 'Request cancelled', message: `${summary} was cancelled and will not run.` };
       case 'expired':

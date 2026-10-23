@@ -98,6 +98,7 @@
     "loading": "Kürzliche Genehmigungen werden geladen…",
     "error": "Kürzliche Genehmigungen konnten nicht geladen werden.",
     "retry": "Erneut versuchen",
+    "decisionReasonLabel": "Grund des Genehmigers",
     "empty": "Kürzlich wurde nichts abgeschlossen.",
     "status": {
       "failed": "Fehlgeschlagen",

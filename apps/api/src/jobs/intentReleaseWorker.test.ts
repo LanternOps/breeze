@@ -4552,6 +4552,29 @@ describe('processIntentReleaseJob', () => {
     );
   });
 
+  it('includes the approver\'s deny reason in the requester\'s denial notification (#9658)', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsResults.push([{ decisionReason: 'Wrong maintenance window' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { title: string; message: string };
+    expect(arg.title).toBe('Approval denied');
+    expect(arg.message).toBe(
+      'run_script(deviceId=d-1) was denied and will not run. Reason: Wrong maintenance window',
+    );
+  });
+
+  it('keeps the plain denial copy when the approver gave no reason', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsResults.push([{ decisionReason: '  ' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('run_script(deviceId=d-1) was denied and will not run.');
+  });
+
   it('notifies the requester on intent_expired without releasing anything', async () => {
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
 

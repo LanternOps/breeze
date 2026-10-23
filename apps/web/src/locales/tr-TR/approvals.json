@@ -98,6 +98,7 @@
     "loading": "Son onaylar yükleniyor…",
     "error": "Son onaylar yüklenemedi.",
     "retry": "Yeniden dene",
+    "decisionReasonLabel": "Onaylayanın gerekçesi",
     "empty": "Son zamanlarda tamamlanan bir şey yok.",
     "status": {
       "failed": "Başarısız",

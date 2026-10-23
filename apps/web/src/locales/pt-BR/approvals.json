@@ -98,6 +98,7 @@
     "loading": "Carregando aprovações recentes…",
     "error": "Não foi possível carregar as aprovações recentes.",
     "retry": "Tentar novamente",
+    "decisionReasonLabel": "Motivo do aprovador",
     "empty": "Nada foi finalizado recentemente.",
     "status": {
       "failed": "Falhou",
