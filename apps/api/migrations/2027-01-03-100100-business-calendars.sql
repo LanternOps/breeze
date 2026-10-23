@@ -8,7 +8,9 @@
 -- FOR ALL policy and a SEPARATE additive FOR SELECT partner-wide branch keyed
 -- on breeze_current_partner_id() (template 2027-01-02-130000-flows.sql). The
 -- branch is never appended to the FOR ALL policy, so an org token can READ a
--- partner-wide calendar but its UPDATE/DELETE matches 0 rows.
+-- partner-wide calendar but its UPDATE/DELETE matches 0 rows. A second
+-- SELECT-only branch (<table>_org_member_select) covers organization sessions,
+-- whose JWT carries no partner id: see section 7.
 --
 -- The three children (revisions, intervals, holidays) DENORMALISE the owner
 -- pair from their parent, like tool_source_tools: each carries the same policy
@@ -400,6 +402,26 @@ BEGIN
       'CREATE POLICY %I ON %I FOR SELECT USING (org_id IS NULL AND partner_id = public.breeze_current_partner_id())',
       t || '_partner_wide_select', t
     );
+    -- Org-member read branch, also SELECT-only. Organization-session JWTs
+    -- deliberately carry partnerId = NULL (middleware/auth.ts), so for an org
+    -- user breeze_current_partner_id() is NULL and the branch above never
+    -- matches; without this, an org user's ticket would silently resolve to
+    -- 24×7 and every SLA write on a partner-default ticket (first response,
+    -- pause end) would fail to read its snapshot. A partner-wide calendar is
+    -- readable by a session with access to an org of THAT partner — the read
+    -- the branch above intends, derived from org access instead of a claim.
+    -- The organizations read inside runs under the caller's own RLS.
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I', t || '_org_member_select', t);
+    EXECUTE format($p$
+      CREATE POLICY %I ON %I FOR SELECT USING (
+        org_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM public.organizations o
+           WHERE o.partner_id = %I.partner_id
+             AND public.breeze_has_org_access(o.id)
+        )
+      )
+    $p$, t || '_org_member_select', t, t);
     EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO breeze_app', t);
   END LOOP;
 END $$;

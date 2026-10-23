@@ -13,8 +13,9 @@
  *                          enable_tickets gate opens an org context WITH
  *                          currentPartnerId, driven here through the real
  *                          middleware + route.
- * The negative control proves the portal opt-in is load-bearing: the generic
- * portal context (currentPartnerId NULL) cannot see the default.
+ * Organization-session JWTs carry no partner id, so org sessions read the
+ * partner's calendars through the org-member branch instead; that branch never
+ * reaches another partner's rows.
  */
 import './setup';
 import { describe, expect, it } from 'vitest';
@@ -34,7 +35,8 @@ import { buildDbAccessContext } from '../../middleware/auth';
 import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 import { partnerScopedDbContext } from '../../routes/partnerApi/dbContext';
 import { portalTicketsEnabledMiddleware, ticketRoutes } from '../../routes/portal/tickets';
-import { createTicket } from '../../services/ticketService';
+import { addTicketComment, changeTicketStatus, createTicket } from '../../services/ticketService';
+import { addBusinessMinutes } from '@breeze/shared';
 import { resolveBusinessCalendar } from '../../services/businessCalendars/resolve';
 import { createOrganization, createPartner, createUser } from './db-utils';
 
@@ -55,6 +57,11 @@ async function seedPartnerDefault(partnerId: string, opts: { isDefault?: boolean
   });
 }
 
+const NY_WEEKDAYS = {
+  timezone: 'America/New_York',
+  intervals: [1, 2, 3, 4, 5].map((weekday) => ({ weekday: weekday as 1, startMinute: 540, endMinute: 1020 })),
+};
+
 async function fixture() {
   const partner = (await createPartner())!;
   const org = (await createOrganization({ partnerId: partner.id }))!;
@@ -71,6 +78,11 @@ async function snapshotOf(ticketId: string) {
     db.select({ rev: tickets.slaCalendarRevisionId, due: tickets.responseDueAt, created: tickets.createdAt })
       .from(tickets).where(eq(tickets.id, ticketId)));
   return row!;
+}
+
+/** Exactly what authMiddleware opens for an organization-scope JWT (partnerId: null). */
+function orgSession(orgId: string, userId: string): DbAccessContext {
+  return buildDbAccessContext({ scope: 'organization', orgId, accessibleOrgIds: [orgId], partnerId: null, userId });
 }
 
 /** The portal stack as portalAuthMiddleware leaves it, self-managed routes included. */
@@ -103,8 +115,11 @@ describe('business calendar caller contexts (#8973 W4, Gate B1)', () => {
       createTicket({ orgId: org.id, subject: 'staff', source: 'manual' }, { kind: 'user', userId: staff.id, name: 'Staff' }));
     snapshots.staff = (await snapshotOf(staffTicket.id)).rev;
 
-    // Org-scope token (an org user carries its partner as currentPartnerId).
-    const orgCtx = buildDbAccessContext({ scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id], partnerId: partner.id, userId: staff.id });
+    // Org-scope session: organization JWTs deliberately carry partnerId = null
+    // (middleware/auth.ts), so currentPartnerId is NULL and the partner-wide
+    // SELECT branch never matches — the org-member read branch is what lets it
+    // see its own partner's calendars.
+    const orgCtx = orgSession(org.id, staff.id);
     const orgTicket = await withDbAccessContext(orgCtx, () =>
       createTicket({ orgId: org.id, subject: 'org token', source: 'manual' }, { kind: 'user', userId: staff.id, name: 'Staff' }));
     snapshots.org = (await snapshotOf(orgTicket.id)).rev;
@@ -139,20 +154,65 @@ describe('business calendar caller contexts (#8973 W4, Gate B1)', () => {
       staff: cal.revisionId, org: cal.revisionId, partnerApi: cal.revisionId, email: cal.revisionId, portal: cal.revisionId,
     });
 
-    // The deadline is business time, not wall clock, on every path.
+    // The deadline is business time on every path: exactly what the shared
+    // calculator gives on the snapshotted Mon–Fri 09:00–17:00 New York hours.
     for (const id of [staffTicket.id, orgTicket.id, apiTicket.id, emailTicket.id, pid!]) {
       const s = await snapshotOf(id);
-      expect(s.due).not.toBeNull();
+      expect(s.due, id).toEqual(addBusinessMinutes(NY_WEEKDAYS, [], s.created, 60));
     }
   });
 
-  runDb('negative control: the generic portal context (no currentPartnerId) cannot see the partner default', async () => {
-    const { partner, org } = await fixture();
-    const generic: DbAccessContext = {
-      scope: 'organization', orgId: org.id, accessibleOrgIds: [org.id], accessiblePartnerIds: [], userId: null, currentPartnerId: null,
-    };
-    const resolved = await withDbAccessContext(generic, () => resolveBusinessCalendar(db, { partnerId: partner.id, orgId: org.id }));
-    expect(resolved.source).toBe('none');
+  // The SLA write points re-read the snapshot on every change. An org-scope
+  // session (currentPartnerId NULL) must be able to read a PARTNER-WIDE
+  // revision, or a first response / pause end would fail the write.
+  runDb('an org-scope session can answer and resume a ticket on a partner-wide calendar', async () => {
+    const { org, staff, cal } = await fixture();
+    const ctx = orgSession(org.id, staff.id);
+    const actor = { kind: 'user' as const, userId: staff.id, name: 'Staff' };
+    const ticket = await withDbAccessContext(ctx, () => createTicket({ orgId: org.id, subject: 'org session', source: 'manual' }, actor));
+    expect((await snapshotOf(ticket.id)).rev).toBe(cal.revisionId);
+
+    await withDbAccessContext(ctx, () => addTicketComment(ticket.id, { content: 'On it', isPublic: true }, actor));
+    await withDbAccessContext(ctx, () => changeTicketStatus(ticket.id, { status: 'pending' }, {}, actor));
+    await withDbAccessContext(ctx, () => changeTicketStatus(ticket.id, { status: 'open' }, {}, actor));
+
+    const [row] = await withSystemDbAccessContext(() => db.select().from(tickets).where(eq(tickets.id, ticket.id)));
+    expect(row?.firstResponseAt).not.toBeNull();
+    expect(row?.slaPausedAt).toBeNull();
+    expect(row?.slaCalendarRevisionId).toBe(cal.revisionId);
+  });
+
+  runDb('isolation: another partner (partner or org session) sees nothing of a partner-wide calendar', async () => {
+    const { cal } = await fixture();
+    const other = (await createPartner())!;
+    const otherOrg = (await createOrganization({ partnerId: other.id }))!;
+    const reads = async (ctx: DbAccessContext) => withDbAccessContext(ctx, async () => [
+      (await db.select().from(businessCalendars).where(eq(businessCalendars.id, cal.calendarId))).length,
+      (await db.select().from(businessCalendarRevisions).where(eq(businessCalendarRevisions.calendarId, cal.calendarId))).length,
+      (await db.select().from(businessCalendarIntervals).where(eq(businessCalendarIntervals.revisionId, cal.revisionId))).length,
+    ]);
+    expect(await reads(orgSession(otherOrg.id, (await createUser({ partnerId: other.id, email: `iso-${Date.now()}@example.com` })).id))).toEqual([0, 0, 0]);
+    expect(await reads(buildDbAccessContext({ scope: 'partner', orgId: null, accessibleOrgIds: [otherOrg.id], partnerId: other.id, userId: null }))).toEqual([0, 0, 0]);
+    expect(await reads({ scope: 'organization', orgId: otherOrg.id, accessibleOrgIds: [otherOrg.id], accessiblePartnerIds: [], userId: null, currentPartnerId: other.id })).toEqual([0, 0, 0]);
+  });
+
+  // The org-member read branch (<table>_org_member_select) is keyed on org
+  // access, not on the currentPartnerId claim: a session with access to an
+  // org of the owning partner reads its partner-wide calendars — including
+  // the generic portal context — and a session of another partner's org
+  // never does.
+  runDb('the org-member branch: own partner resolves, another partner never does', async () => {
+    const { partner, org, cal } = await fixture();
+    const other = (await createPartner())!;
+    const otherOrg = (await createOrganization({ partnerId: other.id }))!;
+    const portalCtx = (orgId: string): DbAccessContext => ({
+      scope: 'organization', orgId, accessibleOrgIds: [orgId], accessiblePartnerIds: [], userId: null, currentPartnerId: null,
+    });
+    const own = await withDbAccessContext(portalCtx(org.id), () => resolveBusinessCalendar(db, { partnerId: partner.id, orgId: org.id }));
+    expect(own).toEqual({ source: 'partner', calendarId: cal.calendarId, revisionId: cal.revisionId });
+    // Even naming the other partner explicitly finds nothing: RLS hides the rows.
+    const foreign = await withDbAccessContext(portalCtx(otherOrg.id), () => resolveBusinessCalendar(db, { partnerId: partner.id, orgId: otherOrg.id }));
+    expect(foreign.source).toBe('none');
   });
 
   runDb('resolution order: an org override wins; an archived override falls through to the partner default; none when there is no default', async () => {
