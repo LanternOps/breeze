@@ -6,7 +6,7 @@
 
 import { Hono } from 'hono';
 import { routePath as honoRoutePath } from 'hono/route';
-import { avg, and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { avg, and, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { Counter, Gauge, Histogram } from 'prom-client';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -71,6 +71,7 @@ import { envFloat } from '../utils/envFloat';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { admissionRouteLabelOf } from '../services/safeRequestLabel';
+import { resolveAnalyticsDateWindow, resolveAnalyticsOrgScope } from './analyticsQueryScope';
 export {
   recordBackupCommandTimeout,
   recordBackupDispatchFailure,
@@ -1525,12 +1526,13 @@ function emptyDashboardMetrics() {
 
 metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', 'system'), requireMetricsRead, async (c) => {
   const auth = c.get('auth');
-  const orgCondition =
-    typeof auth?.orgCondition === 'function'
-      ? auth.orgCondition(devices.orgId)
-      : auth?.orgId
-        ? eq(devices.orgId, auth.orgId)
-        : undefined;
+  // The org switcher's selection arrives as `?orgId=`; it may only narrow the
+  // token's reach (#9648).
+  const orgScope = resolveAnalyticsOrgScope(auth, c.req.query('orgId'));
+  if (!orgScope.ok) {
+    return c.json({ error: orgScope.error }, orgScope.status);
+  }
+  const orgCondition = orgScope.orgCondition(devices.orgId);
 
   // `allowedSiteIds` is populated by requirePermission. `undefined` is
   // unrestricted; `[]` is restricted to no sites and must never widen into
@@ -1641,28 +1643,29 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
   }
 
   const auth = c.get('auth');
-  const orgCondition =
-    typeof auth?.orgCondition === 'function'
-      ? auth.orgCondition(devices.orgId)
-      : auth?.orgId
-        ? eq(devices.orgId, auth.orgId)
-        : undefined;
-  const range = c.req.query('range') ?? '30d';
-  const days = range === '24h' ? 1 : range === '7d' ? 7 : 30;
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const orgScope = resolveAnalyticsOrgScope(auth, c.req.query('orgId'));
+  if (!orgScope.ok) {
+    return c.json({ error: orgScope.error }, orgScope.status);
+  }
+  const orgCondition = orgScope.orgCondition(devices.orgId);
+  // Custom range (`startDate`/`endDate`) wins over the `range` preset (#9649).
+  const dateWindow = resolveAnalyticsDateWindow(
+    { range: c.req.query('range'), startDate: c.req.query('startDate'), endDate: c.req.query('endDate') },
+    (range) => (range === '24h' ? 1 : range === '7d' ? 7 : 30)
+  );
+  if (!dateWindow.ok) {
+    return c.json({ error: dateWindow.error }, dateWindow.status);
+  }
+  const { since, until } = dateWindow;
 
   try {
-    const rollupOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(metricRollups.orgId)
-        : auth?.orgId
-          ? eq(metricRollups.orgId, auth.orgId)
-          : undefined;
+    const rollupOrgCondition = orgScope.orgCondition(metricRollups.orgId);
     const rollupCondition = and(
       eq(metricRollups.sourceTable, 'device_metrics'),
       eq(metricRollups.bucketSeconds, 86400),
       inArray(metricRollups.metricName, ['cpu_percent', 'ram_percent']),
       gte(metricRollups.bucketStart, since),
+      ...(until ? [lt(metricRollups.bucketStart, until)] : []),
       sql`${metricRollups.sampleCount} > 0`,
       sql`${metricRollups.avgValue} IS NOT NULL`,
       ...(rollupOrgCondition ? [rollupOrgCondition] : [])
@@ -1693,9 +1696,11 @@ metricsRoutes.get('/trends', authMiddleware, requireScope('organization', 'partn
       return c.json(Array.from(byBucket.values()));
     }
 
-    const trendsCondition = orgCondition
-      ? and(gte(deviceMetrics.timestamp, since), orgCondition)
-      : gte(deviceMetrics.timestamp, since);
+    const trendsCondition = and(
+      gte(deviceMetrics.timestamp, since),
+      ...(until ? [lt(deviceMetrics.timestamp, until)] : []),
+      ...(orgCondition ? [orgCondition] : [])
+    );
     const rows = await db
       .select({
         bucket: sql<string>`date_trunc('day', ${deviceMetrics.timestamp})`.as('bucket'),

@@ -215,6 +215,63 @@ describe('UserRiskPage', () => {
     expect(scoreCalls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('keeps the list and detail mounted while scores refresh after a label save (#9684)', async () => {
+    routeFetch({ save: 'ok' });
+    const routed = fetchWithAuthMock.getMockImplementation()!;
+    let scoreCalls = 0;
+    fetchWithAuthMock.mockImplementation((url: string, ...rest: unknown[]) => {
+      if (typeof url === 'string' && url.includes('/user-risk/scores')) {
+        scoreCalls += 1;
+        // The post-save refresh never resolves, so we observe the in-flight state.
+        if (scoreCalls >= 2) return new Promise<Response>(() => {});
+      }
+      return (routed as (...a: unknown[]) => Promise<Response>)(url, ...rest);
+    });
+
+    render(<UserRiskPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /true positive/i }));
+
+    await screen.findByTestId('user-risk-refreshing');
+    expect(screen.queryByTestId('user-risk-loading')).toBeNull();
+    expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
+  });
+
+  it('keeps the list on screen and toasts when the post-save refresh fails (#9684)', async () => {
+    routeFetch({ save: 'ok' });
+    const routed = fetchWithAuthMock.getMockImplementation()!;
+    let scoreCalls = 0;
+    fetchWithAuthMock.mockImplementation((url: string, ...rest: unknown[]) => {
+      if (typeof url === 'string' && url.includes('/user-risk/scores')) {
+        scoreCalls += 1;
+        if (scoreCalls >= 2) return Promise.resolve(response({ error: 'down' }, false, 500));
+      }
+      return (routed as (...a: unknown[]) => Promise<Response>)(url, ...rest);
+    });
+
+    render(<UserRiskPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /true positive/i }));
+
+    await waitFor(() => {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+    expect(screen.getByTestId('user-risk-page')).toBeTruthy();
+    expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
+  });
+
+  it('names each risk driver with a label and description, never the raw key (#9684)', async () => {
+    routeFetch();
+
+    render(<UserRiskPage />);
+
+    expect(await screen.findByText('Failed sign-in attempts')).toBeTruthy();
+    expect(screen.getByText(/repeated failed logins/i)).toBeTruthy();
+    expect(await screen.findByText('Unusual session activity')).toBeTruthy();
+    expect(screen.queryByText(/auth failure risk/i)).toBeNull();
+    expect(screen.queryByText(/rules-v0/i)).toBeNull();
+  });
+
   it('toasts an error when saving a label fails (non-2xx)', async () => {
     // The save POST returns 500 regardless of how the load/detail calls interleave.
     routeFetch({ save: 'fail' });

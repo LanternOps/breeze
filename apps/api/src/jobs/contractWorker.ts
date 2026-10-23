@@ -86,6 +86,14 @@ export async function runContractBillingSweep(asOf: Date = new Date()): Promise<
         console.error('[contract-billing] renewal pending after the renewal sweep: contractId=%s orgId=%s — not billed, not expired', row.id, row.orgId);
         captureException(new Error(`contract ${row.id} billing deferred: auto-renew term ended but the renewal sweep did not extend it`));
       }
+      // #9509: the sweep only picks contracts whose pointer is due, so a lost
+      // ledger claim means the pointer sat on a period that was already billed.
+      // generateDueInvoice moved it on (the next run bills), but the invariant
+      // broke, so report it rather than leave it to a stdout warning.
+      if (res.skipped === 'already_billed') {
+        console.error('[contract-billing] already billed: due contract pointed at a claimed period; pointer moved on: contractId=%s orgId=%s', row.id, row.orgId);
+        captureException(new Error(`contract ${row.id} billing pointer was on an already-claimed period (moved past it)`));
+      }
       // Wave 3 (#3775): a catalog line billed at the contract snapshot because
       // the price book has no row in the contract's currency is never silent —
       // one structured warning per gap so ops can fill the book.

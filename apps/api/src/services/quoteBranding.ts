@@ -94,16 +94,15 @@ export type InvoiceBrandingSource = Omit<QuoteBrandingSource, 'presentationSnaps
  * draft — so the in-app preview and the public customer view cannot disagree.
  */
 export async function resolveInvoiceBranding(invoice: InvoiceBrandingSource): Promise<QuoteBranding> {
-  return resolveDocumentBranding(invoice, (partner) => resolveInvoicePresentation(invoice, partner));
+  return resolveDocumentBranding(invoice, (partner) => resolveInvoicePresentation(invoice, partner), { partnerBrandFallback: true });
 }
 
 async function resolveDocumentBranding(
   doc: Omit<QuoteBrandingSource, 'presentationSnapshot'>,
   presentation: (partner: typeof partners.$inferSelect | undefined) => { theme: DocumentThemeId; pageSize: DocumentPageSize },
-  // Quotes fall back to the partner's own Branding settings (logo, colours)
-  // when the customer org's portal_branding row has none. Invoices don't yet —
-  // their customer views and PDF read portal_branding only, and the in-app
-  // preview must not diverge from them.
+  // Quotes and invoices fall back to the partner's own Branding settings (logo,
+  // colours) when the customer org's portal_branding row has none (#9676). The
+  // invoice customer views and PDF apply the same resolver.
   opts: { partnerBrandFallback?: boolean } = {},
 ): Promise<QuoteBranding> {
   const [partner] = await db

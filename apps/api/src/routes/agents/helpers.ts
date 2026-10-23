@@ -1608,9 +1608,22 @@ export async function handleCisCommandResult(
     return;
   }
 
-  const completed = resultData.status === 'completed';
   const payloadDetails = isObject(payload.details) ? payload.details : null;
   const resultPayload = parseResultJson(resultData.stdout);
+  // #9604: the remediation's own `success` flag decides too, not just the
+  // command status. Agents before the fix report a remediation they could not
+  // apply as a COMPLETED command whose stdout says `{ success: false, error }`;
+  // fixed agents send a failed command. Only an explicit `false` flips the
+  // outcome, so a stdout without the field keeps the command status.
+  const agentReportedNotApplied = resultPayload?.success === false;
+  const completed = resultData.status === 'completed' && !agentReportedNotApplied;
+  const failureError = completed
+    ? null
+    : readTrimmedString(resultData.error)
+      ?? readTrimmedString(resultPayload?.error)
+      ?? (agentReportedNotApplied
+        ? 'Agent reported the remediation was not applied'
+        : `Remediation command ${resultData.status}`);
   const resultDetails = resultPayload && isObject(resultPayload.details)
     ? resultPayload.details
     : null;
@@ -1641,7 +1654,10 @@ export async function handleCisCommandResult(
     commandId: command.id,
     commandStatus: resultData.status,
     exitCode: resultData.exitCode ?? null,
-    error: resultData.error ?? null,
+    error: completed ? (resultData.error ?? null) : failureError,
+    // Older agents send `completed` + `success:false`; this explains why the
+    // action reads failed while commandStatus reads completed.
+    ...(agentReportedNotApplied ? { agentReportedNotApplied: true } : {}),
     stderr: resultData.stderr ?? null,
     completedAt: new Date().toISOString(),
   };

@@ -1362,6 +1362,7 @@
     "drive": "Unità",
     "size": "Dimensione",
     "used": "Utilizzato",
+    "usedPercent": "% utilizzato",
     "health": "Integrità",
     "noDiskInventoryReported": "Nessun inventario dei dischi segnalato.",
     "networkAdapters": "Schede di rete",
@@ -2497,7 +2498,7 @@
     "showFindings": "Mostra rilevamenti",
     "stats": {
       "accepted": "Accettate",
-      "kev": "KEV",
+      "kev": "Sfruttata nota",
       "mitigated": "Mitigate",
       "open": "Aperte",
       "patchReady": "Pronte per patch",

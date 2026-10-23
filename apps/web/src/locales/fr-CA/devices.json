@@ -1362,6 +1362,7 @@
     "drive": "Conduision",
     "size": "Taille",
     "used": "Utilisés",
+    "usedPercent": "% utilisé",
     "health": "Santé",
     "noDiskInventoryReported": "Aucun inventaire de disque signalé.",
     "networkAdapters": "Adaptateurs réseau",
@@ -2497,7 +2498,7 @@
     "showFindings": "Afficher les constats",
     "stats": {
       "accepted": "Accepté",
-      "kev": "Kev",
+      "kev": "Exploitée connue",
       "mitigated": "Atténué",
       "open": "Ouvrir",
       "patchReady": "Prêt à la mise à jour",
@@ -2515,9 +2516,9 @@
     "statusLabel": "Étiquette de statut",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
+      "cve": "CVE",
       "cvss": "CVSS",
-      "kev": "Kev",
+      "kev": "KEV",
       "risk": "Risque",
       "severity": "Gravité",
       "status": "Statut"

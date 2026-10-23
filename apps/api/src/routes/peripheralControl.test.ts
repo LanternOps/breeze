@@ -303,6 +303,94 @@ describe('peripheralControl routes', () => {
     expect(body.data.action).toBe('alert');
   });
 
+  // #9620: the web form cannot edit targeting, so an update that omits
+  // targetType/targetIds must leave the stored targeting unchanged instead of
+  // silently widening the policy to the whole organization.
+  describe('update targeting (#9620)', () => {
+    const siteA = '33333333-3333-3333-3333-333333333333';
+    const siteB = '44444444-4444-4444-4444-444444444444';
+    const sitePolicy = { ...basePolicy, targetType: 'site', targetIds: { siteIds: [siteA, siteB] } };
+
+    function mockUpdate(existing: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([existing])
+          })
+        })
+      } as any);
+      const set = vi.fn((values: Record<string, unknown>) => ({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...existing, ...values }])
+        })
+      }));
+      vi.mocked(db.update).mockReturnValue({ set } as any);
+      return set;
+    }
+
+    function postUpdate(extra: Record<string, unknown> = {}) {
+      return app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: policyId, name: 'Renamed', deviceClass: 'storage', action: 'block', ...extra })
+      });
+    }
+
+    it('keeps a site-targeted policy site-targeted when the update omits targeting', async () => {
+      const set = mockUpdate(sitePolicy);
+      const res = await postUpdate();
+
+      expect(res.status).toBe(200);
+      const written = set.mock.calls[0]![0];
+      expect(written.targetType).toBe('site');
+      expect(written.targetIds).toEqual({ siteIds: [siteA, siteB] });
+      expect(written.name).toBe('Renamed');
+    });
+
+    it('keeps the stored targetIds when only targetType is resent unchanged', async () => {
+      const set = mockUpdate(sitePolicy);
+      const res = await postUpdate({ targetType: 'site' });
+
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0].targetIds).toEqual({ siteIds: [siteA, siteB] });
+    });
+
+    it('clears targetIds when the update switches targetType without naming new targets', async () => {
+      const set = mockUpdate(sitePolicy);
+      const res = await postUpdate({ targetType: 'organization' });
+
+      expect(res.status).toBe(200);
+      const written = set.mock.calls[0]![0];
+      expect(written.targetType).toBe('organization');
+      expect(written.targetIds).toEqual({ siteIds: [], groupIds: [], deviceIds: [] });
+    });
+
+    it('applies explicit targeting on update', async () => {
+      const set = mockUpdate(sitePolicy);
+      const res = await postUpdate({ targetType: 'site', targetIds: { siteIds: [siteA] } });
+
+      expect(res.status).toBe(200);
+      expect(set.mock.calls[0]![0].targetIds).toEqual({ siteIds: [siteA], groupIds: [], deviceIds: [] });
+    });
+
+    it('still defaults a create without targeting to the whole organization', async () => {
+      const values = vi.fn((v: Record<string, unknown>) => ({
+        returning: vi.fn().mockResolvedValue([{ ...basePolicy, ...v }])
+      }));
+      vi.mocked(db.insert).mockReturnValue({ values } as any);
+
+      const res = await app.request('/peripherals/policies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'New', deviceClass: 'storage', action: 'block' })
+      });
+
+      expect(res.status).toBe(201);
+      expect(values.mock.calls[0]![0].targetType).toBe('organization');
+      expect(values.mock.calls[0]![0].targetIds).toEqual({ siteIds: [], groupIds: [], deviceIds: [] });
+    });
+  });
+
   it('returns 404 when updating a non-existent policy', async () => {
     // getPolicyWithAccess returns empty
     vi.mocked(db.select).mockReturnValue({

@@ -341,12 +341,6 @@ export function removeOrgPriceOverride(id: string, orgId: string): Promise<Respo
 
 // ---- presentation helpers -------------------------------------------------
 
-export const CATALOG_TYPE_LABELS: Record<CatalogItemType, string> = {
-  hardware: 'Hardware',
-  software: 'Software',
-  service: 'Service',
-};
-
 export const CATALOG_TYPE_ORDER: CatalogItemType[] = ['hardware', 'software', 'service'];
 
 // Quiet tinted chips, one hue per type (mirrors the contract status badge style).

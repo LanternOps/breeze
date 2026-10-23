@@ -443,6 +443,7 @@
     "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
     "low": "Düşük",
     "markComplete": "Tamamlandı Olarak İşaretle",
+    "reopen": "Yeniden aç",
     "medium": "Orta",
     "next": "Sonraki",
     "noRecommendationsMatchYourFilters": "Filtrelerinizle eşleşen öneri yok.",
@@ -810,9 +811,10 @@
     "precision": "Hassasiyet",
     "recentEvidence": "Son kanıtlar",
     "refresh": "Yenile",
+    "refreshing": "Yenileniyor",
     "repeatSignalUsers": "Tekrar sinyali kullanıcıları",
     "retry": "Tekrar dene",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Kuralları-v0 risk puanlarını, kanıtları ve değerlendirme etiketlerini gözden geçirin.",
+    "reviewUserRiskScoresEvidenceAnd": "Kullanıcı risk puanlarını, bunların dayandığı kanıtları ve değerlendirme etiketlerinizi gözden geçirin.",
     "scoreImpact": "{{value}} etki",
     "scoresEvidenceAndLabelsWillAppearHere": "Kullanıcı riski v0 üreticisi etkinleştirildiğinde puanlar, kanıtlar ve etiketler burada görünecektir.",
     "selectAUserToInspectRiskEvidence": "Risk kanıtlarını incelemek için bir kullanıcı seçin.",
@@ -821,7 +823,41 @@
     "truePositive": "Gerçek pozitif",
     "truePositiveLabelSaved": "Gerçek pozitif etiketi kaydedildi",
     "userRisk": "Kullanıcı Riski",
-    "userRiskScoringIsDisabledForThis": "Bu kuruluş için kullanıcı risk puanlaması devre dışı bırakıldı."
+    "userRiskScoringIsDisabledForThis": "Bu kuruluş için kullanıcı risk puanlaması devre dışı bırakıldı.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Çok faktörlü kimlik doğrulama eksikleri",
+        "description": "MFA’sı etkin olmayan hesaplar."
+      },
+      "authFailureRisk": {
+        "label": "Başarısız oturum açma denemeleri",
+        "description": "Parola tahmini veya kimlik bilgisi doldurma saldırısına işaret edebilecek tekrarlanan başarısız oturum açmalar."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Olağan dışı oturum etkinliği",
+        "description": "Tanınmayan konumlardan veya cihazlardan ya da olağan dışı saatlerde yapılan oturum açmalar."
+      },
+      "threatExposureRisk": {
+        "label": "Tehdit maruziyeti",
+        "description": "Kullanıcının çalıştığı cihazlarda tespit edilen tehditler."
+      },
+      "softwareViolationRisk": {
+        "label": "Yazılım ilkesi ihlalleri",
+        "description": "Yazılım ilkelerinizi ihlal eden yüklü yazılımlar."
+      },
+      "deviceSecurityRisk": {
+        "label": "Cihaz güvenlik durumu",
+        "description": "Kullanıcının cihazlarında eksik koruma veya yama gibi zayıf güvenlik durumu."
+      },
+      "staleAccessRisk": {
+        "label": "Eskimiş erişim",
+        "description": "Uzun süredir kullanılmayan hesaplar veya erişimler."
+      },
+      "recentImpactRisk": {
+        "label": "Son risk olayları",
+        "description": "Bu kullanıcı için son günlerde kaydedilen risk olayları."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Aktif",
@@ -989,7 +1025,13 @@
       "flow": "Akış",
       "status": "Durum",
       "riskTierTitle": "Risk katmanı {{tier}}",
-      "signer": "İmzalayan: {{signer}}"
+      "signer": "İmzalayan: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Cihaz işlem yapamadı: kullanılabilir PAM yardımcısı yok",
+        "sessionUnavailable": "Cihaz işlem yapamadı: kullanıcının oturumu kullanılamıyor",
+        "helperStartFailed": "Cihaz işlem yapamadı: PAM yardımcısı başlatılamadı",
+        "generic": "Cihaz bu isteği işleyemedi"
+      }
     },
     "actions": {
       "respond": "Yanıtla",

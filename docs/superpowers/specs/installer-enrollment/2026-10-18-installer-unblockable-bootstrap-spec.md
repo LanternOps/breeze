@@ -1,7 +1,8 @@
 # Installer bootstrap from an independent artifact source when the control plane is filtered — spec
 
 **Issue:** #8874 · **Composes with:** #8868 (block detection and diagnosis), #8870 (second control-plane domain), #8869 (agent ECH, shipped)
-**Date:** 2026-10-18 · **Status:** Draft spec. No plan yet. Open Decisions below need owner answers before planning.
+**Date:** 2026-10-18 · **Status:** Approved spec (Gate A, 2026-10-22). No plan yet. The Open Decisions below are decided.
+**Approval:** approved 2026-10-22 by Todd. All seven Open Decisions in §6 are decided as recommended.
 **Rigor:** high. The release workflow, the signed-manifest trust chain and the installer scripts are agent-shipped, high-blast-radius surfaces.
 
 ## 1. Problem
@@ -252,8 +253,12 @@ Each has a recommendation. An independent second-model review agreed with the ar
    (c) No hosted fallback: hosted keeps the MSI/pkg workaround plus #8870.
    **Recommend (a).** It is the only option with GitHub's blocking profile that serves the right edition. It needs one owner action: create the repository and grant the private pipeline publish rights. **Gate:** hosted `INSTALLER_FALLBACK_SOURCE` stays `off` until the first hosted release exists there and the §7 lab passes.
 
+   **Decided 2026-10-22:** (a). A new public distribution repository. The owner creates it and grants the private pipeline publish rights. Hosted `INSTALLER_FALLBACK_SOURCE` stays `off` until the repository exists and the §7.2 SNI-selective-proxy lab passes.
+
 2. **Self-host default.** (a) `auto` turns the fallback on in github mode with `BINARY_GITHUB_REPOSITORY`, the same bytes the 302 already serves. (b) Off unless configured. A "default on for hosted only" reading does not survive §1.2, because hosted cannot use the public repo.
    **Recommend (a).** It costs nothing unless the control plane is unreachable, and a private fork fails closed with a clear message.
+
+   **Decided 2026-10-22:** (a). The fallback defaults on (`auto`) for self-host in github mode.
 
 3. **Anchor lifetime.**
    - Position A: no expiry, relying on exact-hash pinning plus the heartbeat upgrade.
@@ -261,8 +266,12 @@ Each has a recommendation. An independent second-model review agreed with the ar
    - Options: (a) `validUntil = min(token expiry, mint + 30 days)`; (b) `validUntil = token expiry`; (c) none.
    **Recommend (a)** plus the installed-version floor (§3.2). Long-lived RMM-pasted commands keep the primary path. They lose only the fallback after 30 days, and re-copying a command re-arms it.
 
+   **Decided 2026-10-22:** (a). `validUntil = min(token expiry, mint + 30 days)`, plus the installed-version floor.
+
 4. **Anchor encoding.** (a) Per-asset hashes embedded, as in §3.2: no parsing, and it works for any mirror, but the Unix command is about 500 characters longer. (b) The hash of the signed manifest, with `install.sh` parsing JSON in bash: fragile, and the hosted manifest generator lives elsewhere. (c) The hash of `checksums.txt`: short and parse-free, but it is not signed, is excluded from the manifest, and its presence in the local or hosted volume is unproven.
    **Recommend (a).** The plan adds a length-budget test (Decision 7).
+
+   **Decided 2026-10-22:** (a). Per-asset hashes.
 
 5. **Mirror parity check.** Who proves the artifact source holds the anchor's bytes?
    - Position A: (a) the publishing pipeline asserts parity at publish time; the API never fetches from the mirror; a client that sees a mismatch fails closed ("checksum mismatch from the fallback source").
@@ -274,13 +283,19 @@ Each has a recommendation. An independent second-model review agreed with the ar
 
    Option (a) keeps the "no hosted asset from a public release" guard intact for every serving and ingesting path, and adds no worker. Option (b) becomes a follow-up if the lab or the field shows drift.
 
+   **Decided 2026-10-22:** (a). The publishing pipeline checks parity at publish time, with the ordering contract above.
+
 6. **macOS app on an unreachable control plane.** (a) Consent, then agent-side redemption (§3.5). (b) A better error only.
    **Recommend (a).** The Go path already exists and is ECH- and hostpolicy-aware. The cost is the missing org-name confirmation, which the consent copy states.
+
+   **Decided 2026-10-22:** (a). Consent, then agent-side redemption.
 
 7. **Command length.**
    - Today's Windows one-liner measures about 2,950 characters, or about 7,870 as UTF-16 Base64 for `-EncodedCommand`, close to CMD's 8,191 limit. The fallback adds roughly 600 to 900.
    - Options: (a) a unit test asserting a budget for both forms, plus documenting that wrappers needing `-EncodedCommand` should use a script file; (b) add a "download as .ps1/.sh" button in this feature (browser downloads get MOTW and execution-policy friction).
    **Recommend (a)** now and (b) as a follow-up only if the budget cannot be met.
+
+   **Decided 2026-10-22:** (a) now: a unit test asserting the length budget. The script-file download (b) is a follow-up.
 
 ## 7. Test and rollout notes
 

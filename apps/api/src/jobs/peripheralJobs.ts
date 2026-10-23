@@ -9,6 +9,7 @@ import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import { attachWorkerObservability } from './workerObservability';
 import { reconcilePeripheralPolicyDevice } from '../services/peripheralPolicyState';
+import { resolveLinkGovernedDeviceIds } from '../services/peripheralLinkReconcileTrigger';
 import { notHoldingOrgCondition, notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { isUnassignedPoolOrgType } from '../services/unassignedPool/orgType';
 
@@ -428,7 +429,23 @@ export async function schedulePeripheralPolicyDevice(
   return String(job.id);
 }
 
+/**
+ * Every device a peripheral policy can affect: its standalone targeting plus,
+ * when the snapshot carries the policy `id` and the policy is linked from an
+ * active config policy (#9619), the devices that config policy is assigned to.
+ * Mutation paths (edit / disable / exceptions) use this so a content change
+ * reaches link-governed devices too.
+ */
 export async function resolvePeripheralPolicyDeviceIds(
+  policy: PeripheralPolicyTargetSnapshot & { id?: string },
+): Promise<string[]> {
+  const standalone = await resolvePeripheralPolicyStandaloneDeviceIds(policy);
+  if (!policy.id || !policy.isActive) return standalone;
+  const governed = await resolveLinkGovernedDeviceIds(policy.id);
+  return governed.length === 0 ? standalone : [...new Set([...standalone, ...governed])].sort();
+}
+
+export async function resolvePeripheralPolicyStandaloneDeviceIds(
   policy: PeripheralPolicyTargetSnapshot,
 ): Promise<string[]> {
   if (!policy.isActive) return [];

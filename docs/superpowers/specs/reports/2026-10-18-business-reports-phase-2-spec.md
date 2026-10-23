@@ -2,7 +2,8 @@
 
 - **Issue:** #6830 (Phase 2 of #3198)
 - **Date:** 2026-10-18, verified against `main` @ `23648a6246`
-- **Status:** Draft. Awaiting Gate A (Todd). The Open Decisions are in §9.
+- **Status:** Approved at Gate A (Todd, 2026-10-22). The Open Decisions in §9 are decided.
+- **Approval:** approved 2026-10-22 by Todd. OD2 is B (Todd closed the quorum split). OD6 and OD8 follow the Opus recommendation. The rest are as recommended.
 - **Builds on:** `docs/superpowers/specs/reports/2026-08-16-psa-business-reports-spec.md` (Phase 1, approved), `docs/superpowers/plans/reports/2026-09-21-business-reports-INDEX.md` (Phase 1 W01–W03, merged)
 - **Scope:** this spec only. The wave plans are written after Gate A.
 
@@ -253,38 +254,46 @@ Order rationale: W1 is the most-asked-for report, and its quantity resolver is a
    - **B: Add `cost_basis` to `catalog_item_org_pricing` (the issue's proposed fork).** Pro: lets a partner record per-client vendor cost. Con: vendor cost rarely varies per customer, so this is a new column on an org-axis table (an export-policy classification and its tests) for a rare case. It also changes nothing about margin on past invoices, which already carry their snapshot.
    - **C: Recompute from today's `catalog_items.cost_basis`.** Pro: covers lines that lacked a cost at billing time. Con: restates history whenever a catalog cost changes, and crosses currencies.
    - **Recommend A.** The snapshot already exists and is the source the product's own margin panel trusts. B can be revisited if a partner shows a real per-customer cost case.
+   - **Decided 2026-10-22:** A. Per-client cost comes from the invoice-line snapshot (`invoice_lines.cost_basis`), with coverage % and unknown-cost revenue. No schema.
 2. **How is technician labor costed?**
    - **A: Hours plus effective hourly rate only (no labor dollars).** Pro: exact, with no invented data. Con: no "profit after labor" figure.
    - **B: A as the default, plus an optional uniform `laborCostPerHour` + currency config parameter producing a labelled *estimated contribution after labor*.** Pro: gives owners the number they want, honestly labelled, and mirrors the approved `weeklyCapacityHours` precedent (Phase 1 OD3). Con: one blended rate hides senior/junior cost differences.
    - **C: A new per-technician cost-rate table** (partner-owned; a `partner_id NOT NULL` shape needs a stated justification under Partner-Wide First, plus RLS, cascade, export policy and an HR-sensitivity review). Pro: accurate. Con: a tenancy migration for one consumer. Scheduling/dispatch is the natural second consumer and should shape the table.
    - **Recommend B** (Opus). It ships the headline owners ask for without schema, and C waits for a second consumer, exactly as Phase 1 deferred `technician_capacity`.
    - **Codex recommends A:** exclude labor dollars explicitly and defer full profitability. Its reason: a single invented rate can make an unprofitable client look profitable, and the report's credibility rests on every figure being sourced. **Unresolved quorum disagreement; Todd decides.** B is A plus an opt-in. With the parameter unset, B behaves exactly like A, so choosing B costs little if the figure is printed only when the parameter is set and always carries an "estimate" label.
+   - **Decided 2026-10-22:** **B.** Hours × effective hourly rate by default, plus the opt-in uniform `laborCostPerHour` parameter. With it unset, the report behaves exactly like A. When it is set, the figure carries an "estimate" label.
 3. **When is recurring revenue counted in R4?**
    - **A: At invoice `issue_date` (billed basis), with a note.** Pro: reconciles to invoices and AR. Con: annual contracts spike in their billing month.
    - **B: Spread contract-sourced revenue over its `contract_billing_periods` window** (the same allocation as R5's billed series). Pro: smoother per-period margin. Con: R4 then disagrees with invoice totals for the period, which needs a reconciliation line.
    - **Recommend A for v1**, with B's spread already present in R5's billed series. Revisit if owners report annual-contract distortion.
+   - **Decided 2026-10-22:** A. Recurring revenue is counted at invoice `issue_date`.
 4. **Does MRR history need a materialized snapshot table?**
    - **A: No table. Use run-over-run baseline chips plus the reconstructable billed-recurring series (§3.2).** Pro: no tenancy work, and exact history from day one via invoices. Con: no contracted-MRR history before a definition's first scheduled run, and no churn/expansion bridge.
    - **B: A monthly `mrr_snapshots` table** (org-owned, Shape 1 RLS, cascade/merge/export registrations, plus a worker job in `workerReadinessManifest.ts`). Pro: true contracted-MRR history and movement analysis. Con: high-blast-radius schema plus a job, history only from deployment day anyway, and it duplicates what scheduled report runs already store.
    - **Recommend A.** Revisit B as its own feature if owners ask for churn bridges.
+   - **Decided 2026-10-22:** A. No MRR history table.
 5. **What is the quote win-rate headline denominator?**
    - **A: Decided only, won ÷ (won + declined + expired), with the open count beside it.** Pro: stable once decided, and treats expiry as the loss it is in practice. Con: flatters a period with many open quotes.
    - **B: The cohort, won ÷ all sent.** Pro: no exclusion. Con: recent periods always look bad until their quotes settle.
    - **C: Exclude expired from the denominator** (won ÷ (won + declined)). Con: rewards letting quotes lapse instead of chasing a decline.
    - **Recommend A, showing B as a secondary figure.**
+   - **Decided 2026-10-22:** A. The decided-only denominator, with the open count shown beside it.
 6. **Does ticket volume / backlog trend belong in this phase?**
    - **A: Split it into its own issue.** Pro: it is a service metric with a different persona and permission (`TICKETS_READ`), and an honest backlog trend needs reopen history that `tickets` does not keep (no status log). Con: the title of #6830 promised it.
    - **B: Add it as a fourth wave, reconstructing backlog from `created_at` / `resolved_at`** with a reopen disclosure.
    - **C (codex): Ship arrival volume, current backlog, and backlog-trend observations from scheduled runs in a fourth wave now; split out only the historical reconstruction.** Reopen clears `resolved_at` / `closed_at` (`ticketService.ts`), but status changes are already logged as `ticket_comments` rows with `comment_type = 'status_change'` and `old_value` / `new_value`. Audit that log's coverage, imports and deletion semantics before inventing a history table.
    - **Recommend A** (Opus). The orchestrator files the follow-up, and it should carry codex's C framing and the `status_change` comment lead as its starting point. The three money reports form one owner/finance pack, and a service report has no reason to wait on them or delay them. **Unresolved quorum disagreement on placement only.** Both sides agree a historical backlog needs the comment-log audit first.
+   - **Decided 2026-10-22:** A. Ticket volume and backlog trend split into their own issue. That issue audits the `status_change` comment log (coverage, imports, deletion semantics) first.
 7. **One `mrr_renewals` type, or separate `mrr` and `contract_renewals` types?**
    - **A: One type with two sections.** Pro: one contract resolution pass; renewals carry "MRR at stake" for free; one monthly owner report. Con: a renewals-only schedule (for an account manager) carries the MRR section too.
    - **B: Two types.** Pro: separate audiences. Con: two enum values, two of each surface, and duplicated resolution.
    - **Recommend A.** A section toggle in the options form covers the account-manager case if requested.
+   - **Decided 2026-10-22:** A. One report type (`mrr_renewals`) with two sections.
 8. **Should W2 add a durable quote → contract link so conversion can be measured?**
    - **A: No column. Report won monthly recurring value (R6) and draft "pending activation" contracts (R5).** Pro: no schema change. Con: no per-quote "accepted but never activated" attribution.
    - **B (codex): Add nullable `contracts.source_quote_id`, stamped inside the accept transaction.** This needs a same-org composite FK `(source_quote_id, org_id) → quotes(id, org_id)` `DEFERRABLE INITIALLY IMMEDIATE` `ON DELETE SET NULL (source_quote_id)`, a `CORE_TENANT_EXPORT_POLICY` classification for the new column, an org-merge check (contracts and quotes move together), and a migration. Pro: real conversion and time-to-activation metrics going forward. Con: a schema change on a billing table, forward-only (legacy contracts stay unknown), for a metric no one has asked for yet.
    - **Recommend A** (Opus); codex recommends B. **Unresolved quorum disagreement; Todd decides.** If B is chosen, it belongs in W2 as its own commit, with the tenancy obligations above, and §4 grows accordingly.
+   - **Decided 2026-10-22:** A. `contracts.source_quote_id` is deferred.
 
 ## 10. Advisor quorum
 

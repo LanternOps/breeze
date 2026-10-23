@@ -17,6 +17,7 @@ import {
   type LoadErrorKind,
 } from "../../lib/httpError";
 import AccessDenied from "../shared/AccessDenied";
+import { showToast } from "../shared/Toast";
 import { fetchWithAuth } from "../../stores/auth";
 import { useMlFeatureFlags } from "../../hooks/useMlFeatureFlags";
 import { formatDateTime } from "@/lib/dateTimeFormat";
@@ -107,6 +108,19 @@ const formatDate = (value: string): string => {
     minute: "2-digit",
   });
 };
+// Factor keys the scorer emits (apps/api userRiskScoring.ts). Each has a label +
+// description under securityUserRiskPage.factors.<key>; anything else falls back
+// to the humanised key below.
+const KNOWN_FACTORS = new Set([
+  "mfaRisk",
+  "authFailureRisk",
+  "sessionAnomalyRisk",
+  "threatExposureRisk",
+  "softwareViolationRisk",
+  "deviceSecurityRisk",
+  "staleAccessRisk",
+  "recentImpactRisk",
+]);
 const formatFactor = (value: string): string =>
   value
     .replace(/([a-z])([A-Z])/g, "$1 $2")
@@ -130,12 +144,16 @@ export default function UserRiskPage() {
     "true_positive" | "false_positive" | null
   >(null);
   const userRiskDisabled = mlFlags.isDisabled("ml.user_risk_v0.enabled");
-  const loadScores = useCallback(async () => {
+  const [refreshing, setRefreshing] = useState(false);
+  // `background` refreshes (after a label save) keep the current data on screen
+  // and show an inline spinner instead of swapping in the full-page one (#9684).
+  const loadScores = useCallback(async (background = false) => {
     if (!mlFlags.loaded || userRiskDisabled) {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    if (background) setRefreshing(true);
+    else setLoading(true);
     setError(null);
     setErrorKind("none");
     try {
@@ -176,6 +194,18 @@ export default function UserRiskPage() {
       // artifact anywhere to debug from. (#2429)
       console.error("[UserRiskPage] failed to load user risk scores:", err);
       const kind = errorKindOf(err);
+      // A failed background refresh must not discard the data already on screen;
+      // surface it as a toast instead of the full-page error panel (#9684).
+      if (background && kind === "other") {
+        showToast({
+          type: "error",
+          message:
+            err instanceof Error
+              ? err.message
+              : t("securityUserRiskPage.failedToLoadUserRisk"),
+        });
+        return;
+      }
       setErrorKind(kind);
       // 'denied' renders AccessDenied, which supplies its own copy.
       if (kind === "other")
@@ -186,6 +216,7 @@ export default function UserRiskPage() {
         );
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [mlFlags.loaded, userRiskDisabled]);
   useEffect(() => {
@@ -284,7 +315,7 @@ export default function UserRiskPage() {
             ? t("securityUserRiskPage.truePositiveLabelSaved")
             : t("securityUserRiskPage.falsePositiveLabelSaved"),
       });
-      await loadScores();
+      await loadScores(true);
     } catch (err) {
       handleActionError(
         err,
@@ -312,7 +343,7 @@ export default function UserRiskPage() {
             {t("securityUserRiskPage.userRisk")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {t("securityUserRiskPage.reviewRulesV0RiskScoresEvidenceAnd")}
+            {t("securityUserRiskPage.reviewUserRiskScoresEvidenceAnd")}
           </p>
         </header>
         <section
@@ -368,17 +399,26 @@ export default function UserRiskPage() {
             {t("securityUserRiskPage.userRisk")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {t("securityUserRiskPage.reviewRulesV0RiskScoresEvidenceAnd")}
+            {t("securityUserRiskPage.reviewUserRiskScoresEvidenceAnd")}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadScores()}
-          className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
-        >
-          <RefreshCw className="h-4 w-4" />
-          {t("securityUserRiskPage.refresh")}
-        </button>
+        <div className="flex items-center gap-3">
+          {refreshing && (
+            <Loader2
+              className="h-4 w-4 animate-spin text-muted-foreground"
+              data-testid="user-risk-refreshing"
+              aria-label={t("securityUserRiskPage.refreshing")}
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => void loadScores()}
+            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            <RefreshCw className="h-4 w-4" />
+            {t("securityUserRiskPage.refresh")}
+          </button>
+        </div>
       </header>
 
       <section className="grid gap-3 md:grid-cols-4">
@@ -535,11 +575,24 @@ export default function UserRiskPage() {
                   {factors.map(([factor, value]) => (
                     <div key={factor}>
                       <div className="mb-1 flex items-center justify-between gap-3 text-xs">
-                        <span className="capitalize text-muted-foreground">
-                          {formatFactor(factor)}
+                        <span
+                          className={
+                            KNOWN_FACTORS.has(factor)
+                              ? "font-medium"
+                              : "capitalize text-muted-foreground"
+                          }
+                        >
+                          {KNOWN_FACTORS.has(factor)
+                            ? t(/* i18n-dynamic */ `securityUserRiskPage.factors.${factor}.label`)
+                            : formatFactor(factor)}
                         </span>
                         <span className="font-medium">{value}</span>
                       </div>
+                      {KNOWN_FACTORS.has(factor) && (
+                        <p className="mb-1 text-xs text-muted-foreground">
+                          {t(/* i18n-dynamic */ `securityUserRiskPage.factors.${factor}.description`)}
+                        </p>
+                      )}
                       <div className="h-2 rounded-full bg-muted">
                         <div
                           className={`h-2 rounded-full ${driverBarClass(value)}`}

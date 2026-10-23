@@ -14,12 +14,59 @@ const MAX_LABEL_LENGTH = 140;
 /** `on device 6eae0f70...` as emitted by aiGuardrails.buildApprovalDescription. */
 const DEVICE_ID_STUB = /\bon device [0-9a-f]{8}\.\.\./i;
 
-function titleCaseWords(snake: string): string {
+export function titleCaseWords(snake: string): string {
   return snake
     .split(/[_\s]+/)
     .filter(Boolean)
     .map((w, i) => (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase()))
     .join(' ');
+}
+
+/**
+ * Human headlines for approval-gated tools whose prettified identifier reads
+ * poorly (#9657). Tools absent here fall back to `titleCaseWords(toolName)`.
+ * Display text only: nothing here feeds approval, tier or permission logic.
+ */
+const TOOL_HEADLINES: Record<string, string> = {
+  remediate_vulnerability: 'Remediate vulnerabilities',
+  restore_snapshot: 'Restore backup snapshot',
+  trigger_backup: 'Start a backup',
+  trigger_hyperv_backup: 'Start a Hyper-V backup',
+  trigger_mssql_backup: 'Start a SQL Server backup',
+  m365_disable_user: 'Disable Microsoft 365 user',
+  m365_reset_password: 'Reset Microsoft 365 password',
+  m365_revoke_sessions: 'Revoke Microsoft 365 sign-in sessions',
+  m365_remove_license: 'Remove Microsoft 365 license',
+  m365_assign_license: 'Assign Microsoft 365 license',
+  m365_remove_from_group: 'Remove user from Microsoft 365 group',
+  m365_add_to_group: 'Add user to Microsoft 365 group',
+  m365_retire_intune_device: 'Retire Intune device',
+  m365_create_user: 'Create Microsoft 365 user',
+  m365_set_auto_reply: 'Set Microsoft 365 auto-reply',
+};
+
+/** Object noun for `manage_<noun>` tools, so `void` reads `Void invoice`. */
+const MANAGE_TOOL_NOUNS: Record<string, string> = {
+  manage_invoices: 'invoice',
+  manage_quotes: 'quote',
+  manage_contracts: 'contract',
+};
+
+/**
+ * Human headline for an approval-gated call when no call-specific description
+ * exists: never the bare tool identifier (#9657).
+ */
+export function humanizeToolAction(toolName: string, action?: string | null): string {
+  const verb = action ? action.replace(/[_\s]+/g, ' ').trim().toLowerCase() : '';
+  const noun = MANAGE_TOOL_NOUNS[toolName];
+  const nounPhrase = verb.endsWith(' payment') ? `${noun} payment` : noun;
+  if (noun && verb.endsWith(' payment')) {
+    const v = verb.replace(/ payment$/, '');
+    return `${v.charAt(0).toUpperCase()}${v.slice(1)} ${nounPhrase}`;
+  }
+  if (noun && verb) return `${verb.charAt(0).toUpperCase()}${verb.slice(1)} ${noun}`;
+  const head = TOOL_HEADLINES[toolName] ?? titleCaseWords(toolName);
+  return verb ? `${head}: ${verb}` : head;
 }
 
 /** `RESTART service "Spooler"` → `Restart service "Spooler"`. */
@@ -90,7 +137,7 @@ function fallbackLabel(toolName: string, input: Record<string, unknown>): string
     }
   }
 
-  const head = titleCaseWords(toolName);
+  const head = TOOL_HEADLINES[toolName] ?? titleCaseWords(toolName);
   const detail = [
     str(input.action) ?? str(input.commandType),
     str(input.serviceName) ?? str(input.processName) ?? str(input.scriptName) ?? str(input.name),

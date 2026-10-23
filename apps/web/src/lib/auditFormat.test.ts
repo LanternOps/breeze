@@ -122,6 +122,46 @@ describe('formatAuditAction', () => {
     }
   });
 
+  // #9630: restore audit rows and the per-command-type `agent.command.<type>`
+  // family rendered as prettified codes.
+  it('labels backup restore audit actions', () => {
+    expect(formatAuditAction('backup.restore.create')).toBe('Started a restore');
+    expect(formatAuditAction('backup.restore.cancel')).toBe('Cancelled a restore');
+    expect(formatAuditAction('backup.restore.unattested_override')).toBe(
+      'Confirmed restore of an unverified snapshot',
+    );
+  });
+
+  it('labels agent.command.<type> rows with a friendly command name', () => {
+    expect(formatAuditAction('agent.command.backup_restore')).toBe('Queued command: Restore backup');
+    expect(formatAuditAction('agent.command.install_patches')).toBe('Queued command: Install patches');
+    expect(formatAuditAction('agent.command.reboot')).toBe('Queued command: Reboot');
+  });
+
+  it('falls back to the prettified type for an unmapped agent.command.<type>', () => {
+    expect(formatAuditAction('agent.command.some_new_thing')).toBe('Queued command: Some new thing');
+  });
+
+  it('keeps agent.command.result.submit as its explicit entry', () => {
+    expect(formatAuditAction('agent.command.result.submit')).toBe('Submitted command result');
+  });
+
+  it('uses the translated agent.command template when supplied', () => {
+    expect(
+      formatAuditAction('agent.command.reboot', { 'agent.command.*': 'Befehl: {command}' }),
+    ).toBe('Befehl: Reboot');
+  });
+
+  it('ships restore labels and a {command} template in every locale', () => {
+    for (const locale of ['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR']) {
+      const a = auditActions(locale);
+      expect(a['agent.command.*'], locale).toContain('{command}');
+      for (const k of ['backup.restore.create', 'backup.restore.cancel', 'backup.restore.unattested_override']) {
+        expect(a[k], `${locale} ${k}`).toBeTruthy();
+      }
+    }
+  });
+
   it('never renders an unmapped ai.* or mcp.* code with a lower-case acronym', () => {
     expect(formatAuditAction('ai.script_lane.reset')).toBe('AI script lane reset');
     expect(formatAuditAction('ai.some_future.thing')).toBe('AI some future thing');

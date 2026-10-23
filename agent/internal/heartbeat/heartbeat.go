@@ -600,7 +600,11 @@ type Heartbeat struct {
 	// sessionbroker.GetConsoleSessionID — the same target FindCapableSession
 	// falls back to.
 	pamConsoleSessionID func() string
-	pamDismissConsent   func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
+	// pamReportUnable sends the "cannot act on this elevation" report (#9517);
+	// nil means reportPamUnable's real POST (sendPamElevationUnable), sent off
+	// the etwlua loop goroutine.
+	pamReportUnable   func(requestID string, unable pamUnable)
+	pamDismissConsent func(session *sessionbroker.Session, id string, timeout time.Duration) (ipc.PamDismissConsentResult, error)
 	// pamDismissConsentInstance dismisses one specific consent.exe (#8995);
 	// nil means sessionBroker.DismissPamConsentInstance.
 	pamDismissConsentInstance func(session *sessionbroker.Session, id string, instance ipc.PamConsentInstance, timeout time.Duration) (ipc.PamDismissConsentResult, error)

@@ -330,10 +330,27 @@ export function getPolicyOrgId(auth: AuthContext): string | null {
   return null;
 }
 
-export async function getRecommendationStatusMap(auth: AuthContext, orgId?: string): Promise<Map<string, 'dismissed' | 'completed'>> {
+export type AffectedOrgBreakdown = Map<string, { affectedDevices: number; latestObservedMs: number }>;
+export type RecommendationActionStatus = 'completed' | 'dismissed' | 'reopened';
+export type RecommendationAction = { status: RecommendationActionStatus; at: Date };
+/** recommendation id -> org id -> that org's newest action (#9641). */
+export type RecommendationActionMap = Map<string, Map<string, RecommendationAction>>;
+
+const RECOMMENDATION_ACTION_STATUS: Record<string, RecommendationActionStatus> = {
+  'security.recommendation.complete': 'completed',
+  'security.recommendation.dismiss': 'dismissed',
+  'security.recommendation.reopen': 'reopened'
+};
+
+/**
+ * Newest complete/dismiss/reopen audit row per (recommendation, org). Keyed by
+ * org so one client's action never matches another's in the all-organizations
+ * view (#9641).
+ */
+export async function getRecommendationStatusMap(auth: AuthContext, orgId?: string): Promise<RecommendationActionMap> {
   const conditions = [
     eq(auditLogs.resourceType, 'security_recommendation'),
-    inArray(auditLogs.action, ['security.recommendation.complete', 'security.recommendation.dismiss'])
+    inArray(auditLogs.action, Object.keys(RECOMMENDATION_ACTION_STATUS))
   ];
 
   const orgCondition = auth.orgCondition(auditLogs.orgId);
@@ -351,6 +368,7 @@ export async function getRecommendationStatusMap(auth: AuthContext, orgId?: stri
   const rows = await db
     .select({
       action: auditLogs.action,
+      orgId: auditLogs.orgId,
       resourceName: auditLogs.resourceName,
       details: auditLogs.details,
       timestamp: auditLogs.timestamp
@@ -359,7 +377,7 @@ export async function getRecommendationStatusMap(auth: AuthContext, orgId?: stri
     .where(and(...conditions))
     .orderBy(desc(auditLogs.timestamp));
 
-  const statusMap = new Map<string, 'dismissed' | 'completed'>();
+  const actionMap: RecommendationActionMap = new Map();
   for (const row of rows) {
     let recommendationId = row.resourceName ?? '';
     if (!recommendationId && row.details && typeof row.details === 'object') {
@@ -368,18 +386,46 @@ export async function getRecommendationStatusMap(auth: AuthContext, orgId?: stri
         recommendationId = details.recommendationId;
       }
     }
+    const status = RECOMMENDATION_ACTION_STATUS[row.action];
+    if (!recommendationId || !row.orgId || !status) continue;
 
-    if (!recommendationId || statusMap.has(recommendationId)) {
-      continue;
+    let byOrg = actionMap.get(recommendationId);
+    if (!byOrg) {
+      byOrg = new Map();
+      actionMap.set(recommendationId, byOrg);
     }
-
-    statusMap.set(
-      recommendationId,
-      row.action === 'security.recommendation.complete' ? 'completed' : 'dismissed'
-    );
+    if (!byOrg.has(row.orgId)) {
+      byOrg.set(row.orgId, { status, at: new Date(row.timestamp) });
+    }
   }
 
-  return statusMap;
+  return actionMap;
+}
+
+/**
+ * Effective status of one recommendation over the orgs where its problem is
+ * currently present. Per org: a completion is void once the problem has been
+ * observed after it (a newer snapshot/threat on an affected device); a dismissal
+ * is permanent until an explicit reopen. Across orgs the recommendation is open
+ * if ANY affected org is open (#9641).
+ */
+export function resolveRecommendationStatus(
+  recommendationId: string,
+  affectedByOrg: AffectedOrgBreakdown | undefined,
+  actions: RecommendationActionMap | undefined
+): 'open' | 'completed' | 'dismissed' {
+  if (!affectedByOrg || affectedByOrg.size === 0) return 'open';
+  const byOrg = actions?.get(recommendationId);
+  let sawCompleted = false;
+  for (const [orgId, affected] of affectedByOrg) {
+    const action = byOrg?.get(orgId);
+    if (!action || action.status === 'reopened') return 'open';
+    if (action.status === 'completed') {
+      if (affected.latestObservedMs > action.at.getTime()) return 'open';
+      sawCompleted = true;
+    }
+  }
+  return sawCompleted ? 'completed' : 'dismissed';
 }
 
 // ── Org scoping ─────────────────────────────────────────────────────────────
@@ -839,7 +885,7 @@ export async function queueThreatAction(c: any, action: 'quarantine' | 'remove' 
 export async function buildBe9Recommendations(
   auth: AuthContext,
   orgId?: string
-): Promise<{ recommendations: Be9Recommendation[]; error?: { status: 400 | 403; message: string } }> {
+): Promise<{ recommendations: Be9Recommendation[]; affectedByOrg?: Map<string, AffectedOrgBreakdown>; error?: { status: 400 | 403; message: string } }> {
   const scope = resolveScopedOrgIds(auth, orgId);
   if (scope.error) {
     return { recommendations: [], error: scope.error };
@@ -859,10 +905,6 @@ export async function buildBe9Recommendations(
     return { recommendations: [] };
   }
 
-  const activeThreatDevices = new Set(
-    threats.filter((threat) => threat.status === 'active').map((threat) => threat.deviceId)
-  );
-
   const affectedCounts = {
     antivirus: 0,
     firewall: 0,
@@ -873,18 +915,46 @@ export async function buildBe9Recommendations(
     vulnerability_management: 0
   };
 
-  const vulnerabilityDevices = new Set(activeThreatDevices);
+  // Per category, per org: affected device count + the newest time the problem
+  // was observed (posture snapshot / active threat). Drives per-org status and
+  // completion auto-reopen (#9641).
+  const breakdowns = new Map<keyof typeof affectedCounts, AffectedOrgBreakdown>();
+  const noteAffected = (category: keyof typeof affectedCounts, org: string, observedAt: string | Date | null | undefined) => {
+    let byOrg = breakdowns.get(category);
+    if (!byOrg) {
+      byOrg = new Map();
+      breakdowns.set(category, byOrg);
+    }
+    const entry = byOrg.get(org) ?? { affectedDevices: 0, latestObservedMs: 0 };
+    entry.affectedDevices++;
+    const ms = observedAt ? new Date(observedAt).getTime() : 0;
+    if (Number.isFinite(ms) && ms > entry.latestObservedMs) entry.latestObservedMs = ms;
+    byOrg.set(org, entry);
+  };
+
+  const vulnerabilityDevices = new Map<string, { orgId: string; observedAt: string | Date | null | undefined }>();
+  for (const threat of threats) {
+    if (threat.status !== 'active') continue;
+    vulnerabilityDevices.set(threat.deviceId, { orgId: threat.orgId, observedAt: threat.detectedAt });
+  }
   for (const item of posture) {
-    if (item.factors.av_health.score < 80) affectedCounts.antivirus++;
-    if (item.factors.firewall.score < 90) affectedCounts.firewall++;
-    if (item.factors.encryption.score < 90) affectedCounts.encryption++;
-    if (item.factors.password_policy.score < 85) affectedCounts.password_policy++;
-    if (item.factors.admin_exposure.score < 85) affectedCounts.admin_accounts++;
-    if (item.factors.patch_compliance.score < 90) affectedCounts.patch_compliance++;
+    if (item.factors.av_health.score < 80) { affectedCounts.antivirus++; noteAffected('antivirus', item.orgId, item.capturedAt); }
+    if (item.factors.firewall.score < 90) { affectedCounts.firewall++; noteAffected('firewall', item.orgId, item.capturedAt); }
+    if (item.factors.encryption.score < 90) { affectedCounts.encryption++; noteAffected('encryption', item.orgId, item.capturedAt); }
+    if (item.factors.password_policy.score < 85) { affectedCounts.password_policy++; noteAffected('password_policy', item.orgId, item.capturedAt); }
+    if (item.factors.admin_exposure.score < 85) { affectedCounts.admin_accounts++; noteAffected('admin_accounts', item.orgId, item.capturedAt); }
+    if (item.factors.patch_compliance.score < 90) { affectedCounts.patch_compliance++; noteAffected('patch_compliance', item.orgId, item.capturedAt); }
 
     if (item.factors.open_ports.score < 70 || item.factors.os_currency.score < 70) {
-      vulnerabilityDevices.add(item.deviceId);
+      const existing = vulnerabilityDevices.get(item.deviceId);
+      const existingMs = existing?.observedAt ? new Date(existing.observedAt).getTime() : 0;
+      if (!existing || new Date(item.capturedAt).getTime() > existingMs) {
+        vulnerabilityDevices.set(item.deviceId, { orgId: item.orgId, observedAt: item.capturedAt });
+      }
     }
+  }
+  for (const device of vulnerabilityDevices.values()) {
+    noteAffected('vulnerability_management', device.orgId, device.observedAt);
   }
   affectedCounts.vulnerability_management = vulnerabilityDevices.size;
 
@@ -1013,5 +1083,11 @@ export async function buildBe9Recommendations(
       return b.affectedDevices - a.affectedDevices;
     });
 
-  return { recommendations };
+  const affectedByOrg = new Map<string, AffectedOrgBreakdown>();
+  for (const rec of recommendations) {
+    const breakdown = breakdowns.get(rec.category as keyof typeof affectedCounts);
+    if (breakdown) affectedByOrg.set(rec.id, breakdown);
+  }
+
+  return { recommendations, affectedByOrg };
 }
