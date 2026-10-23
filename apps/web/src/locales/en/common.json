@@ -2774,5 +2774,9 @@
     "title": "This section crashed",
     "description": "A rendering error stopped this page from displaying. Try again, and if it keeps happening, include the message below when you report it.",
     "retry": "Try again"
+  },
+  "featureLock": {
+    "lockedLabel": "Locked",
+    "upgrade": "See plans"
   }
 }

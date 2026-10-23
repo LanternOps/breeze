@@ -2774,5 +2774,9 @@
     "title": "Cette section a planté",
     "description": "Une erreur d’affichage a empêché cette page de s’afficher. Réessayez et, si le problème persiste, incluez le message ci-dessous dans votre signalement.",
     "retry": "Réessayer"
+  },
+  "featureLock": {
+    "lockedLabel": "Verrouillé",
+    "upgrade": "Voir les offres"
   }
 }

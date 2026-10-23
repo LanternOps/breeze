@@ -2774,5 +2774,9 @@
     "title": "Dieser Bereich ist abgestürzt",
     "description": "Ein Darstellungsfehler hat die Anzeige dieser Seite verhindert. Versuche es erneut und gib bei wiederholtem Auftreten die folgende Meldung in deiner Fehlermeldung an.",
     "retry": "Erneut versuchen"
+  },
+  "featureLock": {
+    "lockedLabel": "Gesperrt",
+    "upgrade": "Tarife ansehen"
   }
 }
