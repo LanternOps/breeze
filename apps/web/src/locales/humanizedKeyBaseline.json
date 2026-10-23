@@ -3587,7 +3587,6 @@
   "security.sensitiveDataPoliciesTab.errors.updatePolicy",
   "security.sensitiveDataPoliciesTab.form.allOrganizations",
   "security.sensitiveDataPoliciesTab.form.createPolicy",
-  "security.sensitiveDataPoliciesTab.form.cronExpression",
   "security.sensitiveDataPoliciesTab.form.detectionClasses",
   "security.sensitiveDataPoliciesTab.form.editPolicy",
   "security.sensitiveDataPoliciesTab.form.scheduleType",
