@@ -124,6 +124,12 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // #5861 PR 2: the per-asset list opens the same org-scoped context as the
   // overview, so it must opt out of the portal request transaction too.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
+  // #8973 W4 Gate B1: portal ticket create. portalTicketsEnabledMiddleware
+  // opens one org-scoped context with currentPartnerId (the validated owning
+  // partner) BEFORE its enable_tickets read, so createTicket's business-calendar
+  // resolver can read a partner-wide default through the SELECT-only branch.
+  // Every other portal ticket route keeps the generic request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/tickets\/?$/ },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.

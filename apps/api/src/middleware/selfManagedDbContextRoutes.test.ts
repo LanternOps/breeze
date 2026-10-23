@@ -726,3 +726,14 @@ it('#6263 W04 self-manages only the YARA rule test upload (the scan runs outside
   expect(isSelfManagedDbContextRoute('PATCH', '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333')).toBe(false);
   expect(isSelfManagedDbContextRoute('POST', '/api/v1/security/yara/rule-sets/not-a-uuid/test')).toBe(false);
 });
+
+it('#8973 W4 self-manages only the portal ticket create (Gate B1), not the ticket reads or comment writes', () => {
+  const T = '44444444-4444-4444-8444-444444444444';
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/portal/tickets')).toBe(true);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/portal/tickets/')).toBe(true);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/portal/tickets')).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', `/api/v1/portal/tickets/${T}`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', `/api/v1/portal/tickets/${T}/comments`)).toBe(false);
+  expect(isSelfManagedDbContextRoute('GET', '/api/v1/portal/tickets/forms')).toBe(false);
+  expect(isSelfManagedDbContextRoute('POST', '/api/v1/tickets')).toBe(false);
+});
