@@ -159,12 +159,13 @@ BEGIN
       WITH CHECK (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
   END IF;
 
-  -- Grants are revoked, never deleted by users; org/partner erasure runs in
-  -- system scope.
+  -- Partner reach for DELETE (the shape-3 contract covers all four commands);
+  -- grants are revoked, never deleted by users — wisp_grants_delete_guard
+  -- admits a DELETE only in system scope (erasure) or as an FK cascade.
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'wisp_grants' AND policyname = 'wisp_grants_delete') THEN
     CREATE POLICY wisp_grants_delete ON wisp_grants
       FOR DELETE TO breeze_app
-      USING (public.breeze_current_scope() = 'system');
+      USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'wisp_grant_revisions' AND policyname = 'wisp_grant_revisions_select') THEN
@@ -185,18 +186,26 @@ BEGIN
             SELECT 1 FROM wisp_grants g
             WHERE g.id = wisp_grant_revisions.grant_id
               AND g.partner_id = wisp_grant_revisions.partner_id
+              AND public.breeze_has_partner_access(g.partner_id)
               AND g.grantor_user_id = public.breeze_current_user_id()
           )
         )
       );
   END IF;
 
-  -- No UPDATE policy (append-only). DELETE only in system scope (the
-  -- partner-axis erasure sweep); the immutability trigger agrees.
+  -- Partner reach for UPDATE/DELETE (shape-3 contract). Revisions are
+  -- append-only: wisp_grant_revisions_immutable_guard refuses every UPDATE,
+  -- and every DELETE outside system scope (erasure) or an FK cascade.
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'wisp_grant_revisions' AND policyname = 'wisp_grant_revisions_update') THEN
+    CREATE POLICY wisp_grant_revisions_update ON wisp_grant_revisions
+      FOR UPDATE TO breeze_app
+      USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id))
+      WITH CHECK (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'wisp_grant_revisions' AND policyname = 'wisp_grant_revisions_delete') THEN
     CREATE POLICY wisp_grant_revisions_delete ON wisp_grant_revisions
       FOR DELETE TO breeze_app
-      USING (public.breeze_current_scope() = 'system');
+      USING (public.breeze_current_scope() = 'system' OR public.breeze_has_partner_access(partner_id));
   END IF;
 END $$;
 
@@ -263,6 +272,22 @@ DROP TRIGGER IF EXISTS wisp_grants_update_guard ON wisp_grants;
 CREATE TRIGGER wisp_grants_update_guard BEFORE UPDATE ON wisp_grants
   FOR EACH ROW EXECUTE FUNCTION public.wisp_grants_update_guard();
 
+-- Grants are revoked, never deleted by a user. A DELETE passes only in
+-- system scope (org / partner erasure) or as an FK cascade from the
+-- grantor, scope org or partner (pg_trigger_depth() > 1).
+CREATE OR REPLACE FUNCTION public.wisp_grants_delete_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF public.breeze_current_scope() = 'system' OR pg_trigger_depth() > 1 THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'wisp_grants: grants are revoked, never deleted';
+END $$;
+
+DROP TRIGGER IF EXISTS wisp_grants_delete_guard ON wisp_grants;
+CREATE TRIGGER wisp_grants_delete_guard BEFORE DELETE ON wisp_grants
+  FOR EACH ROW EXECUTE FUNCTION public.wisp_grants_delete_guard();
+
 -- ---------------------------------------------------------------------------
 -- 6. wisp_grant_revisions_immutable_guard — revisions are never updated, and
 --    deleted only by system-scope erasure or as an FK cascade from the grant /
@@ -313,6 +338,39 @@ ALTER TABLE ai_operator_tasks DROP CONSTRAINT IF EXISTS ai_operator_tasks_grant_
 ALTER TABLE ai_operator_tasks ADD CONSTRAINT ai_operator_tasks_grant_fk
   FOREIGN KEY (grant_id) REFERENCES wisp_grants (id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS ai_operator_tasks_grant_id_idx ON ai_operator_tasks (grant_id) WHERE grant_id IS NOT NULL;
+
+-- Tenant binding for the pinned grant. Runs and tasks carry no partner_id, so
+-- no composite FK can tie grant_id to the row's tenant; this guard does: the
+-- grant must belong to the partner of the row's org, and an org-scoped grant
+-- may only pin work in its own org. It reads under the CALLER's RLS, so it
+-- fails closed in a context that cannot see the grant (grant-bearing work is
+-- admitted in system scope).
+CREATE OR REPLACE FUNCTION public.wisp_grant_link_tenant_guard() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.grant_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM wisp_grants g
+      JOIN organizations o ON o.partner_id = g.partner_id
+     WHERE g.id = NEW.grant_id
+       AND o.id = NEW.org_id
+       AND (g.org_id IS NULL OR g.org_id = NEW.org_id)
+  ) THEN
+    RAISE EXCEPTION USING ERRCODE = '23503',
+      MESSAGE = format('%s: grant %s is not in the tenant scope of org %s', TG_TABLE_NAME, NEW.grant_id, NEW.org_id);
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS ai_agent_runs_grant_tenant_guard ON ai_agent_runs;
+CREATE TRIGGER ai_agent_runs_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, org_id ON ai_agent_runs
+  FOR EACH ROW EXECUTE FUNCTION public.wisp_grant_link_tenant_guard();
+DROP TRIGGER IF EXISTS ai_operator_tasks_grant_tenant_guard ON ai_operator_tasks;
+CREATE TRIGGER ai_operator_tasks_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, org_id ON ai_operator_tasks
+  FOR EACH ROW EXECUTE FUNCTION public.wisp_grant_link_tenant_guard();
 
 -- ---------------------------------------------------------------------------
 -- 8. Grants + comments

@@ -50,6 +50,7 @@ describe('2027-01-04-100100-wisp-grants.sql', () => {
   it('guards admin updates and revision immutability with triggers', () => {
     expect(sql).toContain('CREATE TRIGGER wisp_grants_update_guard BEFORE UPDATE ON wisp_grants');
     expect(sql).toMatch(/CREATE TRIGGER wisp_grant_revisions_immutable_guard BEFORE UPDATE OR DELETE ON wisp_grant_revisions/);
+    expect(sql).toContain('CREATE TRIGGER wisp_grants_delete_guard BEFORE DELETE ON wisp_grants');
   });
 
   it('adds grant columns to runs and tasks with both-or-none checks', () => {
@@ -59,6 +60,13 @@ describe('2027-01-04-100100-wisp-grants.sql', () => {
       expect(sql).toContain(`${t}_grant_link_chk`);
       expect(sql).toMatch(new RegExp(`${t}_grant_revision_fk[\\s\\S]*?REFERENCES wisp_grant_revisions \\(id, grant_id\\)[\\s\\S]*?ON DELETE RESTRICT`));
     }
+  });
+
+  it('binds a pinned grant to the run/task tenant (no partner_id column, so a trigger)', () => {
+    for (const t of ['ai_agent_runs', 'ai_operator_tasks']) {
+      expect(sql).toContain(`CREATE TRIGGER ${t}_grant_tenant_guard BEFORE INSERT OR UPDATE OF grant_id, org_id ON ${t}`);
+    }
+    expect(sql).toMatch(/JOIN organizations o ON o\.partner_id = g\.partner_id[\s\S]*?g\.org_id IS NULL OR g\.org_id = NEW\.org_id/);
   });
 
   it('writes no rows, so it needs no system-scope election', () => {

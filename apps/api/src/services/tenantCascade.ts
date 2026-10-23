@@ -1133,6 +1133,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'users',
   'vault_snapshot_inventory',
   'webhooks',
+  // Wisp W02 (#9908): org-scoped grants only (partner-wide grants have org_id
+  // NULL and leave with the partner). ai_agent_runs / ai_operator_tasks pin a
+  // grant with ON DELETE RESTRICT FKs, so they must (and do) precede it; the
+  // revisions go with the grant via ON DELETE CASCADE.
+  'wisp_grants',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,
   // so deleting the parent first is FK-safe; built-in rows (org_id NULL) are
   // never matched by an org erasure.
