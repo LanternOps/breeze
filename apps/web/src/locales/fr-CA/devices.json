@@ -1950,6 +1950,7 @@
     "title": "Connexions réseau actives"
   },
   "devicePatchStatusTab": {
+    "released": "Publié le {{date}}",
     "compliance": {
       "compliant": "{{percent}} % conforme",
       "description": "Mises à jour en attente vs installées",

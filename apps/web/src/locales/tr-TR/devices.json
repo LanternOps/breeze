@@ -1950,6 +1950,7 @@
     "title": "Aktif Ağ Bağlantıları"
   },
   "devicePatchStatusTab": {
+    "released": "Yayın tarihi: {{date}}",
     "compliance": {
       "compliant": "{{percent}}% uyumlu",
       "description": "Bekleyen ve yüklü güncellemeler",
