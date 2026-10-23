@@ -3483,6 +3483,8 @@
     "health": {
       "empty": {
         "title": "Todavía no se está monitoreando nada",
+        "titleWithCheck": "Sin datos de estado SNMP",
+        "descriptionWithCheck": "Hay una verificación de red activa para este dispositivo, por lo que la accesibilidad sigue monitoreándose. Activa SNMP para recopilar también datos de estado.",
         "action": "Configurar monitoreo",
         "benefit": {
           "printer": "Activa SNMP para ver los niveles de tóner y tinta, las bandejas de papel, los contadores de páginas y los errores de la impresora.",
