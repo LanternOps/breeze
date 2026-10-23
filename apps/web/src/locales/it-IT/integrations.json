@@ -340,7 +340,9 @@
     "retry": "Riprova",
     "since": "da {{time}}",
     "fix": "Risolvi",
-    "remedy": { "reconnect": "Riconnettiti dall’app client (ad es. aggiungi di nuovo il server MCP). Nessuna azione in Breeze." },
+    "remedy": {
+      "reconnect": "Riconnettiti dall’app client (ad es. aggiungi di nuovo il server MCP). Nessuna azione in Breeze."
+    },
     "truncated": "Vengono mostrati i primi {{count}}",
     "recentlyResolved": "Risolti di recente ({{count}})",
     "resolution": {
@@ -728,7 +730,10 @@
     "allApplications": "Tutte le applicazioni",
     "searchAllApplicationsFirst2": " (non in Applicazioni di proprietà) un’app Breeze già esistente in questo tenant. ",
     "tenantIdGuidPlaceholder": "ID tenant (GUID), ad es. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Usa l’ID directory (tenant), un GUID, dalla panoramica della registrazione app Entra, non il dominio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Usa l’ID directory (tenant), un GUID, dalla panoramica della registrazione app Entra, non il dominio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Il salvataggio richiede la verifica MFA.",
+    "clientSecretPlaceholder": "segreto client dell'app",
+    "clientSecretStoredPlaceholder": "•••••••••• (memorizzato, crittografato)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Stato dei dispositivi",

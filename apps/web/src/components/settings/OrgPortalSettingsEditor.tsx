@@ -297,6 +297,8 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
     enableEdrVisibility: true,
   });
 
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
+
   const save = useCallback(async () => {
     if (!draft || saving) return;
     setSaving(true);
@@ -342,6 +344,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
         successMessage: t('orgPortalSettingsEditor.toasts.saved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
+      setPreviewRefreshKey((k) => k + 1);
       onSave();
     } catch (err) {
       if (!(err instanceof ActionError)) throw err;
@@ -549,7 +552,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
         </div>
       </section>
 
-      <OrgPortalPreviewPanel orgId={orgId} />
+      <OrgPortalPreviewPanel orgId={orgId} refreshKey={previewRefreshKey} />
 
       <div className="flex justify-end">
         <button

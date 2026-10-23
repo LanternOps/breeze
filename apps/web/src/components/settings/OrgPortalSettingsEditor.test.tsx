@@ -175,6 +175,28 @@ describe('OrgPortalSettingsEditor', () => {
     expect(body.welcomeMessage).toBe('Welcome!');
   });
 
+  it('refetches the Customer view preview after a successful save (stale-preview fix)', async () => {
+    mockApi();
+    const base = fetchMock.getMockImplementation()!;
+    const previewCalls = () =>
+      fetchMock.mock.calls.filter(([u]) => String(u).includes('/portal-preview')).length;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/portal-preview')) return makeJsonResponse({ data: { portalUser: null, sections: [], readiness: [] } });
+      if (url.includes('/portal-users')) return makeJsonResponse({ data: [] });
+      return base(input, init);
+    });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    await waitFor(() => expect(screen.getByTestId('org-portal-save')).toBeInTheDocument());
+    await waitFor(() => expect(previewCalls()).toBe(1));
+
+    fireEvent.click(screen.getByTestId('org-portal-toggle-enableTickets'));
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    await waitFor(() => expect(previewCalls()).toBe(2));
+  });
+
   it('enables available visibility flags in the local draft', async () => {
     mockApi();
     render(<OrgPortalSettingsEditor

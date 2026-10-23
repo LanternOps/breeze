@@ -94,7 +94,7 @@ function summarize(key: string, data: unknown): Row[] {
   return rows;
 }
 
-export default function OrgPortalPreviewPanel({ orgId }: { orgId: string }) {
+export default function OrgPortalPreviewPanel({ orgId, refreshKey = 0 }: { orgId: string; refreshKey?: number }) {
   const { t } = useTranslation('settings');
   const [users, setUsers] = useState<PortalUserOption[]>([]);
   const [portalUserId, setPortalUserId] = useState('');
@@ -159,7 +159,9 @@ export default function OrgPortalPreviewPanel({ orgId }: { orgId: string }) {
     }
   }, [orgId, portalUserId]);
 
-  useEffect(() => { void load(); }, [load]);
+  // `refreshKey` bumps when the settings editor saves, so the preview does not
+  // keep showing the pre-save gate state.
+  useEffect(() => { void load(); }, [load, refreshKey]);
 
   const who = preview?.portalUser
     ? (preview.portalUser.name || preview.portalUser.email)
