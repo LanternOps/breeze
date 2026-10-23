@@ -34,7 +34,7 @@ import { AGENT_DENIED_READ_TOOLS, AGENT_HUMAN_ONLY_TOOLS } from '../aiToolExposu
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 
 const ceiling = (o: Partial<GrantCeiling> = {}): GrantCeiling => ({
-  grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', scopeOrgId: null, status: 'active',
+  grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true, status: 'active',
   orgIds: new Set(['org-a']), siteIds: null, permissionKeys: new Set(['devices:read', 'tickets:write']),
   toolAllowlist: null, deniedTools: new Set([...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]), ...o,
 });
@@ -86,7 +86,14 @@ describe('assertWithinCeiling', () => {
   });
   it('a partner-level check (orgId null) passes only for a partner-wide grant (w00 A30 scopeOrgId)', () => {
     expect(() => assertWithinCeiling(ceiling({ scopeOrgId: null }), { orgId: null })).not.toThrow();
-    expect(() => assertWithinCeiling(ceiling({ scopeOrgId: 'org-a' }), { orgId: null })).toThrow(expect.objectContaining({ code: 'org' }));
+    expect(() => assertWithinCeiling(ceiling({ scopeOrgId: 'org-a', partnerWide: false }), { orgId: null })).toThrow(expect.objectContaining({ code: 'org' }));
+  });
+  it('a partner-level check needs the grantor\'s LIVE full-partner reach, not just a partner-wide scope', () => {
+    expect(() => assertWithinCeiling(ceiling({ scopeOrgId: null, partnerWide: false }), { orgId: null })).toThrow(expect.objectContaining({ code: 'org' }));
+  });
+  it('an org-scoped ceiling refuses any other org even if its org set were wider', () => {
+    expect(() => assertWithinCeiling(ceiling({ scopeOrgId: 'org-a', partnerWide: false, orgIds: new Set(['org-a', 'org-b']) }), { orgId: 'org-b' }))
+      .toThrow(expect.objectContaining({ code: 'org' }));
   });
 });
 
@@ -250,7 +257,7 @@ describe('resolveGrantCeiling', () => {
     shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o2', 'o3'], partnerOrgAccess: 'selected' });
 
     const c = await resolveGrantCeiling('g1', 'r1');
-    expect(c).toMatchObject({ grantId: 'g1', revisionId: 'r1', partnerId: PARTNER, grantorUserId: USER, scopeOrgId: 'o2', status: 'active' });
+    expect(c).toMatchObject({ grantId: 'g1', revisionId: 'r1', partnerId: PARTNER, grantorUserId: USER, scopeOrgId: 'o2', partnerWide: false, status: 'active' });
     expect([...c.orgIds]).toEqual(['o2']);
     expect([...c.permissionKeys]).toEqual(['devices:read']);
     expect(c.siteIds).toBeNull();
@@ -258,5 +265,37 @@ describe('resolveGrantCeiling', () => {
     expect(c.deniedTools.has('snapshot_denied_tool')).toBe(true);
     for (const t of AGENT_HUMAN_ONLY_TOOLS) expect(c.deniedTools.has(t)).toBe(true);
     for (const t of AGENT_DENIED_READ_TOOLS.keys()) expect(c.deniedTools.has(t)).toBe(true);
+  });
+
+  it('clamps an org-scoped grant to its scope org even when the snapshot lists another', async () => {
+    queueSelect([grantRow({ orgId: 'o1' })]);
+    queueSelect([revisionRow()]); // snapshot orgIds ['o1', 'o2']
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1', 'o2'], partnerOrgAccess: 'all' });
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect([...c.orgIds]).toEqual(['o1']);
+    expect(c.partnerWide).toBe(false);
+  });
+
+  it('an empty live ∩ snapshot org set fails closed (grantor_access_lost; the reconciler pauses)', async () => {
+    queueSelect([grantRow()]);
+    queueSelect([revisionRow()]); // snapshot orgIds ['o1', 'o2']
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o9'], partnerOrgAccess: 'selected' });
+    await expect(resolveGrantCeiling('g1', 'r1')).rejects.toBeInstanceOf(GrantInactiveError);
+  });
+
+  it('partnerWide is true only for a partner-wide grant whose grantor still has org_access all', async () => {
+    for (const [access, expected] of [['all', true], ['selected', false]] as const) {
+      queueSelect([grantRow()]);
+      queueSelect([revisionRow()]);
+      queueSelect([{ status: 'active', partnerId: PARTNER }]);
+      shared.getUserPermissions.mockResolvedValueOnce(livePerms([{ resource: 'ai_sessions', action: 'use' }]));
+      shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: access });
+      const c = await resolveGrantCeiling('g1', 'r1');
+      expect(c.partnerWide, access).toBe(expected);
+    }
   });
 });

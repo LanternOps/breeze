@@ -37,8 +37,16 @@ export type GrantCeiling = {
   partnerId: string;
   /** w00 A3 — W03's broker and W05's watches read it; no second lookup. */
   grantorUserId: string;
-  /** w00 A30 — `wisp_grants.org_id`; null = partner-wide. Partner-level (orgId null) checks pass only here. */
+  /** w00 A30 — `wisp_grants.org_id`; null = partner-wide. */
   scopeOrgId: string | null;
+  /**
+   * True only for a partner-wide grant (scopeOrgId null) whose grantor STILL
+   * has `org_access = 'all'`. Partner-level subjects (check.orgId null — they
+   * aggregate across every org of the partner) pass only when this is true, so
+   * a grantor narrowed to 'selected' keeps per-org reach but loses the
+   * cross-org view live.
+   */
+  partnerWide: boolean;
   /** Orgs inside the ceiling (partner-wide → every live org of the partner the grantor may access ∩ snapshot). */
   orgIds: ReadonlySet<string>;
   /** null = unrestricted within orgIds. */
@@ -131,10 +139,15 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
 
   if (check.orgId !== undefined) {
     if (check.orgId === null) {
-      if (ceiling.scopeOrgId !== null) {
-        throw new CeilingViolationError('org', 'a partner-level subject is outside an org-scoped grant');
+      if (ceiling.scopeOrgId !== null || !ceiling.partnerWide) {
+        throw new CeilingViolationError('org', 'a partner-level subject needs a partner-wide grant held with full partner org access');
       }
-    } else if (!ceiling.orgIds.has(check.orgId)) {
+    } else if (
+      !ceiling.orgIds.has(check.orgId)
+      // Belt and braces: an org-scoped grant never reaches past its scope org,
+      // whatever its org set says.
+      || (ceiling.scopeOrgId !== null && check.orgId !== ceiling.scopeOrgId)
+    ) {
       throw new CeilingViolationError('org', `organization ${check.orgId} is outside the delegation ceiling`);
     }
   }
@@ -327,13 +340,24 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
   if (!live.ok) throw new GrantInactiveError(grantId, 'paused', live.reason);
 
   const reach = intersectSnapshotWithLive(snapshot, live);
+  const scopeOrgId = grant.orgId ?? null;
+  // An org-scoped grant is clamped to its scope org whatever the snapshot says.
+  const orgIds = scopeOrgId === null
+    ? reach.orgIds
+    : new Set([...reach.orgIds].filter((id) => id === scopeOrgId));
+  // Zero orgs left = the grantor lost access to everything the grant covers.
+  // Fail closed; the reconciler persists the pause (grantor_access_lost).
+  if (orgIds.size === 0) throw new GrantInactiveError(grantId, 'paused', 'grantor_access_lost');
+
   return {
     grantId,
     revisionId,
     partnerId: grant.partnerId,
     grantorUserId: grant.grantorUserId,
-    scopeOrgId: grant.orgId ?? null,
+    scopeOrgId,
+    partnerWide: scopeOrgId === null && live.partnerOrgAccess === 'all',
     ...reach,
+    orgIds,
     toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
     deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
     status: 'active',
