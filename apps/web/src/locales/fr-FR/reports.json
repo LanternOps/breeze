@@ -339,6 +339,7 @@
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
         "ai_usage_by_client": "Utilisation de l'IA par client",
+        "mrr_renewals": "MRR et renouvellements",
         "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
@@ -442,6 +443,7 @@
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
         "ai_usage_by_client": "Utilisation de l'IA par client",
+        "mrr_renewals": "MRR et renouvellements",
         "backup_status": "État des sauvegardes"
       },
       "runsTable": {
@@ -991,6 +993,7 @@
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
         "ai_usage_by_client": "Utilisation de l'IA par client",
+        "mrr_renewals": "MRR et renouvellements",
         "backup_status": "État des sauvegardes"
       },
       "schedules": {
@@ -1063,6 +1066,10 @@
         "ai_usage_by_client": {
           "name": "Utilisation de l'IA par client",
           "description": "Utilisation de l'IA de la plateforme par client sur la période : requêtes, jetons, coût Breeze, montant à facturer selon le profil de facturation du client et ce qui a déjà été facturé. L'utilisation incluse et les modèles sans tarif sont présentés séparément, jamais fusionnés."
+        },
+        "mrr_renewals": {
+          "name": "MRR et renouvellements",
+          "description": "Revenus récurrents mensuels et annuels des contrats actifs, mesurés le jour où le rapport est exécuté, avec les contrats qui se renouvellent dans l'horizon choisi et ce qui a réellement été facturé comme récurrent. Un jeu de totaux par devise, sans conversion."
         },
         "backup_status": {
           "name": "Rapport d’état des sauvegardes",
@@ -1186,6 +1193,19 @@
       },
       "periodNote": "Les frais sont facturés par mois civil UTC. Une période définie dans un autre fuseau horaire peut différer de la facture pour l'utilisation proche des limites du mois.",
       "unpricedNote": "L'utilisation d'un modèle sans tarif dans le profil de facturation du client est comptée comme non tarifée. Elle n'est jamais considérée comme gratuite.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Ce rapport est toujours mesuré le jour où il est exécuté. Il n'y a ni période ni date de référence à définir.",
+      "groupBy": "Regrouper par",
+      "groupByValues": {
+        "organization": "Organisation",
+        "contract": "Contrat"
+      },
+      "renewalHorizon": "Horizon de renouvellement",
+      "renewalHorizonOption": "{{days}} prochains jours",
+      "renewalHorizonHelp": "Les contrats dont l'échéance tombe dans cette fenêtre sont listés comme renouvellements.",
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },

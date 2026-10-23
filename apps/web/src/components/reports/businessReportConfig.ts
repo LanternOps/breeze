@@ -29,6 +29,7 @@ export const BUSINESS_OPTION_CONFIG_KEYS = [
   'weeklyCapacityHours',
   'asOf',
   'includePaidInPeriod',
+  'renewalHorizonDays',
 ] as const;
 
 export function omitConfigKeys(
