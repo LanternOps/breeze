@@ -3218,6 +3218,7 @@ jobs:
           # be copied into the cache dir once the install succeeds.
           TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
           TAURI_ARCHIVES=$(mktemp -d)
+          chmod 755 "$TAURI_ARCHIVES"  # let apt's sandbox user traverse it
           # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
           # degraded and can crawl at 1-4 min/package, blowing this job's
           # timeout before Rust ever compiles — a transient infra flake that
@@ -3265,10 +3266,15 @@ jobs:
             if install_deps; then
               echo "Tauri system dependencies installed (attempt ${attempt})."
               # Seed the cache (saved by the post step only on a cache miss).
+              # Never leave a partial/empty dir behind: cache keys are immutable,
+              # so saving one would poison every later run for this key.
               rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
-              sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ 2>/dev/null \
-                && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}" \
-                || echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
+              if ! { ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1 \
+                     && sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ \
+                     && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"; }; then
+                echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
+                sudo rm -rf "${TAURI_DEBS_DIR}"
+              fi
               exit 0
             fi
             if [ "${attempt}" -eq "${attempts}" ]; then
