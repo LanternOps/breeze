@@ -1082,6 +1082,26 @@ describe('enrollment key routes — list & create', () => {
       expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs + 50);
     });
 
+    it('clamps the deployment fallback TTL to the partner cap when no expiry default is configured (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
+        ttlMinutes: 43200,
+        deviceCount: 50,
+        maxTtlMinutes: 60,
+        ttlConfigured: false,
+        deviceCountConfigured: false,
+      });
+      const getInserted = mockInsertCapture([makeEnrollmentKey()]);
+      const before = Date.now();
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Capped fallback', maxUsage: 1 }),
+      });
+      expect(res.status).toBe(201);
+      expect(getInserted().expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000 + 50);
+      expect(getInserted().expiresAt.getTime()).toBeGreaterThanOrEqual(before + 60 * 60 * 1000 - 50);
+    });
+
     it('rejects when both ttlMinutes and expiresAt are sent', async () => {
       const res = await app.request('/enrollment-keys', {
         method: 'POST',

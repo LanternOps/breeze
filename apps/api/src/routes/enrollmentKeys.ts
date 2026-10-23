@@ -1419,7 +1419,12 @@ enrollmentKeyRoutes.post(
         ? new Date(data.expiresAt)
         : new Date(
             Date.now() +
-              (configuredTtlMinutes ?? DEFAULT_ENROLLMENT_KEY_TTL_MINUTES) * 60 * 1000,
+              (configuredTtlMinutes ??
+                // Deployment fallback is still bound by the partner cap.
+                Math.min(
+                  DEFAULT_ENROLLMENT_KEY_TTL_MINUTES,
+                  resolvedDefaults?.maxTtlMinutes ?? DEFAULT_ENROLLMENT_KEY_TTL_MINUTES,
+                )) * 60 * 1000,
           );
     const maxUsage = data.maxUsage ?? configuredDeviceCount ?? 1;
 
