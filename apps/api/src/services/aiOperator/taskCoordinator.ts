@@ -683,13 +683,32 @@ function withServiceRecoveryCheckpoint(
 }
 
 /**
- * A task's checkpoint arm must agree with its recipe (plan Amendment A.4): a
- * `service_recovery` task holds the service-recovery arm and any other recipe
- * must not. Checked in `advanceTask` before any advancer or gate runs, so a
- * task can never borrow the other arm's requester gate or advancers.
+ * Each production recipe's checkpoint arm guard (plan Amendment A.4). R1a
+ * appends `identity_offboarding: isIdentityOffboardingCheckpoint`.
+ *
+ * Every key in the production registry (`RECIPES`) MUST have an entry here.
+ * `taskCoordinatorPlanApproval.test.ts` pins that, so a shipped recipe can
+ * never skip the agreement check below.
+ */
+export const RECIPE_CHECKPOINT_ARMS: Readonly<Record<string, (c: TaskCheckpoint) => boolean>> = Object.freeze({
+  [SERVICE_RECOVERY_WORKFLOW_KEY]: isServiceRecoveryCheckpoint,
+});
+
+/**
+ * A task's checkpoint arm must agree with its recipe (plan Amendment A.4).
+ * Checked in `advanceTask` before any advancer or gate runs, so a production
+ * task can never borrow another arm's requester gate or advancers.
+ *
+ * A recipe that declares an arm must hold it. A recipe with no entry in
+ * `RECIPE_CHECKPOINT_ARMS` is not checked and keeps the pre-R1a-0 behaviour.
+ * Only test-local recipes reach that branch, because every registered recipe
+ * is pinned to declare an arm. One example is the E3 human-work fixture
+ * `fixture_identity`, which holds the only checkpoint shape that exists until
+ * R1a adds the identity arm.
  */
 function checkpointMatchesRecipe(recipeKey: string, checkpoint: TaskCheckpoint): boolean {
-  return isServiceRecoveryCheckpoint(checkpoint) === (recipeKey === SERVICE_RECOVERY_WORKFLOW_KEY);
+  const holdsOwnArm = RECIPE_CHECKPOINT_ARMS[recipeKey];
+  return holdsOwnArm ? holdsOwnArm(checkpoint) : true;
 }
 
 /**
@@ -845,8 +864,8 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   //
   // Selected by checkpoint ARM (R1a-0): the service-recovery arm keeps the
   // device-keyed gate, call and arguments unchanged; every other arm re-checks
-  // the task's live target rows. `checkpointMatchesRecipe` above already
-  // guarantees the arm belongs to this recipe.
+  // the task's live target rows. For every recipe that declares an arm,
+  // `checkpointMatchesRecipe` above already guarantees the arm belongs to it.
   if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
     const accessCheck = isServiceRecoveryCheckpoint(checkpoint)
       ? await requesterAccessLost(task, checkpoint.recipeInput.deviceId)

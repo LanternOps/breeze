@@ -181,21 +181,53 @@ const taskRow = (workflowKey: string, currentStepKey: string) => ({
 });
 
 describe('advanceTask — checkpoint arm must match the recipe (R1a-0 Task 1b)', () => {
-  it('a non-service_recovery recipe holding the service-recovery arm fails unresolved, never dispatches, never reaches a gate', async () => {
-    const out = await coordinator.advanceTask(taskRow('fixture_identity', 'offboard') as never, 4);
-    expect(out).toMatch(/^failed:/);
+  // Amended in the R1a-0 fix-up: the agreement check binds every recipe that
+  // DECLARES an arm (`RECIPE_CHECKPOINT_ARMS`), and a test pins that every
+  // registered production recipe declares one. A test-local recipe that
+  // declares none falls through to the pre-R1a-0 behaviour, which is what the
+  // E3 human-work integration suites (`fixture_identity`) rely on.
+  it('a recipe that declares an arm must hold it: service_recovery with a non-service-recovery checkpoint fails unresolved, never dispatches, never reaches a gate', async () => {
+    parseSeam.next = {
+      ok: true,
+      checkpoint: {
+        version: 1, recipeInput: { contactId: 'contact-1' }, findings: [], satisfiedCriteria: [], unsatisfiedCriteria: [],
+        mutationAttempts: 0, lastVerification: null, lastOperationKey: null, fixWatchId: null,
+      },
+    };
+    const out = await coordinator.advanceTask(taskRow('service_recovery', 'execute') as never, 4);
+    expect(out).toBe('failed: checkpoint does not match workflow service_recovery');
     expect(lastPatch()).toMatchObject({
       state: 'failed', outcome: 'unresolved',
-      outcomeDetail: expect.stringContaining("checkpoint does not match workflow 'fixture_identity'"),
+      outcomeDetail: expect.stringContaining("checkpoint does not match workflow 'service_recovery'"),
     });
     expect(planEffect).not.toHaveBeenCalled();
     expect(requesterAccessLost).not.toHaveBeenCalled();
+    expect(requesterAccessLostForTargets).not.toHaveBeenCalled();
+  });
+
+  it('a test-local recipe that declares no arm keeps the pre-R1a-0 behaviour: the service-recovery arm reaches the device gate with its deviceId', async () => {
+    const row = taskRow('fixture_identity', 'offboard');
+    const out = await coordinator.advanceTask(row as never, 4);
+    expect(out).toMatch(/requester access lost \(gate-reached\)/);
+    expect(requesterAccessLost).toHaveBeenCalledWith(row, SR_DEVICE);
+    expect(requesterAccessLostForTargets).not.toHaveBeenCalled();
   });
 
   it('control: a service_recovery task with the service-recovery arm passes the check and reaches its gate', async () => {
     const out = await coordinator.advanceTask(taskRow('service_recovery', 'execute') as never, 4);
     expect(out).toMatch(/requester access lost/);
     expect(requesterAccessLost).toHaveBeenCalledTimes(1);
+  });
+
+  it('every registered production recipe declares its checkpoint arm, so only test-local recipes fall through', async () => {
+    const { RECIPE_KEYS } = await vi.importActual<typeof import('./recipes')>('./recipes');
+    const arms = coordinator.RECIPE_CHECKPOINT_ARMS;
+    expect(Object.isFrozen(arms)).toBe(true);
+    expect(RECIPE_KEYS.length).toBeGreaterThan(0);
+    for (const key of RECIPE_KEYS) {
+      expect(typeof arms[key], `recipe '${key}' declares no checkpoint arm`).toBe('function');
+    }
+    expect(Object.keys(arms).sort()).toEqual([...RECIPE_KEYS]);
   });
 });
 
