@@ -59,7 +59,7 @@ import {
   devices,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
 import { admitServiceRecoveryTask, admitTask, recipeEnabled } from '../services/aiOperator/taskService';
 import { canMutateOrgWideGovernance } from '../services/siteCeilingAccess';
@@ -678,6 +678,13 @@ async function draftPerson(orgId: string, input: IdentityOffboardingInput): Prom
  */
 async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperatorTaskInput) {
   const auth = c.get('auth');
+  // Offboarding changes a person's directory accounts: on top of
+  // ai_agents:write it needs the organization write permission the contact
+  // routes use. The permissions were resolved by requireAiWrite above.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
   if (!canMutateOrgWideGovernance(auth)) {
     return c.json({
       error: 'Offboarding acts on organization-wide identity accounts; site-restricted users cannot start it.',
@@ -804,6 +811,9 @@ aiOperatorTasksRoutes.post(
   '/task-drafts',
   scopes,
   requireAiWrite,
+  // A draft can return contact names and addresses: the same read permission
+  // the contact routes require.
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
   zValidator('json', operatorTaskDraftSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -834,7 +844,21 @@ aiOperatorTasksRoutes.post(
       return c.json({ data: { recipeKey: recipe.key, recipeVersion: recipe.version, input: parsed.data, workflow } });
     }
 
+    // Same gates as admission, BEFORE any contact is read: offboarding is
+    // org-wide identity governance, and a disabled recipe drafts nothing.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Offboarding acts on organization-wide identity accounts; site-restricted users cannot start it.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    if (!recipeEnabled(recipe.key)) {
+      return c.json({ error: 'The offboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+    }
     const input = parsed.data as IdentityOffboardingInput;
+    if (!input.contactId && (input.personHint ?? '').trim().length < 2) {
+      return c.json({ error: 'Name the person with at least two characters, or choose a contact.', code: 'INVALID_INPUT' }, 400);
+    }
     const person = await draftPerson(body.orgId, input);
     const degraded = new Set(readiness.degradedEffects);
     const plannedEffectTools = (Object.keys(IDENTITY_TOGGLE_TOOLS) as Array<keyof typeof IDENTITY_TOGGLE_TOOLS>)

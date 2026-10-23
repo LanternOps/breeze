@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   resolveEffectiveAgent: vi.fn(),
   tasksEnabled: true,
   recipeOn: true,
+  permissions: [] as Array<{ resource: string; action: string }>,
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -83,6 +84,8 @@ function app(authOverrides: Record<string, unknown> = {}) {
       canAccessOrg: (id: string) => id === ORG, orgCondition: () => undefined,
       allowedSiteIds: undefined, canAccessSite: () => true, ...authOverrides,
     } as never);
+    // What requireAiWrite stores after resolving the caller's grants.
+    c.set('permissions', { permissions: h.permissions } as never);
     await next();
   });
   a.route('/ai/operator', aiOperatorTasksRoutes);
@@ -110,6 +113,7 @@ beforeEach(() => {
   h.inserts = 0;
   h.tasksEnabled = true;
   h.recipeOn = true;
+  h.permissions = [{ resource: 'organizations', action: 'write' }, { resource: 'organizations', action: 'read' }];
   h.listWorkflowReadiness.mockResolvedValue([readyIdentity(), readySr()]);
   h.resolveEffectiveAgent.mockResolvedValue({ agentId: AGENT, effective: { enabled: true } });
   h.admitTask.mockResolvedValue({ ok: true, taskId: 'task-new', replayed: false });
@@ -165,6 +169,16 @@ describe('POST /task-drafts', () => {
     expect(data.person.candidates.map((c: { name: string }) => c.name)).toEqual(['Dana Ruiz', 'Dana Smith']);
   });
 
+  it('drafts refuse a site-restricted caller, a disabled recipe and a too-short hint BEFORE reading any contact', async () => {
+    const d = { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { personHint: 'Dana' } };
+    expect((await post('/task-drafts', d, app({ allowedSiteIds: ['s1'] }))).status).toBe(403);
+    h.recipeOn = false;
+    expect((await post('/task-drafts', d)).status).toBe(422);
+    h.recipeOn = true;
+    expect((await post('/task-drafts', { ...d, inputs: { personHint: ' D ' } })).status).toBe(400);
+    expect(h.selectQueue).toEqual([]);
+  });
+
   it('an unknown key is a 400 naming both supported workflows; bad inputs are a 400', async () => {
     const unknown = await post('/task-drafts', { recipeKey: 'no_such_recipe', recipeVersion: 1, orgId: ORG, inputs: {} });
     expect(unknown.status).toBe(400);
@@ -208,6 +222,13 @@ describe('POST /tasks — identity_offboarding', () => {
     const refused = await post('/tasks', body());
     expect(refused.status).toBe(404);
     expect(await refused.json()).toEqual({ error: 'Contact not found' });
+  });
+
+  it('without organizations:write the identity admission is refused', async () => {
+    h.permissions = [{ resource: 'organizations', action: 'read' }];
+    const res = await post('/tasks', body());
+    expect(res.status).toBe(403);
+    expect(h.admitTask).not.toHaveBeenCalled();
   });
 
   it('a site-restricted caller is refused before anything is read or admitted', async () => {
