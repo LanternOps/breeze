@@ -49,7 +49,6 @@ export type Webhook = {
   // Set by GET /webhooks in place of the secret itself, which is never returned.
   hasSecret?: boolean;
   headers?: WebhookHeader[];
-  payloadTemplate?: string;
 };
 
 type WebhookListProps = {
