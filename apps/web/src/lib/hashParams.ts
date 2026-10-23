@@ -57,9 +57,16 @@ function splitSegments(raw: string, knownTabs: readonly string[]): {
 // rejected inline below with explicit comparisons (not a Set lookup) so static
 // analysis recognises the guard; the container is also prototype-less.
 
+// Materialise the parsed params as a prototype-less record. Accumulating in a
+// Map (not `record[key] = …`) keeps user-controlled keys away from dynamic
+// property writes; the reserved-key skip above is defence in depth.
+function toNullProtoRecord(map: ReadonlyMap<string, string[]>): Record<string, string[]> {
+  return Object.assign(Object.create(null) as Record<string, string[]>, Object.fromEntries(map));
+}
+
 export function parseHashGrammar(hash: string, knownTabs: readonly string[]): ParsedHash {
   const { tab, selection, rest } = splitSegments(stripHash(hash ?? ''), knownTabs);
-  const params: Record<string, string[]> = Object.create(null);
+  const params = new Map<string, string[]>();
   for (const seg of rest) {
     const eq = seg.indexOf('=');
     if (eq <= 0) continue;
@@ -71,9 +78,9 @@ export function parseHashGrammar(hash: string, knownTabs: readonly string[]): Pa
       .map(safeDecode)
       .filter((v) => v !== '');
     if (values.length === 0) continue;
-    params[key] = values;
+    params.set(key, values);
   }
-  return { tab, selection, params };
+  return { tab, selection, params: toNullProtoRecord(params) };
 }
 
 /**
