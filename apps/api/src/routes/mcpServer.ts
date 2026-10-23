@@ -2259,16 +2259,26 @@ async function fileMcpActionIntent(
   if (outcome.kind === 'terminal_replay') return mcpActionStatusResult(id, outcome.status);
   // B-W04 (#6158, D-B32): a modern client that declared URL-mode elicitation
   // is pointed at the approval page through MRTR; everyone else polls.
+  // Only a request still waiting for a decision is elicited; an already
+  // approved / executing replay just reports its status.
   const originRef = mcpOriginRef(args.auth.principal);
-  if (args.correlation.era === 'modern' && originRef && declaresUrlElicitation(args.clientCapabilities)) {
-    const requestState = sealMcpRequestState({
-      a: outcome.status.actionId,
-      p: originRef,
-      m: 'tools/call',
-      t: args.toolName,
-      d: computeArgumentDigest(canonicalizeArguments(args.toolInput)),
-    }, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
-    return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
+  if (args.correlation.era === 'modern' && originRef && outcome.status.status === 'pending_approval'
+    && declaresUrlElicitation(args.clientCapabilities)) {
+    try {
+      const requestState = sealMcpRequestState({
+        a: outcome.status.actionId,
+        p: originRef,
+        m: 'tools/call',
+        t: args.toolName,
+        d: computeArgumentDigest(canonicalizeArguments(args.toolInput)),
+      }, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
+      return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
+    } catch (err) {
+      // The intent is already filed: never turn that into an error. The
+      // client still gets the pollable pending result.
+      console.error('[MCP] Failed to seal approval requestState; answering pending_approval:', err);
+      captureException(err);
+    }
   }
   return jsonRpcResult(id, buildPendingApprovalResult(outcome.status));
 }
@@ -2308,17 +2318,17 @@ async function handleToolsCallContinuation(
 
   const opened = openMcpRequestState(params.requestState, mcpRequestStateKey(), Math.floor(Date.now() / 1000));
   if (!opened.ok && opened.reason === 'invalid_request_state') return invalid();
-  const payload = opened.ok ? opened.payload : opened.payload;
+  const { payload } = opened;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
-  // The credential binding is checked before the payload's action id is ever
-  // exposed (an expired state from another credential reveals nothing).
-  if (payload.p !== callerRef) return invalid();
-  if (!opened.ok) {
-    return jsonRpcError(id, -32602, 'Invalid params', { reason: 'request_state_expired', actionId: payload.a });
-  }
-  if (payload.m !== 'tools/call' || payload.t !== toolName
+  // Every binding (credential, method, tool, arguments) is checked before
+  // the payload's action id is ever exposed — an expired state reveals it
+  // only to the same credential, for the same call.
+  if (payload.p !== callerRef || payload.m !== 'tools/call' || payload.t !== toolName
     || payload.d !== computeArgumentDigest(canonicalizeArguments(toolInput))) {
     return invalid();
+  }
+  if (!opened.ok) {
+    return jsonRpcError(id, -32602, 'Invalid params', { reason: 'request_state_expired', actionId: payload.a });
   }
 
   const responses = params.inputResponses;
@@ -2359,17 +2369,26 @@ async function handleToolsCallContinuation(
       const inFlight = approvalWaitsByOrigin.get(callerRef) ?? 0;
       if (inFlight < mcpApprovalWaitsPerPrincipal()) {
         approvalWaitsByOrigin.set(callerRef, inFlight + 1);
+        const signal = c?.req.raw.signal;
         try {
           const { waitForIntentTerminalOutcome } = await import('../services/actionIntents/intentService');
           // Ownership was asserted above; no DB transaction is held across the wait.
-          await runOutsideDbContext(() => waitForIntentTerminalOutcome(intent.id, mcpApprovalWaitMs(), c?.req.raw.signal));
+          await runOutsideDbContext(() => waitForIntentTerminalOutcome(intent.id, mcpApprovalWaitMs(), signal));
+        } catch (err) {
+          // A failed wait is not a failed action: fall through to the re-read
+          // so the caller still gets the real status.
+          console.error('[MCP] approval wait failed; re-reading the status:', err);
+          captureException(err);
         } finally {
           const left = (approvalWaitsByOrigin.get(callerRef) ?? 1) - 1;
           if (left <= 0) approvalWaitsByOrigin.delete(callerRef);
           else approvalWaitsByOrigin.set(callerRef, left);
         }
-        const fresh = await loadOwnedMcpIntent(auth, intent.id);
-        if (fresh) current = toMcpActionStatus(fresh, base);
+        if (!signal?.aborted) {
+          const fresh = await loadOwnedMcpIntent(auth, intent.id);
+          if (!fresh) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+          current = toMcpActionStatus(fresh, base);
+        }
       }
     }
 

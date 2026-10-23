@@ -562,3 +562,54 @@ describe('B-W04 URL elicitation: decline / cancel / malformed', () => {
     expect(mocks.waitForIntentTerminalOutcome).not.toHaveBeenCalled();
   });
 });
+
+describe('B-W04 URL elicitation: review fixes', () => {
+  it('a live replay already approved is not re-elicited: plain pending result', async () => {
+    intentMocks.createMcpActionIntent.mockReset().mockResolvedValue({
+      ...pendingOutcome('execute_command'),
+      isNew: false,
+      status: { ...pendingOutcome('execute_command').status, status: 'in_progress' },
+    });
+    const { body } = await modernCall('execute_command', ARGS, { caps: URL_CAPS });
+    expect(body.result.resultType).toBe('complete');
+    expect(body.result).not.toHaveProperty('inputRequests');
+    expect(body.result.structuredContent.status).toBe('in_progress');
+  });
+
+  it('a failed wait falls through to the re-read (and still releases the wait slot)', async () => {
+    process.env.MCP_APPROVAL_WAITS_PER_PRINCIPAL = '1';
+    const state = await firstCall();
+    setRows(intentRow('pending_approval'), intentRow('completed', 'execute_command', { result: { ok: 1 } }));
+    mocks.waitForIntentTerminalOutcome.mockReset().mockRejectedValueOnce(new Error('db blip')).mockResolvedValue(null);
+    const first = await retry(state, { action: 'accept' });
+    expect(first.body.result.structuredContent.status).toBe('completed');
+    setRows(intentRow('pending_approval'), intentRow('pending_approval'));
+    await retry(state, { action: 'accept' });
+    expect(mocks.waitForIntentTerminalOutcome).toHaveBeenCalledTimes(2);
+  });
+
+  it('the intent vanishing between the wait and the re-read is not_found, never a stale pending', async () => {
+    const state = await firstCall();
+    setRows(intentRow('pending_approval'), null);
+    const { body } = await retry(state, { action: 'accept' });
+    expect(body.error).toMatchObject({ code: -32602, data: { reason: 'not_found' } });
+  });
+
+  it('accept on an already-terminal intent does not wait', async () => {
+    const state = await firstCall();
+    setRows(intentRow('rejected'));
+    const { body } = await retry(state, { action: 'accept' });
+    expect(mocks.waitForIntentTerminalOutcome).not.toHaveBeenCalled();
+    expect(body.result.isError).toBe(true);
+    expect(body.result.structuredContent.status).toBe('rejected');
+  });
+
+  it('an expired state with edited arguments is invalid_request_state, not request_state_expired', async () => {
+    const state = await firstCall();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.now() + 601_000));
+    const { body } = await retry(state, { action: 'accept' }, 'execute_command', { ...ARGS, extra: 'edited' });
+    expect(body.error).toMatchObject({ code: -32602, data: { reason: 'invalid_request_state' } });
+    expect(body.error.data).not.toHaveProperty('actionId');
+  });
+});
