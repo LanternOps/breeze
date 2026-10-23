@@ -1020,7 +1020,25 @@
         "fullScan": "Vollständiger Scan",
         "maxFileSizeMb": "Maximale Dateigröße (MB)",
         "scanTimeoutMinutes": "Scan-Zeitlimit (Minuten)",
-        "scanRunsServerSideDescription": "Breeze startet diesen Scan vom Server aus — das Gerät benötigt keinen lokalen Zeitplan."
+        "scanRunsServerSideDescription": "Breeze startet diesen Scan vom Server aus — das Gerät benötigt keinen lokalen Zeitplan.",
+        "ruleSets": {
+          "title": "Erkennungsregelsätze",
+          "description": "Regelsätze, die die IOC-Scans dieser Richtlinie verwenden.",
+          "manageLink": "Erkennungsregeln verwalten",
+          "loading": "Regelsätze werden geladen…",
+          "loadError": "Die Regelsätze konnten nicht geladen werden. Die Richtlinie behält ihre aktuellen Regelsätze; die übrigen Einstellungen können Sie trotzdem speichern.",
+          "none": "Für diese Richtlinie sind keine Regelsätze verfügbar.",
+          "legacyNote": "Keine Regelsätze: Scans verwenden nur die integrierten älteren Signaturen.",
+          "cap": "Eine Richtlinie kann höchstens {{max}} Regelsätze verwenden.",
+          "unavailable": "Nicht verfügbarer Regelsatz",
+          "blocking": "Diese Richtlinie kann die nicht verfügbaren Regelsätze nicht verwenden (gelöscht, verschoben oder Eigentum einer anderen Organisation). Entfernen Sie sie vor dem Speichern.",
+          "overrideDraft": "Die geerbten Einstellungen enthalten Regelsätze, die diese Richtlinie nicht verwenden kann. Entfernen Sie die nicht verfügbaren Regelsätze und speichern Sie dann.",
+          "errors": {
+            "tooMany": "Eine Richtlinie kann höchstens 20 Regelsätze verwenden.",
+            "invalidIds": "Die Liste der Regelsätze ist ungültig. Laden Sie die Seite neu und versuchen Sie es erneut.",
+            "notAttachable": "Diese Richtlinie kann einige der ausgewählten Regelsätze nicht verwenden. Sie sind unten hervorgehoben."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Anmeldeinformationen",

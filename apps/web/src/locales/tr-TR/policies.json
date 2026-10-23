@@ -1020,7 +1020,25 @@
         "fullScan": "Tam tarama",
         "maxFileSizeMb": "Maksimum dosya boyutu (MB)",
         "scanTimeoutMinutes": "Tarama zaman aşımı (dakika)",
-        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur."
+        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur.",
+        "ruleSets": {
+          "title": "Tespit kural kümeleri",
+          "description": "Bu ilkenin IOC taramalarının kullandığı kural kümeleri.",
+          "manageLink": "Tespit kurallarını yönet",
+          "loading": "Kural kümeleri yükleniyor…",
+          "loadError": "Kural kümeleri yüklenemedi. İlke mevcut kural kümelerini korur; diğer ayarları yine de kaydedebilirsiniz.",
+          "none": "Bu ilke için kullanılabilir kural kümesi yok.",
+          "legacyNote": "Kural kümesi yok: taramalar yalnızca yerleşik eski imzaları kullanır.",
+          "cap": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+          "unavailable": "Kullanılamayan kural kümesi",
+          "blocking": "Bu ilke kullanılamayan kural kümelerini (silinmiş, taşınmış veya başka bir kuruluşa ait) kullanamaz. Kaydetmeden önce bunları kaldırın.",
+          "overrideDraft": "Devralınan ayarlar bu ilkenin kullanamayacağı kural kümeleri içeriyor. Kullanılamayan kural kümelerini kaldırın, ardından kaydedin.",
+          "errors": {
+            "tooMany": "Bir ilke en fazla 20 kural kümesi kullanabilir.",
+            "invalidIds": "Kural kümesi listesi geçerli değil. Sayfayı yeniden yükleyip tekrar deneyin.",
+            "notAttachable": "Bu ilke seçilen kural kümelerinden bazılarını kullanamaz. Aşağıda vurgulanmıştır."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Kimlik Bilgileri",

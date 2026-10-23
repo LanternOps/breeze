@@ -80,6 +80,7 @@ describe('YARA UI copy rule (spec §11)', () => {
         'security:securityEdrPage.iocScansLink',
         'pages:titles.securityDetectionRules',
         'common:nav.securityDetectionRules',
+        'policies:configurationPolicies.featureTabs.securityTab.ruleSets',
       ]),
     );
   });

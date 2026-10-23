@@ -49,6 +49,16 @@ export function useFeatureLink(policyId: string) {
             if (code === 'MONITOR_NOT_ATTACHABLE') {
               return i18n.t('policies:configurationPolicies.featureTabs.monitorsTab.notAttachable');
             }
+            // Security link rule-set gate (#6263 W03 securityRuleSetGate.ts, #6267).
+            if (code === 'TOO_MANY_RULE_SETS') {
+              return i18n.t('policies:configurationPolicies.featureTabs.securityTab.ruleSets.errors.tooMany');
+            }
+            if (code === 'INVALID_RULE_SET_IDS') {
+              return i18n.t('policies:configurationPolicies.featureTabs.securityTab.ruleSets.errors.invalidIds');
+            }
+            if (code === 'YARA_RULE_SET_NOT_ATTACHABLE') {
+              return i18n.t('policies:configurationPolicies.featureTabs.securityTab.ruleSets.errors.notAttachable');
+            }
             return undefined;
           },
           successMessage: i18n.t('common:states.saved'),

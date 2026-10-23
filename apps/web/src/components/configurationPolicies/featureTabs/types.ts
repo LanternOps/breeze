@@ -66,6 +66,13 @@ export type FeatureTabProps = {
    * calls) destructure it; every other tab ignores it.
    */
   orgId?: string | null;
+  /**
+   * Partner that owns a partner-wide policy (null for org policies). Lets the
+   * Security tab's rule-set picker (#6267) match partner-wide sets to the
+   * policy's partner, so a system-scope viewer never sees another partner's
+   * sets as attachable.
+   */
+  partnerId?: string | null;
 };
 
 export const FEATURE_META: Record<FeatureType, {
