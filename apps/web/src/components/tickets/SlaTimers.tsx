@@ -3,8 +3,9 @@ import { useTranslation } from 'react-i18next';
 import type { TicketDetail } from './ticketConfig';
 import { formatRelative } from './ticketConfig';
 
-// Mirrors the server-stored deadlines (#8973: responseDueAt / resolutionDueAt, which already include
-// paused time) — no target arithmetic here. Twin of slaState in ticketConfig.ts; change together.
+// Reads the server-stored due dates (#8973: responseDueAt / resolutionDueAt, which already include
+// paused time) — no target arithmetic here. Same due dates as slaState in ticketConfig.ts; unlike
+// slaState it does not use the warn points or slaBusinessMinutesRemaining.
 type TimerState =
   | { kind: 'met' }
   | { kind: 'metLate' }
@@ -67,10 +68,13 @@ export function SlaTimers({ ticket, now = new Date() }: { ticket: TicketDetail; 
       )}
       {hasResolution && (
         <TimerRow label={t('slaTimers.resolution')} testId="sla-timer-resolution"
-          // resolvedAt is stamped on resolve/close and cleared on reopen (ticketService);
-          // terminal + updatedAt covers legacy rows that predate the stamp.
-          state={timerState(ticket.resolutionDueAt!, ticket.resolvedAt ?? (terminal ? ticket.updatedAt : null),
-            breached.has('resolution'), terminal, ticket.slaPausedAt, now)} />
+          // resolvedAt is stamped on resolve/close and cleared on reopen (ticketService).
+          // A legacy terminal row that predates the stamp has no completion time
+          // (updatedAt moves on any later edit), so it reads "Met" as it always did.
+          state={!ticket.resolvedAt && terminal && !breached.has('resolution')
+            ? { kind: 'met' }
+            : timerState(ticket.resolutionDueAt!, ticket.resolvedAt ?? null,
+              breached.has('resolution'), terminal, ticket.slaPausedAt, now)} />
       )}
       {ticket.slaPausedAt && !terminal && (
         <p className="text-xs text-muted-foreground" data-testid="sla-timers-paused">

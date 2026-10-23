@@ -129,6 +129,15 @@ describe('SlaTimers', () => {
     expect(screen.getByTestId('sla-timer-response')).toHaveTextContent(/Met$/);
   });
 
+  it('a legacy resolved ticket with no resolvedAt stays "Met" even if edited after its due', () => {
+    // updatedAt moves on any later edit, so it cannot prove a late completion.
+    render(<SlaTimers ticket={mkTicket({
+      status: 'resolved', resolvedAt: null, updatedAt: inMin(-1),
+      resolutionSlaMinutes: 60, resolutionDueAt: inMin(-30),
+    })} />);
+    expect(screen.getByTestId('sla-timer-resolution')).toHaveTextContent(/Met$/);
+  });
+
   it('renders no row when the stored due is null even if a target exists', () => {
     render(<SlaTimers ticket={mkTicket({ responseSlaMinutes: 60, resolutionSlaMinutes: 240 })} />);
     expect(screen.queryByTestId('sla-timers')).toBeNull();

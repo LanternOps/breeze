@@ -2,7 +2,9 @@
 -- #8973 W3 (spec §4.3, §4.6, §8.2): stored SLA deadline columns on tickets.
 --   sla_paused_business_minutes  business minutes spent paused, accrued when a
 --                                pause ends (equals sla_paused_minutes while
---                                no calendar applies)
+--                                no calendar applies; the SLA sweep's heal
+--                                pass raises it to sla_paused_minutes if a
+--                                pre-W3 API instance folded a pause)
 --   response_due_at / resolution_due_at    deadline per target; NULL when the
 --                                          target is NULL
 --   response_warn_at / resolution_warn_at  the 80% "breaching soon" point

@@ -450,6 +450,11 @@ describe('SLA deadlines follow the restamp and the explicit override (#8973)', (
     const resolutionDue = sqlOf(restamp.resolutionDueAt);
     expect(resolutionDue.sql).toContain(`->>'resolutionSlaMinutes'`);
     expect(resolutionDue.params).toEqual(expect.arrayContaining(['resolution', at(480).toISOString()]));
+    // Stale-read guard: a pause that ended between the read and this write
+    // would leave the computed deadlines short, so the restamp is skipped.
+    const where = sqlOf(updateWhereMock.mock.calls[1]![0]);
+    expect(where.sql).toContain('"tickets"."sla_paused_business_minutes" = $');
+    expect(where.params).toContain(0);
   });
 
   it('a user-set target keeps its deadlines out of the AI restamp', async () => {

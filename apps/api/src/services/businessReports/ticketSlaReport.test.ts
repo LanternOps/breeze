@@ -177,12 +177,15 @@ describe('generateTicketSlaAttainmentReport', () => {
     queueExecute([], EMPTY_OVERALL, []);
     await generateTicketSlaAttainmentReport(orgScope, {}, orgAuthority);
     const cte = calls[0]!.sql;
-    expect(cte).toContain('t.response_due_at, t.resolution_due_at');
+    expect(cte).toContain('COALESCE(t.response_due_at, t.created_at');
+    expect(cte).toContain('COALESCE(t.resolution_due_at, t.created_at');
     expect(cte).toContain('s.first_response_at <= s.response_due_at');
     expect(cte).toContain('s.resolved_at <= s.resolution_due_at');
     expect(cte).toContain('now() > s.response_due_at');
     expect(cte).toContain('now() > s.resolution_due_at');
     expect(cte).not.toMatch(/s\.created_at \+/);
+    // A missing stored due is never silently dropped as no_target.
+    expect(cte).not.toContain('response_due_at IS NULL THEN');
     // Detail rows still show the lifetime paused minutes.
     expect(cte).toContain('COALESCE(t.sla_paused_minutes, 0) AS paused');
   });

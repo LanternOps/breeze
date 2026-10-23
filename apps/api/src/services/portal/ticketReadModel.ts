@@ -73,10 +73,13 @@ export function ticketSla(row: TicketSlaRow, now: Date): SlaDto {
     row.resolvedAt
   ) status = 'met';
   else {
-    // Warn points of the arms still running (a null deadline has no clock).
+    // Warn points of the arms still running. An arm with a target but no
+    // stored deadline yet (written by a pre-W3 instance; the SLA sweep heals
+    // it within a tick) still runs — it is never "met" — it just cannot be
+    // at risk until its warn point exists.
     const running: Array<Date | null> = [];
-    if (!row.firstResponseAt && row.responseDueAt) running.push(row.responseWarnAt);
-    if (row.resolutionDueAt) running.push(row.resolutionWarnAt);
+    if (!row.firstResponseAt && targets.responseMinutes !== null) running.push(row.responseWarnAt);
+    if (targets.resolutionMinutes !== null) running.push(row.resolutionWarnAt);
 
     if (running.length === 0) status = 'met';
     else if (

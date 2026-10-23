@@ -85,6 +85,14 @@ describe('ticketSla reads the stored deadlines (#8973)', () => {
     }), NOW).status).toBe('breached');
   });
 
+  it('a target whose stored deadline is not written yet is still running, never met', () => {
+    const sla = ticketSla(slaRow({
+      firstResponseAt: new Date('2026-09-02T00:20:00Z'),
+      resolutionDueAt: null, resolutionWarnAt: null,
+    }), new Date('2026-09-02T05:00:00Z'));
+    expect(sla.status).toBe('on_track');
+  });
+
   it('at-risk follows the stored warn point, not elapsed arithmetic', () => {
     // Warn moved early (e.g. by a business calendar): at risk at +50 min.
     const early = slaRow({ responseWarnAt: new Date('2026-09-02T00:50:00Z') });

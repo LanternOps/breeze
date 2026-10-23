@@ -3050,6 +3050,9 @@ export async function applyAiFieldUpdates(
           // Still on the inputs the targets were resolved from.
           sql`${tickets.categoryId} IS NOT DISTINCT FROM ${after.categoryId}::uuid`,
           eq(tickets.priority, after.priority),
+          // #8973: the deadlines above were computed from this pause total;
+          // a pause that ended in between would make them stale.
+          eq(tickets.slaPausedBusinessMinutes, ticket.slaPausedBusinessMinutes),
         ));
     }
   }

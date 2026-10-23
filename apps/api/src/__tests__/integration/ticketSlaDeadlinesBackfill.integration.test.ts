@@ -1,9 +1,10 @@
 import './setup';
 import { readFile } from 'node:fs/promises';
 import postgres from 'postgres';
-import { sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { tickets } from '../../db/schema';
+import { SLA_AT_RISK } from '../../routes/tickets/tickets';
 import { splitSqlStatements } from '../../db/autoMigrate';
 import { createOrganization, createPartner } from './db-utils';
 import { getAppDb, getTestDb } from './setup';
@@ -77,17 +78,7 @@ function oldBreachDue(target: 'response' | 'resolution'): string {
           + (${targetColumn} + COALESCE(sla_paused_minutes, 0)) * interval '1 minute'`;
 }
 
-// ---- stored-column predicates (spec §4.3 readers 1 and 2) -----------------
-
-const NEW_AT_RISK = `(
-  sla_breached_at IS NULL
-  AND status IN ('new', 'open')
-  AND sla_paused_at IS NULL
-  AND (
-    (first_response_at IS NULL AND response_warn_at IS NOT NULL AND now() >= response_warn_at)
-    OR (resolution_warn_at IS NOT NULL AND now() >= resolution_warn_at)
-  )
-)`;
+// ---- stored-column predicates (spec §4.3 reader 1; reader 2 is the production SLA_AT_RISK) --
 
 function newBreachDue(target: 'response' | 'resolution'): string {
   const due = target === 'response' ? 'response_due_at' : 'resolution_due_at';
@@ -113,7 +104,11 @@ async function readSets(kind: 'old' | 'new', orgId: string): Promise<Sets> {
   };
   return kind === 'old'
     ? { atRisk: await ids(OLD_AT_RISK), response: await ids(oldBreachDue('response')), resolution: await ids(oldBreachDue('resolution')) }
-    : { atRisk: await ids(NEW_AT_RISK), response: await ids(newBreachDue('response')), resolution: await ids(newBreachDue('resolution')) };
+    : {
+        // The PRODUCTION staff-queue fragment, not a copy (it is the reader under test).
+        atRisk: [...await db.select({ subject: tickets.subject }).from(tickets)
+          .where(and(eq(tickets.orgId, orgId), SLA_AT_RISK)).orderBy(asc(tickets.subject))].map((r) => r.subject),
+        response: await ids(newBreachDue('response')), resolution: await ids(newBreachDue('resolution')) };
 }
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
@@ -332,8 +327,10 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     // would never breach it.
     const { org } = await seedFixtures(); // all rows pre-W3-shaped: no stored deadlines
     const { withSystemDbAccessContext } = await import('../../db');
-    const { sweepTicketSlaBreaches } = await import('../../jobs/ticketSlaWorker');
+    const { healMissingDeadlines, sweepTicketSlaBreaches } = await import('../../jobs/ticketSlaWorker');
 
+    // The worker runs the heal in its own system transaction, then the sweep.
+    await withSystemDbAccessContext(() => healMissingDeadlines());
     const stamped = await withSystemDbAccessContext(() => sweepTicketSlaBreaches());
 
     const db = getTestDb();
@@ -368,6 +365,45 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     expect(await withSystemDbAccessContext(() => sweepTicketSlaBreaches())).toEqual([]);
   });
 
+  runDb('heals a pause a pre-W3 instance folded into sla_paused_minutes only, so no false breach (Gate B12)', async () => {
+    const partner = await createPartner({ name: 'SlaHeal-Partner' });
+    const org = await createOrganization({ partnerId: partner.id, name: 'SlaHeal-Org' });
+    const db = getTestDb();
+    const base = { orgId: org.id, partnerId: partner.id, source: 'api' as const, priority: 'normal' as const, status: 'open' as const };
+    const created = minutesAgo(70);
+    const due = new Date(created.getTime() + 60 * 60_000);
+    // Both written by the W3 code: deadlines stored, no pause yet.
+    for (const [subject, extra] of [
+      ['unanswered', {}],
+      ['answered', { firstResponseAt: minutesAgo(65) }],
+    ] as const) {
+      await db.insert(tickets).values({
+        ...base, ...extra, subject, ticketNumber: `HEAL-${crypto.randomUUID().slice(0, 8)}`, createdAt: created,
+        responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+        responseDueAt: due, responseWarnAt: new Date(created.getTime() + 48 * 60_000),
+        resolutionDueAt: new Date(created.getTime() + 480 * 60_000), resolutionWarnAt: new Date(created.getTime() + 384 * 60_000),
+      });
+    }
+    // A pre-W3 instance ends a 30-minute pause: it folds sla_paused_minutes only.
+    await db.execute(sql.raw(`UPDATE tickets SET sla_paused_minutes = 30 WHERE org_id = '${org.id}'`));
+
+    const { withSystemDbAccessContext } = await import('../../db');
+    const { healMissingDeadlines, sweepTicketSlaBreaches } = await import('../../jobs/ticketSlaWorker');
+    expect(await withSystemDbAccessContext(() => healMissingDeadlines())).toBe(2);
+    // 70 minutes in, 30 of them paused: the true response deadline is +90, not +60.
+    expect(await withSystemDbAccessContext(() => sweepTicketSlaBreaches())).toEqual([]);
+
+    const rows = new Map([...await db.execute<{ subject: string; b: number; rdue: string; resdue: string }>(sql.raw(`
+      SELECT subject, sla_paused_business_minutes AS b,
+             (response_due_at - created_at)::text AS rdue, (resolution_due_at - created_at)::text AS resdue
+        FROM tickets WHERE org_id = '${org.id}'`))].map((r) => [r.subject, r]));
+    expect(rows.get('unanswered')).toMatchObject({ b: 30, rdue: '01:30:00', resdue: '08:30:00' });
+    // A frozen arm keeps its deadline; only the unfrozen resolution arm moves.
+    expect(rows.get('answered')).toMatchObject({ b: 30, rdue: '01:00:00', resdue: '08:30:00' });
+    // Healed rows leave the heal predicate: a second tick touches nothing.
+    expect(await withSystemDbAccessContext(() => healMissingDeadlines())).toBe(0);
+  });
+
   runDb('the heal pass probes the partial missing-deadline index', async () => {
     await seedFixtures();
     await applyNoTransaction(INDEXES);
@@ -378,6 +414,7 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
         EXPLAIN SELECT id FROM tickets
          WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
             OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+            OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0)
          ORDER BY created_at ASC LIMIT 500`));
     });
     expect([...rows].map((r) => r['QUERY PLAN']).join('\n')).toContain('tickets_sla_deadlines_missing_idx');

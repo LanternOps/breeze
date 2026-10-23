@@ -75,7 +75,7 @@ const PRIORITY_ORDER = sql`CASE ${tickets.priority}
 // point of each unfrozen arm (services/ticketSlaDeadlines.ts writes it).
 // SLA_BREACHED is unchanged. A stamped breach on either arm leaves at-risk.
 const SLA_BREACHED = sql`${tickets.slaBreachedAt} IS NOT NULL`;
-const SLA_AT_RISK = sql`(
+export const SLA_AT_RISK = sql`(
   ${tickets.slaBreachedAt} IS NULL
   AND ${tickets.status} IN ('new', 'open')
   AND ${tickets.slaPausedAt} IS NULL

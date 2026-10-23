@@ -38,8 +38,8 @@ export type { TicketSlaConfig };
 type GroupBy = TicketSlaSummary['groupBy'];
 
 const NOTES = [
-  'Attainment is recomputed from ticket timestamps and the SLA targets stored on each ticket, not from the sla_breached_at stamp: the SLA sweep only marks tickets that are still open and unanswered when it runs, so a late-but-eventually-answered ticket is never stamped.',
-  'Attainment compares each completion with the deadline stored on the ticket. The response deadline is frozen at the first response, so pause time after the first response no longer moves it (corrected in #8973; earlier reports counted lifetime pauses toward response).',
+  'Attainment is recomputed from ticket timestamps and the SLA deadlines stored on each ticket, not from the sla_breached_at stamp: the SLA sweep only marks tickets that are still open and unanswered when it runs, so a late-but-eventually-answered ticket is never stamped.',
+  'Attainment compares each completion with the deadline stored on the ticket. The response deadline is frozen at the first response, so later pauses do not move it. Tickets answered before #8973 keep a deadline that includes all of their pauses.',
   'Tickets with no SLA target are excluded from the attainment denominators and counted separately.',
   'Planned work (work_kind other than support) carries a due date, not an SLA, and is excluded.',
   'The technician axis uses the ticket\'s CURRENT assignee; reassignment history is not tracked.',
@@ -96,7 +96,9 @@ const GROUP_AXES: Record<GroupBy, { key: SQL; label: SQL; order: SQL }> = {
  * resolution_due_at — the same column the breach sweep compares — so the
  * report and the sweep can no longer disagree about when a target was due.
  * met = completion <= due; missed = completion after it, or now() past it
- * while unmet. A target with no stored deadline counts as no_target.
+ * while unmet. A target whose stored deadline is not written yet (a pre-W3
+ * instance during a deploy; the SLA sweep heals it) is judged against the
+ * wall-clock formula the heal will store, so it is never dropped as no_target.
  */
 function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
   return sql`
@@ -106,7 +108,10 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
         t.ticket_number, t.internal_number, t.created_at,
         t.first_response_at, t.resolved_at,
         t.response_sla_minutes, t.resolution_sla_minutes,
-        t.response_due_at, t.resolution_due_at,
+        COALESCE(t.response_due_at, t.created_at
+          + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS response_due_at,
+        COALESCE(t.resolution_due_at, t.created_at
+          + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute') AS resolution_due_at,
         COALESCE(t.sla_paused_minutes, 0) AS paused,
         t.sla_breached_at, t.sla_breach_reason
       FROM tickets t
@@ -119,7 +124,7 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
     outcomes AS (
       SELECT s.*,
         CASE
-          WHEN s.response_sla_minutes IS NULL OR s.response_due_at IS NULL THEN 'no_target'
+          WHEN s.response_sla_minutes IS NULL THEN 'no_target'
           WHEN s.first_response_at IS NOT NULL
            AND s.first_response_at <= s.response_due_at
             THEN 'met'
@@ -128,7 +133,7 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
           ELSE 'pending'
         END AS response_outcome,
         CASE
-          WHEN s.resolution_sla_minutes IS NULL OR s.resolution_due_at IS NULL THEN 'no_target'
+          WHEN s.resolution_sla_minutes IS NULL THEN 'no_target'
           WHEN s.resolved_at IS NOT NULL
            AND s.resolved_at <= s.resolution_due_at
             THEN 'met'

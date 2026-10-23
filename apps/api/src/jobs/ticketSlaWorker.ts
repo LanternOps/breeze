@@ -73,43 +73,57 @@ function extractRows<T>(result: unknown): T[] {
 }
 
 /**
- * #8973 Gate B12 — rolling-deploy heal. A ticket created (or given a target)
- * by a pre-W3 API instance still serving during the deploy has a target but
- * no stored deadline, so the stored-deadline passes below would never breach
- * it. Fill the missing arms with the wall-clock formula the backfill used
- * (2027-01-02-190200), at most HEAL_BATCH rows per tick. The partial index
- * tickets_sla_deadlines_missing_idx (2027-01-02-190300) is empty in steady
- * state, so this costs one empty index probe per tick.
+ * #8973 Gate B12 — rolling-deploy heal. A pre-W3 API instance still serving
+ * during the deploy writes the SLA inputs without the stored deadlines:
+ *   - a ticket created or given a target has a target but no deadline, so the
+ *     stored-deadline passes below would never breach it;
+ *   - a pause it ends is folded into sla_paused_minutes only, so the stored
+ *     deadline stays too early and would breach falsely.
+ * Both are detectable without a calendar (business minutes equal
+ * sla_paused_minutes until W4), so each tick repairs at most HEAL_BATCH such
+ * rows with the wall-clock formula the backfill used (2027-01-02-190200):
+ * business minutes are raised to sla_paused_minutes, a missing arm is filled,
+ * and an unfrozen arm of a lagging row is recomputed. Frozen arms keep their
+ * deadline. The partial index tickets_sla_deadlines_missing_idx
+ * (2027-01-02-190300) matches exactly this predicate and is empty in steady
+ * state, so the heal costs one empty index probe per tick.
  *
- * W4 adds `sla_calendar_revision_id IS NULL` to the predicate: a ticket on a
- * calendar always has its deadlines written by the calendar-aware writers.
+ * W4 adds `sla_calendar_revision_id IS NULL` to the predicate: on a calendar,
+ * business minutes legitimately differ from sla_paused_minutes and the
+ * calendar-aware writers own the deadlines.
  */
 const HEAL_BATCH = 500;
 
-async function healMissingDeadlines(): Promise<number> {
+export async function healMissingDeadlines(): Promise<number> {
   const paused = sql.raw('GREATEST(t.sla_paused_business_minutes, COALESCE(t.sla_paused_minutes, 0))');
+  const lagging = sql.raw('t.sla_paused_business_minutes < COALESCE(t.sla_paused_minutes, 0)');
+  const responseOpen = sql.raw(`t.first_response_at IS NULL AND NOT ('response' = ANY(string_to_array(COALESCE(t.sla_breach_reason, ''), ',')))`);
+  const resolutionOpen = sql.raw(`t.resolved_at IS NULL AND NOT ('resolution' = ANY(string_to_array(COALESCE(t.sla_breach_reason, ''), ',')))`);
+  const healResponse = sql`t.response_sla_minutes IS NOT NULL AND (t.response_due_at IS NULL OR (${lagging} AND ${responseOpen}))`;
+  const healResolution = sql`t.resolution_sla_minutes IS NOT NULL AND (t.resolution_due_at IS NULL OR (${lagging} AND ${resolutionOpen}))`;
   const result = await db.execute<{ id: string }>(sql`
     WITH missing AS (
       SELECT id
       FROM tickets
       WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
          OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+         OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0)
       ORDER BY created_at ASC
       LIMIT ${sql.raw(String(HEAL_BATCH))}
       FOR UPDATE SKIP LOCKED
     )
     UPDATE tickets t
     SET sla_paused_business_minutes = ${paused},
-        response_due_at = CASE WHEN t.response_due_at IS NULL AND t.response_sla_minutes IS NOT NULL
+        response_due_at = CASE WHEN ${healResponse}
           THEN t.created_at + (t.response_sla_minutes + ${paused}) * interval '1 minute'
           ELSE t.response_due_at END,
-        response_warn_at = CASE WHEN t.response_due_at IS NULL AND t.response_sla_minutes IS NOT NULL
+        response_warn_at = CASE WHEN ${healResponse}
           THEN t.created_at + ${paused} * interval '1 minute' + t.response_sla_minutes * interval '1 minute' * 0.8
           ELSE t.response_warn_at END,
-        resolution_due_at = CASE WHEN t.resolution_due_at IS NULL AND t.resolution_sla_minutes IS NOT NULL
+        resolution_due_at = CASE WHEN ${healResolution}
           THEN t.created_at + (t.resolution_sla_minutes + ${paused}) * interval '1 minute'
           ELSE t.resolution_due_at END,
-        resolution_warn_at = CASE WHEN t.resolution_due_at IS NULL AND t.resolution_sla_minutes IS NOT NULL
+        resolution_warn_at = CASE WHEN ${healResolution}
           THEN t.created_at + ${paused} * interval '1 minute' + t.resolution_sla_minutes * interval '1 minute' * 0.8
           ELSE t.resolution_warn_at END
     FROM missing
@@ -118,6 +132,8 @@ async function healMissingDeadlines(): Promise<number> {
   `);
   const healed = extractRows<{ id: string }>(result).length;
   if (healed > 0) {
+    // Expected only in a deploy window. A steady stream means a writer that
+    // bypasses services/ticketSlaDeadlines.ts.
     console.warn(`[TicketSlaWorker] Healed stored SLA deadlines on ${healed} ticket(s) written without them`);
   }
   return healed;
@@ -168,7 +184,6 @@ async function stampBreaches(target: 'response' | 'resolution'): Promise<Breache
 }
 
 export async function sweepTicketSlaBreaches(): Promise<Array<BreachedTicketRow & { target: 'response' | 'resolution' }>> {
-  await healMissingDeadlines();
   const response = await stampBreaches('response');
   const resolution = await stampBreaches('resolution');
   if (response.length === MAX_BREACHES_PER_RUN || resolution.length === MAX_BREACHES_PER_RUN) {
@@ -212,6 +227,15 @@ function createWorker(): Worker<SlaSweepJobData> {
     QUEUE_NAME,
     async (job: Job<SlaSweepJobData>) => {
       if (job.data?.type === 'approval-expiry') return runApprovalExpiry();
+      // #8973 Gate B12: heal first, in its OWN system transaction. A failing
+      // heal (lock, timeout) must never stop breach stamping — in a shared
+      // transaction its error would abort the stamping passes too.
+      try {
+        await runWithSystemDbAccess(healMissingDeadlines);
+      } catch (err) {
+        console.error('[TicketSlaWorker] SLA deadline heal failed; stamping breaches anyway:', err);
+        captureException(err instanceof Error ? err : new Error(String(err)));
+      }
       try {
         // DB stamping inside the system context; notifications after it exits.
         const rows = await runWithSystemDbAccess(sweepTicketSlaBreaches);

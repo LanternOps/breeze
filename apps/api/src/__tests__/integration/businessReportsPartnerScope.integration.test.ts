@@ -160,6 +160,8 @@ type TicketSeed = {
   slaBreachedAt?: string | null;
   assignedTo?: string | null;
   pausedMinutes?: number;
+  /** #8973: a pre-W3-instance row with a target but no stored deadline. */
+  noStoredDeadline?: boolean;
 };
 
 /**
@@ -179,8 +181,8 @@ async function seedTicket(orgId: string, partnerId: string, o: TicketSeed): Prom
     VALUES (${id}, ${orgId}, ${partnerId}, ${`T-${id.slice(0, 12)}`}, 'seeded', 'open', 'high',
       ${o.workKind ?? 'support'}, ${o.createdAt}, ${o.firstResponseAt ?? null}, ${o.resolvedAt ?? null},
       ${o.responseSla ?? null}, ${o.resolutionSla ?? null}, ${paused}, ${paused},
-      ${o.createdAt}::timestamp + (${o.responseSla ?? null}::int + ${paused}::int) * interval '1 minute',
-      ${o.createdAt}::timestamp + (${o.resolutionSla ?? null}::int + ${paused}::int) * interval '1 minute',
+      CASE WHEN ${o.noStoredDeadline ?? false} THEN NULL ELSE ${o.createdAt}::timestamp + (${o.responseSla ?? null}::int + ${paused}::int) * interval '1 minute' END,
+      CASE WHEN ${o.noStoredDeadline ?? false} THEN NULL ELSE ${o.createdAt}::timestamp + (${o.resolutionSla ?? null}::int + ${paused}::int) * interval '1 minute' END,
       ${o.deletedAt ?? null}, ${o.slaBreachedAt ?? null}, ${o.assignedTo ?? null})`);
   return id;
 }
@@ -314,6 +316,23 @@ describe('ticket_sla_attainment — real Postgres (#3198 W02 Task 7)', () => {
     expect(s.rows.find((r) => r.createdAt === '2026-08-13T00:00:00.000Z')!.slaPausedMinutes).toBe(30);
     // The breach sorts first.
     expect(s.rows[0]!.createdAt).toBe('2026-08-11T00:00:00.000Z');
+  });
+
+  // #8973: a target whose stored deadline is not written yet (pre-W3 instance
+  // during a deploy) is judged against the wall-clock formula, never dropped.
+  runDb('a target with no stored deadline is still judged, against the wall-clock formula', async () => {
+    const f = await seedBusinessFixture();
+    const p = f.partner.id;
+    await seedTicket(f.orgA.id, p, { createdAt: '2026-08-10T00:00:00Z', firstResponseAt: '2026-08-10T00:50:00Z', responseSla: 60, noStoredDeadline: true });
+    await seedTicket(f.orgA.id, p, { createdAt: '2026-08-11T00:00:00Z', firstResponseAt: '2026-08-11T01:30:00Z', responseSla: 60, pausedMinutes: 20, noStoredDeadline: true });
+
+    const authority = await livePartnerAuthority(f);
+    const s = (await generateReport('ticket_sla_attainment', await livePartnerScope(f, authority),
+      { period: AUGUST, groupBy: 'organization' }, authority)).summary as TicketSlaSummary;
+
+    expect(s.overall).toMatchObject({ ticketsTotal: 2, noSlaTickets: 0, responseEligible: 2, responseMet: 1 });
+    const outcome = Object.fromEntries(s.rows.map((r) => [r.createdAt, r.responseOutcome]));
+    expect(outcome).toEqual({ '2026-08-10T00:00:00.000Z': 'met', '2026-08-11T00:00:00.000Z': 'missed' });
   });
 
   runDb('org scope sees only its own org, under an org-token RLS context', async () => {

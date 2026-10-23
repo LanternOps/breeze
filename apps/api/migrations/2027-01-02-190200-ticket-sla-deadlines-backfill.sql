@@ -11,6 +11,12 @@
 -- rounds identically and the at-risk set is reproduced to the microsecond.
 -- A NULL target leaves its due/warn columns NULL.
 --
+-- Answered and resolved tickets get the same lifetime-pause formula: their
+-- deadlines are NOT re-derived at the freeze point (that history is not
+-- stored), so a pre-W3 ticket keeps the deadline the old readers used. Only
+-- tickets answered after this release freeze the response deadline at the
+-- first response.
+--
 -- ONE-TIME PARTNER API FEED RE-DELIVERY (Gate B3, accepted): the
 -- breeze_tickets_partner_feed_xid BEFORE INSERT OR UPDATE trigger restamps
 -- partner_feed_xid on every row this file updates, so Partner API tickets-feed
@@ -18,9 +24,10 @@
 -- due/warn fields. The trigger is deliberately left enabled.
 --
 -- Shape (Gate B11): a procedure that UPDATEs at most `batch` rows per
--- iteration and COMMITs after each, so row locks are released per batch and an
--- interrupted run resumes where it stopped (the predicate only matches rows
--- still missing a value). autoMigrate sends each statement of a
+-- iteration and COMMITs after each, so row locks are released per batch. Rows
+-- are visited in primary-key order with a keyset cursor (last id), so each
+-- batch is an index range read and the whole run is O(rows), not a rescan of
+-- the table per batch. autoMigrate sends each statement of a
 -- `-- @no-transaction` file separately, so the CALL runs at top level, where
 -- PL/pgSQL transaction control is allowed. The procedure has no SET clause
 -- (a SET clause forbids COMMIT), so every name is schema-qualified.
@@ -31,42 +38,57 @@
 -- UPDATE. Without it each UPDATE would match zero rows and the loop would end
 -- with a truthful-looking total of 0.
 --
--- Idempotent: re-running matches only rows still missing a value. The
--- procedure is dropped at the end of the file.
+-- Resumable and idempotent: a row matches only while it is still missing a
+-- due value for a non-null target, or while its business minutes lag
+-- sla_paused_minutes (a null-target ticket with pause history). A matched row
+-- has all four deadline columns and its business minutes rewritten. An
+-- interrupted run, or a re-run, starts from the first id again and skips
+-- every row already done. The procedure is dropped at the end of the file.
 
 CREATE OR REPLACE PROCEDURE public.breeze_backfill_ticket_sla_deadlines(batch int)
 LANGUAGE plpgsql
 AS $$
 DECLARE
   n integer;
+  last_id uuid := '00000000-0000-0000-0000-000000000000';
+  next_id uuid;
   total bigint := 0;
 BEGIN
   LOOP
     PERFORM set_config('breeze.scope', 'system', true);
 
-    UPDATE public.tickets t
-       SET response_due_at = t.created_at
-             + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute',
-           response_warn_at = t.created_at
-             + COALESCE(t.sla_paused_minutes, 0) * interval '1 minute'
-             + t.response_sla_minutes * interval '1 minute' * 0.8,
-           resolution_due_at = t.created_at
-             + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute',
-           resolution_warn_at = t.created_at
-             + COALESCE(t.sla_paused_minutes, 0) * interval '1 minute'
-             + t.resolution_sla_minutes * interval '1 minute' * 0.8,
-           sla_paused_business_minutes = COALESCE(t.sla_paused_minutes, 0)
-     WHERE t.ctid IN (
-       SELECT s.ctid
-         FROM public.tickets s
-        WHERE (s.response_sla_minutes IS NOT NULL AND s.response_due_at IS NULL)
-           OR (s.resolution_sla_minutes IS NOT NULL AND s.resolution_due_at IS NULL)
-           OR (s.sla_paused_business_minutes = 0 AND COALESCE(s.sla_paused_minutes, 0) > 0)
-        LIMIT batch
-     );
+    WITH picked AS (
+      SELECT s.id
+        FROM public.tickets s
+       WHERE s.id > last_id
+         AND (   (s.response_sla_minutes IS NOT NULL AND s.response_due_at IS NULL)
+              OR (s.resolution_sla_minutes IS NOT NULL AND s.resolution_due_at IS NULL)
+              OR (s.sla_paused_business_minutes = 0 AND COALESCE(s.sla_paused_minutes, 0) > 0))
+       ORDER BY s.id
+       LIMIT batch
+    ), updated AS (
+      UPDATE public.tickets t
+         SET response_due_at = t.created_at
+               + (t.response_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute',
+             response_warn_at = t.created_at
+               + COALESCE(t.sla_paused_minutes, 0) * interval '1 minute'
+               + t.response_sla_minutes * interval '1 minute' * 0.8,
+             resolution_due_at = t.created_at
+               + (t.resolution_sla_minutes + COALESCE(t.sla_paused_minutes, 0)) * interval '1 minute',
+             resolution_warn_at = t.created_at
+               + COALESCE(t.sla_paused_minutes, 0) * interval '1 minute'
+               + t.resolution_sla_minutes * interval '1 minute' * 0.8,
+             sla_paused_business_minutes = COALESCE(t.sla_paused_minutes, 0)
+        FROM picked
+       WHERE t.id = picked.id
+      RETURNING t.id
+    )
+    SELECT count(*), (array_agg(updated.id ORDER BY updated.id DESC))[1]
+      INTO n, next_id
+      FROM updated;
 
-    GET DIAGNOSTICS n = ROW_COUNT;
     EXIT WHEN n = 0;
+    last_id := next_id;
     total := total + n;
     COMMIT;
     RAISE NOTICE 'ticket SLA deadline backfill: % rows so far', total;

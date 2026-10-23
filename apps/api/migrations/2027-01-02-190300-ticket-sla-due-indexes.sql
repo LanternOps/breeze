@@ -34,15 +34,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_resolution_due_idx
     AND resolved_at IS NULL
     AND resolution_due_at IS NOT NULL;
 
--- Gate B12 rolling-deploy heal: rows that have a target but no stored
--- deadline (written by a pre-W3 API instance during the deploy). Empty once
--- the backfill above has run, so the sweep's per-tick heal is one empty index
--- probe instead of a tickets scan. Predicate must match healMissingDeadlines()
--- in jobs/ticketSlaWorker.ts.
+-- Gate B12 rolling-deploy heal: rows a pre-W3 API instance wrote during the
+-- deploy — a target with no stored deadline (create, restamp), or a pause it
+-- folded into sla_paused_minutes only, leaving sla_paused_business_minutes
+-- (and so the stored deadline) behind. Empty once the backfill above has run,
+-- so the sweep's per-tick heal is one empty index probe instead of a tickets
+-- scan. Predicate must match healMissingDeadlines() in jobs/ticketSlaWorker.ts.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_deadlines_missing_idx
   ON public.tickets (created_at)
   WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
-     OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL);
+     OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+     OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0);
 
 DO $$
 DECLARE

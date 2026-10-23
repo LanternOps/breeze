@@ -13,14 +13,15 @@
  * (create, #6691 restamp, explicit override, pause end, first response,
  * reopen), and their output rides the SAME UPDATE statement as the write
  * itself, so a deadline is never written apart from the row change that
- * caused it. Every SLA reader (breach sweep, staff queue, report, portal,
- * web, Partner API) compares against the stored columns instead of
- * re-deriving them.
+ * caused it. The SLA readers (breach sweep, staff queue, report, portal,
+ * web) compare against the stored columns instead of re-deriving them; the
+ * Partner API exposes them.
  *
  * Freeze rule: once a target has an outcome its due/warn never move.
  *   response   — first_response_at set, or 'response' in sla_breach_reason
  *   resolution — resolved_at set, or 'resolution' in sla_breach_reason
- * Reopening clears resolved_at and so unfreezes resolution.
+ * Reopening clears resolved_at and so unfreezes resolution, unless a
+ * resolution breach was already stamped (one-shot rule).
  */
 import {
   addBusinessMinutes,
