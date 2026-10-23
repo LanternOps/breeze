@@ -1487,6 +1487,24 @@ describe('createSessionPreToolUse', () => {
       expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
     });
 
+    it('refuses a helper session call to a tool the helper scope does not cover, before PAM', async () => {
+      const session = makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: HELPER_DEVICE_ID,
+          user: { id: HELPER_DEVICE_ID, email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+      });
+
+      // query_devices has a core schema but is org-wide: no HELPER_TOOL_SCOPING entry.
+      const result = await createSessionPreToolUse(session)('query_devices', {});
+
+      expect(result).toEqual({ allowed: false, error: "Tool 'query_devices' is not available in the Helper context" });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
+      expect(checkGuardrails).not.toHaveBeenCalled();
+    });
+
     it('leaves a tool with no core input schema to its own handler (session-aware tools)', async () => {
       mockInsertReturning({ id: 'exec-m365' });
       mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-m365', actionName: 'm365_reset_password' }));
