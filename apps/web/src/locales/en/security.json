@@ -2400,6 +2400,51 @@
       "source": "YARA source",
       "sourceTooLarge": "The rule source is larger than 64 KB.",
       "checkedOnSave": "The set is checked with the same compiler devices use when you save. Rules with errors are not published."
+    },
+    "ioc": {
+      "help": {
+        "title": "How the importer works",
+        "format": "One IOC per line (# starts a comment), or a JSON array. Prefix a line with its kind, such as sha256: or domain:, to set the kind yourself.",
+        "exactMatch": "Exact match only: no wildcards or patterns.",
+        "contentNotTraffic": "Domains and IP addresses match text inside scanned files, not network traffic.",
+        "partialOverlap": "Importing the same IOCs again is detected. A batch that only partly overlaps an earlier import is not deduplicated."
+      },
+      "label": "Label",
+      "labelPlaceholder": "For example: Vendor advisory 2026-10",
+      "labelRequired": "Enter a label to preview the generated rules.",
+      "paste": "Paste IOCs",
+      "textTooLong": "The pasted text is larger than 256 KB. Split it into smaller imports.",
+      "skippedLines": "These lines are skipped:",
+      "lineError": "Line {{line}}: {{error}}",
+      "validCount": "{{valid}} of {{total}} IOCs ready to import",
+      "kind": "Kind",
+      "value": "Value",
+      "kinds": {
+        "md5": "MD5 hash",
+        "sha1": "SHA-1 hash",
+        "sha256": "SHA-256 hash",
+        "filename": "File name",
+        "filepath": "File path",
+        "domain": "Domain",
+        "ip": "IP address",
+        "string": "Text string"
+      },
+      "errors": {
+        "empty": "Empty value",
+        "unknown_kind": "Unknown kind",
+        "bad_hash": "Not a valid hash for this kind",
+        "too_short": "Text must be at least 4 bytes",
+        "too_long": "Too long",
+        "bad_path": "Not a valid path for this kind",
+        "bad_ip": "Not a valid IP address",
+        "bad_domain": "Not a valid domain",
+        "duplicate": "Duplicate of an earlier line"
+      },
+      "overCap": "At most {{max}} IOCs per import. Split the list into smaller imports.",
+      "hashNote": "Hash IOCs make devices hash every scanned file in full, so full scans take longer.",
+      "generateFailed": "Rules could not be generated from these IOCs.",
+      "generatedTitle": "Rules that will be saved: {{total}}",
+      "import": "Import {{total}} IOCs"
     }
   }
 }

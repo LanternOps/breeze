@@ -2400,6 +2400,51 @@
       "source": "Source YARA",
       "sourceTooLarge": "La source de la règle dépasse 64 Ko.",
       "checkedOnSave": "À l’enregistrement, l’ensemble est vérifié avec le même compilateur que les appareils. Les règles qui contiennent des erreurs ne sont pas publiées."
+    },
+    "ioc": {
+      "help": {
+        "title": "Fonctionnement de l’importation",
+        "format": "Un IOC par ligne (# commence un commentaire) ou un tableau JSON. Faites précéder une ligne de son type, comme sha256: ou domain:, pour choisir le type vous-même.",
+        "exactMatch": "Correspondance exacte seulement : aucun caractère générique ni motif.",
+        "contentNotTraffic": "Les domaines et adresses IP correspondent à du texte dans les fichiers balayés, pas au trafic réseau.",
+        "partialOverlap": "Une nouvelle importation des mêmes IOC est détectée. Un lot qui recoupe seulement en partie une importation précédente n’est pas dédoublonné."
+      },
+      "label": "Libellé",
+      "labelPlaceholder": "Par exemple : Avis du fournisseur 2026-10",
+      "labelRequired": "Saisissez un libellé pour prévisualiser les règles générées.",
+      "paste": "Coller des IOC",
+      "textTooLong": "Le texte collé dépasse 256 Ko. Divisez-le en plus petites importations.",
+      "skippedLines": "Ces lignes sont ignorées :",
+      "lineError": "Ligne {{line}} : {{error}}",
+      "validCount": "{{valid}} IOC sur {{total}} prêts à importer",
+      "kind": "Type",
+      "value": "Valeur",
+      "kinds": {
+        "md5": "Hachage MD5",
+        "sha1": "Hachage SHA-1",
+        "sha256": "Hachage SHA-256",
+        "filename": "Nom de fichier",
+        "filepath": "Chemin de fichier",
+        "domain": "Domaine",
+        "ip": "Adresse IP",
+        "string": "Chaîne de texte"
+      },
+      "errors": {
+        "empty": "Valeur vide",
+        "unknown_kind": "Type inconnu",
+        "bad_hash": "Hachage non valide pour ce type",
+        "too_short": "Le texte doit compter au moins 4 octets",
+        "too_long": "Trop long",
+        "bad_path": "Chemin non valide pour ce type",
+        "bad_ip": "Adresse IP non valide",
+        "bad_domain": "Domaine non valide",
+        "duplicate": "Doublon d’une ligne précédente"
+      },
+      "overCap": "Au plus {{max}} IOC par importation. Divisez la liste en plus petites importations.",
+      "hashNote": "Les IOC de hachage obligent les appareils à hacher chaque fichier balayé au complet, donc les balayages complets prennent plus de temps.",
+      "generateFailed": "Impossible de générer des règles à partir de ces IOC.",
+      "generatedTitle": "Règles qui seront enregistrées : {{total}}",
+      "import": "Importer {{total}} IOC"
     }
   }
 }

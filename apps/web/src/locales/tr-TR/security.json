@@ -2400,6 +2400,51 @@
       "source": "YARA kaynağı",
       "sourceTooLarge": "Kural kaynağı 64 KB'tan büyük.",
       "checkedOnSave": "Kaydettiğinizde küme, cihazların kullandığı derleyiciyle denetlenir. Hatalı kurallar yayımlanmaz."
+    },
+    "ioc": {
+      "help": {
+        "title": "İçe aktarıcı nasıl çalışır",
+        "format": "Her satıra bir IOC (# bir yorum başlatır) veya bir JSON dizisi. Türü kendiniz belirlemek için satırın başına sha256: veya domain: gibi türünü yazın.",
+        "exactMatch": "Yalnızca tam eşleşme: joker karakter veya desen yok.",
+        "contentNotTraffic": "Alan adları ve IP adresleri ağ trafiğiyle değil, taranan dosyaların içindeki metinle eşleşir.",
+        "partialOverlap": "Aynı IOC'lerin yeniden içe aktarılması algılanır. Önceki bir içe aktarmayla yalnızca kısmen örtüşen bir grup tekilleştirilmez."
+      },
+      "label": "Etiket",
+      "labelPlaceholder": "Örneğin: Üretici bülteni 2026-10",
+      "labelRequired": "Üretilen kuralları önizlemek için bir etiket girin.",
+      "paste": "IOC'leri yapıştırın",
+      "textTooLong": "Yapıştırılan metin 256 KB'tan büyük. Daha küçük içe aktarmalara bölün.",
+      "skippedLines": "Bu satırlar atlanıyor:",
+      "lineError": "Satır {{line}}: {{error}}",
+      "validCount": "{{total}} IOC'den {{valid}} tanesi içe aktarılmaya hazır",
+      "kind": "Tür",
+      "value": "Değer",
+      "kinds": {
+        "md5": "MD5 karması",
+        "sha1": "SHA-1 karması",
+        "sha256": "SHA-256 karması",
+        "filename": "Dosya adı",
+        "filepath": "Dosya yolu",
+        "domain": "Alan adı",
+        "ip": "IP adresi",
+        "string": "Metin dizesi"
+      },
+      "errors": {
+        "empty": "Boş değer",
+        "unknown_kind": "Bilinmeyen tür",
+        "bad_hash": "Bu tür için geçerli bir karma değil",
+        "too_short": "Metin en az 4 bayt olmalı",
+        "too_long": "Çok uzun",
+        "bad_path": "Bu tür için geçerli bir yol değil",
+        "bad_ip": "Geçerli bir IP adresi değil",
+        "bad_domain": "Geçerli bir alan adı değil",
+        "duplicate": "Önceki bir satırın yinelenmesi"
+      },
+      "overCap": "İçe aktarma başına en fazla {{max}} IOC. Listeyi daha küçük içe aktarmalara bölün.",
+      "hashNote": "Karma IOC'leri cihazların taranan her dosyanın tamamının karmasını almasına yol açar; bu nedenle tam taramalar daha uzun sürer.",
+      "generateFailed": "Bu IOC'lerden kural üretilemedi.",
+      "generatedTitle": "Kaydedilecek kurallar: {{total}}",
+      "import": "{{total}} IOC içe aktar"
     }
   }
 }

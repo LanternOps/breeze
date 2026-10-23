@@ -2400,6 +2400,51 @@
       "source": "Código fuente YARA",
       "sourceTooLarge": "El código fuente de la regla supera los 64 KB.",
       "checkedOnSave": "Al guardar, el conjunto se verifica con el mismo compilador que usan los dispositivos. Las reglas con errores no se publican."
+    },
+    "ioc": {
+      "help": {
+        "title": "Cómo funciona el importador",
+        "format": "Un IOC por línea (# inicia un comentario) o un arreglo JSON. Anteponga el tipo a una línea, como sha256: o domain:, para fijar el tipo usted mismo.",
+        "exactMatch": "Solo coincidencia exacta: sin comodines ni patrones.",
+        "contentNotTraffic": "Los dominios y las direcciones IP coinciden con texto dentro de los archivos escaneados, no con el tráfico de red.",
+        "partialOverlap": "Se detecta cuando vuelve a importar los mismos IOC. Un lote que solo coincide en parte con una importación anterior no se deduplica."
+      },
+      "label": "Etiqueta",
+      "labelPlaceholder": "Por ejemplo: Aviso del proveedor 2026-10",
+      "labelRequired": "Ingrese una etiqueta para ver la vista previa de las reglas generadas.",
+      "paste": "Pegar IOC",
+      "textTooLong": "El texto pegado supera los 256 KB. Divídalo en importaciones más pequeñas.",
+      "skippedLines": "Estas líneas se omiten:",
+      "lineError": "Línea {{line}}: {{error}}",
+      "validCount": "{{valid}} de {{total}} IOC listos para importar",
+      "kind": "Tipo",
+      "value": "Valor",
+      "kinds": {
+        "md5": "Hash MD5",
+        "sha1": "Hash SHA-1",
+        "sha256": "Hash SHA-256",
+        "filename": "Nombre de archivo",
+        "filepath": "Ruta de archivo",
+        "domain": "Dominio",
+        "ip": "Dirección IP",
+        "string": "Cadena de texto"
+      },
+      "errors": {
+        "empty": "Valor vacío",
+        "unknown_kind": "Tipo desconocido",
+        "bad_hash": "No es un hash válido para este tipo",
+        "too_short": "El texto debe tener al menos 4 bytes",
+        "too_long": "Demasiado largo",
+        "bad_path": "No es una ruta válida para este tipo",
+        "bad_ip": "No es una dirección IP válida",
+        "bad_domain": "No es un dominio válido",
+        "duplicate": "Duplicado de una línea anterior"
+      },
+      "overCap": "Como máximo {{max}} IOC por importación. Divida la lista en importaciones más pequeñas.",
+      "hashNote": "Los IOC de hash hacen que los dispositivos calculen el hash completo de cada archivo escaneado, así que los escaneos completos tardan más.",
+      "generateFailed": "No se pudieron generar reglas a partir de estos IOC.",
+      "generatedTitle": "Reglas que se guardarán: {{total}}",
+      "import": "Importar {{total}} IOC"
     }
   }
 }

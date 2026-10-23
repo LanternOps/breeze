@@ -11,6 +11,7 @@ import { showToast } from "../../shared/Toast";
 import { RuleSetBadges, useOwnerLabel } from "./RuleSetList";
 import RuleSetRules from "./RuleSetRules";
 import RuleEditorDialog from "./RuleEditorDialog";
+import IocImportPanel from "./IocImportPanel";
 import {
   describePublishOutcome,
   formatPublishOutcome,
@@ -374,6 +375,16 @@ export default function RuleSetEditor({
             onDelete={(rule) => setConfirm({ kind: "rule", rule })}
           />
         </div>
+      )}
+
+      {tab === "import" && !readOnly && (
+        <IocImportPanel
+          set={set}
+          onImported={(body) => {
+            onTabChange("rules");
+            void afterRuleMutation(body, set);
+          }}
+        />
       )}
 
       {dialogRule !== undefined && (

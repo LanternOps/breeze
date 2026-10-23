@@ -2400,6 +2400,51 @@
       "source": "YARA-Quelltext",
       "sourceTooLarge": "Der Regelquelltext ist größer als 64 KB.",
       "checkedOnSave": "Beim Speichern wird der Satz mit demselben Compiler geprüft, den die Geräte verwenden. Fehlerhafte Regeln werden nicht veröffentlicht."
+    },
+    "ioc": {
+      "help": {
+        "title": "So funktioniert der Import",
+        "format": "Ein IOC pro Zeile (# leitet einen Kommentar ein) oder ein JSON-Array. Stellen Sie einer Zeile ihre Art voran, etwa sha256: oder domain:, um die Art selbst festzulegen.",
+        "exactMatch": "Nur exakte Übereinstimmung: keine Platzhalter oder Muster.",
+        "contentNotTraffic": "Domains und IP-Adressen werden mit Text in gescannten Dateien abgeglichen, nicht mit Netzwerkverkehr.",
+        "partialOverlap": "Ein erneuter Import derselben IOCs wird erkannt. Ein Stapel, der sich nur teilweise mit einem früheren Import überschneidet, wird nicht dedupliziert."
+      },
+      "label": "Bezeichnung",
+      "labelPlaceholder": "Zum Beispiel: Herstellerhinweis 2026-10",
+      "labelRequired": "Geben Sie eine Bezeichnung ein, um die erzeugten Regeln in der Vorschau zu sehen.",
+      "paste": "IOCs einfügen",
+      "textTooLong": "Der eingefügte Text ist größer als 256 KB. Teilen Sie ihn auf mehrere Importe auf.",
+      "skippedLines": "Diese Zeilen werden übersprungen:",
+      "lineError": "Zeile {{line}}: {{error}}",
+      "validCount": "{{valid}} von {{total}} IOCs bereit zum Import",
+      "kind": "Art",
+      "value": "Wert",
+      "kinds": {
+        "md5": "MD5-Hash",
+        "sha1": "SHA-1-Hash",
+        "sha256": "SHA-256-Hash",
+        "filename": "Dateiname",
+        "filepath": "Dateipfad",
+        "domain": "Domäne",
+        "ip": "IP-Adresse",
+        "string": "Textzeichenfolge"
+      },
+      "errors": {
+        "empty": "Leerer Wert",
+        "unknown_kind": "Unbekannte Art",
+        "bad_hash": "Kein gültiger Hash für diese Art",
+        "too_short": "Text muss mindestens 4 Byte lang sein",
+        "too_long": "Zu lang",
+        "bad_path": "Kein gültiger Pfad für diese Art",
+        "bad_ip": "Keine gültige IP-Adresse",
+        "bad_domain": "Keine gültige Domäne",
+        "duplicate": "Duplikat einer früheren Zeile"
+      },
+      "overCap": "Höchstens {{max}} IOCs pro Import. Teilen Sie die Liste auf mehrere Importe auf.",
+      "hashNote": "Hash-IOCs lassen Geräte jede gescannte Datei vollständig hashen, daher dauern vollständige Scans länger.",
+      "generateFailed": "Aus diesen IOCs konnten keine Regeln erzeugt werden.",
+      "generatedTitle": "Regeln, die gespeichert werden: {{total}}",
+      "import": "{{total}} IOCs importieren"
     }
   }
 }
