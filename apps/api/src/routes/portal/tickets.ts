@@ -40,6 +40,7 @@ import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
 import { lockTicketForWrite } from '../../services/ticketRowLock';
+import { isMergedTombstone } from '../../services/ticketMerge/errors';
 
 export const ticketRoutes = new Hono();
 
@@ -491,6 +492,10 @@ ticketRoutes.post(
     const locked = await lockTicketForWrite(db, ticket.id);
     if (!locked || locked.orgId !== auth.user.orgId || locked.deletedAt) {
       return c.json({ error: 'Ticket not found' }, 404);
+    }
+    // #8972 W1: a merged tombstone is read-only; the reply belongs on the survivor.
+    if (isMergedTombstone(locked)) {
+      return c.json({ error: 'This request was merged into another ticket', code: 'TICKET_MERGED' }, 409);
     }
 
     const [comment] = await db

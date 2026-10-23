@@ -1113,6 +1113,31 @@ describe('POST /tickets/:id/status', () => {
   });
 });
 
+describe('POST /tickets/:id/status — merged tombstone (#8972 W1)', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('handleServiceError maps TicketMergedError to 409 { error, code: TICKET_MERGED, details: { mergedIntoTicketId } }', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    const { TicketMergedError } = await import('../../services/ticketMerge/errors');
+    serviceMocks.changeTicketStatus.mockRejectedValue(new TicketMergedError(TICKET_ID, 'surv-1'));
+    // The production app.onError rebuilds an HTTPException's body WITHOUT
+    // `details`, so the route itself must map it: an app whose onError answers
+    // 500 proves the 409 + survivor id come from handleServiceError.
+    const app = makeApp();
+    app.onError((_err, c) => c.json({ error: 'unmapped' }, 500));
+
+    const res = await app.request(`/tickets/${TICKET_ID}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'pending' })
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: expect.any(String), code: 'TICKET_MERGED', details: { mergedIntoTicketId: 'surv-1' },
+    });
+  });
+});
+
 describe('POST /tickets/:id/assign', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 

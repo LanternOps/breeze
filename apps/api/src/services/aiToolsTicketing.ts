@@ -79,6 +79,8 @@ import {
 } from './ticketChecklistTemplateService';
 import { PartnerWideWriteDeniedError, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { listWorkTypes } from './workTypeService';
+import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged } from './ticketMerge/errors';
 import {
   addTicketLink,
   findTicketIdByNumber,
@@ -1428,6 +1430,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               ))
               .limit(1)
               .for('update');
+            // #8972 W1: the ticket row after the draft (#3778 order: drafts
+            // are pre-ticket children), so no draft lands on a merged tombstone.
+            assertTicketNotMerged(await lockTicketForWrite(tx, ticketId));
 
             const newDraftId = crypto.randomUUID();
 

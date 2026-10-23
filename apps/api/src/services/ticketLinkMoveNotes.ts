@@ -5,6 +5,7 @@ import { ticketComments, tickets } from '../db/schema';
 import { emitTicketEvent } from './ticketEvents';
 import { captureException } from './sentry';
 import { lockTicketForWrite } from './ticketRowLock';
+import { isMergedTombstone } from './ticketMerge/errors';
 
 /**
  * A `ticket_links` row an org mover deleted (#7900 W02), as returned by its
@@ -131,7 +132,8 @@ export async function noteTicketLinksRemovedByOrgMove(removed: readonly RemovedT
       try {
         await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
           // #8972 W0: the ticket row lock, then the note, in this note's own transaction.
-          await lockTicketForWrite(db, note.ticketId);
+          // #8972 W1: a merged tombstone gets no note (it keeps no links).
+          if (isMergedTombstone(await lockTicketForWrite(db, note.ticketId))) return;
           return db.insert(ticketComments).values({
             ticketId: note.ticketId,
             userId: null,

@@ -19,7 +19,8 @@ import { assertNoHourBlockDrawnTime } from './ticketMoveHourBlockGuard';
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type RemovedTicketLink } from './ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from './ticketLinkLock';
-import { lockTicketForWrite } from './ticketRowLock';
+import { lockTicketForWrite, lockTicketsForWrite } from './ticketRowLock';
+import { assertTicketNotMerged, isMergedTombstone } from './ticketMerge/errors';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
@@ -326,6 +327,8 @@ async function getTicketOrThrow(ticketId: string) {
 async function lockTicketOrThrow(ticketId: string, exec: Pick<typeof db, 'select'> = db) {
   const locked = await lockTicketForWrite(exec, ticketId);
   if (!locked) throw new TicketServiceError('Ticket not found', 404);
+  // #8972 W1: a tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(locked);
   return locked;
 }
 
@@ -453,6 +456,30 @@ export async function writeTicketCommentedOutbox(input: {
 }
 
 /**
+ * #8972 W1 (Gate B6): lock the ticket a caller-verification note goes to — the
+ * snapshotted ticket, or its survivor when it has been merged. A tombstone and
+ * its survivor are locked TOGETHER in one ascending batch (the order a merge
+ * uses for the same pair), never tombstone-then-survivor, so this cannot cycle
+ * with a merge of the survivor that also locks every ticket merged into it.
+ * The tombstone's pointer is read unlocked first; if it moved before the lock
+ * (the survivor was itself merged: path compression), read and lock again.
+ */
+async function lockCallerVerificationTarget(ticketId: string) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [peek] = await db.select({ mergedIntoTicketId: tickets.mergedIntoTicketId })
+      .from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+    if (!peek) return null;
+    const locked = await lockTicketsForWrite(db, [ticketId, peek.mergedIntoTicketId]);
+    const original = locked.get(ticketId);
+    if (!original) return null;
+    if (!original.mergedIntoTicketId) return original;
+    const survivor = locked.get(original.mergedIntoTicketId);
+    if (survivor) return survivor;
+  }
+  return null;
+}
+
+/**
  * Caller verification (#6354): a system comment on the ticket the
  * verification snapshotted, written in the CALLER's transaction after a
  * successful status CAS (that CAS is the idempotency boundary — a retry that
@@ -465,7 +492,10 @@ export async function addCallerVerificationSystemComment(input: {
   orgId: string; ticketId: string; verificationId: string; event: string;
 }): Promise<void> {
   // #8972 W0: the ticket row lock IS the read (ticket first, then the comment).
-  const locked = await lockTicketForWrite(db, input.ticketId);
+  // #8972 W1 (Gate B6): `caller_verifications.ticket_ref` stays on a merged
+  // tombstone as history, but the note goes to its SURVIVOR and this never
+  // throws TICKET_MERGED (a merge must never roll back a security decision).
+  const locked = await lockCallerVerificationTarget(input.ticketId);
   const ticket = locked && locked.orgId === input.orgId ? locked : null;
   if (!ticket) {
     // Deleted, moved out of the org, or invisible in this RLS context. The
@@ -615,7 +645,12 @@ export async function revalidateTicketAssignee(
   }, partnerId, ticket.orgId, ticket.deviceId, { bypassCache: true })) return ticket;
 
   // #8972 W0: ticket first. Movers already hold it (a no-op re-lock).
-  await lockTicketOrThrow(ticketId, connection);
+  const lockedRow = await lockTicketForWrite(connection, ticketId);
+  if (!lockedRow) throw new TicketServiceError('Ticket not found', 404);
+  // #8972 W1: a tombstone keeps its assignee as history. The movers carry
+  // tombstones with their survivor and revalidate each; skip rather than fail
+  // the move (a tombstone is never worked, so its assignee grants nothing).
+  if (isMergedTombstone(lockedRow)) return ticket;
   const [updated] = await connection.update(tickets)
     .set({ assignedTo: null, updatedAt: new Date() })
     .where(and(
@@ -2504,7 +2539,10 @@ export async function addTicketComment(
   // locked row (not a stale pre-read) and the comment insert never waits on
   // the ticket while holding anything (services/ticketRowLock.ts).
   const { ticket, comment, firstResponseStamped, attachments } = await db.transaction(async (tx) => {
-    if (!(await lockTicketForWrite(tx, ticketId))) throw new TicketServiceError('Ticket not found', 404);
+    const lockedRow = await lockTicketForWrite(tx, ticketId);
+    if (!lockedRow) throw new TicketServiceError('Ticket not found', 404);
+    // #8972 W1: a tombstone is read-only, checked under the lock.
+    assertTicketNotMerged(lockedRow);
     const ticket = await getTicketOrThrow(ticketId);
     if (importMode) assertImportWrite(importMode, actor, ticket);
     // The claim below matches on uploaded_by_user_id; a machine principal has
@@ -3018,6 +3056,9 @@ export async function applyAiFieldUpdates(
     setClause.fieldProvenance = sql.join([sql`${tickets.fieldProvenance}`, ...provenanceParts], sql` || `);
   }
 
+  // #8972 W1: the ticket row lock (the UPDATE below would take it anyway) so
+  // the tombstone guard runs under it: an AI never edits a merged ticket.
+  await lockTicketOrThrow(ticketId);
   const [after] = await db
     .update(tickets)
     .set(setClause)
@@ -3186,6 +3227,11 @@ export async function sendTicketDraft(
   if (draft.state !== 'active') {
     throw new TicketServiceError('Draft is no longer active', 409);
   }
+  // #8972 W1: the ticket row after the draft (a pre-ticket child in the #3778
+  // order), so the tombstone guard runs under the lock a merge also takes.
+  // A merge deletes the source's drafts first, so this only trips on a draft
+  // written after the merge's draft read; it must still never post there.
+  await lockTicketOrThrow(ticketId);
 
   const body = content && content.trim().length > 0 ? content : draft.content;
 
@@ -3262,15 +3308,19 @@ export async function sendTicketDraft(
  * enforces the transition against a concurrent racer.
  */
 export async function discardTicketDraft(ticketId: string, draftId: string): Promise<{ id: string }> {
+  // #8972 W1: the draft is locked FIRST (a pre-ticket child, #3778 order),
+  // then the ticket row for the tombstone guard, then the CAS below.
   const [draft] = await db
     .select({ id: ticketDrafts.id, state: ticketDrafts.state })
     .from(ticketDrafts)
     .where(and(eq(ticketDrafts.id, draftId), eq(ticketDrafts.ticketId, ticketId)))
-    .limit(1);
+    .limit(1)
+    .for('update');
   if (!draft) throw new TicketServiceError('Draft not found', 404);
   if (draft.state !== 'active') {
     throw new TicketServiceError('Draft is no longer active', 409);
   }
+  await lockTicketOrThrow(ticketId);
 
   const updated = await db
     .update(ticketDrafts)
@@ -3471,7 +3521,10 @@ async function lockCommentForWrite(
   actor: TicketActor,
   canManageAny: boolean
 ) {
-  if (!(await lockTicketForWrite(tx, ticketId))) throw new TicketServiceError('Ticket not found', 404);
+  const lockedTicket = await lockTicketForWrite(tx, ticketId);
+  if (!lockedTicket) throw new TicketServiceError('Ticket not found', 404);
+  // #8972 W1: a tombstone's comments (the merge's own notes) are read-only.
+  assertTicketNotMerged(lockedTicket);
   const [locked] = await tx
     .select()
     .from(ticketComments)
@@ -3618,6 +3671,8 @@ export async function restoreTicket(ticketId: string, actor: TicketActor): Promi
   humanUserId(actor, 'Restoring a ticket');
   const ticket = await getTicketOrThrow(ticketId);
   if (!ticket.deletedAt) throw new TicketServiceError('Ticket is not deleted', 409);
+  // #8972 W1: a tombstone cannot be restored (spec §3.2); checked under the lock.
+  await lockTicketOrThrow(ticketId);
 
   const [updated] = await db
     .update(tickets)
@@ -3769,6 +3824,10 @@ export async function moveTicketOrg(
     .limit(1);
   const snapshot = snapshots[0];
   if (!snapshot) throw new TicketServiceError('Ticket not found', 404);
+  // #8972 W1 (spec §3.9): a tombstone moves only with its survivor. A merge
+  // committing after this read changes the row content, so the CAS UPDATE
+  // below refuses it too; the guard after that UPDATE says which.
+  assertTicketNotMerged(snapshot);
   const rowVersion = snapshot.rowVersion;
   // Keep the service's historical no-op contract: callers receive the exact
   // ticket object produced by Drizzle.  The content hash is an internal CAS
@@ -4067,6 +4126,7 @@ export async function moveTicketOrg(
     if (!row) {
       throw new TicketServiceError('Ticket changed while the organization move was in progress', 409);
     }
+    assertTicketNotMerged(row);
     updated = await revalidateTicketAssignee(ticketId, actor, tx, row);
     // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every

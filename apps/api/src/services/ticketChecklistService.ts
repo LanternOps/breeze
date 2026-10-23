@@ -13,6 +13,7 @@ import type {
   ChecklistItemSource,
 } from '@breeze/shared';
 import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged } from './ticketMerge/errors';
 
 /** `db` or a transaction handle, so the W03 sweep can seed inside its own tx. */
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -180,7 +181,10 @@ async function lockItemTicket(itemId: string): Promise<boolean> {
     .where(eq(ticketChecklistItems.id, itemId))
     .limit(1)) as Array<{ ticketId: string }>;
   if (!peek) return false;
-  return (await lockTicketForWrite(db, peek.ticketId)) !== null;
+  const locked = await lockTicketForWrite(db, peek.ticketId);
+  // #8972 W1: a merged tombstone's checklist is read-only.
+  assertTicketNotMerged(locked);
+  return locked !== null;
 }
 
 export async function addChecklistItem(
@@ -192,7 +196,7 @@ export async function addChecklistItem(
   // #8972 W0: ticket first (it also serializes the MAX(position) read below).
   // The caller authorized `ticket`; one this context cannot lock is written
   // exactly as before.
-  await lockTicketForWrite(exec, ticket.id);
+  assertTicketNotMerged(await lockTicketForWrite(exec, ticket.id));
   const [agg] = (await exec
     .select({ maxPosition: sql<number | null>`MAX(${ticketChecklistItems.position})` })
     .from(ticketChecklistItems)
@@ -325,7 +329,7 @@ export async function reorderChecklist(
   itemIds: string[],
 ): Promise<ChecklistSummary> {
   // #8972 W0: ticket first; the same-set check below then reads under it.
-  await lockTicketForWrite(db, ticketId);
+  assertTicketNotMerged(await lockTicketForWrite(db, ticketId));
   const current = (await db
     .select({ id: ticketChecklistItems.id })
     .from(ticketChecklistItems)

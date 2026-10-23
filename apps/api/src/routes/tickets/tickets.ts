@@ -23,6 +23,7 @@ import {
   softDeleteTicket, restoreTicket,
   TicketServiceError
 } from '../../services/ticketService';
+import { ticketMergedResponse } from '../../services/ticketMerge/errors';
 import {
   evaluateTicketTriage,
   getTicketTriageSuggestion,
@@ -94,6 +95,9 @@ export function actorFrom(c: { get: (k: 'auth') => AuthContext }): Extract<Ticke
 }
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // #8972 W1: a write reached a merged tombstone → 409 with the survivor id.
+  const merged = ticketMergedResponse(c, err);
+  if (merged) return merged;
   if (err instanceof TicketServiceError) {
     // `code` is optional on the error; include it when present so callers can
     // branch on a stable token instead of the message (W08 #3902 relies on
