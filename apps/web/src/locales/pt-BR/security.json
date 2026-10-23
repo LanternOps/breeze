@@ -466,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Uma nova senha de recuperação do BitLocker será gerada e colocada em custódia; a antiga será removida depois que a nova chave estiver ativa.",
+    "accessRevealed": "revelou a chave",
     "bitlocker": "BitLocker",
     "cancel": "Cancelar",
     "collectNow": "Coletar agora",
@@ -491,6 +492,7 @@
     "rotate": "Girar",
     "rotateKey": "Girar chave",
     "rotateRecoveryKey": "Girar chave de recuperação",
+    "rotateVolume": "Volume a rotacionar",
     "thisAccessHasBeenRecordedInThe": "Este acesso foi registrado na trilha de auditoria."
   },
   "securityS1ThreatList": {

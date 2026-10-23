@@ -25,7 +25,7 @@ import {
   toGroupFinding,
   type FleetFindingRow,
 } from '../services/vulnerabilityFleetAggregation';
-import { fetchCveCatalogRecord, fetchFleetFindingRows } from '../services/vulnerabilityFleetQueries';
+import { fetchCveCatalogRecord, fetchFleetFindingRows, resolveReadyFindingIds } from '../services/vulnerabilityFleetQueries';
 import {
   aggregateFleetStats,
   getSoftwareGroupDetail,
@@ -519,7 +519,10 @@ type FleetRow = {
   epssScore: number | null;
   riskScore: number | null;
   deviceCount: number;
+  /** Vendor fix published (global catalog flag) — NOT "Ready". */
   patchAvailable: boolean;
+  /** Distinct devices whose open finding for this CVE is Ready (#9533). */
+  patchReadyDeviceCount: number;
   statuses: string[];
 };
 
@@ -529,10 +532,16 @@ type FleetRow = {
  * we take the max riskScore across devices to be safe. Sort: riskScore DESC,
  * knownExploited (true first), epssScore DESC, cvssScore DESC — all nulls last.
  */
-function aggregateFleet(items: MergedItem[]): FleetRow[] {
+function aggregateFleet(items: MergedItem[], readyIds: ReadonlySet<string>): FleetRow[] {
   const byVuln = new Map<string, FleetRow>();
   const statusesByVuln = new Map<string, Set<string>>();
+  const readyDevicesByVuln = new Map<string, Set<string>>();
   for (const item of items) {
+    if (readyIds.has(item.id)) {
+      const devicesReady = readyDevicesByVuln.get(item.vulnerabilityId) ?? new Set<string>();
+      devicesReady.add(item.deviceId);
+      readyDevicesByVuln.set(item.vulnerabilityId, devicesReady);
+    }
     const statuses = statusesByVuln.get(item.vulnerabilityId);
     if (statuses) {
       statuses.add(item.status);
@@ -558,6 +567,7 @@ function aggregateFleet(items: MergedItem[]): FleetRow[] {
       riskScore: item.riskScore,
       deviceCount: 1,
       patchAvailable: item.patchAvailable,
+      patchReadyDeviceCount: 0,
       statuses: [],
     });
   }
@@ -565,6 +575,7 @@ function aggregateFleet(items: MergedItem[]): FleetRow[] {
   for (const row of byVuln.values()) {
     const statuses = statusesByVuln.get(row.id);
     row.statuses = statuses ? [...statuses].sort() : [];
+    row.patchReadyDeviceCount = readyDevicesByVuln.get(row.id)?.size ?? 0;
   }
 
   return Array.from(byVuln.values()).sort((a, b) => {
@@ -616,7 +627,15 @@ vulnerabilityRoutes.get('/', zValidator('query', fleetListQuerySchema), async (c
     ...query,
     allowedSiteIds: perms?.allowedSiteIds,
   });
-  const rows = aggregateFleet(items);
+  // "Ready" means what it means on the By-software column and the "Patch
+  // ready" tile: Remediate's resolver finds a pending, partner-approved patch
+  // (#7499). The catalog flag alone is vendor-level, and showing it as Ready
+  // gave this lens a third answer to "is there a patch?" (#9533).
+  const readyIds = await resolveReadyFindingIds(items);
+  let rows = aggregateFleet(items, readyIds);
+  // The patch-ready filter (the tile's preset) narrows to CVEs with a Ready
+  // finding; readCatalogRows' catalog-flag condition is only a pre-filter.
+  if (query.patchAvailable) rows = rows.filter((r) => r.patchReadyDeviceCount > 0);
   return c.json({
     items: rows.slice(0, FLEET_CVE_CAP),
     hasMore: rows.length > FLEET_CVE_CAP,

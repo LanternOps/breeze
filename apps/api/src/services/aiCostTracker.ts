@@ -6,14 +6,15 @@
  * priced and written by aiModels/settleInvocation.ts (W03 #7601).
  */
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
 import { aiAgentRuns } from '../db/schema/aiAgents';
-import { eq, and, sql, desc, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and, sql, desc, isNotNull, isNull, inArray } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import { captureException, captureMessage } from './sentry';
+import { computeDebitKeySql, deliverCreditDebit, insertCreditDebitIntent } from './aiCreditDebitOutbox';
 import { captureAtMostHourly } from './llm/platformKeyAlert';
 import { evaluateAiBudgetThresholds } from './aiBudgetAlerts';
 import { getCatalogEntryName } from './llmProviderCatalog';
@@ -304,177 +305,9 @@ export async function checkBillingCreditsDetailed(
   return null;
 }
 
-/**
- * Outcome of a KEYED credit debit (W03 #7601 Step 8a; billing-service #25).
- * - `debited`: the billing service holds exactly one debit for the key
- *   (`replayed` = this call found the earlier one).
- * - `retryable`: not confirmed (5xx, 408/429, transport). Retry under the SAME
- *   key — the service dedupes, so a lost response cannot double-charge.
- * - `rejected`: a 4xx (or no partner to bill). The same key can never succeed,
- *   so retrying is pointless; the caller records it for an operator.
- * - `not_configured`: no billing service on this deployment (self-hosted).
- * `code` is short and bounded (`http_<status>[:<error code>]`, `transport`,
- * `org_partner_missing`); it never carries the response message or params.
- */
-export type CreditDebitResult =
-  | { kind: 'debited'; replayed: boolean }
-  | { kind: 'retryable'; status: number | null; code: string }
-  | { kind: 'rejected'; status: number | null; code: string }
-  | { kind: 'not_configured' };
-
-const CREDIT_DEBIT_TIMEOUT_MS = 15_000;
-const BILLING_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
-
-export function isBillingServiceConfigured(): boolean {
-  return Boolean(process.env.BILLING_SERVICE_URL && process.env.BILLING_SERVICE_API_KEY);
-}
-
-async function billingErrorCode(res: Response): Promise<string | null> {
-  try {
-    const body = await res.json() as { error?: unknown } | null;
-    return typeof body?.error === 'string' && BILLING_ERROR_CODE.test(body.error) ? body.error : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Debit platform credits under an idempotency key. Never throws for a billing
- * outcome (only for a caller bug: empty key, bad amount), and reports nothing
- * to Sentry itself: the caller owns the durable state and the event.
- *
- * The key travels as BOTH the `idempotencyKey` body field and the
- * `Idempotency-Key` header. The body field name is load-bearing: the billing
- * service's schema strips unknown fields, so a misspelling would silently turn
- * this into an unkeyed debit (pinned by aiCostTracker.test.ts).
- */
-export async function debitBillingCredits(
-  orgId: string,
-  costCents: number,
-  opts: { idempotencyKey: string },
-): Promise<CreditDebitResult> {
-  const key = opts.idempotencyKey;
-  if (typeof key !== 'string' || key.trim().length === 0 || key.length > 255) {
-    throw new Error('debitBillingCredits: idempotencyKey must be 1-255 characters');
-  }
-  if (!Number.isFinite(costCents) || costCents < 0) {
-    throw new Error('debitBillingCredits: costCents must be a finite non-negative amount');
-  }
-  const billingUrl = process.env.BILLING_SERVICE_URL;
-  const billingKey = process.env.BILLING_SERVICE_API_KEY;
-  if (!billingUrl || !billingKey) return { kind: 'not_configured' };
-
-  // Lookup only inside a context; the fetch stays outside it (#1105).
-  const [org] = await withSystemDbAccessContext(() => db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1));
-  if (!org?.partnerId) return { kind: 'rejected', status: null, code: 'org_partner_missing' };
-
-  let res: Response;
-  try {
-    res = await fetch(`${billingUrl}/billing/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${billingKey}`,
-        'Content-Type': 'application/json',
-        'Idempotency-Key': key,
-      },
-      body: JSON.stringify({ costCents, idempotencyKey: key }),
-      signal: AbortSignal.timeout(CREDIT_DEBIT_TIMEOUT_MS),
-    });
-  } catch {
-    return { kind: 'retryable', status: null, code: 'transport' };
-  }
-  if (res.ok) return { kind: 'debited', replayed: res.headers.get('Idempotent-Replayed') === 'true' };
-  const errorCode = await billingErrorCode(res);
-  const code = errorCode ? `http_${res.status}:${errorCode}` : `http_${res.status}`;
-  // 408/429 mean "try again later" by definition; every other 4xx is a request
-  // the same key can never make succeed (bad input, key reused with another
-  // amount, auth). 5xx = not confirmed, safe to retry under the same key.
-  const retryable = res.status >= 500 || res.status === 408 || res.status === 429;
-  return retryable
-    ? { kind: 'retryable', status: res.status, code }
-    : { kind: 'rejected', status: res.status, code };
-}
-
-/**
- * Draw platform-funded spend down from the org's prepaid AI credit balance.
- *
- * UNKEYED legacy debit, kept for its one remaining caller: compute
- * settlement (settleComputeCents). Token spend uses the keyed
- * debitBillingCredits via settleInvocation (W06 deleted the env-only
- * OpenAI-compatible chat path, its other caller). Only ever call this for
- * `billingSource === 'platform'`: partner BYOK spend is billed by Anthropic to
- * the partner, not against our credits.
- */
-export async function deductBillingCredits(orgId: string, costCents: number): Promise<void> {
-  const billingUrl = process.env.BILLING_SERVICE_URL;
-  const billingKey = process.env.BILLING_SERVICE_API_KEY;
-  if (!billingUrl || !billingKey) return;
-
-  // Self-contexted (#2190), and deliberately only around the LOOKUP: the
-  // wrapper reuses an ambient request context, so the in-request chat callers
-  // are unchanged, while a contextless caller (compute settlement from a
-  // headless run) gets a context instead of an RLS-filtered
-  // zero-row read that would silently skip every deduction. The fetch below
-  // stays outside it — a pooled connection must never be held across a network
-  // call (#1105).
-  const [org] = await withSystemDbAccessContext(() => db
-    .select({ partnerId: organizations.partnerId })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1));
-
-  // NOT NULL column (see checkBillingCreditsDetailed): falsy means no org row
-  // came back, so this spend is about to go unbilled with nothing said.
-  if (!org?.partnerId) {
-    reportBillingIssueAtMostHourly(`deduct-no-partner:${orgId}`, () => {
-      captureMessage('AI credit deduction skipped: no organization row to bill', {
-        eventCode: 'ai_billing_org_partner_missing',
-        tags: { org_id: orgId, ai_billing_http_status: 'none' },
-      });
-    });
-    return;
-  }
-
-  try {
-    const res = await fetch(`${billingUrl}/billing/api/internal/partners/${org.partnerId}/ai-credits/deduct`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${billingKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ costCents }),
-    });
-
-    // The status was previously discarded entirely: a 4xx/5xx from the billing
-    // service dropped this platform-funded spend on the floor with no log line
-    // and no event, so the credit balance both budget gates read silently
-    // drifted above what was actually consumed. Still non-throwing — usage is
-    // already recorded and the caller's AI response must not fail over billing.
-    if (!res.ok) {
-      console.error(
-        `[AI] Billing credit deduction returned HTTP ${res.status} for org=${orgId}, cost=${costCents} cents — spend not deducted`,
-      );
-      reportBillingIssueAtMostHourly(`deduct-http:${orgId}`, () => {
-        captureMessage('AI credit deduction rejected; platform spend went unbilled', {
-          eventCode: 'ai_billing_credits_deduct_failed',
-          tags: { org_id: orgId, ai_billing_http_status: String(res.status) },
-        });
-      });
-    }
-  } catch (err) {
-    console.error('[AI] Failed to deduct billing credits:', err instanceof Error ? err.message : String(err));
-    reportBillingIssueAtMostHourly(`deduct-throw:${orgId}`, () => {
-      captureException(err, undefined, {
-        org_id: orgId,
-        ai_billing_http_status: 'transport_error',
-      });
-    });
-  }
-}
+// The keyed debit client lives in a leaf module so the credit-debit outbox
+// (aiCreditDebits.ts) can use it without an import cycle through this file.
+export { debitBillingCredits, isBillingServiceConfigured, type CreditDebitResult } from './aiCreditDebitClient';
 
 /**
  * Execution plane W04 (spec §5.6 "Reservation") — the credits gate for the
@@ -539,15 +372,25 @@ export async function reserveComputeCents(
  * Execution plane W04 (spec §5.6, §9) — replace a run's reservation with what
  * the sandbox actually cost.
  *
- * Called from the run loop's `finally` for EVERY billing source, and from the
- * admission enqueue-failure path with `0` (that zero IS the release: there is
- * exactly one way a reservation ever ends). `compute_reserved_cents` is
- * cleared in the same statement that writes `compute_cents`, so the daily sum
- * can never double-count a settled run.
+ * Called from the run loop's `finally` for EVERY billing source, from the
+ * terminal-transition reservation release (`transitionRunStatus`), and from
+ * the admission enqueue-failure path with `0` (that zero IS the release).
+ * `compute_reserved_cents` is cleared in the same statement that writes
+ * `compute_cents`, so the daily sum can never double-count a settled run.
  *
- * Credits are deducted only for `platform`; a BYOK partner is still CHARGED
+ * #9451 — exactly once per run ATTEMPT. That statement is also the claim:
+ * it only matches while `compute_settled_at` is NULL, so when two of the
+ * callers above reach the same attempt (the run loop's throw path terminalizes
+ * before its `finally` finalizes) the second is a no-op — no second rollup,
+ * no second debit — instead of billing the run twice. The first settle wins.
+ *
+ * Credits are debited only for `platform`; a BYOK partner is still CHARGED
  * (the row and the `ai_cost_usage` rollup carry the cents) — they just do not
- * come out of prepaid AI credits, exactly like token spend.
+ * come out of prepaid AI credits, exactly like token spend. The debit is
+ * KEYED (`ai-compute:<run id>:<attempt>`) and its intent is written in the
+ * claim's own transaction, so it is never lost: a failure is retried by the
+ * sweep under the same key and amount, or stamped failed for an operator
+ * re-drive (aiCreditDebitOutbox.ts).
  */
 export async function settleComputeCents(
   orgId: string,
@@ -557,11 +400,34 @@ export async function settleComputeCents(
 ): Promise<void> {
   const cents = Number.isFinite(actualCents) && actualCents > 0 ? Math.ceil(actualCents) : 0;
 
-  await withSystemDbAccessContext(() => db
-    .update(aiAgentRuns)
-    .set({ computeCents: cents, computeReservedCents: null })
-    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId))));
+  // Inside an ambient SYSTEM transaction (the stalled-run reaper runs inside
+  // admission's, which has already UPDATEd this run row), the claim MUST join
+  // it: a second connection would block on that row lock while the caller
+  // awaits us — a self-deadlock. The intent then commits with the caller, and
+  // is NOT sent inline (it is not committed yet, and an HTTP call must never
+  // run inside a held transaction, #1105): the sweep delivers it after its
+  // grace. Otherwise: own transaction, committed before the billing call.
+  const joinAmbient = getCurrentDbAccessContext()?.scope === 'system';
+  const claimTx = <T>(fn: () => Promise<T>): Promise<T> => joinAmbient
+    ? fn()
+    : runOutsideDbContext(() => withSystemDbAccessContext(fn, 'aiCostTracker.settleComputeCents'));
+  const claim = await claimTx(async () => {
+    const [claimed] = await db
+      .update(aiAgentRuns)
+      .set({ computeCents: cents, computeReservedCents: null, computeSettledAt: sql`now()` })
+      .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId), isNull(aiAgentRuns.computeSettledAt)))
+      .returning({ debitKey: sql<string>`${computeDebitKeySql()}` });
+    if (!claimed) return null;
+    const intent = billingSource === 'platform' && cents > 0
+      ? await insertCreditDebitIntent({ orgId, source: 'compute', sourceId: runId, idempotencyKey: claimed.debitKey, costCents: cents })
+      : null;
+    return { intent };
+  });
 
+  if (!claim) {
+    console.warn('[AI] compute already settled for this run attempt; not settled again', { orgId, runId, cents, billingSource });
+    return;
+  }
   if (cents <= 0) return;
 
   const now = new Date();
@@ -592,9 +458,9 @@ export async function settleComputeCents(
     }
   }
 
-  if (billingSource === 'platform') {
-    await deductBillingCredits(orgId, cents);
-  }
+  // Never throws; a failure stays on the outbox row for the sweep / an operator.
+  // Joined an ambient transaction → the sweep sends it once that commits.
+  if (claim.intent && !joinAmbient) await deliverCreditDebit(claim.intent);
 }
 
 export interface SdkInputTokenUsage {

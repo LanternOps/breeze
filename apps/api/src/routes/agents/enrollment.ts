@@ -53,6 +53,7 @@ import {
   PartnerDeviceCapacityError,
 } from '../../services/partnerDeviceCapacity';
 import { markTopologyIdentityDirty } from '../../services/topology/identityDirty';
+import { applyOrgDefaultDeviceGroup } from '../../services/enrollmentDefaultGroup';
 
 export const enrollmentRoutes = new Hono();
 
@@ -907,6 +908,13 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
       if (!dev) {
         throw new Error('Failed to create device');
+      }
+
+      // #9617: org "default device group" — fresh rows only (an in-place
+      // re-enrollment keeps whatever groups the device already has). Never
+      // throws; runs in a savepoint so it cannot abort this transaction.
+      if (insertFreshRow && !isSupportEnrollment) {
+        await applyOrgDefaultDeviceGroup(tx, { orgId: dev.orgId, deviceId: dev.id, siteId: dev.siteId });
       }
 
       // Quick Support: bind the session to the device it just enrolled. Inside

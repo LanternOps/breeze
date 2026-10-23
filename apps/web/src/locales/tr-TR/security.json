@@ -466,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
+    "accessRevealed": "anahtarı gösterdi",
     "bitlocker": "BitLocker",
     "cancel": "İptal",
     "collectNow": "Şimdi topla",
@@ -491,6 +492,7 @@
     "rotate": "Döndür",
     "rotateKey": "Döndürme tuşu",
     "rotateRecoveryKey": "Kurtarma anahtarını döndür",
+    "rotateVolume": "Birim",
     "thisAccessHasBeenRecordedInThe": "Bu erişim denetim takibine kaydedildi."
   },
   "securityS1ThreatList": {

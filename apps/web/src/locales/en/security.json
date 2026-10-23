@@ -466,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
+    "accessRevealed": "revealed the key",
     "bitlocker": "BitLocker",
     "cancel": "Cancel",
     "collectNow": "Collect now",
@@ -491,6 +492,7 @@
     "rotate": "Rotate",
     "rotateKey": "Rotate key",
     "rotateRecoveryKey": "Rotate recovery key",
+    "rotateVolume": "Volume",
     "thisAccessHasBeenRecordedInThe": "This access has been recorded in the audit trail."
   },
   "securityS1ThreatList": {

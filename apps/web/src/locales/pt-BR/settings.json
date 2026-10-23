@@ -700,7 +700,13 @@
         "quality": "Qualidade"
       },
       "failovers": "Acionamentos de backup",
-      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível"
+      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organização",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por recurso"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "ex.: Dom 02:00-06:00, 02:00-04:00 ou 24/7",
     "maintenanceInvalid": "Use uma janela UTC como <first>Dom 02:00-04:00</first> ou <second>02:00-04:00</second>, ou <always>24/7</always> para sempre ativa. Deixe em branco para as organizações configurarem.",
     "maintenanceHelp": "Janela de tempo (UTC) para atualizações e reinicializações automáticas. Use <always>24/7</always> para sempre ativa ou deixe em branco para cada organização configurar.",
-    "deviceGroup": "Grupo de dispositivos padrão",
-    "alertThreshold": "Limite de alerta padrão",
     "autoEnrollment": {
       "title": "Registro automático",
       "enable": "Ativar registro automático para novos dispositivos",
-      "requireApproval": "Exigir aprovação do administrador",
-      "sendWelcome": "Enviar notificação de boas-vindas"
+      "requireApproval": "Exigir aprovação do administrador"
     },
     "enrollment": {
       "title": "Registro de dispositivos",
@@ -1810,27 +1813,13 @@
     "deviceGroup": {
       "title": "Grupo de dispositivos padrão",
       "description": "Dispositivos recém-cadastrados são adicionados automaticamente a este grupo.",
-      "options": {
-        "AllManagedDevices": "Todos os dispositivos gerenciados",
-        "CriticalInfrastructure": "Infraestrutura crítica",
-        "RemoteStaff": "Equipe remota",
-        "Contractors": "Prestadores de serviço"
-      }
-    },
-    "alertSeverity": {
-      "title": "Severidade padrão dos alertas",
-      "description": "Alertas abaixo desta severidade são enviados apenas ao feed de resumo.",
-      "options": {
-        "critical": "Somente crítica",
-        "high": "Alta e crítica",
-        "medium": "Média e superiores"
-      }
+      "none": "Nenhum",
+      "unavailable": "Grupo selecionado (indisponível)"
     },
     "autoEnrollment": {
       "title": "Cadastro automático",
       "enable": "Ativar cadastro automático",
-      "requireApproval": "Exigir aprovação do administrador",
-      "sendWelcome": "Enviar mensagem de boas-vindas"
+      "requireApproval": "Exigir aprovação do administrador"
     },
     "agentUpdates": {
       "title": "Política de atualização do agente",
@@ -2487,7 +2476,11 @@
     "sourceDefault": "Padrão",
     "selectOrgForEffectiveBudget": "Selecione uma organização para ver seu orçamento vigente, ou edite os valores padrão em todo o parceiro.",
     "editPartnerWideDefaults": "Editar valores padrão em todo o parceiro",
-    "thresholdsOff": "Desativado"
+    "thresholdsOff": "Desativado",
+    "todaysCost": "Custo de hoje",
+    "monthlyCost": "Custo mensal",
+    "messagesToday": "Mensagens de hoje",
+    "tokensThisMonth": "Tokens deste mês"
   },
   "aiAgentsPage": {
     "schedules": {

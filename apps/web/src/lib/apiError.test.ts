@@ -368,6 +368,33 @@ describe('extractApiError — zValidator field errors render with readable label
     expect(msg).not.toContain('settings.');
   });
 
+  it('renders each field once when several array entries fail the same way (#9533)', () => {
+    // Two bad ids in one array → two dotted paths that humanize to one label.
+    const body = wrapperBody([], {
+      'deviceVulnerabilityIds.0': ['Invalid UUID'],
+      'deviceVulnerabilityIds.1': ['Invalid UUID'],
+    });
+    expect(extractApiError(body, FALLBACK)).toBe('Device vulnerability IDs: Invalid UUID');
+  });
+
+  it('keeps distinct messages for one field, labelled once, and leaves other fields alone', () => {
+    const body = wrapperBody([], {
+      'contacts.0.email': ['Invalid email address'],
+      'contacts.1.email': ['Required'],
+      'contacts.2.email': ['Invalid email address'],
+      name: ['Required'],
+    });
+    expect(extractApiError(body, FALLBACK)).toBe('Email: Invalid email address; Required; Name: Required');
+  });
+
+  it('keeps a route headline that is not the raw-path rendering, while deduping the details', () => {
+    const body = {
+      error: 'Remediation request rejected',
+      details: { formErrors: [], fieldErrors: { 'ids.0': ['Invalid UUID'], 'ids.1': ['Invalid UUID'] } },
+    };
+    expect(extractApiError(body, FALLBACK)).toBe('Remediation request rejected: IDs: Invalid UUID');
+  });
+
   it('does not repeat a label the message already starts with', () => {
     const body = wrapperBody([], {
       'settings.notifications.slackWebhookUrl': [

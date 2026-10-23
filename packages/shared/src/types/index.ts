@@ -703,12 +703,11 @@ export interface InheritableEventLogSettings {
 
 export interface InheritableDefaultSettings {
   policyDefaults?: Record<string, string>;
+  /** Org level only: a `device_groups.id` (static group) applied at enrollment (#9617). */
   deviceGroup?: string;
-  alertThreshold?: string;
   autoEnrollment?: {
     enabled: boolean;
     requireApproval: boolean;
-    sendWelcome: boolean;
   };
   agentUpdatePolicy?: string;
   maintenanceWindow?: string;

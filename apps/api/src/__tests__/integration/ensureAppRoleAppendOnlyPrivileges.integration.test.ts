@@ -93,6 +93,9 @@ describe('ensureAppRole append-only re-revoke — runtime privilege check (#4371
     // UPDATE it, org erasure DELETEs it), so only TRUNCATE is revoked —
     // ensureAppRole.ts revokes it from breeze_app AND PUBLIC.
     'ai_budget_reservations',
+    // AI credit debit outbox (#9451): mark-sent/failed UPDATE it, org erasure
+    // DELETEs it; only TRUNCATE is revoked (breeze_app AND PUBLIC).
+    'ai_credit_debits',
   ])(
     'breeze_app keeps UPDATE/DELETE but has no TRUNCATE on %s',
     async (table) => {

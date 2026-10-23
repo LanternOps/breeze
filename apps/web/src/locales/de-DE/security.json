@@ -466,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Es wird ein neues BitLocker-Wiederherstellungskennwort generiert und hinterlegt; Der alte wird entfernt, nachdem der neue Schlüssel angebracht wurde.",
+    "accessRevealed": "hat den Schlüssel angezeigt",
     "bitlocker": "BitLocker",
     "cancel": "Abbrechen",
     "collectNow": "Jetzt erfassen",
@@ -491,6 +492,7 @@
     "rotate": "Rotieren",
     "rotateKey": "Schlüssel rotieren",
     "rotateRecoveryKey": "Wiederherstellungsschlüssel rotieren",
+    "rotateVolume": "Laufwerk",
     "thisAccessHasBeenRecordedInThe": "Dieser Zugriff wurde im Audit Trail aufgezeichnet."
   },
   "securityS1ThreatList": {

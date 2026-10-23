@@ -809,6 +809,8 @@
       "session_consent_bypassed": "Session à distance démarrée sans réponse à la demande de consentement",
       "screen_access_consent_blocked": "Accès à l'écran bloqué : l'appareil exige le consentement de l'utilisateur",
       "device.wake_on_lan": "Wake-on-LAN envoyé",
+      "device.recovery_key.reveal": "Clé de récupération révélée",
+      "device.recovery_key.rotate": "Clé de récupération renouvelée",
       "device.create": "Appareil ajouté",
       "device.update": "Appareil mis à jour",
       "device.delete": "Appareil supprimé",

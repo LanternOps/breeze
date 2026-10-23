@@ -28,6 +28,7 @@ function group(overrides: Partial<SoftwareGroup> = {}): SoftwareGroup {
     maxEpss: 0.9,
     patchReadyFindingCount: 12,
     patchReadyDeviceCount: 12,
+    vendorFixAvailable: true,
     tickets: [],
     targetVersion: null,
     ...overrides,
@@ -88,6 +89,61 @@ describe('SoftwareGroupTable', () => {
     render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={() => {}} onClearFilters={() => {}} />);
     const desktop = within(await screen.findByTestId('responsive-table-desktop'));
     expect(desktop.getByTestId('software-group-target-sw:google chrome|google llc')).toHaveTextContent('Update to latest');
+  });
+
+  // #9533: one definition of "is there a patch?" across the page.
+  describe('Patch column states', () => {
+    const KEY = 'sw:google chrome|google llc';
+    const renderWith = async (overrides: Partial<SoftwareGroup>) => {
+      vi.mocked(api.fetchSoftwareGroups).mockResolvedValue({ items: [group(overrides)], hasMore: false });
+      render(<SoftwareGroupTable filters={FILTERS} refreshKey={0} emptyVariant="filtered" onSelectGroup={() => {}} onClearFilters={() => {}} />);
+      return within(await screen.findByTestId('responsive-table-desktop'));
+    };
+
+    it('vendor fix but no Ready managed patch → leads with the update advice, never "—"', async () => {
+      const desktop = await renderWith({ patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: true, targetVersion: null });
+      const cell = desktop.getByTestId(`software-group-patch-${KEY}`);
+      expect(cell).toHaveTextContent('Update to latest');
+      expect(cell).not.toHaveTextContent('—');
+      expect(cell).not.toHaveTextContent('Ready');
+    });
+
+    it('a known fix version counts as a vendor fix even without the catalog flag', async () => {
+      const desktop = await renderWith({ patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: false, targetVersion: '126.0.1' });
+      expect(desktop.getByTestId(`software-group-patch-${KEY}`)).toHaveTextContent('Update to 126.0.1');
+    });
+
+    it('no Ready patch and no known fix → "—" alone', async () => {
+      const desktop = await renderWith({ patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: false, targetVersion: null });
+      const cell = desktop.getByTestId(`software-group-patch-${KEY}`);
+      expect(cell).toHaveTextContent('—');
+      expect(cell).not.toHaveTextContent('Update to');
+    });
+
+    it('Ready leads with the device split and keeps the target as context (table and cards)', async () => {
+      const desktop = await renderWith({ targetVersion: '126.0.1' });
+      expect(desktop.getByTestId(`software-group-patch-${KEY}`)).toHaveTextContent('Ready · 12/14 devices');
+      expect(desktop.getByTestId(`software-group-target-${KEY}`)).toHaveTextContent('Update to 126.0.1');
+      const cards = within(screen.getByTestId('responsive-table-cards'));
+      expect(cards.getByText('Ready · 12/14 devices')).toHaveAttribute('title', expect.stringContaining('pending on the device and approved'));
+    });
+
+    it('the cards show the same non-Ready answers', async () => {
+      await renderWith({ patchReadyFindingCount: 0, patchReadyDeviceCount: 0, vendorFixAvailable: true, targetVersion: null });
+      const cards = within(screen.getByTestId('responsive-table-cards'));
+      expect(cards.getByText('Update to latest')).toBeInTheDocument();
+      expect(cards.queryByText(/^Ready/)).toBeNull();
+    });
+
+    it('explains the vocabulary in a header tooltip', async () => {
+      const desktop = await renderWith({});
+      const trigger = desktop.getByRole('button', { name: 'About the Patch column' });
+      fireEvent.click(trigger);
+      // The bubble is portaled outside the table to escape its overflow wrapper (#9552).
+      const tooltip = screen.getByRole('tooltip');
+      expect(trigger).toHaveAttribute('aria-describedby', tooltip.id);
+      expect(tooltip).toHaveTextContent('pending on the device and approved');
+    });
   });
 
   it('invokes onSelectGroup with the groupKey on row click', async () => {

@@ -1887,6 +1887,12 @@ export async function createAndEnqueueAgentRun(
         finishedAt: null,
         queuedAt: new Date(),
         correlationId: randomUUID(),
+        // #9451 — a new attempt: reopen its compute settlement. The new
+        // `queuedAt` above is the attempt identity in its debit key
+        // (`ai-compute:<run id>:<attempt>`), so it can never collide with the
+        // previous attempt's.
+        computeCents: null,
+        computeSettledAt: null,
         // Execution plane W04 — a reclaimed row must never carry a PREVIOUS
         // attempt's frozen inputs: this attempt froze its own set (or, for a
         // non-analysis profile, none at all).
@@ -2052,6 +2058,9 @@ export async function transitionRunStatus(
         // AI model registry W03 — the funding admission checked; the release
         // below settles on it rather than re-deriving one per org.
         fundingSource: aiAgentRuns.fundingSource,
+        // #9451 — NULL = the run never left `queued`, so no sandbox ever ran:
+        // the release below settles it at 0, not at the reservation.
+        startedAt: aiAgentRuns.startedAt,
       });
     const row = rows[0] ?? null;
 
@@ -2128,13 +2137,18 @@ export async function transitionRunStatus(
   // settle at the reservation, never $0" — a run we lost track of is exactly
   // the case where the measured number is gone. A normally finished run has
   // already settled (which NULLs the column), so this is a no-op for it, and
-  // `settleComputeCents` is idempotent against a cleared reservation.
+  // `settleComputeCents` settles each run attempt at most once (#9451: the
+  // first settle claims it; a later one changes nothing and bills nothing).
+  //
+  // #9451 — a run that never STARTED (enqueue failure, cancelled while
+  // queued) ran no sandbox, so it is settled at 0: billing it the worst case
+  // would charge an org for compute that never existed.
   const outstandingReservation = moved.computeReservedCents ?? 0;
   if (isTerminalRunStatus(to) && outstandingReservation > 0) {
     try {
       await settleComputeCents(
         // NULL = admitted before W03: the previous fail-safe.
-        moved.orgId, moved.id, outstandingReservation, moved.fundingSource ?? 'platform',
+        moved.orgId, moved.id, moved.startedAt ? outstandingReservation : 0, moved.fundingSource ?? 'platform',
       );
     } catch (error) {
       console.error('[aiAgentRunService] compute reservation release failed; the org keeps a held reservation', {

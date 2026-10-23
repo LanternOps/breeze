@@ -466,6 +466,7 @@
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Un nouveau mot de passe de récupération BitLocker sera généré et mis en séquestre ; l’ancienne est retirée une fois la nouvelle clé en place.",
+    "accessRevealed": "a révélé la clé",
     "bitlocker": "BitLocker",
     "cancel": "Annuler",
     "collectNow": "Collectez maintenant",
@@ -491,6 +492,7 @@
     "rotate": "Renouveler",
     "rotateKey": "Renouveler la clé",
     "rotateRecoveryKey": "Renouveler la clé de récupération",
+    "rotateVolume": "Volume concerné",
     "thisAccessHasBeenRecordedInThe": "Cet accès a été enregistré dans la piste d’audit."
   },
   "securityS1ThreatList": {

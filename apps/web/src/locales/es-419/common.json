@@ -771,9 +771,9 @@
     },
     "search": {
       "prompt": "Buscar en Breeze",
-      "placeholder": "Buscar dispositivos, scripts, alertas, usuarios, configuraciones…",
+      "placeholder": "Buscar dispositivos, scripts, alertas, configuraciones…",
       "searching": "Buscando…",
-      "startTyping": "Empiece a escribir para buscar en dispositivos, scripts, alertas, usuarios y configuraciones.",
+      "startTyping": "Empiece a escribir para buscar en dispositivos, scripts, alertas y configuraciones.",
       "noResults": "No se encontraron resultados. Pruebe una consulta diferente.",
       "navigationHint": "Utilice las flechas para navegar, Intro para abrir",
       "closeHint": "Esc para cerrar",
@@ -863,6 +863,8 @@
       "cycleSidebar": "Cambiar el modo de la barra lateral",
       "help": "Abrir el panel de ayuda",
       "showThis": "Mostrar esta tarjeta",
+      "orgSwitcher": "Abrir el selector de organización",
+      "aiSidebar": "Mostrar u ocultar la barra lateral de IA",
       "close": "Cerrar un diálogo o menú",
       "typingNote": "Los atajos de una sola tecla se pausan mientras escribes en un campo.",
       "create": "Crear",
@@ -2379,7 +2381,7 @@
           },
           "search": {
             "title": "Buscar cualquier cosa",
-            "description": "Presione Cmd+K para buscar instantáneamente dispositivos, scripts, alertas, usuarios o configuraciones."
+            "description": "Presione Cmd+K para buscar instantáneamente dispositivos, scripts, alertas o configuraciones."
           },
           "switchOrgs": {
             "title": "Cambiar de organización",

@@ -73,3 +73,40 @@ describe('EncryptionPage method tiles (#9607)', () => {
     expect(screen.getByTestId('encryption-method-unknown')).toHaveTextContent('2');
   });
 });
+
+describe('EncryptionPage test ids (#9609)', () => {
+  it('exposes the page, tiles, filters and device rows', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockResolvedValue({
+        data: [{
+          deviceId: 'z', deviceName: 'dev-z', os: 'windows', encryptionMethod: 'bitlocker',
+          encryptionStatus: 'encrypted', volumes: [], tpmPresent: null, recoveryKeyEscrowed: true,
+        }],
+        summary: {
+          total: 7, fullyEncrypted: 4, partial: 1, unencrypted: 2, recoveryKeysEscrowed: 3,
+          methodCounts: { bitlocker: 4, filevault: 1, luks: 0, none: 2, unknown: 0 },
+        },
+      }),
+    } as unknown as Response);
+    render(<EncryptionPage />);
+    expect(await screen.findByTestId('encryption-page')).toBeInTheDocument();
+    expect(await screen.findByTestId('encryption-row-z')).toBeInTheDocument();
+    expect(screen.getByTestId('encryption-state-total')).toHaveTextContent('7');
+    expect(screen.getByTestId('encryption-state-encrypted')).toHaveTextContent('4');
+    expect(screen.getByTestId('encryption-state-partial')).toHaveTextContent('1');
+    expect(screen.getByTestId('encryption-state-unencrypted')).toHaveTextContent('2');
+    expect(screen.getByTestId('encryption-method-bitlocker')).toHaveTextContent('4');
+    for (const id of ['filevault', 'luks', 'none', 'unknown']) {
+      expect(screen.getByTestId(`encryption-method-${id}`)).toBeInTheDocument();
+    }
+    expect(screen.getByTestId('encryption-search')).toBeInTheDocument();
+    expect(screen.getByTestId('encryption-filter-status')).toBeInTheDocument();
+    expect(screen.getByTestId('encryption-filter-os')).toBeInTheDocument();
+    expect(screen.getByTestId('encryption-filter-escrow')).toBeInTheDocument();
+    expect(screen.getByTestId('encryption-table')).toBeInTheDocument();
+    expect(screen.getByTestId('encryption-escrow-z')).toBeInTheDocument();
+  });
+});

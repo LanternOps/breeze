@@ -216,7 +216,9 @@ describe('webhook routes', () => {
           createdBy: 'user-123',
           createdAt: new Date('2026-02-07T13:00:00.000Z'),
           updatedAt: new Date('2026-02-07T13:00:00.000Z'),
-          lastDeliveryAt: null
+          lastDeliveryAt: new Date('2026-02-08T10:00:00.000Z'),
+          successCount: 7,
+          failureCount: 2
         }]))
       }))
     } as any);
@@ -238,6 +240,10 @@ describe('webhook routes', () => {
     expect(body.id).toBe(WEBHOOK_ID_1);
     expect(body.hasSecret).toBe(true);
     expect(body.secret).toBeUndefined();
+    // #9656: delivery stats are returned so the list can render them.
+    expect(body.lastDeliveryAt).toBe('2026-02-08T10:00:00.000Z');
+    expect(body.successCount).toBe(7);
+    expect(body.failureCount).toBe(2);
   });
 
   it('encrypts and redacts custom webhook headers', async () => {
@@ -565,7 +571,9 @@ describe('webhook routes', () => {
           createdBy: 'user-123',
           createdAt: new Date(),
           updatedAt: new Date(),
-          lastDeliveryAt: null
+          lastDeliveryAt: new Date('2026-02-08T10:00:00.000Z'),
+          successCount: 5,
+          failureCount: 1
         },
         {
           id: WEBHOOK_ID_2,
@@ -579,7 +587,9 @@ describe('webhook routes', () => {
           createdBy: 'user-123',
           createdAt: new Date(),
           updatedAt: new Date(),
-          lastDeliveryAt: null
+          lastDeliveryAt: null,
+          successCount: null,
+          failureCount: null
         }
       ]) as any);
 
@@ -599,6 +609,9 @@ describe('webhook routes', () => {
       masked: '********'
     });
     expect(body.data[1].status).toBe('paused');
+    // #9656: delivery stats on the list; null counts serialize as 0.
+    expect(body.data[0]).toMatchObject({ lastDeliveryAt: '2026-02-08T10:00:00.000Z', successCount: 5, failureCount: 1 });
+    expect(body.data[1]).toMatchObject({ lastDeliveryAt: null, successCount: 0, failureCount: 0 });
   });
 
   it('queues a test webhook delivery and persists pending delivery row', async () => {
