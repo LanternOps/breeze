@@ -1368,6 +1368,7 @@
         "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
         "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur ce devis ; la facture pourrait donc ne pas être envoyée par e-mail. Envoyez-la vous-même au client si nécessaire.",
         "successNoRecipient": "Devis accepté. Facture {{number}} émise. Elle n'a peut-être pas été envoyée par e-mail : aucun destinataire n'est enregistré sur ce devis.",
+        "successNoEmailService": "Devis accepté. Facture {{number}} émise. Elle n'a pas été envoyée par e-mail : aucun service e-mail n'est configuré. Partagez-la depuis la page de la facture.",
         "overlap": {
           "title": "Cette organisation a déjà un contrat au même rythme",
           "body": "L’acceptation a créé un nouveau brouillon de contrat. Si vous l’activez en plus du contrat existant, le client paie pour les deux. Vérifiez les deux avant d’en activer un.",
