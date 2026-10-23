@@ -122,6 +122,65 @@ async function verifyDeviceAccess(
   return { device };
 }
 
+type FileCommandResult = Awaited<ReturnType<typeof aiExecuteCommand>>;
+type DescribedDeleteResult = FileCommandResult & {
+  outcome?: 'moved_to_trash' | 'permanently_deleted' | 'unverified';
+  spaceReclaimed?: boolean;
+  bytesFreed?: number;
+  message?: string;
+};
+
+function parseAgentStdoutObject(stdout: string | undefined): Record<string, unknown> | null {
+  if (!stdout) return null;
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #9853: the agent answers a trash move with `{ deleted: true, trashId }`,
+ * which read as "space freed" to the model on a disk that stayed full. The
+ * agent body stays in `stdout` (fenced as device text, trashId included); the
+ * fields added here are API-authored and survive the chat compactor.
+ */
+function describeTrashDeleteResult(result: FileCommandResult): DescribedDeleteResult {
+  if (result.status !== 'completed') return result;
+  return {
+    ...result,
+    outcome: 'moved_to_trash',
+    spaceReclaimed: false,
+    message: 'The item was moved to the agent trash (~/.breeze-trash; trashId in the agent result), not deleted. No disk space was reclaimed: the bytes stay on disk in the trash, on the same volume (an item on another volume is copied onto the trash volume), until trash items are purged after 30 days. To free space use disk_cleanup (preview, then execute), or delete with permanent: true.',
+  };
+}
+
+function describePermanentDeleteResult(result: FileCommandResult): DescribedDeleteResult {
+  if (result.status !== 'completed') return result;
+  const body = parseAgentStdoutObject(result.stdout);
+  const bytesFreed = body && typeof body.bytesFreed === 'number' && Number.isFinite(body.bytesFreed)
+    ? Math.max(0, body.bytesFreed)
+    : null;
+  if (body?.permanent !== true || bytesFreed === null) {
+    // A gated agent always answers a permanent delete with both fields. If
+    // they are missing the API cannot tell a permanent delete from a trash
+    // move, so it must not claim either.
+    return {
+      ...result,
+      outcome: 'unverified',
+      message: 'The agent did not confirm a permanent delete, so it is unknown whether any disk space was reclaimed. Check with analyze_disk_usage refresh=true before reporting the space as freed.',
+    };
+  }
+  return {
+    ...result,
+    outcome: 'permanently_deleted',
+    spaceReclaimed: true,
+    bytesFreed,
+    message: `The item was permanently deleted and cannot be restored. The agent reported ${bytesFreed} bytes freed.`,
+  };
+}
+
 // #6745 (A-W05 follow-up): the largest preview page of realistic candidates
 // that fits the chat budget uncompacted (aiToolsFilesystem.diskCleanup.outputShape.test.ts).
 const DISK_CLEANUP_DEFAULT_CANDIDATES = 35;
@@ -142,7 +201,7 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     definition: {
       name: 'file_operations',
-      description: 'Perform file operations on a device. list auto-executes with audit; read, write, delete, mkdir and rename require approval because the agent reads/writes as root/LocalSystem. The org AI data policy may refuse user profile folders; request_diagnostic_access is the exception unless the level is off.',
+      description: 'File operations on a device. list auto-executes; read/write/delete/mkdir/rename need approval (runs as root). delete moves the item to the agent trash on the same volume, which frees no disk space; to free space use disk_cleanup or permanent: true. The AI data policy may refuse profile folders.',
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -150,7 +209,8 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
           action: { type: 'string', enum: ['list', 'read', 'write', 'delete', 'mkdir', 'rename'], description: 'File operation' },
           path: { type: 'string', description: 'File or directory path' },
           content: { type: 'string', description: 'File content (for write)' },
-          newPath: { type: 'string', description: 'New path (for rename)' }
+          newPath: { type: 'string', description: 'New path (for rename)' },
+          permanent: { type: 'boolean', description: 'delete only: delete now instead of moving to the agent trash. Frees the space; cannot be restored. Needs a current agent; non-empty folders are refused.' }
         },
         required: ['deviceId', 'action', 'path']
       }
@@ -197,12 +257,47 @@ export function registerFilesystemTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      const permanent = input.permanent === true;
+      if (permanent && fileCommandType !== 'file_delete') {
+        return JSON.stringify({ error: 'permanent applies only to the delete action' });
+      }
+
+      if (permanent) {
+        // #9853: the same fail-closed agent-version gate disk_cleanup's execute
+        // lane uses. A gated agent answers a permanent delete with
+        // `{ permanent: true, bytesFreed }`, which is how the result below can
+        // say what was freed. An older or unparseable agent is refused: nothing
+        // is dispatched, so a permanent request never turns into a silent trash
+        // move that frees nothing.
+        if (!agentSupportsCleanupGuard(access.device.agentVersion)) {
+          return JSON.stringify({
+            error: 'agent_update_required',
+            minAgentVersion: MIN_AGENT_VERSION_CLEANUP_GUARD,
+            agentVersion: access.device.agentVersion || null,
+            message: `Nothing was deleted. This agent cannot permanently delete files; permanent delete needs agent ${MIN_AGENT_VERSION_CLEANUP_GUARD} or newer. Upgrade the agent. disk_cleanup has the same requirement. A delete without permanent only moves the item to the agent trash on the same volume and frees no disk space.`,
+          });
+        }
+        // File Manager lane, not the cleanup lane: no `cleanupGuard`, because
+        // the guard confines deletes to the cleanup rule table and refuses
+        // anything modified recently — an active runaway log, the case this
+        // exists for. No `recursive`, so a non-empty folder is refused by the
+        // agent rather than wiped; folders go through disk_cleanup.
+        const result = await aiExecuteCommand(auth, 'file_operations', deviceId, fileCommandType, {
+          path: input.path,
+          permanent: true,
+        }, { userId: auth.user.id, timeoutMs: 30000 });
+        return JSON.stringify(describePermanentDeleteResult(result));
+      }
+
       const result = await aiExecuteCommand(auth, 'file_operations', deviceId, fileCommandType, {
         path: input.path,
         content: input.content,
         newPath: input.newPath
       }, { userId: auth.user.id, timeoutMs: 30000 });
 
+      if (fileCommandType === 'file_delete') {
+        return JSON.stringify(describeTrashDeleteResult(result));
+      }
       return JSON.stringify(result);
     }
   });
