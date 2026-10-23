@@ -824,6 +824,15 @@ describe('updateRings routes', () => {
       expect(row.approvalScope).toBe('ring');
     });
 
+    it('patch list: older ring approve + newer partner-wide approve attributes scope to partner', async () => {
+      const row = await getPatches([
+        { patchId: PATCH_ID, status: 'approved', ringId: RING_ID, updatedAt: new Date('2026-02-01') },
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-03-01') }
+      ]);
+      expect(row.approvalStatus).toBe('approved');
+      expect(row.approvalScope).toBe('partner');
+    });
+
     it('patch list: another ring’s decision is ignored; no decision stays pending', async () => {
       const row = await getPatches([
         { patchId: PATCH_ID, status: 'approved', ringId: OTHER_RING, updatedAt: new Date('2026-02-01') }
@@ -850,6 +859,27 @@ describe('updateRings routes', () => {
       const res = await app.request(`/update-rings/${RING_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
       expect(res.status).toBe(200);
       expect((await res.json()).approvalSummary).toEqual({ approved: 1, rejected: 1 });
+    });
+
+    it('summary: other rings’ rows are ignored; pending is counted only when undecided', async () => {
+      const P3 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+      vi.mocked(db.select)
+        .mockReturnValueOnce(ringLookup())
+        .mockReturnValueOnce(rowsQuery([
+          { patchId: PATCH_ID, status: 'approved', ringId: OTHER_RING, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'pending', ringId: RING_ID, updatedAt: new Date('2026-02-01') },
+          { patchId: P2, status: 'approved', ringId: null, updatedAt: new Date('2026-03-01') },
+          { patchId: P3, status: 'pending', ringId: RING_ID, updatedAt: new Date('2026-02-01') },
+        ]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) })
+            })
+          })
+        } as any);
+      const res = await app.request(`/update-rings/${RING_ID}`, { method: 'GET', headers: { Authorization: 'Bearer token' } });
+      expect((await res.json()).approvalSummary).toEqual({ approved: 1, pending: 1 });
     });
 
     it('compliance: partner-wide approved patches are included, declined ones excluded', async () => {

@@ -100,7 +100,19 @@ export function manualDecisionScope(
   patchId: string,
   verdict: 'approved' | 'rejected',
 ): 'ring' | 'partner' {
-  return rows.some((r) => r.patchId === patchId && r.ringId === ringId && r.status === verdict) ? 'ring' : 'partner';
+  // The winner is the NEWEST applicable row carrying the winning status (a
+  // newer opposite-status row would have changed the verdict). A timestamp tie
+  // attributes to the ring's own row.
+  let best: { at: number; scope: 'ring' | 'partner' } | null = null;
+  for (const r of rows) {
+    if (r.patchId !== patchId || r.status !== verdict) continue;
+    if (r.ringId !== null && r.ringId !== ringId) continue;
+    const t = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+    const at = Number.isFinite(t) ? t : 0;
+    const scope = r.ringId === null ? 'partner' : 'ring';
+    if (!best || at > best.at || (at === best.at && scope === 'ring')) best = { at, scope };
+  }
+  return best?.scope ?? 'partner';
 }
 
 /**

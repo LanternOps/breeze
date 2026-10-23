@@ -5,7 +5,6 @@ import { and, eq, sql, desc, asc, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   patchPolicies,
-  patchApprovals,
   patchJobs,
   patches,
   devicePatches,
