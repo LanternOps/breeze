@@ -223,7 +223,9 @@ describe('mrr_renewals — real Postgres (#9828 W1)', () => {
       ...scopeValues,
     });
 
-    const previous = await withSystemDbAccessContext(() => previousBaselineFor(report!.id, scopeValues.executionScopeFingerprint));
+    const fingerprint = scopeValues.executionScopeFingerprint;
+    expect(fingerprint).toBeTruthy();
+    const previous = await withSystemDbAccessContext(() => previousBaselineFor(report!.id, fingerprint!));
     expect((previous?.summary as unknown as MrrRenewalsSummary).byCurrency).toEqual(summaryOf(first).byCurrency);
   });
 });
