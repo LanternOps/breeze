@@ -312,7 +312,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
-  manage_tickets: ['list', 'get', 'list_work_types', 'list_links'],
+  manage_tickets: ['list', 'get', 'list_work_types', 'list_links', 'merge_preview'],
   manage_update_rings: ['list', 'get'],
   query_agent_versions: ['list_versions', 'check_upgrades'],
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
@@ -423,7 +423,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
-  manage_tickets: ['move_org'],
+  manage_tickets: ['move_org', 'merge'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -515,7 +515,7 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // resolved by resolveApprovalScope's override hook, not this static table.
   // See TIER3_INPUT_AWARE_ACTIONS.
   manage_organizations: ['create_org'],
-  manage_tickets: ['move_org'],
+  manage_tickets: ['move_org', 'merge'],
   // Grants an AUTHORITY, not a device action: it converts "this agent must ask
   // a human for <opKey>" into "this agent may run <opKey> unattended for this
   // org from now on". Proposing that and authorising it are separate

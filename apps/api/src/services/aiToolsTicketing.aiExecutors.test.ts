@@ -366,7 +366,9 @@ describe('draft (P2-4, #4191)', () => {
     // WHERE clause names ticket_id/kind/state='active' (not some other
     // column, which would make the lock meaningless).
     expect(txSelectForMock).toHaveBeenCalledWith('update');
-    expect(txSelectWhereMock).toHaveBeenCalledTimes(1);
+    // #8972 W1: the draft lock, then the ticket row lock (tombstone guard).
+    expect(txSelectWhereMock).toHaveBeenCalledTimes(2);
+    expect(sqlOf(txSelectWhereMock.mock.calls[1]![0]).sql).toContain('"tickets"."id" = $');
     const whereSql = sqlOf(txSelectWhereMock.mock.calls[0]![0]);
     expect(whereSql.sql.toLowerCase()).toContain('"ticket_id" = $');
     expect(whereSql.sql.toLowerCase()).toContain('"kind" = $');
