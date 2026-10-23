@@ -142,10 +142,13 @@ describe('identifyTaskPerson', () => {
     expect(h.createContact).not.toHaveBeenCalled();
   });
 
-  it('escapes LIKE wildcards in a free-text hint', async () => {
+  it('a free-text hint matches the WHOLE name exactly (case-insensitive), never a substring', async () => {
     h.selectQueue = [[]];
-    await identifyTaskPerson(ORG, { contactId: null, personHint: 'd_a%na' });
-    expect(render(h.wheres[0]).params).toContain('%d\\_a\\%na%');
+    await identifyTaskPerson(ORG, { contactId: null, personHint: 'Dana Ruiz' });
+    const q = render(h.wheres[0]);
+    expect(q.sql).toContain('lower(btrim(');
+    expect(q.sql.toLowerCase()).not.toContain('ilike');
+    expect(q.params).toContain('dana ruiz');
   });
 });
 
@@ -231,6 +234,23 @@ describe('resolveProviderAccounts', () => {
     const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts.map((a) => a.provider).sort()).toEqual(['google', 'm365']);
     expect(h.m365Read).toHaveBeenCalledWith(ORG, { type: 'm365.user.get', userIdOrUpn: 'dana@customer.example' });
+  });
+
+  it('REFUSES a provider account whose primary address is not the one asked for (alias -> another person)', async () => {
+    h.m365Read.mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'obj-9', userPrincipalName: 'sam@customer.example', mail: 'sam@customer.example' } });
+    h.dir.users.get.mockResolvedValue({ data: { id: '909', primaryEmail: 'sam@customer.example' } });
+    h.selectQueue = [[{ id: 'm-conn' }]];
+    const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
+    expect(r.accounts).toEqual([]);
+    expect(r.problems.join(' ')).toMatch(/m365: dana@customer.example resolves to a different primary account \(sam@customer.example\)/);
+    expect(r.problems.join(' ')).toMatch(/google: dana@customer.example resolves to a different primary account/);
+  });
+
+  it('accepts an M365 account whose mail (not UPN) is the address asked for', async () => {
+    h.m365Read.mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'obj-2', userPrincipalName: 'dana_ext@tenant.onmicrosoft.com', mail: 'Dana@customer.example' } });
+    h.selectQueue = [[{ id: 'm-conn' }]];
+    const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
+    expect(r.accounts.find((a) => a.provider === 'm365')).toMatchObject({ externalId: 'obj-2' });
   });
 
   it('a provider error is reported, never thrown; no address and no links means no accounts', async () => {

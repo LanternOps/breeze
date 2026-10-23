@@ -26,7 +26,7 @@
  * `org_id` predicate on every read IS the isolation, and the unit test asserts
  * each one.
  */
-import { and, eq, ilike, inArray, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { contactExternalLinks, contacts } from '../../db/schema/contacts';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
@@ -55,10 +55,6 @@ export interface ResolvedProviderAccount {
 }
 
 const MAX_LABEL = 255;
-
-function escapeLike(s: string): string {
-  return s.replace(/[\\%_]/g, (ch) => `\\${ch}`);
-}
 
 /** Phase 1. Who is being offboarded? Read-only, system scope, org-predicated. */
 export async function identifyTaskPerson(
@@ -94,10 +90,14 @@ export async function identifyTaskPerson(
     }
 
     if (hint.length < 2) return { ok: false, reason: 'ambiguous', detail: 'name the person by contact or email address' };
+    // EXACT (case-insensitive, trimmed) full-name match only. A substring
+    // match would let "Dan" resolve to the one "Dana Smith" in the org and
+    // freeze HER accounts — the wrong-person risk spec §11 puts first. Anything
+    // short of an exact, unique match is the technician's choice to make.
     const rows = await db
       .select({ id: contacts.id, name: contacts.name, email: contacts.email })
       .from(contacts)
-      .where(and(eq(contacts.orgId, orgId), ilike(contacts.name, `%${escapeLike(hint)}%`)))
+      .where(and(eq(contacts.orgId, orgId), sql`lower(btrim(${contacts.name})) = ${hint.toLowerCase()}`))
       .limit(2);
     if (rows.length === 1) {
       const row = rows[0]!;
@@ -157,8 +157,16 @@ export async function resolveProviderAccounts(
     try {
       const r = await executeM365ReadActionByOrg(orgId, { type: 'm365.user.get', userIdOrUpn: email });
       if (r.ok && r.kind === 'resource' && typeof r.resource.id === 'string') {
-        const upn = typeof r.resource.userPrincipalName === 'string' ? r.resource.userPrincipalName : email;
-        accounts.push({ provider: 'm365', externalId: r.resource.id, principalLabel: upn.slice(0, MAX_LABEL), connectionId: m365ConnectionId, fromLink: false });
+        // Accept the account only when its OWN address is the one asked for:
+        // a lookup that resolved through an alias or a proxy address may be a
+        // different person's mailbox, and freezing it would offboard them.
+        const upn = typeof r.resource.userPrincipalName === 'string' ? canonicalizeUserEmail(r.resource.userPrincipalName) : null;
+        const mail = typeof r.resource.mail === 'string' ? canonicalizeUserEmail(r.resource.mail) : null;
+        if (upn === email || mail === email) {
+          accounts.push({ provider: 'm365', externalId: r.resource.id, principalLabel: (upn ?? email).slice(0, MAX_LABEL), connectionId: m365ConnectionId, fromLink: false });
+        } else {
+          problems.push(`m365: ${email} resolves to a different primary account (${upn ?? 'unknown'}); link the contact to the right account`);
+        }
       } else if (!r.ok && r.code !== 'graph_not_found') {
         problems.push(`m365 lookup failed (${r.code})`);
       }
@@ -184,7 +192,13 @@ export async function resolveProviderAccounts(
           const res = await dir.users.get({ userKey: email });
           const id = typeof res.data.id === 'string' ? res.data.id : null;
           const primary = typeof res.data.primaryEmail === 'string' ? canonicalizeUserEmail(res.data.primaryEmail) : null;
-          if (id) accounts.push({ provider: 'google', externalId: id, principalLabel: (primary ?? email).slice(0, MAX_LABEL), connectionId: googleConnectionId, fromLink: false });
+          // Same rule as M365: an alias lookup that lands on a different
+          // primary account is refused, never frozen.
+          if (id && primary === email) {
+            accounts.push({ provider: 'google', externalId: id, principalLabel: primary.slice(0, MAX_LABEL), connectionId: googleConnectionId, fromLink: false });
+          } else if (id) {
+            problems.push(`google: ${email} resolves to a different primary account (${primary ?? 'unknown'}); link the contact to the right account`);
+          }
         }
       }
     } catch (err) {
