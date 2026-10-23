@@ -973,7 +973,15 @@
       "allAdmitted": "All selected devices were admitted and queued.",
       "partiallyAdmitted": "Some devices were admitted and queued. Review the remaining targets.",
       "rejected": "No devices were admitted. Review the reasons below.",
-      "queued": "Queued"
+      "queued": "Queued",
+      "reasons": {
+        "not_found_or_inaccessible": "Device not found or not accessible",
+        "site_access_denied": "You don't have access to this device's site",
+        "script_org_mismatch": "This script belongs to a different organization than the device",
+        "os_incompatible": "Script is not compatible with this device's operating system",
+        "device_decommissioned": "Device has been decommissioned",
+        "maintenance_suppressed": "Skipped: device is in a maintenance window"
+      }
     },
     "confirm": {
       "title": "Confirm Execution",

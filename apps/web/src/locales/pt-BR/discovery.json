@@ -203,6 +203,7 @@
       "scanQueued": "Varredura de descoberta enfileirada para \"{{name}}\"",
       "profileCreated": "Perfil de descoberta \"{{name}}\" criado",
       "profileUpdated": "Perfil de descoberta \"{{name}}\" atualizado",
+      "profileDeleted": "Perfil de descoberta \"{{name}}\" excluído",
       "profileMoved": "Perfil movido para {{site}}.",
       "assetsMoved_one": "{{count}} dispositivo de rede movido",
       "assetsMoved_other": "{{count}} dispositivos de rede movidos",

@@ -353,7 +353,7 @@ export default function CustomFieldDefinitionImportStep({
                       >
                         {FIELD_TYPES.map((ft) => (
                           <option key={ft} value={ft}>
-                            {ft}
+                            {t(/* i18n-dynamic */ `settings:customFieldsPage.fieldTypes.${ft}.label`)}
                           </option>
                         ))}
                       </select>

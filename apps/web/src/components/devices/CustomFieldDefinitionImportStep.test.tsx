@@ -83,6 +83,13 @@ describe('CustomFieldDefinitionImportStep', () => {
     expect(screen.getByTestId('cf-def-type-udf7')).toHaveValue('text');
   });
 
+  it('labels the Type options with the translated type names, not raw enum values', async () => {
+    render(<CustomFieldDefinitionImportStep source="datto_rmm" organizationId={ORG_ID} />);
+    await uploadCsv('UDF Slot\nudf7\n');
+    const labels = Array.from(screen.getByTestId('cf-def-type-udf7').querySelectorAll('option')).map((o) => o.textContent);
+    expect(labels).toEqual(['Text', 'Number', 'Yes/No', 'Dropdown', 'Date']);
+  });
+
   it('hides the partner-wide owner option from a user who cannot manage it', async () => {
     state.isPartnerScope = true;
     state.canManagePartnerWide = false;

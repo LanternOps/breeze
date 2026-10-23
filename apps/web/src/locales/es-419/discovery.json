@@ -203,6 +203,7 @@
       "scanQueued": "Exploración de descubrimiento en cola para \"{{name}}\"",
       "profileCreated": "Perfil de descubrimiento \"{{name}}\" creado",
       "profileUpdated": "Perfil de descubrimiento \"{{name}}\" actualizado",
+      "profileDeleted": "Perfil de descubrimiento \"{{name}}\" eliminado",
       "profileMoved": "Perfil movido a {{site}}.",
       "assetsMoved_one": "{{count}} dispositivo de red movido",
       "assetsMoved_other": "{{count}} dispositivos de red movidos",
