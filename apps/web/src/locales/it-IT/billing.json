@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} riga/righe superano la quantità inclusa e non sono state fatturate: {{names}}",
         "uncoveredDevices": "Fattura generata, ma {{count}} dispositivo/i non sono fatturati da alcuna riga di questo contratto: {{breakdown}}",
         "priceBookGaps": "{{count}} riga/righe di catalogo fatturate al prezzo salvato nel contratto — nessun prezzo in {{currency}} nel catalogo: {{lines}}",
-        "draftDeleted": "Bozza eliminata"
+        "draftDeleted": "Bozza eliminata",
+        "skipped": {
+          "already_billed": "Nessuna fattura generata: questo periodo di fatturazione è già stato fatturato.",
+          "not_due": "Nessuna fattura generata: questo contratto non è ancora in scadenza di fatturazione.",
+          "renewal_pending": "Nessuna fattura generata: questo contratto ha superato la data di fine ed è in attesa di rinnovo.",
+          "expired": "Nessuna fattura generata: questo contratto è scaduto.",
+          "unknown": "Non è stata generata alcuna fattura per questo contratto."
+        }
       },
       "cancelConfirm": {
         "title": "Annullare questo contratto?",

@@ -66,8 +66,8 @@
     "alertAcknowledged": "Alerta reconocida",
     "failedToResolveAlert": "No se pudo resolver la alerta",
     "alertResolved": "Alerta resuelta",
-    "alertsBreadcrumb": "Ruta de navegación de alertas",
-    "alertFallback": "Reserva de alerta",
+    "alertsBreadcrumb": "Alertas",
+    "alertFallback": "Alerta",
     "unknownMetric": "Métrica desconocida",
     "severity": {
       "critical": "Crítico",
@@ -125,7 +125,7 @@
     "unknownMetric": "Métrica desconocida",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Resolver alerta",
-    "ticketCreationFailedRetry": "Reintento fallido al crear el ticket",
+    "ticketCreationFailedRetry": "No se pudo crear el ticket. Inténtelo de nuevo",
     "ticketCreated": "Ticket {{ticket}} creado",
     "severity": {
       "critical": "Crítico",
@@ -458,8 +458,6 @@
     "loadingAlerts": "Cargando alertas...",
     "tryAgain": "Intentar otra vez",
     "alerts": "Alertas",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Supervise las alertas en sus dispositivos. Las reglas se gestionan en",
-    "configurationPolicies": "Políticas de configuración",
     "alert": "alerta",
     "dismissedAlertsAreHiddenForGoodWarranty": "Las alertas descartadas se ocultan para siempre. El vencimiento de la garantía no volverá a alertar para la misma fecha de finalización; otras alertas aún pueden activarse nuevamente si su condición se repite.",
     "cancel": "Cancelar",
@@ -505,7 +503,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} alerta?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} alerta?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} alertas?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} alertas?",
+    "subtitle": "Supervise las alertas en sus dispositivos. Los umbrales se definen en <monitors>Monitores</monitors>; impleméntelos en los clientes con <policies>Políticas de configuración</policies>."
   },
   "alertsSummary": {
     "activeAlerts": "Alertas activas",
@@ -545,7 +544,8 @@
     "sections": {
       "channels": "Canales",
       "routing": "Enrutamiento",
-      "escalation": "Políticas de escalamiento"
+      "escalation": "Políticas de escalamiento",
+      "inheritedChannels": "Compartidos por su socio"
     },
     "routing": {
       "everythingElse": "Todo lo demás",

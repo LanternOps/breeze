@@ -19,7 +19,7 @@
 import { getDirectoryClient, getGmailClient, getLicensingClient } from '../../googleClient';
 import { canonicalizeUserEmail, resolveContextByOrg, type GoogleToolContext } from '../../aiToolsGoogle';
 import type { PlannedEffect } from '../recipes/types';
-import { registerEffectProbe, type EffectProbe, type EffectProbeResult } from './index';
+import { registerEffectProbe, type EffectProbe, type EffectProbeRegistration, type EffectProbeResult } from './index';
 
 /** Page size the write-adjacent list reads use; a full page cannot prove absence. */
 const LICENSE_PAGE_SIZE = 100;
@@ -250,19 +250,20 @@ export const probeGoogleWipeMobileDevice: EffectProbe = async (effect, ctx) => {
     : result('unsatisfied', `${pending.length} of ${matched.length} device(s) for ${primaryEmail} have not started wiping`);
 };
 
-const GOOGLE_PROBES: ReadonlyArray<readonly [string, EffectProbe]> = [
+const GOOGLE_PROBES: ReadonlyArray<readonly [string, EffectProbe, EffectProbeRegistration?]> = [
   ['google_suspend_user', probeGoogleSuspendUser],
   ['google_remove_from_group', probeGoogleRemoveFromGroup],
   ['google_remove_license', probeGoogleRemoveLicense],
   ['google_set_vacation', probeGoogleSetVacation],
   ['google_set_forwarding', probeGoogleSetForwarding],
   ['google_add_mail_delegate', probeGoogleAddMailDelegate],
-  ['google_signout', probeGoogleSignout],
+  // Structurally unobservable: no provider call, always `unknown` (R1a-0).
+  ['google_signout', probeGoogleSignout, { alwaysUnknown: true }],
   ['google_wipe_mobile_device', probeGoogleWipeMobileDevice],
 ];
 
 /** Registers the eight Google probes; returns the tool names. The registry refuses duplicates, so call once. */
 export function registerGoogleEffectProbes(): string[] {
-  for (const [name, probe] of GOOGLE_PROBES) registerEffectProbe(name, probe);
+  for (const [name, probe, opts] of GOOGLE_PROBES) registerEffectProbe(name, probe, opts);
   return GOOGLE_PROBES.map(([name]) => name);
 }

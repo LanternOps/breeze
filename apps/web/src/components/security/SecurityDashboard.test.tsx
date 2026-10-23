@@ -6,13 +6,16 @@ const { fetchWithAuth } = vi.hoisted(() => ({
 }));
 
 vi.mock('@/stores/auth', () => ({
-  fetchWithAuth
+  fetchWithAuth,
+  registerOrgIdProvider: vi.fn()
 }));
 
 vi.mock('../../lib/featureFlags', () => ({
   ENABLE_EDR_INTEGRATIONS: false
 }));
 
+import { act } from '@testing-library/react';
+import { useOrgStore } from '@/stores/orgStore';
 import SecurityDashboard from './SecurityDashboard';
 
 // fetchJson in the component reads response.text(), not json().
@@ -47,8 +50,10 @@ const overviewPayload = {
   trend: []
 };
 
+// GET /vulnerabilities/stats — the CVE findings summary the linked page uses.
 const threatsPayload = {
-  summary: { critical: 2, high: 1, medium: 1, low: 1 }
+  openBySeverity: { critical: 2, high: 7, medium: 11, low: 3 },
+  totalFindings: 40
 };
 
 const emptyOverviewPayload = {
@@ -63,7 +68,8 @@ const emptyOverviewPayload = {
 };
 
 const emptyThreatsPayload = {
-  summary: { critical: 0, high: 0, medium: 0, low: 0 }
+  openBySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+  totalFindings: 0
 };
 
 function routeSecurity(overview: unknown, threats: unknown) {
@@ -73,7 +79,7 @@ function routeSecurity(overview: unknown, threats: unknown) {
         ? Promise.reject(overview)
         : Promise.resolve(ok(overview));
     }
-    if (url.startsWith('/security/threats')) {
+    if (url.startsWith('/vulnerabilities/stats')) {
       return threats instanceof Error
         ? Promise.reject(threats)
         : Promise.resolve(ok(threats));
@@ -96,7 +102,7 @@ describe('SecurityDashboard', () => {
 
     // Regression for the #2340 glued-text bug: these must render with a space
     // ("5 open items", never "5open items").
-    expect(screen.getByText('5 open items')).toBeInTheDocument();
+    expect(screen.getByText('23 open items')).toBeInTheDocument();
     expect(screen.getByText('43 devices tracked')).toBeInTheDocument();
     expect(screen.getByText('43 devices audited')).toBeInTheDocument();
     expect(screen.getByText(/^Updated\s/)).toBeInTheDocument();
@@ -116,6 +122,65 @@ describe('SecurityDashboard', () => {
     expect(screen.getByRole('link', { name: '+2 more' })).toHaveAttribute(
       'href',
       '/security/admin-audit'
+    );
+  });
+
+  it('says Refresh reloads the latest snapshot, and shows partial encryption separately (#9643)', async () => {
+    routeSecurity(
+      {
+        ...overviewPayload,
+        encryption: {
+          bitlockerEnabled: 20,
+          bitlockerPartial: 4,
+          filevaultEnabled: 10,
+          filevaultPartial: 0,
+          total: 43
+        }
+      },
+      threatsPayload
+    );
+    render(<SecurityDashboard />);
+    await screen.findByText('62');
+
+    expect(screen.getByRole('button', { name: /Refresh/ })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/latest security snapshot/i)
+    );
+    const card = screen.getByTestId('security-overview-encryption-card');
+    expect(card).toHaveTextContent(/BitLocker partial\s*4/);
+    // No partial FileVault machines -> no FileVault partial row.
+    expect(card).not.toHaveTextContent(/FileVault partial/);
+    expect(screen.getByTestId('security-overview-score-card')).toBeInTheDocument();
+    expect(screen.getByTestId('security-overview-recommendations-card')).toBeInTheDocument();
+  });
+
+  it('feeds the Vulnerabilities card from CVE findings by severity, never /security/threats (#9640)', async () => {
+    routeSecurity(overviewPayload, threatsPayload);
+    render(<SecurityDashboard />);
+
+    expect(await screen.findByText('23 open items')).toBeInTheDocument();
+    const row = (sev: string) =>
+      screen.getByRole('link', { name: new RegExp(`^${sev}`, 'i') });
+    expect(row('critical')).toHaveTextContent('2');
+    expect(row('high')).toHaveTextContent('7');
+    expect(row('medium')).toHaveTextContent('11');
+    expect(row('low')).toHaveTextContent('3');
+    const urls = fetchWithAuth.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.startsWith('/security/threats'))).toBe(false);
+    expect(urls).toContain('/vulnerabilities/stats');
+  });
+
+  it('refetches the overview and vulnerability summary when the selected org changes (#9642)', async () => {
+    routeSecurity(overviewPayload, threatsPayload);
+    act(() => useOrgStore.setState({ currentOrgId: 'org-a' }));
+    render(<SecurityDashboard />);
+    await screen.findByText('62');
+    const before = fetchWithAuth.mock.calls.length;
+
+    act(() => useOrgStore.setState({ currentOrgId: 'org-b' }));
+
+    await vi.waitFor(() =>
+      expect(fetchWithAuth.mock.calls.length).toBe(before + 2)
     );
   });
 
@@ -191,7 +256,7 @@ describe('SecurityDashboard', () => {
       };
       fetchWithAuth.mockImplementation((url: string) => {
         if (url === '/security/dashboard') return settle(overview);
-        if (url === '/security/threats') return settle(threats);
+        if (url === '/vulnerabilities/stats') return settle(threats);
         return Promise.resolve(ok({}));
       });
     }

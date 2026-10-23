@@ -33,8 +33,10 @@ import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import {
+  serviceRecoveryCheckpointSchema,
   taskCheckpointSchema,
   TASK_CHECKPOINT_VERSION,
+  type ServiceRecoveryCheckpoint,
   type TaskCheckpoint,
   type ServiceRecoveryInput,
 } from '@breeze/shared';
@@ -172,7 +174,9 @@ export async function admitServiceRecoveryTask(
   const now = input.now ?? new Date();
   const criterion = buildServiceRecoveryCriterion(recipeInput);
 
-  const checkpoint: TaskCheckpoint = taskCheckpointSchema.parse({
+  // Admission builds the service-recovery ARM explicitly (R1a-0): the union
+  // would accept it too, but the type here is the arm, not the union.
+  const checkpoint: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
     version: TASK_CHECKPOINT_VERSION,
     recipeInput,
     criterion,
@@ -529,11 +533,28 @@ export function parseTaskCheckpointResult(
   if (parsed.success) return { ok: true, checkpoint: parsed.data };
   return {
     ok: false,
-    detail: parsed.error.issues
-      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+    detail: describeCheckpointIssues(parsed.error.issues, [])
       .join('; ')
       .slice(0, 400),
   };
+}
+
+/**
+ * `taskCheckpointSchema` is a union of per-recipe arms (R1a-0). Once it has
+ * more than one arm, zod reports a mismatch as a single `invalid_union` issue
+ * at the root, which would replace "recipeInput.serviceName: too small" with
+ * "(root): Invalid input" — the one forensic trail a terminalized task has.
+ * Expand each arm's own issues instead, with their full paths.
+ */
+type CheckpointIssue = { path: PropertyKey[]; message: string; code?: string; errors?: CheckpointIssue[][] };
+function describeCheckpointIssues(issues: readonly CheckpointIssue[], prefix: PropertyKey[]): string[] {
+  return issues.flatMap((i) => {
+    const path = [...prefix, ...i.path];
+    if (i.code === 'invalid_union' && Array.isArray(i.errors) && i.errors.length > 0) {
+      return i.errors.flatMap((arm) => describeCheckpointIssues(arm, path));
+    }
+    return [`${path.map(String).join('.') || '(root)'}: ${i.message}`];
+  });
 }
 
 /** Convenience wrapper for callers that only need the value. */

@@ -1362,6 +1362,7 @@
     "drive": "Unidad",
     "size": "Tamaño",
     "used": "Usado",
+    "usedPercent": "% usado",
     "health": "Salud",
     "noDiskInventoryReported": "No se informó ningún inventario de disco.",
     "networkAdapters": "Adaptadores de red",
@@ -2497,7 +2498,7 @@
     "showFindings": "Mostrar hallazgos",
     "stats": {
       "accepted": "Aceptado",
-      "kev": "Kev",
+      "kev": "Explotada conocida",
       "mitigated": "mitigado",
       "open": "Abierto",
       "patchReady": "Parche listo",
@@ -2515,9 +2516,9 @@
     "statusLabel": "Etiqueta de estado",
     "table": {
       "actions": "Acciones",
-      "cve": "Cve",
-      "cvss": "cvss",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Riesgo",
       "severity": "Gravedad",
       "status": "Estado"
@@ -2700,7 +2701,7 @@
       "message_one": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con {{count}} dispositivo restante? Los que estén sin conexión lo ejecutarán en su próximo registro.",
       "message_other": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{count}} dispositivos restantes? Los que estén sin conexión lo ejecutarán en su próximo registro."
     },
-    "importFromRmm": "Importar desde otro RMM",
+    "importFromRmm": "Importar campos personalizados desde otro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} solo se aplica a dispositivos con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivos de red",
@@ -3483,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Todavía no se está monitoreando nada",
+        "titleWithCheck": "Sin datos de estado SNMP",
+        "descriptionWithCheck": "Hay una verificación de red activa para este dispositivo, por lo que la accesibilidad sigue monitoreándose. Activa SNMP para recopilar también datos de estado.",
         "action": "Configurar monitoreo",
         "benefit": {
           "printer": "Activa SNMP para ver los niveles de tóner y tinta, las bandejas de papel, los contadores de páginas y los errores de la impresora.",

@@ -23,7 +23,8 @@ import {
   normalizeEncryption,
   parsePasswordPolicySummary,
   parseLocalAdminSummary,
-  parseEncryptionVolumes
+  parseEncryptionVolumes,
+  deriveEncryptionMethod
 } from './helpers';
 import { requireSecurityReadAccess } from './readAuthorization';
 
@@ -157,7 +158,6 @@ complianceRoutes.get(
     const { page, limit } = getPagination(query);
 
     const rows = await listStatusRows(auth, query.orgId);
-    const statuses = rows.map(toStatusResponse);
 
     // Real escrow status: devices with at least one active escrowed key.
     // Constrained to the org-scoped device set already resolved by
@@ -177,20 +177,26 @@ complianceRoutes.get(
       : [];
     const escrowedDeviceIds = new Set(escrowRows.map((r) => r.deviceId));
 
-    const methodByOs: Record<'windows' | 'macos' | 'linux', string> = {
-      windows: 'bitlocker',
-      macos: 'filevault',
-      linux: 'luks'
+    const FALLBACK_VOLUME_METHOD_LABELS: Record<string, string> = {
+      bitlocker: 'BitLocker',
+      filevault: 'FileVault',
+      luks: 'LUKS',
+      none: 'None',
+      unknown: 'Unknown'
     };
 
     let devicesData = rows.map((row) => {
       const status = toStatusResponse(row);
       const encStatus = status.encryptionStatus;
-      const method = encStatus === 'unencrypted' ? 'none' : methodByOs[status.os];
+      // What the agent reported, never inferred from the OS (#9607).
+      const method = deriveEncryptionMethod(row.encryptionDetails, encStatus);
+      // No per-volume detail reported: synthesize one row for the system
+      // volume. Its method mirrors the device-level method, which is itself
+      // only what the agent reported.
       const fallbackVolume = {
         drive: status.os === 'windows' ? 'C:' : status.os === 'macos' ? 'Macintosh HD' : '/dev/sda1',
         encrypted: encStatus !== 'unencrypted',
-        method: method === 'bitlocker' ? 'BitLocker' : method === 'filevault' ? 'FileVault' : method === 'luks' ? 'LUKS2' : 'None',
+        method: FALLBACK_VOLUME_METHOD_LABELS[method] ?? method,
         status: null as string | null,
         percentEncrypted: null as number | null
       };
@@ -202,7 +208,9 @@ complianceRoutes.get(
         encryptionMethod: method,
         encryptionStatus: encStatus,
         volumes: parseEncryptionVolumes(row.encryptionDetails) ?? [fallbackVolume],
-        tpmPresent: status.os === 'windows',
+        // The agent does not collect TPM state; null renders as "not
+        // reported" rather than a value guessed from the OS (#9607).
+        tpmPresent: null as boolean | null,
         recoveryKeyEscrowed: escrowedDeviceIds.has(status.deviceId)
       };
     });
@@ -225,23 +233,26 @@ complianceRoutes.get(
       devicesData = devicesData.filter((device) => device.deviceName.toLowerCase().includes(term));
     }
 
-    const fullyEncrypted = statuses.filter((status) => normalizeEncryption(status.encryptionStatus) === 'encrypted').length;
-    const partial = statuses.filter((status) => normalizeEncryption(status.encryptionStatus) === 'partial').length;
-    const unencrypted = statuses.filter((status) => normalizeEncryption(status.encryptionStatus) === 'unencrypted').length;
+    // Every tile (state, escrow and method) counts the same filtered set so
+    // they never disagree under a filter (#9609).
+    const fullyEncrypted = devicesData.filter((device) => normalizeEncryption(device.encryptionStatus) === 'encrypted').length;
+    const partial = devicesData.filter((device) => normalizeEncryption(device.encryptionStatus) === 'partial').length;
+    const unencrypted = devicesData.filter((device) => normalizeEncryption(device.encryptionStatus) === 'unencrypted').length;
 
     return c.json({
       ...paginate(devicesData, page, limit),
       summary: {
-        total: statuses.length,
+        total: devicesData.length,
         fullyEncrypted,
         partial,
         unencrypted,
-        recoveryKeysEscrowed: rows.filter((row) => escrowedDeviceIds.has(row.deviceId)).length,
+        recoveryKeysEscrowed: devicesData.filter((device) => device.recoveryKeyEscrowed).length,
         methodCounts: {
           bitlocker: devicesData.filter((device) => device.encryptionMethod === 'bitlocker').length,
           filevault: devicesData.filter((device) => device.encryptionMethod === 'filevault').length,
           luks: devicesData.filter((device) => device.encryptionMethod === 'luks').length,
-          none: devicesData.filter((device) => device.encryptionMethod === 'none').length
+          none: devicesData.filter((device) => device.encryptionMethod === 'none').length,
+          unknown: devicesData.filter((device) => device.encryptionMethod === 'unknown').length
         }
       }
     });

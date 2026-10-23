@@ -8,6 +8,7 @@ import { parseCsv } from '../../lib/csvParse';
 import { asList } from '@/lib/asList';
 import { coerceCellForType, type CustomFieldImportDateFormat } from './customFieldImportCoercion';
 import type { ImportSystem } from './CustomFieldDefinitionImportStep';
+import { guessValueColumnRoles } from './customFieldImportHelpers';
 import CustomFieldImportPreviewTable, {
   bulkSelectableValueRows,
   defaultValueImportSelection,
@@ -172,13 +173,16 @@ export default function CustomFieldValueImportStep({ organizationId, source, onC
 
   const [fieldTypeByKey, setFieldTypeByKey] = useState<Record<string, CustomFieldType>>({});
   const [conflictingFieldKeys, setConflictingFieldKeys] = useState<Set<string>>(new Set());
+  // Existing definitions (incl. the ones step 1 just created) — used to pre-map columns (#9679).
+  const [knownFields, setKnownFields] = useState<Array<{ fieldKey: string; name: string }>>([]);
   useEffect(() => {
     let cancelled = false;
     fetchWithAuth('/custom-fields')
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`GET /custom-fields → ${r.status}`))))
       .then((data) => {
         if (cancelled) return;
-        const list = asList<{ fieldKey: string; type: CustomFieldType }>(data);
+        const list = asList<{ fieldKey: string; name?: string; type: CustomFieldType }>(data);
+        setKnownFields(list.map((f) => ({ fieldKey: f.fieldKey, name: f.name ?? '' })));
         const byKey: Record<string, CustomFieldType> = {};
         const conflicts = new Set<string>();
         for (const f of list) {
@@ -230,8 +234,9 @@ export default function CustomFieldValueImportStep({ organizationId, source, onC
       setFileName(file.name);
       setHeaders(parsed.headers);
       setCsvRows(parsed.rows);
-      setRoles({});
-      setFieldKeys({});
+      const guessed = guessValueColumnRoles(parsed.headers, knownFields);
+      setRoles(guessed.roles);
+      setFieldKeys(guessed.fieldKeys);
       setPreviewRows(null);
       setPreviewStale(false);
       setBuiltRows([]);
@@ -241,6 +246,25 @@ export default function CustomFieldValueImportStep({ organizationId, source, onC
       setNotAttempted(0);
     });
   }
+
+  // The field list can land after the file did; fill in guesses for columns the
+  // operator hasn't touched (any explicit choice, including "ignore", is a key in `roles`).
+  useEffect(() => {
+    if (headers.length === 0 || knownFields.length === 0) return;
+    const guessed = guessValueColumnRoles(headers, knownFields);
+    const fresh = headers.filter((h) => guessed.roles[h] !== undefined);
+    if (fresh.length === 0) return;
+    setRoles((prev) => {
+      const next = { ...prev };
+      for (const h of fresh) if (next[h] === undefined) next[h] = guessed.roles[h]!;
+      return next;
+    });
+    setFieldKeys((prev) => {
+      const next = { ...prev };
+      for (const h of fresh) if (next[h] === undefined && guessed.fieldKeys[h]) next[h] = guessed.fieldKeys[h]!;
+      return next;
+    });
+  }, [headers, knownFields]);
 
   function setRole(header: string, role: ColumnRole) {
     setRoles((prev) => ({ ...prev, [header]: role }));
@@ -303,6 +327,12 @@ export default function CustomFieldValueImportStep({ organizationId, source, onC
   }, [headers, csvRows, roles, fieldKeys, dateFormat, fieldTypeByKey, conflictingFieldKeys, organizationId]);
 
   const importRows = mapped.rows;
+  // Human label per previewed row (the file's own hostname, else serial) so matched
+  // rows don't show a bare device uuid (#9679). Indexes match `builtRows`.
+  const rowLabels = useMemo(
+    () => new Map(builtRows.map((r, i) => [i, r.hostname || r.serialNumber || ''] as const).filter(([, l]) => l)),
+    [builtRows],
+  );
   const totalValues = importRows.reduce((n, r) => n + r.values.length, 0);
 
   async function preview() {
@@ -587,6 +617,7 @@ export default function CustomFieldValueImportStep({ organizationId, source, onC
             selected={selected}
             onSelectedChange={setSelected}
             picks={picks}
+            rowLabels={rowLabels}
             onPick={(index, deviceId) => setPicks((prev) => new Map(prev).set(index, deviceId))}
           />
           <div className="flex flex-wrap items-center gap-3">

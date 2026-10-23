@@ -16,7 +16,7 @@ Currently one provider is available:
 Huntress and SentinelOne keep their own dedicated integrations; see [EDR Integrations](/features/edr-integrations/).
 
 <Aside>
-  This release is read-only. Response actions (isolation, remediation) are not yet available for framework providers.
+  Response actions arrived in v0.124.0 and are off until you turn them on. Each connection card has an **Allow response actions** switch; while it is off, the device page shows the provider's data read-only. Changing it, like any connection setting, needs a partner user with full organization access and MFA. The switch, the actions and their history are only visible when the web image is built with `PUBLIC_ENABLE_EDR_INTEGRATIONS=true`, which the published image does not set — see the flag note in [EDR Integrations](/features/edr-integrations/).
 </Aside>
 
 ## Connecting a provider
@@ -31,6 +31,11 @@ Huntress and SentinelOne keep their own dedicated integrations; see [EDR Integra
 </Steps>
 
 A connection reports its own health: connected, needs re-authentication, or error, along with the last inventory and detection sync times. You can pause a connection, trigger a manual sync, or delete it. Deleting is permanent and asks you to confirm the number of detections and endpoints that will be removed.
+
+The connection card also carries two switches (v0.124.0), both off by default:
+
+- **Allow response actions** — lets technicians who hold device execute permission isolate and release devices and run scans on endpoints managed through this connection. Turning it on asks you to confirm.
+- **Push events** — the provider notifies Breeze about new events, which triggers a sync sooner than the regular schedule; scheduled syncs keep running. It needs the server's public URL set and HTTPS, and the connection active. If the provider already pushes to another destination (for example a SIEM), Breeze asks before replacing that feed. A **Send test event** button checks the path; the card shows when the last push event arrived.
 
 ## Mapping vendor tenants to organizations
 
@@ -53,7 +58,7 @@ During each sync Breeze tries to match vendor endpoints to enrolled devices. End
 |----------|--------------|
 | **Security → EDR → Other EDR** tab | Detections from framework providers. The tab carries the provider name when only one provider is connected. |
 | **Incidents** | An incidents feed of framework detections, with **Promote to incident** to open a Breeze incident from a detection. |
-| **Device page → EDR section** | Read-only endpoint health, isolation state and detections for the linked device. |
+| **Device page → EDR section** | Endpoint health, isolation state and detections for the linked device. With **Allow response actions** on for the connection, **Isolate device**, **Release isolation** and **Run scan** buttons (isolating and releasing confirm first, with an optional reason; running any response action asks you to verify with MFA), plus a **Recent response actions** history showing each request as Queued, In progress, Succeeded or Failed. One response action runs at a time per device. |
 | **Alerts** | Alerts raised from framework detections. |
 | **Customer portal** | An optional generic status and threat count; see below. |
 

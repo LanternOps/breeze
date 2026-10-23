@@ -37,7 +37,10 @@ because that is where the connection lives — this includes a few jobs that
 otherwise look like the routine scheduled/retention work in the left column,
 such as automation-run dispatch, backup verification, and event-log retention,
 whose closures reach socket-local dispatch under the hood. Everything else —
-the majority of Breeze's background work — moves.
+the majority of Breeze's background work — moves. One sweep is tied to the
+container's own disk rather than to a connection: the AI transcript sweeper
+(v0.124.0+) runs in every `api` or `all` container and cleans that container's
+transcripts, so it does not move to the worker either.
 
 ## Choosing the roles
 

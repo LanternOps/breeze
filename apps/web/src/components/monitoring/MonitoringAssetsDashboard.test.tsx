@@ -189,4 +189,15 @@ describe.each(['responsive-table-desktop', 'responsive-table-cards'])('%s', (sur
     });
   });
 
+  describe('MonitoringAssetsDashboard — asset type label (#9646)', () => {
+    it('shows the translated type label, not the raw enum', async () => {
+      wire([{ ...baseAsset, assetType: 'access_point' }]);
+      render(<MonitoringAssetsDashboard />);
+
+      const scope = await row();
+      expect(await scope.findByText('Access Point')).toBeInTheDocument();
+      expect(scope.queryByText(/access_point/i)).not.toBeInTheDocument();
+    });
+  });
+
 });

@@ -39,6 +39,10 @@ The rules are fixed and shown on the public page:
 
 Controls are re-evaluated every hour while a page is published, and again when you publish. The hourly refresh re-reads the evidence only: your page settings, introduction, contact details and document list stay as they were at the last publish. Edits you save in the Trust Center tab reach the public page when you publish again. Removing a document from the page still takes it off the public page at the next refresh.
 
+### The Microsoft 365 MFA control
+
+One control, **MFA enforced (Microsoft 365 Conditional Access)**, is evaluated from the organization's Microsoft 365 connection rather than from devices. It reads Met when an enabled Conditional Access policy requires multi-factor authentication for all users on all cloud apps; report-only policies do not count. It needs a Microsoft 365 connection whose Conditional Access sync completed inside the evidence window. Without one, or when the tenant has no synced policies (security defaults and per-user MFA are not read), the control reads **Not assessed**, never Not met.
+
 ## Who can publish
 
 Publishing is limited to partners whose account is trusted. A new account must first earn trust, and a restricted account cannot publish. The Trust Center tab explains the reason when publishing is unavailable.
@@ -50,6 +54,8 @@ A page's public URL is built from the partner slug and the organization slug. Re
 ### Customer authorization
 
 When you publish a customer's page you must confirm that the customer authorized it and record who gave that authorization (name and role). Breeze stores the attestation with the date. A partner's own page needs no customer authorization, so only your own internal organization can be marked as the partner page.
+
+The partner-page setting cannot be removed from a page that is live without a recorded customer authorization, and the partner page cannot be moved to another organization while the current one is live that way. Unpublish the page first. This keeps a page that was published as your own from staying live as a customer page nobody authorized.
 
 ## Framework references
 
@@ -82,6 +88,10 @@ A visitor who wants it fills in a short request form: name, work email, company 
 
 Requests open only while the page is published. Downloads stop if you unpublish the page, if the document is removed, deleted or replaced by a newer version, or if you switch it back to Public.
 
+<Aside type="caution" title="Needs an email transport">
+Document requests depend on email: the visitor's confirmation link is how a request reaches you, and approvals and download links are emailed too. On an install with no email transport configured, no request can be confirmed. The **Approve** and **Resend link** toasts still say an email was sent on such an install (#9256).
+</Aside>
+
 ### Non-disclosure terms
 
 You can add non-disclosure terms in the **Document access requests** section. Requesters must accept them before they can send a request, and Breeze records the exact text each requester accepted. The terms are shown as plain text and reach the public page when you next publish.
@@ -96,7 +106,7 @@ Access links are single-purpose and only ever appear after the `#` in the addres
 
 A trust page can map its controls to one or more security frameworks and show how many of each framework's safeguards have evidence behind them. For example: "Evidence shown for 12 of 106 safeguards (9 verified by Breeze telemetry · 3 declared by the provider)." A safeguard counts when a shown control that references it was assessed from telemetry, or when a current declared control references it. Expired declarations and controls that are not assessed are listed but not counted. This is a summary of evidence, not a statement of compliance, and the page never says a business is compliant with, certified to, or meets a framework.
 
-Choose frameworks in the **Framework view** section of the Trust Center tab. **Use default** clears the page's own choice and falls back to the partner template, then the built-in default. The editor suggests Essential Eight for partners in Australia and Cyber Essentials for partners in the United Kingdom. The default is NIST CSF 2.0.
+Choose frameworks in the **Framework view** section of the Trust Center tab. **Use default** clears the page's own choice and falls back to the partner template, then the built-in default. The editor suggests Essential Eight for partners in Australia and Cyber Essentials for partners in the United Kingdom. The built-in default is NIST CSF 2.0 while the CIS setting below is off; with it on, the default becomes CIS Controls v8.
 
 The CIS Controls v8 view requires `BREEZE_TRUST_CIS_FRAMEWORK_VIEW` (default off). Enabling it is an operator decision after CIS licensing is confirmed. While it is off, CIS cannot be selected and the framework view omits it; control cards still show their CIS references. See the [environment reference](/deploy/environment/).
 
@@ -126,7 +136,13 @@ Each organization's Trust Center tab shows where each setting comes from: **Set 
 
 Publishing freezes the values the page was published with. A later change to your defaults reaches a published page only when that page is published again.
 
+A page that existed before partner defaults were introduced keeps the values it had, as settings of its own, so your new defaults do not change it. Use **Reset to inherited** on each such setting to adopt the partner template.
+
 Changing the defaults needs the `organizations:write` permission, access to every organization in your partner account, and a session with multi-factor authentication. Partner users limited to selected organizations can view the defaults but not change them.
+
+## Languages
+
+The public page is shown in one of eight languages: English, Portuguese (Brazil), Spanish (Latin America), French (France), French (Canada), German, Italian and Turkish. The language is taken from your partner **Language** setting at the moment you publish and frozen with the page, so changing the setting later takes effect at the next publish. Breeze translates its own copy: section headings, control titles and descriptions, statuses and the verification method text. The non-English translations are machine-drafted. Text you wrote yourself, such as the introduction, FAQ answers and document titles, is shown as you entered it.
 
 ## Badge
 

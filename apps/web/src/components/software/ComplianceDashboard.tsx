@@ -184,6 +184,8 @@ export default function ComplianceDashboard({
   const [error, setError] = useState<string | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>("closed");
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
+  // Bumped for every prefilled create so a second prefill re-mounts the form.
+  const [prefillNonce, setPrefillNonce] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   // Catalog items for PolicyForm's per-rule catalog-link picker (#5509).
   // Fetched on its own rather than inside refresh()'s Promise.all: a catalog
@@ -356,6 +358,7 @@ export default function ComplianceDashboard({
         isActive: true,
         enforceMode: false,
       });
+      setPrefillNonce((n) => n + 1);
       setModalMode("create");
       // Clean up the URL
       if (typeof window !== "undefined")
@@ -933,9 +936,11 @@ export default function ComplianceDashboard({
                 </p>
               </div>
               <div className="text-xs text-muted-foreground">
-                {i18n.t("policies:software.complianceDashboard.remediation")}
-                {row.compliance.remediationStatus ??
-                  i18n.t("policies:software.complianceDashboard.none")}
+                {i18n.t("policies:software.complianceDashboard.remediation", {
+                  value:
+                    row.compliance.remediationStatus ??
+                    i18n.t("policies:software.complianceDashboard.none"),
+                })}
               </div>
               {row.compliance.installRemediationStatus &&
                 row.compliance.installRemediationStatus !== "none" && (
@@ -988,8 +993,9 @@ export default function ComplianceDashboard({
                   </div>
                 )}
               <div className="text-xs text-muted-foreground">
-                {i18n.t("policies:software.complianceDashboard.checked")}
-                {formatDateTime(row.compliance.lastChecked)}
+                {i18n.t("policies:software.complianceDashboard.checked", {
+                  date: formatDateTime(row.compliance.lastChecked),
+                })}
               </div>
             </div>
           ))}
@@ -1020,13 +1026,22 @@ export default function ComplianceDashboard({
             </div>
             <div className="overflow-y-auto px-6 py-4">
               <PolicyForm
-                key={selectedPolicy?.id ?? "create"}
+                key={
+                  modalMode === "create"
+                    ? `create-${prefillNonce}`
+                    : (selectedPolicy?.id ?? "create")
+                }
                 onSubmit={handleFormSubmit}
                 onCancel={closeModal}
                 defaultValues={
                   modalMode === "edit" && selectedPolicy
                     ? policyToFormDefaults(selectedPolicy)
-                    : { ownerScope: defaultOwnerScope }
+                    : modalMode === "create" && selectedPolicy
+                      ? {
+                          ...policyToFormDefaults(selectedPolicy),
+                          ownerScope: defaultOwnerScope,
+                        }
+                      : { ownerScope: defaultOwnerScope }
                 }
                 submitLabel={
                   modalMode === "create"

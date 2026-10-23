@@ -110,6 +110,7 @@
     "serialNumber": "Numéro de série",
     "allow": "Autoriser :",
     "reason": "Raison",
+    "expiresAt": "Expire (votre heure locale)",
     "updatePolicy": "Mise à jour de la politique",
     "createPolicy": "Créer une politique"
   }

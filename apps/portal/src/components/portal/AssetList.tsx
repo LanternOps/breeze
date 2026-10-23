@@ -3,7 +3,8 @@ import { Package } from 'lucide-react';
 import { type Asset } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { cn } from '@/lib/utils';
-import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice, type MarkTone } from './ui';
+import { deviceStatusMark } from '@/lib/deviceStatus';
+import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
 
 interface AssetListProps {
   assets: Asset[];
@@ -22,17 +23,6 @@ const OS_LABELS: Record<string, string> = {
 function osLabel(osType: string | null): string {
   if (!osType) return 'Unknown';
   return OS_LABELS[osType.toLowerCase()] ?? osType;
-}
-
-function statusMark(status: Asset['status']): { tone: MarkTone; label: string } {
-  switch (status) {
-    case 'online':
-      return { tone: 'success', label: 'Online' };
-    case 'offline':
-      return { tone: 'neutral', label: 'Offline' };
-    case 'warning':
-      return { tone: 'warning', label: 'Warning' };
-  }
 }
 
 export function AssetList({ assets, error }: AssetListProps) {
@@ -71,7 +61,7 @@ export function AssetList({ assets, error }: AssetListProps) {
             </thead>
             <tbody className="block divide-y divide-border/70 sm:table-row-group">
               {assets.map((asset) => {
-                const mark = statusMark(asset.status);
+                const mark = deviceStatusMark(asset.status);
                 return (
                   <tr key={asset.id} className={ROW}>
                     {/* order-* reorders the card: the device name and its status

@@ -700,7 +700,13 @@
         "quality": "Qualità"
       },
       "failovers": "Failover",
-      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile"
+      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile",
+      "titleBy": {
+        "model": "Utilizzo dell'IA per modello",
+        "organization": "Utilizzo dell'IA per organizzazione",
+        "technician": "Utilizzo dell'IA per tecnico",
+        "feature": "Utilizzo dell'IA per funzionalità"
+      }
     },
     "link": {
       "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "ad es. Sun 02:00-06:00, 02:00-04:00 oppure 24/7",
     "maintenanceInvalid": "Usa una finestra UTC come <first>Sun 02:00-04:00</first> o <second>02:00-04:00</second>, oppure <always>24/7</always> per sempre attivo. Lascia vuoto per consentire alle org di configurarla.",
     "maintenanceHelp": "Finestra oraria (UTC) per aggiornamenti e riavvii automatici. Usa <always>24/7</always> per sempre attivo, oppure lascia vuoto per consentire alle org di configurarla singolarmente.",
-    "deviceGroup": "Gruppo dispositivi predefinito",
-    "alertThreshold": "Soglia avvisi predefinita",
     "autoEnrollment": {
       "title": "Registrazione automatica",
       "enable": "Abilita la registrazione automatica per i nuovi dispositivi",
-      "requireApproval": "Richiedi approvazione amministratore",
-      "sendWelcome": "Invia notifica di benvenuto"
+      "requireApproval": "Richiedi approvazione amministratore"
     },
     "enrollment": {
       "title": "Registrazione dispositivi",
@@ -1030,8 +1033,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Azienda",
+      "devices": "Dispositivi e agenti",
       "security": "Sicurezza e accesso",
       "communications": "Comunicazioni",
+      "ai": "IA",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1065,11 @@
       },
       "company": {
         "label": "Azienda",
-        "description": "Nome, indirizzo, contatti"
+        "description": "Nome, indirizzo, contatti, firma email"
       },
       "regional": {
         "label": "Area geografica",
-        "description": "Fuso orario, formati, orari"
+        "description": "Fuso orario, lingua, formati, orari"
       },
       "defaults": {
         "label": "Predefiniti",
@@ -1072,7 +1077,7 @@
       },
       "security": {
         "label": "Sicurezza",
-        "description": "Allowlist IP e accesso"
+        "description": "Password, sessioni, MFA e allowlist IP"
       },
       "remoteAccess": {
         "label": "Accesso remoto",
@@ -1080,11 +1085,11 @@
       },
       "eventLogs": {
         "label": "Log eventi",
-        "description": "Inoltro e conservazione"
+        "description": "Inoltra i log eventi dei dispositivi a Elasticsearch"
       },
       "notifications": {
         "label": "Notifiche",
-        "description": "Avvisi email e webhook"
+        "description": "Indirizzo mittente, SMTP e valori predefiniti di Slack e Pushover"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1109,7 +1114,7 @@
       },
       "aiFeatures": {
         "label": "Funzionalità IA",
-        "description": "Valori predefiniti per rilevamento anomalie e correzioni suggerite"
+        "description": "Policy sui dati IA, rilevamento anomalie e correzioni suggerite"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1131,14 @@
       "aiApprovals": {
         "label": "Timeout di approvazione IA",
         "description": "Per quanto tempo la chat IA attende l'approvazione di un'azione controllata"
+      },
+      "callerVerification": {
+        "label": "Verifica del chiamante",
+        "description": "Verifica dell’identità di chi chiama per le richieste di assistenza"
+      },
+      "knownGuests": {
+        "label": "Ospiti noti",
+        "description": "Dispositivi approvati di visitatori e tecnici per indirizzo MAC"
       }
     },
     "saved": "Impostazioni partner salvate",
@@ -1388,6 +1401,14 @@
     "never": "Mai",
     "downloadInstaller": "Scarica programma di installazione preconfigurato",
     "downloading": "Download in corso...",
+    "installerDialogTitle": "Scarica il programma di installazione per \"{{name}}\"",
+    "installerDialogDescription": "Il programma di installazione viene creato per un numero fisso di dispositivi. Ogni dispositivo che lo esegue ne utilizza uno.",
+    "installerDeviceCount": "Numero di dispositivi",
+    "installerDeviceCountRemaining": "A questa chiave restano {{count}} registrazioni.",
+    "installerDeviceCountRemaining_one": "A questa chiave resta {{count}} registrazione.",
+    "installerDeviceCountRemaining_other": "A questa chiave restano {{count}} registrazioni.",
+    "installerDeviceCountUnlimited": "Questa chiave non ha limiti di utilizzo.",
+    "installerDeviceCountRange": "Inserisci un numero intero da 1 a {{max}}.",
     "rotate": "Ruota",
     "page": "Pagina {{current}} di {{total}}",
     "previous": "Precedente",
@@ -1401,7 +1422,10 @@
     "retrySites": "Riprova",
     "createASite": "Crea un sito",
     "maxUsage": "Utilizzo massimo (opzionale)",
-    "defaultDeviceLimit": "50 (predefinito)",
+    "defaultDeviceLimit": "{{count}} (predefinito dell’organizzazione)",
+    "expiresAtHelp": "Lascia vuoto per {{duration}} (predefinito dell’organizzazione).",
+    "usageFromDefault": "predefinito",
+    "usageFromDefaultTitle": "Il limite di dispositivi deriva dal valore predefinito dell’organizzazione.",
     "maxUsageHelp": "Numero massimo di agent che possono registrarsi con questa chiave.",
     "expiresAt": "Scade il (opzionale)",
     "creating": "Creazione in corso...",
@@ -1792,27 +1816,13 @@
     "deviceGroup": {
       "title": "Gruppo dispositivi predefinito",
       "description": "I dispositivi appena registrati vengono aggiunti automaticamente a questo gruppo.",
-      "options": {
-        "AllManagedDevices": "Tutti i dispositivi gestiti",
-        "CriticalInfrastructure": "Infrastruttura critica",
-        "RemoteStaff": "Personale remoto",
-        "Contractors": "Collaboratori esterni"
-      }
-    },
-    "alertSeverity": {
-      "title": "Gravità avviso predefinita",
-      "description": "Gli avvisi sotto questa gravità vengono inviati solo al feed riepilogativo.",
-      "options": {
-        "critical": "Solo critici",
-        "high": "Alti e critici",
-        "medium": "Medi e superiori"
-      }
+      "none": "Nessuno",
+      "unavailable": "Gruppo selezionato (non disponibile)"
     },
     "autoEnrollment": {
       "title": "Registrazione automatica",
       "enable": "Abilita registrazione automatica",
-      "requireApproval": "Richiedi approvazione amministratore",
-      "sendWelcome": "Invia messaggio di benvenuto"
+      "requireApproval": "Richiedi approvazione amministratore"
     },
     "agentUpdates": {
       "title": "Criterio aggiornamento agent",
@@ -1863,7 +1873,7 @@
     "disabledDescription": "Abilita l'inoltro log sopra per configurare le impostazioni di connessione.",
     "enable": {
       "title": "Abilita inoltro log",
-      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store con una pianificazione ricorrente."
+      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store man mano che ogni dispositivo li segnala."
     },
     "connection": {
       "title": "Connessione",
@@ -1952,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vista cliente",
+      "subtitle": "Anteprima: cosa vede {{who}}",
+      "whoOrganization": "il cliente",
+      "pickerLabel": "Visualizza come",
+      "pickerAll": "Intera organizzazione",
+      "loading": "Caricamento dell’anteprima…",
+      "loadFailed": "Impossibile caricare la vista cliente.",
+      "on": "Attivo",
+      "off": "Disattivato",
+      "notAvailable": "Un’anteprima dettagliata di questa sezione non è ancora disponibile.",
+      "permissionWithheld": "Non mostrato: per visualizzare questa anteprima serve {{permissions}}.",
+      "tilesWithheld": "Alcuni riquadri non sono mostrati: per visualizzarli serve {{permissions}}.",
+      "noteNoUser": "I dati dei ticket sono nascosti. Scegli un utente del portale per vedere ciò che vede quella persona.",
+      "readinessTitle": "Controlli di preparazione",
+      "readinessNone": "Nessun problema rilevato.",
+      "fix": "Correggi",
+      "readiness": {
+        "documents_empty": "Documenti è attivo, ma nessun documento è contrassegnato come Visibile nel portale: il cliente vede una libreria vuota.",
+        "reports_empty": "Report è attivo, ma non ci sono ancora esecuzioni di report: il cliente vede un elenco vuoto.",
+        "service_one_time_visible": "Servizio è attivo e gli elementi una tantum sono ancora visibili al cliente.",
+        "backups_no_data": "Backup è attivo, ma non ci sono ancora dati di backup da mostrare.",
+        "dashboard_security_no_data": "Dashboard è attiva, ma il punteggio di sicurezza non ha ancora dati: quel riquadro è vuoto per il cliente.",
+        "branding_unset": "Il branding del portale non è mai stato impostato (logo, colori, messaggio di benvenuto o contatto di supporto)."
+      }
+    },
     "loading": "Caricamento impostazioni portale…",
     "save": "Salva impostazioni portale",
     "toasts": {
@@ -2443,7 +2479,11 @@
     "sourceDefault": "Predefinito",
     "selectOrgForEffectiveBudget": "Seleziona un'organizzazione per vedere il suo budget effettivo, oppure modifica i valori predefiniti a livello di partner.",
     "editPartnerWideDefaults": "Modifica i valori predefiniti a livello di partner",
-    "thresholdsOff": "Disattivato"
+    "thresholdsOff": "Disattivato",
+    "todaysCost": "Costo di oggi",
+    "monthlyCost": "Costo mensile",
+    "messagesToday": "Messaggi di oggi",
+    "tokensThisMonth": "Token di questo mese"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4350,6 +4390,13 @@
     "commitmentTermRange": "Durata dell'impegno: inserisci un numero intero da 1 a 120 mesi."
   },
   "catalogItemsTab": {
+    "viewActive": "Attivi",
+    "viewArchived": "Archiviati",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Servizio"
+    },
     "itemArchived": "Elemento archiviato",
     "itemRestored": "Elemento ripristinato",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Il catalogo prodotti è disponibile solo per account partner.",
@@ -4698,6 +4745,7 @@
     "actions": "Azioni",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nessun ruolo trovato. Prova a modificare la ricerca o i filtri.",
     "cloneRole": "Clona ruolo: {{name}}",
+    "cloneDescription": "Copia di {{name}}",
     "clone": "Clona",
     "edit": "Modifica",
     "delete": "Elimina",

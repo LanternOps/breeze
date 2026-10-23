@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Confirm patch approval",
-      "selectedOrganization": "the selected organization",
-      "messageOne": "Approve patch on {{count}} device in {{org}}?",
-      "messageMany": "Approve patch on {{count}} devices in {{org}}?",
+      "selectedRing": "(unnamed)",
+      "messageRingOne": "Approve patch on {{count}} device across all organizations in ring {{ring}}?",
+      "messageRingMany": "Approve patch on {{count}} devices across all organizations in ring {{ring}}?",
       "messagePartnerWide": "Approve patch for all organizations under your partner?"
     },
     "checkingAccess": "Checking your access..."
@@ -335,6 +335,11 @@
       "showing": "Showing {{shown}} of {{total}}",
       "loadMore": "Load more",
       "lastChecked": "Last checked: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Package version {{version}}",
+      "id": "Catalog ID {{id}}",
+      "title": "Another catalog entry has the same title. Each is approved separately."
     }
   },
   "patchesPage": {
@@ -614,5 +619,24 @@
     "orEnterAPackageIDManually": "Or enter a package ID manually",
     "removeRuleFor": "Remove rule for {{application}}",
     "scopeNote": "These rules apply to every device whose configuration policy links this ring."
+  },
+  "patchDetails": {
+    "unknown": "Unknown",
+    "source": "Source",
+    "packageId": "KB / package ID",
+    "severity": "Severity",
+    "releaseDate": "Release date",
+    "firstSeen": "First seen in catalog",
+    "rings": {
+      "title": "Update rings",
+      "note": "When each ring auto-approves this patch (ring-level rule; category overrides are not shown).",
+      "none": "No update rings configured.",
+      "manual": "Not auto-approved — needs manual approval",
+      "immediate": "Auto-approves immediately",
+      "needsDate": "Held — no release date to start the {{count}}-day window",
+      "autoApproves": "Auto-approves {{date}}",
+      "hold_one": "{{count}}-day hold",
+      "hold_other": "{{count}}-day hold"
+    }
   }
 }

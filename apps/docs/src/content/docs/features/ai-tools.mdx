@@ -418,6 +418,25 @@ Use `manage_notification_channels` to manage channels and test connectivity befo
 
 Replace the placeholders with the provider's actual configuration. Store secrets in channel configuration, not in ticket notes or customer-facing documents.
 
+### Microsoft 365 identity actions
+
+With a customer's Microsoft 365 tenant connected for Admin actions (see [Cloud Tenant Integrations](/features/identity-integrations/)), the assistant can run these account actions. Each needs a reason and a human approval.
+
+| Tool | What it does |
+| --- | --- |
+| `m365_reset_password` | Reset a user's password to a temporary one the user must change at first sign-in |
+| `m365_disable_user` | Block a user's sign-in |
+| `m365_revoke_sessions` | Revoke all of a user's Microsoft 365 sign-in sessions and refresh tokens |
+| `m365_assign_license` / `m365_remove_license` | Assign or remove licences (SKUs); assigning fails closed when no seat is free |
+| `m365_add_to_group` / `m365_remove_from_group` | Add a user to, or remove a user from, a group |
+| `m365_retire_intune_device` | Retire an Intune-managed device — removes company data and unenrols it; not a full wipe |
+| `m365_create_user` | Create a user with a temporary password the user must change at first sign-in |
+| `m365_set_auto_reply` | Set, schedule or disable a mailbox automatic reply (out of office) |
+
+The eight actions beyond reset and disable are new in v0.124.0 and are **four-eyes** actions: a second approver decides them every time, never the requester. They need a **one-time re-consent** of the Admin actions permission set in the customer tenant. Until it is granted, they are refused with a "consent upgrade required" error, while reset and disable keep running on the consent the tenant already holds.
+
+`m365_reset_password` and `m365_disable_user` are pinned to one Entra account and need a fresh [caller verification](/security/caller-verification/) of that account. Without one the request is refused with "caller verification required" — in chat, over MCP, and again when an approved action is released — until a verification exists.
+
 ## Administration
 
 `capture_agent_pprof` requires approval and captures heap/goroutine profiles to diagnose agent memory growth or goroutine leaks. The tool returns metadata (sizes, capture time, and runtime gauges such as goroutine count). Download raw profiles from the device command API and analyze them with `go tool pprof`.

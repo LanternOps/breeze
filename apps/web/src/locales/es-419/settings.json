@@ -700,7 +700,13 @@
         "quality": "Calidad"
       },
       "failovers": "Conmutaciones",
-      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible"
+      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organización",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por función"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "p.ej. Dom 02:00-06:00, 02:00-04:00 o 24 horas al día, 7 días a la semana",
     "maintenanceInvalid": "Utilice una ventana UTC como <first>Sun 02:00-04:00</first> o <second>02:00-04:00</second>, o <always>24/7</always> para estar siempre activo. Déjelo vacío para permitir que las organizaciones lo configuren.",
     "maintenanceHelp": "Ventana de tiempo (UTC) para actualizaciones y reinicios automáticos. Utilice <always>24/7</always> para estar siempre activo o déjelo vacío para que las organizaciones lo configuren individualmente.",
-    "deviceGroup": "Grupo de dispositivos predeterminado",
-    "alertThreshold": "Umbral de alerta predeterminado",
     "autoEnrollment": {
       "title": "Inscripción automática",
       "enable": "Habilitar la inscripción automática para nuevos dispositivos",
-      "requireApproval": "Requerir aprobación del administrador",
-      "sendWelcome": "Enviar notificación de bienvenida"
+      "requireApproval": "Requerir aprobación del administrador"
     },
     "enrollment": {
       "title": "Inscripción de dispositivos",
@@ -1030,8 +1033,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Compañía",
+      "devices": "Dispositivos y agentes",
       "security": "Seguridad y acceso",
       "communications": "Comunicaciones",
+      "ai": "IA",
       "branding": "Marca"
     },
     "aiFeatures": {
@@ -1060,11 +1065,11 @@
       },
       "company": {
         "label": "Compañía",
-        "description": "Nombre, dirección, contactos"
+        "description": "Nombre, dirección, contactos, firma de correo"
       },
       "regional": {
         "label": "Regional",
-        "description": "Zona horaria, formatos, horas."
+        "description": "Zona horaria, idioma, formatos, horas"
       },
       "defaults": {
         "label": "Valores predeterminados",
@@ -1072,7 +1077,7 @@
       },
       "security": {
         "label": "Seguridad",
-        "description": "Lista de permitidos y acceso IP"
+        "description": "Contraseñas, sesiones, MFA y lista de IP permitidas"
       },
       "remoteAccess": {
         "label": "Acceso remoto",
@@ -1080,11 +1085,11 @@
       },
       "eventLogs": {
         "label": "Registros de eventos",
-        "description": "Reenvío y retención"
+        "description": "Reenviar registros de eventos de dispositivos a Elasticsearch"
       },
       "notifications": {
         "label": "Notificaciones",
-        "description": "Alertas de correo electrónico y webhooks"
+        "description": "Dirección del remitente, SMTP y valores predeterminados de Slack y Pushover"
       },
       "ticketing": {
         "label": "Gestión de tickets",
@@ -1109,7 +1114,7 @@
       },
       "aiFeatures": {
         "label": "Funciones de IA",
-        "description": "Valores predeterminados de detección de anomalías y correcciones sugeridas"
+        "description": "Política de datos de IA, detección de anomalías y correcciones sugeridas"
       },
       "branding": {
         "label": "Marca",
@@ -1126,6 +1131,14 @@
       "aiApprovals": {
         "label": "Tiempo de espera de aprobación de IA",
         "description": "Cuánto tiempo espera el chat de IA la aprobación de una acción restringida"
+      },
+      "callerVerification": {
+        "label": "Verificación de llamadas",
+        "description": "Verificación de identidad de quien llama en solicitudes de soporte"
+      },
+      "knownGuests": {
+        "label": "Invitados conocidos",
+        "description": "Dispositivos aprobados de visitantes y técnicos por dirección MAC"
       }
     },
     "saved": "Configuración de socio guardada",
@@ -1388,6 +1401,14 @@
     "never": "Nunca",
     "downloadInstaller": "Descargar el instalador preconfigurado",
     "downloading": "Descargando...",
+    "installerDialogTitle": "Descargar instalador para \"{{name}}\"",
+    "installerDialogDescription": "El instalador se genera para una cantidad fija de dispositivos. Cada dispositivo que lo ejecuta consume uno.",
+    "installerDeviceCount": "Número de dispositivos",
+    "installerDeviceCountRemaining": "A esta clave le quedan {{count}} inscripciones.",
+    "installerDeviceCountRemaining_one": "A esta clave le queda {{count}} inscripción.",
+    "installerDeviceCountRemaining_other": "A esta clave le quedan {{count}} inscripciones.",
+    "installerDeviceCountUnlimited": "Esta clave no tiene límite de uso.",
+    "installerDeviceCountRange": "Ingresa un número entero de 1 a {{max}}.",
     "rotate": "Rotar",
     "page": "Página {{current}} de {{total}}",
     "previous": "Anterior",
@@ -1401,7 +1422,10 @@
     "retrySites": "Reintentar",
     "createASite": "Crear un sitio",
     "maxUsage": "Uso máximo (opcional)",
-    "defaultDeviceLimit": "50 (predeterminado)",
+    "defaultDeviceLimit": "{{count}} (predeterminado de la organización)",
+    "expiresAtHelp": "Déjalo en blanco para {{duration}} (predeterminado de la organización).",
+    "usageFromDefault": "predeterminado",
+    "usageFromDefaultTitle": "El límite de dispositivos proviene del valor predeterminado de la organización.",
     "maxUsageHelp": "Número máximo de agentes que pueden inscribirse con esta clave.",
     "expiresAt": "Caduca en (opcional)",
     "creating": "Creando...",
@@ -1792,27 +1816,13 @@
     "deviceGroup": {
       "title": "Grupo de dispositivos predeterminado",
       "description": "Los dispositivos recién inscritos se agregan a este grupo automáticamente.",
-      "options": {
-        "AllManagedDevices": "Todos los dispositivos administrados",
-        "CriticalInfrastructure": "Infraestructura crítica",
-        "RemoteStaff": "Personal remoto",
-        "Contractors": "Contratistas"
-      }
-    },
-    "alertSeverity": {
-      "title": "Gravedad de alerta predeterminada",
-      "description": "Las alertas por debajo de esta gravedad se envían únicamente al feed de resumen.",
-      "options": {
-        "critical": "Sólo crítico",
-        "high": "Alto y crítico",
-        "medium": "Medio y superior"
-      }
+      "none": "Ninguno",
+      "unavailable": "Grupo seleccionado (no disponible)"
     },
     "autoEnrollment": {
       "title": "Inscripción automática",
       "enable": "Habilitar inscripción automática",
-      "requireApproval": "Requerir aprobación del administrador",
-      "sendWelcome": "Enviar mensaje de bienvenida"
+      "requireApproval": "Requerir aprobación del administrador"
     },
     "agentUpdates": {
       "title": "Política de actualización del agente",
@@ -1863,7 +1873,7 @@
     "disabledDescription": "Habilite el reenvío de registros arriba para configurar las opciones de conexión.",
     "enable": {
       "title": "Habilitar el reenvío de registros",
-      "description": "Cuando está habilitado, los registros de eventos se reenvían a su almacén de registros en un horario recurrente."
+      "description": "Cuando está habilitado, los registros de eventos se reenvían a su almacén de registros a medida que cada dispositivo los informa."
     },
     "connection": {
       "title": "Conexión",
@@ -1952,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vista del cliente",
+      "subtitle": "Vista previa: lo que ve {{who}}",
+      "whoOrganization": "su cliente",
+      "pickerLabel": "Ver como",
+      "pickerAll": "Toda la organización",
+      "loading": "Cargando vista previa…",
+      "loadFailed": "No se pudo cargar la vista del cliente.",
+      "on": "Activado",
+      "off": "Desactivado",
+      "notAvailable": "Aún no hay una vista previa detallada de esta sección.",
+      "permissionWithheld": "No se muestra: necesitas {{permissions}} para ver esta vista previa.",
+      "tilesWithheld": "Algunos mosaicos no se muestran: necesitas {{permissions}} para verlos.",
+      "noteNoUser": "Los datos de tickets están ocultos. Elija un usuario del portal para ver lo que ve esa persona.",
+      "readinessTitle": "Verificaciones de preparación",
+      "readinessNone": "No se encontraron problemas.",
+      "fix": "Corregir",
+      "readiness": {
+        "documents_empty": "Documentos está activado, pero ningún documento está marcado como Visible en el portal, por lo que su cliente ve una biblioteca vacía.",
+        "reports_empty": "Informes está activado, pero aún no hay ejecuciones de informes, por lo que su cliente ve una lista vacía.",
+        "service_one_time_visible": "Servicio está activado y los elementos únicos siguen visibles para su cliente.",
+        "backups_no_data": "Copias de seguridad está activado, pero aún no hay datos de copias para mostrar.",
+        "dashboard_security_no_data": "Panel está activado, pero la puntuación de seguridad aún no tiene datos, por lo que ese mosaico aparece vacío para su cliente.",
+        "branding_unset": "La marca del portal nunca se ha configurado (logotipo, colores, mensaje de bienvenida o contacto de soporte)."
+      }
+    },
     "loading": "Cargando configuración del portal...",
     "save": "Guardar la configuración del portal",
     "toasts": {
@@ -2443,7 +2479,11 @@
     "sourceDefault": "Predeterminado",
     "selectOrgForEffectiveBudget": "Seleccione una organización para ver su presupuesto vigente, o edite los valores predeterminados de todo el socio.",
     "editPartnerWideDefaults": "Editar valores predeterminados de todo el socio",
-    "thresholdsOff": "Desactivado"
+    "thresholdsOff": "Desactivado",
+    "todaysCost": "Costo de hoy",
+    "monthlyCost": "Costo mensual",
+    "messagesToday": "Mensajes de hoy",
+    "tokensThisMonth": "Tokens de este mes"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4355,6 +4395,13 @@
     "commitmentTermRange": "Plazo de compromiso: ingresa un número entero de 1 a 120 meses."
   },
   "catalogItemsTab": {
+    "viewActive": "Activos",
+    "viewArchived": "Archivados",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Servicio"
+    },
     "itemArchived": "Artículo archivado",
     "itemRestored": "Artículo restaurado",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "El catálogo de productos está disponible únicamente para cuentas de socios.",
@@ -4703,6 +4750,7 @@
     "actions": "Acciones",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "No se encontraron roles. Intente ajustar su búsqueda o filtros.",
     "cloneRole": "Función de clonación: {{name}}",
+    "cloneDescription": "Copia de {{name}}",
     "clone": "Clon",
     "edit": "Editar",
     "delete": "Eliminar",

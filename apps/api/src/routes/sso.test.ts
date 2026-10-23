@@ -154,12 +154,9 @@ vi.mock('../services/sso', async () => ({
       throw new Error(`OIDC endpoint rejected (internal): ${label}`);
     }
   },
-  PROVIDER_PRESETS: {
-    okta: {
-      scopes: 'openid profile email',
-      attributeMapping: { email: 'email', name: 'name' }
-    }
-  }
+  // The REAL preset table so the preset tests resolve the shipped keys (#9601:
+  // the web sent 'azure' while the table is keyed 'azure-ad').
+  PROVIDER_PRESETS: (await vi.importActual<typeof import('../services/sso')>('../services/sso')).PROVIDER_PRESETS
 }));
 
 vi.mock('../services', () => ({
@@ -845,7 +842,7 @@ describe('sso routes', () => {
       orgId: ORG_UUID,
       name: 'Okta',
       type: 'oidc',
-      scopes: 'openid profile email',
+      scopes: 'openid profile email groups',
       authorizationUrl: 'https://issuer.example.com/auth',
       tokenUrl: 'https://issuer.example.com/token',
       userInfoUrl: 'https://issuer.example.com/userinfo',
@@ -853,6 +850,69 @@ describe('sso routes', () => {
       createdBy: USER_UUID,
       status: 'inactive'
     }));
+  });
+
+  // #9601: the preset key the create route reads must be the one the API
+  // publishes from GET /sso/presets. The web form used to send 'azure', which
+  // matched nothing, so the provider was created with no attribute mapping.
+  describe('preset keys (#9601)', () => {
+    const postPreset = (preset: string) => app.request('/sso/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Entra', type: 'oidc', preset })
+    });
+
+    it('applies the azure-ad preset scopes and given/family name mapping', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('azure-ad');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        scopes: 'openid profile email',
+        attributeMapping: expect.objectContaining({ firstName: 'given_name', lastName: 'family_name' })
+      }));
+    });
+
+    it("maps the legacy 'azure' value (stale web bundles) to the azure-ad preset", async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('azure');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        attributeMapping: expect.objectContaining({ firstName: 'given_name', lastName: 'family_name' })
+      }));
+    });
+
+    it('rejects an unknown preset with 400 instead of silently ignoring it', async () => {
+      const res = await postPreset('not-a-preset');
+
+      expect(res.status).toBe(400);
+      // The caller is told which ids are valid, not a bare "Invalid input".
+      const body = await res.json();
+      expect(body.error).toContain('preset');
+      expect(body.error).toContain('"azure-ad"|"okta"|"google"|"auth0"');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('treats an empty preset (Custom configuration) as no preset', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ attributeMapping: undefined }));
+    });
   });
 
   it('creates a SAML provider without discovery', async () => {

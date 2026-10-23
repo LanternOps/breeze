@@ -1016,6 +1016,7 @@ export default function DeviceDetails({
         tabs={overflowTabs}
         activeTab={activeTab}
         onTabChange={(id) => switchTab(id as Tab)}
+        testIdPrefix="device-tab-"
         mobileMode="scroll"
       />
 

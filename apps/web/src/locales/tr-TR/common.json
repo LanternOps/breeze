@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} bekleyen onay",
     "pendingApprovals_other": "{{count}} bekleyen onay",
     "tickets": "Biletler",
-    "incidents": "Olaylar",
+    "incidents": "Güvenlik Olayları",
     "remoteAccess": "Uzaktan Erişim",
     "scripts": "Komut Dosyaları",
     "patches": "Yamalar",
@@ -771,9 +771,9 @@
     },
     "search": {
       "prompt": "Ara Breeze",
-      "placeholder": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları, ayarları arayın…",
+      "placeholder": "Cihazları, komut dosyalarını, uyarıları, ayarları arayın…",
       "searching": "Aranıyor…",
-      "startTyping": "Cihazlar, komut dosyaları, uyarılar, kullanıcılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
+      "startTyping": "Cihazlar, komut dosyaları, uyarılar ve ayarlar arasında arama yapmak için yazmaya başlayın.",
       "noResults": "Sonuç bulunamadı. Farklı bir sorgu deneyin.",
       "navigationHint": "Gezinmek için okları kullanın, açmak için Enter'ı kullanın",
       "closeHint": "Esc kapatılacak",
@@ -863,6 +863,8 @@
       "cycleSidebar": "Kenar çubuğu modunu değiştir",
       "help": "Yardım panelini aç",
       "showThis": "Bu kartı göster",
+      "orgSwitcher": "Kuruluş seçiciyi aç",
+      "aiSidebar": "Yapay zekâ kenar çubuğunu aç veya kapat",
       "close": "Bir iletişim kutusunu veya menüyü kapat",
       "typingNote": "Bir alana yazarken tek tuşlu kısayollar duraklatılır.",
       "create": "Oluştur",
@@ -1383,6 +1385,12 @@
           "signingSecret": "Webhook imzalarını doğrulamak için bu sırrı kullanın."
         },
         "invalidJsonPreview": "Şablonda geçersiz JSON.",
+        "otherEvents": {
+          "allEvents": "Tüm olaylar (*)",
+          "allEventsHint": "Bu webhook tüm olaylara abone olduğundan aşağıdaki tekil olaylar kullanılmaz. Belirli olayları seçmek için \"Tüm olaylar\" öğesini kaldırın.",
+          "remove": "{{event}} öğesini kaldır",
+          "title": "Diğer abone olunan olaylar"
+        },
         "payload": {
           "previewEmpty": "JSON geçerli olduğunda önizleme görüntülenir.",
           "subtitle": "Hedefinize gönderilen JSON verisi şeklini tanımlayın.",
@@ -2206,7 +2214,7 @@
         },
         "loading": "Olaylar yükleniyor...",
         "tryAgain": "Tekrar deneyin",
-        "title": "Olaylar",
+        "title": "Güvenlik Olayları",
         "description": "Kuruluşlarınız genelinde takip edilen olaylar ve EDR bulguları.",
         "filters": {
           "tracked": "Takip edildi",
@@ -2236,6 +2244,11 @@
         "genericEdrProvider": "EDR sağlayıcısı"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Teknisyen",
+          "system": "Sistem"
+        },
         "errors": {
           "notFound": "Olay bulunamadı",
           "fetchFailed": "Olay getirilemedi"
@@ -2368,7 +2381,7 @@
           },
           "search": {
             "title": "İstediğiniz şeyi arayın",
-            "description": "Cihazları, komut dosyalarını, uyarıları, kullanıcıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
+            "description": "Cihazları, komut dosyalarını, uyarıları veya ayarları anında bulmak için Cmd+K tuşlarına basın."
           },
           "switchOrgs": {
             "title": "Kuruluşları değiştir",

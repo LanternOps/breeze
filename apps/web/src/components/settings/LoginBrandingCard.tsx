@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Loader2, Palette, Save } from 'lucide-react';
+import { Loader2, Save } from 'lucide-react';
 import type { LoginContextBranding } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
@@ -125,15 +125,9 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
 
   return (
     <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="login-branding-card">
-      <div className="mb-6">
-        <div className="flex items-center gap-2">
-          <Palette className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-lg font-semibold">{t('loginBranding.title')}</h2>
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t('loginBranding.description')}
-        </p>
-      </div>
+      <p className="mb-6 max-w-prose text-sm text-muted-foreground">
+        {t('loginBranding.description')}
+      </p>
 
       {partnerSlug && (
         <div className="mb-6 space-y-2">
@@ -235,6 +229,7 @@ export default function LoginBrandingCard({ partnerSlug }: { partnerSlug?: strin
           <span className="text-sm font-medium">{t('loginBranding.preview')}</span>
           <div
             data-testid="login-branding-preview"
+            data-preview
             className="flex min-h-40 flex-col items-center justify-center gap-4 rounded-lg border p-6 text-center"
             style={{ backgroundColor: previewAccent }}
           >

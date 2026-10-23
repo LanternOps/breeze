@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, Trash2, Sparkles } from 'lucide-react';
+import { Plus, Trash2, Sparkles, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 
@@ -10,7 +10,9 @@ const createWebhookSchema = (t: (key: string) => string) => z
   .object({
     name: z.string().min(1, t('longTail.webhooks.WebhookForm.validation.nameRequired')),
     url: z.string().url(t('longTail.webhooks.WebhookForm.validation.invalidUrl')).min(1, t('longTail.webhooks.WebhookForm.validation.urlRequired')),
-    events: z.array(z.string()).min(1, t('longTail.webhooks.WebhookForm.validation.eventRequired')),
+    // At-least-one is enforced on submit against checked boxes + preserved
+    // unlisted events together (#9693), so the schema can't require it.
+    events: z.array(z.string()),
     authType: z.enum(['hmac', 'bearer']),
     secret: z.string().optional(),
     bearerToken: z.string().optional(),
@@ -68,6 +70,9 @@ export const webhookEventOptions = [
   { value: 'integration.health_resolved', label: 'Connection health incident resolved', labelKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.label', description: 'Triggered when a connection health incident is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.integrationHealthResolved.description' }
 ];
 
+const catalogEventValues = new Set<string>(webhookEventOptions.map(option => option.value));
+const ALL_EVENTS = '*';
+
 const generateSecret = (length = 32) => {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   const randomValues = new Uint32Array(length);
@@ -97,6 +102,7 @@ export default function WebhookForm({
     control,
     setValue,
     setFocus,
+    setError,
     watch,
     formState: { errors, isSubmitting }
   } = useForm<WebhookFormValues>({
@@ -113,6 +119,15 @@ export default function WebhookForm({
       ...defaultValues
     }
   });
+
+  // Subscribed events the checkbox list cannot represent ("*", events added
+  // through the API). Kept out of the checkbox group (react-hook-form drops
+  // unknown values from it) and merged back on submit so saving never silently
+  // narrows a subscription (#9693).
+  const [unlistedEvents, setUnlistedEvents] = useState<string[]>(() =>
+    Array.from(new Set((defaultValues?.events ?? []).filter(event => !catalogEventValues.has(event))))
+  );
+  const hasAllEvents = unlistedEvents.includes(ALL_EVENTS);
 
   const { fields, append, remove } = useFieldArray({
     control,
@@ -142,7 +157,15 @@ export default function WebhookForm({
   return (
     <form
       onSubmit={handleSubmit(async values => {
-        await onSubmit?.(values);
+        // react-hook-form can echo untouched default values (incl. unlisted ones
+        // the user just removed), so only trust its value for catalog events.
+        const checked = (values.events ?? []).filter(event => catalogEventValues.has(event));
+        const events = Array.from(new Set([...checked, ...unlistedEvents]));
+        if (events.length === 0) {
+          setError('events', { type: 'custom', message: t('longTail.webhooks.WebhookForm.validation.eventRequired') });
+          return;
+        }
+        await onSubmit?.({ ...values, events });
       })}
       className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
     >
@@ -197,7 +220,43 @@ export default function WebhookForm({
 
       <div className="space-y-2">
         <label className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.fields.events')}</label>
-        <div className="grid gap-3 sm:grid-cols-2">
+        {unlistedEvents.length > 0 && (
+          <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+            <p className="text-xs font-medium text-muted-foreground">
+              {t('longTail.webhooks.WebhookForm.otherEvents.title')}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {unlistedEvents.map(event => {
+                const label = event === ALL_EVENTS ? t('longTail.webhooks.WebhookForm.otherEvents.allEvents') : event;
+                return (
+                  <span
+                    key={event}
+                    className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-1 text-xs font-medium"
+                  >
+                    {label}
+                    <button
+                      type="button"
+                      aria-label={t('longTail.webhooks.WebhookForm.otherEvents.remove', { event: label })}
+                      onClick={() => setUnlistedEvents(prev => prev.filter(item => item !== event))}
+                      className="rounded-full p-0.5 hover:bg-muted"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+            {hasAllEvents && (
+              <p className="text-xs text-muted-foreground">
+                {t('longTail.webhooks.WebhookForm.otherEvents.allEventsHint')}
+              </p>
+            )}
+          </div>
+        )}
+        <fieldset
+          disabled={hasAllEvents}
+          className={cn('grid gap-3 sm:grid-cols-2', hasAllEvents && 'opacity-50')}
+        >
           {webhookEventOptions.map(option => (
             <label
               key={option.value}
@@ -218,7 +277,7 @@ export default function WebhookForm({
               </div>
             </label>
           ))}
-        </div>
+        </fieldset>
         {errors.events && <p className="text-sm text-destructive">{errors.events.message}</p>}
       </div>
 

@@ -1362,6 +1362,7 @@
     "drive": "Sür",
     "size": "Boyut",
     "used": "Kullanılmış",
+    "usedPercent": "Kullanım %",
     "health": "Sağlık",
     "noDiskInventoryReported": "Disk envanteri bildirilmedi.",
     "networkAdapters": "Ağ Bağdaştırıcıları",
@@ -2497,7 +2498,7 @@
     "showFindings": "Bulguları Göster",
     "stats": {
       "accepted": "Kabul edildi",
-      "kev": "Kev",
+      "kev": "Bilinen istismar",
       "mitigated": "Azaltılmış",
       "open": "Aç",
       "patchReady": "Yama Hazır",
@@ -2515,9 +2516,9 @@
     "statusLabel": "Durum Etiketi",
     "table": {
       "actions": "Eylemler",
-      "cve": "Cve",
-      "cvss": "Cvs",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Önem",
       "status": "Durum"
@@ -2700,7 +2701,7 @@
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
     "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
-    "importFromRmm": "Başka bir RMM'den içe aktar",
+    "importFromRmm": "Başka bir RMM'den özel alanları içe aktar",
     "hiddenNonAgentNotice": "{{count}} {{class}} gizlendi — {{fields}} yalnızca aracılı cihazlar için geçerlidir.",
     "hiddenNonAgentClassLabel": {
       "network": "ağ cihazı",
@@ -3483,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Henüz hiçbir şey izlenmiyor",
+        "titleWithCheck": "SNMP sağlık verisi yok",
+        "descriptionWithCheck": "Bu cihaz için etkin bir ağ denetimi var, bu nedenle erişilebilirlik izlenmeye devam ediyor. Ayrıca sağlık verisi toplamak için SNMP'yi açın.",
         "action": "İzlemeyi ayarla",
         "benefit": {
           "printer": "Toner ve mürekkep seviyelerini, kağıt tepsilerini, sayfa sayaçlarını ve yazıcı hatalarını görmek için SNMP’yi açın.",

@@ -57,6 +57,42 @@ describe('addMonthsToDate', () => {
   });
 });
 
+describe('buildContractSpecsFromQuote — contract name (#9778)', () => {
+  const rec = [
+    line({ recurrence: 'monthly', sourceQuoteLineId: 'm' }),
+    line({ recurrence: 'annual', sourceQuoteLineId: 'a' }),
+  ];
+  it('names from title, client and cadence when the quote has a title', () => {
+    const specs = buildContractSpecsFromQuote(
+      { ...quote, title: 'Managed IT Services', orgName: 'Acme Manufacturing' }, rec, '2026-09-01', null,
+    );
+    expect(specs.map((s) => s.name)).toEqual([
+      'Managed IT Services — Acme Manufacturing (Monthly)',
+      'Managed IT Services — Acme Manufacturing (Annual)',
+    ]);
+  });
+  it('omits the client segment when the org name is unknown', () => {
+    const [c] = buildContractSpecsFromQuote({ ...quote, title: 'Managed IT Services' }, rec, '2026-09-01', null);
+    expect(c!.name).toBe('Managed IT Services (Monthly)');
+  });
+  it.each([null, undefined, '', '   '])('falls back to the quote number for title %j', (title) => {
+    const [c] = buildContractSpecsFromQuote({ ...quote, title, orgName: 'Acme' }, rec, '2026-09-01', null);
+    expect(c!.name).toBe('Q-1001 — Monthly');
+  });
+  it('never exceeds the 255-char name column', () => {
+    const [c] = buildContractSpecsFromQuote(
+      { ...quote, title: 'T'.repeat(200), orgName: 'O'.repeat(200) }, rec, '2026-09-01', null,
+    );
+    expect(c!.name.length).toBeLessThanOrEqual(255);
+    expect(c!.name.endsWith('(Monthly)')).toBe(true);
+  });
+  it('does not change amounts or lines', () => {
+    const [titled] = buildContractSpecsFromQuote({ ...quote, title: 'X', orgName: 'Y' }, rec, '2026-09-01', null);
+    const [plain] = buildContractSpecsFromQuote(quote, rec, '2026-09-01', null);
+    expect({ ...titled!, name: '' }).toEqual({ ...plain!, name: '' });
+  });
+});
+
 describe('buildContractSpecsFromQuote', () => {
   it('returns no specs when there are no recurring lines', () => {
     const specs = buildContractSpecsFromQuote(

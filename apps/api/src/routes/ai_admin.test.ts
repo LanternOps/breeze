@@ -123,6 +123,7 @@ vi.mock('../services/aiAgent', () => ({
 vi.mock('../services/aiCostTracker', () => ({
   getSessionHistory: vi.fn(),
   getUsageSummary: vi.fn(),
+  getAggregateUsageSummary: vi.fn(),
   updateBudget: vi.fn(),
 }));
 
@@ -182,7 +183,7 @@ import {
   handleApproval,
   searchSessions,
 } from '../services/aiAgent';
-import { getUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
+import { getUsageSummary, getAggregateUsageSummary, updateBudget, getSessionHistory } from '../services/aiCostTracker';
 import { evaluateAiBudgetThresholds } from '../services/aiBudgetAlerts';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { resolveToolRateLimitMultiplier } from '../services/aiToolRateLimits';
@@ -337,6 +338,16 @@ describe('AI routes', () => {
         return next();
       });
 
+      // #9667: no-org requests now aggregate across accessible orgs.
+      vi.mocked(getAggregateUsageSummary).mockResolvedValueOnce({
+        daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+        monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        billedTo: 'platform',
+        credits: null,
+        alerts: { fired: [] },
+      } as never);
+
       const res = await app.request('/ai/usage', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' },
@@ -346,6 +357,7 @@ describe('AI routes', () => {
       const body = await res.json();
       expect(body.budget).toBeNull();
       expect(body.alerts).toEqual({ fired: [] });
+      expect(getAggregateUsageSummary).toHaveBeenCalledWith(null);
       expect(getUsageSummary).not.toHaveBeenCalled();
     });
   });

@@ -250,10 +250,14 @@ describe('resolveQuoteBranding: partner Branding settings feed the document (Q-2
     expect(b.primaryColor).toBe('#1c8a9e');
   });
 
-  it('leaves invoice branding on the portal row only (quotes-only change)', async () => {
+  it("invoices use the partner's logo and colours too, and an org value still wins (#9676)", async () => {
     queue(brandedPartner, null);
     const b = await resolveInvoiceBranding({ ...source(), documentTheme: null, documentPageSize: null } as never);
-    expect(b.logoUrl).toBeNull();
-    expect(b.primaryColor).toBeNull();
+    expect(b.logoUrl).toBe(PNG);
+    expect(b.primaryColor).toBe('#00bfa6');
+    queue(brandedPartner, baseBrand);
+    const o = await resolveInvoiceBranding({ ...source(), documentTheme: null, documentPageSize: null } as never);
+    expect(o.logoUrl).toBe('logo.png');
+    expect(o.primaryColor).toBe('#1c8a9e');
   });
 });

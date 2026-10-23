@@ -1362,6 +1362,7 @@
     "drive": "Drive",
     "size": "Size",
     "used": "Used",
+    "usedPercent": "Used %",
     "health": "Health",
     "noDiskInventoryReported": "No disk inventory reported.",
     "networkAdapters": "Network Adapters",
@@ -2497,7 +2498,7 @@
     "showFindings": "Show Findings",
     "stats": {
       "accepted": "Accepted",
-      "kev": "Kev",
+      "kev": "Known exploited",
       "mitigated": "Mitigated",
       "open": "Open",
       "patchReady": "Patch Ready",
@@ -2515,9 +2516,9 @@
     "statusLabel": "Status Label",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
-      "cvss": "Cvss",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Severity",
       "status": "Status"
@@ -2572,7 +2573,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
-    "importFromRmm": "Import from another RMM",
+    "importFromRmm": "Import custom fields from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",
@@ -3483,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Nothing is being monitored yet",
+        "titleWithCheck": "No SNMP health data",
+        "descriptionWithCheck": "A network check is active for this device, so reachability is still tracked. Turn on SNMP to also collect health data.",
         "action": "Set up monitoring",
         "benefit": {
           "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",

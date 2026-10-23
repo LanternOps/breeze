@@ -311,6 +311,8 @@
     "no": "Não",
     "noDevicesFound": "Nenhum dispositivo encontrado.",
     "none": "Nenhum",
+    "unknown": "Desconhecido",
+    "tpmNotReported": "Não informado pelo agente",
     "os": "SO",
     "pageOf": "Página {{page}} de {{totalPages}}",
     "partial": "Parcial",
@@ -423,6 +425,8 @@
     "osFilterLabel": "Sistema operacional"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Não foi possível atualizar a recomendação.",
+    "affectsOrgs": "Afeta {{count}} organizações",
     "adminAccounts": "Contas de administrador",
     "allCategories": "Todas as categorias",
     "allPriorities": "Todas as prioridades",
@@ -431,18 +435,19 @@
     "completed": "Concluído",
     "critical": "Crítica",
     "criticalHigh": "Crítica + Alta",
-    "devices": "Dispositivos:",
+    "devices": "Dispositivos: {{value}}",
     "dismiss": "Descartar",
     "dismissed": "Descartado",
-    "effort": "Esforço:",
+    "effort": "Esforço: {{value}}",
     "encryption": "Criptografia",
     "firewall": "Firewall",
     "hideSteps": "Ocultar etapas",
     "high": "Alta",
-    "impact": "Impacto:",
+    "impact": "Impacto: {{value}}",
     "invalidResponseFromServer": "Resposta inválida do servidor",
     "low": "Baixa",
     "markComplete": "Marcar como concluída",
+    "reopen": "Reabrir",
     "medium": "Média",
     "next": "Próximo",
     "noRecommendationsMatchYourFilters": "Nenhuma recomendação corresponde aos filtros.",
@@ -457,10 +462,13 @@
     "vulnMgmt": "Gestão de vulnerabilidades",
     "priorityFilterLabel": "Prioridade",
     "categoryFilterLabel": "Categoria",
-    "statusFilterLabel": "Status da recomendação"
+    "statusFilterLabel": "Status da recomendação",
+    "remediationSteps_one": "{{count}} etapa de correção",
+    "remediationSteps_other": "{{count}} etapas de correção"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Uma nova senha de recuperação do BitLocker será gerada e colocada em custódia; a antiga será removida depois que a nova chave estiver ativa.",
+    "accessRevealed": "revelou a chave",
     "bitlocker": "BitLocker",
     "cancel": "Cancelar",
     "collectNow": "Coletar agora",
@@ -486,6 +494,7 @@
     "rotate": "Girar",
     "rotateKey": "Girar chave",
     "rotateRecoveryKey": "Girar chave de recuperação",
+    "rotateVolume": "Volume a rotacionar",
     "thisAccessHasBeenRecordedInThe": "Este acesso foi registrado na trilha de auditoria."
   },
   "securityS1ThreatList": {
@@ -608,7 +617,10 @@
     "viewDetails": "Ver detalhes",
     "vulnerabilities": "Vulnerabilidades",
     "weakAdmins": "Administradores fracos",
-    "unknown": "Desconhecido"
+    "unknown": "Desconhecido",
+    "bitlockerPartial": "BitLocker parcial",
+    "filevaultPartial": "FileVault parcial",
+    "refreshTooltip": "Recarrega o último instantâneo de segurança. As pontuações são recalculadas em intervalos agendados, não ao clicar."
   },
   "securitySecurityPageHeader": {
     "refresh": "Atualizar",
@@ -681,12 +693,21 @@
     "noActiveScans": "Nenhuma varredura ativa.",
     "noScanHistoryYet": "Ainda não ha histórico de varreduras.",
     "quickScan": "Varredura rápida",
+    "scanClean": "Limpo",
     "scanHistory": "Histórico de varreduras",
     "scanHistoryPartiallyUnavailable": "Não foi possível carregar o histórico de varreduras de {{failed}} de {{total}} dispositivos — esta lista está incompleta.",
     "scanHistoryUnavailable": "Não foi possível carregar o histórico de varreduras.",
+    "scanRequestFailed": "Falha na solicitação de varredura",
+    "scanThreatsFound_one": "{{count}} ameaça encontrada",
+    "scanThreatsFound_other": "{{count}} ameaças encontradas",
+    "scanTimedOut": "Tempo esgotado",
+    "scanTimedOutWithCount": "Tempo esgotado ({{count}} encontradas)",
     "scanType": "Tipo de varredura",
     "scanTypeLabel": "verificação {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "As varreduras são enfileiradas imediatamente nos dispositivos selecionados.",
+    "scansQueuedCount": "{{count}} varredura enfileirada",
+    "scansQueuedCount_one": "{{count}} varredura enfileirada",
+    "scansQueuedCount_other": "{{count}} varreduras enfileiradas",
     "securityScanManager": "Gerenciador de varreduras de segurança",
     "singleSelect": "Seleção única",
     "someScanRequestsFailed": "{{failed}} de {{total}} solicitações de varredura falharam",
@@ -697,14 +718,10 @@
     "startedColumn": "Iniciado",
     "status": "Status: {{status}}",
     "status2": "Status",
-    "type": "Tipo",
-    "scanRequestFailed": "Falha na solicitação de varredura",
-    "scansQueuedCount": "{{count}} varredura enfileirada",
-    "scansQueuedCount_one": "{{count}} varredura enfileirada",
-    "scansQueuedCount_other": "{{count}} varreduras enfileiradas"
+    "type": "Tipo"
   },
   "securityThreatDetail": {
-    "analystReview": "Revisão do analista",
+    "actionFailed": "Falha na ação",
     "detected": "Detectado",
     "device": "Dispositivo",
     "deviceInfo": "Informações do dispositivo",
@@ -715,11 +732,14 @@
     "noThreatSelected": "Nenhuma ameaca selecionada.",
     "otherDetectionsOnThisDevice": "Outras detecções neste dispositivo.",
     "provider": "Provedor",
+    "providerUnknown": "Desconhecido",
     "quarantine": "Quarentena",
+    "quarantineQueued": "Quarentena na fila. O dispositivo informará o resultado.",
     "relatedThreats": "Ameaças relacionadas",
     "remove": "Remover",
+    "removeQueued": "Remoção na fila. O dispositivo informará o resultado.",
     "restore": "Restaurar",
-    "reviewRemediationCompletenessAndEndpointHealth": "Revise a conclusão da remediação e a integridade do endpoint.",
+    "restoreQueued": "Restauração na fila. O dispositivo informará o resultado.",
     "severity": "Severidade",
     "status": "Status",
     "threatDetail": "Detalhes da ameaça",
@@ -730,11 +750,7 @@
     "threatRemoved": "Ameaça removida",
     "threatStatus": "Status da ameaça",
     "threatWasMovedToQuarantineByPolicy": "A ameaça foi movida para quarentena por política ou ação do operador.",
-    "timeline": "Linha do tempo",
-    "actionFailed": "Falha na ação",
-    "quarantineSucceeded": "Ameaça colocada em quarentena",
-    "restoreSucceeded": "Ameaça restaurada",
-    "removeSucceeded": "Ameaça removida"
+    "timeline": "Linha do tempo"
   },
   "securityThreatList": {
     "active": "Ativo",
@@ -810,9 +826,10 @@
     "precision": "Precisão",
     "recentEvidence": "Evidência recente",
     "refresh": "Atualizar",
+    "refreshing": "Atualizando",
     "repeatSignalUsers": "Usuários com sinais repetidos",
     "retry": "Tentar novamente",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Revise regras v0, pontuações de risco, evidências e rótulos de avaliação.",
+    "reviewUserRiskScoresEvidenceAnd": "Revise as pontuações de risco dos usuários, as evidências por trás delas e seus rótulos de avaliação.",
     "scoreImpact": "impacto {{value}}",
     "scoresEvidenceAndLabelsWillAppearHere": "Pontuações, evidências e rótulos aparecerão aqui quando o produtor user-risk v0 estiver habilitado.",
     "selectAUserToInspectRiskEvidence": "Selecione um usuário para inspecionar evidências de risco.",
@@ -821,7 +838,41 @@
     "truePositive": "Verdadeiro positivo",
     "truePositiveLabelSaved": "Rótulo de verdadeiro positivo salvo",
     "userRisk": "Risco do usuário",
-    "userRiskScoringIsDisabledForThis": "A pontuação de risco do usuário está desabilitada para esta organização."
+    "userRiskScoringIsDisabledForThis": "A pontuação de risco do usuário está desabilitada para esta organização.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lacunas de autenticação multifator",
+        "description": "Contas sem MFA ativada."
+      },
+      "authFailureRisk": {
+        "label": "Tentativas de login com falha",
+        "description": "Falhas repetidas de login, que podem indicar tentativa de adivinhar senhas ou credential stuffing."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Atividade de sessão incomum",
+        "description": "Logins de locais ou dispositivos desconhecidos, ou em horários incomuns."
+      },
+      "threatExposureRisk": {
+        "label": "Exposição a ameaças",
+        "description": "Ameaças detectadas nos dispositivos usados pelo usuário."
+      },
+      "softwareViolationRisk": {
+        "label": "Violações da política de software",
+        "description": "Software instalado que viola suas políticas de software."
+      },
+      "deviceSecurityRisk": {
+        "label": "Postura de segurança dos dispositivos",
+        "description": "Saúde de segurança fraca nos dispositivos do usuário, como proteções ou patches ausentes."
+      },
+      "staleAccessRisk": {
+        "label": "Acesso obsoleto",
+        "description": "Contas ou acessos sem uso há muito tempo."
+      },
+      "recentImpactRisk": {
+        "label": "Eventos de risco recentes",
+        "description": "Eventos de risco registrados para este usuário nos últimos dias."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Ativo",
@@ -1294,17 +1345,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Informe pelo menos um ID de dispositivo",
-      "createScan": "Falha ao criar varredura"
+      "createScan": "Falha ao criar varredura",
+      "devicesRequired": "Selecione pelo menos um dispositivo",
+      "devicesNotReady": "A lista de dispositivos ainda está carregando ou está incompleta. Aguarde a conclusão e tente novamente.",
+      "devicesLoadFailed": "Não foi possível carregar a lista de dispositivos. Use Tentar novamente na lista de dispositivos e tente de novo."
     },
     "title": "Criar varredura",
     "form": {
       "policyOptional": "Política (opcional)",
       "noPolicy": "Sem política (configuração manual)",
-      "deviceIds": "IDs de dispositivos",
-      "deviceIdsHelp": "Um UUID por linha ou separados por vírgula.",
-      "deviceIdsPlaceholder": "uuid-dispositivo-1\nuuid-dispositivo-2",
-      "detectionClasses": "Classes de detecção"
+      "detectionClasses": "Classes de detecção",
+      "devices": "Dispositivos",
+      "devicesHelp": "Escolha os dispositivos a serem verificados."
     },
     "actions": {
       "creating": "Criando...",
@@ -1369,6 +1421,10 @@
       "showingSearch": "Mostrando {{visible}} de {{pageCount}} nesta página ({{total}} no total)",
       "showingTotal": "Mostrando {{visible}} de {{total}} achados",
       "pageOf": "Página {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risco aceito",
+      "markedFalsePositive": "Marcado como falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1407,14 +1463,18 @@
       "detectionClasses": "Classes de detecção",
       "scheduleType": "Tipo de agendamento",
       "intervalMinutes": "Intervalo (minutos)",
-      "cronExpression": "Expressão cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expressão cron (UTC)",
+      "cronNextRun": "Próxima execução (seu horário local): {{time}}",
+      "cronExpressionZone": "Expressão cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Intervalo",
       "cron": "Cron",
-      "everyMinutes": "A cada {{minutes}}m"
+      "everyMinutes": "A cada {{minutes}}m",
+      "paused": "Pausado",
+      "pausedTitle": "O agendamento está desativado para esta política, então ela não será executada automaticamente"
     },
     "table": {
       "name": "Nome",
@@ -1739,7 +1799,7 @@
     "unknown": "desconhecido"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "Hardening CIS",
+    "title": "Referenciais CIS",
     "description": "Linhas de base de configuração, pontuação de conformidade e acompanhamento de remediação.",
     "messages": {
       "loadFailed": "Falha ao carregar dados CIS"
@@ -1832,6 +1892,11 @@
     "badges": {
       "allOrgs": "Todas as orgs",
       "partnerWideTitle": "Linha de base para todo o parceiro — aplica-se a dispositivos em todas as organizações"
+    },
+    "scanAll": {
+      "title": "Escanear todas as organizações?",
+      "message": "“{{name}}” é uma linha de base de todo o parceiro. Sem uma organização selecionada, ela escaneia todas as {{orgCount}} organizações. Selecione uma organização primeiro para escanear apenas os dispositivos dela.",
+      "confirm": "Escanear todas"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1914,10 +1979,38 @@
       "status": "Status",
       "approval": "Aprovação",
       "requested": "Solicitado",
-      "completed": "Concluído"
+      "completed": "Concluído",
+      "decision": "Decisão"
     },
     "loading": "Carregando remediações...",
-    "empty": "Nenhuma remediação encontrada."
+    "empty": "Nenhuma remediação encontrada.",
+    "decision": {
+      "approve": "Aprovar",
+      "reject": "Rejeitar",
+      "approveTitle": "Aprovar correção?",
+      "rejectTitle": "Rejeitar correção?",
+      "approveMessage": "Isso coloca na fila a verificação CIS {{checkId}} para execução em {{device}}. O agente alterará a configuração do dispositivo.",
+      "rejectMessage": "Isso cancela a correção pendente da verificação CIS {{checkId}} em {{device}}. Nada será executado no dispositivo.",
+      "noteLabel": "Observação (opcional)",
+      "approved": "Correção de {{checkId}} aprovada e na fila.",
+      "rejected": "Correção de {{checkId}} rejeitada.",
+      "approveFailed": "Falha ao aprovar a correção",
+      "rejectFailed": "Falha ao rejeitar a correção",
+      "queueFailed": "A aprovação foi registrada, mas a correção não pôde ser colocada na fila. Ela voltou a aguardar aprovação; tente novamente.",
+      "mfaRequired": "Aprovar ou rejeitar uma correção exige uma sessão iniciada com autenticação multifator. Saia e entre novamente com MFA.",
+      "ownRequest": "Você solicitou esta correção, então outro usuário precisa aprová-la."
+    },
+    "detail": {
+      "toggle": "Alternar detalhes",
+      "approvedBy": "Aprovado por",
+      "approvedAt": "Aprovado em",
+      "note": "Nota de aprovação",
+      "beforeState": "Antes",
+      "afterState": "Depois",
+      "rollbackHint": "Dica de reversão",
+      "noEvidence": "Ainda não há evidência registrada para esta remediação.",
+      "unknownApprover": "Usuário desconhecido"
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Linhas de base de auditoria",
@@ -2227,5 +2320,8 @@
       "awaitingEvaluation": "Aguardando avaliação",
       "vendorOrgMismatch": "O fornecedor informa outra organização"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Você não tem acesso a esta organização"
   }
 }

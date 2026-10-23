@@ -9,6 +9,7 @@ import { runPreContextChecks } from './preContextChecks';
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext, type DbAccessScope } from '../db';
 import { users, partnerUsers, organizations } from '../db/schema';
 import { UNASSIGNED_POOL_ORG_TYPE } from '../services/unassignedPool/orgType';
+import { orderAccessibleOrgIds } from './accessibleOrgOrder';
 import { and, eq, inArray, isNull, ne, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AiOriginRef } from '@breeze/shared';
@@ -168,6 +169,10 @@ export interface AuthContext {
    * Pre-computed list of org IDs this user can access.
    * - string[] = user can access these specific orgs (org or partner scope)
    * - null = user can access ALL orgs (system scope)
+   *
+   * For partner scope the order is deterministic (`orderAccessibleOrgIds`,
+   * #9529) because `[0]` is still a fallback default in places. Prefer an
+   * explicit org over reading `[0]`.
    */
   accessibleOrgIds: string[] | null;
 
@@ -474,7 +479,7 @@ export async function computeAccessibleOrgIds(
           : eq(organizations.type, 'quick_support');
 
         const partnerOrgs = await db
-          .select({ id: organizations.id })
+          .select({ id: organizations.id, slug: organizations.slug, type: organizations.type })
           .from(organizations)
           .where(
             and(
@@ -487,12 +492,14 @@ export async function computeAccessibleOrgIds(
             )
           );
 
-        return { orgIds: partnerOrgs.map(o => o.id), partnerOrgAccess: 'selected' };
+        return { orgIds: orderAccessibleOrgIds(partnerOrgs), partnerOrgAccess: 'selected' };
       }
 
       // orgAccess=all: partner users can access all orgs under their partner.
+      // Both branches go through orderAccessibleOrgIds: `accessibleOrgIds[0]`
+      // is a fallback default for AI sessions and tool helpers (#9529).
       const partnerOrgs = await db
-        .select({ id: organizations.id })
+        .select({ id: organizations.id, slug: organizations.slug, type: organizations.type })
         .from(organizations)
         .where(
           and(
@@ -504,7 +511,7 @@ export async function computeAccessibleOrgIds(
           )
         );
 
-      return { orgIds: partnerOrgs.map(o => o.id), partnerOrgAccess: 'all' };
+      return { orgIds: orderAccessibleOrgIds(partnerOrgs), partnerOrgAccess: 'all' };
     });
   }
 

@@ -1362,6 +1362,7 @@
     "drive": "Unidade",
     "size": "Tamanho",
     "used": "Usado",
+    "usedPercent": "% usado",
     "health": "Integridade",
     "noDiskInventoryReported": "Nenhum inventário de disco relatado.",
     "networkAdapters": "Adaptadores de rede",
@@ -2497,7 +2498,7 @@
     "showFindings": "Mostrar ocorrências",
     "stats": {
       "accepted": "Aceitas",
-      "kev": "KEV",
+      "kev": "Explorada conhecida",
       "mitigated": "Mitigadas",
       "open": "Abertas",
       "patchReady": "Com patch disponível",
@@ -2700,7 +2701,7 @@
     "unknownOrg": "Organização desconhecida",
     "unknownSite": "Site desconhecido",
     "viewInstallationGuide": "Ver guia de instalação",
-    "importFromRmm": "Importar de outro RMM",
+    "importFromRmm": "Importar campos personalizados de outro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} se aplica somente a dispositivos com agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivos de rede",
@@ -3483,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Nada está sendo monitorado ainda",
+        "titleWithCheck": "Sem dados de integridade SNMP",
+        "descriptionWithCheck": "Há uma verificação de rede ativa para este dispositivo, então a acessibilidade continua sendo monitorada. Ative o SNMP para coletar também dados de integridade.",
         "action": "Configurar monitoramento",
         "benefit": {
           "printer": "Ative o SNMP para ver os níveis de toner e tinta, as bandejas de papel, os contadores de páginas e os erros da impressora.",

@@ -131,6 +131,11 @@ describe('mcpToolDomain', () => {
     expect(hasCoreAiToolName('whoami')).toBe(true);
   });
 
+  it('get_action_status and cancel_action are core', () => {
+    expect(mcpToolDomain('get_action_status')).toBe('core');
+    expect(mcpToolDomain('cancel_action')).toBe('core');
+  });
+
   it('tenant tools count as integrations; unknown names are unclassified', () => {
     expect(MCP_TENANT_TOOL_DOMAIN).toBe('integrations');
     expect(mcpToolDomain('definitely_not_a_tool')).toBeUndefined();

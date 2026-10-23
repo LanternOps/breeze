@@ -207,7 +207,13 @@ describe('getEnrollmentDefaultsForOrg', () => {
   it('falls back to product defaults when neither org nor partner has settings', async () => {
     mockJoinRow({});
     const r = await getEnrollmentDefaultsForOrg(ORG_ID);
-    expect(r).toEqual({ ttlMinutes: 43200, deviceCount: 50, maxTtlMinutes: 525600 });
+    expect(r).toEqual({
+      ttlMinutes: 43200,
+      deviceCount: 50,
+      maxTtlMinutes: 525600,
+      ttlConfigured: false,
+      deviceCountConfigured: false,
+    });
   });
 
   it('falls back to org-local values when there is no partner row (LEFT JOIN null)', async () => {
@@ -216,7 +222,13 @@ describe('getEnrollmentDefaultsForOrg', () => {
       partnerSettings: null,
     });
     const r = await getEnrollmentDefaultsForOrg(ORG_ID);
-    expect(r).toEqual({ ttlMinutes: 60, deviceCount: 5, maxTtlMinutes: 525600 });
+    expect(r).toEqual({
+      ttlMinutes: 60,
+      deviceCount: 5,
+      maxTtlMinutes: 525600,
+      ttlConfigured: true,
+      deviceCountConfigured: true,
+    });
   });
 
   it('propagates a DB error rather than swallowing it', async () => {
