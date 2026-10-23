@@ -7,6 +7,7 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { deserializeAiOrigin } from '@breeze/shared';
 import {
   AgentRunOwnershipError,
@@ -63,7 +64,7 @@ const TENANT_MUTATION_TARGET_ORG_ARG: Readonly<Record<string, Readonly<Record<st
  * Returns null for any intent whose tool/action is not in the allowlist
  * above, or whose recorded target-org argument is missing or not a string.
  */
-function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
+export function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
   // Reads the plain `action` key, same default `aiGuardrails.resolveActionForTool`
   // (TOOL_ACTION_INPUT_KEYS) falls back to — NOT imported from that module on
   // purpose: `services/aiGuardrails.ts` pulls in the full tool-registry import
@@ -103,6 +104,19 @@ function resolveTenantMutationTargetOrgId(intent: ActionIntent): string | null {
  * operator "the target device went away", not "the actor is broken".
  */
 export async function buildAuthContextForIntent(intent: ActionIntent): Promise<AuthContext | null> {
+  // B-W04 (#6158, D-B26): an intent filed by an MCP credential is rebuilt
+  // from that LIVE credential with the same function the MCP call used —
+  // never the user-owned rebuild below, which would widen an org-pinned key
+  // to a target org and synthesize `mfa: true`. This first branch serves all
+  // three callers (release revalidation, the worker's M365 headless dispatch,
+  // the supervised approve-time RBAC re-check). Dynamic import keeps this
+  // module a light leaf (see resolveTenantMutationTargetOrgId above).
+  if (isMcpOriginIntent(intent)) {
+    const { rebuildMcpOriginAuthContext } = await import('../mcpPrincipalAuth');
+    const rebuilt = await rebuildMcpOriginAuthContext(intent);
+    return 'error' in rebuilt ? null : rebuilt.auth;
+  }
+
   if (intent.requestedByUserId) {
     return buildUserOwnedAuthContext(intent, intent.requestedByUserId);
   }

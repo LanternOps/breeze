@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Conferma approvazione patch",
-      "selectedOrganization": "l'organizzazione selezionata",
-      "messageOne": "Approvare la patch su {{count}} dispositivo in {{org}}?",
-      "messageMany": "Approvare la patch su {{count}} dispositivi in {{org}}?",
+      "selectedRing": "(senza nome)",
+      "messageRingOne": "Approvare la patch su {{count}} dispositivo in tutte le organizzazioni nell'anello {{ring}}?",
+      "messageRingMany": "Approvare la patch su {{count}} dispositivi in tutte le organizzazioni nell'anello {{ring}}?",
       "messagePartnerWide": "Approvare la patch per tutte le organizzazioni del tuo partner?"
     },
     "checkingAccess": "Verifica dell’accesso in corso..."
@@ -614,5 +614,24 @@
     "orEnterAPackageIDManually": "Oppure inserisci manualmente un ID pacchetto",
     "removeRuleFor": "Rimuovi regola per {{application}}",
     "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello."
+  },
+  "patchDetails": {
+    "unknown": "Sconosciuto",
+    "source": "Origine",
+    "packageId": "KB / ID pacchetto",
+    "severity": "Gravità",
+    "releaseDate": "Data di rilascio",
+    "firstSeen": "Prima rilevazione nel catalogo",
+    "rings": {
+      "title": "Anelli di aggiornamento",
+      "note": "Quando ogni anello approva automaticamente questa patch (regola a livello di anello; le eccezioni per categoria non sono mostrate).",
+      "none": "Nessun anello di aggiornamento configurato.",
+      "manual": "Nessuna approvazione automatica — richiede approvazione manuale",
+      "immediate": "Approvata automaticamente subito",
+      "needsDate": "In attesa — nessuna data di rilascio per avviare la finestra di {{count}} giorni",
+      "autoApproves": "Approvata automaticamente il {{date}}",
+      "hold_one": "Ritardo di {{count}} giorno",
+      "hold_other": "Ritardo di {{count}} giorni"
+    }
   }
 }

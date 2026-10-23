@@ -1,0 +1,84 @@
+name: Seed Tauri apt cache
+
+# GitHub Actions caches are ref-scoped: a run can restore caches saved on its
+# own ref or the default branch, never from another PR or from merge-queue refs.
+# CI does not run on `push: main` (merge queue), so the Rust Check job could
+# never populate a cache that later PR / merge_group runs can read. This
+# workflow runs on main and saves the .deb set under the key the CI job
+# restores (#9753). Trigger it by hand with:
+#   gh workflow run "Seed Tauri apt cache" --ref main
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/tauri-apt-packages.txt
+      - .github/actions/tauri-apt-cache/**
+      - .github/workflows/tauri-apt-cache-seed.yml
+  schedule:
+    # Daily: runner image versions roll over, and the key includes the image.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tauri-apt-cache-seed
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    name: Seed Tauri apt cache
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore Tauri apt cache
+        id: cache
+        uses: ./.github/actions/tauri-apt-cache
+
+      # Same image + same package list as the CI job, so `--download-only`
+      # fetches exactly the closure CI's install would. Not on any PR's
+      # critical path, so generous retries are fine.
+      - name: Download Tauri system dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          TAURI_DEBS_DIR: ${{ steps.cache.outputs.dir }}
+        run: |
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          CI_APT_DIR=$(mktemp -d)
+          TAURI_ARCHIVES=$(mktemp -d)
+          chmod 755 "$TAURI_ARCHIVES"
+          trap 'rm -rf -- "$CI_APT_DIR" "$TAURI_ARCHIVES"' EXIT
+          node .github/scripts/prepare-ci-apt-sources.mjs /etc/apt "$CI_APT_DIR"
+          APT_SOURCES=(-o "Dir::Etc::sourcelist=$CI_APT_DIR/sources.list"
+                       -o "Dir::Etc::sourceparts=$CI_APT_DIR/sources.list.d")
+          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
+          download() {
+            sudo timeout --kill-after=30s 3m apt-get update "${APT_SOURCES[@]}" \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
+            sudo timeout --kill-after=30s 8m apt-get install -y --download-only --no-install-recommends "${APT_SOURCES[@]}" \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
+              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
+          }
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if download && ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1; then
+              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
+              sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/
+              sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"
+              echo "Seeded $(ls "${TAURI_DEBS_DIR}" | wc -l) .deb files; the cache is saved when this job ends."
+              exit 0
+            fi
+            echo "::warning::apt download failed (attempt ${attempt}/${attempts}); retrying"
+            sleep $((attempt * 20))
+          done
+          echo "::error::Failed to download Tauri system dependencies after ${attempts} attempts."
+          exit 1

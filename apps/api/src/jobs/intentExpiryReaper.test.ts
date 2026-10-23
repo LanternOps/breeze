@@ -323,6 +323,25 @@ describe('intentExpiryReaper.reapStaleExecutingIntents', () => {
     expect(recordActionIntentEvent).not.toHaveBeenCalled();
   });
 
+  // B-W04 (#6158, D-B29): an MCP-origin release holds an `executing` Tier-3
+  // ledger row (ai_tool_executions.intent_id); reaping the intent fails it too.
+  it('stale executing intent also fails its linked executing ledger row', async () => {
+    executeMock.mockResolvedValueOnce({
+      rows: [{ id: 'intent-9', org_id: 'org-9', action_name: 'execute_command', argument_digest: 'd', source: 'mcp_api', decided_at: new Date() }],
+    });
+    executeMock.mockResolvedValueOnce({ rows: [] });
+
+    await reapStaleExecutingIntents();
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const q = new PgDialect().sqlToQuery(executeMock.mock.calls[1]?.[0] as never);
+    const ledgerSql = `${q.sql} ${JSON.stringify(q.params)}`;
+    expect(ledgerSql).toContain('ai_tool_executions');
+    expect(ledgerSql).toContain('execution_lost');
+    expect(ledgerSql).toContain('intent-9');
+  });
+
   it('returns 0 when nothing is stuck past the stale-executing timeout', async () => {
     executeMock.mockResolvedValueOnce({ rows: [] });
 

@@ -5,6 +5,7 @@ import { useMemo, useEffect, useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { SSO_OIDC_PRESET_IDS, type SsoOidcPresetId } from '@breeze/shared';
 
 const createSsoProviderSchema = (t: TFunction) => z.object({
   name: z.string().min(1, t('ssoProviderForm.providerNameIsRequired')),
@@ -98,12 +99,21 @@ type SsoProviderFormProps = {
   canManagePartnerWide?: boolean;
 };
 
-const presetOptions = [
+// Option values are the API's preset ids (#9601). The Record is keyed by the
+// shared SsoOidcPresetId union — the same type the API's PROVIDER_PRESETS table
+// uses — so adding, renaming or misspelling a preset fails typecheck here
+// instead of silently autofilling nothing. (Azure was once 'azure' here vs
+// 'azure-ad' in the API.)
+const PRESET_LABEL_KEYS: Record<SsoOidcPresetId, string> = {
+  'azure-ad': 'ssoProviderForm.azureADEntraID',
+  okta: 'ssoProviderForm.okta',
+  google: 'ssoProviderForm.googleWorkspace',
+  auth0: 'ssoProviderForm.auth0'
+};
+
+const presetOptions: { value: SsoOidcPresetId | ''; labelKey: string }[] = [
   { value: '', labelKey: 'ssoProviderForm.customConfiguration' },
-  { value: 'azure', labelKey: 'ssoProviderForm.azureADEntraID' },
-  { value: 'okta', labelKey: 'ssoProviderForm.okta' },
-  { value: 'google', labelKey: 'ssoProviderForm.googleWorkspace' },
-  { value: 'auth0', labelKey: 'ssoProviderForm.auth0' }
+  ...SSO_OIDC_PRESET_IDS.map(id => ({ value: id, labelKey: PRESET_LABEL_KEYS[id] }))
 ];
 
 export default function SsoProviderForm({

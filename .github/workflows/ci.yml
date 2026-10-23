@@ -3164,6 +3164,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # Restore the cached .deb closure so a normal run never touches the Ubuntu
+      # mirror (#9753). The key lives in the shared composite action. Caches
+      # are ref-scoped and CI does not run on push to main, so this job only
+      # READS what `tauri-apt-cache-seed.yml` saves from main; a run that
+      # misses falls back to the network path below (and its own save is
+      # visible only to that ref).
+      - name: Cache Tauri apt packages
+        id: tauri-apt-cache
+        uses: ./.github/actions/tauri-apt-cache
+
       - name: Install Tauri system dependencies
         # Bound the STEP, not just the commands inside it. The per-command
         # deadlines below sum to ~27.75m worst case (3 attempts x 8m, plus two
@@ -3179,7 +3189,26 @@ jobs:
         # step timeout, leaving 23m for the Rust work regardless of how badly
         # the mirror behaves.
         timeout-minutes: 12
+        env:
+          TAURI_DEBS_DIR: ${{ steps.tauri-apt-cache.outputs.dir }}
+          TAURI_CACHE_HIT: ${{ steps.tauri-apt-cache.outputs.cache-hit }}
         run: |
+          # Cache hit: install the saved .deb closure with dpkg. No apt-get
+          # update, no mirror traffic (#9753). Any failure here falls through to
+          # the network path below, which is also the cache-miss path.
+          if [ "${TAURI_CACHE_HIT}" = "true" ] && ls "${TAURI_DEBS_DIR}"/*.deb >/dev/null 2>&1; then
+            if sudo timeout --kill-after=30s 3m dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
+              echo "Tauri system dependencies installed from cache (no mirror access)."
+              exit 0
+            fi
+            echo "::warning::cached .deb install failed; falling back to the network install"
+            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
+          fi
+          # Network path. Download into a private archives dir so the .debs can
+          # be copied into the cache dir once the install succeeds.
+          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
+          TAURI_ARCHIVES=$(mktemp -d)
+          chmod 755 "$TAURI_ARCHIVES"  # let apt's sandbox user traverse it
           # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
           # degraded and can crawl at 1-4 min/package, blowing this job's
           # timeout before Rust ever compiles — a transient infra flake that
@@ -3220,12 +3249,22 @@ jobs:
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
             sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
-              libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
           }
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
             if install_deps; then
               echo "Tauri system dependencies installed (attempt ${attempt})."
+              # Seed the cache (saved by the post step only on a cache miss).
+              # Never leave a partial/empty dir behind: cache keys are immutable,
+              # so saving one would poison every later run for this key.
+              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
+              if ! { ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1 \
+                     && sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ \
+                     && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"; }; then
+                echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
+                sudo rm -rf "${TAURI_DEBS_DIR}"
+              fi
               exit 0
             fi
             if [ "${attempt}" -eq "${attempts}" ]; then

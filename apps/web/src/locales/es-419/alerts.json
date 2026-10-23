@@ -112,6 +112,7 @@
     "close": "Cerrar",
     "createALinkedTicketPreFilledFrom": "Cree un ticket vinculado precargado a partir de esta alerta",
     "createTicket": "Crear ticket",
+    "viewTicket": "Ver ticket {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Silenciar esta alerta: detiene las notificaciones sin resolverlas",
     "suppress": "Suprimir",
     "dismissPermanentlyHidesThisAlertForGood": "Descartar permanentemente: oculta esta alerta definitivamente (el vencimiento de la garantía no volverá a alertar para la misma fecha de finalización; otras condiciones aún pueden abrir una nueva alerta si se repiten)",

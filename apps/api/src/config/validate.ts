@@ -698,6 +698,16 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     MCP_STATELESS_ENABLED: z.string().optional(),
 
+    // Tier-3 over MCP via action intents (B-W04 #6158). Kill switch is boolean
+    // (services/mcpIntentConfig.ts mcpTier3IntentsEnabled()); the knobs are read per call through
+    // positiveIntEnv in config/env.ts. Validated here for format only.
+    MCP_TIER3_INTENTS_ENABLED: z.string().optional(),
+    MCP_INTENT_MAX_LIVE_PER_PRINCIPAL: z.string().optional(),
+    MCP_INTENT_CREATES_PER_HOUR: z.string().optional(),
+    MCP_INTENT_CREATES_PER_USER_PER_HOUR: z.string().optional(),
+    MCP_APPROVAL_WAIT_MS: z.string().optional(),
+    MCP_APPROVAL_WAITS_PER_PRINCIPAL: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
@@ -2100,6 +2110,34 @@ const envSchema = envObjectSchema
           'MCP_STATELESS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
           'Defaults to false (the MCP server answers only the initialize-based protocol versions).',
       });
+    }
+
+    // MCP_TIER3_INTENTS_ENABLED (B-W04 #6158): boolean typo guard.
+    const mcpIntentsRaw = (data.MCP_TIER3_INTENTS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpIntentsRaw && !boolValues.has(mcpIntentsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_TIER3_INTENTS_ENABLED'],
+        message:
+          'MCP_TIER3_INTENTS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (Tier-3 over MCP keeps the MCP_APPROVAL_REQUIRED refusal).',
+      });
+    }
+    for (const knob of [
+      'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+      'MCP_INTENT_CREATES_PER_HOUR',
+      'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+      'MCP_APPROVAL_WAIT_MS',
+      'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+    ] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && (!/^\d+$/.test(raw) || Number(raw) < 1)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be a positive integer when set.`,
+        });
+      }
     }
 
     // ABUSE_SIGNALS_ENABLED (signup-abuse detection). Same treatment and same

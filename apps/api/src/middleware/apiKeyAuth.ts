@@ -85,6 +85,27 @@ export async function enforcePreLookupProbeRateLimit(c: Context): Promise<void> 
 }
 
 /**
+ * True when a human-delegated key's creator credential state moved on since
+ * mint (see the call site in apiKeyAuthMiddleware for the epoch rules).
+ * Exported so the B-W04 release path (services/mcpPrincipalAuth.ts) applies
+ * the identical comparison to a queued `mcp_api` intent's origin key.
+ */
+export function isApiKeyCreatorEpochStale(
+  apiKey: {
+    creatorCredentialEpoch?: number | null;
+    creatorAuthEpoch?: number | null;
+    creatorMfaEpoch?: number | null;
+  },
+  creator: { authEpoch: number; mfaEpoch: number; credentialEpoch: number },
+): boolean {
+  const credentialStale = typeof apiKey.creatorCredentialEpoch === 'number'
+    ? apiKey.creatorCredentialEpoch !== creator.credentialEpoch
+    : typeof apiKey.creatorAuthEpoch === 'number' && apiKey.creatorAuthEpoch !== creator.authEpoch;
+  const mfaStale = typeof apiKey.creatorMfaEpoch === 'number' && apiKey.creatorMfaEpoch !== creator.mfaEpoch;
+  return credentialStale || mfaStale;
+}
+
+/**
  * Middleware to authenticate requests via X-API-Key header.
  *
  * This middleware:
@@ -219,11 +240,7 @@ export async function apiKeyAuthMiddleware(c: Context, next: Next) {
     // still matched, so a key already invalidated stays invalid). A NULL
     // snapshot on both means the key predates epoch binding entirely and is
     // not checked.
-    const credentialStale = typeof apiKey.creatorCredentialEpoch === 'number'
-      ? apiKey.creatorCredentialEpoch !== creator.credentialEpoch
-      : typeof apiKey.creatorAuthEpoch === 'number' && apiKey.creatorAuthEpoch !== creator.authEpoch;
-    const mfaStale = typeof apiKey.creatorMfaEpoch === 'number' && apiKey.creatorMfaEpoch !== creator.mfaEpoch;
-    if (credentialStale || mfaStale) {
+    if (isApiKeyCreatorEpochStale(apiKey, creator)) {
       throw new HTTPException(401, { message: 'API key creator credentials have changed' });
     }
   }

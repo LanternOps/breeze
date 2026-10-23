@@ -160,5 +160,19 @@
     "orderNote": "Die Auswirkungen werden in dieser Reihenfolge ausgeführt. Die Anmeldung wird zuletzt deaktiviert, sodass ein vorzeitiger Abbruch nie E-Mails ohne Weiterleitung hinterlässt.",
     "empty": "Dieser Plan enthält keine Auswirkungen.",
     "invalid": "Dieser Plan konnte nicht vollständig angezeigt werden. Genehmigen Sie ihn nicht."
+  },
+  "intentStatus": {
+    "title": "Genehmigungsstatus",
+    "waitingForApprovers": "Warten auf Genehmiger",
+    "notFound": "Diese Genehmigung wurde nicht gefunden.",
+    "status": {
+      "pending_approval": "Genehmigung ausstehend",
+      "in_progress": "In Bearbeitung",
+      "completed": "Abgeschlossen",
+      "failed": "Fehlgeschlagen",
+      "rejected": "Abgelehnt",
+      "expired": "Abgelaufen",
+      "cancelled": "Abgebrochen"
+    }
   }
 }

@@ -250,7 +250,8 @@ export const recommendationActionQuerySchema = z.object({
 });
 
 export const trendsQuerySchema = z.object({
-  period: z.enum(['7d', '30d', '90d']).optional().default('30d')
+  period: z.enum(['7d', '30d', '90d']).optional().default('30d'),
+  orgId: z.string().guid().optional()
 });
 
 export const postureQuerySchema = z.object({
