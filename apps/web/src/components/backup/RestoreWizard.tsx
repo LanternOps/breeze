@@ -358,7 +358,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
       if (
         total > LARGE_FOLDER_SELECTION_THRESHOLD &&
-        !window.confirm(t('restoreWizard.confirmLargeFolderSelection', { count: total }))
+        !window.confirm(t('restoreWizard.confirmLargeFolderSelection', { count: total, formatted: formatNumber(total) }))
       ) {
         return;
       }
@@ -370,6 +370,20 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
       return next;
     });
   };
+
+  // Folder paths are remembered in folderCounts when toggled; everything else
+  // in the selection is a file. Count them separately so a folder isn't "1 file".
+  const selectedFolderCount = Array.from(selectedFiles).filter((path) => folderCounts.current.has(path)).length;
+  const selectedFileCount = selectedFiles.size - selectedFolderCount;
+  const selectionSummary =
+    selectedFolderCount === 0
+      ? t('restoreWizard.filesSelected', { count: selectedFileCount, formatted: formatNumber(selectedFileCount) })
+      : [
+          selectedFileCount > 0
+            ? t('restoreWizard.selectionFiles', { count: selectedFileCount, formatted: formatNumber(selectedFileCount) })
+            : null,
+          t('restoreWizard.selectionFolders', { count: selectedFolderCount, formatted: formatNumber(selectedFolderCount) }),
+        ].filter(Boolean).join(', ');
 
   const restoreKindLabel = (job: RestoreJob): string => {
     if (job.restoreMode === 'vm') return t('restoreWizard.kindVm');
@@ -704,7 +718,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                           </button>
                           {typeof item.fileCount === 'number' && (
                             <span className="text-xs text-muted-foreground">
-                              {t('restoreWizard.folderFileCount', { count: item.fileCount })}
+                              {t('restoreWizard.folderFileCount', { count: item.fileCount, formatted: formatNumber(item.fileCount) })}
                             </span>
                           )}
                         </div>
@@ -852,7 +866,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     <Server className="h-4 w-4 text-primary" />
                     {t('restoreWizard.restoreType')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {restoreType === 'full' ? 'Full restore' : 'Selective restore'}
+                    {restoreType === 'full' ? t('restoreWizard.kindFull') : t('restoreWizard.kindSelective')}
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
@@ -871,8 +885,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     {t('restoreWizard.files')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {restoreType === 'full'
-                      ? 'All files from snapshot'
-                      : t('restoreWizard.filesSelected', { count: selectedFiles.size })}
+                      ? t('restoreWizard.allFilesFromSnapshot')
+                      : selectionSummary}
                   </p>
                 </div>
               </div>

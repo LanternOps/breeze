@@ -1336,12 +1336,26 @@ describe('RestoreWizard folder selection (#9628)', () => {
     const checkbox = (await openSelectStep()) as HTMLInputElement;
     fireEvent.click(checkbox);
     expect(confirmSpy).toHaveBeenCalledTimes(1);
-    expect(confirmSpy.mock.calls[0]![0]).toContain('5000');
+    expect(confirmSpy.mock.calls[0]![0]).toContain('5,000');
     expect(checkbox.checked).toBe(false);
 
     confirmSpy.mockReturnValue(true);
     fireEvent.click(checkbox);
     expect(checkbox.checked).toBe(true);
+    confirmSpy.mockRestore();
+  });
+  it('summarises a selected folder as a folder, not "1 file", and formats large counts', async () => {
+    mockTree(10001);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const checkbox = (await openSelectStep(['/Finance/q3.xlsx'])) as HTMLInputElement;
+    expect(screen.getByText((10001).toLocaleString() + ' files')).toBeTruthy();
+    fireEvent.click(checkbox);
+    expect(confirmSpy.mock.calls[0]![0]).toContain((10001).toLocaleString());
+    for (let index = 0; index < 2; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    expect(screen.getByText('1 file, 1 folder')).toBeTruthy();
+    expect(screen.queryByText('2 files selected')).toBeNull();
     confirmSpy.mockRestore();
   });
 });
