@@ -339,6 +339,7 @@
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
+        "mrr_renewals": "MRR e rinnovi",
         "backup_status": "Stato dei backup"
       },
       "threatDetection": {
@@ -442,6 +443,7 @@
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
+        "mrr_renewals": "MRR e rinnovi",
         "backup_status": "Stato dei backup"
       },
       "runsTable": {
@@ -991,6 +993,7 @@
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
+        "mrr_renewals": "MRR e rinnovi",
         "backup_status": "Stato dei backup"
       },
       "schedules": {
@@ -1063,6 +1066,10 @@
         "ai_usage_by_client": {
           "name": "Utilizzo dell'IA per cliente",
           "description": "Utilizzo dell'IA della piattaforma per cliente nel periodo: richieste, token, costo Breeze, importo da addebitare in base al profilo di fatturazione del cliente e quanto è già stato fatturato. L'utilizzo incluso e i modelli senza prezzo sono mostrati separatamente, mai sommati."
+        },
+        "mrr_renewals": {
+          "name": "MRR e rinnovi",
+          "description": "Ricavi ricorrenti mensili e annuali dei contratti attivi, misurati il giorno in cui il report viene eseguito, con i contratti in rinnovo entro l'orizzonte scelto e ciò che è stato effettivamente fatturato come ricorrente. Un set di totali per valuta, senza conversione."
         },
         "backup_status": {
           "name": "Report sullo stato dei backup",
@@ -1186,6 +1193,19 @@
       },
       "periodNote": "Gli addebiti sono fatturati per mese di calendario UTC. Un periodo impostato in un altro fuso orario può differire dalla fattura per l'utilizzo vicino ai confini del mese.",
       "unpricedNote": "L'utilizzo di un modello senza tariffa nel profilo di fatturazione del cliente viene conteggiato come senza prezzo. Non è mai considerato gratuito.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Questo report è sempre misurato il giorno in cui viene eseguito. Non ci sono periodi o date di riferimento da impostare.",
+      "groupBy": "Raggruppa per",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "contract": "Contratto"
+      },
+      "renewalHorizon": "Orizzonte di rinnovo",
+      "renewalHorizonOption": "Prossimi {{days}} giorni",
+      "renewalHorizonHelp": "I contratti la cui scadenza cade in questa finestra sono elencati come rinnovi.",
       "cancel": "Annulla",
       "createReport": "Crea report"
     },

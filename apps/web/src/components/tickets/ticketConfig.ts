@@ -31,6 +31,12 @@ export interface TicketSummary {
   responseSlaMinutes?: number | null;
   slaPausedAt?: string | null;
   slaPausedMinutes?: number | null;
+  // #8973 stored SLA deadlines (server-computed; the client never derives them from targets)
+  responseDueAt?: string | null;
+  resolutionDueAt?: string | null;
+  responseWarnAt?: string | null;
+  resolutionWarnAt?: string | null;
+  slaBusinessMinutesRemaining?: { response: number | null; resolution: number | null } | null;
   slaBreachReason?: string | null;
   firstResponseAt: string | null;
   createdAt: string;
@@ -111,29 +117,34 @@ export type SlaState =
   | { kind: 'paused'; minutesLeft: number }
   | { kind: 'breached'; minutesAgo: number };
 
-// "Quiet until it matters" — see SlaChip for per-state rendering. At-risk begins at 80% of the target elapsed.
-// Client twin of the server SLA rules (services/ticketSla.ts and the SQL fragments in routes/tickets/tickets.ts) — change together.
+// "Quiet until it matters" — see SlaChip for per-state rendering. Reads the server-stored deadlines only (#8973):
+// *DueAt already includes paused time and *WarnAt is the server's "breaching soon" point. No target arithmetic here.
+// Client twin of the stored-deadline SQL in apps/api/src/routes/tickets/tickets.ts (SLA_AT_RISK) and
+// apps/api/src/services/ticketSlaDeadlines.ts — change together.
 export function slaState(
-  t: Pick<TicketSummary, 'slaBreachedAt' | 'createdAt' | 'status' | 'firstResponseAt'> &
-     { resolutionSlaMinutes?: number | null; responseSlaMinutes?: number | null; slaPausedAt?: string | null; slaPausedMinutes?: number | null },
+  t: Pick<TicketSummary, 'slaBreachedAt' | 'status' | 'firstResponseAt' | 'responseDueAt' | 'resolutionDueAt' |
+    'responseWarnAt' | 'resolutionWarnAt' | 'slaPausedAt' | 'slaBusinessMinutesRemaining'>,
   now: Date = new Date()
 ): SlaState {
   if (t.status === 'resolved' || t.status === 'closed') return { kind: 'none' };
   if (t.slaBreachedAt) {
     return { kind: 'breached', minutesAgo: (now.getTime() - new Date(t.slaBreachedAt).getTime()) / 60_000 };
   }
-  const targets: number[] = [];
-  if (t.responseSlaMinutes && !t.firstResponseAt) targets.push(t.responseSlaMinutes);
-  if (t.resolutionSlaMinutes) targets.push(t.resolutionSlaMinutes);
-  if (targets.length === 0) return { kind: 'none' };
+  const arms: Array<{ arm: 'response' | 'resolution'; due: Date; warn: Date | null }> = [];
+  if (!t.firstResponseAt && t.responseDueAt) {
+    arms.push({ arm: 'response', due: new Date(t.responseDueAt), warn: t.responseWarnAt ? new Date(t.responseWarnAt) : null });
+  }
+  if (t.resolutionDueAt) {
+    arms.push({ arm: 'resolution', due: new Date(t.resolutionDueAt), warn: t.resolutionWarnAt ? new Date(t.resolutionWarnAt) : null });
+  }
+  if (arms.length === 0) return { kind: 'none' };
 
-  // Both targets share the createdAt clock, so the smallest target is the most urgent.
-  const target = Math.min(...targets);
+  const chosen = arms.reduce((a, b) => (b.due.getTime() < a.due.getTime() ? b : a));
   const clockEnd = t.slaPausedAt ? new Date(t.slaPausedAt) : now; // frozen while paused
-  const activeElapsed = (clockEnd.getTime() - new Date(t.createdAt).getTime()) / 60_000 - (t.slaPausedMinutes ?? 0);
-  const left = target - activeElapsed;
+  const business = t.slaBusinessMinutesRemaining?.[chosen.arm];
+  const left = typeof business === 'number' ? business : (chosen.due.getTime() - clockEnd.getTime()) / 60_000;
   if (t.slaPausedAt) return { kind: 'paused', minutesLeft: Math.max(0, left) };
   if (left <= 0) return { kind: 'breached', minutesAgo: -left };
-  if (activeElapsed >= 0.8 * target) return { kind: 'at-risk', minutesLeft: left };
+  if (arms.some((a) => a.warn && now.getTime() >= a.warn.getTime())) return { kind: 'at-risk', minutesLeft: left };
   return { kind: 'ok', minutesLeft: left };
 }

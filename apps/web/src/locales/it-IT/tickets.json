@@ -20,6 +20,7 @@
     "state": {
       "met": "Rispettato",
       "notMet": "Non rispettato",
+      "metLate": "Rispettato in ritardo",
       "breached": "Violato",
       "pausedLeft": "In pausa · {{relative}} rimanenti",
       "left": "{{relative}} rimanenti"

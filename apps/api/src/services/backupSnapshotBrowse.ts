@@ -23,6 +23,8 @@ export type BrowseEntry = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
+  /** Directories only: indexed files at any depth beneath it (#9628). */
+  fileCount?: number;
 };
 
 export type BrowsePage = {
@@ -36,6 +38,8 @@ export type BrowseRow = {
   source_path: string;
   size: string | number | null;
   modified_at: Date | string | null;
+  /** Files at or beneath this entry (directories only matter). */
+  file_count?: string | number | null;
 };
 
 /** Split a tree path (`/C:/Users`, `C:\Users`, ``) into its non-empty segments. */
@@ -62,7 +66,13 @@ export function shapeBrowseRows(rows: BrowseRow[], segments: string[], limit: nu
   const parent = segments.length > 0 ? `/${segments.join('/')}` : '';
   const entries: BrowseEntry[] = page.map((row) => {
     if (row.is_dir) {
-      return { name: row.name, path: `${parent}/${row.name}`, type: 'directory' };
+      const fileCount = Number(row.file_count);
+      return {
+        name: row.name,
+        path: `${parent}/${row.name}`,
+        type: 'directory',
+        ...(Number.isFinite(fileCount) && row.file_count != null ? { fileCount } : {}),
+      };
     }
     return {
       name: row.name,
@@ -110,12 +120,13 @@ export async function listSnapshotDirectory(params: {
         CASE WHEN position('/' in rest) > 0 THEN 0 ELSE 1 END AS rank,
         min(source_path) AS source_path,
         max(size) AS size,
-        max(modified_at) AS modified_at
+        max(modified_at) AS modified_at,
+        count(*) AS file_count
       FROM r
       WHERE rest <> ''
       GROUP BY 1, 2, 3
     )
-    SELECT g.name, g.is_dir, g.source_path, g.size, g.modified_at
+    SELECT g.name, g.is_dir, g.source_path, g.size, g.modified_at, g.file_count
     FROM g
     ${cursorFilter}
     ORDER BY g.rank, g.name COLLATE "C"

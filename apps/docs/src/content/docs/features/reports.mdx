@@ -35,6 +35,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `technician_time_billability` | Logged time against an assumed weekly capacity, the billable / included / non-billable split, and how much billable time has been approved and billed — billable value reported per currency (see [Business Reports](#business-reports)) | utilization %, billable %, billing conversion %, logged/billable/non-billable minutes, billable value per currency |
 | `ar_aging` | Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency (see [Business Reports](#business-reports)) | outstanding balance per bucket, open invoice count, no-due-date balance, other open balance |
 | `ai_usage_by_client` | AI requests, tokens, Breeze cost and the amount billable to each client for a period, split into billed, unbilled and unpriced (see [AI usage chargeback](/features/ai-usage-chargeback/)) | requests, tokens, Breeze cost, billable amount, billed and unbilled amount, unpriced usage |
+| `mrr_renewals` | Contract monthly recurring revenue as of the run, contracts up for renewal, and 12 months of billed recurring revenue, one set of totals per currency (see [MRR & renewals](#mrr--renewals-mrr_renewals)) | MRR, ARR, base and overage, paused and pending activation, renewals due, billed recurring revenue per month |
 
 <Aside type="note">
 The four evidence-review report types — `identity_access_review`, `vulnerability_management`, `endpoint_management_review` and `threat_detection_review` — are built from previously synced data only — they never make a live call to the source integration while generating, so a scheduled run never depends on a third party being up. If a required source (Microsoft 365 sync, a vulnerability feed, or the Huntress integration) has never completed a sync, the affected figures render as **not measured** rather than zero, and the report states the sync gap explicitly. `identity_access_review` and `endpoint_management_review` require an M365 tenant sync connected (`endpoint_management_review` additionally needs Intune enrolled); `vulnerability_management` requires a connected vulnerability scan/feed source; `threat_detection_review` requires a connected and synced Huntress integration. These four report types are not available for customer self-service in the portal.
@@ -280,7 +281,7 @@ The **Executive Summary** report (`executive_summary`) is built for handing to a
 
 ## Business Reports
 
-Three report types cover the PSA side of the business — service performance, technician time, and money owed. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, and `invoices:read` for AR aging.
+Three report types cover the PSA side of the business — service performance, technician time, and money owed. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, `invoices:read` for AR aging, and `contracts:read` for MRR & renewals.
 
 ### Ownership: one organization, or all of them
 
@@ -316,6 +317,29 @@ Buckets unpaid invoice balances by how far past due they are: current, 1–30, 3
 
 Aging is measured as of the moment the report runs, in the report owner's resolved timezone, unless an explicit as-of date is set. **The as-of date moves only the aging reference date -- it does not reconstruct historical balances or undo payments recorded after it.** An optional note can also list invoices that were fully paid month-to-date as of that date; it's informational and never moves a bucket. Totals are reported **once per currency, with no conversion** -- there is deliberately no combined figure, because an FX-converted headline would be wrong the day after it was produced.
 
+### MRR & renewals (`mrr_renewals`)
+
+Reports contract revenue as of the moment the report runs. Contracts keep no status history, so this report has **no period and no as-of date** -- it cannot be backdated, and sending `period` or `asOf` returns `400`. Dates are compared as UTC calendar dates, the same "today" contract billing uses.
+
+**What MRR counts.** A contract counts while it is **in term**: started, not yet past its end date, and either still billing or in a final term that is already billed and still being served. Each contract's monthly figure is its billing-period value divided by the billing interval, rounded in the contract's own currency, and is split into:
+
+- **Base** -- the recurring lines at their billing prices.
+- **Overage** -- billed allowance overage, counted from today's device and seat quantities.
+- **Final term billed** -- a contract whose last period is already invoiced (for example, a one-year contract billed annually in advance) counts at what that invoice billed. That figure is not split into base and overage.
+
+Per-device and per-seat quantities are counted live when the report runs, so MRR is an estimate of the next invoices, not a billed amount. ARR is MRR × 12. Totals are reported **once per currency, with no conversion**.
+
+**What sits beside MRR, never in it.** Paused contracts and draft contracts (pending activation) are valued the same way and shown next to MRR. Open-ended contracts (no end date) are part of MRR and are also shown as their own figure. Two reconciliation lists make sure nothing disappears silently:
+
+- **Active, not in term** -- contracts marked active that are not counted, with the reason: they start later, they ended and are waiting to be marked expired, or their final period has not been billed.
+- **Could not be valued** -- contracts left out of MRR because a line bills a device group that could not be evaluated, a deleted site, or a final-term invoice that is missing or voided. The report says how many were excluded.
+
+**Renewals.** In-term contracts whose end date falls inside the renewal window (30, 60, 90 or 180 days from the run date, default 90) are listed by end date, with auto-renewing and manually renewed MRR totalled separately, and the date the advance renewal notice was sent for that end date.
+
+**Billed recurring revenue.** The 12 calendar months ending with the current month (in the report owner's time zone) show what issued invoices billed for contracts. A billing period's line is spread evenly over the months it covers; a contract line added to an invoice by hand lands in the invoice's month. Hour-block overage is usage, not recurring revenue, and is left out. The current month is marked partial. This series is **billed** revenue, not MRR.
+
+MRR has no stored history before the report first runs. Schedule it monthly, and each run's PDF compares MRR with the previous run ("vs previous observation").
+
 ### What gets stored, and what gets capped
 
 Every total is computed in SQL over **all** matching rows. The stored detail rows -- the per-ticket, per-technician or per-invoice lines behind the totals -- are capped at 5,000 per run; a truncated detail list never implies a truncated total. A downloaded PDF shows up to 500 detail rows; CSV and Excel downloads of a stored run carry the full (capped) set as raw numeric values -- balances and rates as plain decimals, durations as minutes, percentages as fractions -- each money row tagged with a currency-code column, so a spreadsheet can total them directly. A ratio with nothing to measure (for example, no tickets with a response target) prints **N/A**, never 0%. A user whose access is limited to specific sites gets an explanatory note instead of figures, because tickets, time entries, and invoices are not tied to sites.
@@ -334,6 +358,8 @@ The web options forms set the same keys. Business reports select their data by *
 | `asOf` | AR aging | `YYYY-MM-DD` | Today |
 | `groupBy` | AR aging | `organization`, `currency` | `organization` |
 | `includePaidInPeriod` | AR aging | Add an informational note on invoices fully paid month-to-date (never moves a bucket) | `false` |
+| `groupBy` | MRR & renewals | `organization`, `contract` | `organization` |
+| `renewalHorizonDays` | MRR & renewals | `30`, `60`, `90`, `180` | `90` |
 
 Periods and "today" are resolved in the report owner's time zone -- the organization's, then the partner's, then UTC. If the configured time zone isn't recognized, the report runs in UTC and says so.
 

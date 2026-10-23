@@ -335,6 +335,11 @@
       "showing": "{{total}} cihazdan {{shown}} tanesi gösteriliyor",
       "loadMore": "Daha fazla yükle",
       "lastChecked": "Son denetim: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Paket sürümü {{version}}",
+      "id": "Katalog kimliği {{id}}",
+      "title": "Başka bir katalog girdisi aynı başlığa sahip. Her biri ayrı ayrı onaylanır."
     }
   },
   "patchesPage": {

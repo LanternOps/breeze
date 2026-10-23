@@ -847,12 +847,15 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   defaults: z.object({
     policyDefaults: z.record(z.string(), z.string()).optional(),
+    // #9617: a real device_groups.id (org level only; a partner-level value
+    // cannot name a per-org group). Legacy display strings are accepted so old
+    // clients don't 400, but enrollment ignores anything that isn't a group id.
+    // `alertThreshold` and `autoEnrollment.sendWelcome` were removed (no
+    // consumer); z.object strips them from old clients' payloads rather than 400.
     deviceGroup: z.string().optional(),
-    alertThreshold: z.string().optional(),
     autoEnrollment: z.object({
       enabled: z.boolean(),
       requireApproval: z.boolean(),
-      sendWelcome: z.boolean(),
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
     // Reject malformed windows on the partner (/partners/me) write path at save
@@ -2997,7 +3000,58 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
 // --- Sites (organization-scoped) ---
 
-orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
+/**
+ * Per-site device counts for a set of sites, shared by the Sites list and
+ * `GET /sites/:id` so the number a tile/list shows and the number the site page
+ * shows cannot drift (#9791).
+ *
+ * `deviceCount` excludes ephemeral (Quick Support), parked and decommissioned
+ * rows, so it equals what the agent-class, site-filtered Devices list shows.
+ * `removedDeviceCount` (#7471) counts decommissioned rows, which keep their
+ * site FK and block site deletion.
+ *
+ * Takes no org: the list route spans orgs for a partner-wide read, and
+ * `devices` is org-scoped under RLS, so the grouped query stays
+ * tenant-isolated either way. An empty id list never issues `site_id IN ()`.
+ */
+async function getDeviceCountsBySite(siteIds: string[]): Promise<{
+  deviceCountBySite: Map<string, number>;
+  removedCountBySite: Map<string, number>;
+}> {
+  const deviceCountBySite = new Map<string, number>();
+  const removedCountBySite = new Map<string, number>();
+  if (siteIds.length === 0) return { deviceCountBySite, removedCountBySite };
+
+  const counts = await db
+    .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+    .from(devices)
+    // Removed (decommissioned) devices are excluded alongside the ephemeral
+    // Quick Support ones (#5315): the org record's Devices tab lists
+    // `GET /devices`, which drops decommissioned rows by default, so counting
+    // them here made the Sites table disagree with the tab beside it.
+    .where(and(
+      inArray(devices.siteId, siteIds),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
+      ne(devices.status, 'decommissioned'),
+    ))
+    .groupBy(devices.siteId);
+  for (const row of counts) {
+    deviceCountBySite.set(row.siteId, Number(row.count));
+  }
+  // The DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
+  // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
+  const removedCounts = await db
+    .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+    .from(devices)
+    .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
+    .groupBy(devices.siteId);
+  for (const row of removedCounts) {
+    removedCountBySite.set(row.siteId, Number(row.count));
+  }
+  return { deviceCountBySite, removedCountBySite };
+}
+
+orgRoutes.get('/sites',requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { orgId, organizationId, includeEnrollmentDefaults, ...pagination } = c.req.valid('query');
 
@@ -3085,39 +3139,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // it with a single grouped query over the returned page's site ids —
   // `devices` is org-scoped under RLS so this stays tenant-isolated. Guard on a
   // non-empty page so an empty list never issues a `site_id IN ()` query.
-  const deviceCountBySite = new Map<string, number>();
-  const removedCountBySite = new Map<string, number>();
-  const siteIds = data.map((s) => s.id);
-  if (siteIds.length > 0) {
-    const counts = await db
-      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
-      .from(devices)
-      // Removed (decommissioned) devices are excluded alongside the ephemeral
-      // Quick Support ones (#5315): the org record's Devices tab lists
-      // `GET /devices`, which drops decommissioned rows by default, so counting
-      // them here made the Sites table disagree with the tab beside it.
-      .where(and(
-        inArray(devices.siteId, siteIds),
-        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-        ne(devices.status, 'decommissioned'),
-      ))
-      .groupBy(devices.siteId);
-    for (const row of counts) {
-      deviceCountBySite.set(row.siteId, Number(row.count));
-    }
-    // `removedDeviceCount` (#7471): decommissioned rows keep their site FK and
-    // block site deletion, so surface them next to the active count — the
-    // DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
-    // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
-    const removedCounts = await db
-      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
-      .from(devices)
-      .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
-      .groupBy(devices.siteId);
-    for (const row of removedCounts) {
-      removedCountBySite.set(row.siteId, Number(row.count));
-    }
-  }
+  const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite(data.map((s) => s.id));
 
   const dataWithCounts = data.map((site) => ({
     ...withMaskedSettings(site),
@@ -3251,7 +3273,15 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
-  return c.json(withMaskedSettings(site));
+  // Same helper as the list route, so the site page's count and its
+  // "View all devices" link agree with the Sites list (#9791).
+  const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite([site.id]);
+
+  return c.json({
+    ...withMaskedSettings(site),
+    deviceCount: deviceCountBySite.get(site.id) ?? 0,
+    removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
+  });
 });
 
 orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), zValidator('json', updateSiteSchema), async (c) => {

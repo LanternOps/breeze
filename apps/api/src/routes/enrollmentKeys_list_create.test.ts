@@ -120,9 +120,24 @@ vi.mock('../services/rate-limit', () => ({
 const assertTtlWithinCapMock = vi.fn(
   async (_orgId: string, _ttlMinutes: number | undefined) => null as string | null,
 );
+// #9616: the no-expiry / no-maxUsage branch resolves the partner/org defaults.
+// Default = nothing configured at partner/org level (product fallbacks only).
+const getEnrollmentDefaultsForOrgMock = vi.fn(async (_orgId: string) => ({
+  ttlMinutes: 43200,
+  deviceCount: 50,
+  maxTtlMinutes: 525600,
+  ttlConfigured: false,
+  deviceCountConfigured: false,
+}));
+// Non-default deployment TTL (stands in for ENROLLMENT_KEY_DEFAULT_TTL_MINUTES)
+// so the env-fallback assertion discriminates from the 43200 product default.
+vi.mock('../services/enrollmentKeyTtlDefault', () => ({
+  getDefaultEnrollmentKeyTtlMinutes: () => 720,
+}));
 vi.mock('../services/enrollmentDefaults', () => ({
   assertTtlWithinCap: (...args: [string, number | undefined]) =>
     assertTtlWithinCapMock(...args),
+  getEnrollmentDefaultsForOrg: (orgId: string) => getEnrollmentDefaultsForOrgMock(orgId),
 }));
 
 import { enrollmentKeyRoutes } from './enrollmentKeys';
@@ -248,7 +263,7 @@ function mockInsertCapture(rows: any[]): () => any {
 // The env var is unset in tests, so the literal 43200 (30 days) is the resolved value
 // (the constant is captured at module import — a later env mutation cannot
 // change it).
-const DEFAULT_TTL_MINUTES = 43200;
+const DEFAULT_TTL_MINUTES = 720;
 
 describe('enrollment key routes — list & create', () => {
   let app: Hono;
@@ -843,7 +858,14 @@ describe('enrollment key routes — list & create', () => {
       expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
     });
 
-    it('defaults maxUsage to 1 when the caller omits it', async () => {
+    it('defaults maxUsage to the explicitly configured partner/org device count when the caller omits it (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
+        ttlMinutes: 43200,
+        deviceCount: 10,
+        maxTtlMinutes: 525600,
+        ttlConfigured: false,
+        deviceCountConfigured: true,
+      });
       const created = makeEnrollmentKey();
       const captured = mockInsertCapture([created]);
 
@@ -853,6 +875,19 @@ describe('enrollment key routes — list & create', () => {
         body: JSON.stringify({ name: 'Test Key' }),
       });
 
+      expect(res.status).toBe(201);
+      expect(captured().maxUsage).toBe(10);
+    });
+
+    it('keeps the previous default of 1 when maxUsage is omitted and no partner/org device count is configured (#9616)', async () => {
+      // Resolver reports the 50-device PRODUCT default but deviceCountConfigured=false:
+      // an API caller that never set a count must not get a 50-device key.
+      const captured = mockInsertCapture([makeEnrollmentKey()]);
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Unconfigured count', ttlMinutes: 60 }),
+      });
       expect(res.status).toBe(201);
       expect(captured().maxUsage).toBe(1);
     });
@@ -972,7 +1007,63 @@ describe('enrollment key routes — list & create', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
-    it('falls back to DEFAULT_ENROLLMENT_KEY_TTL_MINUTES when neither ttlMinutes nor expiresAt is sent', async () => {
+    it('does not consult the defaults resolver when maxUsage and ttlMinutes are both explicit, and persists them (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockClear();
+      const captured = mockInsertCapture([makeEnrollmentKey()]);
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Explicit', maxUsage: 3, ttlMinutes: 60 }),
+      });
+      expect(res.status).toBe(201);
+      expect(getEnrollmentDefaultsForOrgMock).not.toHaveBeenCalled();
+      expect(captured().maxUsage).toBe(3);
+    });
+
+    it('keeps an explicit maxUsage over the resolved device count when only the expiry is omitted (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
+        ttlMinutes: 1440,
+        deviceCount: 10,
+        maxTtlMinutes: 525600,
+        ttlConfigured: true,
+        deviceCountConfigured: true,
+      });
+      const captured = mockInsertCapture([makeEnrollmentKey()]);
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Explicit count', maxUsage: 3 }),
+      });
+      expect(res.status).toBe(201);
+      expect(captured().maxUsage).toBe(3);
+    });
+
+    it('uses the resolved partner/org default TTL when neither ttlMinutes nor expiresAt is sent (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
+        ttlMinutes: 1440,
+        deviceCount: 50,
+        maxTtlMinutes: 525600,
+        ttlConfigured: true,
+        deviceCountConfigured: false,
+      });
+      const getInserted = mockInsertCapture([makeEnrollmentKey()]);
+      const before = Date.now();
+
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Org default TTL' }),
+      });
+
+      const after = Date.now();
+      expect(res.status).toBe(201);
+      const ttlMs = 1440 * 60 * 1000;
+      const inserted = getInserted();
+      expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + ttlMs - 50);
+      expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs + 50);
+    });
+
+    it('falls back to the deployment default TTL (ENROLLMENT_KEY_DEFAULT_TTL_MINUTES) when no partner/org expiry is configured (#9616)', async () => {
       const getInserted = mockInsertCapture([makeEnrollmentKey()]);
       const before = Date.now();
 
@@ -989,6 +1080,26 @@ describe('enrollment key routes — list & create', () => {
       const ttlMs = DEFAULT_TTL_MINUTES * 60 * 1000;
       expect(inserted.expiresAt.getTime()).toBeGreaterThanOrEqual(before + ttlMs - 50);
       expect(inserted.expiresAt.getTime()).toBeLessThanOrEqual(after + ttlMs + 50);
+    });
+
+    it('clamps the deployment fallback TTL to the partner cap when no expiry default is configured (#9616)', async () => {
+      getEnrollmentDefaultsForOrgMock.mockResolvedValueOnce({
+        ttlMinutes: 43200,
+        deviceCount: 50,
+        maxTtlMinutes: 60,
+        ttlConfigured: false,
+        deviceCountConfigured: false,
+      });
+      const getInserted = mockInsertCapture([makeEnrollmentKey()]);
+      const before = Date.now();
+      const res = await app.request('/enrollment-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ name: 'Capped fallback', maxUsage: 1 }),
+      });
+      expect(res.status).toBe(201);
+      expect(getInserted().expiresAt.getTime()).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000 + 50);
+      expect(getInserted().expiresAt.getTime()).toBeGreaterThanOrEqual(before + 60 * 60 * 1000 - 50);
     });
 
     it('rejects when both ttlMinutes and expiresAt are sent', async () => {

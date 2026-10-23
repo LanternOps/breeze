@@ -422,4 +422,14 @@ describe('AiUsagePage Buy credits link (#9450)', () => {
     await waitFor(() => expect(getByText('Breeze AI credits remaining')).toBeInTheDocument());
     expect(queryByRole('link', { name: 'Buy credits' })).toBeNull();
   });
+
+  it('renders the four stat-card labels from translation keys', async () => {
+    mockUsage();
+    const r = renderPage();
+    await waitFor(() => expect(r.getByText('Today\'s cost')).toBeTruthy());
+    expect(r.getByText('Monthly cost')).toBeTruthy();
+    expect(r.getByText('Messages today')).toBeTruthy();
+    expect(r.getByText('Tokens this month')).toBeTruthy();
+  });
+
 });

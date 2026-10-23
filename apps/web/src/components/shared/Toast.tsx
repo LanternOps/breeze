@@ -12,7 +12,12 @@ interface ToastData {
   detail?: string;
   type: 'success' | 'error' | 'undo' | 'warning';
   onUndo?: () => void;
+  /** Milliseconds before auto-dismiss (default 5000). `0` keeps the toast until dismissed. */
   duration?: number;
+  /** A value (e.g. a manual invite link) shown in a read-only field with a copy button. */
+  copyValue?: string;
+  copyLabel?: string;
+  copiedLabel?: string;
 }
 
 // Single emitter slot: only one ToastContainer is ever the registered emitter at
@@ -92,6 +97,34 @@ export function _resetToastQueueForTests() {
   bus.emit = null;
 }
 
+function CopyField({ value, label = 'Copy', copiedLabel = 'Copied' }: { value: string; label?: string; copiedLabel?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="mt-2 flex items-center gap-2">
+      <input
+        type="text"
+        readOnly
+        value={value}
+        className="min-w-0 flex-1 rounded border bg-background px-2 py-1 text-xs text-foreground"
+        onFocus={e => e.target.select()}
+      />
+      <button
+        type="button"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(value);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          } catch { /* clipboard not available */ }
+        }}
+        className="shrink-0 rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+      >
+        {copied ? copiedLabel : label}
+      </button>
+    </span>
+  );
+}
+
 export default function ToastContainer() {
   const { t } = useTranslation('common');
   const [toasts, setToasts] = useState<ToastData[]>([]);
@@ -99,6 +132,7 @@ export default function ToastContainer() {
   const addToast = useCallback((toast: Omit<ToastData, 'id'>) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setToasts(prev => [...prev, { ...toast, id }]);
+    if (toast.duration === 0) return; // sticky: stays until dismissed
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, toast.duration || 5000);
@@ -158,6 +192,9 @@ export default function ToastContainer() {
               {toast.message}
               {toast.detail && (
                 <span className="mt-0.5 line-clamp-3 block text-xs opacity-80">{toast.detail}</span>
+              )}
+              {toast.copyValue && (
+                <CopyField value={toast.copyValue} label={toast.copyLabel} copiedLabel={toast.copiedLabel} />
               )}
             </span>
             {toast.type === 'undo' && toast.onUndo && (

@@ -30,6 +30,7 @@ import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from '
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
+import { planCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 import {
   aiActionPlans,
   peripheralDeviceClassEnum,
@@ -4232,15 +4233,22 @@ export function buildBreezeSdkTools(
         // Set active plan ID on session before emitting event
         session.activePlanId = planId;
 
-        // Emit plan_approval_required event
-        session.eventBus.publish({
+        // Emit plan_approval_required event. #9427: tracked as a pending card
+        // until the wait below ends — a rejection or timeout publishes nothing.
+        const planCard = planCardKey(planId);
+        publishPendingCard(session, planCard, {
           type: 'plan_approval_required',
           planId,
           steps: planSteps,
         });
 
         // Block until user approves or rejects (10-min timeout)
-        const approved = await waitForPlanApproval(planId, session);
+        let approved: boolean;
+        try {
+          approved = await waitForPlanApproval(planId, session);
+        } finally {
+          resolvePendingCard(session, planCard);
+        }
 
         if (!approved) {
           session.activePlanId = null;

@@ -6293,25 +6293,83 @@ describe('org routes', () => {
   });
 
   describe('GET /orgs/sites/:id', () => {
+    const siteRow = {
+      id: 'site-1',
+      name: 'HQ',
+      orgId: '11111111-1111-1111-1111-111111111111'
+    };
+    const mockSiteLookup = () => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([siteRow])
+        })
+      })
+    }) as any;
+
     it('should return a site', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'site-1',
-              name: 'HQ',
-              orgId: '11111111-1111-1111-1111-111111111111'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValue(mockSiteDeviceCounts([]));
 
       const res = await app.request('/orgs/sites/site-1');
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe('site-1');
+    });
+
+    // #9792: the dashboard-style "View all devices" link on the site page
+    // needs the same count the Sites list shows, from the same helper.
+    it('returns deviceCount and removedDeviceCount like the list route', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 7 }]))
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 2 }]));
+
+      const res = await app.request('/orgs/sites/site-1');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ id: 'site-1', deviceCount: 7, removedDeviceCount: 2 });
+    });
+
+    it('defaults deviceCount to 0 for a site with no devices', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValue(mockSiteDeviceCounts([]));
+
+      const res = await app.request('/orgs/sites/site-1');
+
+      const body = await res.json();
+      expect(body.deviceCount).toBe(0);
+      expect(body.removedDeviceCount).toBe(0);
+    });
+
+    it('count predicate excludes decommissioned devices (same predicate as the list)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 4 }]) };
+            })
+          })
+        } as any)
+        .mockReturnValue(mockSiteDeviceCounts([]));
+
+      const res = await app.request('/orgs/sites/site-1');
+
+      expect(res.status).toBe(200);
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
     });
 
     it('should return 404 when site not found', async () => {
@@ -6665,7 +6723,9 @@ describe('org routes', () => {
 
       it('allows a site-confined user reading their own site (site-x)', async () => {
         setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
-        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-x') as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(siblingSiteRow('site-x') as any)
+          .mockReturnValue(mockSiteDeviceCounts([]));
 
         const res = await app.request('/orgs/sites/site-x');
 
@@ -6676,7 +6736,9 @@ describe('org routes', () => {
 
       it('allows an unconfined user (allowedSiteIds undefined) to read any sibling site', async () => {
         setAuthContext({ scope: 'organization', orgId: ORG });
-        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(siblingSiteRow('site-y') as any)
+          .mockReturnValue(mockSiteDeviceCounts([]));
 
         const res = await app.request('/orgs/sites/site-y');
 
@@ -9405,7 +9467,9 @@ describe('org routes', () => {
 
       it('GET /orgs/sites/:id masks settings secrets', async () => {
         setAuthContext({ scope: 'organization', orgId: SITE_ORG });
-        vi.mocked(db.select).mockReturnValue(siteSelect({ overrides: { apiKey: 'enc:v1:site-api-key' } }) as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(siteSelect({ overrides: { apiKey: 'enc:v1:site-api-key' } }) as any)
+          .mockReturnValue(mockSiteDeviceCounts([]));
 
         const res = await app.request('/orgs/sites/site-1');
 

@@ -6,6 +6,7 @@ vi.mock('../../db', () => ({
 }));
 
 vi.mock('../../db/schema', () => ({
+  users: { id: 'users.id', name: 'users.name' },
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId', hostname: 'devices.hostname', osType: 'devices.osType' },
   deviceRecoveryKeys: {
     id: 'drk.id', deviceId: 'drk.deviceId', orgId: 'drk.orgId', keyType: 'drk.keyType',
@@ -105,9 +106,11 @@ function mockKeysListSelect(keys: any[] = []) {
 function mockAccessEventsSelect(events: any[] = []) {
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        orderBy: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue(events),
+      leftJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          orderBy: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue(events),
+          }),
         }),
       }),
     }),
@@ -162,7 +165,7 @@ describe('recoveryKeysRoutes', () => {
       { id: KEY_ID, keyType: 'bitlocker', volumeMount: 'C:', protectorId: 'protector-1', status: 'active', escrowedAt: new Date('2026-01-01'), supersededAt: null },
     ]);
     mockAccessEventsSelect([
-      { id: 'evt-1', keyId: KEY_ID, userEmail: 'test@example.com', action: 'revealed', createdAt: new Date('2026-01-02') },
+      { id: 'evt-1', keyId: KEY_ID, userEmail: 'test@example.com', userName: 'Test User', action: 'revealed', createdAt: new Date('2026-01-02') },
     ]);
     const app = buildApp();
 
@@ -177,6 +180,7 @@ describe('recoveryKeysRoutes', () => {
     expect(body.data.keys[0].id).toBe(KEY_ID);
     expect(body.data.accessHistory).toHaveLength(1);
     expect(body.data.accessHistory[0].keyId).toBe(KEY_ID);
+    expect(body.data.accessHistory[0].userName).toBe('Test User');
   });
 
   it('reveal happy path returns decrypted key, writes ledger row + audit without plaintext', async () => {
@@ -296,19 +300,56 @@ describe('recoveryKeysRoutes', () => {
     expect(res.status).toBe(403);
   });
 
-  it('rotate windows defaults volumeMount to C: and queues command', async () => {
-    mockDeviceSelect({ osType: 'windows' });
-    const app = buildApp();
+  function mockEscrowedVolumes(mounts: string[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(mounts.map((volumeMount) => ({ volumeMount }))),
+      }),
+    } as any);
+  }
 
-    const res = await app.request(`/security/encryption/devices/${DEVICE_ID}/recovery-keys/rotate`, {
+  async function rotate(body: Record<string, unknown>) {
+    return buildApp().request(`/security/encryption/devices/${DEVICE_ID}/recovery-keys/rotate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
+      body: JSON.stringify(body),
     });
+  }
+
+  it('rotate windows with exactly one escrowed volume defaults to it and queues command', async () => {
+    mockDeviceSelect({ osType: 'windows' });
+    mockEscrowedVolumes(['C:']);
+    const res = await rotate({});
     expect(res.status).toBe(202);
     expect(queueCommandMock).toHaveBeenCalledWith(DEVICE_ID, 'encryption_rotate_key', { volumeMount: 'C:' }, 'user-1');
     const auditArg = writeRouteAuditMock.mock.calls[0]![1] as any;
     expect(auditArg.action).toBe('device.recovery_key.rotate');
+    expect(auditArg.details.volumeMount).toBe('C:');
+  });
+
+  it('rotate windows honors an explicit data volume', async () => {
+    mockDeviceSelect({ osType: 'windows' });
+    const res = await rotate({ volumeMount: 'D:' });
+    expect(res.status).toBe(202);
+    expect(queueCommandMock).toHaveBeenCalledWith(DEVICE_ID, 'encryption_rotate_key', { volumeMount: 'D:' }, 'user-1');
+    expect((writeRouteAuditMock.mock.calls[0]![1] as any).details.volumeMount).toBe('D:');
+  });
+
+  it('rotate windows without a volume is a 400 when several volumes are escrowed', async () => {
+    mockDeviceSelect({ osType: 'windows' });
+    mockEscrowedVolumes(['C:', 'D:']);
+    const res = await rotate({});
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/volumeMount/);
+    expect(queueCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('rotate windows without a volume is a 400 when no volume is escrowed', async () => {
+    mockDeviceSelect({ osType: 'windows' });
+    mockEscrowedVolumes([]);
+    const res = await rotate({});
+    expect(res.status).toBe(400);
+    expect(queueCommandMock).not.toHaveBeenCalled();
   });
 
   it('rotate macos without credentials returns 400 and does not queue', async () => {

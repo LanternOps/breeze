@@ -29,6 +29,25 @@ describe('installer bootstrap token lifetime limits', () => {
   });
 });
 
+describe('resolveEnrollmentDefaults — configured flags (#9616)', () => {
+  it('reports nothing configured when only product fallbacks apply', () => {
+    const r = resolveEnrollmentDefaults({}, {});
+    expect(r.ttlConfigured).toBe(false);
+    expect(r.deviceCountConfigured).toBe(false);
+  });
+
+  it('flags each value independently, from partner or org', () => {
+    expect(resolveEnrollmentDefaults({ defaultEnrollmentDeviceCount: 5 }, {})).toMatchObject({
+      ttlConfigured: false,
+      deviceCountConfigured: true,
+    });
+    expect(resolveEnrollmentDefaults({}, { defaultEnrollmentTtlMinutes: 60 })).toMatchObject({
+      ttlConfigured: true,
+      deviceCountConfigured: false,
+    });
+  });
+});
+
 describe('resolveEnrollmentDefaults', () => {
   it('inherits the partner value when the org has not set one', () => {
     const r = resolveEnrollmentDefaults(

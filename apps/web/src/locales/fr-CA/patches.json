@@ -335,6 +335,11 @@
       "showing": "{{shown}} sur {{total}} affichés",
       "loadMore": "En charger plus",
       "lastChecked": "Dernière vérification : {{when}}"
+    },
+    "disambiguator": {
+      "version": "Version du paquet {{version}}",
+      "id": "ID de catalogue {{id}}",
+      "title": "Une autre entrée du catalogue porte le même titre. Chacune est approuvée séparément."
     }
   },
   "patchesPage": {

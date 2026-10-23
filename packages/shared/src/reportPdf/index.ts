@@ -16,4 +16,6 @@ export { renderArAgingReport } from './arAgingPdf';
 export type { ArAgingPdfOpts } from './arAgingPdf';
 export { renderAiUsageByClientReport } from './aiUsageByClientPdf';
 export type { AiUsageByClientPdfOpts } from './aiUsageByClientPdf';
+export { renderMrrRenewalsReport } from './mrrRenewalsPdf';
+export type { MrrRenewalsPdfOpts } from './mrrRenewalsPdf';
 export { formatMinutes, formatMoney, formatPercent } from './moneyFormat';

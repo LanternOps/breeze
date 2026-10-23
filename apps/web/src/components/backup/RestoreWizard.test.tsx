@@ -1281,3 +1281,67 @@ describe('RestoreWizard', () => {
     });
   });
 });
+
+describe('RestoreWizard folder selection (#9628)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const mockTree = (fileCount: number) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({
+          data: [{ name: 'Finance', path: '/Finance', type: 'directory', fileCount }],
+        });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  };
+
+  const openSelectStep = async (initialSelectedPaths?: string[]) => {
+    render(<RestoreWizard initialSnapshotId="snap-1" initialSelectedPaths={initialSelectedPaths} />);
+    await screen.findByText('Restore Wizard');
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    if (!initialSelectedPaths) fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    return screen.findByRole('checkbox', { name: /Select folder Finance/i });
+  };
+
+  it('renders a checkbox with the file count on a directory row and selects it', async () => {
+    mockTree(12);
+    const checkbox = (await openSelectStep()) as HTMLInputElement;
+    expect(screen.getByText('12 files')).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('shows the folder as indeterminate when only some of its files are selected', async () => {
+    mockTree(12);
+    const checkbox = (await openSelectStep(['/Finance/q3.xlsx'])) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.indeterminate).toBe(true);
+  });
+
+  it('asks before selecting a folder that expands past 1,000 files, and respects a refusal', async () => {
+    mockTree(5000);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const checkbox = (await openSelectStep()) as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy.mock.calls[0]![0]).toContain('5000');
+    expect(checkbox.checked).toBe(false);
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    confirmSpy.mockRestore();
+  });
+});

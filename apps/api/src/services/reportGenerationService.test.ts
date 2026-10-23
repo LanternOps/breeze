@@ -30,6 +30,9 @@ vi.mock('./businessReports/arAgingReport', () => ({
 vi.mock('./businessReports/aiUsageByClientReport', () => ({
   generateAiUsageByClientReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'ai_usage_by_client' } })),
 }));
+vi.mock('./businessReports/mrrRenewalsReport', () => ({
+  generateMrrRenewalsReport: vi.fn(async () => ({ rows: [], rowCount: 0, summary: { generator: 'mrr_renewals' } })),
+}));
 
 // #6013 W05: backup_status reads through the W03 unified read model, whose
 // SQL is built from Drizzle subqueries this file's flat `db.select` chain
@@ -55,6 +58,7 @@ import { generateTicketSlaAttainmentReport } from './businessReports/ticketSlaRe
 import { generateTechnicianTimeBillabilityReport } from './businessReports/technicianTimeReport';
 import { generateArAgingReport } from './businessReports/arAgingReport';
 import { generateAiUsageByClientReport } from './businessReports/aiUsageByClientReport';
+import { generateMrrRenewalsReport } from './businessReports/mrrRenewalsReport';
 import type { OrgReportExecutionAuthority, ReportExecutionAuthority } from './siteScope';
 import {
   assertReportExecutionPreflight,
@@ -111,6 +115,7 @@ const BUSINESS_TYPES: readonly ReportType[] = [
   'technician_time_billability',
   'ar_aging',
   'ai_usage_by_client',
+  'mrr_renewals',
 ];
 /** The mocked generator each BUSINESS_TYPES entry must reach, and the marker
  *  summary it returns. */
@@ -119,6 +124,7 @@ const BUSINESS_GENERATORS: Record<string, { fn: () => unknown; marker: string }>
   technician_time_billability: { fn: generateTechnicianTimeBillabilityReport as never, marker: 'technician_time' },
   ar_aging: { fn: generateArAgingReport as never, marker: 'ar_aging' },
   ai_usage_by_client: { fn: generateAiUsageByClientReport as never, marker: 'ai_usage_by_client' },
+  mrr_renewals: { fn: generateMrrRenewalsReport as never, marker: 'mrr_renewals' },
 };
 const PARTNER_ID = '44444444-4444-4444-8444-444444444444';
 
@@ -540,8 +546,8 @@ describe('business report types under a zero-site restricted authority (#3198 W0
       expect(result.rows).toEqual([]);
       expect(result.summary).toBeDefined();
       expect((result.summary as { notes: string[] }).notes).toEqual([
-        'This report ran under a site-restricted authority. Tickets, time entries and '
-        + 'invoices have no site dimension, so nothing was queried — the figures below '
+        'This report ran under a site-restricted authority. This report\'s records '
+        + 'have no site dimension, so nothing was queried — the figures below '
         + 'are not measured, and they are not zero.',
       ]);
       expect(db.select).not.toHaveBeenCalled();
@@ -657,8 +663,8 @@ describe('registry dispatch gate order (#3198 W02 Task 3)', () => {
       const result = await generateReport(type, organizationScope(ORG_ID), {}, authority('restricted', [SITE_A]));
       expect(result.rowCount).toBe(0);
       expect((result.summary as { notes: string[] }).notes).toEqual([
-        'This report ran under a site-restricted authority. Tickets, time entries and '
-        + 'invoices have no site dimension, so nothing was queried — the figures below '
+        'This report ran under a site-restricted authority. This report\'s records '
+        + 'have no site dimension, so nothing was queried — the figures below '
         + 'are not measured, and they are not zero.',
       ]);
       for (const generator of Object.values(BUSINESS_GENERATORS)) expect(generator.fn).not.toHaveBeenCalled();

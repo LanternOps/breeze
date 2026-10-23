@@ -700,7 +700,13 @@
         "quality": "Quality"
       },
       "failovers": "Failovers",
-      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable",
+      "titleBy": {
+        "model": "AI usage by model",
+        "organization": "AI usage by organization",
+        "technician": "AI usage by technician",
+        "feature": "AI usage by feature"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "e.g. Sun 02:00-06:00, 02:00-04:00, or 24/7",
     "maintenanceInvalid": "Use a UTC window like <first>Sun 02:00-04:00</first> or <second>02:00-04:00</second>, or <always>24/7</always> for always-on. Leave empty to let orgs configure it.",
     "maintenanceHelp": "Time window (UTC) for automatic updates and reboots. Use <always>24/7</always> for always-on, or leave empty so orgs configure it individually.",
-    "deviceGroup": "Default Device Group",
-    "alertThreshold": "Default Alert Threshold",
     "autoEnrollment": {
       "title": "Auto-Enrollment",
       "enable": "Enable auto-enrollment for new devices",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome notification"
+      "requireApproval": "Require admin approval"
     },
     "enrollment": {
       "title": "Device enrollment",
@@ -1419,7 +1422,10 @@
     "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
-    "defaultDeviceLimit": "50 (default)",
+    "defaultDeviceLimit": "{{count}} (org default)",
+    "expiresAtHelp": "Leave blank for {{duration}} (org default).",
+    "usageFromDefault": "default",
+    "usageFromDefaultTitle": "Device limit came from the organization default.",
     "maxUsageHelp": "Maximum number of agents that can enroll with this key.",
     "expiresAt": "Expires At (optional)",
     "creating": "Creating...",
@@ -1810,27 +1816,13 @@
     "deviceGroup": {
       "title": "Default device group",
       "description": "Newly enrolled devices are added to this group automatically.",
-      "options": {
-        "AllManagedDevices": "All Managed Devices",
-        "CriticalInfrastructure": "Critical Infrastructure",
-        "RemoteStaff": "Remote Staff",
-        "Contractors": "Contractors"
-      }
-    },
-    "alertSeverity": {
-      "title": "Default alert severity",
-      "description": "Alerts below this severity are delivered to the summary feed only.",
-      "options": {
-        "critical": "Critical only",
-        "high": "High and critical",
-        "medium": "Medium and above"
-      }
+      "none": "None",
+      "unavailable": "Selected group (unavailable)"
     },
     "autoEnrollment": {
       "title": "Auto-enrollment",
       "enable": "Enable automatic enrollment",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome message"
+      "requireApproval": "Require admin approval"
     },
     "agentUpdates": {
       "title": "Agent update policy",
@@ -1970,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Customer view",
+      "subtitle": "Preview: what {{who}} sees",
+      "whoOrganization": "your customer",
+      "pickerLabel": "View as",
+      "pickerAll": "Whole organization",
+      "loading": "Loading preview…",
+      "loadFailed": "The customer view failed to load.",
+      "on": "On",
+      "off": "Off",
+      "notAvailable": "A detailed preview of this section isn't available yet.",
+      "permissionWithheld": "Not shown: you need {{permissions}} to preview this.",
+      "tilesWithheld": "Some tiles are not shown: you need {{permissions}} to preview them.",
+      "noteNoUser": "Ticket-scoped data is hidden. Pick a portal user to see what that person sees.",
+      "readinessTitle": "Readiness checks",
+      "readinessNone": "No issues found.",
+      "fix": "Fix",
+      "readiness": {
+        "documents_empty": "Documents is on, but no document is marked Visible in portal, so your customer sees an empty library.",
+        "reports_empty": "Reports is on, but there are no report runs yet, so your customer sees an empty list.",
+        "service_one_time_visible": "Service is on and one-time items are still visible to your customer.",
+        "backups_no_data": "Backups is on, but there is no backup data to show yet.",
+        "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
+        "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      }
+    },
     "loading": "Loading portal settings…",
     "save": "Save portal settings",
     "toasts": {
@@ -2461,7 +2479,11 @@
     "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
     "editPartnerWideDefaults": "Edit partner-wide defaults",
     "thresholdsOff": "Off",
-    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again.",
+    "todaysCost": "Today's cost",
+    "monthlyCost": "Monthly cost",
+    "messagesToday": "Messages today",
+    "tokensThisMonth": "Tokens this month"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4728,6 +4750,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "No roles found. Try adjusting your search or filters.",
     "cloneRole": "Clone Role: {{name}}",
+    "cloneDescription": "Copy of {{name}}",
     "clone": "Clone",
     "edit": "Edit",
     "delete": "Delete",

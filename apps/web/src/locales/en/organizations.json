@@ -589,6 +589,7 @@
       "title": "Documents",
       "subtitle": "Runbooks, baselines, policies and delivery evidence for this organization.",
       "empty": "No documents yet. Upload a runbook, a baseline or a signed policy to start the library.",
+      "emptyPortalHint": "Your customer sees documents marked Visible in portal. A signed proposal or agreement and a security baseline are good first documents.",
       "emptyFiltered": "No documents in this category.",
       "loadFailed": "Could not load documents.",
       "upload": "Upload document",
