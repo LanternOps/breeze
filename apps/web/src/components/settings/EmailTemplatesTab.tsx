@@ -118,10 +118,7 @@ export default function EmailTemplatesTab() {
 
   return (
     <div className="max-w-3xl space-y-4" data-testid="email-templates-tab">
-      <div>
-        <h2 className="text-sm font-semibold">{t('emailTemplates.title')}</h2>
-        <p className="mt-1 text-xs text-muted-foreground">{t('emailTemplates.description')}</p>
-      </div>
+      <p className="max-w-prose text-xs text-muted-foreground">{t('emailTemplates.description')}</p>
       <div className="space-y-4" data-testid="email-templates-list">
         {[
           {billing:false,ids:EMAIL_TEMPLATE_IDS.filter(id=>!BILLING_TEMPLATE_IDS.has(id))},

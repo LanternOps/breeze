@@ -136,8 +136,8 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
       </div>
 
       {/* Auto-enrollment */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.title')}</p>
+      <div className="space-y-4 border-t pt-6">
+        <h3 className="text-sm font-semibold">{t('partnerDefaults.autoEnrollment.title')}</h3>
         <div className="space-y-3">
           <label className="flex items-center gap-3">
             <input
@@ -176,8 +176,8 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
       </div>
 
       {/* Enrollment link defaults + the partner-only lifetime cap (#2776) */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">{t('partnerDefaults.enrollment.title')}</p>
+      <div className="space-y-4 border-t pt-6">
+        <h3 className="text-sm font-semibold">{t('partnerDefaults.enrollment.title')}</h3>
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="partner-enrollment-ttl" className="text-sm font-medium">

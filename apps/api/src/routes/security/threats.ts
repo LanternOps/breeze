@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
+import type { YaraThreatRuleView } from '@breeze/shared';
 
 import { db } from '../../db';
 import { devices } from '../../db/schema';
@@ -9,8 +10,7 @@ import { canAccessSite, getUserPermissions, type UserPermissions } from '../../s
 import {
   listThreatsQuerySchema,
   deviceIdParamSchema,
-  threatIdParamSchema,
-  providerCatalog
+  threatIdParamSchema
 } from './schemas';
 import {
   getPagination,
@@ -19,8 +19,13 @@ import {
   matchDateRange,
   listStatusRows,
   listThreatRows,
-  queueThreatAction
+  loadThreatForCaller,
+  queueThreatAction,
+  toThreatListItem,
+  toThreatRow
 } from './helpers';
+import { requireSecurityReadAccess } from './readAuthorization';
+import { loadVisibleSet } from './yaraAccess';
 
 export const threatsRoutes = new Hono();
 
@@ -72,21 +77,7 @@ threatsRoutes.get(
       });
     }
 
-    const mapped = threats.map((threat) => ({
-      id: threat.id,
-      deviceId: threat.deviceId,
-      deviceName: threat.deviceName,
-      orgId: threat.orgId,
-      providerId: threat.provider,
-      provider: providerCatalog[threat.provider],
-      name: threat.threatName,
-      category: threat.threatType.toLowerCase(),
-      severity: threat.severity,
-      status: threat.status,
-      detectedAt: threat.detectedAt.toISOString(),
-      removedAt: threat.resolvedAt?.toISOString() ?? null,
-      filePath: threat.filePath
-    }));
+    const mapped = threats.map(toThreatListItem);
 
     const response = paginate(mapped, page, limit);
     return c.json({
@@ -177,23 +168,100 @@ threatsRoutes.get(
       });
     }
 
-    const response = paginate(threats.map((threat) => ({
-      id: threat.id,
-      deviceId: threat.deviceId,
-      deviceName: threat.deviceName,
-      orgId: threat.orgId,
-      providerId: threat.provider,
-      provider: providerCatalog[threat.provider],
-      name: threat.threatName,
-      category: threat.threatType.toLowerCase(),
-      severity: threat.severity,
-      status: threat.status,
-      detectedAt: threat.detectedAt.toISOString(),
-      removedAt: threat.resolvedAt?.toISOString() ?? null,
-      filePath: threat.filePath
-    })), page, limit);
+    const response = paginate(threats.map(toThreatListItem), page, limit);
 
     return c.json(response);
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Threat details (#6263 W04-5)
+// ---------------------------------------------------------------------------
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_IDENT = 128;
+const MAX_TAGS = 32;
+const MAX_MATCHED_STRINGS = 10;
+/** The agent caps matched data at 128 bytes before `\xNN` escaping. */
+const MAX_MATCHED_DATA = 512;
+
+function identOrNull(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v.slice(0, MAX_IDENT) : null;
+}
+
+/**
+ * Typed projection of the agent-reported `security_threats.details`
+ * (agent/internal/security/threats.go). Every field is type-checked and junk
+ * is dropped, never passed through. matchedStrings[].data is already escaped
+ * by the agent (escapeMatched): it is truncated here, never escaped again.
+ */
+export function toYaraThreatRuleView(details: unknown, ruleSet: YaraThreatRuleView['ruleSet']): YaraThreatRuleView {
+  const d = details && typeof details === 'object' && !Array.isArray(details) ? (details as Record<string, unknown>) : {};
+  const ruleName = identOrNull(d.ruleName);
+  const ruleSetId = typeof d.ruleSetId === 'string' && UUID_RE.test(d.ruleSetId) ? d.ruleSetId.toLowerCase() : null;
+  const tags = Array.isArray(d.tags)
+    ? d.tags.filter((t): t is string => typeof t === 'string').slice(0, MAX_TAGS).map((t) => t.slice(0, MAX_IDENT))
+    : [];
+  const matchedStrings: YaraThreatRuleView['matchedStrings'] = [];
+  if (Array.isArray(d.matchedStrings)) {
+    for (const s of d.matchedStrings) {
+      if (matchedStrings.length >= MAX_MATCHED_STRINGS) break;
+      if (!s || typeof s !== 'object') continue;
+      const { id, offset, data } = s as Record<string, unknown>;
+      if (typeof id !== 'string' || typeof data !== 'string') continue;
+      if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) continue;
+      matchedStrings.push({ id: id.slice(0, MAX_IDENT), offset, data: data.slice(0, MAX_MATCHED_DATA) });
+    }
+  }
+  return {
+    engine: ruleName ? 'yara' : 'legacy',
+    ruleName,
+    ruleId: identOrNull(d.ruleId),
+    ruleSetId,
+    ruleSet,
+    tags,
+    matchedStrings,
+    sha256: typeof d.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(d.sha256) ? d.sha256.toLowerCase() : null,
+    quarantinedTo: typeof d.quarantinedTo === 'string' && d.quarantinedTo.length > 0 ? d.quarantinedTo.slice(0, 4096) : null,
+    quarantineFailed: d.quarantineFailed === true,
+  };
+}
+
+// Two segments, so it cannot collide with GET /threats/:deviceId. The threat
+// comes back in the list-item shape, so ThreatDetail does not depend on the
+// selected threat being in the first page of GET /threats.
+threatsRoutes.get(
+  '/threats/:id/details',
+  requireScope('organization', 'partner', 'system'),
+  // devices:read for tenant callers; live platform admins in system scope.
+  requireSecurityReadAccess,
+  zValidator('param', threatIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id } = c.req.valid('param');
+    const loaded = await loadThreatForCaller(c, id);
+    if (!('threat' in loaded)) {
+      return c.json({ error: loaded.error }, loaded.status);
+    }
+    const { threat } = loaded;
+
+    let ruleSet: YaraThreatRuleView['ruleSet'] = null;
+    const projected = toYaraThreatRuleView(threat.details, null);
+    if (projected.ruleSetId) {
+      // Joined under the caller's RLS and W03's visibility condition; null =
+      // "no longer available" (deleted, or not visible to this caller).
+      const set = await loadVisibleSet(auth, projected.ruleSetId);
+      if (set) {
+        ruleSet = { id: set.id, name: set.name, isBuiltin: set.isBuiltin, partnerWide: set.orgId === null && !set.isBuiltin };
+      }
+    }
+
+    return c.json({
+      data: {
+        threat: toThreatListItem(toThreatRow(threat)),
+        rule: { ...projected, ruleSet },
+      },
+    });
   }
 );
 
