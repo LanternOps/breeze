@@ -280,7 +280,13 @@ export const DASHBOARD_METRICS = {
   },
   'vuln.openFindings': {
     kind: 'exempt',
-    reason: 'Header counts every status today (bug); linked after it is fixed to open findings (vulnerabilities wave).',
+    reason: 'Counts findings, but the CVE list groups them; the affected link "View open CVEs" carries the destination.',
+  },
+  'vuln.viewOpen': {
+    kind: 'affected',
+    href: () => vulnCvesHref({}),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-open-link',
   },
   'vuln.criticalOpen': {
     kind: 'exempt',
@@ -306,6 +312,8 @@ export const DASHBOARD_METRICS = {
     kind: 'exempt',
     reason: 'Counts findings, but the CVE list groups them; the affected link "View patch-ready CVEs" carries the destination.',
   },
+  // PENDING #9576 (unifies "is there a patch?"): `patchAvailable=1` resolves against today's main
+  // definition. Re-run the `vuln.viewPatchReady` parity case in countParity.alertsVulns.test.tsx when it lands.
   'vuln.viewPatchReady': {
     kind: 'affected',
     href: () => vulnCvesHref({ patchAvailable: true }),

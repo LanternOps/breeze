@@ -436,6 +436,7 @@
       "patchReady": "Correctif disponible",
       "viewCritical": "Voir les CVE critiques",
       "viewPatchReady": "Voir les CVE avec correctif prêt",
+      "viewOpen": "Voir les CVE ouvertes",
       "totalOpen": "{{count}} détections ouvertes",
       "totalOpen_one": "{{count}} détection ouverte",
       "totalOpen_other": "{{count}} détections ouvertes",

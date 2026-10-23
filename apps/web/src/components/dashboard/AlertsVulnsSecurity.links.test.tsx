@@ -6,7 +6,7 @@ import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NavViewer } from '../../lib/navVisibility';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en' } }) }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, o?: { count?: number }) => (key === 'dashboard.vuln.totalOpen' ? `${key}:${o?.count}` : key), i18n: { language: 'en' } }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 const viewerRef = vi.hoisted(() => ({ current: null as unknown as NavViewer }));
@@ -59,6 +59,7 @@ const summary: AlertsSummary = {
   total: 19,
 };
 const vulns: VulnerabilityStats = {
+  openFindings: 9,
   criticalOpen: 5,
   kevCveCount: 3,
   kevDeviceCount: 7,
@@ -132,6 +133,15 @@ describe('vulnerabilities card', () => {
       const el = document.querySelector(`[data-metric="${metric}"]`)!;
       expect(el.tagName).toBe('SPAN');
     }
+  });
+
+  it('header counts OPEN findings (not every status) and links "View open CVEs" (#9793)', () => {
+    renderCard();
+    expect(screen.getByText('dashboard.vuln.totalOpen:9')).toBeInTheDocument();
+    expect(screen.queryByText('dashboard.vuln.totalOpen:40')).toBeNull();
+    expect(hrefOf('dashboard-vuln-open-link')).toBe('/vulnerabilities#cves&status=open');
+    // The header number itself stays text (findings grain vs the grouped CVE list).
+    expect(document.querySelector('[data-metric="vuln.openFindings"]')!.tagName).toBe('SPAN');
   });
 
   it('links hide without devices:read (R4)', () => {

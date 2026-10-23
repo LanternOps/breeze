@@ -98,6 +98,7 @@ const security: SecurityOverview = {
   ],
 };
 const vulns: VulnerabilityStats = {
+  openFindings: 20,
   criticalOpen: 7,
   kevCveCount: 2,
   kevDeviceCount: 4,

@@ -98,6 +98,7 @@ export const FIXTURE_FINDINGS: FixtureFinding[] = [
 export function vulnStatsFor(s: Session) {
   const open = FIXTURE_FINDINGS.filter((f) => inScope(f, s) && f.status === 'open');
   return {
+    openFindings: open.length,
     criticalOpen: open.filter((f) => f.severity === 'critical').length,
     kevCveCount: new Set(open.filter((f) => f.kev).map((f) => f.cveId)).size,
     patchReadyFindingCount: open.filter((f) => f.patchReady).length,
@@ -134,6 +135,12 @@ export interface VulnParityExpectation {
 }
 
 export const VULNS_PARITY: Record<string, VulnParityExpectation> = {
+  // Header "N open findings" (stats.openFindings, status='open' only) -> "View open CVEs".
+  'vuln.viewOpen': {
+    query: { status: 'open' },
+    tileCount: (s) => s.openFindings,
+    grain: 'findings',
+  },
   'vuln.viewCritical': {
     query: { status: 'open', severity: 'critical' },
     tileCount: (s) => s.criticalOpen,
