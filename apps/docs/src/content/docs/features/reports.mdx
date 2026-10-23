@@ -36,6 +36,7 @@ Every report has a `type` that determines which data is queried and how the outp
 | `ar_aging` | Unpaid invoice balances bucketed current / 1–30 / 31–60 / 61–90 / 90+ days past due, one set of totals per currency (see [Business Reports](#business-reports)) | outstanding balance per bucket, open invoice count, no-due-date balance, other open balance |
 | `ai_usage_by_client` | AI requests, tokens, Breeze cost and the amount billable to each client for a period, split into billed, unbilled and unpriced (see [AI usage chargeback](/features/ai-usage-chargeback/)) | requests, tokens, Breeze cost, billable amount, billed and unbilled amount, unpriced usage |
 | `mrr_renewals` | Contract monthly recurring revenue as of the run, contracts up for renewal, and 12 months of billed recurring revenue, one set of totals per currency (see [MRR & renewals](#mrr--renewals-mrr_renewals)) | MRR, ARR, base and overage, paused and pending activation, renewals due, billed recurring revenue per month |
+| `client_profitability` | Per-client billed revenue, cost from the invoice-line cost snapshot with its coverage, the revenue mix and technician hours for a period, with an optional estimated contribution after labor (see [Client profitability](#client-profitability-client_profitability)) | revenue, cost, gross margin, margin %, cost coverage %, unknown-cost revenue, revenue mix, hours by coverage, effective service rate, estimated contribution after labor |
 
 <Aside type="note">
 The four evidence-review report types — `identity_access_review`, `vulnerability_management`, `endpoint_management_review` and `threat_detection_review` — are built from previously synced data only — they never make a live call to the source integration while generating, so a scheduled run never depends on a third party being up. If a required source (Microsoft 365 sync, a vulnerability feed, or the Huntress integration) has never completed a sync, the affected figures render as **not measured** rather than zero, and the report states the sync gap explicitly. `identity_access_review` and `endpoint_management_review` require an M365 tenant sync connected (`endpoint_management_review` additionally needs Intune enrolled); `vulnerability_management` requires a connected vulnerability scan/feed source; `threat_detection_review` requires a connected and synced Huntress integration. These four report types are not available for customer self-service in the portal.
@@ -281,7 +282,7 @@ The **Executive Summary** report (`executive_summary`) is built for handing to a
 
 ## Business Reports
 
-Three report types cover the PSA side of the business — service performance, technician time, and money owed. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, `invoices:read` for AR aging, and `contracts:read` for MRR & renewals.
+Three report types cover the PSA side of the business — service performance, technician time, and money owed. Unlike the report types above, they are **internal**: they are for MSP staff only (organization-scope users, and API or MCP keys, never see them, even when they hold the underlying permission), they never appear in a customer's portal, and generating one requires the type's own permission on top of `reports:read`/`reports:write` -- `tickets:read` for ticket SLA attainment, `time_entries:read` **and** `tickets:read` for technician time & billability, `invoices:read` for AR aging, `contracts:read` for MRR & renewals, and `invoices:read` **and** `time_entries:read` for client profitability.
 
 ### Ownership: one organization, or all of them
 
@@ -340,6 +341,39 @@ Per-device and per-seat quantities are counted live when the report runs, so MRR
 
 MRR has no stored history before the report first runs. Schedule it monthly, and each run's PDF compares MRR with the previous run ("vs previous observation").
 
+### Client profitability (`client_profitability`)
+
+For each client in the period: what you billed, what the billed goods and services cost you, and how much technician time the client used. Generating it needs `invoices:read` **and** `time_entries:read`.
+
+**Billed basis.** Revenue is what **issued** invoices billed, counted on the invoice's issue date (in the report owner's time zone). Draft and void invoices are left out; a voided invoice's replacement counts once. This is billed revenue, not accrual-recognized revenue: an annual contract invoiced in January counts entirely in January. Hours are counted when they were worked, and the invoice for that work can fall in a later period.
+
+**Cost and margin.** Cost comes from the cost recorded on each invoice line when it was created. Only top-level, customer-visible lines are counted, so a bundle's cost is counted once (on the bundle line, not again on its components). Each line's cost is quantity × recorded cost, rounded to the currency's smallest unit.
+
+- **Unknown cost is not zero cost.** Time, hour-block overage, AI usage and most contract lines carry no recorded cost. Their revenue is reported as **unknown-cost revenue** and is left out of the margin. A line with an explicit cost of `0.00` is a known zero.
+- **Gross margin** and **margin %** are measured only over lines with a recorded cost. **Cost coverage %** -- the share of revenue that has a recorded cost -- is printed beside every margin, so a client billed mostly for labor never shows a misleading margin taken from a sliver of its revenue.
+- A **bundle with a component that has no recorded cost** counts as unknown cost here, and the report says how many bundles that affected. (The invoice margin panel counts the missing component as zero; this is the one place the two differ.)
+- Products sold through a quote carry their cost only if the quote was accepted after quote costs began to be copied onto invoices; earlier ones count as unknown cost.
+
+**Revenue mix.** Each line is filed by its source: **recurring** (contract lines), **labor** (time entries, and hour-block overage, which is usage), **product** (parts, catalog and bundle lines, and catalog items sold through a quote), **AI** (AI usage) and **other** (the remaining manual lines). AI lines carry no cost here; the [AI usage by client](/features/ai-usage-chargeback/) report shows what the AI cost beside the charges.
+
+**Hours and effective service rate.** Hours are completed time entries (running timers excluded) whose start falls in the period, split into billable, included and non-billable. The **effective service rate** is (recurring + labor revenue) ÷ hours worked; product resale and AI are left out so a hardware-heavy month does not flatter a client. **Revenue per hour** is printed beside it. Both are blank when no hours were worked. Partner-wide, time entries with no organization are shown once as **unattributed time**, never spread across clients.
+
+**Hours and currencies.** A client's hours are attributed to a currency only when all of its revenue in the period is in one currency and every one of its time entries is in that same currency. Otherwise the hours are shown once on the client and its rate and labor-estimate figures are blank. Hours are never split or repeated across currencies.
+
+**Estimated contribution after labor (optional).** Set a uniform internal **labor cost per hour** on the report (an amount and a currency) to add an estimate:
+
+> estimated contribution after labor = gross margin + labor and recurring revenue with no recorded cost − all completed hours × the rate
+
+- It counts **all** completed hours -- billable, included and non-billable -- because all of them cost you.
+- Recurring revenue with no recorded cost is treated as service revenue (the included time is the cost of serving a managed contract). That share is printed on its own line ("of which recurring revenue with no recorded cost"), so a resold licence billed through a contract is visible as an assumption.
+- Product, AI and other revenue with no recorded cost is left out of the estimate and printed beside it.
+- It is one blended rate for every technician, and it assumes no labor is already inside a line's recorded cost. Every figure that uses it is labelled **Estimated contribution after labor (uniform rate)**.
+- The rate applies only to clients whose hours are attributed to the rate's currency; no FX conversion is applied. With no rate set, the report shows hours only and no estimate.
+
+The labor rate is an option of this report, not a partner setting: it is stored on the report definition, edited in the report's options, and never appears on a customer document.
+
+Partner-wide, one detail row is stored per client and currency (plus one hours-only row for a client whose hours cannot sit on a single currency row, and one for unattributed time); one organization's report stores one row per invoice. Totals are reported **once per currency, with no conversion**.
+
 ### What gets stored, and what gets capped
 
 Every total is computed in SQL over **all** matching rows. The stored detail rows -- the per-ticket, per-technician or per-invoice lines behind the totals -- are capped at 5,000 per run; a truncated detail list never implies a truncated total. A downloaded PDF shows up to 500 detail rows; CSV and Excel downloads of a stored run carry the full (capped) set as raw numeric values -- balances and rates as plain decimals, durations as minutes, percentages as fractions -- each money row tagged with a currency-code column, so a spreadsheet can total them directly. A ratio with nothing to measure (for example, no tickets with a response target) prints **N/A**, never 0%. A user whose access is limited to specific sites gets an explanatory note instead of figures, because tickets, time entries, and invoices are not tied to sites.
@@ -360,6 +394,9 @@ The web options forms set the same keys. Business reports select their data by *
 | `includePaidInPeriod` | AR aging | Add an informational note on invoices fully paid month-to-date (never moves a bucket) | `false` |
 | `groupBy` | MRR & renewals | `organization`, `contract` | `organization` |
 | `renewalHorizonDays` | MRR & renewals | `30`, `60`, `90`, `180` | `90` |
+| `period.kind` | Client profitability | Same values as above | `last_full_month` |
+| `groupBy` | Client profitability | `organization`, `source` (revenue category) | `organization` partner-wide, `source` for one organization |
+| `laborCostPerHour` | Client profitability | `{ "amount": "45.00", "currencyCode": "USD" }` -- a positive amount with at most 2 decimals (whole units for zero-decimal currencies) in a supported currency | Not set (hours only, no estimate) |
 
 Periods and "today" are resolved in the report owner's time zone -- the organization's, then the partner's, then UTC. If the configured time zone isn't recognized, the report runs in UTC and says so.
 
