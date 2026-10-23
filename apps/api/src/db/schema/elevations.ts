@@ -70,6 +70,8 @@ export const elevationAuditEventTypeEnum = pgEnum('elevation_audit_event_type', 
   'session_ended',
   'command_executed',
   'evidence_attached',
+  // #9517: the agent reported it could not act on the request.
+  'device_unable',
 ]);
 
 export const elevationAuditActorEnum = pgEnum('elevation_audit_actor', [
@@ -168,6 +170,15 @@ export const elevationRequests = pgTable(
     sessionEndedAt: timestamp('session_ended_at', { withTimezone: true }),
     clientIp: inet('client_ip'),
     userAgent: text('user_agent'),
+
+    // #9517: set when the agent reports it cannot act on this request (no
+    // SYSTEM helper in the requester's session, ...). First report wins; a
+    // still-pending request is closed as 'expired' in the same write. CHECK
+    // elevation_requests_device_unable_chk (2027-01-02-180000 migration) keeps
+    // the three together and bounds the code and detail.
+    deviceUnableAt: timestamp('device_unable_at', { withTimezone: true }),
+    deviceUnableReason: varchar('device_unable_reason', { length: 64 }),
+    deviceUnableDetail: text('device_unable_detail'),
 
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
 

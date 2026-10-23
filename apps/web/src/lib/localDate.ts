@@ -9,3 +9,21 @@ export function localDateInputValue(date: Date = new Date()): string {
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+/**
+ * Converts a `YYYY-MM-DD` value from `<input type="date">` into an ISO datetime
+ * for the last millisecond of that day in the user's LOCAL timezone (#9654), so
+ * an expiry "on the 30th" holds through the whole of the 30th where the user
+ * is. Returns null for anything that is not a real calendar date (malformed, or
+ * a rollover such as 2026-02-31).
+ */
+export function endOfLocalDayIso(date: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return null;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+  if (end.getFullYear() !== year || end.getMonth() !== month - 1 || end.getDate() !== day) {
+    return null;
+  }
+  return end.toISOString();
+}

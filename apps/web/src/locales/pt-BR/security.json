@@ -989,7 +989,13 @@
       "flow": "Fluxo",
       "status": "Status",
       "riskTierTitle": "Camada de risco {{tier}}",
-      "signer": "Signatário: {{signer}}"
+      "signer": "Signatário: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "O dispositivo não pôde agir: nenhum auxiliar PAM disponível",
+        "sessionUnavailable": "O dispositivo não pôde agir: sessão do usuário indisponível",
+        "helperStartFailed": "O dispositivo não pôde agir: o auxiliar PAM não conseguiu iniciar",
+        "generic": "O dispositivo não pôde atender a esta solicitação"
+      }
     },
     "actions": {
       "respond": "Responder",

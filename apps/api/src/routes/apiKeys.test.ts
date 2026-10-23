@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { MCP_GRANTABLE_DOMAINS, normalizeMcpDomainsInput } from '@breeze/shared';
 import { apiKeyRoutes } from './apiKeys';
@@ -903,6 +903,66 @@ describe('api keys routes', () => {
       await createWith({ mcpDomains: ['tickets'] });
       const call = vi.mocked(createAuditLogAsync).mock.calls.find((c) => c[0].action === 'api_key.create');
       expect(call?.[0].details).toMatchObject({ mcpDomains: ['tickets'] });
+    });
+
+    // Reuses the create helpers above; not mcpDomains-specific.
+    describe('expiresAt on create (#9654)', () => {
+      afterEach(() => vi.useRealTimers());
+
+      async function expectExpiresAtRejected(res: Response) {
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(Object.keys(body.details.fieldErrors)).toEqual(['expiresAt']);
+        expect(db.insert).not.toHaveBeenCalled();
+      }
+
+      it('accepts a future ISO datetime and stores it as that instant', async () => {
+        const captured = mockCreate();
+        const expiresAt = '2099-06-30T23:59:59.999Z';
+        const res = await createWith({ expiresAt });
+        expect(res.status).toBe(201);
+        expect(captured.values?.expiresAt).toEqual(new Date(expiresAt));
+      });
+
+      it('stores null for a never-expiring key, whether null or omitted', async () => {
+        for (const extra of [{ expiresAt: null }, {}]) {
+          const captured = mockCreate();
+          const res = await createWith(extra);
+          expect(res.status).toBe(201);
+          expect(captured.values?.expiresAt).toBeNull();
+        }
+      });
+
+      it('rejects a bare date: the server takes a real timestamp, the client normalises', async () => {
+        asFullAccess();
+        await expectExpiresAtRejected(await createWith({ expiresAt: '2099-06-30' }));
+      });
+
+      it('rejects an offset datetime (only the Z form is accepted)', async () => {
+        asFullAccess();
+        await expectExpiresAtRejected(await createWith({ expiresAt: '2099-06-30T23:59:59+02:00' }));
+      });
+
+      it('rejects a non-date string', async () => {
+        asFullAccess();
+        await expectExpiresAtRejected(await createWith({ expiresAt: 'tomorrow' }));
+      });
+
+      it('rejects an expiry at or before now and accepts one just after', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const now = new Date('2026-10-22T12:00:00.000Z');
+        vi.setSystemTime(now);
+
+        for (const past of ['2026-10-22T11:59:59.000Z', now.toISOString(), '2020-01-01T00:00:00.000Z']) {
+          asFullAccess();
+          await expectExpiresAtRejected(await createWith({ expiresAt: past }));
+        }
+
+        const captured = mockCreate();
+        const res = await createWith({ expiresAt: '2026-10-22T12:01:00.000Z' });
+        expect(res.status).toBe(201);
+        expect(captured.values?.expiresAt).toEqual(new Date('2026-10-22T12:01:00.000Z'));
+      });
     });
   });
 });

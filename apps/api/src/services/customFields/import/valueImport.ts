@@ -595,8 +595,9 @@ async function writeRow(
   // already has one, and re-asserting it would be a write per row per run.
   const needsLink = !!externalId && target.method !== 'link';
   // The SAME key derivation W06's resolver uses, so the row the next run looks
-  // up is the row this one wrote. A batch-level default here would silently
-  // break re-resolution.
+  // up is the row this one wrote. The batch source is applied once, upstream,
+  // in the route's `withBatchSystem`, so preview and commit agree; do not add a
+  // second default here.
   const linkSystem = row.externalSystem?.trim() || DEFAULT_IMPORT_SYSTEM;
   // device_external_links_uniq is scoped to the whole PARTNER, deliberately
   // (a source system's identity is unique across its tenant, not per org — see
