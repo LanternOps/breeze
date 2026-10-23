@@ -43,11 +43,11 @@ status: draft — awaiting Gate B
 
 Inputs the spec implies but no spec bullet tests; each has a pinned test in the owning task.
 
-1. **Org erasure deletes a survivor before its tombstone.** `tickets_merged_into_org_fk` is `NO ACTION`; if `tenantCascade` (or any retention purge) deletes `tickets` in more than one statement or batch, a survivor can go before its tombstone → 23503 mid-erasure. Expect erasure to succeed. Test: T1.1 step 6.
+1. **Org erasure deletes a survivor before its tombstone.** `tickets_merged_into_org_fk` is `NO ACTION`; if `tenantCascade` (or any retention purge) deletes `tickets` in more than one statement or batch, a survivor can go before its tombstone → 23503 mid-erasure. Expect erasure to succeed. Test: T1.1 step 5.
 2. **Merging a ticket whose survivor is itself later merged while a comment is in flight.** A→B, then B→C racing an `addTicketComment` on B. Expect the comment to land on C or be refused `TICKET_MERGED`, never on a tombstone. Test: T1.7 (`comment add vs merge` pair, survivor-side variant).
 3. **DST night on a business calendar whose open interval spans the transition** (e.g. 00:00–06:00 in `America/New_York` on 2026-03-08 and 2026-11-01). Expect the interval to count its real elapsed minutes (300 / 420). Test: T3.1.
 4. **A routing rule references a category or status that is later archived/deleted, or an assignee who leaves.** Expect: delete refused (`RESTRICT`) for category/status; deleted assignee → action becomes a no-op skip recorded on the ticket, never a broader rule. Test: T5.2.
-5. **Portal requester of a tombstone whose survivor was then soft-deleted.** Expect the banner "merged into a deleted ticket", no link, no read of the survivor. Test: T1.13.
+5. **Portal requester of a tombstone whose survivor was then soft-deleted.** Expect the banner "merged into a deleted ticket", no link, no read of the survivor. Test: T1.12.
 
 ---
 
@@ -56,15 +56,15 @@ Inputs the spec implies but no spec bullet tests; each has a pinned test in the 
 | Wave | PR content | Depends on | Migration slot | Blast radius |
 |---|---|---|---|---|
 | **W0** | Ticket-child writer lock-order invariant (spec §3.5 "first task"): writer registry + contract test, `addTicketComment` / `editTicketComment` / `deleteTicketComment` and every other violator re-ordered to ticket-row-first, concurrency tests. No schema. | — | none | high (locking on hot writers) |
-| **W1** | Merge backend: tombstone columns, guards, eligibility, preview, execute, route, events, inbound email, movers carry tombstones, readers hide tombstones, Partner API, portal read predicate (API), AI actions. | W0 | `2027-01-02-190000-ticket-merge.sql` | high (data movement, billing rows) |
+| **W1** | Merge backend: tombstone columns, guards, eligibility, preview, execute, route, events, inbound email, movers carry tombstones, readers hide tombstones, Partner API, portal read predicate (API), AI actions. | W0 | `2027-01-02-200000-ticket-merge.sql` | high (data movement, billing rows) |
 | **W2** | Merge UI: web dialog + header action + banners + "Show merged" filter; portal banner + list hiding. | W1 | none | medium |
-| **W3** | Stored SLA deadlines, no calendar yet: shared calculator, columns + batched backfill, write points, six readers switched, §8.5 corrections, Partner API fields. | — (parallel with W0/W1) | `2027-01-02-200000-ticket-sla-deadlines.sql` (DDL) + `2027-01-02-200100-ticket-sla-deadlines-backfill.sql` + `2027-01-02-200200-ticket-sla-due-indexes.sql`, all `-- @no-transaction` | high (every ticket row, six readers) |
+| **W3** | Stored SLA deadlines, no calendar yet: shared calculator, columns + batched backfill, write points, six readers switched, §8.5 corrections, Partner API fields. | — (parallel with W0/W1) | `2027-01-02-190000-ticket-sla-deadlines.sql` (DDL) + `2027-01-02-190100-ticket-sla-deadlines-backfill.sql` + `2027-01-02-190200-ticket-sla-due-indexes.sql`, all `-- @no-transaction` | high (every ticket row, six readers) |
 | **W4** | Business-hours calendars: four tables + RLS + registrations, service, resolver, calendar wired into W3 write points, holiday recompute job, D12 apply-revision, routes + AI read tool, Business-hours card, org picker, blob backfill, Regional card removal. | W3 | `2027-01-02-210000-business-calendars.sql` | high (new tenant tables) |
 | **W5** | Routing rules: two tables + `tickets.routing_rule_id` + `ticket_statuses (id, partner_id)` key, evaluator in `createTicket`, explicit-choice provenance, routes, Routing tab + fallback editor move, AI tools, cross-context test. | W3 (both edit `createTicket`); W4 for the combined caller-context test | `2027-01-02-220000-ticket-routing-rules.sql` | high (every ticket create) |
 
 Execution order: **W0 ∥ W3 → W1 → W2; W3 → W4 → W5.** W1 and W3 both touch `routes/tickets/tickets.ts` and `ticketSlaWorker.ts`; whichever lands second rebases and keeps the other's predicate (see "Cross-wave rebase rules").
 
-**Migration slots** are reserved from the newest file on main at plan time (`2027-01-02-180000-elevation-device-unable.sql`). Each wave owns its `HH0000–HH5959` block. If `origin/main` overtakes a slot before the wave commits, `scripts/check-migration-naming.sh` (pre-commit, pre-push `--against-ref origin/main`) rejects it: take the next free `HHMMSS` after the newest file and say so in the PR body. Never rename after the PR merges.
+**Migration slots** are reserved from the newest file on main at plan time (`2027-01-02-180000-elevation-device-unable.sql`). Each wave owns its `HH0000–HH5959` block, numbered in the expected landing order W3 (19) → W1 (20) → W4 (21) → W5 (22). A wave that lands out of that order (e.g. W4 before W1) is guaranteed to be overtaken and must take the next free slot at commit. If `origin/main` overtakes a slot before the wave commits, `scripts/check-migration-naming.sh` (pre-commit, pre-push `--against-ref origin/main`) rejects it: take the next free `HHMMSS` after the newest file and say so in the PR body. Never rename after the PR merges.
 
 ### Cross-wave rebase rules
 
@@ -169,12 +169,12 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 
 ---
 
-## W1 — Merge backend (`2027-01-02-190000-ticket-merge.sql`)
+## W1 — Merge backend (`2027-01-02-200000-ticket-merge.sql`)
 
 ### Task 1.1: Schema, FK, registrations
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-190000-ticket-merge.sql`
+- Create: `apps/api/migrations/2027-01-02-200000-ticket-merge.sql`
 - Modify: `apps/api/src/db/schema/portal.ts` (tickets `:174-265`, ticket_comments `:269`)
 - Modify: `apps/api/src/services/tenantExportPolicyRegistry.ts:974`
 - Modify: `apps/api/src/services/ticketService.ts:3608`, `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts:207`
@@ -247,7 +247,7 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
   - path compression: `it('A→B then B→C leaves A pointing at C')`;
   - `it('survivor feed xid bumped exactly once; moved comments do not fire the feed trigger')`.
 - [ ] **Step 2: Run** — FAIL (module missing).
-- [ ] **Step 3: Implement `mergeTickets`** in one request transaction with the §3.5 order: (1) `lockOrgTicketLinks(tx, orgId, 'exclusive')` holding no row lock; (2) `organizations` row `FOR SHARE`, refuse `merging`; (3) source's `action_intents` (refuse pending), `ticket_drafts`, `ai_agent_runs`, `ai_operator_task_targets`; (4) source, survivor and every ticket with `merged_into_ticket_id = source` `FOR UPDATE` in ascending id, then `assertMergeEligible` again; (5) `ticket_comments`, then `TICKET_CHILD_ORG_REWRITE_LOCK_ORDER`. Then the tombstone transition (dedicated, not `changeTicketStatus`), path compression, outbox rows (T1.6) inside the txn. The device hand-over writes only `tickets.device_id`; merge takes **no** `devices` row lock after the link lock (the parked-device inversion, `ticketLinkLock.ts:9`). Wrap the whole call in one retry on `40P01`.
+- [ ] **Step 3: Implement `mergeTickets`** in one request transaction with the §3.5 order: (1) `lockOrgTicketLinks(tx, orgId, 'exclusive')` holding no row lock; (2) `organizations` row `FOR SHARE`, refuse `merging`; (3) source's `action_intents` (refuse pending), `ticket_drafts`, `ai_agent_runs`, `ai_operator_task_targets`; (4) source, survivor and every ticket with `merged_into_ticket_id = source` `FOR UPDATE` in ascending id, then `assertMergeEligible` again; (5) `ticket_comments`, then `TICKET_CHILD_ORG_REWRITE_LOCK_ORDER`. Then the tombstone transition (dedicated, not `changeTicketStatus`), path compression, outbox rows (T1.6) inside the txn. The device hand-over writes only `tickets.device_id`; merge takes **no** `devices` row lock after the link lock (the parked-device inversion, `ticketLinkLock.ts:21-30`). Wrap the whole call in one retry on `40P01`.
 - [ ] **Step 4: Run** IT file + `npx vitest run src/services/timeEntryWriters.contract.test.ts src/services/ticketChildWriters.contract.test.ts src/services/parkedFanout.contract.test.ts` — PASS.
 - [ ] **Step 5: Commit** `feat(api): merge re-point engine (#8972)`.
 
@@ -286,8 +286,9 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 **Files:** Create `apps/api/src/__tests__/integration/ticketMerge.concurrency.integration.test.ts` (shape: `ticketApprovalGate.concurrency.integration.test.ts`).
 
 - [ ] **Step 1: Write** one `it` per pair, each starting both operations on separate connections with a barrier and asserting no `40P01` escapes (merge may retry once) and a consistent end state: merge vs `sendTicketDraft`, `editTicketComment`, `addTicketComment` (source side → comment lands on survivor or `TICKET_MERGED`; survivor-side chained A→B→C variant, Review Focus #2), timer stop, link add, `moveTicketOrg` (either order), device move, SLA sweep tick.
-- [ ] **Step 2: Run** — expect PASS if W0 + T1.4 are right; any red is a lock-order bug: fix in the writer (W0 pattern), never by widening the retry.
-- [ ] **Step 3: Commit** `test(api): merge concurrency pairs (#8972)`.
+- [ ] **Step 2: Prove the pairs discriminate (mutation control).** Temporarily make `mergeTickets` lock children before tickets (swap steps 4 and 5) and disable the 40P01 retry; run — expect at least the comment-edit, draft-send and move-org pairs to FAIL with `40P01`. Record the red output in the PR body, then restore.
+- [ ] **Step 3: Run** the restored code — PASS. Any red is a lock-order bug: fix in the writer (W0 pattern), never by widening the retry.
+- [ ] **Step 4: Commit** `test(api): merge concurrency pairs (#8972)`.
 
 ### Task 1.8: Inbound email after a merge
 
@@ -374,13 +375,14 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 **Files:** `e2e-tests/tests/ticket-merge.spec.ts`, page object in `e2e-tests/pages/`.
 
 - [ ] **Step 1:** Spec: create two tickets in one org, comment on each, merge the newer into the older via the dialog, assert the survivor timeline has both comments and the tombstone URL shows the banner — `data-testid` selectors only.
-- [ ] **Step 2:** Run against a `worktree-stack`; PASS. **Commit** `test(e2e): ticket merge (#8972)`.
+- [ ] **Step 2:** Write the spec **before** T2.1's dialog is wired into `TicketWorkbench` and run it against a `worktree-stack` — expect FAIL (no `ticket-merge-open`); record the failing run.
+- [ ] **Step 3:** After T2.1–T2.3, run — PASS. **Commit** `test(e2e): ticket merge (#8972)`.
 
 **W2 gates:** web + portal typecheck exit 0; web/portal unit suites for touched files; `localeParity`, `no-silent-mutations`; e2e spec green locally (UI-test hold is Todd's call).
 
 ---
 
-## W3 — Stored SLA deadlines (`2027-01-02-200000`, `2027-01-02-200100`)
+## W3 — Stored SLA deadlines (`2027-01-02-190000`, `2027-01-02-190100`, `2027-01-02-190200`)
 
 ### Task 3.1: Business-time calculator
 
@@ -404,7 +406,7 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 ### Task 3.2: Columns and backfill
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-200000-ticket-sla-deadlines.sql` (DDL), `apps/api/migrations/2027-01-02-200100-ticket-sla-deadlines-backfill.sql` (backfill)
+- Create: `apps/api/migrations/2027-01-02-190000-ticket-sla-deadlines.sql` (DDL), `apps/api/migrations/2027-01-02-190100-ticket-sla-deadlines-backfill.sql` (backfill)
 - Modify: `db/schema/portal.ts` (tickets), `tenantExportPolicyRegistry.ts:974`
 - Test: IT `ticketSlaDeadlinesBackfill.integration.test.ts`
 
@@ -416,7 +418,7 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 
 ### Task 3.3: Sweep indexes
 
-**Files:** Create `apps/api/migrations/2027-01-02-200200-ticket-sla-due-indexes.sql` (first line `-- @no-transaction`; precedent `2026-12-13-120100-tickets-partner-feed-index.sql`, including its INVALID-index detection); Drizzle index declarations.
+**Files:** Create `apps/api/migrations/2027-01-02-190200-ticket-sla-due-indexes.sql` (first line `-- @no-transaction`; precedent `2026-12-13-120100-tickets-partner-feed-index.sql`, including its INVALID-index detection); Drizzle index declarations.
 
 - [ ] **Step 1: Failing IT test** (in `ticketSlaDeadlinesBackfill.integration.test.ts`): `EXPLAIN` of the T3.5 sweep query uses `tickets_sla_response_due_idx` / `tickets_sla_resolution_due_idx`.
 - [ ] **Step 2: Run** — FAIL. **Step 3: Implement** `CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_response_due_idx ON tickets (response_due_at) WHERE status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL` and the resolution twin (`resolved_at IS NULL`). Keep `tickets_sla_sweep_idx` (Gate B7). **Step 4: Run** — PASS, `pnpm db:check-drift`. **Commit** `feat(api): SLA due-at sweep indexes (#8973)`.
@@ -486,7 +488,7 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 **Interfaces:** `async function resolveBusinessCalendar(db: DbExecutor, owner: { partnerId: string; orgId: string }): Promise<{ revisionId: string | null; calendarId: string | null; source: 'org' | 'partner' | 'none' }>` — org override → partner default → none; reads with explicit `partner_id`/`org_id` filters on the **caller's** connection (Gate B1).
 
 - [ ] **Step 1: Failing tests:** resolution order; archived override falls through to the partner default; IT: a ticket created from portal, inbound email, Partner API, staff partner token and org-scope token, under a partner-default calendar, each snapshots the same `sla_calendar_revision_id`.
-- [ ] **Step 2–4:** FAIL → implement (portal `POST /tickets` becomes self-managed and opens `portalOrgContext(orgId, auth.partnerId)`, precedent `routes/portal/network.ts:26-37,89`; the context must be in place **before** the ticketing-enabled middleware's org-scoped read (`routes/portal/tickets.ts:66`), which treats an invisible row as enabled — test `it('ticketing disabled still refuses a self-managed portal create')`) → PASS. **Commit** `feat(api): business calendar resolver (#8973)`.
+- [ ] **Step 2–4:** FAIL → implement (portal `POST /tickets` becomes self-managed and opens `portalOrgContext(orgId, auth.partnerId)`, precedent `routes/portal/network.ts:26-37,89`; the context must be in place **before** the ticketing-enabled middleware's org-scoped read (`portalTicketsEnabledMiddleware`, `routes/portal/tickets.ts:78-98`), which treats an invisible row as enabled — test `it('ticketing disabled still refuses a self-managed portal create')`) → PASS. **Commit** `feat(api): business calendar resolver (#8973)`.
 
 ### Task 4.4: Calendar-aware write points and payload
 
@@ -563,7 +565,7 @@ Spec §3.5. Invariant: **every writer of a ticket child row locks the ticket row
 
 **Files:** `ticketService.ts` (`createTicket :1067` — call after requester resolution `~:1191`, before priority `:1236`, initial status `:1237`, SLA `:1248`); `services/inboundEmail/inboundEmailService.ts:493-500` and `routes/officeAddin/tickets.ts:662` (continuation tickets pass `continuationOfTicketId`); tests.
 
-**Interfaces:** `CreateTicketInput` gains `continuationOfTicketId?: string` (explicit provenance — never inferred from description or subject). Both continuation producers (`inboundEmailService.ts:493-500`/`:855`, `officeAddin/tickets.ts:662`/`:698`) pass it; `createTicket` skips routing when it is set, and copies the predecessor's priority/category/assignee as the spec requires ("continuation tickets copy their predecessor"); consumes `evaluateRoutingRules`, `ExplicitChoices` derived from input presence (T5.4).
+**Interfaces:** `CreateTicketInput` gains `continuationOfTicketId?: string` (explicit provenance — never inferred from description or subject). Both continuation producers (`inboundEmailService.ts:493-500`/`:855`, `officeAddin/tickets.ts:662`/`:698`) pass it; `createTicket` skips routing when it is set and copies nothing from the predecessor — today's continuation path copies no priority/category/assignee, so the spec's "they copy their predecessor" is not current behaviour (Gate B14); consumes `evaluateRoutingRules`, `ExplicitChoices` derived from input presence (T5.4).
 
 - [ ] **Step 1: Failing tests:** precedence per field (explicit > intake form > rule > category default/SLA chain); a rule category drives `resolveEffectiveSlaTargetsForTicket`; rule assignee → initial core `open`; rule `set_status_id` overrides; `pending`/`on_hold` status → `sla_paused_at = created_at`; `ticket.created` outbox carries the final `assigneeId`, no `ticket.assigned`; `tickets.routing_rule_id` set; internal system comment lists applied and skipped actions; `ticket.create` audit details gain `routingRuleId`, `routingActions`; skipped for `isImportWrite` and `continuationOfTicketId`; explicit ineligible assignee still errors; inbound default assignee (`applyDefaultInboundAssignee`, `defaultAssignee.ts:49`) applies only when no rule assigned.
 - [ ] **Step 2–4:** FAIL → implement → PASS (+ `inboundEmailService.test.ts`, `defaultAssignee.test.ts`). **Commit** `feat(api): route tickets at create (#8883)`.
@@ -615,7 +617,8 @@ Caller dispositions (verify each in the PR body):
 **Files:** Create `apps/api/src/__tests__/integration/ticketCreateCallerContexts.integration.test.ts`.
 
 - [ ] **Step 1:** For each of portal, inbound email, Partner API, staff partner token, org-scope token: create a ticket under a partner-default calendar and a partner-wide rule; assert the same `sla_calendar_revision_id` and `routing_rule_id` (spec §12 "Caller contexts").
-- [ ] **Step 2:** Run — PASS (red here means a context cannot see partner-wide config; fix the context, Gate B1). **Commit** `test(api): ticket create caller contexts (#8883)`.
+- [ ] **Step 2: Mutation control.** Temporarily revert T4.3's portal self-managed context (portal create back on `currentPartnerId: null`); run — expect the portal case to FAIL (no revision, no rule). Record it, restore.
+- [ ] **Step 3:** Run — PASS (red here means a context cannot see partner-wide config; fix the context, Gate B1). **Commit** `test(api): ticket create caller contexts (#8883)`.
 
 **W5 gates:** as W4 plus `ticketRoutingRulesPartnerRls`, `ticketCreateCallerContexts`; PR body Rule 9 statement.
 
@@ -623,7 +626,7 @@ Caller dispositions (verify each in the PR body):
 
 ## Gate B — decisions for Todd
 
-Plan default in brackets. Items 1–10 are plan-level; the spec's D1–D12 are not re-opened.
+Plan default in brackets. Items 1–10 are plan-level choices the spec leaves open; items 11–16 depart from the spec's literal wording and amend it if approved. The spec's D1–D12 are not re-opened.
 
 1. **How config is read from a portal-created ticket.** The spec says nested `runOutsideDbContext(withSystemDbAccessContext)`; `docs/agents/tenancy-rls.md` (Partner-Wide First, step 3) retired that for XOR config tables, and nested system reads inside an open transaction have stalled CI behind queued TRUNCATE (#9446). **[Read on the caller's connection with explicit owner filters; make portal `POST /tickets` a self-managed DB-context route carrying `currentPartnerId = auth.partnerId` (SELECT-only branch, precedent `routes/portal/network.ts`); prove with T5.8.]**
 2. **Precursor wave W0** for the lock-order invariant, shipped before merge. **[Yes — independent PR, de-risks W1.]**
@@ -638,6 +641,9 @@ Plan default in brackets. Items 1–10 are plan-level; the spec's D1–D12 are n
 11. **W3 backfill transaction shape.** Spec §4.6 says "batched"; a ctid loop inside one migration transaction releases no locks. **[DDL in its own `@no-transaction` file; backfill as a procedure that `COMMIT`s per 5,000-row batch (resumable); fall back to a single transactional loop in its own file only if `autoMigrate` cannot run it.]**
 12. **Rolling-deploy gap.** A pre-W3 API instance still serving during the deploy creates tickets with no stored deadlines, which the new sweep would never breach. **[Sweep heals up to 500 such rows per tick with the wall-clock formula before stamping.]**
 13. **"At least one action" on a routing rule.** The spec's DB CHECK conflicts with `set_assignee_user_id ON DELETE SET NULL` (deleting a user whose rule only assigns would fail). **[Service validation at create/update only; a rule emptied by a user deletion becomes a visible no-action rule.]**
+14. **Continuation tickets and routing.** Spec §5.2 says continuations skip routing "because they copy their predecessor", but today's continuation path copies no priority, category or assignee. **[Skip routing, copy nothing — today's behaviour unchanged; copying is a separate follow-up if wanted.]**
+15. **Calendar revision immutability vs org merge.** Spec §4.1 allows only `created_by_user_id → NULL`; org merge must restamp `org_id` on an org-owned calendar's revisions. **[Trigger also allows an `org_id`-only ownership restamp; owner guards `DEFERRABLE INITIALLY IMMEDIATE` (T4.1).]**
+16. **W5 depends on W3.** Spec §11 marks W5 independent. **[Land W5 after W3 (both edit `createTicket` and the SLA stamp) and after W4 (the combined caller-context test T5.8).]**
 
 ## Quorum outcome
 
@@ -650,7 +656,7 @@ Opus formed positions P1–P13 (Gate B 1–10 plus the slot and module choices) 
 
 Qualified agreements folded in: P1 context must precede the portal ticketing-enabled middleware (T4.3); P2 INVALID-index guard (T3.3, cross-wave rules); P6 time-entry scanner covers only `time_entries` (T1.4); P8 W3 must not reference `merged_into_ticket_id` before W1's migration ships (rebase rules); P10 portal `NewTicketForm` also always sends priority (T5.4); P11 keep attachment public/non-deleted filters and comment author checks (T1.12); P12 no `devices` row lock after the link lock (T1.4); P13 remove only the Business Hours card (T4.9).
 
-Five additional risks Codex raised, all adopted: verification effects on a merged ticket (T1.2, Gate B6); explicit continuation provenance (T5.3); revision immutability vs org merge (T4.1); malformed legacy business-hours blobs (T4.1); sole-assignee rule vs `SET NULL` (T5.1, Gate B13). The hot-table DDL discipline (`2026-12-20-200300` precedent) was applied to W1 as well. No disagreement is left open; Gate B 11–13 are listed because they depart from the spec's literal wording.
+Five additional risks Codex raised, all adopted: verification effects on a merged ticket (T1.2, Gate B6); explicit continuation provenance (T5.3); revision immutability vs org merge (T4.1); malformed legacy business-hours blobs (T4.1); sole-assignee rule vs `SET NULL` (T5.1, Gate B13). The hot-table DDL discipline (`2026-12-20-200300` precedent) was applied to W1 as well. No disagreement is left open; Gate B 11–16 are listed because they depart from the spec’s literal wording (14–16 came from the PR review).
 
 ## Deferred / follow-ups (not in any wave)
 
