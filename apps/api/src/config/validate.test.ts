@@ -3039,6 +3039,25 @@ describe('validateConfig', () => {
     });
   });
 
+  // Wisp W02 (Wisp design §10): the deployment switch is hosted-only.
+  it('refuses BREEZE_WISP_ENABLED=true in production without IS_HOSTED=true', () => {
+    withEnv({ ...workspaceProdEnv, IS_HOSTED: 'false', BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires IS_HOSTED=true/);
+    });
+  });
+
+  it('accepts BREEZE_WISP_ENABLED=true in production when hosted', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);
+    });
+  });
+
   // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
   // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
   // as a margin discrepancy nobody traces back to an env var.
