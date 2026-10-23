@@ -323,7 +323,7 @@ describe('RestoreWizard', () => {
     expect(link.getAttribute('href')).toBe('/settings/profile');
   });
 
-  it.each(['attested', 'producer_only', 'pending', undefined])('shows no second-factor note for a %s snapshot (#9629)', async (status) => {
+  it.each(['attested', 'producer_only', 'pending', 'attestation_failed', 'something_new', undefined])('shows no second-factor note for a %s snapshot (#9629)', async (status) => {
     authState.user = { mfaEnabled: false };
     await goToReview(status);
     expect(screen.queryByTestId('restore-review-second-factor-note')).toBeNull();
@@ -372,6 +372,34 @@ describe('RestoreWizard', () => {
     expect(summary.textContent).not.toContain('cmd-9f3a');
     fireEvent.click(screen.getByRole('button', { name: /copy command id/i }));
     expect(writeText).toHaveBeenCalledWith('cmd-9f3a');
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Command ID copied' }));
+  });
+
+  it('toasts an error when the command id cannot be copied (#9626)', async () => {
+    const writeText = vi.fn(async () => { throw new Error('denied'); });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', restoreType: 'full', status: 'completed',
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z', commandId: 'cmd-9f3a',
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    fireEvent.click(screen.getByRole('button', { name: /copy command id/i }));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Could not copy the command ID' }));
+  });
+
+  it.each([null, {}])('treats an unknown second-factor state (%j) as informational, not a set-up warning (#9629)', async (user) => {
+    authState.user = user as { mfaEnabled?: boolean } | null;
+    await goToReview('unattested');
+    expect(screen.getByTestId('restore-review-second-factor-note').getAttribute('data-tone')).toBe('info');
+    expect(screen.queryByTestId('snapshot-second-factor-hint')).toBeNull();
   });
 
   it('cancels a queued restore from the Latest restore job panel', async () => {
