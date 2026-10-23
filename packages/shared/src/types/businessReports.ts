@@ -236,6 +236,95 @@ export type AiUsageByClientSummary = {
   rows: AiUsageByClientDetailRow[];
 };
 
+// ---- MRR & renewals (`mrr_renewals`, #9828 W1) ------------------------------
+// Measured at run time: contracts keep no status history, so there is no
+// period and no backdating. Money is a per-currency decimal string, never
+// summed across currencies.
+
+export type MrrRenewalsGroupBy = 'organization' | 'contract';
+export type MrrRenewalsHorizonDays = 30 | 60 | 90 | 180;
+/** How a detail row was valued: live (`active`, `paused`, `draft`) or from the
+ *  invoice of a billed final term (`billed_final_term`). */
+export type MrrContractBasis = 'active' | 'billed_final_term' | 'paused' | 'draft';
+
+export type MrrCurrencyTotals = {
+  currencyCode: string;
+  /** In-term contracts (`active` + `billed_final_term`). mrr = baseMrr + overageMrr. */
+  mrr: string;
+  baseMrr: string;
+  /** Billed allowance overage of `active` rows only (a billed final term is not split). */
+  overageMrr: string;
+  /** The `billed_final_term` share of `mrr`. */
+  finalTermMrr: string;
+  /** mrr × 12. */
+  arr: string;
+  contractCount: number;
+  /** Beside MRR, never in it. */
+  pausedMrr: string;
+  pausedCount: number;
+  /** Draft contracts, beside MRR, never in it. */
+  pendingActivationMrr: string;
+  pendingActivationCount: number;
+  /** In-term contracts with no end date (part of `mrr`). */
+  evergreenMrr: string;
+  evergreenCount: number;
+};
+export type MrrGroupRow = MrrCurrencyTotals & { groupKey: string; groupLabel: string };
+export type MrrRenewalTotals = {
+  currencyCode: string; autoRenewMrr: string; autoRenewCount: number; manualMrr: string; manualCount: number;
+};
+/** Billed recurring revenue in one calendar month (owner timezone): issued
+ *  contract invoice lines, a period's line spread evenly over its months.
+ *  Billed, not MRR. `partial` marks the run month. */
+export type MrrBilledMonth = { month: string; currencyCode: string; amount: string; partial: boolean };
+export type MrrContractDetailRow = {
+  contractId: string;
+  contractName: string;
+  orgId: string;
+  orgName: string | null;
+  status: string;
+  basis: MrrContractBasis;
+  intervalMonths: number;
+  currencyCode: string;
+  baseMonthly: string;
+  /** Null for a billed final term (billed as a lump, never split). */
+  overageMonthly: string | null;
+  mrr: string;
+  startDate: string;
+  endDate: string | null;
+  /** Days from asOf to endDate; null when open-ended. */
+  daysRemaining: number | null;
+  autoRenew: boolean;
+  renewalTermMonths: number | null;
+  inRenewalWindow: boolean;
+  /** When the advance renewal notice for THIS end date was sent; looked up for
+   *  renewal-window rows only, null otherwise. */
+  advanceNoticeSentAt: string | null;
+};
+export type MrrRenewalsSummary = {
+  generatedAt: string;
+  /** UTC calendar date of the run (contract dates are UTC, like billing). */
+  asOf: string;
+  /** The report owner's timezone (billed-series months and notes only). */
+  timeZone: string;
+  scope: ReportScopeMeta;
+  groupBy: MrrRenewalsGroupBy;
+  renewalHorizonDays: MrrRenewalsHorizonDays;
+  byCurrency: MrrCurrencyTotals[];
+  groups: MrrGroupRow[];
+  /** `contractIds`: rows with inRenewalWindow, end date ascending. */
+  renewals: { totals: MrrRenewalTotals[]; contractIds: string[] };
+  activeNotInTerm: {
+    contractId: string; contractName: string; orgName: string | null; reason: string; startDate: string; endDate: string | null;
+  }[];
+  /** Contracts that should count but could not be valued; excluded from MRR. */
+  skipped: { contractId: string; contractName: string; orgName: string | null; reason: string }[];
+  billedRecurring: MrrBilledMonth[];
+  detail: DetailRowMeta;
+  notes: string[];
+  rows: MrrContractDetailRow[];
+};
+
 const EMPTY_DETAIL: DetailRowMeta = { cap: 5000, stored: 0, available: 0, truncated: false };
 
 export function emptyTicketSlaSummary(note: string): TicketSlaSummary {
@@ -330,6 +419,27 @@ export function emptyAiUsageByClientSummary(note: string): AiUsageByClientSummar
       charges: [],
     },
     groups: [],
+    detail: { ...EMPTY_DETAIL },
+    notes: [note],
+    rows: [],
+  };
+}
+
+export function emptyMrrRenewalsSummary(note: string): MrrRenewalsSummary {
+  return {
+    generatedAt: new Date().toISOString(),
+    // A UTC calendar date like every real run's asOf, never a full timestamp.
+    asOf: new Date().toISOString().slice(0, 10),
+    timeZone: 'UTC',
+    scope: { kind: 'organization', orgId: '', orgName: null },
+    groupBy: 'organization',
+    renewalHorizonDays: 90,
+    byCurrency: [],
+    groups: [],
+    renewals: { totals: [], contractIds: [] },
+    activeNotInTerm: [],
+    skipped: [],
+    billedRecurring: [],
     detail: { ...EMPTY_DETAIL },
     notes: [note],
     rows: [],

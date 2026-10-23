@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyAiUsageByClientSummary, emptyArAgingSummary, emptyTechnicianTimeSummary, emptyTicketSlaSummary } from './businessReports';
+import { emptyAiUsageByClientSummary, emptyArAgingSummary, emptyTechnicianTimeSummary, emptyTicketSlaSummary, emptyMrrRenewalsSummary } from './businessReports';
 
 const NOTE = 'nothing was queried';
 
@@ -54,6 +54,30 @@ describe('emptyAiUsageByClientSummary', () => {
     const s = emptyAiUsageByClientSummary(NOTE);
     expect(s.groupBy).toBe('organization');
     expect(s.period).toMatchObject({ timeZone: 'UTC' });
+    expect(s.scope).toEqual({ kind: 'organization', orgId: '', orgName: null });
+  });
+});
+
+describe('emptyMrrRenewalsSummary (#9828 W1)', () => {
+  it('carries the note, an untruncated empty detail block and no money at all', () => {
+    const s = emptyMrrRenewalsSummary(NOTE);
+    expect(s.notes).toEqual([NOTE]);
+    expect(s.byCurrency).toEqual([]);
+    expect(s.groups).toEqual([]);
+    expect(s.renewals).toEqual({ totals: [], contractIds: [] });
+    expect(s.activeNotInTerm).toEqual([]);
+    expect(s.skipped).toEqual([]);
+    expect(s.billedRecurring).toEqual([]);
+    expect(s.rows).toEqual([]);
+    expect(s.detail).toMatchObject({ cap: 5000, stored: 0, available: 0, truncated: false });
+  });
+
+  it('defaults to the organization axis, a 90-day horizon and a UTC calendar-date asOf', () => {
+    const s = emptyMrrRenewalsSummary(NOTE);
+    expect(s.groupBy).toBe('organization');
+    expect(s.renewalHorizonDays).toBe(90);
+    expect(s.timeZone).toBe('UTC');
+    expect(s.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(s.scope).toEqual({ kind: 'organization', orgId: '', orgName: null });
   });
 });
