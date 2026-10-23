@@ -115,6 +115,9 @@ export const narrativeSubmissionSchema: z.ZodType<NarrativeSubmission> = z.objec
   // anonymous "Too big" instead of naming the key. The refine bounds the
   // count anyway: the key is an enum of NARRATIVE_SECTION_KEYS.length values,
   // so more entries than that necessarily repeats a key and is rejected.
+  // That bounds what is ACCEPTED, not parse cost (every element is validated
+  // first, as it was under the old `.max()`); the input is the model's tool
+  // call, so its size is capped by the model's output budget.
   sections: z.array(narrativeSectionSubmissionSchema),
 }).strict().superRefine((value, ctx) => {
   const seen = new Set<NarrativeSectionKey>();

@@ -1,6 +1,10 @@
-// Must stay first: sets zod `jitless` in browsers before any schema in the
-// barrel is constructed (zod >= 4.6 probes `new Function`, which the web CSP
-// reports as an eval violation).
+// Keep first. In browsers and workers this sets zod `jitless` (see
+// validators/topologyZod.ts) before the barrel constructs any schema: zod reads
+// the config when a schema is CONSTRUCTED, and without it probes
+// `new Function`, which the web CSP (no 'unsafe-eval') reports as an eval
+// violation. It only covers schemas built after this line runs: deep imports
+// that bypass this barrel (other than the topology subpaths, which import it
+// themselves) and modules that import `zod` directly are not covered.
 import './validators/topologyZod';
 export * from './types';
 export * from './constants';
