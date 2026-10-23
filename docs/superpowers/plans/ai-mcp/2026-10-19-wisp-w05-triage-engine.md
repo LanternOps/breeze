@@ -3,6 +3,7 @@ spec: docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md
 orchestrator: docs/superpowers/plans/ai-mcp/2026-10-19-wisp-w00-wave-map-and-contracts.md
 wave: W05
 depends_on: [W02, W03, W04]
+tracking_issue: LanternOps/breeze#9906
 ---
 
 # Wisp W05 — Triage Engine Implementation Plan
