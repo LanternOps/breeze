@@ -143,6 +143,14 @@ export interface AdmitServiceRecoveryTaskInput {
    * idempotency" and is what every internal admission passes.
    */
   clientIdempotencyKey?: string | null;
+  /**
+   * Wisp W02 (Wisp design §4.3) — TRUSTED INTERNAL INPUT: the delegation grant
+   * + revision a Wisp-launched task runs under. W07's coordinator is the
+   * producer; `routes/aiOperatorTasks.ts` does not expose it. The requester
+   * gate then checks the live ceiling (with the effect permission) before
+   * each effect, and the coordinator's runs inherit the pin.
+   */
+  grant?: { grantId: string; grantRevisionId: string };
 }
 
 /**
@@ -292,6 +300,13 @@ export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult>
     return { ok: false, refusal: 'recipe_disabled', detail: `workflow '${recipe.key}' has no feature flag and cannot be admitted` };
   }
 
+  // Wisp W02: a delegation grant is one person's borrowed authority; the
+  // requester gate re-checks that person before every effect, so a grant
+  // without its requester has nothing to re-check against.
+  if (input.grant && !input.requesterUserId) {
+    return { ok: false, refusal: 'invalid_input', detail: 'a grant-bearing task needs its requester (the grantor)' };
+  }
+
   const now = input.now ?? new Date();
   let targets: AdmissionTargets;
   if (recipe.key === SERVICE_RECOVERY_WORKFLOW_KEY) {
@@ -431,6 +446,9 @@ export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult>
         mode: 'live',
         originKind: input.originKind,
         requesterUserId: input.requesterUserId,
+        // Wisp W02: both or none (`ai_operator_tasks_grant_link_chk`).
+        grantId: input.grant?.grantId ?? null,
+        grantRevisionId: input.grant?.grantRevisionId ?? null,
         objective: input.objective.slice(0, 4000),
         deviceId: row.deviceId,
         targetLabel: row.targetLabel,
