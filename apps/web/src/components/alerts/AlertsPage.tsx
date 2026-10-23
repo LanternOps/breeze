@@ -204,6 +204,7 @@ export default function AlertsPage() {
       setAlerts(normalizeAlertRows(raw, stableT('alertsPage.unknownDevice')));
     } catch (err) {
       if (fetchId !== alertsFetchId.current) return;
+      console.error('Failed to fetch alerts:', err);
       setError(err instanceof Error ? err.message : stableT('alertsPage.genericError'));
     } finally {
       if (fetchId === alertsFetchId.current) setLoading(false);
@@ -299,7 +300,10 @@ export default function AlertsPage() {
 
   const handleCloseDetail = () => {
     if (alertIdFromHash(window.location.hash.replace(/^#/, ''))) {
-      history.replaceState(null, '', window.location.pathname + window.location.search);
+      // Assigning (not replaceState) fires `hashchange`, so useHashState drops
+      // hashAlertId and following the same link again re-opens the drawer.
+      openedHashAlertRef.current = null;
+      window.location.hash = '';
     }
     activeDetailIdRef.current = null;
     setDetailOpen(false);

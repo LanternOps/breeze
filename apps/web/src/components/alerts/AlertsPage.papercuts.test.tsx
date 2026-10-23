@@ -91,6 +91,36 @@ describe('AlertsPage papercuts (#9625)', () => {
     expect(within(dialog).getAllByText('High CPU on SRV-01').length).toBeGreaterThan(0);
   });
 
+  it('following the same #<alertId> link again after closing re-opens the drawer', async () => {
+    window.location.hash = ID;
+    route([row]);
+    render(<AlertsPage />);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getAllByRole('button', { name: /close/i })[0]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await act(async () => { window.location.hash = ID; window.dispatchEvent(new HashChangeEvent('hashchange')); });
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('an unknown #<alertId> leaves the plain list with no drawer', async () => {
+    window.location.hash = '00000000-0000-4000-8000-000000000000';
+    route([row]);
+    render(<AlertsPage />);
+    await screen.findByText('High CPU on SRV-01');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a background refetch after closing does not re-open the hash alert', async () => {
+    window.location.hash = ID;
+    route([row]);
+    render(<AlertsPage />);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getAllByRole('button', { name: /close/i })[0]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await act(async () => { window.dispatchEvent(new HashChangeEvent('hashchange')); });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('closing the drawer clears the alert id from the hash', async () => {
     window.location.hash = ID;
     route([row]);
