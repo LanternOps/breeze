@@ -86,6 +86,15 @@ describe('Analytics papercuts (#9650)', () => {
     });
   });
 
+  it('shows the in-range sessions count, not the live remoteSessions count', async () => {
+    routes['/metrics'] = { data: { sessions: 1, remoteSessions: 0 } };
+    render(<AnalyticsPage />);
+    const label = await screen.findByText('Sessions in range');
+    await waitFor(() => {
+      expect(label.closest('a')?.textContent).toMatch(/Sessions in range\s*1(?!\d)/);
+    });
+  });
+
   it('does not show the coverage note below the device cap', async () => {
     routes['/devices'] = { data: Array.from({ length: 99 }, (_, i) => ({ id: `d-${i}` })) };
     render(<AnalyticsPage />);

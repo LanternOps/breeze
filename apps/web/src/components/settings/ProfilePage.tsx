@@ -125,6 +125,8 @@ function takeSsoReauthErrorFromQuery(): string | null {
   return code;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Reads and CONSUMES the `#ssoReauthGrant=<id>` fragment the SSO callback
  *  redirects back with. The grant is single-use, so the fragment is stripped in
  *  the same tick it is read: leaving it in the address bar invites a confusing
@@ -135,9 +137,16 @@ function takeSsoReauthGrantFromHash(): string | null {
   if (typeof window === 'undefined') return null;
   const match = /^#ssoReauthGrant=(.+)$/.exec(window.location.hash);
   if (!match) return null;
-  const grantId = decodeURIComponent(match[1]);
+  let grantId: string | null;
+  try {
+    grantId = decodeURIComponent(match[1]);
+  } catch {
+    grantId = null;
+  }
   replaceUrl(`${window.location.pathname}${window.location.search}`);
-  return grantId;
+  // A hand-edited or mangled fragment is not a grant: the server would 400 it
+  // ("Invalid UUID") and the user would see that raw. Ignore it.
+  return grantId && UUID_RE.test(grantId) ? grantId : null;
 }
 
 type PasskeySummary = {
