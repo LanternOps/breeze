@@ -28,7 +28,8 @@ import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
  * `quotes_revision_of_uq` does not prevent a cycle (A→B, B→A is unique). A
  * cycle has no root, so the root-anchored walk never reaches it; the
  * diagnostics statement counts such quotes so the report can say so instead of
- * silently under-counting. Neither those nor depth-capped lineages feed a rate.
+ * silently under-counting. Unreachable quotes feed no rate. A depth-capped
+ * lineage IS still counted, on its 50th version (the report prints a note).
  */
 
 /** anomaly: a terminal 'superseded' version (should be impossible). */

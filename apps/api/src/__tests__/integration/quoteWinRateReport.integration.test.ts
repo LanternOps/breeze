@@ -139,6 +139,11 @@ describe('quote_win_rate — real Postgres (#9828 W2)', () => {
     expect(s.overall.winRate).toBeCloseTo(1 / 3, 10);
     expect(s.overall.closeRate).toBeCloseTo(1 / 4, 10);
     expect(s.groups.map((g) => [g.groupLabel, g.lineages]).sort()).toEqual([['Acme', 3], ['Globex', 1]]);
+    // The foreign partner's sent quote is not counted in the diagnostics either.
+    expect(s.diagnostics).toEqual({ unreachable: 0, depthCapped: 0 });
+    // Won A-1 first sent 8/02 10:00, accepted 8/12 10:00 = 10 days; lost A-2 8/03 -> 8/05 = 2 days.
+    expect(s.overall.medianDaysToWin).toBe(10);
+    expect(s.overall.medianDaysToLoss).toBe(2);
     const everything = JSON.stringify(s);
     expect(everything).not.toContain('Initech');
     expect(everything).not.toContain(f.foreignOrg.id);

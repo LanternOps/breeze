@@ -96,6 +96,7 @@ describe('quote lineage queries — real Postgres (#9828 W2)', () => {
     await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: 'Q-fresh', status: 'viewed', sentAt: '2026-08-02T11:00:00Z', expiryDate: '2026-09-15' });
     const rows = await run(lineageDetailQuery(cteOf(w), 100));
     expect(Object.fromEntries(rows.map((r) => [r.quote_number, r.outcome]))).toEqual({ 'Q-stale': 'expired', 'Q-fresh': 'open' });
+    expect(rows.find((r) => r.quote_number === 'Q-stale')!.outcome_at).toBe('2026-09-10T00:00:00.000Z');
     const [counts] = rowsOf(await withSystemDbAccessContext(() => db.execute(lineageOverallQuery(cteOf(w)))));
     expect(counts).toMatchObject({ lineages: 2, won: 0, lost: 0, expired: 1, open: 1, anomalies: 0 });
   });
@@ -130,9 +131,35 @@ describe('quote lineage queries — real Postgres (#9828 W2)', () => {
     const b = await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: 'Q-cyc-B', status: 'sent', sentAt: '2026-08-03T10:00:00Z', expiryDate: '2026-12-31', revisionOf: a, revisionNumber: 2 });
     await getTestDb().update(quotes).set({ revisionOfQuoteId: b, revisionNumber: 3 }).where(eq(quotes.id, a));
 
+    // A foreign partner's sent quote must not leak into the diagnostics count.
+    await seedQuote({ partnerId: w.otherPartner.id, orgId: w.foreign.id, number: 'Q-foreign-sent', status: 'sent', sentAt: '2026-08-04T10:00:00Z', expiryDate: '2026-12-31', revisionOf: null });
     const [diag] = rowsOf(await withSystemDbAccessContext(() => db.execute(lineageDiagnosticsQuery(partnerArgs(w)))));
     expect(diag).toMatchObject({ unreachable: 2, depth_capped: 0 });
+    // A sibling org outside the allowlist is not counted either.
+    const [narrow] = rowsOf(await withSystemDbAccessContext(() => db.execute(lineageDiagnosticsQuery(partnerArgs(w, [w.globex.id])))));
+    expect(narrow).toMatchObject({ unreachable: 0, depth_capped: 0 });
     expect(await run(lineageDetailQuery(cteOf(w), 100))).toEqual([]);
+  });
+
+  runDb('depth guard: a 50-version chain is fully walked, a 51st version is counted as depth_capped', async () => {
+    const w = await seedWorld();
+    let prev = await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: 'Q-d1', status: 'sent', sentAt: '2026-08-02T10:00:00Z', expiryDate: '2026-12-31' });
+    for (let i = 2; i <= 50; i += 1) {
+      prev = await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: `Q-d${i}`, status: 'sent', sentAt: '2026-08-02T10:00:00Z', expiryDate: '2026-12-31', revisionOf: prev, revisionNumber: i });
+    }
+    const [at50] = rowsOf(await withSystemDbAccessContext(() => db.execute(lineageDiagnosticsQuery(partnerArgs(w)))));
+    expect(at50).toMatchObject({ unreachable: 0, depth_capped: 0 });
+    await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: 'Q-d51', status: 'sent', sentAt: '2026-08-02T10:00:00Z', expiryDate: '2026-12-31', revisionOf: prev, revisionNumber: 51 });
+    const [at51] = rowsOf(await withSystemDbAccessContext(() => db.execute(lineageDiagnosticsQuery(partnerArgs(w)))));
+    expect(at51).toMatchObject({ unreachable: 1, depth_capped: 1 });
+  });
+
+  runDb('a superseded v1 followed by an accepted v2 is one won lineage, not an anomaly', async () => {
+    const w = await seedWorld();
+    const v1 = await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: 'Q-s1', status: 'superseded', sentAt: '2026-08-02T10:00:00Z' });
+    await seedQuote({ partnerId: w.partner.id, orgId: w.acme.id, number: 'Q-s1-R2', status: 'accepted', sentAt: '2026-08-03T10:00:00Z', acceptedAt: '2026-08-05T10:00:00Z', revisionOf: v1, revisionNumber: 2 });
+    const [counts] = rowsOf(await withSystemDbAccessContext(() => db.execute(lineageOverallQuery(cteOf(w)))));
+    expect(counts).toMatchObject({ lineages: 1, won: 1, anomalies: 0 });
   });
 
   runDb('the walk never leaves the caller\'s orgs or partner: allowlist narrows to one org, a foreign partner is invisible', async () => {
