@@ -243,3 +243,34 @@ describe('buildReportPdf: client_profitability', () => {
     warn.mockRestore();
   });
 });
+
+describe('client_profitability pagination', () => {
+  /** Top-down y (mm) of every text run containing `needle`. */
+  function textYs(doc: ReturnType<typeof buildReportPdf>, needle: string): number[] {
+    const pages = (doc.internal as unknown as { pages: Array<string[] | undefined> }).pages;
+    const pageH = doc.internal.pageSize.getHeight();
+    const out: number[] = [];
+    pages.forEach((p) => {
+      if (!Array.isArray(p)) return;
+      const re = /([\d.]+) ([\d.]+) Td\s*\((.*?)\)\s*Tj/g;
+      let m: RegExpExecArray | null;
+      const stream = p.join('\n');
+      while ((m = re.exec(stream))) {
+        if (m[3].includes(needle)) out.push(pageH - Number(m[2]) / doc.internal.scaleFactor);
+      }
+    });
+    return out;
+  }
+
+  it('never strands a section heading at the foot of a page, wherever earlier content ends', () => {
+    for (let n = 0; n <= 30; n++) {
+      const orgs = Array.from({ length: n }, (_, i) => orgRow(`Client ${i}`, [money()]));
+      const doc = buildReportPdf([], { ...opts, summary: partnerSummary({ orgs }) });
+      for (const needle of ['By client', 'By revenue source', 'Revenue mix', 'Hours by coverage', 'Profitability per currency']) {
+        for (const y of textYs(doc, needle)) {
+          expect(y, `${needle} with ${n} clients`).toBeLessThan(199 - 14);
+        }
+      }
+    }
+  });
+});
