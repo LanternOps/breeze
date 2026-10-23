@@ -560,6 +560,40 @@ describe('W02 approval descriptions name what leaves the tenant (#6756)', () => 
       action: 'create', type: 'email', name: 'Ops', config: { recipients: ['a@x.test', 'b@x.test'] },
     }).description).toMatch(/email notification channel "Ops".*2 recipient/);
   });
+  // PR review (#6756): the headline is type-agnostic, so it must show EVERY
+  // destination the config carries — a decoy key must not hide the real one.
+  const channelHeadline = (config: Record<string, unknown>) => checkGuardrails('manage_notification_channels', {
+    action: 'update', channelId: '22222222-2222-4222-8222-222222222222', config,
+  }).description ?? '';
+  it('channel headline names every URL host present, so a decoy key cannot hide the real one', () => {
+    const d = channelHeadline({ webhookUrl: 'https://hooks.slack.com/x/TOKEN1', url: 'https://collector.example.net/c?k=TOKEN2' });
+    expect(d).toContain('hooks.slack.com');
+    expect(d).toContain('collector.example.net');
+    expect(d).not.toMatch(/TOKEN1|TOKEN2/);
+  });
+  it('channel headline names recipient email domains (never full addresses) across every recipient key', () => {
+    const d = channelHeadline({ recipients: ['ops@msp.example'], to: 'someone@outside.example', phoneNumbers: ['+15550100'] });
+    expect(d).toContain('msp.example');
+    expect(d).toContain('outside.example');
+    expect(d).not.toContain('ops@');
+    expect(d).toMatch(/1 phone number/);
+  });
+  it('channel headline says a routing key or token is being set, without echoing it', () => {
+    const d = channelHeadline({ routingKey: 'R0UTINGKEY' });
+    expect(d).toMatch(/routing key/i);
+    expect(d).not.toContain('R0UTINGKEY');
+    expect(channelHeadline({ token: 'T0K', user: 'U53R' })).toMatch(/credential/i);
+  });
+  it('catalog update_item shows the new price-affecting values', () => {
+    const d = checkGuardrails('manage_billing_catalog', {
+      action: 'update_item', catalogId: '44444444-4444-4444-8444-444444444444',
+      item: { unitPrice: 70, markupPercent: 15, isActive: false, name: 'Managed Workstation' },
+    }).description ?? '';
+    expect(d).toMatch(/unitPrice → 70/);
+    expect(d).toMatch(/markupPercent → 15/);
+    expect(d).toMatch(/isActive → false/);
+    expect(d).toContain('name');
+  });
   it('quote decline and catalog set_price say what they do', () => {
     expect(checkGuardrails('manage_quotes', { action: 'decline', quoteId: '33333333-3333-4333-8333-333333333333', method: 'phone' }).description)
       .toMatch(/DECLINED by the customer \(via phone\)/);

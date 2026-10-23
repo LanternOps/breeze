@@ -3189,18 +3189,46 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
 function describeChannelDestination(config: unknown): string | null {
   if (!config || typeof config !== 'object') return null;
   const c = config as Record<string, unknown>;
-  const url = [c.webhookUrl, c.url].find((v): v is string => typeof v === 'string' && v.length > 0);
-  if (url) {
+  // Type-agnostic on purpose (an `update` carries no `type`): name EVERY
+  // destination the config holds, so a decoy key (a Slack-looking
+  // `webhookUrl` beside the `url` a webhook channel actually posts to) can
+  // never hide the real one. Hosts only — webhook paths and queries carry
+  // tokens. Email recipients by domain, never full address (PR review, #6756).
+  const parts: string[] = [];
+  const hosts = new Set<string>();
+  let unparseable = false;
+  for (const [key, value] of Object.entries(c)) {
+    if (!/url$/i.test(key) || typeof value !== 'string' || value.length === 0) continue;
     try {
-      return `host ${new URL(url).host}`;
+      hosts.add(new URL(value).host);
     } catch {
-      return 'an unparseable URL';
+      unparseable = true;
     }
   }
-  const list = [c.recipients, c.to, c.phoneNumbers].find((v) => Array.isArray(v) || typeof v === 'string');
-  if (Array.isArray(list)) return `${list.length} recipient(s)`;
-  if (typeof list === 'string') return '1 recipient';
-  return null;
+  if (hosts.size > 0) parts.push(`host ${[...hosts].join(', ')}`);
+  if (unparseable) parts.push('an unparseable URL');
+
+  const recipients = [c.recipients, c.to, c.phoneNumbers]
+    .flatMap((v) => (Array.isArray(v) ? v : typeof v === 'string' ? [v] : []))
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+  const domains = new Set<string>();
+  let phones = 0;
+  for (const r of recipients) {
+    const at = r.lastIndexOf('@');
+    if (at > 0 && at < r.length - 1) domains.add(r.slice(at + 1).toLowerCase());
+    else phones += 1;
+  }
+  const emailCount = recipients.length - phones;
+  if (emailCount > 0) parts.push(`${emailCount} recipient(s) at ${[...domains].slice(0, 5).join(', ')}${domains.size > 5 ? ', …' : ''}`);
+  if (phones > 0) parts.push(`${phones} phone number(s)`);
+
+  if (['routingKey', 'integrationKey'].some((k) => typeof c[k] === 'string' && (c[k] as string).length > 0)) {
+    parts.push('a new routing key (not shown)');
+  }
+  if (['token', 'user', 'userKey', 'botToken'].some((k) => typeof c[k] === 'string' && (c[k] as string).length > 0)) {
+    parts.push('new credentials (not shown)');
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
 }
 
 function buildApprovalDescription(
@@ -3530,7 +3558,11 @@ function buildApprovalDescription(
       } else if (action === 'archive_item') {
         parts.push(`Archive catalog item ${itemRef}`);
       } else if (action === 'update_item') {
-        const fields = input.item && typeof input.item === 'object' ? Object.keys(input.item as Record<string, unknown>) : [];
+        // Price-affecting fields show their new value (contract renewals bill
+        // the live price); other fields are named only (PR review, #6756).
+        const item = input.item && typeof input.item === 'object' ? input.item as Record<string, unknown> : {};
+        const PRICE_FIELDS = ['unitPrice', 'costBasis', 'markupPercent', 'taxable', 'isActive'];
+        const fields = Object.keys(item).map((k) => (PRICE_FIELDS.includes(k) ? `${k} → ${String(item[k])}` : k));
         parts.push(`Update catalog item ${itemRef} (${fields.join(', ') || 'no fields'})`);
       } else if (action === 'set_bundle_components') {
         parts.push(`Replace the components of bundle ${itemRef} (${Array.isArray(input.components) ? input.components.length : 0} component(s))`);
