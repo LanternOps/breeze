@@ -37,6 +37,7 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'POST /:id/commands/:commandId/result': 'protected',
   'POST /:id/commands/:commandId/pam-observations': 'protected',
   'POST /:id/pam/reconciliation-bindings': 'protected',
+  'POST /:id/pam/elevation-unable': 'protected',
   'POST /:id/rotate-token': 'protected',
   'POST /:id/rotate-token/confirm': 'protected',
   'POST /:id/uninstall-intent': 'protected',

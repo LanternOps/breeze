@@ -33,6 +33,12 @@ auditLogRoutes.use('*', authMiddleware);
 const listLogsSchema = z.object({
   page: z.string().optional(),
   limit: z.string().optional(),
+  // The Audit Trail's user picker (#9671): match the actor by identity
+  // (audit_logs.actor_id), which also covers rows written without an actor
+  // email such as agent.command.*. ANDed with the org scope, so it only
+  // narrows what the caller can already see.
+  userId: z.string().guid().optional(),
+  // Free-text user match (email / name); see buildFilterConditions.
   user: z.string().min(1).optional(),
   action: z.string().min(1).optional(),
   resource: z.string().min(1).optional(),
@@ -317,17 +323,32 @@ function parseCommaList(raw: string | undefined): string[] {
 
 function buildFilterConditions(
   orgCond: SQL | undefined,
-  filters: { user?: string; action?: string; resource?: string; from?: string; to?: string; excludeActions?: string }
+  filters: {
+    userId?: string;
+    user?: string;
+    action?: string;
+    resource?: string;
+    from?: string;
+    to?: string;
+    excludeActions?: string;
+  }
 ): SQL | undefined {
   const conditions: SQL[] = [];
 
   if (orgCond) conditions.push(orgCond);
 
+  if (filters.userId) {
+    conditions.push(eq(auditLogsTable.actorId, filters.userId));
+  }
+
   if (filters.user) {
     const term = `%${escapeIlike(filters.user)}%`;
+    // users.email (via the actor join) as well as actor_email: rows such as
+    // agent.command.* carry actor_id but no actor_email (#9671).
     conditions.push(
       or(
         ilike(auditLogsTable.actorEmail, term),
+        ilike(users.email, term),
         ilike(users.name, term)
       )!
     );
@@ -692,7 +713,9 @@ function paginatedListHandler(
     // index. The dashboard widget that calls /logs?limit=5 doesn't need the
     // count — it never displays "X of Y total". Pass skipCount=true there.
     const skipCount = query.skipCount === 'true';
-    const hasFilters = !!(query.user || query.action || query.resource || query.from || query.to);
+    // The LATERAL fast path applies none of these filters, so any of them
+    // (userId included, #9671) must force the standard path.
+    const hasFilters = !!(query.userId || query.user || query.action || query.resource || query.from || query.to);
     // excludeActions is compatible with the fast path — it's applied inside the
     // LATERAL subquery before the per-org LIMIT. The standard path picks it up
     // via buildFilterConditions(orgCond, query) above.
@@ -880,7 +903,7 @@ auditLogRoutes.post(
 // Accepts the same filter set as the list/search endpoints (#8366) and builds
 // the WHERE through the same helpers, so the file matches what the viewer shows.
 const exportGetSchema = z.object({
-  userId: z.string().guid().optional(),
+  userId: listLogsSchema.shape.userId,
   user: listLogsSchema.shape.user,
   action: listLogsSchema.shape.action,
   resource: listLogsSchema.shape.resource,
@@ -913,10 +936,7 @@ auditLogRoutes.get(
       .map((column) => column.trim())
       .filter((column): column is AuditExportColumn => (auditExportColumns as readonly string[]).includes(column));
     const exportColumns = normalizeExportColumns(parsedColumns, includeDetails);
-    const listWhere = buildListWhere(scope.orgCond, query);
-    const where = userId
-      ? (listWhere ? and(listWhere, eq(auditLogsTable.actorId, userId)) : eq(auditLogsTable.actorId, userId))
-      : listWhere;
+    const where = buildListWhere(scope.orgCond, query);
     const rows = await queryRows(where, 10000, 0);
 
     writeRouteAudit(c, {

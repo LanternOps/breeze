@@ -12,6 +12,7 @@
         "low": "Baixos",
         "medium": "Médios"
       },
+      "customRangeIncomplete": "Escolha uma data de início e uma de término (início primeiro, no máximo 366 dias de diferença) para aplicar um período personalizado.",
       "dashboardOptions": {
         "capacity": "Planejamento de capacidade",
         "operations": "Visão geral de operações",

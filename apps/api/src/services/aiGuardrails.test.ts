@@ -949,7 +949,7 @@ describe('buildApprovalDescription — manage_tickets copy (P2-4, #4191)', () =>
 
   it('other manage_tickets actions keep the pre-existing generic description shape (no regression)', () => {
     const result = checkGuardrails('manage_tickets', { action: 'assign', ticketId: TICKET_ID });
-    expect(result.description).toBe('manage_tickets: assign');
+    expect(result.description).toBe('Manage tickets: assign');
   });
 });
 
@@ -1001,7 +1001,7 @@ describe('buildApprovalDescription — manage_ai_agents copy (P2-5, #4192)', () 
 
   it('other manage_ai_agents actions keep the generic description shape (no regression)', () => {
     const result = checkGuardrails('manage_ai_agents', { action: 'rotate_something' });
-    expect(result.description).toBe('manage_ai_agents: rotate_something');
+    expect(result.description).toBe('Manage ai agents: rotate something');
   });
 });
 

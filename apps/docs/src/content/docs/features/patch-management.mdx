@@ -445,6 +445,8 @@ Content-Type: application/json
 
 Patch settings inherit through the hierarchy. A device with a more specific policy override uses those settings rather than the parent policy's settings. Use `GET /configuration-policies/:id/resolve-patch-config/:deviceId` to see the effective resolved config for a specific device.
 
+When two configuration policies with patch settings reach the same device (for example an organization-wide policy and a device-group override), only the closest one schedules patch jobs for that device: its schedule, update ring and reboot policy apply, and the broader policy leaves the device out of its own jobs. The closest level wins (device, then device group, site, organization, partner), and within a level the lower assignment priority wins. An update ring's device count follows the same rule, so a device is counted only under the ring of the policy that patches it. If the closest policy's update ring is disabled or missing, its devices are not patched (the broader policy does not take them back) until the ring is re-enabled or the policy is linked to another ring.
+
 Approval comes from the [update ring](/features/update-rings/) linked to the patch feature. The ring decides which severities and categories are approved, and after what deferral, for the devices it covers. With no ring linked, only manual approvals apply. A device's **Patches** tab shows the result for each patch (see [Approval on a device's Patches tab](#approval-on-a-devices-patches-tab)).
 
 #### End-user restart prompts
