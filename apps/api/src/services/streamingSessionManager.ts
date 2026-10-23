@@ -20,7 +20,7 @@ import { aiSessions, aiMessages } from '../db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
-import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/shared/types/ai';
 // TYPE-ONLY, and it must stay that way: chatRunBridge.ts imports this module at
 // runtime for `streamingSessionManager.get`, so a value import back would be a
 // real runtime cycle. TypeScript erases this one.
@@ -582,6 +582,13 @@ export interface ActiveSession {
   /** Resolver for the plan approval promise (in-memory, no DB polling) */
   planApprovalResolver: ((approved: boolean) => void) | null;
   /**
+   * #9427: cards this turn is blocked on and not yet decided, keyed
+   * `approval:<executionId>` / `plan:<planId>`. Maintained only through
+   * services/sessionPendingCards.ts (record + publish, then remove in a
+   * `finally` around the wait); read by the attach route's snapshot.
+   */
+  pendingCards: Map<string, AiPendingCardEvent>;
+  /**
    * Results of `analysis` runs associated with this session that have
    * finished but whose summary has not yet been shown to the model
    * (execution-plane spec §5.5). Chat-initiated launch is currently disabled
@@ -1087,6 +1094,7 @@ export class StreamingSessionManager {
       approvedPlanSteps: new Map(),
       currentPlanStepIndex: 0,
       planApprovalResolver: null,
+      pendingCards: new Map(),
       pendingRunResults: [],
       tenantTools: tenantToolsByName,
     };
