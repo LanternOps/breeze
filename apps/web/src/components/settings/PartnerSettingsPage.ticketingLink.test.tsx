@@ -47,13 +47,17 @@ describe('PartnerSettingsPage Ticketing rail link (#9787)', () => {
   it('#ticketing still renders the static link-out panel and does not navigate', async () => {
     window.location.hash = '#ticketing';
     const assign = vi.fn();
+    const replace = vi.fn();
+    const hrefSet = vi.fn();
     const original = window.location;
-    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, hash: '#ticketing', assign, addEventListener: window.addEventListener.bind(window), removeEventListener: window.removeEventListener.bind(window) } });
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...original, hash: '#ticketing', assign, replace, set href(v: string) { hrefSet(v); }, addEventListener: window.addEventListener.bind(window), removeEventListener: window.removeEventListener.bind(window) } });
     try {
       mountPage();
       expect(await screen.findByTestId('partner-settings-ticketing-panel')).toBeInTheDocument();
       expect(screen.getByTestId('partner-settings-ticketing-link')).toHaveAttribute('href', '/settings/ticketing');
       expect(assign).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(hrefSet).not.toHaveBeenCalled();
       expect(vi.mocked(navigateTo)).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(window, 'location', { configurable: true, value: original });

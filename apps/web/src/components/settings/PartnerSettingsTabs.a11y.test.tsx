@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import '@/lib/i18n';
 import { i18n } from '@/lib/i18n';
@@ -124,6 +124,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
     render(<PartnerSettingsPage />);
     await screen.findByTestId('partner-settings-panel-heading');
     await waitFor(() => expect(screen.getByTestId('partner-settings-panel-heading').textContent).toBe(label));
+    // Let the panel's own fetches settle so the walk sees loaded content, not a spinner.
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
   };
 
   it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('heading order h1 → h2 → h3 for %s', async (_key, hash, labelKey) => {
@@ -143,6 +145,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
   it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('every control has an accessible name on %s', async (_key, hash, labelKey) => {
     await mountTab(hash, i18n.t(labelKey, { ns: 'settings' }));
     const controls = Array.from(document.querySelectorAll('main input, main select, main textarea, section input, section select, section textarea'));
+    // callerVerification (form loads policy data) and emailTemplates (link list) expose no inputs under these fixtures.
+    if (!['callerVerification', 'emailTemplates'].includes(_key)) expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {
       expect.soft(control, `${describeControl(control)} has no accessible name`).toHaveAccessibleName();
     }

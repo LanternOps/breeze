@@ -96,7 +96,7 @@ describe('PartnerSettingsPage — Known guests and Caller verification tabs (#97
     expect(screen.queryByTestId('stub-caller-verification-policy')).toBeNull();
   });
 
-  it('rail lists Caller verification under Security only when the flag is on', async () => {
+  it('rail lists Caller verification when the flag is on', async () => {
     flag.enabled = true;
     flag.loaded = true;
     render(<PartnerSettingsPage />);
