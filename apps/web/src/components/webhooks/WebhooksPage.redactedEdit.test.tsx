@@ -35,7 +35,7 @@ function webhook(overrides: Record<string, unknown> = {}) {
     orgId: 'org-1',
     name: 'Alert relay',
     url: 'https://hooks.example.com/alerts',
-    events: ['alert.created'],
+    events: ['alert.triggered'],
     headers: [{ key: 'Authorization', value: redacted }],
     status: 'active',
     hasSecret: true,
