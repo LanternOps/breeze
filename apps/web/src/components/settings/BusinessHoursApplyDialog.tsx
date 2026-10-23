@@ -56,7 +56,7 @@ export default function BusinessHoursApplyDialog({ calendarId, calendarName, ope
     if (!preview || applying) return;
     setApplying(true);
     try {
-      await runAction<{ data: { updated: number; skippedLocked: number } }>({
+      const result = await runAction<{ data: { updated: number; skippedLocked: number } }>({
         request: () => fetchWithAuth(`/business-calendars/${calendarId}/apply-revision`, {
           method: 'POST',
           body: JSON.stringify({ expectedRevisionId: preview.revisionId }),
@@ -68,6 +68,15 @@ export default function BusinessHoursApplyDialog({ calendarId, calendarName, ope
         suppressErrorToast: (status, code) => status === 409 && code === 'REVISION_CHANGED',
       });
       onApplied();
+      const skipped = result?.data?.skippedLocked ?? 0;
+      if (skipped > 0) {
+        // Some tickets were held by a concurrent edit through every retry and
+        // kept their old revision: say so and leave the dialog open on a fresh
+        // preview so the operator can apply again.
+        showToast({ type: 'warning', message: t('businessHoursCard.toasts.appliedPartial', { skipped }) });
+        await loadPreview();
+        return;
+      }
       onClose();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;

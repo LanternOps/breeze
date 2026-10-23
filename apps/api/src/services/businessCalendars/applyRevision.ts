@@ -6,8 +6,10 @@
  * minutes were never counted under the old hours, so the recompute is exact.
  * Tickets with pauses keep their revision (re-reading past pauses under other
  * hours cannot be done correctly, quorum C4); the preview counts them.
- * Frozen arms keep their deadline. Tickets on a null revision are never on
- * this calendar and are never touched.
+ * "No pause history" also means no wall-clock pause minutes: a pause that fell
+ * outside the old hours counted 0 business minutes but the new hours may
+ * count it. Frozen arms keep their deadline. Tickets on a null revision are
+ * never on this calendar and are never touched.
  *
  * Behind a preview (eligible / immediately-breached / skipped-paused counts),
  * and applied with an `expectedRevisionId` so an hours edit landing between
@@ -41,8 +43,13 @@ const OPEN = new Set(['new', 'open', 'pending', 'on_hold']);
 type Runner = <T>(fn: () => Promise<T>) => Promise<T>;
 export type ApplyOptions = { run?: Runner; now?: Date; sleep?: (ms: number) => Promise<void> };
 
-const neverPaused = (r: Pick<ApplyCandidateRow, 'slaPausedBusinessMinutes' | 'slaPausedAt'>) =>
-  (r.slaPausedBusinessMinutes ?? 0) === 0 && r.slaPausedAt == null;
+/**
+ * No pause history at all. Business minutes alone are not enough: a pause that
+ * fell entirely outside the OLD hours has 0 business minutes but real
+ * wall-clock minutes, which the new hours may count — not exact, so skipped.
+ */
+const neverPaused = (r: Pick<ApplyCandidateRow, 'slaPausedBusinessMinutes' | 'slaPausedMinutes' | 'slaPausedAt'>) =>
+  (r.slaPausedBusinessMinutes ?? 0) === 0 && (r.slaPausedMinutes ?? 0) === 0 && r.slaPausedAt == null;
 
 function defaultRunner(auth: CalendarAuth): Runner {
   return (fn) => withDbAccessContext(dbAccessContextFromAuth(auth as AuthContext), fn);
@@ -141,9 +148,11 @@ export async function applyRevision(
       const rows = await repo.lockApplyBatch(calendarId, target, batch);
       for (const row of rows) {
         // Re-checked under the row lock: still open, still never paused, and
-        // still on an OLDER revision (not already moved, not re-resolved).
+        // still on an OLDER revision of THIS calendar — a ticket a mover
+        // re-resolved onto another calendar (or already on the target) since
+        // it was listed is left alone.
         if (!OPEN.has(row.status) || row.deletedAt || !neverPaused(row)) continue;
-        if (!row.slaCalendarRevisionId || row.slaCalendarRevisionId === target.id) continue;
+        if (row.revisionCalendarId !== calendarId || row.revisionNumber == null || row.revisionNumber >= target.revision) continue;
         await repo.applyTicketRevision(row.id, patchFor(row, target.id, snapshot));
         updated++;
       }

@@ -150,6 +150,18 @@ describe('createCalendar', () => {
     expect(repo.insertCalendar).not.toHaveBeenCalled();
   });
 
+  it('stores the canonical IANA spelling of a time zone (the DB check is exact)', async () => {
+    repo.insertCalendar.mockResolvedValue(wide);
+    await createCalendar(auth(), { ownerScope: 'partner', name: 'X', timezone: 'europe/london', intervals: weekdays });
+    expect(repo.insertRevision).toHaveBeenCalledWith(wide, 'Europe/London', weekdays, 'u-1');
+  });
+
+  it('a time zone the database rejects is 400 BAD_TIMEZONE, not a 500', async () => {
+    repo.insertCalendar.mockResolvedValue(wide);
+    repo.insertRevision.mockRejectedValueOnce(Object.assign(new Error('tz'), { code: '23514', constraint_name: 'business_calendar_revisions_timezone_chk' }));
+    await expectError(createCalendar(auth(), { ownerScope: 'partner', name: 'X', timezone: 'UTC', intervals: weekdays }), 400, 'BAD_TIMEZONE');
+  });
+
   it('a duplicate partner-wide name is 409 NAME_TAKEN', async () => {
     repo.insertCalendar.mockRejectedValue(Object.assign(new Error('dup'), { code: '23505', constraint_name: 'business_calendars_partner_name_uq' }));
     await expectError(createCalendar(auth(), { ownerScope: 'partner', name: 'X', timezone: 'UTC', intervals: weekdays }), 409, 'NAME_TAKEN');
@@ -180,6 +192,12 @@ describe('defaults, archive and delete', () => {
     expect(repo.clearPartnerDefaultRows).toHaveBeenCalledWith(P, CAL);
     expect(repo.updateCalendarRow).toHaveBeenCalledWith(CAL, { isPartnerDefault: true });
     expect(repo.clearPartnerDefaultRows.mock.invocationCallOrder[0]).toBeLessThan(repo.updateCalendarRow.mock.invocationCallOrder[0]!);
+  });
+
+  it('a concurrent set-default that loses the unique race is 409 DEFAULT_CHANGED', async () => {
+    repo.findCalendar.mockResolvedValue(wide);
+    repo.updateCalendarRow.mockRejectedValueOnce(Object.assign(new Error('dup'), { code: '23505', constraint_name: 'business_calendars_partner_default_uq' }));
+    await expectError(setPartnerDefault(auth(), CAL), 409, 'DEFAULT_CHANGED');
   });
 
   it('an org-owned or archived calendar cannot become the default', async () => {
@@ -235,7 +253,10 @@ describe('holidays and the recompute job (spec §4.5)', () => {
 
   it('a future holiday queues the recompute job after commit', async () => {
     const res = await addHoliday(auth(), CAL, { date: '2030-06-11', name: 'Tomorrow' }, now);
-    expect(res).toEqual({ holiday: { id: 'h-1', date: '2030-06-11', name: 'Tomorrow' }, recomputeQueued: true });
+    expect(res).toEqual({
+      holiday: { id: 'h-1', date: '2030-06-11', name: 'Tomorrow' }, recomputeQueued: true,
+      calendar: { id: CAL, orgId: null, partnerId: P, name: 'Support' },
+    });
     expect(runAfterCommit).toHaveBeenCalledTimes(1);
     expect(enqueue).not.toHaveBeenCalled();
     await runAfterCommit.mock.calls[0]![1]();

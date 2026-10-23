@@ -6988,7 +6988,8 @@
       "holidayAdded": "Tatil eklendi",
       "holidayRemoved": "Tatil kaldırıldı",
       "recompute": "Açık taleplerin son tarihleri güncelleniyor.",
-      "applied": "Açık taleplere uygulandı: {{count}} güncellendi"
+      "applied": "Açık taleplere uygulandı: {{count}} güncellendi",
+      "appliedPartial": "{{skipped}} talep düzenleniyordu ve eski çalışma saatlerini korudu. Yeniden denemek için tekrar uygulayın."
     },
     "apply": {
       "title": "{{name}} takvimini açık taleplere uygula",

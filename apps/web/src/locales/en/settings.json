@@ -6988,7 +6988,8 @@
       "holidayAdded": "Holiday added",
       "holidayRemoved": "Holiday removed",
       "recompute": "Open tickets' deadlines are being updated.",
-      "applied": "Applied to open tickets: {{count}} updated"
+      "applied": "Applied to open tickets: {{count}} updated",
+      "appliedPartial": "{{skipped}} tickets were being edited and kept their old hours. Apply again to retry them."
     },
     "apply": {
       "title": "Apply {{name}} to open tickets",

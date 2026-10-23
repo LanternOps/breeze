@@ -14,7 +14,7 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import postgres from 'postgres';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import {
   businessCalendarHolidays,
@@ -204,5 +204,36 @@ describe('business calendar holiday recompute (#8973 W4, spec §4.5)', () => {
     expect(rows.get(fresh.id)!.resolutionDueAt!.getTime()).toBeGreaterThanOrEqual(fresh.resolutionDueAt!.getTime());
     expect(rows.get(pausedHistory.id)?.slaCalendarRevisionId).toBe(f.revisionId);
     expect(rows.get(resolved.id)?.slaCalendarRevisionId).toBe(f.revisionId);
+  });
+
+  // More than one APPLY_CHUNK (500): the id cursor must neither skip nor repeat
+  // rows across chunks, and a soft-deleted ticket is never touched.
+  runDb('D12 apply walks past the first 500-ticket chunk and skips soft-deleted tickets', async () => {
+    const f = await fixture();
+    const createdAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    await getTestDb().execute(sql`
+      INSERT INTO tickets (org_id, partner_id, ticket_number, subject, source, status, created_at, updated_at,
+                           sla_calendar_revision_id, resolution_sla_minutes, resolution_due_at, resolution_warn_at)
+      SELECT ${f.orgA.id}::uuid, ${f.partner.id}::uuid, 'BULK-' || g || '-' || substr(md5(random()::text), 1, 6), 'bulk', 'api', 'open',
+             (${createdAt}::timestamptz AT TIME ZONE 'UTC'), (${createdAt}::timestamptz AT TIME ZONE 'UTC'), ${f.revisionId}::uuid, 5760, (${createdAt}::timestamptz AT TIME ZONE 'UTC'), (${createdAt}::timestamptz AT TIME ZONE 'UTC')
+        FROM generate_series(1, 503) g`);
+    const deleted = await seedTicket(f, f.orgA.id, { deletedAt: new Date() });
+    const rev2 = await withSystemDbAccessContext(async () => {
+      const [r] = await db.insert(businessCalendarRevisions).values({
+        calendarId: f.calendarId, partnerId: f.partner.id, orgId: null, revision: 2, timezone: 'UTC',
+      }).returning();
+      await db.insert(businessCalendarIntervals).values([0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
+        revisionId: r!.id, partnerId: f.partner.id, orgId: null, weekday, startMinute: 0, endMinute: 1440,
+      })));
+      return r!;
+    });
+    const auth = { ...f.auth, accessibleOrgIds: [f.orgA.id, f.orgB.id], principal: { kind: 'user' } } as never;
+
+    expect(await applyRevision(auth, f.calendarId, { expectedRevisionId: rev2.id })).toEqual({ updated: 503, skippedLocked: 0 });
+    const onRev2 = await getTestDb().execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM tickets WHERE org_id = ${f.orgA.id}::uuid AND sla_calendar_revision_id = ${rev2.id}::uuid`);
+    expect([...onRev2][0]!.n).toBe(503);
+    const [del] = await getTestDb().select().from(tickets).where(eq(tickets.id, deleted.id));
+    expect(del?.slaCalendarRevisionId).toBe(f.revisionId);
   });
 });

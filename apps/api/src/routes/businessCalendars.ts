@@ -197,8 +197,8 @@ businessCalendarRoutes.post('/:id/archive', scopes, writePerm, zValidator('param
 businessCalendarRoutes.delete('/:id', scopes, writePerm, zValidator('param', idParam), async (c) => {
   try {
     const { id } = c.req.valid('param');
-    await deleteCalendar(authOf(c), id);
-    audit(c, 'business_calendar.delete', { id });
+    const owner = await deleteCalendar(authOf(c), id);
+    audit(c, 'business_calendar.delete', owner);
     return c.json({ data: { deleted: true } });
   } catch (err) {
     return handleError(c, err);
@@ -208,8 +208,8 @@ businessCalendarRoutes.delete('/:id', scopes, writePerm, zValidator('param', idP
 businessCalendarRoutes.post('/:id/holidays', scopes, writePerm, zValidator('param', idParam), zValidator('json', businessCalendarHolidaySchema), async (c) => {
   try {
     const { id } = c.req.valid('param');
-    const data = await addHoliday(authOf(c), id, c.req.valid('json'));
-    audit(c, 'business_calendar.holiday.add', { id }, { date: data.holiday.date, recomputeQueued: data.recomputeQueued });
+    const { calendar, ...data } = await addHoliday(authOf(c), id, c.req.valid('json'));
+    audit(c, 'business_calendar.holiday.add', calendar, { date: data.holiday.date, recomputeQueued: data.recomputeQueued });
     return c.json({ data }, 201);
   } catch (err) {
     return handleError(c, err);
@@ -219,8 +219,8 @@ businessCalendarRoutes.post('/:id/holidays', scopes, writePerm, zValidator('para
 businessCalendarRoutes.delete('/:id/holidays/:holidayId', scopes, writePerm, zValidator('param', holidayParam), async (c) => {
   try {
     const { id, holidayId } = c.req.valid('param');
-    const data = await removeHoliday(authOf(c), id, holidayId);
-    audit(c, 'business_calendar.holiday.remove', { id }, { holidayId, recomputeQueued: data.recomputeQueued });
+    const { calendar, ...data } = await removeHoliday(authOf(c), id, holidayId);
+    audit(c, 'business_calendar.holiday.remove', calendar, { holidayId, recomputeQueued: data.recomputeQueued });
     return c.json({ data });
   } catch (err) {
     return handleError(c, err);

@@ -6988,7 +6988,8 @@
       "holidayAdded": "Feriado adicionado",
       "holidayRemoved": "Feriado removido",
       "recompute": "Os prazos dos tickets abertos estão sendo atualizados.",
-      "applied": "Aplicado aos tickets abertos: {{count}} atualizados"
+      "applied": "Aplicado aos tickets abertos: {{count}} atualizados",
+      "appliedPartial": "{{skipped}} tickets estavam sendo editados e mantiveram o horário anterior. Aplique novamente para tentar de novo."
     },
     "apply": {
       "title": "Aplicar {{name}} aos tickets abertos",

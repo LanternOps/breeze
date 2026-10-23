@@ -23,7 +23,16 @@ type Mode = { kind: 'idle' } | { kind: 'create' } | { kind: 'edit' };
  * Business hours (#8973): the calendars SLA deadlines are counted on. Lives on the
  * Priorities & SLAs tab because it feeds the same response/resolution clocks.
  */
+/**
+ * The calendar routes are partner/system scope only, so an organization-scope
+ * session gets no card at all rather than a load error and a dead Create.
+ */
 export default function BusinessHoursCard() {
+  if (getJwtClaims().scope === 'organization') return null;
+  return <BusinessHoursCardContent />;
+}
+
+function BusinessHoursCardContent() {
   const { t } = useTranslation('settings');
   const organizations = useOrgStore((s) => s.organizations);
   const claims = getJwtClaims();

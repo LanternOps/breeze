@@ -282,6 +282,18 @@ describe('business calendars partner RLS (#8973 W4 Task 4.1)', () => {
       expect(await sqlState(() => sys(() => db.insert(orgTicketSettings).values({ orgId: orgB1.id, businessCalendarId: wideA.cal.id })))).toBe('23514');
     });
 
+    runDb("re-pointing a settings row to another org re-checks the calendar (UPDATE OF org_id)", async () => {
+      const { partnerA, orgA1, orgA2 } = await fixture();
+      const ownA1 = await seedCalendar({ orgId: orgA1.id, partnerId: null });
+      const [settings] = await sys(() => db.insert(orgTicketSettings).values({ orgId: orgA1.id, businessCalendarId: ownA1.cal.id }).returning());
+      // orgA1's own calendar must not follow the row into orgA2.
+      expect(await sqlState(() => sys(() => db.update(orgTicketSettings).set({ orgId: orgA2.id }).where(eq(orgTicketSettings.id, settings!.id))))).toBe('23514');
+      // A partner-wide calendar of the same partner can.
+      const wide = await seedCalendar({ orgId: null, partnerId: partnerA.id });
+      await sys(() => db.update(orgTicketSettings).set({ businessCalendarId: wide.cal.id }).where(eq(orgTicketSettings.id, settings!.id)));
+      expect(await sqlState(() => sys(() => db.update(orgTicketSettings).set({ orgId: orgA2.id }).where(eq(orgTicketSettings.id, settings!.id))))).toBeUndefined();
+    });
+
     runDb('deleting the calendar nulls the override (ON DELETE SET NULL)', async () => {
       const { partnerA, orgA1 } = await fixture();
       const wide = await seedCalendar({ orgId: null, partnerId: partnerA.id });

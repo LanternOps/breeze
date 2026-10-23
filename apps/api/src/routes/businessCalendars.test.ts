@@ -151,10 +151,19 @@ describe('CRUD', () => {
   });
 
   it('holidays report whether a recompute was queued', async () => {
-    serviceMocks.addHoliday.mockResolvedValue({ holiday: { id: HOL, date: '2030-12-25', name: 'Christmas' }, recomputeQueued: true });
+    serviceMocks.addHoliday.mockResolvedValue({
+      holiday: { id: HOL, date: '2030-12-25', name: 'Christmas' }, recomputeQueued: true,
+      calendar: { id: CAL, orgId: ORG, partnerId: null, name: 'Org hours' },
+    });
     const res = await req('POST', `/${CAL}/holidays`, { date: '2030-12-25', name: 'Christmas' });
     expect(res.status).toBe(201);
-    expect((await res.json()).data.recomputeQueued).toBe(true);
+    const body = await res.json();
+    expect(body.data).toEqual({ holiday: { id: HOL, date: '2030-12-25', name: 'Christmas' }, recomputeQueued: true });
+    // An org-owned calendar's event is audited under its org, not the partner.
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'business_calendar.holiday.add', orgId: ORG, resourceId: CAL,
+    }));
+    expect(writeRouteAuditMock.mock.calls[0]![1]).not.toHaveProperty('partnerId');
   });
 
   it('GET apply-revision/preview returns the three counts; POST apply-revision passes the expected revision', async () => {

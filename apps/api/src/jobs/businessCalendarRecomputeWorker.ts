@@ -175,7 +175,12 @@ export const defaultRecomputeDeps: RecomputeDeps = {
       let updated = 0;
       for (const r of eligible) {
         const calendar = calendars.get(r.slaCalendarRevisionId!) ?? null;
-        if (!calendar) continue; // revision vanished (erasure); its FK nulled the snapshot
+        if (!calendar) {
+          // Under system scope every revision is readable, so this only
+          // happens if the revision was deleted mid-chunk (tenant erasure).
+          console.warn(`[BusinessCalendarRecompute] revision ${r.slaCalendarRevisionId} of ticket ${r.id} is gone; skipped`);
+          continue;
+        }
         const patch = recomputePatch(r, calendar);
         if (!patch) continue;
         await db.update(tickets).set(patch).where(eq(tickets.id, r.id));
@@ -254,8 +259,13 @@ export async function initializeBusinessCalendarRecomputeWorker(): Promise<void>
     captureException(error);
   });
   worker.on('failed', (job, error) => {
-    console.error(`[BusinessCalendarRecompute] Job ${job?.id} failed:`, error);
-    captureException(error);
+    const exhausted = job ? job.attemptsMade >= (job.opts.attempts ?? 1) : false;
+    console.error(
+      `[BusinessCalendarRecompute] Job ${job?.id} failed${exhausted ? ' — retries exhausted, open tickets on this calendar keep stale deadlines' : ''}:`,
+      { calendarId: job?.data?.calendarId, reason: job?.data?.reason, attemptsMade: job?.attemptsMade },
+      error,
+    );
+    captureException(error, undefined, { worker: 'businessCalendarRecomputeWorker', calendarId: job?.data?.calendarId ?? 'unknown', exhausted: String(exhausted) });
   });
 }
 

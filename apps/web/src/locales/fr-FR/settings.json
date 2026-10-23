@@ -6988,7 +6988,8 @@
       "holidayAdded": "Jour férié ajouté",
       "holidayRemoved": "Jour férié supprimé",
       "recompute": "Les échéances des tickets ouverts sont en cours de mise à jour.",
-      "applied": "Appliqué aux tickets ouverts : {{count}} mis à jour"
+      "applied": "Appliqué aux tickets ouverts : {{count}} mis à jour",
+      "appliedPartial": "{{skipped}} tickets étaient en cours de modification et conservent leurs anciens horaires. Appliquez à nouveau pour réessayer."
     },
     "apply": {
       "title": "Appliquer {{name}} aux tickets ouverts",

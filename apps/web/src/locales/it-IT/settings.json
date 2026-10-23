@@ -6988,7 +6988,8 @@
       "holidayAdded": "Festività aggiunta",
       "holidayRemoved": "Festività rimossa",
       "recompute": "Le scadenze dei ticket aperti sono in aggiornamento.",
-      "applied": "Applicato ai ticket aperti: {{count}} aggiornati"
+      "applied": "Applicato ai ticket aperti: {{count}} aggiornati",
+      "appliedPartial": "{{skipped}} ticket erano in modifica e mantengono il vecchio orario. Applica di nuovo per riprovare."
     },
     "apply": {
       "title": "Applica {{name}} ai ticket aperti",

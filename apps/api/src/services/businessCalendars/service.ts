@@ -25,6 +25,7 @@ import type { AuthContext } from '../../middleware/auth';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../partnerWideAccess';
 import { enqueueBusinessCalendarRecompute } from '../../jobs/businessCalendarRecomputeWorker';
+import { captureException } from '../sentry';
 import * as repo from './repository';
 import { resolveBusinessCalendar } from './resolve';
 import type { CalendarRow, Owner } from './repository';
@@ -108,6 +109,33 @@ const HOURS_MESSAGES: Record<'NO_INTERVALS' | 'OVERLAP' | 'BAD_RANGE' | 'BAD_TIM
 function assertHours(timezone: string, intervals: repo.IntervalValues[]): void {
   const result = validateRevision({ timezone, intervals: intervals as CalendarInterval[] });
   if (!result.ok) throw new BusinessCalendarError(HOURS_MESSAGES[result.code], 400, result.code);
+}
+
+/**
+ * Intl accepts any letter case ("europe/london"); the database check compares
+ * exactly against pg_timezone_names, so store Intl's canonical spelling.
+ */
+function canonicalTimezone(timezone: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: timezone }).resolvedOptions().timeZone;
+}
+
+/** Revision n+1 with the canonical zone; the DB time-zone check maps to a 400. */
+async function insertHoursRevision(calendar: CalendarRow, timezone: string, intervals: repo.IntervalValues[], userId: string) {
+  assertHours(timezone, intervals);
+  try {
+    return await repo.insertRevision(calendar, canonicalTimezone(timezone), intervals, userId);
+  } catch (err) {
+    if (pgConstraintIs(err, 'business_calendar_revisions_timezone_chk')) {
+      throw new BusinessCalendarError(HOURS_MESSAGES.BAD_TIMEZONE, 400, 'BAD_TIMEZONE');
+    }
+    throw err;
+  }
+}
+
+function pgConstraintIs(err: unknown, constraint: string): boolean {
+  const e = err as { constraint_name?: string; constraint?: string; cause?: { constraint_name?: string; constraint?: string } } | null;
+  const name = e?.constraint_name ?? e?.constraint ?? e?.cause?.constraint_name ?? e?.cause?.constraint;
+  return name === constraint;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +265,7 @@ export async function createCalendar(auth: CalendarAuth, input: CreateBusinessCa
     }
     throw err;
   }
-  await repo.insertRevision(calendar, input.timezone, input.intervals, auth.user.id);
+  await insertHoursRevision(calendar, input.timezone, input.intervals, auth.user.id);
   for (const h of input.holidays ?? []) await repo.insertHoliday(calendar, h.date, h.name.trim());
   return toDto(calendar);
 }
@@ -260,8 +288,7 @@ export async function updateCalendar(auth: CalendarAuth, calendarId: string, inp
   }
   let revisionCreated = false;
   if (input.timezone !== undefined && input.intervals !== undefined) {
-    assertHours(input.timezone, input.intervals);
-    await repo.insertRevision(row, input.timezone, input.intervals, auth.user.id);
+    await insertHoursRevision(row, input.timezone, input.intervals, auth.user.id);
     row = (await repo.updateCalendarRow(row.id, {})) ?? row;
     revisionCreated = true;
   }
@@ -276,8 +303,17 @@ export async function setPartnerDefault(auth: CalendarAuth, calendarId: string):
   }
   if (row.archivedAt) throw new BusinessCalendarError('An archived calendar cannot be the partner default', 409, 'CALENDAR_ARCHIVED');
   await repo.clearPartnerDefaultRows(row.partnerId, row.id);
-  const updated = (await repo.updateCalendarRow(row.id, { isPartnerDefault: true })) ?? row;
-  return toDto(updated);
+  try {
+    const updated = (await repo.updateCalendarRow(row.id, { isPartnerDefault: true })) ?? row;
+    return toDto(updated);
+  } catch (err) {
+    // Two set-default requests for different calendars of one partner: the
+    // loser hits business_calendars_partner_default_uq.
+    if (isPgUniqueViolation(err, 'business_calendars_partner_default_uq')) {
+      throw new BusinessCalendarError('Another calendar was just made the default; reload and try again', 409, 'DEFAULT_CHANGED');
+    }
+    throw err;
+  }
 }
 
 /** Back to 24×7 for every org that does not override. */
@@ -302,7 +338,11 @@ export async function archiveCalendar(auth: CalendarAuth, calendarId: string, ar
  * org override selects it (the referencing FKs are ON DELETE SET NULL for
  * cascade ordering, so the guard lives here — spec §4.1). Archive instead.
  */
-export async function deleteCalendar(auth: CalendarAuth, calendarId: string): Promise<void> {
+/** The owner of a calendar, for the route's audit row (org-owned events belong to the org). */
+export type CalendarOwnerRef = { id: string; orgId: string | null; partnerId: string | null; name: string };
+const ownerRef = (row: CalendarRow): CalendarOwnerRef => ({ id: row.id, orgId: row.orgId, partnerId: row.partnerId, name: row.name });
+
+export async function deleteCalendar(auth: CalendarAuth, calendarId: string): Promise<CalendarOwnerRef> {
   const row = await loadForWrite(auth, calendarId);
   if (row.isPartnerDefault) {
     throw new BusinessCalendarError('The partner default cannot be deleted; choose another default first', 409, 'CALENDAR_IS_DEFAULT');
@@ -314,6 +354,7 @@ export async function deleteCalendar(auth: CalendarAuth, calendarId: string): Pr
     throw new BusinessCalendarError('An organization uses this calendar as its override; clear it there first', 409, 'CALENDAR_IN_USE');
   }
   await repo.deleteCalendarRow(row.id);
+  return ownerRef(row);
 }
 
 /** 'YYYY-MM-DD' of `now` in `timezone`. */
@@ -332,7 +373,16 @@ async function queueRecomputeIfFuture(calendar: CalendarRow, date: string, reaso
   const current = (await repo.currentRevisions([calendar.id])).get(calendar.id);
   const timezone = current?.revision.timezone ?? 'UTC';
   if (date <= localDateIn(timezone, now)) return false;
-  runAfterDbContextCommit('business-calendar-recompute', () => enqueueBusinessCalendarRecompute({ calendarId: calendar.id, reason }));
+  runAfterDbContextCommit('business-calendar-recompute', async () => {
+    try {
+      await enqueueBusinessCalendarRecompute({ calendarId: calendar.id, reason });
+    } catch (err) {
+      // The holiday is committed; only the deadline refresh is lost. Loud and
+      // tagged so an operator can re-run it (re-saving the holiday re-queues).
+      console.error(`[businessCalendars] holiday recompute NOT queued for calendar ${calendar.id}; open tickets keep their old deadlines`, err);
+      captureException(err, undefined, { service: 'businessCalendars', calendarId: calendar.id, reason });
+    }
+  });
   return true;
 }
 
@@ -341,7 +391,7 @@ export async function addHoliday(
   calendarId: string,
   input: { date: string; name: string },
   now: Date = new Date(),
-): Promise<{ holiday: { id: string; date: string; name: string }; recomputeQueued: boolean }> {
+): Promise<{ holiday: { id: string; date: string; name: string }; recomputeQueued: boolean; calendar: CalendarOwnerRef }> {
   const calendar = await loadForWrite(auth, calendarId);
   let holiday: repo.HolidayRow;
   try {
@@ -353,14 +403,14 @@ export async function addHoliday(
     throw err;
   }
   const recomputeQueued = await queueRecomputeIfFuture(calendar, holiday.holidayDate, 'holiday_added', now);
-  return { holiday: { id: holiday.id, date: holiday.holidayDate, name: holiday.name }, recomputeQueued };
+  return { holiday: { id: holiday.id, date: holiday.holidayDate, name: holiday.name }, recomputeQueued, calendar: ownerRef(calendar) };
 }
 
-export async function removeHoliday(auth: CalendarAuth, calendarId: string, holidayId: string, now: Date = new Date()): Promise<{ recomputeQueued: boolean }> {
+export async function removeHoliday(auth: CalendarAuth, calendarId: string, holidayId: string, now: Date = new Date()): Promise<{ recomputeQueued: boolean; calendar: CalendarOwnerRef }> {
   const calendar = await loadForWrite(auth, calendarId);
   const removed = await repo.deleteHoliday(calendar.id, holidayId);
   if (!removed) throw new BusinessCalendarError('Holiday not found', 404, 'NOT_FOUND');
-  return { recomputeQueued: await queueRecomputeIfFuture(calendar, removed.holidayDate, 'holiday_removed', now) };
+  return { recomputeQueued: await queueRecomputeIfFuture(calendar, removed.holidayDate, 'holiday_removed', now), calendar: ownerRef(calendar) };
 }
 
 /**

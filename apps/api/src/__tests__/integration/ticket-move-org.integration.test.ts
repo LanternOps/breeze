@@ -1240,6 +1240,20 @@ describe('moveTicketOrg — business calendar re-resolution (#8973 W4)', () => {
     expect(referenced).toEqual([]);
   });
 
+  it('a ticket with pause history keeps its accrued business minutes; the new calendar counts from them', async () => {
+    const { partner, orgB, actor, insert } = await seed();
+    await calendar({ orgId: null, partnerId: partner.id }, { isPartnerDefault: true, timezone: 'America/New_York' });
+    const paused = await insert({ slaPausedBusinessMinutes: 30, slaPausedMinutes: 900 });
+
+    await withSystemDbAccessContext(() => moveTicketOrg(paused.id, orgB.id, actor));
+
+    const moved = await readTicket(paused.id);
+    expect(moved?.slaPausedBusinessMinutes).toBe(30);
+    expect(moved?.slaPausedMinutes).toBe(900);
+    // Mon 09:00 NY + (60 + 30) business minutes → Mon 10:30 NY.
+    expect(moved?.responseDueAt).toEqual(new Date('2030-06-03T14:30:00Z'));
+  });
+
   it('with no calendar in the target org the snapshot is nulled (24×7), never the source calendar', async () => {
     const { orgB, actor, insert } = await seed();
     const open = await insert({});

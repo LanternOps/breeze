@@ -174,9 +174,13 @@ const applySelection = {
   resolutionSlaMinutes: tickets.resolutionSlaMinutes,
   slaPausedAt: tickets.slaPausedAt,
   slaPausedBusinessMinutes: tickets.slaPausedBusinessMinutes,
+  slaPausedMinutes: tickets.slaPausedMinutes,
   firstResponseAt: tickets.firstResponseAt,
   resolvedAt: tickets.resolvedAt,
   slaBreachReason: tickets.slaBreachReason,
+  // The snapshot's calendar and revision number, re-checked under the row lock.
+  revisionCalendarId: sql<string | null>`(SELECT r.calendar_id FROM business_calendar_revisions r WHERE r.id = ${tickets.slaCalendarRevisionId})`,
+  revisionNumber: sql<number | null>`(SELECT r.revision FROM business_calendar_revisions r WHERE r.id = ${tickets.slaCalendarRevisionId})`,
 };
 export type ApplyCandidateRow = {
   id: string;
@@ -188,9 +192,12 @@ export type ApplyCandidateRow = {
   resolutionSlaMinutes: number | null;
   slaPausedAt: Date | null;
   slaPausedBusinessMinutes: number;
+  slaPausedMinutes: number | null;
   firstResponseAt: Date | null;
   resolvedAt: Date | null;
   slaBreachReason: string | null;
+  revisionCalendarId: string | null;
+  revisionNumber: number | null;
 };
 
 const olderRevisionOf = (calendarId: string, target: { revision: number }) => sql`${tickets.slaCalendarRevisionId} IN (

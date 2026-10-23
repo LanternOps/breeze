@@ -43,6 +43,7 @@ function ticket(id: string, over: Record<string, unknown> = {}) {
     slaPausedAt: null, slaPausedBusinessMinutes: 0,
     firstResponseAt: null, resolvedAt: null, slaBreachReason: null,
     responseDueAt: created, responseWarnAt: created, resolutionDueAt: created, resolutionWarnAt: created,
+    slaPausedMinutes: 0, revisionCalendarId: CAL, revisionNumber: 1,
     ...over,
   };
 }
@@ -56,6 +57,9 @@ const fixtureRows = [
   ticket('t-3', { slaPausedAt: new Date('2030-06-04T13:00:00Z') }),
   ticket('t-4', { slaPausedBusinessMinutes: 30 }),
   ticket('t-5', { firstResponseAt: new Date('2030-06-03T13:10:00Z'), responseSlaMinutes: 60 }),
+  // Paused only outside business hours: 0 business minutes but wall-clock
+  // pause history, which other hours WOULD count — not exact, so skipped.
+  ticket('t-6', { slaPausedMinutes: 3600 }),
 ];
 
 beforeEach(() => {
@@ -73,7 +77,7 @@ describe('previewApplyRevision (D12)', () => {
       revisionId: 'rev-2',
       eligibleCount: 3, // t-1, t-2, t-5 (never paused)
       immediatelyBreachedCount: 1, // t-1; t-5's response arm is frozen
-      skippedPausedCount: 2, // t-3 paused now, t-4 has pause history
+      skippedPausedCount: 3, // t-3 paused now, t-4 business pause history, t-6 wall-clock pause history
     });
     expect(repo.listApplyCandidates).toHaveBeenCalledWith(CAL, { id: 'rev-2', revision: 2 }, null, 500);
   });
@@ -111,8 +115,19 @@ describe('applyRevision (D12)', () => {
       resourceType: 'business_calendar',
       resourceId: CAL,
       partnerId: P,
-      details: expect.objectContaining({ revisionId: 'rev-2', updated: 3, skippedPausedCount: 2, skippedLocked: 0 }),
+      details: expect.objectContaining({ revisionId: 'rev-2', updated: 3, skippedPausedCount: 3, skippedLocked: 0 }),
     }));
+  });
+
+  it('re-checks under the row lock: a ticket moved to another calendar or already on the target is left alone', async () => {
+    repo.lockApplyBatch.mockImplementation(async (_cal: string, _rev: unknown, ids: string[]) =>
+      fixtureRows.filter((r) => ids.includes(r.id)).map((r) =>
+        r.id === 't-1' ? { ...r, slaCalendarRevisionId: 'rev-other', revisionCalendarId: 'cal-other', revisionNumber: 1 }
+          : r.id === 't-2' ? { ...r, slaCalendarRevisionId: 'rev-3', revisionNumber: 3 }
+          : r));
+    const res = await applyRevision(auth(), CAL, { expectedRevisionId: 'rev-2' }, { run, now });
+    expect(res.updated).toBe(1);
+    expect(repo.applyTicketRevision.mock.calls.map((c) => c[0])).toEqual(['t-5']);
   });
 
   it('a stale expected revision is 409 REVISION_CHANGED and writes nothing', async () => {

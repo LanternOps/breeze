@@ -30,6 +30,12 @@ export async function withBusinessMinutesRemaining<T extends RemainingSource>(
 ): Promise<Array<T & { slaBusinessMinutesRemaining: ReturnType<typeof slaBusinessMinutesRemaining> }>> {
   const revisionIds = rows.map((r) => r.slaCalendarRevisionId ?? null);
   const calendars = revisionIds.some(Boolean) ? await loadTicketCalendars(db, revisionIds) : new Map<string, NonNullable<TicketCalendar>>();
+  // A snapshot the reader cannot load is a caller-context gap (the write
+  // points throw on the same condition); the field stays null, but say so.
+  const unreadable = [...new Set(revisionIds.filter((id): id is string => !!id && !calendars.has(id)))];
+  if (unreadable.length > 0) {
+    console.warn(`[businessCalendars] ${unreadable.length} calendar revision(s) not readable in this context; slaBusinessMinutesRemaining left null`, unreadable);
+  }
   return rows.map((row) => {
     const calendar = row.slaCalendarRevisionId ? calendars.get(row.slaCalendarRevisionId) ?? null : null;
     return {

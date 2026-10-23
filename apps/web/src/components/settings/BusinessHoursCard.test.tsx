@@ -9,8 +9,9 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const claims = vi.hoisted(() => ({ current: { scope: 'partner', orgId: null as string | null, partnerId: 'partner-1' as string | null } }));
 vi.mock('../../lib/authScope', () => ({
-  getJwtClaims: () => ({ scope: 'partner', orgId: null, partnerId: 'partner-1' }),
+  getJwtClaims: () => claims.current,
 }));
 vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: { organizations: { id: string; name: string }[] }) => unknown) =>
@@ -220,6 +221,19 @@ describe('BusinessHoursCard', () => {
       expect(JSON.parse((calls('POST', APPLY_URL)[0][1] as RequestInit).body as string)).toEqual({ expectedRevisionId: 'rev-1' });
     });
 
+    it('rows a concurrent writer held are reported and the dialog stays open with a fresh preview', async () => {
+      handlers[`GET ${PREVIEW_URL}`] = () => preview('rev-1');
+      handlers[`POST ${APPLY_URL}`] = () => json({ data: { updated: 10, skippedLocked: 2 } });
+      await renderCard();
+      fireEvent.click(screen.getByTestId(`business-hours-select-${CAL_ALL}`));
+      fireEvent.click(screen.getByTestId('business-hours-apply-open'));
+      await screen.findByTestId('business-hours-apply-eligible');
+      fireEvent.click(screen.getByTestId('business-hours-apply-confirm'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: expect.stringContaining('2') })));
+      await waitFor(() => expect(calls('GET', PREVIEW_URL)).toHaveLength(2));
+      expect(screen.getByTestId('business-hours-apply-confirm')).toBeInTheDocument();
+    });
+
     it('on REVISION_CHANGED tells the user and reloads the preview', async () => {
       let previews = 0;
       handlers[`GET ${PREVIEW_URL}`] = () => preview(`rev-${++previews}`);
@@ -235,5 +249,16 @@ describe('BusinessHoursCard', () => {
       // Confirm is available again for the refreshed revision.
       await waitFor(() => expect(screen.getByTestId('business-hours-apply-confirm')).not.toHaveAttribute('disabled'));
     });
+  });
+
+  it('renders nothing for an organization-scope user (the calendar API is partner/system only)', async () => {
+    claims.current = { scope: 'organization', orgId: 'org-1', partnerId: null };
+    try {
+      const { container } = render(<BusinessHoursCard />);
+      expect(container.innerHTML).toBe('');
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      claims.current = { scope: 'partner', orgId: null, partnerId: 'partner-1' };
+    }
   });
 });

@@ -6988,7 +6988,8 @@
       "holidayAdded": "Feiertag hinzugefügt",
       "holidayRemoved": "Feiertag entfernt",
       "recompute": "Die Fristen offener Tickets werden aktualisiert.",
-      "applied": "Auf offene Tickets angewendet: {{count}} aktualisiert"
+      "applied": "Auf offene Tickets angewendet: {{count}} aktualisiert",
+      "appliedPartial": "{{skipped}} Tickets wurden gerade bearbeitet und behalten ihre bisherigen Zeiten. Wenden Sie die Änderung erneut an, um sie nachzuholen."
     },
     "apply": {
       "title": "{{name}} auf offene Tickets anwenden",
