@@ -763,3 +763,56 @@ export function cadenceValueFor(minutes: number): 60 | 240 | 1440;              
 - W05 concern routes carry `grantId` (query on list, body on snooze/dismiss); web page, mobile service, screen and tests updated; `normalizeConcern` reads `recipient.snoozedUntil` and the DTO's `approvalIntentId`.
 - `wispStateFromThreadPayload` carries `budgetCentsPerDay`/`floorTickMinutes` (W04's header now has the budget control; the grant payload grew in W04).
 - `/wisp/nudge-settings` is an addition beyond w00's final route list (spec §7.4 needs a home for the partner "urgent-capable" mark) — flagged to the orchestrator; kept.
+
+## 2026-10-23 amendments (w00 A28, A29, A31, A32, A34) — tasks added by the orchestrator
+
+### Task 1 edits (schema)
+
+`wisp_nudge_preferences` gains: `brief_time_local text NULL CHECK (brief_time_local ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$') DEFAULT '08:00'`, `brief_timezone text NULL`, `last_brief_at timestamptz NULL`, `proactivity text NOT NULL DEFAULT 'normal' CHECK (proactivity IN ('quiet','normal','chatty'))`. Zod (Task 2): `briefTimeLocal: z.string().regex(...).nullable()`, `briefTimezone: z.string().max(64).nullable()`, `proactivity: z.enum(['quiet','normal','chatty'])`; defaults in the "missing row" object. RLS test: a `brief_time_local` of `'25:00'` is 23514.
+
+### Task 2 / Task 3 edits (`NudgePayload.kind`, proactivity floor)
+
+- `NudgePayload` gains `kind: 'concern' | 'digest' | 'brief'` (w00 A28). Dedupe keys: concern as before; digest as before; brief `wisp.brief:${threadId}:${localDate}`.
+- `decideNudgeDelivery` gains `severity: ConcernSeverity | null` and `kind`, and applies the proactivity push floor **before** quiet hours: `quiet` ⇒ push only `high`; `normal` ⇒ `medium`+; `chatty` ⇒ all. Exceptions that always push: `kind === 'brief'`, and a concern nudge carrying `approvalIntentId`. A nudge filtered by the floor returns `suppressed: 'prefs'` with the in-app row still written. Tests: a `low` concern under `normal` → in-app only, `suppressed: 'prefs'`; the same under `chatty` → pushed; a `low` concern with an approval id under `quiet` → pushed; the brief under `quiet` → pushed.
+- The brief ignores quiet hours (the user picked the time); digests and concern nudges keep the existing quiet-hour logic.
+
+### Task 13: Morning brief (w00 A28)
+
+**Files:**
+- Create: `apps/api/src/services/wisp/brief.ts` (+ `brief.test.ts`)
+- Modify: Task 5's `nudgeDigest.ts` sweep (`runNudgeDigest` → also `runMorningBriefs(now)`; same 15-minute lane), Task 11's mobile preference rows (brief time picker Off / 07:00 / 08:00 / 09:00 and the proactivity dial Quiet / Normal / Chatty — two new rows beside the digest cadence)
+
+**Interfaces:**
+```ts
+export type BriefSection = { heading: string; lines: string[] };
+export function briefDue(prefs: { briefTimeLocal: string | null; briefTimezone: string | null }, lastBriefAt: Date | null, now: Date, fallbackTz: string): { due: boolean; localDate: string };  // due when local time ≥ brief_time_local and last_brief_at's local date < today's local date; tz = prefs.briefTimezone ?? fallbackTz ('UTC' when the user has no device timezone)
+export async function buildBrief(grantId: string, now: Date): Promise<{ title: string; body: string; sections: BriefSection[] }>;
+//   deterministic, no model: title `Good morning — ${needsYou} need you, ${open} open`; body = up to 3 highest-severity open concern summaries (≤ 40 chars each) joined by ' · '; sections: Needs you (concerns with approvalIntentId), Open concerns by severity, Overnight (assessments run, specialists launched, concerns resolved since last_brief_at — from listActivity, Task 14), Spend (spendSummary, W05 A32), Watching (active watch count; readiness gaps count from the latest readiness concerns)
+export async function runMorningBriefs(now?: Date): Promise<{ due: number; sent: number; suppressed: number }>;  // active grants × prefs; for each due: notifyUser({ kind: 'brief', concernId: null, userId: grantor, threadId, grantId, deepLink: mobileDeepLink(threadId, null), ...buildBrief }); on inApp||pushed set last_brief_at = now. A user-paused grant (A29) gets no brief; a system-paused grant gets a one-line brief saying why.
+```
+- [ ] **Step 1: Failing tests** — `briefDue` across a DST boundary and the midnight edge (23:59 local vs 00:01); two sweeps in the same local day send one brief (dedupe key); `buildBrief` with 0 concerns says "Nothing needs you"; sections omit empty ones; the `sections` payload is stored in the in-app row's `metadata.brief` so the home (W08) can render it.
+- [ ] **Step 2–4:** run → FAIL, implement, run with Task 5's tests — PASS. Commit `feat(wisp): deterministic morning brief in the digest lane, brief time + proactivity preferences (W06 T13, w00 A28/A29)`.
+
+### Task 14: Activity timeline and the live line (w00 A31)
+
+**Files:**
+- Create: `apps/api/src/services/wisp/activity.ts` (+ `activity.test.ts`); modify W04's `routes/wispThreads.ts` (`GET /:id/activity`), Task 7's web thread page (activity panel + live line), Task 10's `WispThreadScreen` (live line only)
+
+**Interfaces:** `listActivity`, `currentActivity`, `ActivityItem` exactly as w00 A31; cursor = `${at.toISOString()}|${kind}|${id}` base64; `limit` ≤ 100. Sources (all system ctx, each filtered by `assertWithinCeiling({ orgId })`): `ai_agent_runs WHERE grant_id`, `wisp_concerns` (created / status changes by `updated_at`), W07 lineage (`requested_by_run_id`) when present, `action_intents` via `requesting_agent_run_id`, `ai_memory_blocks WHERE authored_by_grant_id`, `user_notifications WHERE user_id = grantor AND metadata->>'grantId' = $g` (nudges + briefs). `currentActivity(grantId)` → `{ orgId, orgName, startedAt } | null` from queued/running assessment runs.
+- Route: `GET /api/v1/wisp/thread/:id/activity?cursor=&limit=` → `{ data: { items, nextCursor } }`; grantor-only, existence-neutral 404.
+- Web: `WispActivityPanel.tsx` (added to `TARGET_GLOBS` only if it mutates — it does not) below the concern list; the header shows `currentActivity` as "Checking Greenwood…" refreshed every 30 s while the page is visible. Mobile: the same line in the summary card.
+- [ ] **Step 1: Failing tests** — items from two orgs where the ceiling covers one → one org's items only; cursor pagination is stable across inserts; `currentActivity` null when nothing is running; route 404 for another user's thread.
+- [ ] **Step 2–4:** run → FAIL, implement, run — PASS. Commit `feat(wisp): activity timeline (derived, ceiling-filtered) and the live "checking…" line (W06 T14, w00 A31)`.
+
+### Task 15: Spend meter and pause/resume controls (w00 A32, A29)
+
+- Web thread page header and `WispThreadHeader`: "{spent}¢ of {budget}¢ today · resets in {h} h" from the grant block's `spentTodayCents` / `budgetResetsAt` (W05 adds them to `GET /wisp/thread` and `/thread/:id`); amber at ≥ 80 %, red + link to the exhausted-budget notice at 100 %. "Pause Wisp" / "Resume" buttons → `POST /wisp/grants/:id/pause|resume` (W02 Task 15) through `runAction`; a paused banner names the reason (`user_paused` ⇒ "You paused Wisp"; others ⇒ the existing copy). Mobile: the meter in the summary card; pause/resume in `WispConcernSheet`'s parent screen menu. Locale keys: `wisp.spend.meter`, `wisp.spend.resets`, `wisp.pause`, `wisp.resume`, `wisp.paused.byYou`, `wisp.toast.paused`, `wisp.toast.resumed`, `wisp.toast.pauseFailed` in all 8 locales.
+- [ ] Tests: `spendMeterState(spent, budget)` pure (`ok` / `warn` / `exhausted`); resume disabled unless `pausedReason === 'user_paused'`; mutations go through `runAction` (`no-silent-mutations`).
+
+### Task 16: Nudge feedback (w00 A34)
+
+**Files:** `apps/api/src/routes/wispConcerns.ts` (W05's file; + test), Task 7's web page, Task 10's `WispConcernSheet` + `wispConcernCopy.ts`, Task 8's mobile service.
+- Route: `POST /api/v1/wisp/concerns/:id/feedback { grantId, useful: boolean, note?: string ≤ 200 }` → 200 `{ data: { recipient } }`; calls W05 `recordFeedback` then W03 `recordHumanBlock(auth, { owner: { kind: 'user', userId: auth.user.id }, blockType: 'preference', subjectKey: \`nudge_feedback:${concern.subject.kind}:${concern.severity}\`, content: { useful, concernId, summary: concern.summary, note }, confidence: 'high', authoredByGrantId: grantId })`; audit `wisp.concern.feedback`. 404 when the grant is not the caller's; 409 when feedback already recorded (idempotent on the same value).
+- UI: two buttons "Useful" / "Not useful" (👍/👎 glyphs are fine) on every concern that has `recipient.nudgeCount > 0`; after a tap the row shows the choice; `not_useful` opens an optional one-line note.
+- [ ] Tests: route refuses a mismatched grant; writes the recipient columns and exactly one memory block; `concernFeedbackState(recipient)` pure on mobile; web mutation through `runAction`.
+- Commit `feat(wisp): useful / not useful feedback on nudges → preference memory (W06 T16, w00 A34)`.

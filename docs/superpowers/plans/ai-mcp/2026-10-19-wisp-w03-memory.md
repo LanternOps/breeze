@@ -623,3 +623,20 @@ State: flag off = no behaviour change; tenancy registrations added (`PARTNER_TEN
 - Noted that W04 attaches `requireEntitlement('wisp')` to `routes/wisp/memory.ts` (W03 cannot depend on W01); no W03 change.
 - W05's `jobs/wispConcernRetention.ts` deletes `concern_outcome` blocks older than 180 d directly (w00 Memory block "reaper in W05"); it adds itself to Task 5's `AI_MEMORY_BLOCKS_ACCESS_ALLOWLIST` with the reason "retention delete, not an agent-side write" — the single-caller contract's wording in Task 5 ("W05 adds nothing here") is superseded by that one entry.
 - w00 A23 (consulting mode, spec §6.1/§8.1): `MemoryBlockType` + `MEMORY_BLOCK_TYPES` + the `block_type` CHECK gain `work_summary` (Task 1); `source_session_id uuid NULL → ai_sessions(id) ON DELETE SET NULL` + partial index + Drizzle `sourceSessionId` reference + one RLS-suite case (Task 1), export classification recorded as `included`-if-ever-registered (Task 2); `MemoryBlock.sourceSessionId`, `RememberInput.sourceSessionId?`, broker stamps it + one integration case (Task 3); `AuthContext.wispGrant` gains optional `sessionId` (W04 chat populator stamps `session.breezeSessionId`; W05 run populator `run.sessionId ?? null`) and `remember` fills `sourceSessionId` from it with a test (Task 6); DTO passes it through (Task 7); memory page "From conversation" button via `aiStore.loadSession` + `open`, keys `fromConversation` / `type.work_summary` in all 8 locale dirs (Task 8). No new migration.
+
+## 2026-10-23 amendments (w00 A34) — task added by the orchestrator
+
+### Task 12: `memoryService.recordHumanBlock` — human-authored, confirmed on write
+
+**Files:**
+- Modify: `apps/api/src/services/wisp/memoryService.ts` (+ `memoryService.test.ts`), the broker contract test's caller allowlist (this is a **human-side** write in request context, not an agent-side broker call — the contract that pins `ai_memory_blocks` agent writers to `memoryBroker.ts` is untouched; a second contract pins human writers to `memoryService.ts`).
+
+**Interfaces:**
+```ts
+export async function recordHumanBlock(auth: AuthContext, input: { owner: MemoryOwner; blockType: MemoryBlockType; subjectKey: string; content: Record<string, unknown>; confidence?: 'low'|'medium'|'high'; authoredByGrantId?: string | null; sourceSessionId?: string | null }): Promise<MemoryBlock>;
+// request context, RLS-enforced (user owner must be auth.user.id; org owner must be reachable by auth); status 'confirmed' with confirmed_at = now (a person said it); authored_by_grant_id kept for provenance ("via Wisp for Todd") but authored_by_grant_revision_id NULL (no agent wrote it); supersedes the previous confirmed block with the same (owner, block_type, subject_key) by setting superseded_by_id on the old row.
+```
+First consumer: W06's `POST /wisp/concerns/:id/feedback` (A34) writes `blockType: 'preference'`, `subjectKey: \`nudge_feedback:${subject.kind}:${severity}\``. `recallForGrant` already returns confirmed blocks; the assessment context (W05) recalls `subjectKeyPrefix: 'nudge_feedback:'` for the grantor, `limit: 20`.
+
+- [ ] **Step 1: Failing tests** — a user owner that is not `auth.user.id` → 403-class error before any write; the block lands `confirmed`; the prior block with the same key is superseded; `authoredByGrantRevisionId` is null; a non-`user_session` principal is refused.
+- [ ] **Step 2–4:** run → FAIL, implement, run with the broker contract test — PASS. Commit `feat(wisp): recordHumanBlock — confirmed human-authored memory (W03 T12, w00 A34)`.

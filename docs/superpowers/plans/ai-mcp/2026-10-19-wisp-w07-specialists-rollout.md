@@ -806,3 +806,30 @@ git commit -m "docs(wisp): feature page, rollout checklist, release-notes draft 
 - `launch_specialist` reads `AuthContext.wispGrant` (w00 A2; stamped by W04) instead of `getActiveGrantForUser`, returning W03's `wisp_grant_required` outside a Wisp session; tests rewritten.
 - Task 3 consumes W01's `hasEntitlement(partnerId, 'wisp')` by name; `getActiveGrantForUser` dropped from its consumes list.
 - Task 8 adds the `setWispGrantsActive` call site (W05's wake tick) that the gauge's comment promised.
+
+## 2026-10-23 amendments (w00 A30, A33) — tasks added by the orchestrator
+
+### Task 1 edits (`specialistPolicy.ts`)
+
+`SpecialistKind` gains `'bulk_ticket_reply'` with `{ autoAdmit: false, requiredPermissions: ['ai_agents:write', 'tickets:write'], estimateCents: 50, requiresDevice: false }`. The leaf-module and "auto-admits exactly sweep + analysis" tests stay true.
+
+### Task 12: `bulk_ticket_reply` — the pinned batch (w00 A30; Grok IncidentSweep)
+
+**Files:**
+- Create: `apps/api/src/services/wisp/specialists/bulkTicketReply.ts` (+ `.test.ts`), `apps/api/src/services/aiOperator/recipes/bulkTicketReply.ts` (+ test) if the Operator recipe registry is the executor (preferred) — otherwise a dedicated worker job
+- Modify: Task 3's coordinator (`requestSpecialist` switch), Task 4's carrier intent (card body = ticket list + exact message + digest), Task 6's `launch_specialist` schema (`params` for this kind), `packages/shared/src/validators/wisp.ts`
+
+**Interfaces:**
+```ts
+export const bulkTicketReplyParamsSchema = z.strictObject({ concernId: z.string().uuid().nullable(), ticketIds: z.array(z.string().uuid()).min(1).max(250), message: z.string().min(1).max(4000), holdTickets: z.boolean().default(false), internalNote: z.string().max(1000).optional() });
+export function bulkReplyDigest(p: { ticketIds: string[]; message: string }): string;   // sha256 of sorted ticketIds joined by ',' + '\n' + message — the intent's resource digest; the executor recomputes it from the stored params and refuses on mismatch
+export async function executeBulkTicketReply(input: { taskId: string; grantId: string; grantRevisionId: string; orgId: string; params: BulkTicketReplyParams; pinnedDigest: string }): Promise<{ sent: string[]; skipped: Array<{ ticketId: string; reason: 'not_in_set' | 'not_in_org' | 'closed' | 'out_of_ceiling' }>; stoppedAt: { ticketId: string; error: string } | null }>;
+//   every ticket must be in params.ticketIds (the pinned set), belong to orgId, be non-closed and pass assertWithinCeiling({ orgId, permission: 'tickets:write' }); batches of 10; one audit row per ticket ('ticket.reply.sent', details { taskId, grantId, concernId }); holdTickets ⇒ status 'pending' + internalNote before sending; the FIRST failure stops the batch and the task finishes 'partial' with the report; nothing is ever added after approval.
+```
+- Partner-level incident concerns (W05 A30) propose this kind with `ticketIds` = the union of child evidence; the card is minted under the **assessment run's** agent principal in the incident's **first** org (an org is required for an intent) and lists tickets across orgs grouped by org; execution fans out one Operator task per org with that org's subset and the same digest input (the digest covers the full set; each task carries the full set and its own `orgId`, and skips the other orgs' tickets as `not_in_org`). Document this in the card body.
+- [ ] **Step 1: Failing tests** — digest is order-independent on ticketIds and sensitive to the message; a ticket outside the pinned set is skipped `not_in_set` and audited; a closed ticket is skipped; the third ticket failing stops the batch, `sent` has two ids, state `partial`; `holdTickets` sets pending + note before any send; a tampered params row (digest mismatch) refuses before the first send.
+- [ ] **Step 2–4:** run → FAIL, implement, run with Tasks 3/4/6 suites — PASS. Commit `feat(wisp): bulk_ticket_reply specialist — pinned set, batched, stop-on-first-failure (W07 T12, w00 A30)`.
+
+### Task 10 edit (gap-finder, w00 A33)
+
+The gap-finder's first context block is `readinessInventory` (W05 Task 15) for the lab partner; gaps it reports distinguish "Breeze lacks the integration" from "this partner has not configured it".

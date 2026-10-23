@@ -188,7 +188,7 @@ it('writes no rows, so it needs no system-scope election', () => { expect(sql).n
      updated_at           timestamptz NOT NULL DEFAULT now(),
      CONSTRAINT wisp_grants_status_chk CHECK (status IN ('active','paused','revoked','expired')),
      CONSTRAINT wisp_grants_grantee_chk CHECK (grantee IN ('wisp')),
-     CONSTRAINT wisp_grants_paused_reason_chk CHECK (paused_reason IS NULL OR paused_reason IN ('grantor_access_lost','grantor_suspended','factor_expired','entitlement_lost','budget_exhausted')),
+     CONSTRAINT wisp_grants_paused_reason_chk CHECK (paused_reason IS NULL OR paused_reason IN ('grantor_access_lost','grantor_suspended','factor_expired','entitlement_lost','budget_exhausted','user_paused','partner_disabled')),
      CONSTRAINT wisp_grants_paused_shape_chk CHECK ((status = 'paused') = (paused_reason IS NOT NULL)),
      CONSTRAINT wisp_grants_budget_chk CHECK (budget_cents_per_day >= 0 AND floor_tick_minutes BETWEEN 15 AND 240)
    );
@@ -425,7 +425,7 @@ it('resolveGrantCeiling returns status active but live term ok:false ⇒ throws 
   export type WispGrant = { id; partnerId; orgId: string | null; grantorUserId; grantee: 'wisp'; currentRevisionId; status: WispGrantStatus; pausedReason: string | null; expiresAt: Date; budgetCentsPerDay: number; floorTickMinutes: number };
   export async function createGrant(input: { auth: AuthContext; scope: WispGrantScope; stepUpGrantId: string }): Promise<WispGrant>;
   export async function refreshGrant(input: { auth: AuthContext; grantId: string; stepUpGrantId: string }): Promise<WispGrant>;
-  export async function pauseGrant(grantId: string, reason: 'grantor_access_lost' | 'grantor_suspended' | 'factor_expired' | 'entitlement_lost' | 'budget_exhausted'): Promise<void>;
+  export async function pauseGrant(grantId: string, reason: 'grantor_access_lost' | 'grantor_suspended' | 'factor_expired' | 'entitlement_lost' | 'budget_exhausted' | 'user_paused' | 'partner_disabled'): Promise<void>; // 'user_paused' / 'partner_disabled' added 2026-10-23 (w00 A29, A35)
   export async function resumeGrant(grantId: string): Promise<void>;
   export async function revokeGrant(input: { auth: AuthContext; grantId: string }): Promise<void>;
   export async function getActiveGrantForUser(userId: string, scope: WispGrantScope): Promise<WispGrant | null>;
@@ -762,3 +762,32 @@ Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEp
 - `previewGrantCeiling` / `GET /grants/preview` return `{ scope, ceilingSnapshot, ceilingHash }` (w00 A4 spelling; W04's modal consumes it).
 - Depth guard: throws `GrantDepthExceededError` (code `grant_depth_exceeded`, w00 A11); predicate corrected — the requesting run must be under the **same grant and org** (an assessment run is grant-bearing and is the legitimate requester), not "any grant-bearing run throws". W07 tightens with `depth`/`profile`.
 - Task 7: added the `WispLimits.maxGrants` cap — `createGrant` throws `GrantLimitReachedError` (code `grant_limit_reached`, route 409 `GRANT_LIMIT_REACHED`) when active grants ≥ `maxGrants` from W01's `getEntitlementLimits(partnerId, 'wisp')`; null limits / absent module ⇒ no cap (W02 can merge before W01).
+
+## 2026-10-23 amendments (w00 A29, A33, A35) — tasks added by the orchestrator
+
+### Task 15: User pause / resume, `partner_disabled`, and the `wisp.grant.*` bus events
+
+**Files:**
+- Modify: `apps/api/migrations/2027-01-02-100100-wisp-grants.sql` (the `paused_reason` CHECK now lists `'user_paused'` and `'partner_disabled'` — edited in Task 2 above), `apps/api/src/db/schema/wisp.ts` (`WispGrantPauseReason`)
+- Modify: `apps/api/src/services/wisp/grants.ts` (+ `grants.test.ts`), `apps/api/src/services/wisp/grantLifecycle.ts` or wherever Task 8's reconcilers live (+ tests), `apps/api/src/routes/wisp.ts` (+ `wisp.test.ts`)
+- Modify: `apps/api/src/services/eventBus.ts` (`EventType` union + `EVENT_TYPES`: `WISP_GRANT_CREATED: 'wisp.grant.created'`, `WISP_GRANT_RESUMED: 'wisp.grant.resumed'`), `apps/api/src/services/eventBus.test.ts`
+
+**Interfaces:**
+- Produces:
+  ```ts
+  export async function userPauseGrant(input: { auth: AuthContext; grantId: string }): Promise<WispGrant>;   // grantor only (WispGrantError 'forbidden' otherwise); active → paused with reason 'user_paused'; audit 'wisp.grant.paused' { reason: 'user_paused' }
+  export async function userResumeGrant(input: { auth: AuthContext; grantId: string }): Promise<WispGrant>;  // grantor only; refuses unless paused_reason === 'user_paused' (WispGrantError 'not_user_paused' → 409 NOT_USER_PAUSED); keeps current_revision_id; audit 'wisp.grant.resumed'
+  ```
+  Bus payloads: `wisp.grant.created` / `wisp.grant.resumed` `{ grantId, partnerId, orgId: string | null, grantorUserId }`, published from the route **after** the commit and outside the DB context (`void publishEvent(...).catch(log)`, the #1105 rule), source `'wisp'`.
+- Routes: `POST /wisp/grants/:id/pause` → 200 `WispGrantDto`; `POST /wisp/grants/:id/resume` → 200 `WispGrantDto` / 409 `NOT_USER_PAUSED`. Both inherit the hub gates; no step-up (pausing never widens; resume keeps the revision).
+- **Reconciler rule (Task 8):** every automatic resume path (`grantor_access_lost` recovered, `factor_expired` renewed, and W05's `entitlement_lost` / `partner_disabled` reconcilers) is guarded by `paused_reason <> 'user_paused'`; a user-paused grant resumes only through `userResumeGrant`. `pauseGrant` on an already-paused grant keeps the **earlier** reason unless the new reason is a system reason and the old one is `'user_paused'` — then the system reason wins (`paused_reason` is overwritten; on `userResumeGrant` the grant is refused with `not_user_paused`, which tells the user why).
+- Watches: `stopWatchesForInactiveGrants` (W05) already stops them with `stopped_reason = 'paused'`; `userResumeGrant` runs `UPDATE wisp_watches SET status='active', stopped_reason=NULL, next_due_at=now() WHERE grant_id=$1 AND stopped_reason='paused'` (W05 adds the column; W02 writes it only when the table exists — guard with a `to_regclass('wisp_watches')` check in SQL or a lazy import, so W02 merges before W05).
+
+- [ ] **Step 1: Failing tests** — `grants.test.ts`: `userPauseGrant` by a non-grantor → `forbidden`; active → paused/`user_paused`; `userResumeGrant` on `paused_reason: 'entitlement_lost'` → `not_user_paused`; on `'user_paused'` → active with the same `currentRevisionId`; reconciler test: a `user_paused` grant is never resumed by the access-recovered path. `wisp.test.ts`: both routes 404 when the flag is off; `409 NOT_USER_PAUSED`; the create route publishes `wisp.grant.created` once with `{ grantId, partnerId, orgId, grantorUserId }` and does not publish on a refused create.
+- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/wisp/grants.test.ts src/routes/wisp.test.ts` — FAIL.
+- [ ] **Step 3: Implement**, then re-run with Task 8's reconciler suite and `src/services/eventBus.test.ts` — PASS.
+- [ ] **Step 4: Commit** — `feat(wisp): user pause/resume, partner_disabled reason, wisp.grant.created/resumed events (W02 T15, w00 A29/A33/A35)`.
+
+### Contract change for W05 (A30): `GrantCeiling.scopeOrgId`
+
+`resolveGrantCeiling` returns `scopeOrgId: string | null` (= `wisp_grants.org_id`). W05's partner-level concerns (`org_id NULL`) are served only to ceilings with `scopeOrgId === null`. Add the field to `GrantCeiling` in Task 6 and to the `assertWithinCeiling` tests (a `check.orgId === null` passes only when `ceiling.scopeOrgId === null`; otherwise `CeilingViolationError('org')`).
