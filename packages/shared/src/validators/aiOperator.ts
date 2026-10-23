@@ -369,7 +369,9 @@ export const createOperatorTaskSchema = z.object({
    * generic zod 400 and undo E1's decision 6, whose whole point is a refusal
    * that names `RECIPE_KEYS`. The outer object stays `.strict()`, and every
    * recipe's own `inputSchema` is `.strict()` too, so nothing is loosened —
-   * the check moves one layer in.
+   * the check moves one layer in. For every key other than a contact-targeted
+   * recipe, the route re-applies `deviceTargetedTaskFieldsSchema` (the shipped
+   * `deviceId` + `inputs` shapes, byte-for-byte) and returns the same 400.
    */
   inputs: z.record(z.string(), z.unknown()),
   sourceKind: z.enum(OPERATOR_TASK_SOURCE_KINDS).optional(),
@@ -389,6 +391,21 @@ export const createOperatorTaskSchema = z.object({
     path: ['sourceId'],
   });
 export type CreateOperatorTaskInput = z.infer<typeof createOperatorTaskSchema>;
+
+/**
+ * The two fields `createOperatorTaskSchema` loosened in R1a, exactly as they
+ * shipped before it: a required device and the strict `{ serviceName }`
+ * input. The route parses every non-contact-targeted body with this (and the
+ * shared 400 formatter), so `service_recovery` — and an unknown key, which
+ * main also validated against this shape before naming the supported
+ * workflows — refuses the same bodies with the same messages as before.
+ */
+export const deviceTargetedTaskFieldsSchema = z.object({
+  deviceId: z.string().guid(),
+  inputs: z.object({
+    serviceName: z.string().min(1).max(255),
+  }).strict(),
+});
 
 // ---- R1a: draft request ----
 

@@ -9,6 +9,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { z } from 'zod';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const h = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
@@ -20,13 +23,21 @@ const h = vi.hoisted(() => ({
   tasksEnabled: true,
   recipeOn: true,
   permissions: [] as Array<{ resource: string; action: string }>,
+  // `resource:action` gates the mocked requirePermission refuses with a 403.
+  deniedGates: [] as string[],
+  wheres: [] as unknown[],
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../middleware/auth')>();
   const pass = async (_c: unknown, next: () => Promise<void>) => next();
   return {
-    authMiddleware: pass, requireScope: () => pass, requirePermission: () => pass, requireMfa: () => pass,
+    authMiddleware: pass, requireScope: () => pass,
+    requirePermission: (resource: string, action: string) => async (c: any, next: () => Promise<void>) => {
+      if (h.deniedGates.includes(`${resource}:${action}`)) return c.json({ error: 'Permission denied' }, 403);
+      return next();
+    },
+    requireMfa: () => pass,
     buildOrgAccessClosures: actual.buildOrgAccessClosures,
   };
 });
@@ -50,7 +61,7 @@ vi.mock('../services/aiAgents/effectivePolicy', () => ({
 vi.mock('../db', () => {
   const chain = () => {
     const c: any = {
-      from: () => c, where: () => c, leftJoin: () => c, orderBy: () => c, $dynamic: () => c,
+      from: () => c, where: (w: unknown) => { h.wheres.push(w); return c; }, leftJoin: () => c, orderBy: () => c, $dynamic: () => c,
       limit: () => c,
       then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(h.selectQueue.shift() ?? []).then(res, rej),
     };
@@ -104,6 +115,8 @@ const body = (over: Record<string, unknown> = {}) => ({
   mode: 'live', recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG,
   inputs: { contactId: CONTACT }, clientIdempotencyKey: 'abcdefgh-r1a', ...over,
 });
+const dialect = new PgDialect();
+const render = (w: unknown) => dialect.sqlToQuery(w as SQL);
 const post = (path: string, b: unknown, a = app()) =>
   a.request(`/ai/operator${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) });
 
@@ -111,6 +124,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.selectQueue = [];
   h.inserts = 0;
+  h.deniedGates = [];
+  h.wheres = [];
   h.tasksEnabled = true;
   h.recipeOn = true;
   h.permissions = [{ resource: 'organizations', action: 'write' }, { resource: 'organizations', action: 'read' }];
@@ -176,7 +191,57 @@ describe('POST /task-drafts', () => {
     expect((await post('/task-drafts', d)).status).toBe(422);
     h.recipeOn = true;
     expect((await post('/task-drafts', { ...d, inputs: { personHint: ' D ' } })).status).toBe(400);
-    expect(h.selectQueue).toEqual([]);
+    // A sentinel row is seeded: any contact read would shift it off the queue
+    // and record a where clause, so both stay untouched only if the gates refuse first.
+    h.selectQueue = [[{ id: CONTACT, name: 'Dana Ruiz', email: null }]];
+    h.wheres = [];
+    expect((await post('/task-drafts', d, app({ allowedSiteIds: ['s1'] }))).status).toBe(403);
+    h.recipeOn = false;
+    expect((await post('/task-drafts', d)).status).toBe(422);
+    h.recipeOn = true;
+    expect((await post('/task-drafts', { ...d, inputs: { personHint: ' D ' } })).status).toBe(400);
+    expect(h.selectQueue).toHaveLength(1);
+    expect(h.wheres).toEqual([]);
+  });
+
+  it('drafts require organizations:read: 403 without it, and no contact is read', async () => {
+    h.deniedGates = ['organizations:read'];
+    h.selectQueue = [[{ id: CONTACT, name: 'Dana Ruiz', email: null }]];
+    const res = await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { contactId: CONTACT } });
+    expect(res.status).toBe(403);
+    expect(h.selectQueue).toHaveLength(1);
+    expect(h.wheres).toEqual([]);
+    h.deniedGates = [];
+    expect((await post('/task-drafts', { recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { contactId: CONTACT } })).status).toBe(200);
+  });
+
+  it('draftPerson reads carry the org_id predicate: contactId, email hint and name hint', async () => {
+    const d = (inputs: Record<string, unknown>) => ({ recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs });
+    for (const [inputs, extra] of [
+      [{ contactId: CONTACT }, CONTACT],
+      [{ personHint: 'dana@customer.example' }, 'dana@customer.example'],
+      [{ personHint: 'Dana' }, '%Dana%'],
+    ] as const) {
+      h.wheres = [];
+      h.selectQueue = [[]];
+      expect((await post('/task-drafts', d(inputs))).status).toBe(200);
+      expect(h.wheres).toHaveLength(1);
+      const q = render(h.wheres[0]);
+      expect(q.sql).toMatch(/"org_id" = \$\d/);
+      expect(q.params).toContain(ORG);
+      expect(q.params).toContain(extra);
+    }
+  });
+
+  it('"resolved" uses the exact-name rule admission does, not a lone substring hit', async () => {
+    const d = (personHint: string) => ({ recipeKey: 'identity_offboarding', recipeVersion: 1, orgId: ORG, inputs: { personHint } });
+    h.selectQueue = [[{ id: 'x', name: 'Dana Smith', email: null }]];
+    let { data } = await (await post('/task-drafts', d('Dan'))).json() as { data: Record<string, any> };
+    expect(data.person.resolved).toBeNull();
+    expect(data.person.candidates).toHaveLength(1);
+    h.selectQueue = [[{ id: 'x', name: 'Dana Smith', email: null }]];
+    ({ data } = await (await post('/task-drafts', d('dana smith '))).json() as { data: Record<string, any> });
+    expect(data.person.resolved).toMatchObject({ id: 'x', name: 'Dana Smith' });
   });
 
   it('an unknown key is a 400 naming both supported workflows; bad inputs are a 400', async () => {
@@ -261,5 +326,73 @@ describe('POST /tasks — identity_offboarding', () => {
     const res = await post('/tasks', body({ recipeKey: 'no_such_recipe', deviceId: DEVICE, inputs: { serviceName: 'spooler' } }));
     expect(res.status).toBe(400);
     expect(((await res.json()) as { supportedRecipeKeys: string[] }).supportedRecipeKeys).toEqual(['identity_offboarding', 'service_recovery']);
+  });
+});
+
+describe('POST /tasks — the contact visibility read is org-predicated', () => {
+  it('the identity_offboarding contactId read constrains org_id to the body orgId', async () => {
+    h.selectQueue = [[{ id: CONTACT, name: 'Dana', email: null }]];
+    await post('/tasks', body());
+    expect(h.wheres.length).toBeGreaterThanOrEqual(1);
+    const q = render(h.wheres[0]);
+    expect(q.sql).toMatch(/"org_id" = \$\d/);
+    expect(q.params).toContain(ORG);
+    expect(q.params).toContain(CONTACT);
+  });
+});
+
+// Observed once from the shipped route: formatZodError of the pre-R1a schema's error.
+const HARDCODED_UNRECOGNIZED = {
+  error: 'inputs: Unrecognized key: "extra"',
+  details: { formErrors: [], fieldErrors: { inputs: ['Unrecognized key: "extra"'] } },
+};
+
+describe('POST /tasks — service_recovery strict fields are restored', () => {
+  // The pre-R1a validator, defined inline: the shipped 400 body is whatever
+  // formatZodError makes of THIS schema's error.
+  const preR1a = z.object({
+    deviceId: z.string().guid(),
+    inputs: z.object({ serviceName: z.string().min(1).max(255) }).strict(),
+  });
+  const srBody = (over: Record<string, unknown> = {}) => ({
+    mode: 'live', recipeKey: 'service_recovery', recipeVersion: 1, orgId: ORG, deviceId: DEVICE,
+    inputs: { serviceName: 'spooler' }, clientIdempotencyKey: 'abcdefgh-sr', ...over,
+  });
+  const expected = async (value: unknown) => {
+    const { formatZodError } = await import('../lib/validation');
+    const r = preR1a.safeParse(value);
+    if (r.success) throw new Error('fixture should fail the pre-R1a schema');
+    return formatZodError(r.error);
+  };
+
+  it('an unknown input key is the shipped 400', async () => {
+    const res = await post('/tasks', srBody({ inputs: { serviceName: 'spooler', extra: 1 } }));
+    expect(res.status).toBe(400);
+    const json = await res.json() as Record<string, any>;
+    expect(json.error).toContain('Unrecognized key');
+    expect(json).toEqual(await expected({ deviceId: DEVICE, inputs: { serviceName: 'spooler', extra: 1 } }));
+    expect(json).toEqual(HARDCODED_UNRECOGNIZED);
+  });
+
+  it('a missing deviceId is a 400 with fieldErrors.deviceId', async () => {
+    const { deviceId: _omit, ...noDevice } = srBody();
+    const res = await post('/tasks', noDevice);
+    expect(res.status).toBe(400);
+    const json = await res.json() as Record<string, any>;
+    expect(json.details.fieldErrors.deviceId).toBeDefined();
+    expect(json).toEqual(await expected({ deviceId: undefined, inputs: { serviceName: 'spooler' } }));
+  });
+
+  it('a missing serviceName is a 400, not a 422', async () => {
+    const res = await post('/tasks', srBody({ inputs: {} }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(await expected({ deviceId: DEVICE, inputs: {} }));
+  });
+
+  it('the 400 happens before the org-access check', async () => {
+    const res = await post('/tasks', srBody({ orgId: '44444444-4444-4444-8444-444444444444', inputs: { serviceName: 'spooler', extra: 1 } }));
+    expect(res.status).toBe(400);
+    const ok = await post('/tasks', srBody({ orgId: '44444444-4444-4444-8444-444444444444' }));
+    expect(ok.status).toBe(404);
   });
 });

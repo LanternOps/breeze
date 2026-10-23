@@ -38,6 +38,7 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import {
   createOperatorTaskSchema,
+  deviceTargetedTaskFieldsSchema,
   operatorTaskDraftSchema,
   operatorTaskListQuerySchema,
   type CreateOperatorTaskInput,
@@ -45,7 +46,7 @@ import {
   type AiOperatorTaskDto,
   type AiOperatorTaskListItemDto,
 } from '@breeze/shared';
-import { zValidator } from '../lib/validation';
+import { formatZodError, zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
   aiAgentRuns,
@@ -229,6 +230,18 @@ aiOperatorTasksRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
+    // `deviceId` and `inputs` are loose on the wire since R1a (a contact-
+    // targeted recipe sends no device and its own inputs). Every other key
+    // gets the shipped shapes back, with the shipped 400 body, and before the
+    // org check — the order the shipped validator middleware ran them in.
+    const isContactTargeted = body.recipeKey === IDENTITY_OFFBOARDING_WORKFLOW_KEY;
+    const deviceFields = isContactTargeted
+      ? null
+      : deviceTargetedTaskFieldsSchema.safeParse({ deviceId: body.deviceId, inputs: body.inputs });
+    if (deviceFields && !deviceFields.success) {
+      return c.json(formatZodError(deviceFields.error), 400);
+    }
+
     // (2) Explicit org from the body. `canAccessOrg` is the same closure the
     // org-scoping predicate is built from, so this cannot drift from what a
     // read would allow. 404 rather than 403: confirming the org exists is
@@ -239,16 +252,12 @@ aiOperatorTasksRoutes.post(
 
     // A contact-targeted recipe (R1a) takes its own path; every other key —
     // service_recovery and an unknown one alike — continues exactly as before.
-    if (body.recipeKey === IDENTITY_OFFBOARDING_WORKFLOW_KEY) {
+    if (isContactTargeted || !deviceFields) {
       return admitIdentityOffboardingFromRoute(c, body);
     }
+    const deviceId = deviceFields.data.deviceId;
+    const serviceName = deviceFields.data.inputs.serviceName;
 
-    // `deviceId` is optional on the wire since R1a (a contact-targeted recipe
-    // sends none). This device-targeted path still requires it.
-    const deviceId = body.deviceId;
-    if (deviceId === undefined) {
-      return c.json({ error: 'deviceId is required for this workflow', code: 'INVALID_INPUT' }, 400);
-    }
 
     // (3) Resolve the target under the caller's own visibility. Note this
     // read runs in the REQUEST's db context (RLS-scoped), unlike admission,
@@ -334,15 +343,15 @@ aiOperatorTasksRoutes.post(
       // is the layer that writes the row.
       workflowKey: recipe.key,
       workflowVersion: recipe.version,
-      objective: `Restore the ${body.inputs.serviceName} service on ${device.hostname ?? body.deviceId}`,
+      objective: `Restore the ${serviceName} service on ${device.hostname ?? deviceId}`,
       // Provenance, not authority (spec §5.1: origins are explicit and never
       // silently converted). A delegate from alert detail is origin 'alert';
       // everything else through this route is a manual delegation.
       originKind: body.sourceKind === 'alert' ? 'alert' : 'manual',
       requesterUserId: auth.user?.id ?? null,
       recipeInput: {
-        deviceId: body.deviceId,
-        serviceName: body.inputs.serviceName,
+        deviceId,
+        serviceName,
         // The alert is the recurrence signal the verification criterion needs
         // (W06: with no alertId the best achievable outcome is
         // `investigation_complete`, never `verified_resolved`).
@@ -661,7 +670,12 @@ async function draftPerson(orgId: string, input: IdentityOffboardingInput): Prom
     : await db.select(cols).from(contacts)
       .where(and(eq(contacts.orgId, orgId), sql`${contacts.name} ILIKE ${`%${hint.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`}`))
       .limit(10);
-  return { resolved: rows.length === 1 ? rows[0]! : null, candidates: rows };
+  // The candidate list is a substring search, but "resolved" uses the SAME
+  // rule admission does (`identifyTaskPerson`): a unique email match, or a
+  // unique exact (trimmed, case-insensitive) full-name match. Anything looser
+  // would preview a person that POST /tasks then refuses as ambiguous.
+  const exact = asEmail ? rows : rows.filter((r) => (r.name ?? '').trim().toLowerCase() === hint.toLowerCase());
+  return { resolved: exact.length === 1 ? exact[0]! : null, candidates: rows };
 }
 
 /**
