@@ -720,6 +720,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/bulk.ts': { gap: '#6776' },
   'tickets/checklist.ts': { tools: ['manage_ticket_checklist', 'manage_tickets'] },
   'tickets/links.ts': { tools: ['manage_tickets'] },
+  'tickets/merge.ts': { tools: ['manage_tickets'] },
   'tickets/emailWebhook.ts': { exempt: 'inbound_integration', note: 'Inbound ticket email delivery callback.' },
   'tickets/export.ts': { gap: '#6808' },
   'tickets/forms.ts': { gap: '#6776' },

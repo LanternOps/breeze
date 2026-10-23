@@ -160,7 +160,7 @@ export async function repointTicketChildren(
   // partner_api_idempotency_keys stay (replay resolves the tombstone, §3.3);
   // ticket_approval_requests cannot exist (MERGE_APPROVAL_STATE, D3).
 
-  const links = await repointTicketLinks(tx, srcId, dstId);
+  const links = await repointTicketLinks(tx, srcId, dstId, orgId);
   counts.ticket_links = links.moved;
 
   // Live work pointers outside the child order (§3.3).
@@ -197,112 +197,132 @@ export async function repointTicketChildren(
   };
 }
 
-interface LinkRow { id: string; source_ticket_id: string; target_ticket_id: string; link_type: TicketLinkType }
+/** One ticket_links row, as the planner sees it. */
+export interface PlanLink {
+  id: string;
+  sourceTicketId: string;
+  targetTicketId: string;
+  linkType: TicketLinkType;
+}
+
+export interface LinkPlan {
+  /** Links kept, with their re-pointed (canonical) legs. */
+  moves: Array<{ id: string; sourceTicketId: string; targetTicketId: string }>;
+  dropped: DroppedLink[];
+  /** How each of the source's links read from the source. */
+  directions: Map<string, 'outgoing' | 'incoming'>;
+}
 
 function canonical(sourceId: string, targetId: string, linkType: TicketLinkType): [string, string] {
   return linkType === 'related' && sourceId > targetId ? [targetId, sourceId] : [sourceId, targetId];
 }
 
 /**
- * Re-point both legs of the source's links (§3.3), one link at a time in
- * creation order, re-checking each against the state the earlier ones left:
- *   - a link between source and survivor is deleted (`between_pair`);
+ * The link re-point plan (§3.3), a pure function shared by the merge and its
+ * preview, so the preview's "links that would be dropped" is exactly what the
+ * merge drops. `orgLinks` is every link of the org, in creation order (the
+ * merge reads them under the org's exclusive ticket_links lock). The source's
+ * links are walked one at a time, each re-checked against the state the
+ * earlier ones left:
+ *   - a link between source and survivor is dropped (`between_pair`);
  *   - `related` is re-canonicalised (source < target);
  *   - a link that would break pair-uniqueness, the self-link CHECK, the single
- *     canonical `duplicate_of`, the duplicate depth rules, the cycle rule or
- *     TICKET_LINK_LIMIT is dropped, and returned for the merge comment.
- * The caller holds the org's exclusive ticket_links lock, so nothing else
- * writes a link of this org meanwhile.
+ *     canonical `duplicate_of` and the duplicate depth rules
+ *     (ticketLinkService.assertDuplicateRules), the cycle rule or
+ *     TICKET_LINK_LIMIT is dropped.
+ * Source and survivor are one node for the cycle walk: links not yet
+ * re-pointed still name the source.
+ */
+export function planLinkRepoint(orgLinks: readonly PlanLink[], srcId: string, dstId: string): LinkPlan {
+  const state = new Map(orgLinks.map((l) => [l.id, { ...l }]));
+  const sourceLinks = orgLinks.filter((l) => l.sourceTicketId === srcId || l.targetTicketId === srcId);
+  const plan: LinkPlan = { moves: [], dropped: [], directions: new Map() };
+  const norm = (id: string) => (id === srcId ? dstId : id);
+
+  const dropReason = (link: PlanLink, s: string, t: string, other: string): DroppedLinkReason | null => {
+    if (other === dstId) return 'between_pair';
+    if (s === t) return 'self';
+    for (const l of state.values()) {
+      if (l.id !== link.id && l.sourceTicketId === s && l.targetTicketId === t && l.linkType === link.linkType) return 'pair_unique';
+    }
+    if (link.linkType === 'duplicate_of') {
+      for (const l of state.values()) {
+        if (l.id === link.id || l.linkType !== 'duplicate_of') continue;
+        const ls = norm(l.sourceTicketId);
+        const lt = norm(l.targetTicketId);
+        if (ls === s || ls === t || lt === s) return 'canonical_duplicate';
+      }
+    }
+    if (link.linkType === 'caused_by' || link.linkType === 'resolves') {
+      // Is `s` reachable from `t` along this type (this link excluded)?
+      const adj = new Map<string, string[]>();
+      for (const l of state.values()) {
+        if (l.id === link.id || l.linkType !== link.linkType) continue;
+        const from = norm(l.sourceTicketId);
+        adj.set(from, [...(adj.get(from) ?? []), norm(l.targetTicketId)]);
+      }
+      const seen = new Set<string>();
+      const queue = [...(adj.get(t) ?? [])];
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (id === s) return 'cycle';
+        if (seen.has(id)) continue;
+        seen.add(id);
+        queue.push(...(adj.get(id) ?? []));
+      }
+    }
+    // The counterpart's count is unchanged (its link moves legs); the survivor gains one.
+    let onSurvivor = 0;
+    for (const l of state.values()) {
+      if (l.id !== link.id && (l.sourceTicketId === dstId || l.targetTicketId === dstId)) onSurvivor++;
+    }
+    if (onSurvivor >= TICKET_LINK_LIMIT) return 'limit';
+    return null;
+  };
+
+  for (const link of sourceLinks) {
+    plan.directions.set(link.id, link.sourceTicketId === srcId ? 'outgoing' : 'incoming');
+    const other = link.sourceTicketId === srcId ? link.targetTicketId : link.sourceTicketId;
+    const [s, t] = canonical(norm(link.sourceTicketId), norm(link.targetTicketId), link.linkType);
+    const reason = dropReason(link, s, t, other);
+    if (reason) {
+      state.delete(link.id);
+      plan.dropped.push({ linkId: link.id, linkType: link.linkType, otherTicketId: other, reason });
+      continue;
+    }
+    state.set(link.id, { ...link, sourceTicketId: s, targetTicketId: t });
+    plan.moves.push({ id: link.id, sourceTicketId: s, targetTicketId: t });
+  }
+  return plan;
+}
+
+/** Every link of the org, in creation order (the planner's input). */
+export async function loadOrgLinks(tx: Exec, orgId: string): Promise<PlanLink[]> {
+  return rows<PlanLink>(tx, sql`
+    SELECT id, source_ticket_id AS "sourceTicketId", target_ticket_id AS "targetTicketId", link_type AS "linkType"
+      FROM ticket_links WHERE org_id = ${orgId}::uuid
+     ORDER BY created_at, id`);
+}
+
+/**
+ * Apply the plan: delete every dropped link, then re-point the kept ones. The
+ * caller holds the org's exclusive ticket_links lock and the ticket locks.
  */
 export async function repointTicketLinks(
   tx: Exec,
   srcId: string,
   dstId: string,
+  orgId: string,
 ): Promise<{ moved: number; dropped: DroppedLink[]; directions: Map<string, 'outgoing' | 'incoming'> }> {
-  const links = await rows<LinkRow>(tx, sql`
-    SELECT id, source_ticket_id, target_ticket_id, link_type FROM ticket_links
-     WHERE source_ticket_id = ${srcId}::uuid OR target_ticket_id = ${srcId}::uuid
-     ORDER BY created_at, id`);
-  const dropped: DroppedLink[] = [];
-  const directions = new Map<string, 'outgoing' | 'incoming'>();
-  let moved = 0;
-  for (const link of links) {
-    directions.set(link.id, link.source_ticket_id === srcId ? 'outgoing' : 'incoming');
-    const other = link.source_ticket_id === srcId ? link.target_ticket_id : link.source_ticket_id;
-    const reason = await linkDropReason(tx, link, srcId, dstId, other);
-    if (reason) {
-      await tx.execute(sql`DELETE FROM ticket_links WHERE id = ${link.id}::uuid`);
-      dropped.push({ linkId: link.id, linkType: link.link_type, otherTicketId: other, reason });
-      continue;
-    }
-    const [s, t] = canonical(
-      link.source_ticket_id === srcId ? dstId : link.source_ticket_id,
-      link.target_ticket_id === srcId ? dstId : link.target_ticket_id,
-      link.link_type,
-    );
+  const plan = planLinkRepoint(await loadOrgLinks(tx, orgId), srcId, dstId);
+  // Deletes first: a dropped link may hold the (pair, type) slot a kept one moves into.
+  for (const d of plan.dropped) await tx.execute(sql`DELETE FROM ticket_links WHERE id = ${d.linkId}::uuid`);
+  for (const m of plan.moves) {
     await tx.execute(sql`
-      UPDATE ticket_links SET source_ticket_id = ${s}::uuid, target_ticket_id = ${t}::uuid
-       WHERE id = ${link.id}::uuid`);
-    moved++;
+      UPDATE ticket_links SET source_ticket_id = ${m.sourceTicketId}::uuid, target_ticket_id = ${m.targetTicketId}::uuid
+       WHERE id = ${m.id}::uuid`);
   }
-  return { moved, dropped, directions };
-}
-
-async function linkDropReason(
-  tx: Exec,
-  link: LinkRow,
-  srcId: string,
-  dstId: string,
-  other: string,
-): Promise<DroppedLinkReason | null> {
-  if (other === dstId) return 'between_pair';
-  const [s, t] = canonical(
-    link.source_ticket_id === srcId ? dstId : link.source_ticket_id,
-    link.target_ticket_id === srcId ? dstId : link.target_ticket_id,
-    link.link_type,
-  );
-  if (s === t) return 'self';
-  const [dup] = await rows<{ n: number }>(tx, sql`
-    SELECT count(*)::int AS n FROM ticket_links
-     WHERE source_ticket_id = ${s}::uuid AND target_ticket_id = ${t}::uuid
-       AND link_type = ${link.link_type}::ticket_link_type AND id <> ${link.id}::uuid`);
-  if ((dup?.n ?? 0) > 0) return 'pair_unique';
-  if (link.link_type === 'duplicate_of') {
-    // ticketLinkService.assertDuplicateRules, against the re-pointed edge:
-    // one canonical per duplicate, no duplicate of a duplicate, and a ticket
-    // with duplicates cannot itself be one.
-    const [hit] = await rows<{ n: number }>(tx, sql`
-      SELECT count(*)::int AS n FROM ticket_links
-       WHERE link_type = 'duplicate_of' AND id <> ${link.id}::uuid
-         AND (source_ticket_id = ${s}::uuid OR source_ticket_id = ${t}::uuid OR target_ticket_id = ${s}::uuid)`);
-    if ((hit?.n ?? 0) > 0) return 'canonical_duplicate';
-  }
-  if (link.link_type === 'caused_by' || link.link_type === 'resolves') {
-    // Is `s` reachable from `t` along this type, ignoring this link itself
-    // (it still has its source leg)?
-    // Source and survivor are one node by now: edges not yet re-pointed still
-    // name the source, so the walk reads every edge with source → survivor.
-    const reach = await rows<{ hit: number }>(tx, sql`
-      WITH RECURSIVE edges(src, dst) AS (
-        SELECT CASE WHEN source_ticket_id = ${srcId}::uuid THEN ${dstId}::uuid ELSE source_ticket_id END,
-               CASE WHEN target_ticket_id = ${srcId}::uuid THEN ${dstId}::uuid ELSE target_ticket_id END
-          FROM ticket_links
-         WHERE link_type = ${link.link_type}::ticket_link_type AND id <> ${link.id}::uuid
-      ), reach(id) AS (
-        SELECT dst FROM edges WHERE src = ${t}::uuid
-        UNION
-        SELECT e.dst FROM edges e JOIN reach r ON e.src = r.id
-      )
-      SELECT 1 AS hit FROM reach WHERE id = ${s}::uuid LIMIT 1`);
-    if (reach.length > 0) return 'cycle';
-  }
-  // The counterpart's count is unchanged (its link moves legs); the survivor
-  // gains one.
-  const [cap] = await rows<{ n: number }>(tx, sql`
-    SELECT count(*)::int AS n FROM ticket_links
-     WHERE (source_ticket_id = ${dstId}::uuid OR target_ticket_id = ${dstId}::uuid) AND id <> ${link.id}::uuid`);
-  if ((cap?.n ?? 0) >= TICKET_LINK_LIMIT) return 'limit';
-  return null;
+  return { moved: plan.moves.length, dropped: plan.dropped, directions: plan.directions };
 }
 
 /** "related T-2026-0007 (dropped: already linked)" lines for the merge comment. */
