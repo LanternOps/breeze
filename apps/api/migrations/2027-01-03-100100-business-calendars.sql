@@ -31,7 +31,7 @@
 -- a same-partner trigger refuses another org's or another partner's calendar.
 --
 -- The tickets.sla_calendar_revision_id column is NOT here: hot-table DDL on
--- tickets lives in its own -- @no-transaction file (2027-01-02-210100).
+-- tickets lives in its own -- @no-transaction file (2027-01-03-100200).
 --
 -- Last, a one-time backfill (spec §4.6 step 2, Gate B5) turns each partner's
 -- stored partners.settings.businessHours preset into a NON-default partner

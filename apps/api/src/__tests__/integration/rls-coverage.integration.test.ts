@@ -611,7 +611,7 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
   // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
   'flows',
-  // Business-hours calendars (#8973 W4, 2027-01-02-210000): org_id XOR
+  // Business-hours calendars (#8973 W4, 2027-01-03-100100): org_id XOR
   // partner_id config table plus three children that DENORMALISE the owner
   // pair from their parent (owner-guard constraint triggers, like
   // tool_source_tools), all four with the partner-wide SELECT branch in the
@@ -968,7 +968,7 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
   'flows',
   // business_calendars_one_owner_chk and the three children's *_one_owner_chk
-  // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-02-210000 (#8973 W4).
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-100100 (#8973 W4).
   // All four partner-wide SELECT branches ship in the same file.
   'business_calendars',
   'business_calendar_revisions',

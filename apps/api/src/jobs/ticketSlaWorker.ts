@@ -93,7 +93,7 @@ function extractRows<T>(result: unknown): T[] {
  * revision until a partner marks a default after the deploy.
  *
  * The partial index tickets_sla_deadlines_missing_idx (rebuilt by
- * 2027-01-02-210100) matches exactly this predicate — and the Drizzle
+ * 2027-01-03-100200) matches exactly this predicate — and the Drizzle
  * declaration in db/schema/portal.ts — and is empty in steady state, so the
  * heal costs one empty index probe per tick.
  */

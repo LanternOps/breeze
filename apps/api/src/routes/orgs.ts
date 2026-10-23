@@ -750,7 +750,7 @@ const partnerSettingsSchema = z.object({
   // businessHours retired (#8973 W4, Gate B5): business hours are business
   // calendars now (routes/businessCalendars.ts). Zod strips the key, so a stale
   // client's value never reaches the shallow merge below and the stored blob
-  // (imported into a calendar by 2027-01-02-210000) is left untouched.
+  // (imported into a calendar by 2027-01-03-100100) is left untouched.
   contact: z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),

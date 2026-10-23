@@ -3,7 +3,7 @@
 -- business-calendar revision a ticket's SLA deadlines are computed on,
 -- snapshotted at create (NULL = 24×7, today's wall-clock rule).
 --
--- In its own file, apart from 2027-01-02-210000-business-calendars.sql,
+-- In its own file, apart from 2027-01-03-100100-business-calendars.sql,
 -- because tickets is a hot table: same lock discipline as
 -- 2026-12-20-200300-ticket-approval-hot-table-columns.sql. Outside a
 -- transaction the column is added catalog-only (nullable, no default), the FK
