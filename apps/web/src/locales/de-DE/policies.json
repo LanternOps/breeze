@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Gilt für alle Organisationen. Deaktivieren Sie „Alle Organisationen“, um eine Teilmenge auszuwählen.",
       "polite": "höflich",
       "loading": "Laden…",
-      "loadMoreOrganizations": "Weitere Organisationen laden"
+      "loadMoreOrganizations": "Weitere Organisationen laden",
+      "appliedToAllOrgs": "Richtlinie gilt jetzt für alle Organisationen",
+      "removedFromAllOrgs": "Richtlinie gilt nicht mehr für alle Organisationen"
     },
     "featureTabs": {
       "automationTab": {
@@ -1337,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Keine Softwarerichtlinien gefunden. Erstellen Sie zunächst eine Richtlinie.",
       "recentViolations": "Aktuelle Verstöße",
       "noCurrentSoftwareViolations": "Keine aktuellen Softwareverstöße.",
-      "violationS": "Verstoß(e)",
       "remediation": "Abhilfe: {{value}}",
       "checked": "Geprüft: {{date}}",
       "deactivatePolicy": "Richtlinie deaktivieren",
@@ -1375,7 +1376,10 @@
       "coverageVendor": "Hersteller",
       "coverageReason": "Grund",
       "vendorOnlyAgent": "Nur beim Hersteller bekannter Agent",
-      "coverageRowsNote": "{{shown}} von {{total}} angezeigt"
+      "coverageRowsNote": "{{shown}} von {{total}} angezeigt",
+      "violationCount": "{{count}} Verstoß",
+      "violationCount_one": "{{count}} Verstoß",
+      "violationCount_other": "{{count}} Verstöße"
     },
     "deploymentList": {
       "running": "Wird ausgeführt",
@@ -1591,7 +1595,9 @@
       "registry": "Registrierung",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Dienst läuft",
+      "readOnlyHint": "Über die API erstellt. Hier nicht bearbeitbar; beim Speichern bleibt sie unverändert."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Geräte konnten nicht abgerufen werden",

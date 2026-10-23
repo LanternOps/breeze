@@ -112,6 +112,10 @@
     "reason": "Reason",
     "expiresAt": "Expires (your local time)",
     "updatePolicy": "Update Policy",
-    "createPolicy": "Create Policy"
+    "createPolicy": "Create Policy",
+    "saved": {
+      "created": "Policy created",
+      "updated": "Policy updated"
+    }
   }
 }

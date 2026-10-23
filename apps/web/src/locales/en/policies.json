@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Applied to all organizations. Uncheck “All organizations” to pick a subset.",
       "polite": "polite",
       "loading": "Loading…",
-      "loadMoreOrganizations": "Load more organizations"
+      "loadMoreOrganizations": "Load more organizations",
+      "appliedToAllOrgs": "Policy now applies to all organizations",
+      "removedFromAllOrgs": "Policy no longer applies to all organizations"
     },
     "featureTabs": {
       "automationTab": {
@@ -1337,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "No software policies found. Create one to get started.",
       "recentViolations": "Recent Violations",
       "noCurrentSoftwareViolations": "No current software violations.",
-      "violationS": "violation(s)",
       "remediation": "Remediation: {{value}}",
       "checked": "Checked: {{date}}",
       "deactivatePolicy": "Deactivate Policy",
@@ -1375,14 +1376,17 @@
       "coverageVendor": "Vendor",
       "coverageReason": "Reason",
       "vendorOnlyAgent": "Vendor-only agent",
-      "coverageRowsNote": "Showing {{shown}} of {{total}}"
+      "coverageRowsNote": "Showing {{shown}} of {{total}}",
+      "violationCount": "{{count}} violation",
+      "violationCount_one": "{{count}} violation",
+      "violationCount_other": "{{count}} violations"
     },
     "deploymentList": {
       "running": "Running",
       "completed": "Completed",
       "failed": "Failed",
       "paused": "Paused",
-      "canceled": "Canceled",
+      "canceled": "Cancelled",
       "deployments": "Deployments",
       "monitorProgressAndManageDeploymentWorkflows": "Monitor progress and manage deployment workflows.",
       "allStatuses": "All statuses",
@@ -1390,7 +1394,7 @@
       "completed2": "Completed",
       "failed2": "Failed",
       "paused2": "Paused",
-      "canceled2": "Canceled",
+      "canceled2": "Cancelled",
       "allTypes": "All types",
       "manual": "Manual",
       "scheduled": "Scheduled",
@@ -1591,7 +1595,9 @@
       "registry": "registry",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Service running",
+      "readOnlyHint": "Created via the API. Not editable here; it is kept unchanged when you save."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Failed to fetch devices",

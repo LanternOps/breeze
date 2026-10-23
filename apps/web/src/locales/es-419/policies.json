@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Aplicado a todas las organizaciones. Desmarque \"Todas las organizaciones\" para elegir un subconjunto.",
       "polite": "educado",
       "loading": "Cargando…",
-      "loadMoreOrganizations": "Cargar más organizaciones"
+      "loadMoreOrganizations": "Cargar más organizaciones",
+      "appliedToAllOrgs": "La política ahora se aplica a todas las organizaciones",
+      "removedFromAllOrgs": "La política ya no se aplica a todas las organizaciones"
     },
     "featureTabs": {
       "automationTab": {
@@ -1337,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "No se encontraron políticas de software. Cree uno para comenzar.",
       "recentViolations": "Violaciones recientes",
       "noCurrentSoftwareViolations": "No hay violaciones de software actuales.",
-      "violationS": "violaciones",
       "remediation": "Remediación: {{value}}",
       "checked": "Comprobado: {{date}}",
       "deactivatePolicy": "Desactivar política",
@@ -1375,7 +1376,10 @@
       "coverageVendor": "Proveedor",
       "coverageReason": "Motivo",
       "vendorOnlyAgent": "Agente solo del proveedor",
-      "coverageRowsNote": "Mostrando {{shown}} de {{total}}"
+      "coverageRowsNote": "Mostrando {{shown}} de {{total}}",
+      "violationCount": "{{count}} violación",
+      "violationCount_one": "{{count}} violación",
+      "violationCount_other": "{{count}} violaciones"
     },
     "deploymentList": {
       "running": "En ejecución",
@@ -1591,7 +1595,9 @@
       "registry": "registro",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Servicio en ejecución",
+      "readOnlyHint": "Creada mediante la API. No se puede editar aquí; se conserva sin cambios al guardar."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "No se pudieron recuperar los dispositivos",

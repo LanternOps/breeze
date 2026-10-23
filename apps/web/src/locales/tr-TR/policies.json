@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Tüm kuruluşlara uygulanır. Bir alt küme seçmek için \"Tüm kuruluşlar\" seçeneğinin işaretini kaldırın.",
       "polite": "kibar",
       "loading": "Yükleniyor…",
-      "loadMoreOrganizations": "Daha fazla kuruluş yükle"
+      "loadMoreOrganizations": "Daha fazla kuruluş yükle",
+      "appliedToAllOrgs": "Politika artık tüm kuruluşlara uygulanıyor",
+      "removedFromAllOrgs": "Politika artık tüm kuruluşlara uygulanmıyor"
     },
     "featureTabs": {
       "automationTab": {
@@ -1337,7 +1339,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Hiçbir yazılım ilkesi bulunamadı. Başlamak için bir tane oluşturun.",
       "recentViolations": "Son İhlaller",
       "noCurrentSoftwareViolations": "Mevcut yazılım ihlali yok.",
-      "violationS": "ihlalleri",
       "remediation": "Düzeltme: {{value}}",
       "checked": "Kontrol edildi: {{date}}",
       "deactivatePolicy": "Politikayı Devre Dışı Bırak",
@@ -1375,7 +1376,10 @@
       "coverageVendor": "Sağlayıcı",
       "coverageReason": "Neden",
       "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı",
-      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor"
+      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "violationCount": "{{count}} ihlal",
+      "violationCount_one": "{{count}} ihlal",
+      "violationCount_other": "{{count}} ihlal"
     },
     "deploymentList": {
       "running": "Koşuyor",
@@ -1591,7 +1595,9 @@
       "registry": "kayıt defteri",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Hizmet çalışıyor",
+      "readOnlyHint": "API ile oluşturuldu. Burada düzenlenemez; kaydettiğinizde olduğu gibi korunur."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Cihazlar getirilemedi",

@@ -929,10 +929,11 @@ export default function ComplianceDashboard({
               <div>
                 <p className="font-medium">{row.device.hostname}</p>
                 <p className="text-xs text-muted-foreground">
-                  {Array.isArray(row.compliance.violations)
-                    ? row.compliance.violations.length
-                    : 0}{" "}
-                  {i18n.t("policies:software.complianceDashboard.violationS")}
+                  {i18n.t("policies:software.complianceDashboard.violationCount", {
+                    count: Array.isArray(row.compliance.violations)
+                      ? row.compliance.violations.length
+                      : 0,
+                  })}
                 </p>
               </div>
               <div className="text-xs text-muted-foreground">

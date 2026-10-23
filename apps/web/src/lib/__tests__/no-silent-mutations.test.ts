@@ -542,6 +542,9 @@ const TARGET_GLOBS = [
   // restarted from their fix — or reverted to full history — when it did not.
   'src/components/devices/ReliabilityBaselineDialog.tsx',
   'src/components/devices/ReliabilityBaselineSection.tsx',
+  // Sweep G4: peripheral policy save + config-policy partner-wide toggle toast their outcome.
+  'src/components/peripherals/PeripheralPolicyForm.tsx',
+  'src/components/configurationPolicies/OrganizationScopePanel.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -952,7 +955,7 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
     // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
-    expect(absoluteFiles.length).toBe(247);
+    expect(absoluteFiles.length).toBe(249);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
