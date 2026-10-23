@@ -1533,6 +1533,15 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
     return c.json({ error: orgScope.error }, orgScope.status);
   }
   const orgCondition = orgScope.orgCondition(devices.orgId);
+  // "Sessions in range" follows the selected range (preset or custom, #9650);
+  // the other figures here (uptime, active sessions) are point-in-time.
+  const sessionWindow = resolveAnalyticsDateWindow(
+    { range: c.req.query('range'), startDate: c.req.query('startDate'), endDate: c.req.query('endDate') },
+    (range) => (range === '24h' ? 1 : range === '7d' ? 7 : 30)
+  );
+  if (!sessionWindow.ok) {
+    return c.json({ error: sessionWindow.error }, sessionWindow.status);
+  }
 
   // `allowedSiteIds` is populated by requirePermission. `undefined` is
   // unrestricted; `[]` is restricted to no sites and must never widen into
@@ -1594,9 +1603,9 @@ metricsRoutes.get('/', authMiddleware, requireScope('organization', 'partner', '
       .where(activeSessionCondition);
     const activeSessions = Number(sessionRow?.count ?? 0);
 
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const totalSessionCondition = and(
-      gte(remoteSessions.createdAt, thirtyDaysAgo),
+      gte(remoteSessions.createdAt, sessionWindow.since),
+      sessionWindow.until ? lt(remoteSessions.createdAt, sessionWindow.until) : undefined,
       orgCondition,
       siteCondition
     );

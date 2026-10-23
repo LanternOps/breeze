@@ -82,7 +82,7 @@ const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'RESTORE_POINT_ATTEMPT_RETEN
  * Execution allowance on top of the delivery TTL: the longest server-side
  * command timeout is 24 h (WHOLE_MACHINE_RESTORE_TIMEOUT_MS in
  * services/commandTimeouts.ts); the three restore-point triggers are all far
- * shorter (patch 2 h, software install 55 min, script = its own timeout).
+ * shorter (patch 2 h, software install 75 min, script = its own timeout).
  */
 const COMMAND_EXECUTION_ALLOWANCE_MS = DAY_MS;
 

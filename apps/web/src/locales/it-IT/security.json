@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "Nessun dispositivo trovato.",
     "none": "Nessuno",
+    "unknown": "Sconosciuto",
+    "tpmNotReported": "Non segnalato dall'agente",
     "os": "OS",
     "pageOf": "Pagina {{page}} di {{totalPages}}",
     "partial": "Parziale",
@@ -1950,10 +1952,27 @@
       "status": "Stato",
       "approval": "Approvazione",
       "requested": "Richiesta",
-      "completed": "Completata"
+      "completed": "Completata",
+      "decision": "Decisione"
     },
     "loading": "Caricamento remediation...",
-    "empty": "Nessuna remediation trovata."
+    "empty": "Nessuna remediation trovata.",
+    "decision": {
+      "approve": "Approva",
+      "reject": "Rifiuta",
+      "approveTitle": "Approvare la correzione?",
+      "rejectTitle": "Rifiutare la correzione?",
+      "approveMessage": "Il controllo CIS {{checkId}} verrà messo in coda per l'esecuzione su {{device}}. L'agente modificherà la configurazione del dispositivo.",
+      "rejectMessage": "La correzione in attesa per il controllo CIS {{checkId}} su {{device}} verrà annullata. Sul dispositivo non verrà eseguito nulla.",
+      "noteLabel": "Nota (facoltativa)",
+      "approved": "Correzione per {{checkId}} approvata e messa in coda.",
+      "rejected": "Correzione per {{checkId}} rifiutata.",
+      "approveFailed": "Impossibile approvare la correzione",
+      "rejectFailed": "Impossibile rifiutare la correzione",
+      "queueFailed": "L'approvazione è stata registrata, ma non è stato possibile mettere in coda la correzione. È di nuovo in attesa di approvazione; riprova.",
+      "mfaRequired": "Per approvare o rifiutare una correzione serve una sessione avviata con l'autenticazione a più fattori. Esci e accedi di nuovo con l'MFA.",
+      "ownRequest": "Hai richiesto tu questa correzione, quindi deve approvarla un altro utente."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Baseline di audit",

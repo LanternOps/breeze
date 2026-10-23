@@ -3484,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Es wird noch nichts überwacht",
+        "titleWithCheck": "Keine SNMP-Integritätsdaten",
+        "descriptionWithCheck": "Für dieses Gerät ist eine Netzwerkprüfung aktiv, daher wird die Erreichbarkeit weiterhin erfasst. Aktivieren Sie SNMP, um zusätzlich Integritätsdaten zu erfassen.",
         "action": "Überwachung einrichten",
         "benefit": {
           "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",

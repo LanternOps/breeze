@@ -311,6 +311,8 @@
     "no": "Hayır",
     "noDevicesFound": "Cihaz bulunamadı.",
     "none": "Hiçbiri",
+    "unknown": "Bilinmiyor",
+    "tpmNotReported": "Ajan tarafından bildirilmedi",
     "os": "İşletim Sistemi",
     "pageOf": "Sayfa {{page}} / {{totalPages}}",
     "partial": "Kısmi",
@@ -1950,10 +1952,27 @@
       "status": "Durum",
       "approval": "Onay",
       "requested": "İstendi",
-      "completed": "Tamamlandı"
+      "completed": "Tamamlandı",
+      "decision": "Karar"
     },
     "loading": "Düzeltmeler yükleniyor...",
-    "empty": "Hiçbir düzeltme bulunamadı."
+    "empty": "Hiçbir düzeltme bulunamadı.",
+    "decision": {
+      "approve": "Onayla",
+      "reject": "Reddet",
+      "approveTitle": "Düzeltme onaylansın mı?",
+      "rejectTitle": "Düzeltme reddedilsin mi?",
+      "approveMessage": "Bu işlem CIS denetimi {{checkId}} için {{device}} üzerinde çalıştırılmak üzere kuyruğa alır. Ajan cihazın yapılandırmasını değiştirecek.",
+      "rejectMessage": "Bu işlem {{device}} üzerindeki CIS denetimi {{checkId}} için bekleyen düzeltmeyi iptal eder. Cihazda hiçbir şey çalışmaz.",
+      "noteLabel": "Not (isteğe bağlı)",
+      "approved": "{{checkId}} düzeltmesi onaylandı ve kuyruğa alındı.",
+      "rejected": "{{checkId}} düzeltmesi reddedildi.",
+      "approveFailed": "Düzeltme onaylanamadı",
+      "rejectFailed": "Düzeltme reddedilemedi",
+      "queueFailed": "Onay kaydedildi ancak düzeltme kuyruğa alınamadı. Yeniden onay bekliyor; tekrar deneyin.",
+      "mfaRequired": "Bir düzeltmeyi onaylamak veya reddetmek için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Çıkış yapıp MFA ile yeniden giriş yapın.",
+      "ownRequest": "Bu düzeltmeyi siz istediniz; başka bir kullanıcının onaylaması gerekir."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Denetim Esasları",

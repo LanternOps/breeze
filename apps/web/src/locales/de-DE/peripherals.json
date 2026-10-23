@@ -110,6 +110,7 @@
     "serialNumber": "Seriennummer",
     "allow": "Zulassen:",
     "reason": "Grund",
+    "expiresAt": "Läuft ab (Ihre Ortszeit)",
     "updatePolicy": "Richtlinie aktualisieren",
     "createPolicy": "Richtlinie erstellen"
   }

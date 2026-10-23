@@ -3484,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Nothing is being monitored yet",
+        "titleWithCheck": "No SNMP health data",
+        "descriptionWithCheck": "A network check is active for this device, so reachability is still tracked. Turn on SNMP to also collect health data.",
         "action": "Set up monitoring",
         "benefit": {
           "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",

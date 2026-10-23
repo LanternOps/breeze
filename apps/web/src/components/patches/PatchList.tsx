@@ -62,6 +62,10 @@ export type Patch = {
   /** Catalog identity (source + externalId is unique) — shown when titles collide (#9533). */
   externalId?: string;
   version?: string | null;
+  /** Package / KB identifier from the catalog (patches.package_id). */
+  packageId?: string | null;
+  /** When the catalog first imported the patch (patches.created_at). */
+  firstSeenAt?: string;
 };
 
 type PatchListProps = {

@@ -20,12 +20,6 @@ export const isWebhookActive = (webhook: Pick<Webhook, 'status' | 'enabled'>): b
 
 export type WebhookAuthType = 'hmac' | 'bearer';
 
-export type WebhookAuth = {
-  type: WebhookAuthType;
-  secret?: string;
-  token?: string;
-};
-
 export type WebhookHeader = {
   key: string;
   // GET /webhooks returns every header value as a redaction marker object.
@@ -43,11 +37,11 @@ export type Webhook = {
   lastTriggered?: string;
   successCount?: number;
   failureCount?: number;
-  secret?: string;
-  bearerToken?: string;
-  auth?: WebhookAuth;
   // Set by GET /webhooks in place of the secret itself, which is never returned.
   hasSecret?: boolean;
+  // Derived by the API (#9652): 'bearer' when an `Authorization: Bearer …`
+  // header is stored, else 'hmac' when a signing secret is, else 'none'.
+  authType?: WebhookAuthType | 'none';
   headers?: WebhookHeader[];
 };
 

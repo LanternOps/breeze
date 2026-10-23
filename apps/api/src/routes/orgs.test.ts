@@ -755,6 +755,21 @@ describe('org routes', () => {
         return captured;
       };
 
+      it('persists the launch default on direct system creation without granting paid entitlement', async () => {
+        const captured = captureInsertedValues();
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner', plan: 'enterprise', maxDevices: 1000 })
+        });
+        expect(res.status).toBe(201);
+        expect(captured[0]?.purchaseSelection).toEqual({
+          catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly',
+        });
+        expect(captured[0]).not.toHaveProperty('plan');
+        expect(captured[0]).not.toHaveProperty('maxDevices');
+      });
+
       it('writes settings.ticketing.inbound.enabled=false when the caller sends no settings', async () => {
         const captured = captureInsertedValues();
 

@@ -3484,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Henüz hiçbir şey izlenmiyor",
+        "titleWithCheck": "SNMP sağlık verisi yok",
+        "descriptionWithCheck": "Bu cihaz için etkin bir ağ denetimi var, bu nedenle erişilebilirlik izlenmeye devam ediyor. Ayrıca sağlık verisi toplamak için SNMP'yi açın.",
         "action": "İzlemeyi ayarla",
         "benefit": {
           "printer": "Toner ve mürekkep seviyelerini, kağıt tepsilerini, sayfa sayaçlarını ve yazıcı hatalarını görmek için SNMP’yi açın.",

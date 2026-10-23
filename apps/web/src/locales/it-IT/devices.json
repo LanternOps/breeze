@@ -3484,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Non è ancora attivo alcun monitoraggio",
+        "titleWithCheck": "Nessun dato di integrità SNMP",
+        "descriptionWithCheck": "Per questo dispositivo è attivo un controllo di rete, quindi la raggiungibilità è comunque monitorata. Attiva SNMP per raccogliere anche i dati di integrità.",
         "action": "Configura il monitoraggio",
         "benefit": {
           "printer": "Attiva SNMP per visualizzare i livelli di toner e inchiostro, i vassoi della carta, i contatori delle pagine e gli errori della stampante.",

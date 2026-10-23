@@ -16,7 +16,7 @@ import { useTranslation } from 'react-i18next';
 import ChartWidget from './ChartWidget';
 import GaugeWidget from './GaugeWidget';
 import QueryBuilder, { type QueryResult } from './QueryBuilder';
-import CapacityForecast, { type ForecastPoint, type Thresholds } from './CapacityForecast';
+import CapacityForecast, { type ForecastPoint } from './CapacityForecast';
 import SLAComplianceCard from './SLAComplianceCard';
 import Sparkline from '../dashboard/Sparkline';
 import { fetchWithAuth } from '../../stores/auth';
@@ -31,6 +31,9 @@ const dashboardOptions = [
   { value: 'capacity', labelKey: 'analytics.analyticsPage.dashboardOptions.capacity' },
   { value: 'sla', labelKey: 'analytics.analyticsPage.dashboardOptions.sla' }
 ];
+
+/** Online devices the Query Builder covers; the page says so when it is hit. */
+const QUERY_DEVICE_LIMIT = 100;
 
 const dateRanges = [
   { value: '24h', labelKey: 'analytics.analyticsPage.dateRanges.last24Hours' },
@@ -68,6 +71,8 @@ type SummaryMetrics = {
 
 type ComplianceStats = {
   complianceRate: number;
+  /** False when the response proves there is nothing to evaluate (zero checks). */
+  hasChecks?: boolean;
   totalPolicies?: number;
   enabledPolicies?: number;
 };
@@ -75,13 +80,13 @@ type ComplianceStats = {
 type CapacityState = {
   currentValue: number;
   data: ForecastPoint[];
-  thresholds?: Thresholds;
 };
 
 type SlaSummary = {
   uptime: number;
   target?: number;
-  incidents?: number;
+  /** Name of the SLA definition the figures belong to. */
+  name?: string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -274,7 +279,12 @@ const normalizeComplianceStats = (raw: unknown): ComplianceStats => {
     }
   }
 
+  const overviewTotal = ['compliant', 'non_compliant', 'nonCompliant', 'pending', 'error']
+    .reduce((sum, key) => sum + pickNumber(overview[key]), 0);
+  const hasOverview = Object.keys(overview).length > 0;
+
   return {
+    hasChecks: hasOverview ? overviewTotal > 0 : undefined,
     complianceRate: complianceRate ?? 0,
     totalPolicies: pickOptionalNumber(source.totalPolicies, source.total, source.policyCount),
     enabledPolicies: pickOptionalNumber(source.enabledPolicies, source.enabled)
@@ -302,18 +312,9 @@ const normalizeCapacity = (raw: unknown): CapacityState => {
     })
     : [];
 
-  const thresholdsRecord = getRecord(record.thresholds);
-  const thresholds = Object.keys(thresholdsRecord).length
-    ? {
-      warning: pickOptionalNumber(thresholdsRecord.warning, thresholdsRecord.warn),
-      critical: pickOptionalNumber(thresholdsRecord.critical, thresholdsRecord.crit)
-    }
-    : undefined;
-
   return {
     currentValue: pickNumber(record.currentValue, record.current, record.utilization, forecast[0]?.value),
-    data: forecast,
-    thresholds
+    data: forecast
   };
 };
 
@@ -335,8 +336,7 @@ const normalizeSla = (raw: unknown): SlaSummary | null => {
 
   return {
     uptime,
-    target: pickOptionalNumber(sourceRecord.targetPercentage, sourceRecord.target, sourceRecord.slaTarget),
-    incidents: pickOptionalNumber(sourceRecord.incidents, sourceRecord.incidentCount, sourceRecord.breachCount)
+    target: pickOptionalNumber(sourceRecord.targetPercentage, sourceRecord.target, sourceRecord.slaTarget)
   };
 };
 
@@ -524,11 +524,6 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
 
   const customRangeComplete = dateRange === 'custom' && isCompleteCustomRange(customStartDate, customEndDate);
 
-  const rangeLabel = useMemo(
-    () => t(/* i18n-dynamic */ dateRanges.find(option => option.value === dateRange)?.labelKey ?? 'analytics.analyticsPage.dateRanges.customRange'),
-    [dateRange, t]
-  );
-
   const changeDateRange = useCallback((value: string) => {
     // Seed an empty custom range with the last 30 days so switching to it
     // applies a real, visible window instead of an implicit default (#9649).
@@ -696,7 +691,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
                   summary = {
                     uptime,
                     target: pickOptionalNumber(compliance.uptimeTarget, firstDefinition.uptimeTarget) ?? summary?.target,
-                    incidents: summary?.incidents
+                    name: typeof firstDefinition.name === 'string' ? firstDefinition.name : undefined
                   };
                 }
               } catch {
@@ -716,7 +711,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
         })(),
         (async () => {
           try {
-            const devicesData = await fetchJson('/devices?limit=100&status=online');
+            const devicesData = await fetchJson(`/devices?limit=${QUERY_DEVICE_LIMIT}&status=online`);
             const payload = getRecord(devicesData);
             const data = Array.isArray(payload.data) ? payload.data : [];
             setDeviceIds(
@@ -916,7 +911,6 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             {t('analytics.analyticsPage.widgets.alertTable.title')}
           </a>
         </h3>
-        <p className="text-xs text-muted-foreground">{rangeLabel}</p>
       </div>
       {alertRows.length === 0 ? (
         <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
@@ -978,6 +972,7 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     <GaugeWidget
       title={t('analytics.analyticsPage.widgets.complianceGauge.title')}
       value={complianceStats.complianceRate}
+      empty={complianceStats.hasChecks === false}
       description={complianceStats.totalPolicies !== undefined
         ? t('analytics.analyticsPage.widgets.complianceGauge.policiesEvaluated', {
           count: complianceStats.enabledPolicies ?? complianceStats.totalPolicies
@@ -990,27 +985,15 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
     <SLAComplianceCard
       uptime={slaSummary.uptime}
       target={slaSummary.target}
-      incidents={slaSummary.incidents}
-      periodLabel={rangeLabel}
+      definitionName={slaSummary.name}
     />
-  ) : (
-    <div className="flex h-full flex-col rounded-lg border bg-card p-5 shadow-xs">
-      <div className="mb-4 flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold">{t('analytics.slaComplianceCard.title')}</h3>
-        <p className="text-xs text-muted-foreground">{rangeLabel}</p>
-      </div>
-      <div className="flex flex-1 items-center justify-center rounded-md border border-dashed py-10 text-xs text-muted-foreground">
-        {t('analytics.chartWidget.noData')}
-      </div>
-    </div>
-  );
+  ) : null;
 
   const capacityCard = (
     <CapacityForecast
       title={t('analytics.analyticsPage.widgets.capacity.title')}
       currentValue={capacityForecast.currentValue}
       data={capacityForecast.data}
-      thresholds={capacityForecast.thresholds}
     />
   );
 
@@ -1245,6 +1228,11 @@ export default function AnalyticsPage({ timezone }: AnalyticsPageProps) {
             </button>
             {exploreOpen && (
               <>
+                {deviceIds.length >= QUERY_DEVICE_LIMIT && (
+                  <p className="text-xs text-muted-foreground">
+                    {t('analytics.queryBuilder.coverageNote', { count: QUERY_DEVICE_LIMIT })}
+                  </p>
+                )}
                 <QueryBuilder deviceIds={deviceIds} onQueryResult={handleQueryResult} />
                 {queryResult && (
                   <ChartWidget

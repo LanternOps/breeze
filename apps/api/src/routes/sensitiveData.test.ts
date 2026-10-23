@@ -490,6 +490,34 @@ describe('sensitive data routes', () => {
       expect(queueCommand).toHaveBeenCalledTimes(1);
     });
 
+    it('dashboard remediated24h counts by remediatedAt, not lastSeenAt (#9682)', async () => {
+      const h = 60 * 60 * 1000;
+      const ago = (ms: number) => new Date(Date.now() - ms);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            // seen 2 days ago, remediated 1h ago -> counted
+            { dataType: 'pci', risk: 'high', status: 'remediated', lastSeenAt: ago(48 * h), remediatedAt: ago(1 * h) },
+            // seen 23h ago, remediated 3 days ago -> not counted
+            { dataType: 'pci', risk: 'high', status: 'remediated', lastSeenAt: ago(23 * h), remediatedAt: ago(72 * h) },
+            // remediated with no timestamp -> not counted
+            { dataType: 'pci', risk: 'high', status: 'remediated', lastSeenAt: ago(1 * h), remediatedAt: null },
+            // status gate: only 'remediated' rows count, whatever their timestamps
+            { dataType: 'pci', risk: 'high', status: 'open', lastSeenAt: ago(1 * h), remediatedAt: ago(1 * h) }
+          ])
+        })
+      } as any);
+
+      const res = await app.request('/sensitive-data/dashboard', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.totals.remediated24h).toBe(1);
+    });
+
     it('dashboard excludes out-of-site findings for a site-restricted user', async () => {
       // Site-restricted path adds an innerJoin before .where(); the join filters
       // out the forbidden-site finding, so only the allowed-site row is returned.

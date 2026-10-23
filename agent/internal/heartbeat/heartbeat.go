@@ -456,13 +456,17 @@ type Heartbeat struct {
 	client                    *http.Client
 	clientMu                  sync.RWMutex
 	stopChan                  chan struct{}
-	metricsCol                *collectors.MetricsCollector
-	hardwareCol               *collectors.HardwareCollector
-	softwareCol               *collectors.SoftwareCollector
-	softwareObservationFn     func() (collectors.SoftwareInventoryObservationV2, error)
-	inventoryCol              *collectors.InventoryCollector
-	vpnCol                    *collectors.VPNCollector
-	changeTrackerCol          *collectors.ChangeTrackerCollector
+	// pamUnableStop closes as Stop begins, ahead of the bounded drain that
+	// precedes stopChan, so an in-flight PAM unable report is cancelled
+	// within the shutdown stage budget.
+	pamUnableStop         chan struct{}
+	metricsCol            *collectors.MetricsCollector
+	hardwareCol           *collectors.HardwareCollector
+	softwareCol           *collectors.SoftwareCollector
+	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol          *collectors.InventoryCollector
+	vpnCol                *collectors.VPNCollector
+	changeTrackerCol      *collectors.ChangeTrackerCollector
 	// hardwareCollectFn / memoryCollectFn override the hardware-send path's
 	// collectors in tests; nil uses hardwareCol.CollectHardware and
 	// collectors.CollectMemoryModules. memoryCollectTimeout 0 = default.
@@ -1148,15 +1152,16 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	outboxRoot := backupResultOutboxDir()
 	h := &Heartbeat{
-		config:       cfg,
-		secureToken:  secToken,
-		client:       httpClient,
-		stopChan:     make(chan struct{}),
-		metricsCol:   collectors.NewMetricsCollector(),
-		hardwareCol:  collectors.NewHardwareCollector(),
-		softwareCol:  collectors.NewSoftwareCollectorWithVersion(version),
-		inventoryCol: collectors.NewInventoryCollector(),
-		vpnCol:       collectors.NewVPNCollector(),
+		config:        cfg,
+		secureToken:   secToken,
+		client:        httpClient,
+		stopChan:      make(chan struct{}),
+		pamUnableStop: make(chan struct{}),
+		metricsCol:    collectors.NewMetricsCollector(),
+		hardwareCol:   collectors.NewHardwareCollector(),
+		softwareCol:   collectors.NewSoftwareCollectorWithVersion(version),
+		inventoryCol:  collectors.NewInventoryCollector(),
+		vpnCol:        collectors.NewVPNCollector(),
 		changeTrackerCol: collectors.NewChangeTrackerCollector(
 			filepath.Join(config.GetDataDir(), "change_tracker_snapshot.json"),
 		),
@@ -2477,6 +2482,9 @@ func (h *Heartbeat) DrainAndWait(ctx context.Context) {
 
 func (h *Heartbeat) Stop() {
 	h.stopOnce.Do(func() {
+		if h.pamUnableStop != nil {
+			close(h.pamUnableStop)
+		}
 		h.stopHardwareHealth()
 		h.stopTimeSync()
 		h.stopWorkloads()
