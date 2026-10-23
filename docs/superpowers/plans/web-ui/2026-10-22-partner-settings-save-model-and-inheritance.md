@@ -73,7 +73,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `partner-settings-drilldown-row-<orgId>`
   - `partner-settings-tab-<key>` (already emitted)
 - **Copy:** fixed meanings come from §5.4: *has its own value*, *overrides*, *shadowed*, *in effect*. Badge labels are "Locks orgs", "Locks orgs when enabled", "Org can override", "Org can override, up to {{limit}}" and "Partner-wide".
-- **Public repo:** no customer names, hostnames, IPs or internal infra. Some partner-settings fields are stored today but their enforcement is tracked privately. They appear in this plan only as "fields whose enforcement is tracked privately", which is the §5.2 `unclassified` path. Never enumerate them in code comments, tests, commits or PR text.
+- **Public repo:** no customer names, hostnames, IPs or internal infra. A field without a verified runtime consumer defaults to `unclassified` (§5.2). Code, tests, commits and PR text never give a reason for any individual field's classification.
 - **Tenancy (W3):**
   - Reads run in the request DB context (`withDbAccessContext`, set by `authMiddleware`). Never use a bare pool or `withSystemDbAccessContext` in the routes.
   - There is no migration, no new table and no persisted state (§11). If a task appears to need one, stop and return to the spec.
@@ -102,7 +102,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
 | Caller verification renders under Security | `:742-746`. Component `callerVerification/CallerVerificationPolicyForm.tsx:49` returns null when the flag is off (`:50`). `<form>` at `:121` (`cv-policy-form`), Save at `:199`. Flag hook `lib/useCallerVerificationEnabled.ts:9` |
 | Known guests is rendered at the bottom of Regional and mutates with bare `fetchWithAuth` (POST `:55`, DELETE `:75`) | `PartnerRegionalTab.tsx:177`; `KnownGuestsSettings.tsx:32,55,75`; own `<h2>` at `:88` |
 | The ML autosave no longer refetches the page. #9205 already fixed the §1.1 draft-wiping bug: `onSaved` patches `partner.settings.ml` | `PartnerSettingsPage.tsx:803` |
-| Validation runs only inside `handleSave` (maintenance window, website). The IP-allowlist lockout `confirm` runs there too | `:452-468`, `:528-546` |
+| The Save **gate** checks only `aiBudgetsValid`. The website is validated only inside `handleSave`. The maintenance window already shows an inline error (`PartnerDefaultsTab.tsx:28,85`) but does not gate Save. The lockout `confirm` runs in `handleSave` | `PartnerSettingsPage.tsx:452-468`, `:528-546`, `:644` |
 | Only `beforeunload` guards navigation. The precedent for `astro:before-preparation` is `ScriptForm` | `:304-310`; `components/scripts/ScriptForm.tsx:370-387` |
 | The rail is already sticky and scrollable (F1). Items are hash anchors only, with no `href` kind | `SettingsSectionNav.tsx:6-37,50-55,83` |
 | In-card saves: Login page PUT `/partners/me/login-branding` (`LoginBrandingCard.tsx:78-87`); Trust Center `updateTrustPageTemplate` with `REVISION_MISMATCH` → `load()` discards the draft (`TrustTemplateSettings.tsx:99-124`); AI feature defaults PUT `/ai/models/assignments` (`aiModels/FeatureDefaultsCard.tsx:255`); AI data policy PUT `/partner/ai/data-policy`, autosaved on radio change and on blur (`PartnerAiDataPolicyCard.tsx:57,123,129-135`) | — |
@@ -226,8 +226,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `every control has an accessible name on <tab>`: keep the existing helper.
 - [ ] **Step 2: Run** `cd apps/web && npx vitest run src/components/settings/PartnerSettingsTabs.a11y.test.tsx`. Expected: FAIL on the tabs without a heading (Security, Notifications, Event logs, Defaults, Branding, AI budgets, AI approvals) and on the tabs whose own `h2` duplicates the label.
 - [ ] **Step 3: Implement** the shell heading. Task 4 fixes the child components. Keep this task's diff to the shell.
-- [ ] **Step 4: Run** the test. Expected: still FAIL only for the tabs Task 4 owns. Record the list in the commit body.
-- [ ] **Step 5: Commit** `feat(web): partner settings panel heading on every tab (#9170)`
+- [ ] **Step 4: Run** the test. Expected: it still FAILs, but only for the tabs Task 4 owns. Do **not** commit while it is red. Tasks 3 and 4 land as one commit, made at the end of Task 4.
 
 ### Task 4: Child panels: drop their own `h2`, flatten nested cards, cap helper width
 
@@ -257,7 +256,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
 - [ ] **Step 2: Run** the a11y test. Expected: FAIL on Notifications, Defaults, Branding, Remote access, and on the heading-order cases left over from Task 3.
 - [ ] **Step 3: Implement** the per-file changes. Update any co-located test that queried `getByRole('heading', { level: 2 })` to level 3.
 - [ ] **Step 4: Run** the a11y test plus every co-located test of the touched files. Expected: PASS.
-- [ ] **Step 5: Commit** `fix(web): partner settings panels — one heading ladder, no nested cards (#9170)`
+- [ ] **Step 5: Commit** Tasks 3 and 4 together: `feat(web): partner settings panel headings, one heading ladder, no nested cards (#9170)`
 
 ### Task 5: Caller verification and Known guests tabs; Ticketing as a rail link
 
@@ -358,10 +357,10 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `remoteAccessProviders.*`, `networkProxy.dedicatedTunnelOrigin` and `defaults.maxEnrollmentLinkTtlMinutes` → `partnerOnly`.
   - `regional.timezone` and `regional.language` → `overridable`. The other Regional fields → `partnerOnly`.
 - Branding fields whose consumers disagree (§5.2, reports vs documents) carry two `consumers` entries, or are `unclassified`.
-- **Any field the W3 inventory cannot tie to a verified runtime consumer is `unclassified`.** That includes fields whose enforcement is tracked privately. The maintainer supplies that inventory before this step (Gate B 9). Do not record the reason in code.
+- **Any field the W3 inventory cannot tie to a verified runtime consumer is `unclassified`.** The maintainer supplies that inventory before this step (Gate B 9). Do not record the reason for any field in code.
 - **Secret fields never report `overrides`.** Encryption uses random IVs (`services/secretCrypto.ts:292`), so equal plaintexts do not compare equal as ciphertexts. A secret field's `counts.overrides` is therefore `null`, and its line says "N set their own" rather than "N override". `ownValue` and `shadowed` need no equality test, so they stay.
 - **Completeness boundaries:**
-  - Open-ended dictionaries (`preferences`, `policyDefaults`; `types/index.ts:686`) are **one** entry each, covering the whole sub-object, not one entry per key.
+  - Open-ended dictionaries (`preferences`, `types/index.ts:686`; `policyDefaults`, `:705`) are **one** entry each, covering the whole sub-object, not one entry per key.
   - Optional nested objects recurse.
   - Arrays (for example `alertThresholdPercents`) are leaves.
   - Regional `timezone`/`language`/`dateFormat`/`timeFormat`/`businessHours` sit on `PartnerSettings` itself (`:802`) and are covered explicitly.
@@ -413,8 +412,8 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   type OrgSource =
     | { kind: 'orgSettings'; path: readonly string[] }            // organizations.settings #> path
     | { kind: 'aiBudgets'; column: keyof AiBudgetRow }
-    | { kind: 'portalBranding'; column: string }
-    | { kind: 'pushoverChannels'; key: string }                   // notification_channel_configs.config ->> key, per channel
+    | { kind: 'portalBranding'; column: keyof typeof portalBranding.$inferSelect }   // rendered via the Drizzle column object, never a string
+    | { kind: 'pushoverChannels'; key: PushoverConfigKey }        // a literal union from partnerPushoverDefaults.ts; config ->> key per channel
     | null;
   export type Bucket = 'ownValue'|'overrides'|'shadowed'|'clamped';
   export interface FieldBinding {
@@ -439,6 +438,10 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `projection never returns a secret path`: walk every non-presence projection's output keys and expect `isSecretJsonPath([...entry.paths[0].split('.'), key])===false`.
   - `secret overrides is not computable`: `bucketSql('overrides', …)===null` for every secret entry.
   - `bucketSql compiles with bound parameters only`: `.toSQL().params` holds the partner value, and the SQL text contains no fixture string.
+  - `every binding path segment and catalog id is a safe identifier`:
+    - Every `orgSettings.path` segment, and every `pushoverChannels.key`, matches `/^[A-Za-z0-9_]+$/`.
+    - Every catalog id matches `/^[A-Za-z0-9_.]+$/`.
+    - JSON paths reach SQL only as a bound `text[]` (`settings #> $n::text[]`).
   - `classify` table tests, one row per §5.4 kind:
     - locks set + org has own value → `shadowed`
     - overridable set + org differs → `overrides`
@@ -483,7 +486,9 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `export async function aggregateTab(tab: CatalogTabKey, ctx: { partnerId: string; accessibleOrgIds: readonly string[] }): Promise<InheritanceTabDto>`
   - `export async function listFieldOrgs(fieldId: string, ctx: …, page: { bucket: Bucket; cursor: string|null; limit: number }): Promise<InheritanceOrgPageDto>`
 - **Query budget:** one read of `partners.settings`, plus **one aggregate query per `OrgSource.kind` that the tab uses**:
-  - `orgSettings`: `SELECT count(*) AS org_count, count(*) FILTER (WHERE <bucketSql>) AS "<fieldId>.<bucket>", … FROM organizations WHERE <partnerVisibleOrgConditions>`.
+  - `orgSettings`: `SELECT count(*) AS org_count, count(*) FILTER (WHERE <bucketSql>) AS c0, … FROM organizations WHERE <partnerVisibleOrgConditions>`.
+    - Aliases are positional (`c0…cN`), mapped back to `(fieldId, bucket)` in TS, so no id ever reaches SQL text.
+    - `ctx.accessibleOrgIds` is `string[]` here. `requireScope('partner')` guarantees it is non-null, and a `null` throws, which the route turns into a 500. It never means "all orgs".
   - `aiBudgets` / `portalBranding`: the same, over `organizations LEFT JOIN <table> USING org_id`, which has one row per org.
   - `pushoverChannels`: a CTE pre-aggregates `bool_or(<predicate>)` per org over `notification_channels ⋈ notification_channel_configs`, then counts orgs. A two-channel org counts once.
 - There is no per-org loop, no per-org query and no `getEffectiveOrgSettings` call (§5.6). No query selects `organizations.settings` whole.
@@ -519,8 +524,10 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `GET /orgs/partners/me/settings-inheritance/orgs?field=<id>&bucket=ownValue|overrides|shadowed|clamped&cursor=&limit=1..50` (defaults: bucket `ownValue`, limit 50) → `{ data: InheritanceOrgPageDto }`
 - Middleware is attached **to each of the two endpoints**, never with `.use('*')`. The router is mounted at `/` inside `orgRoutes`, so a wildcard `use` would gate unrelated org and system routes. The `siteLocation.ts:31` precedent uses per-endpoint middleware. The chain:
   1. `requireScope('partner')`. This excludes system scope, which `canManagePartnerWidePolicies` alone would admit.
-  2. `requirePartner`, `requireOrgRead`.
-  3. An inline gate: `if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'PARTNER_WIDE_REQUIRED' }, 403)`. Reuse the existing message constant. The code string matches what Trust Center already maps (`TrustTemplateSettings.tsx:113`).
+  2. `requirePartner`, then a local `requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action)`. The one in `orgs.ts:194` is file-local and not exported. `siteLocation.ts` follows the same pattern.
+  3. An inline gate: `if (!canManagePartnerWidePolicies(auth)) return c.json({ error: PARTNER_WIDE_READ_DENIED_MESSAGE, code: 'PARTNER_WIDE_REQUIRED' }, 403)`.
+     - Add `PARTNER_WIDE_READ_DENIED_MESSAGE` to `services/partnerWideAccess.ts` next to the write message, which describes a write.
+     - The code string matches what Trust Center already maps (`TrustTemplateSettings.tsx:112`).
   4. `zValidator('query', …)`, where `tab` is a `z.enum` built from `CatalogTabKey` and `field` is refined against `CATALOG_BY_ID`.
 - `accessibleOrgIds` comes from the auth context (`computeAccessibleOrgIds` has already run in `authMiddleware`). Do not call it again.
 
@@ -558,7 +565,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `resolver contract`: for every visible org and every catalog field with a non-null `orgSource`, run the **actual** runtime resolver (`getOrgForwardingConfig`, `getEffectiveAiBudget`, `getOrgAgentUpdateConfig`, `resolveEnrollmentDefaults`, `resolveAiApprovalTimeout`, `applyPartnerPushoverDefaults`, `resolveDocumentBrand`). Assert that its in-effect source (partner vs org) equals the drill-down row's `inEffect`, and that the aggregate counts equal the per-org tallies.
   - `bucketSql agrees with classifyOrg`: for every field and bucket, the set of org ids from the aggregate's SQL predicate equals the set `classifyOrg` labels with that bucket, over all fixture rows.
   - `two-channel org counted once`.
-- [ ] **Step 2: Run** on a per-worktree stack (`pnpm wt-stack up`; copy the root `.env` with the AI keys blanked; set `BREEZE_WORKSPACE_ENABLED=false` and a free `BREEZE_DOCKER_SUBNET`/`BREEZE_CADDY_IP`), then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/partnerSettingsInheritance.integration.test.ts`. Expected: FAIL before Task 12/13 code is present on this branch. Prove the red with `git stash push -m w3-red-<tag>` of the service, or run it first if the tasks are done in order.
+- [ ] **Step 2: Run** on a per-worktree stack (`pnpm wt-stack up`; copy the root `.env` with the AI keys blanked; set `BREEZE_WORKSPACE_ENABLED=false` and a free `BREEZE_DOCKER_SUBNET`/`BREEZE_CADDY_IP`), then `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/partnerSettingsInheritance.integration.test.ts`. Expected: FAIL. Write this file **before** implementing Tasks 12–13. If they already exist, prove the red with a temporary WIP commit that reverts `aggregate.ts`, then drop it. Never use `git stash`: the stack is shared across worktrees.
 - [ ] **Step 3: Fix** any classification the contract exposes **in `classify.ts` or the catalog, never in the resolvers** (§10: no runtime semantics change).
 - [ ] **Step 4: Run.** Expected: PASS. Then run `pnpm wt-stack down`.
 - [ ] **Step 5: Commit** `test(api): partner settings inheritance under real RLS + resolver contract (#9170)`
@@ -584,7 +591,8 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   ```ts
   export type SaveUnitId = 'partnersMe'|'callerVerification'|'loginBranding'|'trustCenter'|'aiFeatureDefaults'|'aiDataPolicy';
   export type SaveOutcome = { status: 'saved'; savedAt: number } | { status: 'failed' } | { status: 'conflict' } | { status: 'cancelled' };
-  export interface SaveUnit { id: SaveUnitId; tabs: readonly TabKey[]; isDirty(): boolean; validity(): { isValid: boolean; firstInvalidFieldId: string|null; tab: TabKey|null }; save(): Promise<SaveOutcome> }
+  export type TabValidity = { isValid: boolean; invalidCount: number; firstInvalidFieldId: string|null };
+  export interface SaveUnit { id: SaveUnitId; tabs: readonly TabKey[]; isDirty(): boolean; validity(): Partial<Record<TabKey, TabValidity>>; save(): Promise<SaveOutcome> }   // valid ⇔ every entry isValid
   export const UNIT_TABS: Record<SaveUnitId, readonly TabKey[]>;   // partnersMe → company, regional, defaults, eventLogs, remoteAccess, security, notifications, aiBudgets, aiApprovals, branding
   export function unitOrder(units: readonly SaveUnit[]): SaveUnit[];  // rail order: the earliest tab of each unit in ALL_TABS
   export async function runSaveUnits(units: readonly SaveUnit[]): Promise<Partial<Record<SaveUnitId, SaveOutcome>>>;
@@ -616,11 +624,12 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
     rebaseline<T>(id, value: T, revision?: number): void;          // baseline = draft = value
     markOutcome(id, o: SaveOutcome): void;
     reloadFromServer(id): Promise<void>;                            // the conflict "Reload theirs"
+    invalidate(id): void;                                           // next ensureLoaded refetches
     reset(): void }                                                 // on page unmount
   export function isSliceDirty(s: Slice<unknown>): boolean;          // stable JSON compare of draft vs baseline
   ```
 - **Page-scoped and not persisted:** no `persist` middleware. `reset()` runs when `PartnerSettingsPage` unmounts and when `currentPartnerId` changes. A panel mounts and unmounts freely without losing its draft.
-- "Load once" means de-duplicated initialisation: concurrent callers share one in-flight promise. A failure leaves `status:'error'`, so the panel's Retry calls `ensureLoaded` again. `reloadFromServer` and `invalidate(id)` force a fresh load. `aiFeatureDefaults` is invalidated after a model or connection mutation on the same tab, replacing `PartnerAiModelsTab.tsx:73`'s `onSaved={reload}`.
+- "Load once" means de-duplicated initialisation: concurrent callers share one in-flight promise. A failure leaves `status:'error'`, so the panel's Retry calls `ensureLoaded` again. `reloadFromServer` and `invalidate(id)` force a fresh load. `aiFeatureDefaults` is invalidated after a model or connection mutation on the same tab, replacing the `onSaved={reload}` at `PartnerAiModelsTab.tsx:75`. `ConnectionsCard` and `ModelsCard` at `:73-74` keep `onChanged={reload}`, which now also calls `invalidate('aiFeatureDefaults')`.
 - **Stale responses are dropped.** Each load and save captures `partnerId` plus a per-slice generation counter. A response for an older generation, or another partner, is ignored.
 - **Edits during a save stay dirty.** `save()` snapshots the draft it sends, and on success `rebaseline` sets `baseline` to **that snapshot**, not the current draft.
 - **Revision metadata is per unit.** Trust Center uses `revision: number`. AI feature defaults carries its per-row stamps (`FeatureDefaultsCard.tsx:160`) inside the slice value, and that unit maps a stamp conflict to `conflict` the same way Task 21 handles Trust Center.
@@ -651,7 +660,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
 **Interfaces:**
 - Produces:
   - `export function buildPartnersMePayload(state: PartnersMeState): Record<string, unknown>`. The payload is byte-identical to today's `handleSave`, including `CLEARABLE_SECURITY_KEYS` nulls, the explicit-boolean-only `networkProxy`, the trimmed website and the `emailSignature` null.
-  - `export function partnersMeValidity(state): Record<TabKey, { isValid: boolean; firstInvalidFieldId: string|null }>`. Website (`isHttpUrl`), id `partner-company-website`. Maintenance window (`isValidMaintenanceWindow`), id `partner-defaults-maintenance-window`. AI budget thresholds: raw text parses, id `partner-ai-budgets-thresholds`.
+  - `export function partnersMeValidity(state): Partial<Record<TabKey, TabValidity>>`. Website (`isHttpUrl`), id `partner-company-website`. Maintenance window (`isValidMaintenanceWindow`), id `partner-defaults-maintenance-window`. AI budget thresholds: raw text parses, id `partner-ai-budgets-thresholds`.
   - `usePartnersMeUnit(): { state; setters; unit: SaveUnit; dirtyTabs: Partial<Record<TabKey, boolean>>; load(): Promise<void> }`. `unit.save()` runs `preflight`, which holds the existing allowlist lockout confirm unchanged (decline → `cancelled`). It then calls `runPartnerSave`. On success it dispatches `PARTNER_SETTINGS_SAVED_EVENT` and re-baselines.
   - `<PartnerSettingsStatus state={…} onOpenTab={(key, fieldId?) => void} />`. It renders `role="status" aria-live="polite" data-testid="partner-settings-status"` with these states (copy keys under `partnerSettingsPage.status.*`):
     - `clean` — "All changes saved · {{time}}", or "All changes saved" when nothing has saved this session
@@ -672,6 +681,8 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `payload unchanged`: build from a fixture state and deep-equal the payload the current `handleSave` sends. Capture it before refactoring by running the old code once and pasting the result as the fixture.
   - `invalid draft on one tab disables Save after switching tabs`: AI budgets thresholds `"50,abc"` → switch to `#company` → Save disabled, and the status reads `invalid` with an AI budgets link. Switching back shows `"50,abc"` with its inline error.
   - `invalid website shows inline error with aria-invalid/aria-describedby and blocks Save`.
+  - `invalid maintenance window blocks Save`: the inline error already exists, and the gate is new.
+- `usePartnersMeUnit.ts` issues the PATCH (through `runPartnerSave`), so it joins `no-silent-mutations` `TARGET_GLOBS` (+1).
   - `status lists every dirty tab before save` (#9170 comment): edit Company city and Security max sessions → the status text names both tabs, and clicking "Company" opens `#company`.
   - `invalid link focuses the first invalid field`.
   - `save disabled without partner-wide access`: `canManagePartnerWide:false` → disabled, with the `readOnly` line.
@@ -745,8 +756,8 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
   - `Reload theirs replaces the draft with the server copy and clears dirty`.
   - `other units still save during a trust conflict`.
 - [ ] **Step 2: Run.** Expected: FAIL.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run.** Expected: PASS.
+- [ ] **Step 3: Implement.** `trustCenterUnit.ts` joins `no-silent-mutations` `TARGET_GLOBS` (+1).
+- [ ] **Step 4: Run** plus `no-silent-mutations.test.ts`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(web): trust center template saves through the header and keeps drafts on conflict (#9170)`
 
 ### Task 22: AI feature-defaults and AI data-policy units
@@ -779,12 +790,18 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
 
 **Interfaces:**
 - `<AutosaveSwitch checked onChange disabled label describedBy testId />` renders `role="switch"`. The toggle-switch look is now reserved for autosave controls.
+- **Autosave outcome channel (§3.1–3.2).**
+  - The page exposes `reportAutosave(tab: TabKey, outcome: SaveOutcome)` through a small context. `PartnerMlFeaturesCard` and `PartnerModulesCard` call it after their `runAction` settles.
+  - The status line shows `autosaved` or `autosaveFailed` for that tab when nothing else is dirty.
+  - Both cards are optimistic: on failure they revert their own slice to the pre-toggle value.
 - `<FormCard onSubmit>` renders `<form noValidate onSubmit={e => { e.preventDefault(); onSubmit(); }} class="rounded-lg border bg-card p-6">`. The shell wraps each form-kind panel body in it with `onSubmit={save}`. List and autosave cards are not wrapped, and drawers keep their own forms.
 - The guard adds `document.addEventListener('astro:before-preparation', …)` next to `beforeunload` while any unit is dirty. It follows `ScriptForm.tsx:370-387`, and its confirm copy is `partnerSettingsPage.unsavedConfirm`.
 
 - [ ] **Step 1: Write failing tests**
   - `dedicated origin is a checkbox and saves only on header Save`.
   - `ML features render as switches and autosave without touching other drafts`: edit Security first, toggle an ML switch, and assert the Security draft remains dirty and unchanged. This is the §11 acceptance test, kept even though #9205 fixed the refetch.
+  - `autosave failure reverts and shows "Couldn't save — try again"`: the ML switch request returns 500 → the switch is back to its prior state and `partner-settings-status` holds the failure text.
+  - `autosave success shows "Saved · <time>"`.
   - `Enter in a form card runs the header Save`.
   - `every <button> inside a FormCard has an explicit type`: render every form tab and query `form button:not([type])` → 0.
   - `astro:before-preparation is cancelled while dirty and confirm declined`.
@@ -842,7 +859,9 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
 - Produces:
   - `fetchTabInheritance(tab: CatalogTabKey): Promise<{ status: 'ok'; data: InheritanceTabDto } | { status: 'restricted' } | { status: 'unavailable' }>`. 403 `PARTNER_WIDE_REQUIRED` → `restricted`. Any other failure → `unavailable`, logged with `console.warn` and never toasted, because this is a read.
   - `fetchFieldOrgs(field: string, cursor: string|null): Promise<InheritanceOrgPageDto>`.
-  - `useTabInheritance(tab: CatalogTabKey | null)` caches per tab for the page session. `invalidateInheritance(tabs: TabKey[])` is called by `usePartnerSettingsSave` (Task 19) after a successful unit save, for that unit's tabs.
+  - `useTabInheritance(tab: CatalogTabKey | null)` caches per tab for the page session. The shell passes `isCatalogTab(activeTab) ? activeTab : null`.
+  - `invalidateInheritance(tabs: readonly TabKey[])` is called by `usePartnerSettingsSave` (Task 19) after a successful unit save, for that unit's tabs. It drops the cache entries for `tabs.filter(isCatalogTab)`.
+  - Add `export function isCatalogTab(k: string): k is CatalogTabKey` to the shared catalog (Task 8).
   - The fetchers use `skipOrgIdInjection: true` (the `lib/api/sendingDomains.ts` `NO_ORG` pattern).
 - When `canManagePartnerWide === false`, the hook short-circuits to `restricted` and does not fetch.
 
@@ -967,7 +986,7 @@ F1 (#9171, part 1) already merged as #9206: the rail is scrollable and sticky, a
 ## CI traps
 
 - **`network-proxy-tunnel-origin.spec.ts` asserts `aria-checked`** on the dedicated-origin control. Task 23 must change it to `toBeChecked()` in the same PR, or the E2E job goes red.
-- **The `no-silent-mutations` pinned count** changes in W2 (Tasks 20, 22, 24, plus any new unit file). Each PR sets its own count from `main` at rebase time. Two W2 PRs in flight will conflict on `:955`, so rebase the second.
+- **The `no-silent-mutations` pinned count** changes in W2. Expected bumps: Task 18 +1, Task 20 +2, Task 21 +1, Task 22 +2 and Task 24 +1, which is +7. Task 26 states the final number. Each PR sets its own count from `main` at rebase time. Two W2 PRs in flight will conflict on `:955`, so rebase the second.
 - **The integration suite runs only under Integration Tests, not Test API.** W3's Task 14 file is invisible to `pnpm test`, so run it on a wt-stack before the PR and paste the output. A stacked W3 PR (base ≠ main) gets no CI: `gh workflow run CI --ref <branch>`.
 - **`mcp-coverage.test.ts`** fails on a new route file without an entry, and on an exemption note without an issue reference.
 - **`routerAuthGate.contract.test.ts`** exercises `index.ts` mounts. The new router is mounted inside `orgRoutes` after `authMiddleware`, so it inherits the gate. Run the contract anyway.
