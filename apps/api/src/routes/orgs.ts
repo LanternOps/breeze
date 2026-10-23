@@ -86,6 +86,7 @@ import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isV
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
+import { partnerSettingsInheritanceRoutes } from './partnerSettingsInheritance';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -497,6 +498,9 @@ orgRoutes.use('*', authMiddleware);
 
 // Mounted after authMiddleware so the pin route inherits authentication.
 orgRoutes.route('/', siteLocationRoutes);
+// Partner settings inheritance read model (#9170): after authMiddleware, before
+// /partners/:id. Its middleware is per endpoint, never a wildcard.
+orgRoutes.route('/', partnerSettingsInheritanceRoutes);
 
 // GET / - List organizations accessible to the current user
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
