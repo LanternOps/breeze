@@ -1,3 +1,7 @@
+// Must stay first: sets zod `jitless` in browsers before any schema in the
+// barrel is constructed (zod >= 4.6 probes `new Function`, which the web CSP
+// reports as an eval violation).
+import './validators/topologyZod';
 export * from './types';
 export * from './constants';
 export * from './validators';
