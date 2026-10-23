@@ -139,7 +139,7 @@ export async function resolveProviderAccounts(
   const accounts: ResolvedProviderAccount[] = [];
   const email = person.email ? canonicalizeUserEmail(person.email) : null;
 
-  const { links, m365ConnectionId, m365Connected, googleConnected } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const { links, m365ConnectionId, m365Connected, m365Unusable, googleConnected } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const linkRows = person.contactId
       ? await db
         .select({ system: contactExternalLinks.system, externalId: contactExternalLinks.externalId })
@@ -165,11 +165,14 @@ export async function resolveProviderAccounts(
       .from(googleWorkspaceConnections)
       .where(eq(googleWorkspaceConnections.orgId, orgId))
       .limit(1);
-    // A revoked (disconnected) or never-consented row means the org does not
-    // use Microsoft 365 now; looking through it would freeze a permanent
-    // "lookup failed" problem onto every task.
-    const m365Connected = m365Rows.some((r) => r.status !== 'revoked' && r.status !== 'pending-consent');
-    return { links: linkRows, m365ConnectionId: conn?.id ?? null, m365Connected, googleConnected: Boolean(google) };
+    // Fail closed: ANY row means this org has used Microsoft 365, so the person
+    // may have an account there. A revoked or consent-pending row (a failed
+    // re-consent also lands there) cannot be looked through; it is reported as
+    // its own problem rather than read as "does not use Microsoft 365".
+    const m365Connected = m365Rows.length > 0;
+    const m365Unusable = m365Connected && m365Rows.every((r) => r.status === 'revoked' || r.status === 'pending-consent')
+      ? m365Rows[0]!.status : null;
+    return { links: linkRows, m365ConnectionId: conn?.id ?? null, m365Connected, m365Unusable, googleConnected: Boolean(google) };
   }));
 
   const linked = (system: 'm365' | 'google') => links.find((l) => l.system === system)?.externalId ?? null;
@@ -179,6 +182,8 @@ export async function resolveProviderAccounts(
   const m365Linked = linked('m365');
   if (m365Linked) {
     accounts.push({ provider: 'm365', externalId: m365Linked, principalLabel: labelFor(m365Linked), connectionId: m365ConnectionId, fromLink: true });
+  } else if (email && m365Unusable) {
+    problems.push(`m365 connection is ${m365Unusable}, so Breeze could not look this person up in Microsoft 365`);
   } else if (email && m365Connected) {
     // No connection row at all means "this org does not use Microsoft 365",
     // not a failed lookup. A row in ANY state is looked through, so a broken
