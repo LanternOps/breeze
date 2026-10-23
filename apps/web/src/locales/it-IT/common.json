@@ -116,7 +116,8 @@
     "ticketsServiceRequests": "Richieste di servizio",
     "ticketsProblems": "Problemi",
     "ticketsChanges": "Modifiche",
-    "endpointMessages": "Messaggi"
+    "endpointMessages": "Messaggi",
+    "planAndFeatures": "Piano e funzionalità"
   },
   "documentTitles": {
     "dashboard": "Dashboard",

@@ -6923,5 +6923,55 @@
     "enabledToast": "Atajos de una sola tecla activados",
     "disabledToast": "Atajos de una sola tecla desactivados",
     "saveFailed": "No se pudieron guardar los atajos de una sola tecla."
+  },
+  "planAndFeatures": {
+    "heading": "Plan y funciones",
+    "description": "Lo que incluye tu plan. Las funciones bloqueadas siguen visibles para que veas lo que agrega una mejora.",
+    "currentPlan": "Plan actual",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Ilimitado"
+    },
+    "columns": {
+      "feature": "Función",
+      "state": "Estado",
+      "source": "Origen",
+      "expires": "Vence",
+      "limits": "Límites"
+    },
+    "state": {
+      "enabled": "Incluida",
+      "disabled": "Bloqueada"
+    },
+    "source": {
+      "plan": "Predeterminado del plan",
+      "billing": "Facturación",
+      "license": "Licencia",
+      "manual": "Asignación manual"
+    },
+    "graceWarning": "Venció el {{expiresAt}} — período de gracia hasta el {{graceUntil}}",
+    "noExpiry": "Nunca",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisor de incorporación",
+        "why": "Un supervisor de IA que diagnostica y repara fallas de incorporación sin intervención."
+      },
+      "verified_library": {
+        "label": "Biblioteca de software verificada",
+        "why": "Paquetes seleccionados y verificados que puedes implementar con confianza."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp clasifica tu flota de forma continua y avisa a la persona indicada; disponible en Pro y superiores."
+      }
+    },
+    "loadError": "No se pudo cargar tu plan.",
+    "retry": "Reintentar"
   }
 }

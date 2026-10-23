@@ -6923,5 +6923,55 @@
     "enabledToast": "Atalhos de tecla única ativados",
     "disabledToast": "Atalhos de tecla única desativados",
     "saveFailed": "Não foi possível salvar os atalhos de tecla única."
+  },
+  "planAndFeatures": {
+    "heading": "Plano e recursos",
+    "description": "O que seu plano inclui. Recursos bloqueados continuam visíveis para que você veja o que um upgrade acrescenta.",
+    "currentPlan": "Plano atual",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Ilimitado"
+    },
+    "columns": {
+      "feature": "Recurso",
+      "state": "Situação",
+      "source": "Origem",
+      "expires": "Expira em",
+      "limits": "Limites"
+    },
+    "state": {
+      "enabled": "Incluído",
+      "disabled": "Bloqueado"
+    },
+    "source": {
+      "plan": "Padrão do plano",
+      "billing": "Faturamento",
+      "license": "Licença",
+      "manual": "Atribuição manual"
+    },
+    "graceWarning": "Expirou em {{expiresAt}} — carência até {{graceUntil}}",
+    "noExpiry": "Nunca",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisor de integração",
+        "why": "Um supervisor de IA que diagnostica e corrige falhas de integração sem intervenção."
+      },
+      "verified_library": {
+        "label": "Biblioteca de software verificada",
+        "why": "Pacotes selecionados e verificados que você pode implantar com confiança."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "O Wisp faz a triagem contínua da sua frota e avisa a pessoa certa; disponível a partir do Pro."
+      }
+    },
+    "loadError": "Não foi possível carregar seu plano.",
+    "retry": "Tentar novamente"
   }
 }

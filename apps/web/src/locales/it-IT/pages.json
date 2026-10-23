@@ -179,7 +179,8 @@
     "devicesTime": "Sincronizzazione dell’ora",
     "adminAiModels": "Modelli di IA",
     "billingAutopay": "Pagamenti automatici",
-    "endpointMessages": "Messaggi agli endpoint"
+    "endpointMessages": "Messaggi agli endpoint",
+    "settingsPlan": "Piano e funzionalità"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoraggio e gestione remota",
@@ -262,6 +263,10 @@
       },
       "alertTemplates": {
         "title": "Modelli di avviso"
+      },
+      "plan": {
+        "title": "Piano e funzionalità",
+        "description": "Il tuo piano, quali funzionalità include e da dove proviene ciascuna."
       }
     },
     "groups": {

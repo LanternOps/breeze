@@ -179,7 +179,8 @@
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
     "billingAutopay": "Automatische Zahlungen",
-    "endpointMessages": "Endpunkt-Nachrichten"
+    "endpointMessages": "Endpunkt-Nachrichten",
+    "settingsPlan": "Tarif & Funktionen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -262,6 +263,10 @@
       },
       "alertTemplates": {
         "title": "Alarmvorlagen"
+      },
+      "plan": {
+        "title": "Tarif & Funktionen",
+        "description": "Ihr Tarif, welche Funktionen er umfasst und woher jede einzelne stammt."
       }
     },
     "groups": {

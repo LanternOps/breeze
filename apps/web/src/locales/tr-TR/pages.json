@@ -179,7 +179,8 @@
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
     "billingAutopay": "Otomatik ödemeler",
-    "endpointMessages": "Uç Nokta Mesajları"
+    "endpointMessages": "Uç Nokta Mesajları",
+    "settingsPlan": "Plan ve özellikler"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -262,6 +263,10 @@
       },
       "alertTemplates": {
         "title": "Uyarı şablonları"
+      },
+      "plan": {
+        "title": "Plan ve özellikler",
+        "description": "Planınız, hangi özellikleri içerdiği ve her birinin nereden geldiği."
       }
     },
     "groups": {
