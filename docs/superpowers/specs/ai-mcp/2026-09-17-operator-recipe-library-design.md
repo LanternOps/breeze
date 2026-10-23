@@ -219,16 +219,26 @@ The model never proposes an effect that `buildPlan` did not produce, never edits
 
 ### 6.3 `identity_offboarding` spine
 
+*Amended 2026-10-23 (W06 R1a, decision D1 = A): eight step rows. Approval, the
+cutoff wait and the ordered walk are PHASES of the one `effects` step, because
+E4 binds a plan approval to the step that proposed it, one approval per plan
+revision. Device lock / log-off is human work until a probed device tool exists
+(D2). The behaviour and the order are the original diagram's; only the step
+rows differ.*
+
 ```
 intake (reason) → confirm_identity (human_work: technician confirms contact + accounts + inheritor)
-→ discover (probe reads, both providers) → review (reason: exceptions) → plan_approval (§6.4)
-→ wait_cutoff (wait, optional: scheduled last-day time)
-→ per provider, in this order, each = pre-probe → effect → post-probe:
+→ discover (probe reads, both providers; freezes the planning snapshot: facts + degraded tools)
+→ review (reason: exceptions; proposes nothing)
+→ effects (effect) — one step, in this order of phases:
+     propose the plan → four-eyes approval (§6.4) → re-seal against the snapshot
+     → not-before cutoff (optional scheduled last-day time) → ordered walk,
+     per provider, each effect = pre-probe → effect → post-probe:
      1 auto-reply            4 remove group memberships     7 retire/selective-wipe mobile
      2 mail forwarding       5 remove licenses*             8 revoke sessions / sign out
      3 mailbox delegate      6 revoke app tokens            9 disable (M365) / suspend (Google) — LAST
-→ device steps (Breeze agent: lock or log off, flag for collection)
-→ human_work: collect hardware, transfer file ownership, update documentation, anything rendered manual by readiness
+→ manual_work (human_work: collect hardware, sign the person out of / lock each selected device and
+  collect it, transfer file ownership, update documentation, anything rendered manual by readiness)
 → verify_outcome (probe: account cannot sign in; no licenses; no memberships) → document
 ```
 
