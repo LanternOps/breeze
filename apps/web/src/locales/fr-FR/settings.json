@@ -4703,6 +4703,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Aucun rôle trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
     "cloneRole": "Rôle du clone : {{name}}",
+    "cloneDescription": "Copie de {{name}}",
     "clone": "Cloner",
     "edit": "Modifier",
     "delete": "Supprimer",

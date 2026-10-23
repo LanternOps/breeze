@@ -4703,6 +4703,7 @@
     "actions": "Eylemler",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Hiçbir rol bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin.",
     "cloneRole": "Klon Rolü: {{name}}",
+    "cloneDescription": "{{name}} kopyası",
     "clone": "Klon",
     "edit": "Düzenle",
     "delete": "Sil",

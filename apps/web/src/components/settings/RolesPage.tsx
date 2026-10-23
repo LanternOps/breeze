@@ -121,6 +121,29 @@ export default function RolesPage() {
     }
   }, []);
 
+  // Picking a parent inside Create/Clone/Edit shows that parent's effective
+  // permissions as inherited (#9603). They are inherited by definition from the
+  // child's side, so every row is marked inherited.
+  const handleParentChange = useCallback(async (parentRoleId: string | null) => {
+    if (!parentRoleId) {
+      setInheritedPermissions([]);
+      return;
+    }
+    try {
+      const response = await fetchWithAuth(`/roles/${parentRoleId}/effective-permissions`);
+      if (!response.ok) {
+        setInheritedPermissions([]);
+        return;
+      }
+      const data = await response.json();
+      setInheritedPermissions(
+        (data.permissions ?? []).map((p: EffectivePermission) => ({ ...p, inherited: true }))
+      );
+    } catch {
+      setInheritedPermissions([]);
+    }
+  }, []);
+
   // Compute available parent roles (system roles + custom roles, excluding descendants of selected role)
   const getAvailableParentRoles = useCallback(() => {
     // All roles can be potential parents except the selected role itself
@@ -254,7 +277,7 @@ export default function RolesPage() {
       const clonedRole = await runAction<Role>({
         request: () => fetchWithAuth(`/roles/${selectedRole.id}/clone`, {
           method: 'POST',
-          body: JSON.stringify({ name: data.name })
+          body: JSON.stringify({ name: data.name, description: data.description })
         }),
         errorFallback: t('rolesPage.failedToCloneRole'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
@@ -284,7 +307,6 @@ export default function RolesPage() {
       // and the modal does NOT close on partial-success.
       if (
         permissionsChanged ||
-        data.description !== selectedRole.description ||
         parentRoleChanged ||
         forceMfaChanged
       ) {
@@ -405,7 +427,8 @@ export default function RolesPage() {
         mode="create"
         role={null}
         availableParentRoles={getAvailableParentRoles()}
-        inheritedPermissions={[]}
+        inheritedPermissions={inheritedPermissions}
+        onParentChange={handleParentChange}
         onSubmit={handleCreateSubmit}
         onCancel={handleCloseModal}
         loading={submitting}
@@ -418,6 +441,7 @@ export default function RolesPage() {
         role={selectedRole}
         availableParentRoles={getAvailableParentRoles()}
         inheritedPermissions={inheritedPermissions}
+        onParentChange={handleParentChange}
         onSubmit={handleEditSubmit}
         onCancel={handleCloseModal}
         loading={submitting}
@@ -430,6 +454,7 @@ export default function RolesPage() {
         role={selectedRole}
         availableParentRoles={getAvailableParentRoles()}
         inheritedPermissions={inheritedPermissions}
+        onParentChange={handleParentChange}
         onSubmit={handleCloneSubmit}
         onCancel={handleCloseModal}
         loading={submitting}

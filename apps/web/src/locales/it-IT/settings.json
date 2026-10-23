@@ -4698,6 +4698,7 @@
     "actions": "Azioni",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nessun ruolo trovato. Prova a modificare la ricerca o i filtri.",
     "cloneRole": "Clona ruolo: {{name}}",
+    "cloneDescription": "Copia di {{name}}",
     "clone": "Clona",
     "edit": "Modifica",
     "delete": "Elimina",
