@@ -1775,7 +1775,7 @@
     "unknown": "unbekannt"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Härten",
+    "title": "CIS Benchmarks",
     "description": "Konfigurationsbaselines, Compliance-Bewertung und Korrekturverfolgung.",
     "messages": {
       "loadFailed": "CIS-Daten konnten nicht geladen werden"
@@ -1868,6 +1868,11 @@
     "badges": {
       "allOrgs": "Alle Orgs",
       "partnerWideTitle": "Partnerweite Baseline – gilt für Geräte in jeder Organisation"
+    },
+    "scanAll": {
+      "title": "Alle Organisationen scannen?",
+      "message": "„{{name}}“ ist eine partnerweite Baseline. Ohne ausgewählte Organisation scannt sie alle {{orgCount}} Organisationen. Wählen Sie zuerst eine Organisation aus, um nur deren Geräte zu scannen.",
+      "confirm": "Alle scannen"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1970,6 +1975,17 @@
       "queueFailed": "Die Genehmigung wurde gespeichert, die Behebung konnte jedoch nicht eingereiht werden. Sie wartet wieder auf Genehmigung; versuchen Sie es erneut.",
       "mfaRequired": "Zum Genehmigen oder Ablehnen einer Behebung ist eine mit Multi-Faktor-Authentifizierung angemeldete Sitzung erforderlich. Melden Sie sich ab und mit MFA erneut an.",
       "ownRequest": "Sie haben diese Behebung angefordert, daher muss ein anderer Benutzer sie genehmigen."
+    },
+    "detail": {
+      "toggle": "Details umschalten",
+      "approvedBy": "Genehmigt von",
+      "approvedAt": "Genehmigt am",
+      "note": "Genehmigungsnotiz",
+      "beforeState": "Vorher",
+      "afterState": "Nachher",
+      "rollbackHint": "Rollback-Hinweis",
+      "noEvidence": "Für diese Korrektur wurde noch kein Nachweis erfasst.",
+      "unknownApprover": "Unbekannter Benutzer"
     }
   },
   "auditBaselinesAuditBaselinesPage": {

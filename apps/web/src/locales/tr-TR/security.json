@@ -1775,7 +1775,7 @@
     "unknown": "bilinmiyor"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Sertleştirme",
+    "title": "CIS Benchmarks",
     "description": "Yapılandırma temelleri, uyumluluk puanlaması ve iyileştirme takibi.",
     "messages": {
       "loadFailed": "CIS verileri yüklenemedi"
@@ -1868,6 +1868,11 @@
     "badges": {
       "allOrgs": "Tüm kuruluşlar",
       "partnerWideTitle": "İş ortağı çapında temel — her kuruluştaki cihazlar için geçerlidir"
+    },
+    "scanAll": {
+      "title": "Tüm kuruluşlar taransın mı?",
+      "message": "“{{name}}” iş ortağı genelinde bir temeldir. Kuruluş seçilmediğinde {{orgCount}} kuruluşun tamamını tarar. Yalnızca bir kuruluşun cihazlarını taramak için önce o kuruluşu seçin.",
+      "confirm": "Tümünü tara"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1970,6 +1975,17 @@
       "queueFailed": "Onay kaydedildi ancak düzeltme kuyruğa alınamadı. Yeniden onay bekliyor; tekrar deneyin.",
       "mfaRequired": "Bir düzeltmeyi onaylamak veya reddetmek için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Çıkış yapıp MFA ile yeniden giriş yapın.",
       "ownRequest": "Bu düzeltmeyi siz istediniz; başka bir kullanıcının onaylaması gerekir."
+    },
+    "detail": {
+      "toggle": "Ayrıntıları aç/kapat",
+      "approvedBy": "Onaylayan",
+      "approvedAt": "Onay zamanı",
+      "note": "Onay notu",
+      "beforeState": "Önce",
+      "afterState": "Sonra",
+      "rollbackHint": "Geri alma ipucu",
+      "noEvidence": "Bu iyileştirme için henüz kanıt kaydedilmedi.",
+      "unknownApprover": "Bilinmeyen kullanıcı"
     }
   },
   "auditBaselinesAuditBaselinesPage": {

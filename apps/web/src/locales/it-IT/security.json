@@ -1775,7 +1775,7 @@
     "unknown": "sconosciuto"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "Hardening CIS",
+    "title": "CIS Benchmarks",
     "description": "Baseline di configurazione, punteggio di conformità e monitoraggio della remediation.",
     "messages": {
       "loadFailed": "Impossibile caricare i dati CIS"
@@ -1868,6 +1868,11 @@
     "badges": {
       "allOrgs": "Tutte le org",
       "partnerWideTitle": "Baseline a livello di Partner: si applica ai dispositivi di ogni organizzazione"
+    },
+    "scanAll": {
+      "title": "Scansionare tutte le organizzazioni?",
+      "message": "«{{name}}» è una baseline a livello di partner. Senza un’organizzazione selezionata, scansiona tutte le {{orgCount}} organizzazioni. Seleziona prima un’organizzazione per scansionare solo i suoi dispositivi.",
+      "confirm": "Scansiona tutte"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1970,6 +1975,17 @@
       "queueFailed": "L'approvazione è stata registrata, ma non è stato possibile mettere in coda la correzione. È di nuovo in attesa di approvazione; riprova.",
       "mfaRequired": "Per approvare o rifiutare una correzione serve una sessione avviata con l'autenticazione a più fattori. Esci e accedi di nuovo con l'MFA.",
       "ownRequest": "Hai richiesto tu questa correzione, quindi deve approvarla un altro utente."
+    },
+    "detail": {
+      "toggle": "Mostra/nascondi dettagli",
+      "approvedBy": "Approvato da",
+      "approvedAt": "Approvato il",
+      "note": "Nota di approvazione",
+      "beforeState": "Prima",
+      "afterState": "Dopo",
+      "rollbackHint": "Suggerimento di rollback",
+      "noEvidence": "Nessuna evidenza registrata finora per questa remediation.",
+      "unknownApprover": "Utente sconosciuto"
     }
   },
   "auditBaselinesAuditBaselinesPage": {

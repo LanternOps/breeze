@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Check, Loader2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react';
 import { cn, friendlyFetchError, formatRelativeTime } from '@/lib/utils';
 import { FilterSelect } from '../shared/FilterSelect';
 import { fetchWithAuth, useAuthStore } from '@/stores/auth';
@@ -24,8 +24,22 @@ type Remediation = {
   createdAt: string;
   executedAt: string | null;
   deviceHostname: string;
+  deviceDisplayName?: string | null;
   baselineName: string | null;
+  // Audit evidence the API already stores (#9606).
+  approvedBy?: string | null;
+  approverName?: string | null;
+  approvedAt?: string | null;
+  approvalNote?: string | null;
+  beforeState?: Record<string, unknown> | null;
+  afterState?: Record<string, unknown> | null;
+  rollbackHint?: string | null;
 };
+
+const deviceLabel = (rem: Remediation) => rem.deviceDisplayName || rem.deviceHostname;
+
+const hasEvidence = (rem: Remediation) =>
+  Boolean(rem.approvedBy || rem.approvedAt || rem.approvalNote || rem.beforeState || rem.afterState || rem.rollbackHint);
 
 const statusBadge: Record<string, string> = {
   pending_approval: 'bg-amber-500/20 text-amber-800 border-amber-500/40',
@@ -82,6 +96,7 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [statusFilter, setStatusFilter] = useState('all');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
@@ -183,10 +198,10 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
     else fetchData();
   };
 
-  const columnCount = canDecide ? 9 : 8;
+  const columnCount = canDecide ? 10 : 9;
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-xs">
+    <div className="rounded-lg border bg-card p-6 shadow-xs" data-testid="cis-remediations-tab">
       {error && (
         <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -218,6 +233,7 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
         <table className="min-w-full divide-y">
           <thead className="bg-muted/40">
             <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <th className="w-8 px-4 py-3" />
               <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.checkId')}</th>
               <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.device')}</th>
               <th className="px-4 py-3">{t('cisHardeningCisRemediationsTab.table.baseline')}</th>
@@ -249,11 +265,28 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
               </tr>
             ) : (
               remediations.map((rem) => (
-                <tr key={rem.id} className="text-sm">
+                <Fragment key={rem.id}>
+                <tr className="text-sm" data-testid={`cis-remediation-row-${rem.id}`}>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedId(expandedId === rem.id ? null : rem.id)}
+                      aria-expanded={expandedId === rem.id}
+                      aria-label={t('cisHardeningCisRemediationsTab.detail.toggle')}
+                      data-testid={`cis-remediation-toggle-${rem.id}`}
+                      className="rounded-md p-1 hover:bg-muted"
+                    >
+                      {expandedId === rem.id ? (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </button>
+                  </td>
                   <td className="px-4 py-3">
                     <code className="font-mono text-xs">{rem.checkId}</code>
                   </td>
-                  <td className="px-4 py-3 font-medium">{rem.deviceHostname}</td>
+                  <td className="px-4 py-3 font-medium" title={rem.deviceHostname}>{deviceLabel(rem)}</td>
                   <td className="px-4 py-3 text-muted-foreground">{rem.baselineName ?? '-'}</td>
                   <td className="px-4 py-3 capitalize text-muted-foreground">
                     {t(/* i18n-dynamic */ `cisHardeningCisRemediationsTab.actions.${rem.action}`, { defaultValue: rem.action })}
@@ -328,6 +361,63 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
                     </td>
                   )}
                 </tr>
+                {expandedId === rem.id && (
+                  <tr data-testid={`cis-remediation-detail-${rem.id}`}>
+                    <td colSpan={columnCount} className="bg-muted/20 px-4 py-3">
+                      {hasEvidence(rem) ? (
+                        <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                          <div>
+                            <dt className="text-xs font-semibold uppercase text-muted-foreground">
+                              {t('cisHardeningCisRemediationsTab.detail.approvedBy')}
+                            </dt>
+                            <dd>{rem.approverName ?? (rem.approvedBy ? t('cisHardeningCisRemediationsTab.detail.unknownApprover') : '-')}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs font-semibold uppercase text-muted-foreground">
+                              {t('cisHardeningCisRemediationsTab.detail.approvedAt')}
+                            </dt>
+                            <dd>{rem.approvedAt ? new Date(rem.approvedAt).toLocaleString() : '-'}</dd>
+                          </div>
+                          {rem.approvalNote && (
+                            <div className="sm:col-span-2">
+                              <dt className="text-xs font-semibold uppercase text-muted-foreground">
+                                {t('cisHardeningCisRemediationsTab.detail.note')}
+                              </dt>
+                              <dd>{rem.approvalNote}</dd>
+                            </div>
+                          )}
+                          <div>
+                            <dt className="text-xs font-semibold uppercase text-muted-foreground">
+                              {t('cisHardeningCisRemediationsTab.detail.beforeState')}
+                            </dt>
+                            <dd>
+                              <pre className="overflow-x-auto rounded-md border bg-card p-2 text-xs">{rem.beforeState ? JSON.stringify(rem.beforeState, null, 2) : '-'}</pre>
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-xs font-semibold uppercase text-muted-foreground">
+                              {t('cisHardeningCisRemediationsTab.detail.afterState')}
+                            </dt>
+                            <dd>
+                              <pre className="overflow-x-auto rounded-md border bg-card p-2 text-xs">{rem.afterState ? JSON.stringify(rem.afterState, null, 2) : '-'}</pre>
+                            </dd>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <dt className="text-xs font-semibold uppercase text-muted-foreground">
+                              {t('cisHardeningCisRemediationsTab.detail.rollbackHint')}
+                            </dt>
+                            <dd>{rem.rollbackHint ?? '-'}</dd>
+                          </div>
+                        </dl>
+                      ) : (
+                        <p className="text-center text-sm text-muted-foreground">
+                          {t('cisHardeningCisRemediationsTab.detail.noEvidence')}
+                        </p>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))
             )}
           </tbody>
@@ -349,11 +439,11 @@ export default function CisRemediationsTab({ refreshKey, onMutate }: CisRemediat
           : decision.approved
             ? t('cisHardeningCisRemediationsTab.decision.approveMessage', {
                 checkId: decision.remediation.checkId,
-                device: decision.remediation.deviceHostname,
+                device: deviceLabel(decision.remediation),
               })
             : t('cisHardeningCisRemediationsTab.decision.rejectMessage', {
                 checkId: decision.remediation.checkId,
-                device: decision.remediation.deviceHostname,
+                device: deviceLabel(decision.remediation),
               })}
         confirmLabel={decision?.approved
           ? t('cisHardeningCisRemediationsTab.decision.approve')
