@@ -71,6 +71,7 @@ import {
 } from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
 import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
+import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
@@ -660,6 +661,7 @@ const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdva
     observe: withServiceRecoveryCheckpoint((a, c) => advanceObserve(a.task, a.leaseEpoch, c, a.recipe, a.now)),
     verify: withServiceRecoveryCheckpoint((a, c) => advanceVerify(a.task, a.leaseEpoch, c, a.recipe)),
   },
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: IDENTITY_OFFBOARDING_ADVANCERS,
 };
 
 /**

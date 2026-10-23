@@ -292,14 +292,22 @@ function agentFrom(resolved: Awaited<ReturnType<typeof resolveEffectiveAgentSyst
  * pinned to `orgId` by an explicit predicate. I/O errors THROW so the
  * coordinator's wake retries; they are never read as "not ready".
  */
-export async function computeRecipeReadinessSystem(orgId: string, recipe: AnyRecipeDefinition): Promise<RecipeReadiness> {
+export async function computeRecipeReadinessSystem(
+  orgId: string,
+  recipe: AnyRecipeDefinition,
+  opts: { ignoreFlag?: boolean } = {},
+): Promise<RecipeReadiness> {
   const kind = Object.hasOwn(RECIPE_AGENT_KINDS, recipe.key) ? RECIPE_AGENT_KINDS[recipe.key]! : null;
   const [connections, resolved] = await Promise.all([
     runOutsideDbContext(() => withSystemDbAccessContext(() => loadConnections(db, orgId))),
     kind ? resolveEffectiveAgentSystem(orgId, kind) : Promise.resolve(null),
   ]);
+  // The coordinator passes `ignoreFlag`: a recipe flag turned off mid-task
+  // fences NEW admissions, never the capability facts of a running task — and
+  // a flag-off readiness reports nothing degraded, which must never be read
+  // as "everything is dispatchable".
   return computeRecipeReadiness(recipe, {
-    orgId, ...connections, agent: agentFrom(resolved), flagEnabled: recipeEnabled(recipe.key),
+    orgId, ...connections, agent: agentFrom(resolved), flagEnabled: opts.ignoreFlag === true || recipeEnabled(recipe.key),
   });
 }
 

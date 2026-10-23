@@ -235,7 +235,7 @@ export async function loadCompletionData(input: CompletionRecordInput): Promise<
     const itemRows = await db
       .select({
         index: aiOperatorTaskSteps.attemptOrdinal, stepKey: aiOperatorTaskSteps.stepKey,
-        label: ticketChecklistItems.label, doneAt: ticketChecklistItems.doneAt, doneBy: ticketChecklistItems.doneByUserId,
+        label: ticketChecklistItems.label, tickedAt: ticketChecklistItems.doneAt, tickedBy: ticketChecklistItems.doneByUserId,
       })
       .from(aiOperatorTaskSteps)
       .innerJoin(ticketChecklistItems, and(
@@ -245,7 +245,7 @@ export async function loadCompletionData(input: CompletionRecordInput): Promise<
       .where(and(eq(aiOperatorTaskSteps.orgId, orgId), eq(aiOperatorTaskSteps.taskId, taskId), eq(aiOperatorTaskSteps.stepKind, 'human_work')))
       .orderBy(asc(aiOperatorTaskSteps.createdAt), asc(aiOperatorTaskSteps.attemptOrdinal));
 
-    const userIds = [...new Set([approval?.approvedBy, ...itemRows.map((r) => r.doneBy)].filter((v): v is string => !!v))];
+    const userIds = [...new Set([approval?.approvedBy, ...itemRows.map((r) => r.tickedBy)].filter((v): v is string => !!v))];
     const names = new Map<string, string>();
     if (userIds.length > 0) {
       const rows = await db.select({ id: users.id, name: users.name, email: users.email }).from(users).where(inArray(users.id, userIds));
@@ -289,9 +289,9 @@ export async function loadCompletionData(input: CompletionRecordInput): Promise<
       approverName: approval?.approvedBy ? names.get(approval.approvedBy) ?? approval.approvedBy : null,
       effects,
       humanWork: itemRows.map((r) => ({
-        label: r.label, done: r.doneAt !== null,
-        completedBy: r.doneBy ? names.get(r.doneBy) ?? r.doneBy : null,
-        completedAt: r.doneAt ? r.doneAt.toISOString() : null,
+        label: r.label, done: r.tickedAt !== null,
+        completedBy: r.tickedBy ? names.get(r.tickedBy) ?? r.tickedBy : null,
+        completedAt: r.tickedAt ? r.tickedAt.toISOString() : null,
       })),
       verification: lastVerification && typeof lastVerification.result === 'string'
         ? { result: lastVerification.result, detail: typeof lastVerification.detail === 'string' ? lastVerification.detail : '' }
