@@ -20,6 +20,7 @@ vi.mock('../services/patchAlerts', () => ({
   REBOOT_PENDING_ALERT_THRESHOLD_DAYS: 7,
   emitRebootPendingAlert: vi.fn().mockResolvedValue(null),
   loadOldestRebootRequiredSince: vi.fn().mockResolvedValue(null),
+  resolveClearedRebootPendingAlerts: vi.fn().mockResolvedValue(0),
 }));
 
 import {
@@ -513,9 +514,40 @@ describe('runMaintenanceRebootSweep', () => {
       processRebootCandidate: vi.fn().mockResolvedValue({ issued: false, reason: 'no-action' }),
       emitRebootPendingAlert: vi.fn().mockResolvedValue(null),
       loadOldestRebootRequiredSince: vi.fn().mockResolvedValue(null),
+      resolveClearedRebootPendingAlerts: vi.fn().mockResolvedValue(0),
       ...overrides,
     };
   }
+
+  // A restarted device reports pending_reboot = false and so is never a
+  // candidate again; the sweep must still clear its open alert.
+  it('resolves cleared reboot-pending alerts on every tick, even with no candidates', async () => {
+    const deps = makeSweepDeps({ getRebootCandidates: vi.fn().mockResolvedValue([]) });
+
+    await runMaintenanceRebootSweep(deps);
+
+    expect(deps.resolveClearedRebootPendingAlerts).toHaveBeenCalledTimes(1);
+  });
+
+  it('a resolver throw is reported and does not stop the candidate loop', async () => {
+    const boom = new Error('resolve boom');
+    const deps = makeSweepDeps({
+      resolveClearedRebootPendingAlerts: vi.fn().mockRejectedValue(boom),
+      processRebootCandidate: vi.fn().mockResolvedValue({ issued: true, reason: 'issued' }),
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await runMaintenanceRebootSweep(deps);
+
+      expect(result).toEqual({ issued: 2, checked: 2 });
+      expect(captureException).toHaveBeenCalledWith(boom, undefined, {
+        worker: 'maintenanceRebootWorker',
+        stage: 'resolve-cleared-alerts',
+      });
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 
   it('isolates per-device errors so a throw on one device does not abort others', async () => {
     const result = await runMaintenanceRebootSweep(

@@ -334,16 +334,18 @@ export function ReportRunList({
                             <Download className="h-4 w-4" aria-hidden="true" />
                             PDF
                           </a>
-                          <a
-                            data-testid={`portal-report-run-csv-${run.id}`}
-                            href={portalApi.reportArtifactUrl(run.id, 'csv')}
-                            download
-                            aria-label={`Download ${name} as CSV`}
-                            className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
-                          >
-                            <Download className="h-4 w-4" aria-hidden="true" />
-                            CSV
-                          </a>
+                          {run.csvAvailable && (
+                            <a
+                              data-testid={`portal-report-run-csv-${run.id}`}
+                              href={portalApi.reportArtifactUrl(run.id, 'csv')}
+                              download
+                              aria-label={`Download ${name} as CSV`}
+                              className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
+                            >
+                              <Download className="h-4 w-4" aria-hidden="true" />
+                              CSV
+                            </a>
+                          )}
                         </div>
                       )}
                     </td>

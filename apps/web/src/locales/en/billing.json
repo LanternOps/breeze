@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} line(s) are over their included quantity and were not billed: {{names}}",
         "uncoveredDevices": "Invoice generated, but {{count}} device(s) are not billed by any line on this contract: {{breakdown}}",
         "priceBookGaps": "{{count}} catalog line(s) billed at the contract snapshot — no {{currency}} price in the catalog: {{lines}}",
-        "draftDeleted": "Draft deleted"
+        "draftDeleted": "Draft deleted",
+        "skipped": {
+          "already_billed": "No invoice generated — this billing period has already been billed.",
+          "not_due": "No invoice generated — this contract is not due for billing yet.",
+          "renewal_pending": "No invoice generated — this contract is past its end date and waiting on its renewal.",
+          "expired": "No invoice generated — this contract has expired.",
+          "unknown": "No invoice was generated for this contract."
+        }
       },
       "cancelConfirm": {
         "title": "Cancel this contract?",

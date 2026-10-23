@@ -297,6 +297,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
                 assetType={asset.type}
                 collection={collection}
                 snmpEnabled={!!extras.snmpMonitoringEnabled}
+                hasNetworkCheck={!!extras.reachability?.detail.networkCheck}
                 timezone={timezone}
                 onSetUpMonitoring={() => openSettings('monitoring')}
                 onViewMonitoring={handleViewMonitoring}

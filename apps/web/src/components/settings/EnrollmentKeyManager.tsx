@@ -13,6 +13,10 @@ import '@/lib/i18n';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT } from '@breeze/shared';
 import { useStableT } from '@/lib/i18n/useStableT';
+import InstallerDownloadDialog, {
+  type InstallerDownloadTarget,
+  type InstallerPlatform,
+} from './InstallerDownloadDialog';
 
 interface EnrollmentKey {
   id: string;
@@ -107,6 +111,7 @@ export default function EnrollmentKeyManager() {
   const [rotateTarget, setRotateTarget] = useState<EnrollmentKey | null>(null);
   const [downloadDropdownId, setDownloadDropdownId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [installerTarget, setInstallerTarget] = useState<InstallerDownloadTarget | null>(null);
   const [hideExpired, setHideExpired] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
 
@@ -406,11 +411,25 @@ export default function EnrollmentKeyManager() {
     }
   };
 
-  const handleDownloadInstaller = async (keyId: string, platform: 'windows' | 'macos') => {
+  // #9615: the installer route sizes the embedded credential from `count`
+  // and defaults to ONE device without it, so the row asks first (the same
+  // device-count question Add Device asks) instead of downloading directly.
+  const openInstallerDialog = (key: EnrollmentKey, platform: InstallerPlatform) => {
+    setInstallerTarget({
+      keyId: key.id,
+      keyName: key.name,
+      platform,
+      remainingUses: key.maxUsage === null ? null : Math.max(0, key.maxUsage - key.usageCount),
+    });
+  };
+
+  const handleDownloadInstaller = async (keyId: string, platform: InstallerPlatform, count: number) => {
     if (downloading) return;
     setDownloading(true);
+    setError(undefined);
     try {
-      const response = await fetchWithAuth(`/enrollment-keys/${keyId}/installer/${platform}`);
+      const params = new URLSearchParams({ count: String(count) });
+      const response = await fetchWithAuth(`/enrollment-keys/${keyId}/installer/${platform}?${params.toString()}`);
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({ error: t('enrollmentKeys.downloadFailed') }));
@@ -435,6 +454,9 @@ export default function EnrollmentKeyManager() {
       setError(t('enrollmentKeys.installerFailed', { message }));
     } finally {
       setDownloading(false);
+      // The dialog stays open (showing "Downloading...") until the request
+      // settles; any failure then surfaces in the page's error banner.
+      setInstallerTarget(null);
     }
   };
 
@@ -796,7 +818,7 @@ export default function EnrollmentKeyManager() {
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      handleDownloadInstaller(key.id, 'windows');
+                                      openInstallerDialog(key, 'windows');
                                       setDownloadDropdownId(null);
                                     }}
                                     className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted"
@@ -806,7 +828,7 @@ export default function EnrollmentKeyManager() {
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      handleDownloadInstaller(key.id, 'macos');
+                                      openInstallerDialog(key, 'macos');
                                       setDownloadDropdownId(null);
                                     }}
                                     className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted"
@@ -1036,6 +1058,14 @@ export default function EnrollmentKeyManager() {
           </div>
         </div>
       )}
+      <InstallerDownloadDialog
+        target={installerTarget}
+        downloading={downloading}
+        onCancel={() => setInstallerTarget(null)}
+        onConfirm={(target, count) => {
+          void handleDownloadInstaller(target.keyId, target.platform, count);
+        }}
+      />
       <ConfirmDialog
         open={rotateTarget !== null}
         onClose={() => setRotateTarget(null)}

@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} approbation en attente",
     "pendingApprovals_other": "{{count}} approbations en attente",
     "tickets": "Tickets",
-    "incidents": "Incidents",
+    "incidents": "Incidents de sécurité",
     "remoteAccess": "Accès à distance",
     "scripts": "Scénarios",
     "patches": "Correctifs",
@@ -2206,7 +2206,7 @@
         },
         "loading": "Incidents de chargement...",
         "tryAgain": "Réessayer",
-        "title": "Incidents",
+        "title": "Incidents de sécurité",
         "description": "Incidents suivis et constats EDR dans vos organisations.",
         "filters": {
           "tracked": "Suivis",
@@ -2236,6 +2236,11 @@
         "genericEdrProvider": "Fournisseur EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Technicien",
+          "system": "Système"
+        },
         "errors": {
           "notFound": "Incident non trouvé",
           "fetchFailed": "Impossible de charger l’incident"

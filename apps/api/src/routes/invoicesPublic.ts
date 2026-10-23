@@ -11,6 +11,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceStripePayments } from '../db/schema';
 import { partners } from '../db/schema/orgs';
 import { portalBranding } from '../db/schema/portal';
+import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
 import { resolveInvoiceByLinkToken, getOrMintInvoiceLink, buildPublicInvoiceUrl } from '../services/invoiceLinkToken';
 import { markViewed } from '../services/invoiceService';
 import { assembleCustomerInvoiceDocument } from '../services/customerDocument';
@@ -121,6 +122,7 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       const [partner] = await db.select({
         name: partners.name, billingEmail: partners.billingEmail,
         documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize,
+        settings: partners.settings,
       }).from(partners).where(eq(partners.id, inv.partnerId)).limit(1);
       const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor })
         .from(portalBranding).where(eq(portalBranding.orgId, inv.orgId)).limit(1);
@@ -189,14 +191,16 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
 
 function brandingBlock(
   inv: { documentTheme: string | null; documentPageSize: string | null },
-  partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null } | undefined,
+  partner: { name: string; billingEmail: string | null; documentTheme: string | null; documentPageSize: string | null; settings: unknown } | undefined,
   brand: { logoUrl: string | null; primaryColor: string | null } | undefined,
 ) {
+  // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
+  const docBrand = resolveDocumentBrand(brand, partner?.settings);
   return {
     partnerName: partner?.name ?? 'Invoice',
     contactEmail: partner?.billingEmail ?? null,
-    logoUrl: brand?.logoUrl ?? null,
-    primaryColor: brand?.primaryColor ?? null,
+    logoUrl: docBrand.logoUrl,
+    primaryColor: docBrand.primaryColor,
     // #6227: the invoice's issue-time snapshot (every non-draft invoice carries
     // one since 2026-10-29-100100), partner live values only as the fallback.
     ...resolveInvoicePresentation(inv, partner),

@@ -1,4 +1,4 @@
-import { BREEZE_MCP_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
+import { buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
 
 // Approximate tool count stated in the instructions below. Kept as a rounded
 // literal (not derived from the aiTools registry at runtime) so this string
@@ -7,7 +7,9 @@ import { BREEZE_MCP_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
 // if the two drift apart.
 export const MCP_TOOL_COUNT_APPROX = 250;
 
-export const MCP_SERVER_INSTRUCTIONS = `You are connected to Breeze RMM — a multi-tenant Remote Monitoring and Management platform for MSPs. This server exposes ~${MCP_TOOL_COUNT_APPROX} tools for managing devices, alerts, patches, backups, security, tickets, and configuration policies.
+/** Server instructions; approval wording follows the action-intents flag (D-B34). */
+export function buildMcpServerInstructions(intentsEnabled: boolean): string {
+  return `You are connected to Breeze RMM — a multi-tenant Remote Monitoring and Management platform for MSPs. This server exposes ~${MCP_TOOL_COUNT_APPROX} tools for managing devices, alerts, patches, backups, security, tickets, and configuration policies.
 
 ## Tenant hierarchy
 Partner (MSP) → Organization (customer) → Site (location) → Device Group → Device. You can only see and act within the organizations your API key/token grants access to.
@@ -17,13 +19,17 @@ Partner (MSP) → Organization (customer) → Site (location) → Device Group �
 2. Read before write: prefer query_* and get_* tools to understand state before any manage_* or execute_* call.
 3. One target at a time unless the user explicitly asks for a fleet-wide operation.
 
-${BREEZE_MCP_GUARDRAILS_CORE}
+${buildMcpGuardrailsCore(intentsEnabled)}
 
 ## Paged and large results
 List results carry hasMore and nextCursor. When hasMore is true and you need more, call the same tool again with cursor set to nextCursor and the same filters. A result with artifact.handle means the full output is stored: use read_artifact to page through it instead of re-running the query.
 
 ## Common workflows
 For frequent MSP tasks, use the guided prompts: breeze-fleet-triage, breeze-device-investigate, breeze-patch-remediate, breeze-incident-kickoff, breeze-turnkey-setup.`;
+}
+
+/** Flag-off value; existing importers keep this name. */
+export const MCP_SERVER_INSTRUCTIONS = buildMcpServerInstructions(false);
 
 export interface McpPromptDefinition {
   name: string;

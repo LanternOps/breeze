@@ -57,6 +57,8 @@ vi.mock('../db/schema', () => ({
 
 vi.mock('./alertService', () => ({
   createAlert: vi.fn().mockResolvedValue('alert-1'),
+  resolveAlert: vi.fn().mockResolvedValue(true),
+  RESOLVABLE_ALERT_STATUSES: ['active', 'acknowledged', 'suppressed'],
 }));
 
 vi.mock('./featureConfigResolver', () => ({
@@ -76,7 +78,7 @@ vi.mock('./sentry', () => ({
 
 import { db } from '../db';
 import { alertTemplates, alertRules, alerts } from '../db/schema';
-import { createAlert } from './alertService';
+import { createAlert, resolveAlert } from './alertService';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
 import {
@@ -560,5 +562,37 @@ describe('loadOldestRebootRequiredSince', () => {
   it('throws on an unparseable value instead of silently dropping the reboot flag', async () => {
     mockMinRow('not-a-timestamp');
     await expect(loadOldestRebootRequiredSince(DEVICE_ID, ORG_ID)).rejects.toThrow(TypeError);
+  });
+});
+
+describe('resolveClearedRebootPendingAlerts', () => {
+  function mockCandidates(ids: string[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            where: () => ({ orderBy: () => ({ limit: () => Promise.resolve(ids.map((id) => ({ id }))) }) }),
+          }),
+        }),
+      }),
+    } as never);
+  }
+
+  it('one failing resolve does not strand the rest of the batch, and the count survives', async () => {
+    const { resolveClearedRebootPendingAlerts } = await import('./patchAlerts');
+    mockCandidates(['a1', 'a2', 'a3']);
+    vi.mocked(resolveAlert).mockReset();
+    vi.mocked(resolveAlert)
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error('publish failed'))
+      .mockResolvedValueOnce(true);
+
+    await expect(resolveClearedRebootPendingAlerts()).resolves.toBe(2);
+    expect(vi.mocked(resolveAlert)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({ alertId: 'a2' }),
+    );
   });
 });

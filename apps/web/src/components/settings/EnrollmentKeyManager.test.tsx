@@ -677,3 +677,221 @@ describe('EnrollmentKeyManager — subtitle (#3964)', () => {
     expect(code?.textContent).toBe('breeze-agent enroll <key>');
   });
 });
+
+// #9615: the row's "Download pre-configured installer" used to send no
+// `count`, so the API's `?? 1` default built an installer that enrolled ONE
+// device even for a key with 55 uses left. The row now asks how many devices
+// (defaulting to the key's remaining uses, like Add Device's device-count
+// field) and sends that as `count`.
+describe('EnrollmentKeyManager — row installer download device count (#9615)', () => {
+  const okInstaller = () =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Disposition': 'attachment; filename="breeze.msi"' }),
+      blob: async () => new Blob(['msi']),
+      json: async () => ({}),
+    } as unknown as Response);
+
+  function routeInstallerFetch(list: Row[], installer: () => Promise<Response> = okInstaller) {
+    const calls = routeFetch(list);
+    const base = fetchWithAuth.getMockImplementation()!;
+    fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string; body?: string }) => {
+      const url = String(rawUrl ?? '');
+      if (url.includes('/installer/')) {
+        calls.push({ url, method: opts?.method ?? 'GET' });
+        return installer();
+      }
+      return base(rawUrl, opts);
+    });
+    return calls;
+  }
+
+  beforeEach(() => {
+    Object.assign(URL, {
+      createObjectURL: vi.fn(() => 'blob:installer'),
+      revokeObjectURL: vi.fn(),
+    });
+  });
+
+  async function openInstallerDialog(platform: 'Windows (.msi)' | 'macOS (.zip)', row = 0) {
+    await screen.findAllByText('Prod key');
+    fireEvent.click(screen.getAllByTitle('Download pre-configured installer')[row]);
+    fireEvent.click(screen.getByText(platform));
+    return (await screen.findByTestId('installer-device-count')) as HTMLInputElement;
+  }
+
+  const installerCalls = (calls: Array<{ url: string }>) =>
+    calls.filter((c) => c.url.includes('/installer/'));
+
+  it("defaults the device count to the key's remaining uses and sends it as count", async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55, usageCount: 3 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('52');
+    // Nothing is minted until the admin confirms.
+    expect(installerCalls(calls)).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    await waitFor(() => expect(installerCalls(calls)).toHaveLength(1));
+    expect(installerCalls(calls)[0].url).toBe('/enrollment-keys/k-1/installer/windows?count=52');
+  });
+
+  it('sends the device count the admin entered (macOS)', async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55, usageCount: 0 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('macOS (.zip)');
+    fireEvent.change(input, { target: { value: '10' } });
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    await waitFor(() => expect(installerCalls(calls)).toHaveLength(1));
+    expect(installerCalls(calls)[0].url).toBe('/enrollment-keys/k-1/installer/macos?count=10');
+  });
+
+  it("refuses a count above the key's remaining uses", async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 5, usageCount: 2 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('3');
+    fireEvent.change(input, { target: { value: '4' } });
+
+    const confirm = screen.getByTestId('installer-download-confirm') as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+
+  it.each(['0', '', '2.5'])('refuses a non-positive-integer count (%j)', async (value) => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: null }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    fireEvent.change(input, { target: { value } });
+
+    const confirm = screen.getByTestId('installer-download-confirm') as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+
+  it('defaults an unlimited key to the product default device count', async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: null, usageCount: 7 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('50');
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    await waitFor(() => expect(installerCalls(calls)).toHaveLength(1));
+    expect(installerCalls(calls)[0].url).toBe('/enrollment-keys/k-1/installer/windows?count=50');
+  });
+
+  it('cancel closes the dialog without minting an installer', async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    await openInstallerDialog('Windows (.msi)');
+    fireEvent.click(screen.getByTestId('installer-download-cancel'));
+
+    expect(screen.queryByTestId('installer-device-count')).toBeNull();
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+
+  it.each([
+    ['100000', false],
+    ['100001', true],
+  ])('bounds an unlimited key at the route maximum (%s)', async (value, disabled) => {
+    routeInstallerFetch([makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: null })]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    fireEvent.change(input, { target: { value } });
+    expect((screen.getByTestId('installer-download-confirm') as HTMLButtonElement).disabled).toBe(disabled);
+  });
+
+  it('uses the singular form when one enrollment is left', async () => {
+    routeInstallerFetch([makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 5, usageCount: 4 })]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('1');
+    expect(screen.getByText('This key has 1 enrollment left.')).toBeTruthy();
+  });
+
+  it("reopening for another key starts from that key's default, not the last value", async () => {
+    routeInstallerFetch([
+      makeRow({ id: 'k-a', siteId: 's-1', siteName: 'HQ', maxUsage: 55, usageCount: 0 }),
+      makeRow({ id: 'k-b', siteId: 's-1', siteName: 'HQ', maxUsage: 8, usageCount: 0 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const first = await openInstallerDialog('Windows (.msi)', 0);
+    fireEvent.change(first, { target: { value: '30' } });
+    fireEvent.click(screen.getByTestId('installer-download-cancel'));
+
+    const second = await openInstallerDialog('Windows (.msi)', 1);
+    expect(second.value).toBe('8');
+  });
+
+  it('stays open showing progress until the download settles', async () => {
+    let finish!: (r: Response) => void;
+    routeInstallerFetch(
+      [makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 })],
+      () => new Promise<Response>((resolve) => { finish = resolve; }),
+    );
+    render(<EnrollmentKeyManager />);
+
+    await openInstallerDialog('Windows (.msi)');
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    const confirm = await screen.findByTestId('installer-download-confirm');
+    await waitFor(() => expect(confirm.textContent).toBe('Downloading...'));
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+
+    finish(await okInstaller());
+    await waitFor(() => expect(screen.queryByTestId('installer-device-count')).toBeNull());
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a failed download in the page error banner and closes the dialog', async () => {
+    routeInstallerFetch(
+      [makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 })],
+      () => Promise.resolve(jsonRes({ error: 'Enrollment key usage exhausted' }, false, 410)),
+    );
+    render(<EnrollmentKeyManager />);
+
+    await openInstallerDialog('Windows (.msi)');
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    expect(await screen.findByText('Enrollment key usage exhausted')).toBeTruthy();
+    expect(screen.queryByTestId('installer-device-count')).toBeNull();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('Escape closes the dialog without minting an installer', async () => {
+    const calls = routeInstallerFetch([makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 })]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('installer-device-count')).toBeNull();
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+});
