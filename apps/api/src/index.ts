@@ -202,6 +202,7 @@ import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { fleetDesignRoutes } from './routes/fleetDesign';
 import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
+import { wispRoutes } from './routes/wisp';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -1104,6 +1105,9 @@ api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// Wisp W02 (#9908): delegation grants. Every route 404s while
+// BREEZE_WISP_ENABLED is off (checked per request inside wispRoutes).
+api.route('/wisp', wispRoutes);
 // W03 (#5612): more specific than '/ai', so it must be registered first — same
 // reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
 // registration order.
