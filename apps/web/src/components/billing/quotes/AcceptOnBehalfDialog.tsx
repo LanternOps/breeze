@@ -180,6 +180,11 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
         // rather than printing a blank where a number belongs.
         successMessage: (data) => {
           if (!data.invoiceNumber) return t('quotes.actions.acceptOnBehalf.successDraftInvoice');
+          // Auto-email is on but the server has no email transport: say that,
+          // not "no recipient" (a recipient on file would not help).
+          if (autoEmail && emailConfigured === false) {
+            return t('quotes.actions.acceptOnBehalf.successNoEmailService', { number: data.invoiceNumber });
+          }
           // Auto-email is on but nobody is on record to receive it: be honest
           // that the customer may not have the invoice.
           if (autoEmail && !hasRecipients) {

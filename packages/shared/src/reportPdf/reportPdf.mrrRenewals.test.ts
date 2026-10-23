@@ -137,3 +137,36 @@ describe('buildReportPdf: mrr_renewals', () => {
     warn.mockRestore();
   });
 });
+
+describe('mrr_renewals pagination', () => {
+  /** Top-down y (mm) of every text run containing `needle`, with its page number. */
+  function textYs(doc: ReturnType<typeof buildReportPdf>, needle: string): Array<{ page: number; yMm: number }> {
+    const pages = (doc.internal as unknown as { pages: Array<string[] | undefined> }).pages;
+    const pageH = doc.internal.pageSize.getHeight();
+    const out: Array<{ page: number; yMm: number }> = [];
+    pages.forEach((p, page) => {
+      if (!Array.isArray(p)) return;
+      const stream = p.join('\n');
+      const re = /([\d.]+) ([\d.]+) Td\s*\((.*?)\)\s*Tj/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(stream))) {
+        if (m[3].includes(needle)) out.push({ page, yMm: pageH - Number(m[2]) / doc.internal.scaleFactor });
+      }
+    });
+    return out;
+  }
+
+  it('keeps the Reconciliation heading and prose above the footer when earlier content overflows', () => {
+    const skipped = Array.from({ length: 70 }, (_, i) => ({
+      contractId: `s${i}`, contractName: `Skipped Contract ${i}`, orgName: 'Acme Co', reason: 'no billing interval',
+    }));
+    const doc = buildReportPdf([], { ...opts, summary: { ...SUMMARY, skipped } });
+    expect(doc.getNumberOfPages()).toBeGreaterThan(1);
+    const heading = textYs(doc, 'Reconciliation');
+    expect(heading.length).toBeGreaterThan(0);
+    const all = [...heading, ...textYs(doc, 'Skipped Contract')];
+    expect(all.length).toBeGreaterThan(60);
+    // footY is 199 mm on the 210 mm landscape page; nothing may be drawn below it.
+    for (const t of all) expect(t.yMm).toBeLessThan(199);
+  });
+});

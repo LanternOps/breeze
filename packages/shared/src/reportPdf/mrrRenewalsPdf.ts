@@ -56,7 +56,21 @@ const NA = 'N/A';
 /** Renewal-window rows beyond this are dropped from the PDF only. */
 const RENEWAL_TABLE_MAX = 500;
 
-function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y: number, size = 9.5, color?: RGB): number {
+/** Start a fresh page (with chrome) when `needed` mm will not fit. */
+function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, needed: number): number {
+  if (y + needed <= chrome.PAGE.footY - 6) return y;
+  doc.addPage();
+  chrome.drawHeaderBand(doc);
+  chrome.drawFooter(doc);
+  return chrome.PAGE.bandH + 10;
+}
+
+/** Section heading that never lands in the footer: keeps ~30 mm for what follows. */
+function heading(doc: jsPDF, chrome: PdfChrome, text: string, y: number): number {
+  return chrome.drawSectionHeading(doc, text, ensureSpace(doc, chrome, y, 30));
+}
+
+function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y0: number, size = 9.5, color?: RGB): number {
   const { C, PAGE } = chrome;
   const width = PAGE.w - PAGE.mx * 2;
   doc.setFont('helvetica', 'normal');
@@ -64,8 +78,13 @@ function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y: number, size 
   ink(doc, color ?? C.ink);
   const lines = doc.splitTextToSize(text, width) as string[];
   const lineH = size * 0.56;
-  lines.forEach((line, i) => doc.text(line, PAGE.mx, y + i * lineH));
-  return y + lines.length * lineH + 2.5;
+  let y = y0;
+  lines.forEach((line) => {
+    y = ensureSpace(doc, chrome, y, lineH);
+    doc.text(line, PAGE.mx, y);
+    y += lineH;
+  });
+  return y + 2.5;
 }
 
 function scopeLabel(scope: ReportScopeMeta): string {
@@ -171,8 +190,9 @@ function drawScorecard(
 
 function drawRenewals(doc: jsPDF, chrome: PdfChrome, summary: MrrRenewalsSummary, startY: number): number {
   const { C, PAGE } = chrome;
-  let y = chrome.drawSectionHeading(
+  let y = heading(
     doc,
+    chrome,
     `Renewals in the next ${summary.renewalHorizonDays} days`,
     startY + 2,
   );
@@ -234,7 +254,7 @@ function drawRenewals(doc: jsPDF, chrome: PdfChrome, summary: MrrRenewalsSummary
 
 function drawBilled(doc: jsPDF, chrome: PdfChrome, summary: MrrRenewalsSummary, startY: number): number {
   const { C, PAGE } = chrome;
-  let y = chrome.drawSectionHeading(doc, 'Billed recurring revenue', startY + 2);
+  let y = heading(doc, chrome, 'Billed recurring revenue', startY + 2);
   y = drawProse(
     doc,
     chrome,
@@ -281,7 +301,7 @@ export function renderMrrRenewalsReport(
   );
 
   // --- Basis (notes verbatim, before any number) -------------------------------
-  y = chrome.drawSectionHeading(doc, 'Basis', y + 6);
+  y = heading(doc, chrome, 'Basis', y + 6);
   for (const note of summary.notes) {
     y = drawProse(doc, chrome, note, y + 1, 8.6, C.muted);
   }
@@ -290,13 +310,13 @@ export function renderMrrRenewalsReport(
   // section below would print an unmeasured result as "none". Say so instead.
   // A stored run from before the flag existed has no `measured` and was measured.
   if (summary.measured === false) {
-    y = chrome.drawSectionHeading(doc, 'Not measured', y + 4);
+    y = heading(doc, chrome, 'Not measured', y + 4);
     drawProse(doc, chrome, 'Not measured: nothing was queried for this run, for the reason given above. The figures are unknown, not zero.', y + 1, 9, C.muted);
     return;
   }
 
   // --- Scorecard ---------------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, 'Recurring revenue per currency', y + 4);
+  y = heading(doc, chrome, 'Recurring revenue per currency', y + 4);
   y = drawScorecard(doc, chrome, summary, opts, y);
 
   // --- Renewals ----------------------------------------------------------------
@@ -306,7 +326,7 @@ export function renderMrrRenewalsReport(
   y = drawBilled(doc, chrome, summary, y);
 
   // --- Reconciliation ----------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, 'Reconciliation', y + 2);
+  y = heading(doc, chrome, 'Reconciliation', y + 2);
   let any = false;
   if (summary.activeNotInTerm.length > 0) {
     any = true;

@@ -1,7 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { fetchWithAuth } from '../../../stores/auth';
+import { showToast } from '../../shared/Toast';
 import AcceptOnBehalfDialog from './AcceptOnBehalfDialog';
 import type { Quote, QuoteLine } from './quoteTypes';
 
@@ -55,5 +56,37 @@ describe('AcceptOnBehalfDialog — email consequence (#9256)', () => {
   it('renders no email line when auto-email is off, regardless of transport', () => {
     mount({ auto: false, emailConfigured: false });
     expect(screen.queryByTestId('accept-on-behalf-consequence-email')).toBeNull();
+  });
+
+  describe('success toast', () => {
+    async function acceptAndGetToast(over: { recipients?: string[]; emailConfigured?: boolean }): Promise<string> {
+      vi.mocked(fetchWithAuth).mockResolvedValue({
+        ok: true, status: 200, json: async () => ({ data: { invoiceNumber: 'INV-7' } }),
+      } as unknown as Response);
+      mount(over);
+      fireEvent.change(screen.getByTestId('accept-on-behalf-reference'), { target: { value: 'PO 1' } });
+      fireEvent.change(screen.getByTestId('accept-on-behalf-signer-name'), { target: { value: 'Dana Buyer' } });
+      fireEvent.click(screen.getByTestId('accept-on-behalf-submit'));
+      await waitFor(() => expect(showToast).toHaveBeenCalled());
+      return (vi.mocked(showToast).mock.calls[0][0] as { message: string }).message;
+    }
+
+    it('no email service: says so and does not blame a missing recipient', async () => {
+      const message = await acceptAndGetToast({ emailConfigured: false });
+      expect(message).toContain('INV-7');
+      expect(message).toMatch(/no email service/i);
+      expect(message).not.toMatch(/recipient/i);
+    });
+
+    it('no email service wins over a missing recipient', async () => {
+      const message = await acceptAndGetToast({ recipients: [], emailConfigured: false });
+      expect(message).toMatch(/no email service/i);
+      expect(message).not.toMatch(/recipient/i);
+    });
+
+    it('email configured but no recipient: still says no recipient is recorded', async () => {
+      const message = await acceptAndGetToast({ recipients: [], emailConfigured: true });
+      expect(message).toMatch(/no recipient is recorded/i);
+    });
   });
 });

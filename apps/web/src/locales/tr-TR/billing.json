@@ -1368,6 +1368,7 @@
         "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin.",
         "consequenceEmailNoRecipient": "Bu teklifte kayıtlı alıcı yok; bu nedenle fatura e-postayla gönderilmeyebilir. Gerekirse müşteriye kendiniz gönderin.",
         "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok.",
+        "successNoEmailService": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmedi: yapılandırılmış bir e-posta hizmeti yok. Fatura sayfasından paylaşın.",
         "overlap": {
           "title": "Bu kuruluşun aynı sıklıkta bir sözleşmesi zaten var",
           "body": "Kabul işlemi yeni bir taslak sözleşme oluşturdu. Mevcut sözleşmeyle birlikte bunu da etkinleştirirseniz müşteri her ikisi için de ödeme yapar. Herhangi birini etkinleştirmeden önce ikisini de gözden geçirin.",
