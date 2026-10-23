@@ -47,6 +47,23 @@ describe('RecommendationsPage per-org actions (#9714)', () => {
     mock.mock.calls.find(([, init]) => (init as { method?: string } | undefined)?.method === 'POST');
   const sent = (call: NonNullable<ReturnType<typeof findPost>>) => String(call[0]) + JSON.stringify(call[1]);
 
+  it('acts per org: a completed org offers Reopen, an open org offers Complete/Dismiss, and each sends its own org + action', async () => {
+    const mock = mockList([
+      { orgId: ORG_A, status: 'completed', affectedDevices: 2 },
+      { orgId: ORG_B, status: 'open', affectedDevices: 1 },
+    ]);
+    render(<RecommendationsPage />);
+    const reopen = await screen.findByRole('button', { name: /reopen/i });
+    expect(screen.getAllByRole('button', { name: /mark complete/i })).toHaveLength(1);
+    fireEvent.click(reopen);
+    await waitFor(() => {
+      const post = findPost(mock);
+      expect(post).toBeTruthy();
+      expect(post![0]).toBe('/security/recommendations/rec-enable-firewall/reopen');
+      expect(post![1]).toMatchObject({ method: 'POST', orgIdOverride: ORG_A });
+    });
+  });
+
   it("sends the clicked org's id with Mark Complete when a rec spans several orgs", async () => {
     const mock = mockList([
       { orgId: ORG_A, status: 'open', affectedDevices: 2 },
@@ -59,7 +76,7 @@ describe('RecommendationsPage per-org actions (#9714)', () => {
     await waitFor(() => {
       const post = findPost(mock);
       expect(post).toBeTruthy();
-      expect(sent(post!)).toContain(ORG_B);
+      expect(post![1]).toMatchObject({ method: 'POST', orgIdOverride: ORG_B });
       expect(sent(post!)).not.toContain(ORG_A);
     });
   });
@@ -71,7 +88,8 @@ describe('RecommendationsPage per-org actions (#9714)', () => {
     await waitFor(() => {
       const post = findPost(mock);
       expect(post).toBeTruthy();
-      expect(sent(post!)).toContain(ORG_A);
+      expect(post![0]).toBe('/security/recommendations/rec-enable-firewall/dismiss');
+      expect(post![1]).toMatchObject({ method: 'POST', orgIdOverride: ORG_A });
     });
   });
 });

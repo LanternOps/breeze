@@ -86,8 +86,6 @@ export default function RecommendationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [errorKind, setErrorKind] = useState<LoadErrorKind>("none");
-  // Separate from `error`: a refetch clears the load error, not the action error.
-  const [actionError, setActionError] = useState<string>();
   const [priorityFilter, setPriorityFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -157,7 +155,6 @@ export default function RecommendationsPage() {
     orgId: string,
     action: "complete" | "dismiss" | "reopen",
   ) => {
-    setActionError(undefined);
     try {
       await runAction({
         request: () =>
@@ -168,14 +165,10 @@ export default function RecommendationsPage() {
         errorFallback: t("securityRecommendationsPage.actionFailed"),
       });
     } catch (err) {
+      // runAction already toasted the failure (#2472: it must be visible even
+      // though the refetch below clears `error`); 401 is the auth redirect's.
       handleActionError(err, t("securityRecommendationsPage.actionFailed"));
       console.error(`[RecommendationsPage] ${action} error:`, err);
-      // NOT `setError`: the unconditional `fetchData` below opens with
-      // `setError(undefined)`, and React batches both writes into one render — so
-      // a failed complete/dismiss was wiped before it ever painted and the user
-      // saw NOTHING. Keep action failures in their own state, which the refetch
-      // does not clear. (#2472)
-      setActionError(friendlyFetchError(err));
     }
     fetchData(pagination.page);
   };
@@ -264,16 +257,6 @@ export default function RecommendationsPage() {
       {error && (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center">
           <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
-
-      {actionError && (
-        <div
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-center"
-          data-testid="recommendations-action-error"
-          role="alert"
-        >
-          <p className="text-sm text-destructive">{actionError}</p>
         </div>
       )}
 
@@ -451,7 +434,7 @@ export default function RecommendationsPage() {
                   >
                     {(rec.orgs ?? []).length > 1 && (
                       <span className="text-xs font-medium">
-                        {orgName(o.orgId)} · {o.status}
+                        {orgName(o.orgId)} · {t(`securityRecommendationsPage.${o.status}`)}
                       </span>
                     )}
                     {o.status !== "open" ? (
