@@ -53,6 +53,15 @@ describe('mcpModernResult', () => {
     }
   });
 
+  it('B-W04: decorateModernResult keeps a tool result\'s own input_required and adds no cache hints to tools/call', () => {
+    const r = decorateModernResult('tools/call', { resultType: 'input_required', inputRequests: {}, requestState: 's' });
+    expect(r.resultType).toBe('input_required');
+    expect(r).not.toHaveProperty('ttlMs');
+    expect(r).not.toHaveProperty('cacheScope');
+    expect(decorateModernResult('tools/call', { content: [] }).resultType).toBe('complete');
+    expect(decorateModernResult('tools/list', { resultType: 'input_required' }).resultType).toBe('complete');
+  });
+
   it('buildDiscoverResult advertises every supported version, private 5-minute cache', () => {
     expect(buildDiscoverResult()).toEqual({
       resultType: 'complete',

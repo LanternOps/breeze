@@ -125,6 +125,35 @@ describe('SecurityDashboard', () => {
     );
   });
 
+  it('says Refresh reloads the latest snapshot, and shows partial encryption separately (#9643)', async () => {
+    routeSecurity(
+      {
+        ...overviewPayload,
+        encryption: {
+          bitlockerEnabled: 20,
+          bitlockerPartial: 4,
+          filevaultEnabled: 10,
+          filevaultPartial: 0,
+          total: 43
+        }
+      },
+      threatsPayload
+    );
+    render(<SecurityDashboard />);
+    await screen.findByText('62');
+
+    expect(screen.getByRole('button', { name: /Refresh/ })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/latest security snapshot/i)
+    );
+    const card = screen.getByTestId('security-overview-encryption-card');
+    expect(card).toHaveTextContent(/BitLocker partial\s*4/);
+    // No partial FileVault machines -> no FileVault partial row.
+    expect(card).not.toHaveTextContent(/FileVault partial/);
+    expect(screen.getByTestId('security-overview-score-card')).toBeInTheDocument();
+    expect(screen.getByTestId('security-overview-recommendations-card')).toBeInTheDocument();
+  });
+
   it('feeds the Vulnerabilities card from CVE findings by severity, never /security/threats (#9640)', async () => {
     routeSecurity(overviewPayload, threatsPayload);
     render(<SecurityDashboard />);

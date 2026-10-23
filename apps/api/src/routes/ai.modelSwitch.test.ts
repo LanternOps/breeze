@@ -266,7 +266,7 @@ describe('POST /ai/sessions/:id/messages — model switch (W05)', () => {
     vi.mocked(streamingSessionManager.get).mockReturnValue(undefined);
     vi.mocked(streamingSessionManager.getOrCreate).mockResolvedValue(makeActiveSession());
     vi.mocked(streamingSessionManager.tryTransitionToProcessing).mockReturnValue(true);
-    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) } as any);
+    vi.mocked(db.insert).mockReturnValue({ values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'user-row-1' }]) }) } as any);
   });
 
   afterEach(() => {

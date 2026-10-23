@@ -578,6 +578,33 @@ Filing a request needs exactly what a direct Tier 3 call needs: `ai:execute`, pl
 
 When an approver reports a request that came from MCP as suspicious in the Breeze app, the request is rejected. If the reporter owns the MCP credential that filed it, that API key or OAuth grant is revoked. Otherwise nothing is revoked, and the credential's owner and the request's approvers are notified.
 
+### URL elicitation (2026-07-28 clients)
+
+A client on the stateless `2026-07-28` protocol that declares URL-mode elicitation (`clientCapabilities.elicitation.url`) gets a richer first answer than `pending_approval`. The result is `resultType: "input_required"` with one `elicitation/create` request in **URL mode** that points at the Breeze approval page, plus a signed `requestState`:
+
+```json
+{
+  "resultType": "input_required",
+  "inputRequests": {
+    "breeze_approval": {
+      "method": "elicitation/create",
+      "params": { "mode": "url", "message": "…", "url": "https://app.example.com/approvals#intent-5b0c1c7e-…" }
+    }
+  },
+  "requestState": "<signed>"
+}
+```
+
+Breeze never sends form-mode elicitation, and a client that declares only `elicitation: {}` (form) or is on an earlier protocol gets the plain `pending_approval` result. The URL carries only the request id; opening it needs a Breeze login.
+
+The client retries the same `tools/call` (same tool and arguments) with `requestState` and `inputResponses.breeze_approval.action`:
+
+- `accept` waits up to `MCP_APPROVAL_WAIT_MS` for the decision. A finished request returns its outcome (the real result when `completed`, an error result when rejected, failed, expired or cancelled). A request still waiting returns `pending_approval`; poll `get_action_status` from there.
+- `decline` cancels the request (needs `ai:write`).
+- `cancel` (dismissed) leaves the request pending and returns its status.
+
+The `requestState` is bound to the credential, tool, arguments and a 10-minute lifetime; any mismatch returns `-32602` with `data.reason` (`invalid_request_state` or `request_state_expired`, the latter with `data.actionId` for the same credential). A retry never files a new request.
+
 ### Limits and rollout
 
 Three limits apply, set in [Environment variables](#environment-variables): live requests per credential (20), new requests per credential per hour (60), and new requests per requesting user per hour across all their credentials (60).
@@ -856,6 +883,8 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_INTENT_MAX_LIVE_PER_PRINCIPAL` | `20` | Maximum live (not yet finished) approval requests per MCP credential. |
 | `MCP_INTENT_CREATES_PER_HOUR` | `60` | Maximum new approval requests per MCP credential per hour. |
 | `MCP_INTENT_CREATES_PER_USER_PER_HOUR` | `60` | Maximum new approval requests per requesting user per hour, across all their credentials. |
+| `MCP_APPROVAL_WAIT_MS` | `20000` | How long an `accept` retry of a URL-elicitation approval waits for the decision before returning `pending_approval`. |
+| `MCP_APPROVAL_WAITS_PER_PRINCIPAL` | `2` | Concurrent `accept` waits per MCP credential; further ones return the current status without waiting. |
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Maximum concurrent SSE sessions per API key. |
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | Maximum SSE connections per API key per minute. |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Maximum JSON-RPC messages per API key per minute. |

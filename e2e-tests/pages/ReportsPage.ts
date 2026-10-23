@@ -37,6 +37,9 @@ export class ReportsPage {
   ownerScopeOrg = () => this.page.getByTestId('report-owner-scope-org');
   arAgingGroupBy = () => this.page.getByTestId('ar-aging-group-by');
   arAgingCreate = () => this.page.getByTestId('ar-aging-create-report');
+  mrrRenewalsGroupBy = () => this.page.getByTestId('mrr-renewals-group-by');
+  mrrRenewalsHorizon = () => this.page.getByTestId('mrr-renewals-horizon');
+  mrrRenewalsCreate = () => this.page.getByTestId('mrr-renewals-create-report');
 
   // Reports list — saved reports tab
   savedTab = () => this.page.getByTestId('reports-tab-saved');

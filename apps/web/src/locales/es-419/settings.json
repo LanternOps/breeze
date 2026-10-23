@@ -700,7 +700,13 @@
         "quality": "Calidad"
       },
       "failovers": "Conmutaciones",
-      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible"
+      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organización",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por función"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "p.ej. Dom 02:00-06:00, 02:00-04:00 o 24 horas al día, 7 días a la semana",
     "maintenanceInvalid": "Utilice una ventana UTC como <first>Sun 02:00-04:00</first> o <second>02:00-04:00</second>, o <always>24/7</always> para estar siempre activo. Déjelo vacío para permitir que las organizaciones lo configuren.",
     "maintenanceHelp": "Ventana de tiempo (UTC) para actualizaciones y reinicios automáticos. Utilice <always>24/7</always> para estar siempre activo o déjelo vacío para que las organizaciones lo configuren individualmente.",
-    "deviceGroup": "Grupo de dispositivos predeterminado",
-    "alertThreshold": "Umbral de alerta predeterminado",
     "autoEnrollment": {
       "title": "Inscripción automática",
       "enable": "Habilitar la inscripción automática para nuevos dispositivos",
-      "requireApproval": "Requerir aprobación del administrador",
-      "sendWelcome": "Enviar notificación de bienvenida"
+      "requireApproval": "Requerir aprobación del administrador"
     },
     "enrollment": {
       "title": "Inscripción de dispositivos",
@@ -1419,7 +1422,10 @@
     "retrySites": "Reintentar",
     "createASite": "Crear un sitio",
     "maxUsage": "Uso máximo (opcional)",
-    "defaultDeviceLimit": "50 (predeterminado)",
+    "defaultDeviceLimit": "{{count}} (predeterminado de la organización)",
+    "expiresAtHelp": "Déjalo en blanco para {{duration}} (predeterminado de la organización).",
+    "usageFromDefault": "predeterminado",
+    "usageFromDefaultTitle": "El límite de dispositivos proviene del valor predeterminado de la organización.",
     "maxUsageHelp": "Número máximo de agentes que pueden inscribirse con esta clave.",
     "expiresAt": "Caduca en (opcional)",
     "creating": "Creando...",
@@ -1810,27 +1816,13 @@
     "deviceGroup": {
       "title": "Grupo de dispositivos predeterminado",
       "description": "Los dispositivos recién inscritos se agregan a este grupo automáticamente.",
-      "options": {
-        "AllManagedDevices": "Todos los dispositivos administrados",
-        "CriticalInfrastructure": "Infraestructura crítica",
-        "RemoteStaff": "Personal remoto",
-        "Contractors": "Contratistas"
-      }
-    },
-    "alertSeverity": {
-      "title": "Gravedad de alerta predeterminada",
-      "description": "Las alertas por debajo de esta gravedad se envían únicamente al feed de resumen.",
-      "options": {
-        "critical": "Sólo crítico",
-        "high": "Alto y crítico",
-        "medium": "Medio y superior"
-      }
+      "none": "Ninguno",
+      "unavailable": "Grupo seleccionado (no disponible)"
     },
     "autoEnrollment": {
       "title": "Inscripción automática",
       "enable": "Habilitar inscripción automática",
-      "requireApproval": "Requerir aprobación del administrador",
-      "sendWelcome": "Enviar mensaje de bienvenida"
+      "requireApproval": "Requerir aprobación del administrador"
     },
     "agentUpdates": {
       "title": "Política de actualización del agente",
@@ -2487,7 +2479,11 @@
     "sourceDefault": "Predeterminado",
     "selectOrgForEffectiveBudget": "Seleccione una organización para ver su presupuesto vigente, o edite los valores predeterminados de todo el socio.",
     "editPartnerWideDefaults": "Editar valores predeterminados de todo el socio",
-    "thresholdsOff": "Desactivado"
+    "thresholdsOff": "Desactivado",
+    "todaysCost": "Costo de hoy",
+    "monthlyCost": "Costo mensual",
+    "messagesToday": "Mensajes de hoy",
+    "tokensThisMonth": "Tokens de este mes"
   },
   "aiAgentsPage": {
     "schedules": {

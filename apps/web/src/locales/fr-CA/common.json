@@ -774,9 +774,9 @@
     },
     "search": {
       "prompt": "Rechercher dans Breeze",
-      "placeholder": "Rechercher des appareils, scripts, alertes, utilisateurs et paramètres...",
+      "placeholder": "Rechercher des appareils, scripts, alertes et paramètres...",
       "searching": "Cherche...",
-      "startTyping": "Commencez à saisir du texte pour rechercher parmi les appareils, scripts, alertes, utilisateurs et paramètres.",
+      "startTyping": "Commencez à saisir du texte pour rechercher parmi les appareils, scripts, alertes et paramètres.",
       "noResults": "Aucun résultat trouvé. Essayez une autre requête.",
       "navigationHint": "Utilisez des flèches pour naviguer, Entrée pour ouvrir",
       "closeHint": "Esc à la fin",
@@ -866,6 +866,8 @@
       "cycleSidebar": "Changer le mode de la barre latérale",
       "help": "Ouvrir le panneau d'aide",
       "showThis": "Afficher cette carte",
+      "orgSwitcher": "Ouvrir le sélecteur d'organisation",
+      "aiSidebar": "Afficher ou masquer la barre latérale IA",
       "close": "Fermer une boîte de dialogue ou un menu",
       "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ.",
       "create": "Créer",
@@ -2382,7 +2384,7 @@
           },
           "search": {
             "title": "Rechercher n’importe quoi",
-            "description": "Appuyez sur Cmd+K pour trouver instantanément les appareils, scripts, alertes, utilisateurs ou paramètres."
+            "description": "Appuyez sur Cmd+K pour trouver instantanément les appareils, scripts, alertes ou paramètres."
           },
           "switchOrgs": {
             "title": "Changer d’organisation",

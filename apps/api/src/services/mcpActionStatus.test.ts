@@ -17,6 +17,7 @@ import {
   mapIntentStatus,
   mcpApprovalUrl,
   toMcpActionStatus,
+  buildApprovalInputRequiredResult,
 } from './mcpActionStatus';
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -155,5 +156,26 @@ describe('intrinsic tool list entries', () => {
     const e = MCP_CANCEL_ACTION_TOOL_LIST_ENTRY as any;
     expect(e.name).toBe(MCP_CANCEL_ACTION_TOOL_NAME);
     expect(e.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+  });
+});
+
+describe('buildApprovalInputRequiredResult (B-W04 D-B32, PR B)', () => {
+  it('one URL-mode elicitation to the approval URL, the sealed state, never form mode', () => {
+    const status = toMcpActionStatus(mk(), BASE);
+    const r = buildApprovalInputRequiredResult(status, 'STATE');
+    expect(r).toEqual({
+      resultType: 'input_required',
+      inputRequests: {
+        breeze_approval: {
+          method: 'elicitation/create',
+          params: { mode: 'url', message: expect.any(String), url: status.approvalUrl },
+        },
+      },
+      requestState: 'STATE',
+    });
+    const msg = (r.inputRequests as any).breeze_approval.params.message as string;
+    expect(msg).toContain(status.toolName);
+    expect(msg).toMatch(/declin\w* cancels/i);
+    expect(JSON.stringify(r)).not.toContain('"mode":"form"');
   });
 });

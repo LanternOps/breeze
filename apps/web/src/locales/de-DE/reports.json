@@ -339,6 +339,7 @@
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
+        "mrr_renewals": "MRR und Verlängerungen",
         "backup_status": "Sicherungsstatus"
       },
       "threatDetection": {
@@ -442,6 +443,7 @@
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
+        "mrr_renewals": "MRR und Verlängerungen",
         "backup_status": "Sicherungsstatus"
       },
       "runsTable": {
@@ -991,6 +993,7 @@
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
+        "mrr_renewals": "MRR und Verlängerungen",
         "backup_status": "Sicherungsstatus"
       },
       "schedules": {
@@ -1063,6 +1066,10 @@
         "ai_usage_by_client": {
           "name": "KI-Nutzung nach Kunde",
           "description": "KI-Nutzung der Plattform pro Kunde im Zeitraum: Anfragen, Token, Breeze-Kosten, der laut Abrechnungsprofil des Kunden zu berechnende Betrag und was bereits in Rechnung gestellt wurde. Inkludierte Nutzung und Modelle ohne Preis werden getrennt ausgewiesen, nie eingerechnet."
+        },
+        "mrr_renewals": {
+          "name": "MRR und Verlängerungen",
+          "description": "Monatlich und jährlich wiederkehrender Umsatz aus aktiven Verträgen, gemessen an dem Tag, an dem der Bericht läuft, mit den Verträgen, die innerhalb des gewählten Zeitraums verlängert werden, und dem tatsächlich als wiederkehrend abgerechneten Betrag. Pro Währung eine Summe, ohne Umrechnung."
         },
         "backup_status": {
           "name": "Sicherungsstatusbericht",
@@ -1186,6 +1193,19 @@
       },
       "periodNote": "Die Abrechnung erfolgt nach UTC-Kalendermonat. Ein Zeitraum in einer anderen Zeitzone kann bei Nutzung nahe der Monatsgrenzen von der Rechnung abweichen.",
       "unpricedNote": "Nutzung eines Modells ohne Preis im Abrechnungsprofil des Kunden wird als „ohne Preis“ gezählt. Sie gilt nie als kostenlos.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Dieser Bericht wird immer an dem Tag gemessen, an dem er läuft. Es gibt keinen Zeitraum und kein Stichtagsdatum einzustellen.",
+      "groupBy": "Gruppieren nach",
+      "groupByValues": {
+        "organization": "Organisation",
+        "contract": "Vertrag"
+      },
+      "renewalHorizon": "Verlängerungszeitraum",
+      "renewalHorizonOption": "Nächste {{days}} Tage",
+      "renewalHorizonHelp": "Verträge, deren Laufzeit innerhalb dieses Zeitraums endet, werden als Verlängerungen aufgeführt.",
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },

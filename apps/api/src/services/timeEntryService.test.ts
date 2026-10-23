@@ -678,36 +678,42 @@ describe('deleteTimeEntry', () => {
 
 describe('deleteTicketPart', () => {
   it('409s before delete when the locked part is billed', async () => {
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
     dbMocks.selectResults.push([{
-      id: 'part-billed', billingStatus: 'billed', currencyCode: 'USD', addedBy: 'u-1',
+      ticketId: 't-1', id: 'part-billed', billingStatus: 'billed', currencyCode: 'USD', addedBy: 'u-1',
     }]);
 
     await expect(deleteTicketPart('part-billed', ACTOR))
       .rejects.toMatchObject({ code: 'PART_BILLED', status: 409 });
 
     expect(dbMocks.deleteCalls).toBe(0);
-    expect(dbMocks.forUpdateCalls).toBe(1);
+    expect(dbMocks.forUpdateCalls).toBe(2); // #8972 W0: + ticket lock read
   });
 
   it.each(['not_billed', 'no_charge', 'contract'] as const)(
     'allows deletion after locked re-read when status is %s',
     async (billingStatus) => {
+      dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+      dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
       dbMocks.selectResults.push([{
-        id: `part-${billingStatus}`, billingStatus, currencyCode: 'USD', addedBy: 'u-1',
+        ticketId: 't-1', id: `part-${billingStatus}`, billingStatus, currencyCode: 'USD', addedBy: 'u-1',
       }]);
       dbMocks.deleteResult = [{ id: `part-${billingStatus}` }];
 
       await deleteTicketPart(`part-${billingStatus}`, ACTOR);
 
       expect(dbMocks.deleteCalls).toBe(1);
-      expect(dbMocks.forUpdateCalls).toBe(1);
+      expect(dbMocks.forUpdateCalls).toBe(2); // #8972 W0: + ticket lock read
     },
   );
 
   // #6589 — same zero-row race class as #6568/#6588, on the delete path.
   it('rejects with 409 PART_DELETE_LOST when DELETE RETURNING yields no row, instead of reporting success', async () => {
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
     dbMocks.selectResults.push([{
-      id: 'part-raced', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-1',
+      ticketId: 't-1', id: 'part-raced', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-1',
     }]);
     dbMocks.deleteResult = [];
 
@@ -718,8 +724,10 @@ describe('deleteTicketPart', () => {
   });
 
   it("403s when a non-admin deletes someone else's part", async () => {
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
     dbMocks.selectResults.push([{
-      id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
+      ticketId: 't-1', id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
     }]);
 
     await expect(deleteTicketPart('part-other', ACTOR))
@@ -729,8 +737,10 @@ describe('deleteTicketPart', () => {
   });
 
   it('allows a manageAll actor to delete a part added by someone else', async () => {
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
     dbMocks.selectResults.push([{
-      id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
+      ticketId: 't-1', id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
     }]);
     dbMocks.deleteResult = [{ id: 'part-other' }];
 
@@ -1709,12 +1719,14 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
   });
 
   it('(i) a part price edit never touches currencyCode and reads the part FOR UPDATE', async () => {
-    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'EUR', addedBy: 'u-1' }]);
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
+    dbMocks.selectResults.push([{ ticketId: 't-1', id: 'part-1', billingStatus: 'not_billed', currencyCode: 'EUR', addedBy: 'u-1' }]);
     dbMocks.updateResult = [{ id: 'part-1' }];
     await updateTicketPart('part-1', { unitPrice: 5 }, ACTOR);
     expect(dbMocks.updateSetArgs[0]!).not.toHaveProperty('currencyCode');
     expect(dbMocks.updateSetArgs[0]!.unitPrice).toBe('5.00');
-    expect(dbMocks.forUpdateCalls).toBe(1);
+    expect(dbMocks.forUpdateCalls).toBe(2); // #8972 W0: ticket lock read, then the part FOR UPDATE
   });
 
   it('(j) monetary edit of a billed entry rejects ENTRY_BILLED 409 without updating', async () => {
@@ -1733,7 +1745,9 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
   });
 
   it('(k) quantity edit of a billed part rejects PART_BILLED 409', async () => {
-    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'billed', currencyCode: 'EUR', addedBy: 'u-1' }]);
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
+    dbMocks.selectResults.push([{ ticketId: 't-1', id: 'part-1', billingStatus: 'billed', currencyCode: 'EUR', addedBy: 'u-1' }]);
     await expect(updateTicketPart('part-1', { quantity: 3 }, ACTOR))
       .rejects.toMatchObject({ code: 'PART_BILLED', status: 409 });
     expect(dbMocks.updateSetArgs).toHaveLength(0);
@@ -1742,7 +1756,9 @@ describe('currency snapshots (wave 4 / Task 7)', () => {
 
 describe('updateTicketPart zero-row race (#6568)', () => {
   it('rejects with 409 PART_UPDATE_LOST when UPDATE RETURNING yields no mutated row, instead of echoing the stale part', async () => {
-    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-1' }]);
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
+    dbMocks.selectResults.push([{ ticketId: 't-1', id: 'part-1', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-1' }]);
     dbMocks.updateResult = [];
 
     await expect(updateTicketPart('part-1', { description: 'lost race' }, ACTOR))
@@ -1752,8 +1768,10 @@ describe('updateTicketPart zero-row race (#6568)', () => {
 
 describe('updateTicketPart author ownership', () => {
   it("403s when a non-admin edits someone else's part", async () => {
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
     dbMocks.selectResults.push([{
-      id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
+      ticketId: 't-1', id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
     }]);
 
     await expect(updateTicketPart('part-other', { description: 'edited' }, ACTOR))
@@ -1763,8 +1781,10 @@ describe('updateTicketPart author ownership', () => {
   });
 
   it('allows a manageAll actor to edit a part added by someone else', async () => {
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
     dbMocks.selectResults.push([{
-      id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
+      ticketId: 't-1', id: 'part-other', billingStatus: 'not_billed', currencyCode: 'USD', addedBy: 'u-OTHER',
     }]);
     dbMocks.updateResult = [{ id: 'part-other', description: 'edited' }];
 
@@ -1834,14 +1854,18 @@ describe('timeEntryService currency representability guard (W6-G4-2 / W6-G4-3)',
   });
 
   it('updateTicketPart rejects a price edit that is fractional in the part\'s own snapshot', async () => {
-    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'JPY', addedBy: 'u-1' }]);
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
+    dbMocks.selectResults.push([{ ticketId: 't-1', id: 'part-1', billingStatus: 'not_billed', currencyCode: 'JPY', addedBy: 'u-1' }]);
     await expect(updateTicketPart('part-1', { unitPrice: 100.5 }, ACTOR))
       .rejects.toMatchObject({ code: 'PRICE_NOT_REPRESENTABLE', status: 400 });
     expect(dbMocks.updateSetArgs).toHaveLength(0);
   });
 
   it('updateTicketPart accepts a whole-unit JPY price', async () => {
-    dbMocks.selectResults.push([{ id: 'part-1', billingStatus: 'not_billed', currencyCode: 'JPY', addedBy: 'u-1' }]);
+    dbMocks.selectResults.push([{ ticketId: 't-1' }]); // #8972 W0: unlocked part peek
+    dbMocks.selectResults.push([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: ticket lock row
+    dbMocks.selectResults.push([{ ticketId: 't-1', id: 'part-1', billingStatus: 'not_billed', currencyCode: 'JPY', addedBy: 'u-1' }]);
     dbMocks.updateResult = [{ id: 'part-1' }];
     await updateTicketPart('part-1', { unitPrice: 100 }, ACTOR);
     expect(dbMocks.updateSetArgs[0]!.unitPrice).toBe('100.00');

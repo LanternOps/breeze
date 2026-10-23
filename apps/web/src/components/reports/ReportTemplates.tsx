@@ -12,6 +12,7 @@ import {
   Laptop,
   Loader2,
   Plus,
+  Repeat,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -80,6 +81,13 @@ import {
   aiUsageByClientOptionsFromConfig,
   type AiUsageByClientOptions,
 } from './AiUsageByClientOptionsForm';
+import {
+  DEFAULT_MRR_RENEWALS_OPTIONS,
+  MrrRenewalsOptionsForm,
+  mrrRenewalsConfigFromOptions,
+  mrrRenewalsOptionsFromConfig,
+  type MrrRenewalsOptions,
+} from './MrrRenewalsOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { OrgPickerField, useReportTargetOrg } from './OrgPickerField';
@@ -167,6 +175,7 @@ const reportTypeValues: TemplateReportType[] = [
   'technician_time_billability',
   'ar_aging',
   'ai_usage_by_client',
+  'mrr_renewals',
   'devices',
   'alerts',
   'patches',
@@ -235,6 +244,21 @@ const defaultTemplates: ReportTemplate[] = [
     },
     icon: Sparkles,
     tone: { iconBg: 'bg-violet-500/15', iconColor: 'text-violet-600' },
+    group: 'business'
+  },
+  {
+    id: 'mrr_renewals',
+    name: 'MRR & renewals',
+    description:
+      'Monthly and annual recurring revenue from active contracts, measured on the day the report runs, with the contracts renewing inside the chosen horizon and what has actually been billed as recurring. One set of totals per currency, never converted.',
+    defaults: {
+      name: 'MRR & renewals',
+      type: 'mrr_renewals',
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Repeat,
+    tone: { iconBg: 'bg-teal-500/15', iconColor: 'text-teal-600' },
     group: 'business'
   },
   {
@@ -588,6 +612,7 @@ function businessDefaultRange(template: ReportTemplate, t: (key: string) => stri
   const type = template.defaults.type;
   const saved = template.savedBusinessConfig;
   const periodKind = (saved?.period as { kind?: unknown } | undefined)?.kind;
+  if (type === 'mrr_renewals') return t('reports.reportTemplates.spec.asOfRunDate');
   if (type === 'ar_aging') {
     return typeof saved?.asOf === 'string' && saved.asOf
       ? saved.asOf
@@ -678,6 +703,7 @@ export default function ReportTemplates() {
   const [technicianTimeOptions, setTechnicianTimeOptions] = useState<TechnicianTimeOptions>(DEFAULT_TECHNICIAN_TIME_OPTIONS);
   const [arAgingOptions, setArAgingOptions] = useState<ArAgingOptions>(DEFAULT_AR_AGING_OPTIONS);
   const [aiUsageOptions, setAiUsageOptions] = useState<AiUsageByClientOptions>(DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
+  const [mrrRenewalsOptions, setMrrRenewalsOptions] = useState<MrrRenewalsOptions>(DEFAULT_MRR_RENEWALS_OPTIONS);
   // Create-only ownership for the business modal. The selector renders only
   // for a resolved partner-scope token; everyone else creates org-owned.
   const {
@@ -960,6 +986,7 @@ export default function ReportTemplates() {
         setTechnicianTimeOptions(saved ? technicianTimeOptionsFromConfig(saved) : DEFAULT_TECHNICIAN_TIME_OPTIONS);
         setArAgingOptions(saved ? arAgingOptionsFromConfig(saved) : DEFAULT_AR_AGING_OPTIONS);
         setAiUsageOptions(saved ? aiUsageByClientOptionsFromConfig(saved) : DEFAULT_AI_USAGE_BY_CLIENT_OPTIONS);
+        setMrrRenewalsOptions(saved ? mrrRenewalsOptionsFromConfig(saved) : DEFAULT_MRR_RENEWALS_OPTIONS);
         setOwnerScope(defaultOwnerScope);
         setBusinessTemplate(template);
         return;
@@ -1024,6 +1051,18 @@ export default function ReportTemplates() {
             submitLabel={t('reports.aiUsageByClientOptions.createReport')}
             onSubmit={() => {
               void handleCreateDirect(template, aiUsageByClientConfigFromOptions(aiUsageOptions), effectiveOwnerScope);
+            }}
+          />
+        );
+      case 'mrr_renewals':
+        return (
+          <MrrRenewalsOptionsForm
+            {...shared}
+            value={mrrRenewalsOptions}
+            onChange={setMrrRenewalsOptions}
+            submitLabel={t('reports.mrrRenewalsOptions.createReport')}
+            onSubmit={() => {
+              void handleCreateDirect(template, mrrRenewalsConfigFromOptions(mrrRenewalsOptions), effectiveOwnerScope);
             }}
           />
         );

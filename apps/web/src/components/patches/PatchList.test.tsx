@@ -721,3 +721,24 @@ describe('PatchList outstanding devices column (#8728)', () => {
     await waitFor(() => expect(screen.queryByTestId('patch-devices-popover')).toBeNull());
   });
 });
+
+// #9533: two catalog entries can share a title (e.g. one update id per OS
+// build). They looked like the same patch listed twice with identical Review
+// buttons; each row now says what tells it apart.
+describe('PatchList same-title rows (#9533)', () => {
+  it('shows version and catalog id on rows whose title repeats, and only on those', () => {
+    render(
+      <PatchList
+        patches={[
+          makePatch({ id: 'a', title: '2026-10 Cumulative Update', externalId: 'kb-a-guid', version: '26100.1' }),
+          makePatch({ id: 'b', title: '2026-10 cumulative update ', externalId: 'kb-b-guid', version: null }),
+          makePatch({ id: 'c', title: 'Google Chrome', externalId: 'Google.Chrome', version: '141.0' }),
+        ]}
+      />,
+    );
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId('patch-row-a-disambiguator')).toHaveTextContent('Package version 26100.1 · Catalog ID kb-a-guid');
+    expect(desktop.getByTestId('patch-row-b-disambiguator')).toHaveTextContent('Catalog ID kb-b-guid');
+    expect(desktop.queryByTestId('patch-row-c-disambiguator')).toBeNull();
+  });
+});

@@ -66,8 +66,8 @@
     "alertAcknowledged": "Warnung bestätigt",
     "failedToResolveAlert": "Warnung konnte nicht gelöst werden",
     "alertResolved": "Warnung behoben",
-    "alertsBreadcrumb": "Warnungen Breadcrumb",
-    "alertFallback": "Alarm-Fallback",
+    "alertsBreadcrumb": "Warnungen",
+    "alertFallback": "Warnung",
     "unknownMetric": "Unbekannte Metrik",
     "severity": {
       "critical": "Kritisch",
@@ -125,7 +125,7 @@
     "unknownMetric": "Unbekannte Metrik",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Alarm beheben",
-    "ticketCreationFailedRetry": "Ticketerstellung fehlgeschlagen. Wiederholen",
+    "ticketCreationFailedRetry": "Ticket konnte nicht erstellt werden. Bitte erneut versuchen",
     "ticketCreated": "Ticket {{ticket}} erstellt",
     "severity": {
       "critical": "Kritisch",
@@ -458,8 +458,6 @@
     "loadingAlerts": "Benachrichtigungen werden geladen...",
     "tryAgain": "Versuchen Sie es erneut",
     "alerts": "Warnungen",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Überwachen Sie Warnungen auf Ihren Geräten. Regeln werden in verwaltet",
-    "configurationPolicies": "Konfigurationsrichtlinien",
     "alert": "Alarm",
     "dismissedAlertsAreHiddenForGoodWarranty": "Verworfene Warnungen werden endgültig ausgeblendet. Bei Ablauf der Garantie wird für dasselbe Enddatum keine erneute Benachrichtigung angezeigt. Andere Warnungen können weiterhin ausgelöst werden, wenn ihr Zustand erneut auftritt.",
     "cancel": "Abbrechen",
@@ -505,7 +503,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} Alarm?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} Alarm?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} Warnungen?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} Warnungen?",
+    "subtitle": "Überwachen Sie Warnungen auf Ihren Geräten. Schwellenwerte werden unter <monitors>Monitore</monitors> festgelegt und über <policies>Konfigurationsrichtlinien</policies> an Kunden ausgerollt."
   },
   "alertsSummary": {
     "activeAlerts": "Aktive Warnungen",
@@ -545,7 +544,8 @@
     "sections": {
       "channels": "Kanäle",
       "routing": "Weiterleitung",
-      "escalation": "Eskalationsrichtlinien"
+      "escalation": "Eskalationsrichtlinien",
+      "inheritedChannels": "Von Ihrem Partner bereitgestellt"
     },
     "routing": {
       "everythingElse": "Alles andere",

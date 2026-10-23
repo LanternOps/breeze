@@ -423,3 +423,72 @@ describe('CisBaselinesTab schedule re-approval', () => {
     expect(badge.getAttribute('title')).toContain('Departed Tech');
   });
 });
+
+// #9606: Trigger Scan on a partner-wide baseline used to fan out to every
+// organization even with one selected.
+describe('CisBaselinesTab scan scope (#9606)', () => {
+  const scanBodies = () =>
+    fetchWithAuthMock.mock.calls
+      .filter(([url]) => String(url).startsWith('/cis/scan'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+
+  function mockPartnerWideScanFlow() {
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url.startsWith('/cis/scan')
+          ? ({ ok: true, status: 202, json: async () => ({ message: 'CIS scan queued' }) } as unknown as Response)
+          : ({ ok: true, status: 200, json: async () => ({ data: [partnerWideBaseline] }) } as unknown as Response)
+      )
+    );
+  }
+
+  beforeEach(() => {
+    ownerScopeState.isPartnerScope = true;
+    ownerScopeState.defaultOwnerScope = 'partner';
+    showToast.mockClear();
+    fetchWithAuthMock.mockReset();
+    mockPartnerWideScanFlow();
+  });
+
+  it('sends the selected org so the server narrows the scan to it', async () => {
+    orgStoreState.currentOrgId = 'org-2';
+    orgStoreState.organizations = TWO_ORGS;
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+    await screen.findByText('CIS Windows L2 (fleet)');
+
+    fireEvent.click(screen.getByRole('button', { name: /trigger scan/i }));
+
+    await waitFor(() => expect(scanBodies()).toHaveLength(1));
+    expect(scanBodies()[0]).toEqual({ baselineId: 'baseline-2', orgId: 'org-2' });
+    expect(screen.queryByTestId('cis-scan-all-orgs-confirm')).not.toBeInTheDocument();
+  });
+
+  it('with no org selected, asks first and says it scans all N organizations', async () => {
+    orgStoreState.currentOrgId = null;
+    orgStoreState.organizations = TWO_ORGS;
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+    await screen.findByText('CIS Windows L2 (fleet)');
+
+    fireEvent.click(screen.getByRole('button', { name: /trigger scan/i }));
+
+    expect(await screen.findByText(/scans all 2 organizations/i)).toBeInTheDocument();
+    expect(scanBodies()).toHaveLength(0); // nothing sent until confirmed
+
+    fireEvent.click(screen.getByTestId('cis-scan-all-orgs-confirm'));
+    await waitFor(() => expect(scanBodies()).toHaveLength(1));
+    expect(scanBodies()[0]).toEqual({ baselineId: 'baseline-2' });
+  });
+
+  it('does not confirm for an org-owned baseline in fleet view', async () => {
+    orgStoreState.currentOrgId = null;
+    orgStoreState.organizations = TWO_ORGS;
+    mockScanFlow();
+    render(<CisBaselinesTab refreshKey={0} onMutate={vi.fn()} />);
+    await screen.findByText('CIS Windows L1');
+
+    fireEvent.click(screen.getByRole('button', { name: /trigger scan/i }));
+
+    await waitFor(() => expect(scanBodies()).toHaveLength(1));
+    expect(scanBodies()[0]).toEqual({ baselineId: 'baseline-1' });
+  });
+});

@@ -173,6 +173,31 @@ describe('GET /encryption', () => {
   });
 });
 
+describe('GET /encryption summary (#9609)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('state tiles and method tiles are computed from the same filtered set', async () => {
+    const details = { source: 'bitlocker', volumes: [{ mount: 'C:', method: '6', protected: true, status: '1', percentEncrypted: 100 }] };
+    listStatusRowsMock.mockResolvedValue([
+      statusRow({ deviceId: DEV_ESCROWED, deviceName: 'has-key', encryptionDetails: details }),
+      statusRow({ deviceId: DEV_BARE, deviceName: 'no-key', encryptionDetails: details }),
+    ]);
+    mockEscrowRows([DEV_ESCROWED]);
+    const res = await buildApp().request('/encryption?escrow=missing');
+    const json = await res.json();
+    expect(json.summary.methodCounts.bitlocker).toBe(1);
+    expect(json.summary.fullyEncrypted).toBe(1);
+    expect(json.summary.total).toBe(1);
+    expect(json.summary.recoveryKeysEscrowed).toBe(0);
+  });
+});
+
 describe('GET /firewall — unknown firewall state (#8252)', () => {
   beforeEach(() => {
     vi.clearAllMocks();

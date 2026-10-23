@@ -4,7 +4,9 @@ package svcquery
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -20,49 +22,25 @@ func IsRunning(name string) (bool, error) {
 	return info.IsActive(), nil
 }
 
-// GetStatus queries a launchd service by label.
-// Checks launchctl list for running status.
+// GetStatus queries a launchd service by label via `launchctl list`, falling
+// back to the plist paths for an installed but unloaded job. A label that is
+// neither listed nor installed wraps ErrServiceNotFound; a failed `launchctl
+// list` does not (see resolveLaunchdStatus).
 func GetStatus(name string) (ServiceInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "launchctl", "list")
-	output, err := cmd.Output()
-	if err != nil {
-		return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: launchctl list: %w", err)
-	}
-
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
+	output, err := exec.CommandContext(ctx, "launchctl", "list").Output()
+	return resolveLaunchdStatus(string(output), err, name, func(p string) (bool, error) {
+		_, statErr := os.Stat(p)
+		if statErr == nil {
+			return true, nil
 		}
-		label := fields[2]
-		if label == name || strings.HasSuffix(label, "."+name) {
-			pid := fields[0]
-			info := ServiceInfo{
-				Name:   label,
-				Status: StatusStopped,
-			}
-			if pid != "-" {
-				info.Status = StatusRunning
-			}
-			return info, nil
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return false, nil
 		}
-	}
-
-	// Not in launchctl list — check if plist exists (installed but not loaded)
-	plistPaths := []string{
-		"/Library/LaunchDaemons/" + name + ".plist",
-		"/Library/LaunchAgents/" + name + ".plist",
-	}
-	for _, p := range plistPaths {
-		if _, err := os.Stat(p); err == nil {
-			return ServiceInfo{Name: name, Status: StatusStopped}, nil
-		}
-	}
-
-	return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: service %s not found", name)
+		return false, statErr
+	})
 }
 
 // ListServices returns all loaded launchd services.

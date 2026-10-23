@@ -14,8 +14,8 @@
  * filter it could apply).
  */
 export const SITE_RESTRICTED_NOTE =
-  'This report ran under a site-restricted authority. Tickets, time entries and '
-  + 'invoices have no site dimension, so nothing was queried — the figures below '
+  'This report ran under a site-restricted authority. This report\'s records '
+  + 'have no site dimension, so nothing was queried — the figures below '
   + 'are not measured, and they are not zero.';
 
 /** Partner scope only. The org list is `resolvePartnerReportOrgIds`

@@ -153,6 +153,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           merged.push({
             id,
             hostname: String(n?.name ?? n?.hostname ?? raw.hostname ?? stableT('patchComplianceView.unknownDevice')),
+            displayName: typeof raw.displayName === 'string' && raw.displayName.trim() ? raw.displayName : undefined,
             osType: String(n?.os ?? n?.osType ?? raw.osType ?? raw.os_type ?? 'unknown'),
             lastSeenAt: (n?.lastSeen ?? raw.lastSeenAt) ? String(n?.lastSeen ?? raw.lastSeenAt) : undefined,
             pendingPatches,
@@ -213,7 +214,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     let list = devices;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      list = list.filter(d => d.hostname.toLowerCase().includes(q));
+      list = list.filter(d => d.hostname.toLowerCase().includes(q) || (d.displayName?.toLowerCase().includes(q) ?? false));
     }
     if (statusFilter === 'needs-patches') list = list.filter(deviceNeedsUpdates);
     else if (statusFilter === 'critical') list = list.filter(d => d.criticalMissing > 0);
@@ -634,6 +635,10 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                 const isSelected = selectedIds.has(device.id);
                 const isCompliant = !deviceNeedsUpdates(device);
                 const activity = formatLastActivity(device.lastInstalledAt, device.lastScannedAt, t);
+                // #9533: lead with the display name like the rest of the app;
+                // the hostname stays visible as secondary context.
+                const deviceName = device.displayName || device.hostname;
+                const showHostname = !!device.displayName && device.displayName !== device.hostname;
 
                 return (
                   <tr key={device.id} className={cn('text-sm hover:bg-muted/30', isSelected && 'bg-primary/5')}>
@@ -644,8 +649,8 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                         className="flex items-center justify-center text-muted-foreground hover:text-foreground"
                         aria-label={
                           isSelected
-                            ? t('patchComplianceView.selection.deselectDevice', { name: device.hostname })
-                            : t('patchComplianceView.selection.selectDevice', { name: device.hostname })
+                            ? t('patchComplianceView.selection.deselectDevice', { name: deviceName })
+                            : t('patchComplianceView.selection.selectDevice', { name: deviceName })
                         }
                       >
                         {isSelected ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
@@ -661,10 +666,13 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                             href={`/devices/${device.id}`}
                             className="flex items-center gap-1 text-sm font-medium hover:underline"
                           >
-                            <span className="truncate">{device.hostname}</span>
+                            <span className="truncate" title={deviceName}>{deviceName}</span>
                             <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
                           </a>
                           <div className="text-xs text-muted-foreground">
+                            {showHostname && (
+                              <><span data-testid={`compliance-${device.id}-hostname`} title={device.hostname}>{device.hostname}</span> &middot; </>
+                            )}
                             {device.osType}
                             {device.lastSeenAt && <> &middot; {formatPatchRelativeTime(device.lastSeenAt, t)}</>}
                           </div>

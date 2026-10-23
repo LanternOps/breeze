@@ -829,4 +829,53 @@ describe('PatchComplianceView failed installs (#7214)', () => {
     expect(screen.getByRole('columnheader', { name: 'Failed' })).toBeTruthy();
     expect(screen.getByTestId('failed-installs-dev-1').textContent).toBe('1');
   });
+
+});
+
+describe('PatchComplianceView device names (#9533)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    orgState.currentOrgId = 'org-1';
+  });
+
+  // The rest of the app leads with the display name; the hostname stays
+  // visible as secondary context.
+  it('shows the display name with the hostname secondary, and searches both', async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url === '/patches/compliance') {
+        return makeJsonResponse({
+          data: {
+            totalDevices: 2,
+            compliantDevices: 0,
+            devicesNeedingPatches: [
+              { id: 'dev-1', name: 'DESKTOP-7Q2K', os: 'windows', missingCount: 1, approvedMissing: 1, unapprovedMissing: 0, failedMissing: 0, criticalCount: 0, importantCount: 0, osMissing: 1, thirdPartyMissing: 0, pendingReboot: false },
+              { id: 'dev-2', name: 'build-01', os: 'linux', missingCount: 1, approvedMissing: 1, unapprovedMissing: 0, failedMissing: 0, criticalCount: 0, importantCount: 0, osMissing: 1, thirdPartyMissing: 0, pendingReboot: false },
+            ],
+          },
+        });
+      }
+      if (url === '/devices?limit=200') {
+        return makeJsonResponse({ devices: [
+          { id: 'dev-1', hostname: 'DESKTOP-7Q2K', displayName: "Dana's laptop", osType: 'windows' },
+          { id: 'dev-2', hostname: 'build-01', displayName: null, osType: 'linux' },
+        ] });
+      }
+      return makeJsonResponse({});
+    });
+
+    render(<PatchComplianceView ringId={null} />);
+
+    const link = await screen.findByRole('link', { name: /Dana's laptop/ });
+    expect(link).toHaveAttribute('href', '/devices/dev-1');
+    expect(screen.getByTestId('compliance-dev-1-hostname')).toHaveTextContent('DESKTOP-7Q2K');
+    // No display name → hostname is the name, and is not repeated.
+    expect(screen.getByRole('link', { name: /build-01/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('compliance-dev-2-hostname')).toBeNull();
+    expect(screen.getByRole('button', { name: /Dana's laptop/ })).toBeInTheDocument(); // select checkbox label
+
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'desktop-7q' } });
+    expect(screen.getByRole('link', { name: /Dana's laptop/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /build-01/ })).toBeNull();
+  });
 });
