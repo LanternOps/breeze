@@ -6,7 +6,7 @@ import { cancelStaleMergeGroupRuns } from './cancel-stale-merge-group-runs.mjs';
 const REPO = 'o/r';
 
 // Fake GitHub API. `refs` = branches that exist; `runs` = unfinished runs per status.
-function fakeApi({ runs = {}, refs = new Set(), refError = {}, cancelFails = new Set() } = {}) {
+function fakeApi({ runs = {}, refs = new Set(), refError = {}, cancelFails = new Set(), cancelStatus = 500 } = {}) {
   const cancelled = [];
   const api = async (method, path) => {
     const m = path.match(/^repos\/o\/r\/actions\/runs\?event=merge_group&status=(\w+)&per_page=100&page=(\d+)$/);
@@ -23,7 +23,7 @@ function fakeApi({ runs = {}, refs = new Set(), refError = {}, cancelFails = new
     }
     const c = path.match(/^repos\/o\/r\/actions\/runs\/(\d+)\/cancel$/);
     if (method === 'POST' && c) {
-      if (cancelFails.has(Number(c[1]))) return { status: 500, body: {} };
+      if (cancelFails.has(Number(c[1]))) return { status: cancelStatus, body: {} };
       cancelled.push(Number(c[1]));
       return { status: 202, body: {} };
     }
@@ -98,4 +98,24 @@ test('same ref is looked up once for multiple workflows', async () => {
   await cancelStaleMergeGroupRuns({ api, repo: REPO, log });
   assert.equal(lookups.length, 1);
   assert.deepEqual(base.cancelled, []);
+});
+
+test('ref lookup 403/429 or a thrown error never cancels', async () => {
+  for (const mode of [403, 429, 'throw']) {
+    const base = fakeApi({ runs: { queued: [run(1, 'b')] }, refError: mode === 'throw' ? {} : { b: mode } });
+    const api = async (m, p) => {
+      if (mode === 'throw' && p.includes('/git/ref/')) throw new Error('network');
+      return base.api(m, p);
+    };
+    const res = await cancelStaleMergeGroupRuns({ api, repo: REPO, log });
+    assert.deepEqual(base.cancelled, [], String(mode));
+    assert.equal(res.errors, 1);
+  }
+});
+
+test('cancel returning 409 (already finished) is benign, not an error', async () => {
+  const { api } = fakeApi({ runs: { queued: [run(1, 'gone')] }, cancelFails: new Set([1]), cancelStatus: 409 });
+  const res = await cancelStaleMergeGroupRuns({ api, repo: REPO, log });
+  assert.equal(res.errors, 0);
+  assert.equal(res.cancelled, 0);
 });

@@ -58,7 +58,9 @@ export async function cancelStaleMergeGroupRuns({ api, repo, log = console }) {
         } catch (err) {
           cancel = { status: 0, error: err };
         }
-        if (cancel.status === 202) {
+        if (cancel.status === 409) {
+          log.info(`run ${id} already finished; nothing to cancel`);
+        } else if (cancel.status === 202) {
           log.info(`cancelled run ${id}: ref ${ref} no longer exists`);
           result.cancelled++;
         } else {
@@ -95,7 +97,9 @@ async function main() {
     log: { info: (m) => console.log(m), warn: (m) => console.log(`::warning::${m}`) },
   });
   console.log(`inspected=${result.inspected} cancelled=${result.cancelled} errors=${result.errors}`);
-  // Errors never cancel anything; surface them without failing the whole schedule.
+  // Errors never cancel anything, so failing the job is safe and makes a broken
+  // janitor (lost permission, persistent 5xx) visible instead of silently green.
+  if (result.errors > 0) process.exit(1);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
