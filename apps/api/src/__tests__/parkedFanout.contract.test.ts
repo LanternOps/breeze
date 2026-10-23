@@ -196,7 +196,7 @@ function exemptByPattern(file: string): boolean {
 const EXEMPT: Record<string, string> = {
   'services/backupRestoreIntegrity.ts': 'reinstall reattach (#8318 §5.4): reads the ONE device that took a snapshot, to date the snapshot against its install incarnation; selects no targets',
   'services/deviceInstallBoundary/index.ts': 'reinstall reattach (#8318 §5): locks the ONE device row a reattach confirm names (a reattach target is never parked); selects no targets',
-  'services/agentOwnDeviceRow.ts': 'stale callers (#8318 §6.4): updates, and after a 0-row update re-reads, the ONE device row the agent-authenticated caller owns (by id); selects no targets',
+  'services/agentOwnDeviceRow.ts': 'stale callers (#8318 §6.4): reads (bound, locked) and updates, and after a 0-row read or update re-reads, the ONE device row the agent-authenticated caller owns (by id + agent_id); selects no targets. Its callers include the workloads ingest (services/workloads/ingest.ts), which reads its device row only through it',
   'services/yaraScanRefs.ts': 'YARA rule-set refs (#6263 W03a): looks up the ONE device (by id) of a scan the caller already created; selects no targets, and a security_scan to a parked device is refused by command delivery',
   'services/endpointMessaging/chat.ts': 'request path (#8743): opens/messages ONE device the caller named and reached under RLS + the site axis; selects no targets, and chat_open/chat_message to a parked device is refused by command delivery',
   'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
@@ -345,7 +345,6 @@ const EXEMPT: Record<string, string> = {
   'services/timeSync/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
   'services/timeSync/settings.ts': 'derived: resolves policy settings for a single deviceId supplied by already-authorized callers (the calling agent\'s heartbeat/ingest, device view, fleet rows already filtered by notParkedDeviceCondition); selects no work',
   'services/timeSync/configUpdate.ts': 'agent self-service: builds the heartbeat time_sync_settings payload for the calling agent\'s own device id',
-  'services/workloads/ingest.ts': 'agent self-service: ownership-checks device.id+orgId; mounted only under the agent\'s own workloads route',
   'services/workloads/view.ts': 'derived: keyed on a single deviceId from already-authorized callers',
   'services/workloads/settings.ts': 'derived: resolves policy settings for a single deviceId supplied by already-authorized callers (the calling agent\'s heartbeat/ingest, the device view); selects no work',
   'services/timeSync/exports.ts':'derived: daily rows only for the device ids iterateFleetTimeRows already selected with notParkedDeviceCondition',
