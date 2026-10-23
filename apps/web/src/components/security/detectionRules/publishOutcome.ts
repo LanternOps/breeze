@@ -195,7 +195,9 @@ export function publishSuccessMessage(body: unknown, set: { enabled: boolean }):
     if (!isRecord(body)) return '';
     const o = describePublishOutcome(body.publish as YaraPublishBody | undefined, set, { expectPublish: true });
     return o.tone === 'success' ? formatPublishOutcome(o).message : '';
-  } catch {
+  } catch (err) {
+    // Never throw: runAction would turn that into a generic "Done" success toast.
+    console.error('[publishOutcome] success formatter failed; no success toast', err);
     return '';
   }
 }
@@ -212,7 +214,9 @@ export function ruleSetPatchSuccessMessage(body: unknown): string {
     const enabled = data.enabled !== false;
     const o = describePublishOutcome(body.publish as YaraPublishBody | undefined, { enabled });
     return o.tone === 'success' ? formatPublishOutcome(o).message : '';
-  } catch {
+  } catch (err) {
+    // Never throw: runAction would turn that into a generic "Done" success toast.
+    console.error('[publishOutcome] success formatter failed; no success toast', err);
     return '';
   }
 }

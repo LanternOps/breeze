@@ -1034,7 +1034,7 @@
           "blocking": "Diese Richtlinie kann die nicht verfügbaren Regelsätze nicht verwenden (gelöscht, verschoben oder Eigentum einer anderen Organisation). Entfernen Sie sie vor dem Speichern.",
           "overrideDraft": "Die geerbten Einstellungen enthalten Regelsätze, die diese Richtlinie nicht verwenden kann. Entfernen Sie die nicht verfügbaren Regelsätze und speichern Sie dann.",
           "errors": {
-            "tooMany": "Eine Richtlinie kann höchstens 20 Regelsätze verwenden.",
+            "tooMany": "Eine Richtlinie kann höchstens {{max}} Regelsätze verwenden.",
             "invalidIds": "Die Liste der Regelsätze ist ungültig. Laden Sie die Seite neu und versuchen Sie es erneut.",
             "notAttachable": "Diese Richtlinie kann einige der ausgewählten Regelsätze nicht verwenden. Sie sind unten hervorgehoben."
           }

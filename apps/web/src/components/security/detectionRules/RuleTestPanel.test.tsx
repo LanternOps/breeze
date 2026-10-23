@@ -186,6 +186,33 @@ describe('RuleTestPanel (W04-2, D1)', () => {
     expect(screen.getByTestId('rule-test-compile-error-0').textContent).toContain('unknown identifier');
   });
 
+  it('a 422 with an unknown code is not reported as "no enabled rules"', async () => {
+    await runWith(json(422, { error: 'raw', code: 'SOMETHING_NEW' }));
+    expect(errorText()).not.toMatch(/no enabled rules/);
+    expect(errorText()).toMatch(/did not finish|could not/i);
+  });
+
+  it('a 200 without a result renders an error, never a blank panel', async () => {
+    await runWith(json(200, { ok: true }));
+    expect(screen.queryByTestId('rule-test-result')).toBeNull();
+    expect(errorText()).toMatch(/could not/i);
+  });
+
+  it('leaving the panel aborts the in-flight test (the server kills the scan on disconnect)', async () => {
+    let seen: AbortSignal | undefined;
+    fetchWithAuth.mockImplementation((_url: string, init: RequestInit) => {
+      seen = init.signal ?? undefined;
+      return new Promise(() => {});
+    });
+    const { unmount } = render(<RuleTestPanel setId="set-1" />);
+    pick(new File(['x'], 'x.txt'));
+    fireEvent.click(screen.getByTestId('rule-test-run'));
+    await settle();
+    expect(seen?.aborted).toBe(false);
+    unmount();
+    expect(seen?.aborted).toBe(true);
+  });
+
   it('408 says the upload took too long', async () => {
     await runWith(json(408, { error: 'raw', code: 'YARA_TEST_BODY_TIMEOUT' }));
     expect(errorText()).toMatch(/upload took too long/);

@@ -2345,12 +2345,12 @@
       "autoQuarantineExecuteRequired": "Zum Aktivieren der automatischen Quarantäne ist die Berechtigung devices:execute erforderlich, da sie Dateien auf jedem Gerät verschiebt, das mit diesem Satz scannt.",
       "iocBatchAlreadyImported": "Diese IOCs wurden bereits in diesen Satz importiert.",
       "iocRuleNameTaken": "In diesem Satz gibt es bereits eine Regel mit demselben generierten Namen, aber anderem Inhalt. Benennen Sie sie um oder löschen Sie sie und importieren Sie erneut.",
-      "iocTooManyRules": "Mit diesem Import hätte der Satz mehr als 500 Regeln. Importieren Sie in einen anderen Satz.",
+      "iocTooManyRules": "Mit diesem Import hätte der Satz mehr als {{max}} Regeln. Importieren Sie in einen anderen Satz.",
       "iocInvalid": "Einige IOCs sind ungültig. Korrigieren Sie die markierten Zeilen und versuchen Sie es erneut."
     },
     "test": {
       "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
-      "privacy": "Die Datei wird auf dem Breeze-Server in einer Sandbox mit den aktuellen Regeln dieses Satzes gescannt, einschließlich noch nicht veröffentlichter Änderungen. Die Datei wird nicht gespeichert.",
+      "privacy": "Die Datei wird auf dem Breeze-Server in einer Sandbox mit den aktuellen Regeln dieses Satzes gescannt, einschließlich noch nicht veröffentlichter Änderungen. Die Datei wird nicht gespeichert. Im Audit-Protokoll werden nur ihr SHA-256-Wert, ihre Größe und die Anzahl der Treffer erfasst.",
       "sandboxUnavailable": "Dateitests sind auf diesem Server nicht verfügbar",
       "sandboxUnavailableHelp": "Der Server kann den Scan nicht isolieren und führt daher keine hochgeladenen Dateien aus. Regelbearbeitung, IOC-Import und Gerätescans sind nicht betroffen.",
       "file": "Zu testende Datei",
@@ -2368,7 +2368,8 @@
         "unavailable": "Die Regelprüfung ist nicht verfügbar. Versuchen Sie es später erneut.",
         "noRules": "Dieser Satz hat keine aktivierten Regeln zum Testen.",
         "compileFailed": "Dieser Satz lässt sich mit seinen aktuellen Regeln nicht kompilieren, daher wurde nichts gescannt:",
-        "bodyTimeout": "Der Upload hat zu lange gedauert. Versuchen Sie es erneut."
+        "bodyTimeout": "Der Upload hat zu lange gedauert. Versuchen Sie es erneut.",
+        "unexpected": "Der Test konnte nicht abgeschlossen werden. Versuchen Sie es erneut."
       }
     },
     "severity": {
@@ -2422,7 +2423,8 @@
       "deleteRule": "Regel löschen",
       "errorLine": "Zeile {{line}}:",
       "publishedVersion": "Veröffentlichte Version {{version}}",
-      "readOnlyBuiltin": "Der integrierte Regelsatz ist schreibgeschützt. Seine Regeln werden mit Breeze-Versionen aktualisiert."
+      "readOnlyBuiltin": "Der integrierte Regelsatz ist schreibgeschützt. Seine Regeln werden mit Breeze-Versionen aktualisiert.",
+      "refreshFailed": "Die Änderung wurde gesendet, aber der Regelsatz konnte nicht neu geladen werden. Die Anzeige ist möglicherweise veraltet."
     },
     "dialog": {
       "titleAdd": "Regel hinzufügen",
@@ -2434,7 +2436,7 @@
       "tagsHelp": "Durch Kommas getrennt, z. B. ransomware, advisory-42",
       "enabled": "Aktiviert",
       "source": "YARA-Quelltext",
-      "sourceTooLarge": "Der Regelquelltext ist größer als 64 KB.",
+      "sourceTooLarge": "Der Regelquelltext ist größer als {{max}} KB.",
       "checkedOnSave": "Beim Speichern wird der Satz mit demselben Compiler geprüft, den die Geräte verwenden. Fehlerhafte Regeln werden nicht veröffentlicht."
     },
     "ioc": {
@@ -2449,7 +2451,7 @@
       "labelPlaceholder": "Zum Beispiel: Herstellerhinweis 2026-10",
       "labelRequired": "Geben Sie eine Bezeichnung ein, um die erzeugten Regeln in der Vorschau zu sehen.",
       "paste": "IOCs einfügen",
-      "textTooLong": "Der eingefügte Text ist größer als 256 KB. Teilen Sie ihn auf mehrere Importe auf.",
+      "textTooLong": "Der eingefügte Text ist größer als {{max}} KB. Teilen Sie ihn auf mehrere Importe auf.",
       "skippedLines": "Diese Zeilen werden übersprungen:",
       "lineError": "Zeile {{line}}: {{error}}",
       "validCount": "{{valid}} von {{total}} IOCs bereit zum Import",

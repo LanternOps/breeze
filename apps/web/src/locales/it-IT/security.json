@@ -2345,12 +2345,12 @@
       "autoQuarantineExecuteRequired": "Per attivare la quarantena automatica serve l'autorizzazione devices:execute, perché sposta i file su ogni dispositivo che esegue la scansione con questo set.",
       "iocBatchAlreadyImported": "Questi IOC sono già stati importati in questo set.",
       "iocRuleNameTaken": "In questo set esiste già una regola con lo stesso nome generato ma con contenuto diverso. Rinominala o eliminala, poi ripeti l'importazione.",
-      "iocTooManyRules": "Con questa importazione il set supererebbe le 500 regole. Importa in un altro set.",
+      "iocTooManyRules": "Con questa importazione il set supererebbe le {{max}} regole. Importa in un altro set.",
       "iocInvalid": "Alcuni IOC non sono validi. Correggi le righe segnalate e riprova."
     },
     "test": {
       "requestFailed": "Il test non è stato completato. Controlla la connessione e riprova.",
-      "privacy": "Il file viene analizzato sul server Breeze, in una sandbox, con le regole attuali di questo set, comprese le modifiche non ancora pubblicate. Il file non viene conservato.",
+      "privacy": "Il file viene analizzato sul server Breeze, in una sandbox, con le regole attuali di questo set, comprese le modifiche non ancora pubblicate. Il file non viene conservato. Nel registro di controllo vengono registrati solo il suo SHA-256, la dimensione e il numero di corrispondenze.",
       "sandboxUnavailable": "I test dei file non sono disponibili su questo server",
       "sandboxUnavailableHelp": "Il server non può isolare la scansione, quindi non elabora i file caricati. La modifica delle regole, l'importazione di IOC e le scansioni dei dispositivi non sono interessate.",
       "file": "File da provare",
@@ -2368,7 +2368,8 @@
         "unavailable": "Il controllo delle regole non è disponibile. Riprova più tardi.",
         "noRules": "Questo set non ha regole attive da testare.",
         "compileFailed": "Questo set non si compila con le regole attuali, quindi non è stato analizzato nulla:",
-        "bodyTimeout": "Il caricamento ha richiesto troppo tempo. Riprova."
+        "bodyTimeout": "Il caricamento ha richiesto troppo tempo. Riprova.",
+        "unexpected": "Non è stato possibile completare il test. Riprova."
       }
     },
     "severity": {
@@ -2422,7 +2423,8 @@
       "deleteRule": "Elimina regola",
       "errorLine": "Riga {{line}}:",
       "publishedVersion": "Versione pubblicata {{version}}",
-      "readOnlyBuiltin": "Il set di regole integrato è di sola lettura. Le sue regole si aggiornano con le versioni di Breeze."
+      "readOnlyBuiltin": "Il set di regole integrato è di sola lettura. Le sue regole si aggiornano con le versioni di Breeze.",
+      "refreshFailed": "La modifica è stata inviata, ma non è stato possibile ricaricare il set di regole. Ciò che vedi potrebbe non essere aggiornato."
     },
     "dialog": {
       "titleAdd": "Aggiungi regola",
@@ -2434,7 +2436,7 @@
       "tagsHelp": "Separati da virgole, ad es. ransomware, advisory-42",
       "enabled": "Attiva",
       "source": "Sorgente YARA",
-      "sourceTooLarge": "Il sorgente della regola supera i 64 KB.",
+      "sourceTooLarge": "Il sorgente della regola supera i {{max}} KB.",
       "checkedOnSave": "Al salvataggio il set viene verificato con lo stesso compilatore usato dai dispositivi. Le regole con errori non vengono pubblicate."
     },
     "ioc": {
@@ -2449,7 +2451,7 @@
       "labelPlaceholder": "Ad esempio: Bollettino del fornitore 2026-10",
       "labelRequired": "Inserisci un'etichetta per vedere l'anteprima delle regole generate.",
       "paste": "Incolla IOC",
-      "textTooLong": "Il testo incollato supera i 256 KB. Suddividilo in importazioni più piccole.",
+      "textTooLong": "Il testo incollato supera i {{max}} KB. Suddividilo in importazioni più piccole.",
       "skippedLines": "Queste righe vengono ignorate:",
       "lineError": "Riga {{line}}: {{error}}",
       "validCount": "{{valid}} IOC su {{total}} pronti per l'importazione",

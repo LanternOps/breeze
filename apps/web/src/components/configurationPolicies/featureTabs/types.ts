@@ -68,9 +68,9 @@ export type FeatureTabProps = {
   orgId?: string | null;
   /**
    * Partner that owns a partner-wide policy (null for org policies). Lets the
-   * Security tab's rule-set picker (#6267) match partner-wide sets to the
-   * policy's partner, so a system-scope viewer never sees another partner's
-   * sets as attachable.
+   * Security tab's rule-set picker (#6267) offer a partner-wide policy only
+   * its own partner's sets. Org policies are not narrowed by partner in the
+   * picker; the server gate resolves the org's partner and decides.
    */
   partnerId?: string | null;
 };

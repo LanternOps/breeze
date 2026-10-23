@@ -2345,12 +2345,12 @@
       "autoQuarantineExecuteRequired": "Turning on auto-quarantine needs the devices:execute permission, because it moves files on every device that scans with this set.",
       "iocBatchAlreadyImported": "These IOCs were already imported into this set.",
       "iocRuleNameTaken": "A rule with the same generated name already exists in this set with different content. Rename or delete it, then import again.",
-      "iocTooManyRules": "This import would take the set past 500 rules. Import into another set.",
+      "iocTooManyRules": "This import would take the set past {{max}} rules. Import into another set.",
       "iocInvalid": "Some IOCs are not valid. Fix the marked lines and try again."
     },
     "test": {
       "requestFailed": "The test did not finish. Check your connection and try again.",
-      "privacy": "The file is scanned on the Breeze server, in a sandbox, against this set's current rules, including changes that are not published yet. The file is not stored.",
+      "privacy": "The file is scanned on the Breeze server, in a sandbox, against this set's current rules, including changes that are not published yet. The file is not stored. Only its SHA-256, size and match count are recorded in the audit log.",
       "sandboxUnavailable": "File tests are not available on this server",
       "sandboxUnavailableHelp": "The server cannot isolate the scan, so it does not run uploaded files. Rule editing, IOC import and device scans are not affected.",
       "file": "File to test",
@@ -2368,7 +2368,8 @@
         "unavailable": "The rule checker is unavailable. Try again later.",
         "noRules": "This set has no enabled rules to test.",
         "compileFailed": "This set does not compile with its current rules, so nothing was scanned:",
-        "bodyTimeout": "The upload took too long. Try again."
+        "bodyTimeout": "The upload took too long. Try again.",
+        "unexpected": "The test could not be completed. Try again."
       }
     },
     "severity": {
@@ -2422,7 +2423,8 @@
       "deleteRule": "Delete rule",
       "errorLine": "Line {{line}}:",
       "publishedVersion": "Published version {{version}}",
-      "readOnlyBuiltin": "The built-in rule set is read-only. Its rules update with Breeze releases."
+      "readOnlyBuiltin": "The built-in rule set is read-only. Its rules update with Breeze releases.",
+      "refreshFailed": "The change was sent, but the rule set could not be reloaded. What you see may be out of date."
     },
     "dialog": {
       "titleAdd": "Add rule",
@@ -2434,7 +2436,7 @@
       "tagsHelp": "Comma-separated, e.g. ransomware, advisory-42",
       "enabled": "Enabled",
       "source": "YARA source",
-      "sourceTooLarge": "The rule source is larger than 64 KB.",
+      "sourceTooLarge": "The rule source is larger than {{max}} KB.",
       "checkedOnSave": "The set is checked with the same compiler devices use when you save. Rules with errors are not published."
     },
     "ioc": {
@@ -2449,7 +2451,7 @@
       "labelPlaceholder": "For example: Vendor advisory 2026-10",
       "labelRequired": "Enter a label to preview the generated rules.",
       "paste": "Paste IOCs",
-      "textTooLong": "The pasted text is larger than 256 KB. Split it into smaller imports.",
+      "textTooLong": "The pasted text is larger than {{max}} KB. Split it into smaller imports.",
       "skippedLines": "These lines are skipped:",
       "lineError": "Line {{line}}: {{error}}",
       "validCount": "{{valid}} of {{total}} IOCs ready to import",

@@ -2,6 +2,7 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import { i18n } from '@/lib/i18n';
 import { useState, useCallback } from 'react';
+import { YARA_MAX_RULE_SETS_PER_POLICY } from '@breeze/shared';
 import { fetchWithAuth } from '../../../stores/auth';
 import { showToast } from '../../shared/Toast';
 import type { FeatureType, FeatureLink } from './types';
@@ -51,7 +52,7 @@ export function useFeatureLink(policyId: string) {
             }
             // Security link rule-set gate (#6263 W03 securityRuleSetGate.ts, #6267).
             if (code === 'TOO_MANY_RULE_SETS') {
-              return i18n.t('policies:configurationPolicies.featureTabs.securityTab.ruleSets.errors.tooMany');
+              return i18n.t('policies:configurationPolicies.featureTabs.securityTab.ruleSets.errors.tooMany', { max: YARA_MAX_RULE_SETS_PER_POLICY });
             }
             if (code === 'INVALID_RULE_SET_IDS') {
               return i18n.t('policies:configurationPolicies.featureTabs.securityTab.ruleSets.errors.invalidIds');

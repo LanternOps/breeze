@@ -1034,7 +1034,7 @@
           "blocking": "Esta política no puede usar los conjuntos de reglas no disponibles (eliminados, movidos o de otra organización). Quítelos antes de guardar.",
           "overrideDraft": "La configuración heredada incluye conjuntos de reglas que esta política no puede usar. Quite los conjuntos no disponibles y luego guarde.",
           "errors": {
-            "tooMany": "Una política puede usar como máximo 20 conjuntos de reglas.",
+            "tooMany": "Una política puede usar como máximo {{max}} conjuntos de reglas.",
             "invalidIds": "La lista de conjuntos de reglas no es válida. Vuelva a cargar la página e inténtelo de nuevo.",
             "notAttachable": "Esta política no puede usar algunos de los conjuntos de reglas seleccionados. Están resaltados abajo."
           }

@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
  * Spec §11 copy rule for the YARA / IOC-scan UI (#6263 W04): the feature is an
  * "IOC scan", "detection rules", "threat hunting" or a "malware scan
  * (signature-based)". It is never sold as EDR, antivirus, real-time protection
- * or prevention — it scans on a schedule or on demand and blocks nothing.
+ * or prevention — it scans on a schedule or on demand. Auto-quarantine is an
+ * opt-in action on a match, not prevention.
  */
 
 const localesDir = dirname(fileURLToPath(import.meta.url));

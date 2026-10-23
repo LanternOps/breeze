@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Play, ServerOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
@@ -14,15 +14,20 @@ type TestError =
   | { kind: "unavailable" }
   | { kind: "noRules" }
   | { kind: "compileFailed"; errors: Array<{ name?: string; code?: string; message: string; line?: number }> }
-  | { kind: "bodyTimeout" };
+  | { kind: "bodyTimeout" }
+  | { kind: "unexpected" };
 
 /**
  * Maps a failed test request to the state the panel renders inline. Each
  * status has two possible sources, so this keys on the status first and the
  * code second: a 413 is the route's YARA_TEST_TOO_LARGE or the body-limit
  * middleware (no code); a 429 is YARA_TEST_BUSY (another test is running) or
- * the per-user rate limiter (no code). Returns `sandbox` for the D1 fail-closed
- * 503, which disables the panel, and null for failures runAction toasted.
+ * the per-user rate limiter (no code); any 503 other than the fail-closed
+ * sandbox one is "checker unavailable"; a 408 is the body-read deadline. A 422
+ * is split by code (compile failure / no enabled rules); an unknown 422 code
+ * is a generic failure, never mislabelled. Returns `sandbox` for the
+ * fail-closed sandbox 503, which disables the panel, and null for failures
+ * runAction already toasted.
  */
 export function classifyTestError(err: ActionError): TestError | "sandbox" | null {
   const body = (err.body ?? {}) as { errors?: unknown };
@@ -47,7 +52,7 @@ export function classifyTestError(err: ActionError): TestError | "sandbox" | nul
           : [];
         return { kind: "compileFailed", errors };
       }
-      return { kind: "noRules" };
+      return err.code === "YARA_TEST_NO_RULES" ? { kind: "noRules" } : { kind: "unexpected" };
     case 408:
       return { kind: "bodyTimeout" };
     default:
@@ -63,13 +68,15 @@ const ERROR_KEY: Record<TestError["kind"], string> = {
   noRules: "detectionRules.test.errors.noRules",
   compileFailed: "detectionRules.test.errors.compileFailed",
   bodyTimeout: "detectionRules.test.errors.bodyTimeout",
+  unexpected: "detectionRules.test.errors.unexpected",
 };
 
 /**
  * Test one file against the set's current rules — the draft, published or not
- * (W04-2). Per D1 the scan runs on the Breeze server in a sandbox; the file is
- * not stored. The request is a POST, so it goes through runAction (no success
- * toast); the statuses this panel explains inline are not toasted.
+ * (W04-2). The scan runs on the Breeze server in a sandbox; the file is not
+ * stored. The request is a POST, so it goes through runAction (no success
+ * toast); the statuses this panel explains inline are not toasted. Leaving the
+ * panel aborts the request, and the server kills the scan on disconnect.
  */
 export default function RuleTestPanel({ setId }: { setId: string }) {
   const { t } = useTranslation("security");
@@ -79,6 +86,9 @@ export default function RuleTestPanel({ setId }: { setId: string }) {
   const [result, setResult] = useState<YaraTestResult | null>(null);
   const [error, setError] = useState<TestError | null>(null);
   const [sandboxUnavailable, setSandboxUnavailable] = useState(false);
+  const inFlight = useRef<AbortController | null>(null);
+
+  useEffect(() => () => inFlight.current?.abort(), []);
 
   const tooLarge = !!file && file.size > YARA_TEST_SAMPLE_MAX_BYTES;
   const canRun = !!file && !tooLarge && !running && !sandboxUnavailable;
@@ -88,10 +98,19 @@ export default function RuleTestPanel({ setId }: { setId: string }) {
     setRunning(true);
     setError(null);
     setResult(null);
+    const controller = new AbortController();
+    inFlight.current = controller;
     try {
-      const body = await testSample(setId, file, filepath.trim() ? { filepath: filepath.trim() } : {});
-      setResult(body.data);
+      const body = await testSample(setId, file, {
+        signal: controller.signal,
+        ...(filepath.trim() ? { filepath: filepath.trim() } : {}),
+      });
+      if (controller.signal.aborted) return;
+      // A 2xx that carries no result must not leave a blank panel.
+      if (!body?.data || !Array.isArray(body.data.matches)) setError({ kind: "unexpected" });
+      else setResult(body.data);
     } catch (err) {
+      if (controller.signal.aborted) return; // unmounted: nothing left to render into
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
         showToast({ type: "error", message: t("detectionRules.test.requestFailed") });
@@ -101,7 +120,8 @@ export default function RuleTestPanel({ setId }: { setId: string }) {
       if (state === "sandbox") setSandboxUnavailable(true);
       else if (state) setError(state);
     } finally {
-      setRunning(false);
+      if (!controller.signal.aborted) setRunning(false);
+      if (inFlight.current === controller) inFlight.current = null;
     }
   };
 
@@ -178,7 +198,7 @@ export default function RuleTestPanel({ setId }: { setId: string }) {
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p>{t(/* i18n-dynamic */ ERROR_KEY[shownError.kind], { max: 10 })}</p>
+            <p>{t(/* i18n-dynamic */ ERROR_KEY[shownError.kind], { max: YARA_TEST_SAMPLE_MAX_BYTES / (1024 * 1024) })}</p>
             {shownError.kind === "compileFailed" && shownError.errors.length > 0 && (
               <ul className="space-y-0.5 text-xs">
                 {shownError.errors.map((e, i) => (

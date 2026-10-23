@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
@@ -70,12 +70,25 @@ export default function RuleSetEditor({
   const [nameDraft, setNameDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // A failed RE-fetch (after a mutation) keeps the last known set on screen,
+  // so it must say the view may be out of date instead of passing it off as
+  // the server's current state.
+  const loadedRef = useRef(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+
   const load = useCallback(async () => {
     try {
       setSet(await getRuleSet(setId));
+      loadedRef.current = true;
       setErrorKind("none");
+      setLoadError(undefined);
+      setRefreshFailed(false);
     } catch (err) {
       console.error("[RuleSetEditor] load:", err);
+      if (loadedRef.current && errorKindOf(err) === "other") {
+        setRefreshFailed(true);
+        return;
+      }
       const kind = errorKindOf(err);
       setErrorKind(kind);
       if (kind === "other") setLoadError(friendlyFetchError(err));
@@ -314,6 +327,24 @@ export default function RuleSetEditor({
           )}
         </div>
       </div>
+
+      {refreshFailed && (
+        <div
+          data-testid="rule-set-refresh-error"
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
+          <span>{t("detectionRules.editor.refreshFailed")}</span>
+          <button
+            type="button"
+            data-testid="rule-set-refresh-retry"
+            onClick={() => void load()}
+            className="rounded-md border border-destructive/40 bg-background px-3 py-1 text-xs font-medium"
+          >
+            {t("common:actions.retry")}
+          </button>
+        </div>
+      )}
 
       {banner && (
         <div

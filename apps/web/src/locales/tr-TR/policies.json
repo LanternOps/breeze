@@ -1034,7 +1034,7 @@
           "blocking": "Bu ilke kullanılamayan kural kümelerini (silinmiş, taşınmış veya başka bir kuruluşa ait) kullanamaz. Kaydetmeden önce bunları kaldırın.",
           "overrideDraft": "Devralınan ayarlar bu ilkenin kullanamayacağı kural kümeleri içeriyor. Kullanılamayan kural kümelerini kaldırın, ardından kaydedin.",
           "errors": {
-            "tooMany": "Bir ilke en fazla 20 kural kümesi kullanabilir.",
+            "tooMany": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
             "invalidIds": "Kural kümesi listesi geçerli değil. Sayfayı yeniden yükleyip tekrar deneyin.",
             "notAttachable": "Bu ilke seçilen kural kümelerinden bazılarını kullanamaz. Aşağıda vurgulanmıştır."
           }

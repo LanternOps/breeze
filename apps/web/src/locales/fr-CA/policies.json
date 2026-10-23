@@ -1034,7 +1034,7 @@
           "blocking": "Cette politique ne peut pas utiliser les ensembles de règles non disponibles (supprimés, déplacés ou appartenant à une autre organisation). Retirez-les avant d’enregistrer.",
           "overrideDraft": "Les paramètres hérités comprennent des ensembles de règles que cette politique ne peut pas utiliser. Retirez les ensembles non disponibles, puis enregistrez.",
           "errors": {
-            "tooMany": "Une politique peut utiliser au plus 20 ensembles de règles.",
+            "tooMany": "Une politique peut utiliser au plus {{max}} ensembles de règles.",
             "invalidIds": "La liste des ensembles de règles n’est pas valide. Rechargez la page et réessayez.",
             "notAttachable": "Cette politique ne peut pas utiliser certains des ensembles de règles choisis. Ils sont mis en évidence ci-dessous."
           }

@@ -2345,12 +2345,12 @@
       "autoQuarantineExecuteRequired": "L’activation de la quarantaine automatique exige la permission devices:execute, car elle déplace des fichiers sur chaque appareil qui balaie avec cet ensemble.",
       "iocBatchAlreadyImported": "Ces IOC ont déjà été importés dans cet ensemble.",
       "iocRuleNameTaken": "Une règle portant le même nom généré mais un contenu différent existe déjà dans cet ensemble. Renommez-la ou supprimez-la, puis importez de nouveau.",
-      "iocTooManyRules": "Cette importation porterait l’ensemble au-delà de 500 règles. Importez dans un autre ensemble.",
+      "iocTooManyRules": "Cette importation porterait l’ensemble au-delà de {{max}} règles. Importez dans un autre ensemble.",
       "iocInvalid": "Certains IOC ne sont pas valides. Corrigez les lignes signalées et réessayez."
     },
     "test": {
       "requestFailed": "Le test ne s’est pas terminé. Vérifiez votre connexion et réessayez.",
-      "privacy": "Le fichier est balayé sur le serveur Breeze, dans un bac à sable, avec les règles actuelles de cet ensemble, y compris les modifications pas encore publiées. Le fichier n’est pas conservé.",
+      "privacy": "Le fichier est balayé sur le serveur Breeze, dans un bac à sable, avec les règles actuelles de cet ensemble, y compris les modifications pas encore publiées. Le fichier n’est pas conservé. Seuls son SHA-256, sa taille et le nombre de correspondances sont consignés dans le journal d’audit.",
       "sandboxUnavailable": "Les tests de fichiers ne sont pas offerts sur ce serveur",
       "sandboxUnavailableHelp": "Le serveur ne peut pas isoler le balayage, donc il ne traite pas les fichiers téléversés. La modification des règles, l’importation d’IOC et les balayages des appareils ne sont pas touchés.",
       "file": "Fichier à tester",
@@ -2368,7 +2368,8 @@
         "unavailable": "Le vérificateur de règles n’est pas disponible. Réessayez plus tard.",
         "noRules": "Cet ensemble n’a aucune règle activée à tester.",
         "compileFailed": "Cet ensemble ne compile pas avec ses règles actuelles, donc rien n’a été balayé :",
-        "bodyTimeout": "Le téléversement a pris trop de temps. Réessayez."
+        "bodyTimeout": "Le téléversement a pris trop de temps. Réessayez.",
+        "unexpected": "Le test n’a pas pu être effectué. Réessayez."
       }
     },
     "severity": {
@@ -2422,7 +2423,8 @@
       "deleteRule": "Supprimer la règle",
       "errorLine": "Ligne {{line}} :",
       "publishedVersion": "Version publiée {{version}}",
-      "readOnlyBuiltin": "L’ensemble de règles intégré est en lecture seule. Ses règles sont mises à jour avec les versions de Breeze."
+      "readOnlyBuiltin": "L’ensemble de règles intégré est en lecture seule. Ses règles sont mises à jour avec les versions de Breeze.",
+      "refreshFailed": "La modification a été envoyée, mais l’ensemble de règles n’a pas pu être rechargé. L’affichage n’est peut-être pas à jour."
     },
     "dialog": {
       "titleAdd": "Ajouter une règle",
@@ -2434,7 +2436,7 @@
       "tagsHelp": "Séparées par des virgules, p. ex. ransomware, advisory-42",
       "enabled": "Activée",
       "source": "Source YARA",
-      "sourceTooLarge": "La source de la règle dépasse 64 Ko.",
+      "sourceTooLarge": "La source de la règle dépasse {{max}} Ko.",
       "checkedOnSave": "À l’enregistrement, l’ensemble est vérifié avec le même compilateur que les appareils. Les règles qui contiennent des erreurs ne sont pas publiées."
     },
     "ioc": {
@@ -2449,7 +2451,7 @@
       "labelPlaceholder": "Par exemple : Avis du fournisseur 2026-10",
       "labelRequired": "Saisissez un libellé pour prévisualiser les règles générées.",
       "paste": "Coller des IOC",
-      "textTooLong": "Le texte collé dépasse 256 Ko. Divisez-le en plus petites importations.",
+      "textTooLong": "Le texte collé dépasse {{max}} Ko. Divisez-le en plus petites importations.",
       "skippedLines": "Ces lignes sont ignorées :",
       "lineError": "Ligne {{line}} : {{error}}",
       "validCount": "{{valid}} IOC sur {{total}} prêts à importer",

@@ -10,6 +10,7 @@ import {
   YARA_IOC_KINDS,
   YARA_IOC_LABEL_MAX,
   YARA_IOC_MAX_PER_BATCH,
+  YARA_IOC_MAX_TEXT_BYTES,
   YARA_RULE_SEVERITIES,
   type YaraGeneratedRule,
   type YaraIoc,
@@ -190,7 +191,7 @@ export default function IocImportPanel({
       </label>
       {textTooLong && (
         <p data-testid="ioc-text-too-long" role="alert" className="text-sm text-destructive">
-          {t("detectionRules.ioc.textTooLong")}
+          {t("detectionRules.ioc.textTooLong", { max: YARA_IOC_MAX_TEXT_BYTES / 1024 })}
         </p>
       )}
 

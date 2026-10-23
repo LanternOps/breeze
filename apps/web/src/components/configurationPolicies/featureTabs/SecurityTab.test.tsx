@@ -349,6 +349,26 @@ describe('SecurityTab rule-set picker (#6267 W04-4)', () => {
     expect(savedRuleSetIds()).toEqual([SET_A1]);
   });
 
+  it('after the draft is saved and later reverted, the tab is inherited (read-only) again', async () => {
+    const parentLink = parentLinkWith({ ruleSetIds: [SET_A1, SET_B1] });
+    const { rerender } = render(<SecurityTab {...baseProps} orgId={ORG_A} parentLink={parentLink} />);
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: /override/i }));
+    await settle();
+    expect(screen.getByTestId('security-override-draft-banner')).toBeInTheDocument();
+
+    // The draft was saved: the policy now has its own link.
+    rerender(<SecurityTab {...baseProps} orgId={ORG_A} parentLink={parentLink} existingLink={ownLink([SET_A1])} />);
+    await settle();
+    // Revert to parent removed it again.
+    rerender(<SecurityTab {...baseProps} orgId={ORG_A} parentLink={parentLink} />);
+    await settle();
+
+    expect(screen.queryByTestId('security-override-draft-banner')).toBeNull();
+    expect(screen.getByRole('button', { name: /override/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull();
+  });
+
   it('a failed list fetch is not deletion: the ids are kept and the rest of the tab still saves', async () => {
     fetchWithAuth.mockResolvedValue(listResponse(500, null));
     render(<SecurityTab {...baseProps} orgId={ORG_A} existingLink={ownLink([SET_A1, SET_B1])} />);

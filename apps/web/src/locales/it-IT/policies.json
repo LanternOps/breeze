@@ -1034,7 +1034,7 @@
           "blocking": "Questo criterio non può usare i set di regole non disponibili (eliminati, spostati o di un'altra organizzazione). Rimuovili prima di salvare.",
           "overrideDraft": "Le impostazioni ereditate includono set di regole che questo criterio non può usare. Rimuovi i set non disponibili, poi salva.",
           "errors": {
-            "tooMany": "Un criterio può usare al massimo 20 set di regole.",
+            "tooMany": "Un criterio può usare al massimo {{max}} set di regole.",
             "invalidIds": "L'elenco dei set di regole non è valido. Ricarica la pagina e riprova.",
             "notAttachable": "Questo criterio non può usare alcuni dei set di regole selezionati. Sono evidenziati qui sotto."
           }

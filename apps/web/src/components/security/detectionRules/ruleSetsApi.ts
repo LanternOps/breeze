@@ -13,6 +13,7 @@ import { runAction, type RunActionOptions } from '@/lib/runAction';
 import { throwIfNotOk } from '@/lib/httpError';
 import { navigateTo } from '@/lib/navigation';
 import { i18n } from '@/lib/i18n';
+import { YARA_MAX_RULES_PER_SET } from '@breeze/shared';
 import type {
   YaraIoc,
   YaraIocKind,
@@ -103,7 +104,7 @@ export function detectionRulesFriendly(code: string): string | undefined {
     case 'IOC_RULE_NAME_TAKEN':
       return i18n.t('security:detectionRules.errors.iocRuleNameTaken');
     case 'IOC_TOO_MANY_RULES':
-      return i18n.t('security:detectionRules.errors.iocTooManyRules');
+      return i18n.t('security:detectionRules.errors.iocTooManyRules', { max: YARA_MAX_RULES_PER_SET });
     case 'IOC_INVALID':
       return i18n.t('security:detectionRules.errors.iocInvalid');
     default:
@@ -303,13 +304,27 @@ export function importIocs(
 // ---------------------------------------------------------------------------
 
 /**
- * Client-side ceiling for one test request. The server may take up to 15 s to
- * read the body plus up to 30 s for the scan child, and a client disconnect
- * kills the child, so `fetchWithAuth`'s 30 s JSON default would abort tests
- * the server is still legitimately running. Passed as the caller-provided
- * `signal`, which `fetchWithAuth` already honours instead of its default.
+ * Client-side ceiling for one test request. The server may spend up to 15 s
+ * reading the body (`YARA_TEST_BODY_TIMEOUT`) plus up to 30 s in the scan
+ * child (45 s today), and a client disconnect kills the child, so
+ * `fetchWithAuth`'s 30 s JSON default would abort tests the server is still
+ * legitimately running. 90 s leaves headroom over that sum. It is passed as
+ * the caller-provided `signal`, which `fetchWithAuth` honours instead of its
+ * default — no change to `fetchWithAuth` itself.
  */
 export const RULE_TEST_TIMEOUT_MS = 90_000;
+
+/** The caller's signal (e.g. the panel unmounting) OR the test timeout, whichever fires first. */
+function testSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(RULE_TEST_TIMEOUT_MS);
+  if (!signal) return timeout;
+  const combined = new AbortController();
+  const forward = (from: AbortSignal) => () => combined.abort(from.reason);
+  if (signal.aborted) combined.abort(signal.reason);
+  else signal.addEventListener('abort', forward(signal), { once: true });
+  timeout.addEventListener('abort', forward(timeout), { once: true });
+  return combined.signal;
+}
 
 /**
  * Statuses the test panel renders inline (with its own copy), so runAction
@@ -332,7 +347,7 @@ export function testSample(
         // The raw file, not FormData: the route reads an octet-stream body.
         body: file,
         headers: { 'Content-Type': 'application/octet-stream' },
-        signal: opts.signal ?? AbortSignal.timeout(RULE_TEST_TIMEOUT_MS),
+        signal: testSignal(opts.signal),
       }),
     errorFallback: i18n.t('security:detectionRules.test.requestFailed'),
     suppressErrorToast: (status) => TEST_INLINE_STATUSES.has(status),

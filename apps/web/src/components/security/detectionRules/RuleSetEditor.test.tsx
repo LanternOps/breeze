@@ -197,6 +197,58 @@ describe('RuleSetEditor publish outcome (W04-3, Review Focus #1)', () => {
     expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ autoQuarantine: true });
   });
 
+  it('a failed refresh after a save says the view may be out of date and offers Retry', async () => {
+    mutationResponse = json(200, {
+      data: { id: 'r1' },
+      publish: { published: true, version: 3, currentVersion: 3, stale: false, errors: [] },
+    });
+    renderEditor();
+    await settle();
+    fetchWithAuth.mockImplementation(async (_url: string, init?: RequestInit) =>
+      !init?.method || init.method === 'GET' ? json(500, { error: 'boom' }) : mutationResponse,
+    );
+    await editAndSave();
+
+    expect(screen.getByTestId('rule-set-refresh-error')).toBeInTheDocument();
+    routeFetch();
+    fireEvent.click(screen.getByTestId('rule-set-refresh-retry'));
+    await settle();
+    expect(screen.queryByTestId('rule-set-refresh-error')).toBeNull();
+  });
+
+  it('deleting the last enabled rule (row 7) warns that devices no longer scan with the set — no success toast', async () => {
+    mutationResponse = json(200, {
+      success: true,
+      publish: { published: false, version: 0, currentVersion: 4, stale: false, errors: [] },
+    });
+    renderEditor();
+    await settle();
+    current = setDetail({ rules: [], ruleCount: 0, publishedVersion: 0 });
+    fireEvent.click(screen.getByTestId('rule-delete-r1'));
+    fireEvent.click(screen.getByTestId('rule-set-confirm-delete'));
+    await settle();
+
+    expect(successToasts()).toHaveLength(0);
+    expect(warningToasts()).toHaveLength(1);
+    expect(warningToasts()[0][0].message).toMatch(/no longer scan/i);
+    expect(screen.getByTestId('rule-set-publish-banner').textContent).toMatch(/no longer scan/i);
+  });
+
+  it('disabling a published set toasts that devices do not use it', async () => {
+    mutationResponse = json(200, {
+      data: { ...setDetail(), enabled: false },
+      publish: { published: true, version: 3, currentVersion: 3, stale: false, errors: [] },
+    });
+    renderEditor();
+    await settle();
+    fireEvent.click(screen.getByTestId('rule-set-toggle-enabled'));
+    await settle();
+
+    expect(successToasts().map(([t]) => t.message)).toEqual([expect.stringMatching(/disabled, so devices do not use it/)]);
+    const patch = fetchWithAuth.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH');
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ enabled: false });
+  });
+
   it('a rename (metadata-only PATCH, no publish) says Saved', async () => {
     mutationResponse = json(200, { data: { ...setDetail(), name: 'Renamed' } });
     renderEditor();

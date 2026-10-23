@@ -132,6 +132,26 @@ describe('IocImportPanel (W04-1)', () => {
     expect(onImported).toHaveBeenCalledTimes(1);
   });
 
+  it('an import whose publish failed toasts no success and hands the warning body to the editor', async () => {
+    const body = {
+      data: { rules: [{ id: 'r9', name: 'ioc_x', kind: 'string', iocCount: 1 }] },
+      publish: {
+        published: false, version: 3, currentVersion: 4, stale: true,
+        errors: [{ ruleId: 'r9', name: 'ioc_x', code: 'compile', message: 'slow pattern', line: 9 }],
+      },
+    };
+    fetchWithAuth.mockResolvedValue(json(201, body));
+    render(<IocImportPanel set={SET} onImported={onImported} />);
+    fireEvent.change(screen.getByTestId('ioc-label'), { target: { value: 'Advisory 42' } });
+    paste('string:abcdefgh');
+    fireEvent.click(screen.getByTestId('ioc-import-submit'));
+    await settle();
+
+    expect(showToast.mock.calls.filter(([t]) => t.type === 'success')).toHaveLength(0);
+    // The editor applies the outcome (warning toast + banner + per-rule errors).
+    expect(onImported).toHaveBeenCalledWith(body);
+  });
+
   it('a 409 IOC_BATCH_ALREADY_IMPORTED shows the friendly "already imported" copy', async () => {
     fetchWithAuth.mockResolvedValue(
       json(409, { error: 'raw', code: 'IOC_BATCH_ALREADY_IMPORTED', names: ['ioc_x'] }),

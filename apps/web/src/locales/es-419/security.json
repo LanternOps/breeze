@@ -2345,12 +2345,12 @@
       "autoQuarantineExecuteRequired": "Para activar la cuarentena automática se necesita el permiso devices:execute, porque mueve archivos en cada dispositivo que escanea con este conjunto.",
       "iocBatchAlreadyImported": "Estos IOC ya se importaron en este conjunto.",
       "iocRuleNameTaken": "Ya existe en este conjunto una regla con el mismo nombre generado y otro contenido. Cámbiele el nombre o elimínela y vuelva a importar.",
-      "iocTooManyRules": "Esta importación dejaría el conjunto con más de 500 reglas. Importe en otro conjunto.",
+      "iocTooManyRules": "Esta importación dejaría el conjunto con más de {{max}} reglas. Importe en otro conjunto.",
       "iocInvalid": "Algunos IOC no son válidos. Corrija las líneas marcadas e inténtelo de nuevo."
     },
     "test": {
       "requestFailed": "La prueba no terminó. Revise su conexión e inténtelo de nuevo.",
-      "privacy": "El archivo se escanea en el servidor de Breeze, en un entorno aislado, con las reglas actuales de este conjunto, incluidos los cambios aún no publicados. El archivo no se almacena.",
+      "privacy": "El archivo se escanea en el servidor de Breeze, en un entorno aislado, con las reglas actuales de este conjunto, incluidos los cambios aún no publicados. El archivo no se almacena. En el registro de auditoría solo se guardan su SHA-256, su tamaño y la cantidad de coincidencias.",
       "sandboxUnavailable": "Las pruebas de archivos no están disponibles en este servidor",
       "sandboxUnavailableHelp": "El servidor no puede aislar el escaneo, así que no procesa archivos cargados. La edición de reglas, la importación de IOC y los escaneos de dispositivos no se ven afectados.",
       "file": "Archivo para probar",
@@ -2368,7 +2368,8 @@
         "unavailable": "El verificador de reglas no está disponible. Inténtelo más tarde.",
         "noRules": "Este conjunto no tiene reglas habilitadas para probar.",
         "compileFailed": "Este conjunto no compila con sus reglas actuales, así que no se escaneó nada:",
-        "bodyTimeout": "La carga tardó demasiado. Inténtelo de nuevo."
+        "bodyTimeout": "La carga tardó demasiado. Inténtelo de nuevo.",
+        "unexpected": "No se pudo completar la prueba. Inténtelo de nuevo."
       }
     },
     "severity": {
@@ -2422,7 +2423,8 @@
       "deleteRule": "Eliminar regla",
       "errorLine": "Línea {{line}}:",
       "publishedVersion": "Versión publicada {{version}}",
-      "readOnlyBuiltin": "El conjunto de reglas integrado es de solo lectura. Sus reglas se actualizan con las versiones de Breeze."
+      "readOnlyBuiltin": "El conjunto de reglas integrado es de solo lectura. Sus reglas se actualizan con las versiones de Breeze.",
+      "refreshFailed": "El cambio se envió, pero no se pudo volver a cargar el conjunto de reglas. Lo que ve puede estar desactualizado."
     },
     "dialog": {
       "titleAdd": "Agregar regla",
@@ -2434,7 +2436,7 @@
       "tagsHelp": "Separadas por comas, p. ej., ransomware, advisory-42",
       "enabled": "Habilitada",
       "source": "Código fuente YARA",
-      "sourceTooLarge": "El código fuente de la regla supera los 64 KB.",
+      "sourceTooLarge": "El código fuente de la regla supera los {{max}} KB.",
       "checkedOnSave": "Al guardar, el conjunto se verifica con el mismo compilador que usan los dispositivos. Las reglas con errores no se publican."
     },
     "ioc": {
@@ -2449,7 +2451,7 @@
       "labelPlaceholder": "Por ejemplo: Aviso del proveedor 2026-10",
       "labelRequired": "Ingrese una etiqueta para ver la vista previa de las reglas generadas.",
       "paste": "Pegar IOC",
-      "textTooLong": "El texto pegado supera los 256 KB. Divídalo en importaciones más pequeñas.",
+      "textTooLong": "El texto pegado supera los {{max}} KB. Divídalo en importaciones más pequeñas.",
       "skippedLines": "Estas líneas se omiten:",
       "lineError": "Línea {{line}}: {{error}}",
       "validCount": "{{valid}} de {{total}} IOC listos para importar",

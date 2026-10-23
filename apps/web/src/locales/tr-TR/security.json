@@ -2345,12 +2345,12 @@
       "autoQuarantineExecuteRequired": "Otomatik karantinayı açmak devices:execute iznini gerektirir; çünkü bu küme ile tarama yapan her cihazda dosyaları taşır.",
       "iocBatchAlreadyImported": "Bu IOC'ler bu kümeye zaten içe aktarıldı.",
       "iocRuleNameTaken": "Bu kümede aynı üretilmiş ada sahip ama içeriği farklı bir kural zaten var. Onu yeniden adlandırın veya silin, sonra yeniden içe aktarın.",
-      "iocTooManyRules": "Bu içe aktarma kümeyi 500 kuralın üzerine çıkarır. Başka bir kümeye aktarın.",
+      "iocTooManyRules": "Bu içe aktarma kümeyi {{max}} kuralın üzerine çıkarır. Başka bir kümeye aktarın.",
       "iocInvalid": "Bazı IOC'ler geçerli değil. İşaretli satırları düzeltip yeniden deneyin."
     },
     "test": {
       "requestFailed": "Test tamamlanmadı. Bağlantınızı denetleyip yeniden deneyin.",
-      "privacy": "Dosya, Breeze sunucusunda bir korumalı alanda, bu kümenin henüz yayımlanmamış değişiklikler dahil güncel kurallarıyla taranır. Dosya saklanmaz.",
+      "privacy": "Dosya, Breeze sunucusunda bir korumalı alanda, bu kümenin henüz yayımlanmamış değişiklikler dahil güncel kurallarıyla taranır. Dosya saklanmaz. Denetim günlüğüne yalnızca SHA-256 değeri, boyutu ve eşleşme sayısı kaydedilir.",
       "sandboxUnavailable": "Bu sunucuda dosya testleri kullanılamıyor",
       "sandboxUnavailableHelp": "Sunucu taramayı yalıtamadığı için yüklenen dosyaları işlemez. Kural düzenleme, IOC içe aktarma ve cihaz taramaları etkilenmez.",
       "file": "Test edilecek dosya",
@@ -2368,7 +2368,8 @@
         "unavailable": "Kural denetleyicisi kullanılamıyor. Daha sonra yeniden deneyin.",
         "noRules": "Bu kümede test edilecek etkin kural yok.",
         "compileFailed": "Bu küme güncel kurallarıyla derlenmiyor, bu nedenle hiçbir şey taranmadı:",
-        "bodyTimeout": "Yükleme çok uzun sürdü. Yeniden deneyin."
+        "bodyTimeout": "Yükleme çok uzun sürdü. Yeniden deneyin.",
+        "unexpected": "Test tamamlanamadı. Yeniden deneyin."
       }
     },
     "severity": {
@@ -2422,7 +2423,8 @@
       "deleteRule": "Kuralı sil",
       "errorLine": "Satır {{line}}:",
       "publishedVersion": "Yayımlanan sürüm {{version}}",
-      "readOnlyBuiltin": "Yerleşik kural kümesi salt okunurdur. Kuralları Breeze sürümleriyle güncellenir."
+      "readOnlyBuiltin": "Yerleşik kural kümesi salt okunurdur. Kuralları Breeze sürümleriyle güncellenir.",
+      "refreshFailed": "Değişiklik gönderildi, ancak kural kümesi yeniden yüklenemedi. Gördükleriniz güncel olmayabilir."
     },
     "dialog": {
       "titleAdd": "Kural ekle",
@@ -2434,7 +2436,7 @@
       "tagsHelp": "Virgülle ayrılmış, ör. ransomware, advisory-42",
       "enabled": "Etkin",
       "source": "YARA kaynağı",
-      "sourceTooLarge": "Kural kaynağı 64 KB'tan büyük.",
+      "sourceTooLarge": "Kural kaynağı {{max}} KB'tan büyük.",
       "checkedOnSave": "Kaydettiğinizde küme, cihazların kullandığı derleyiciyle denetlenir. Hatalı kurallar yayımlanmaz."
     },
     "ioc": {
@@ -2449,7 +2451,7 @@
       "labelPlaceholder": "Örneğin: Üretici bülteni 2026-10",
       "labelRequired": "Üretilen kuralları önizlemek için bir etiket girin.",
       "paste": "IOC'leri yapıştırın",
-      "textTooLong": "Yapıştırılan metin 256 KB'tan büyük. Daha küçük içe aktarmalara bölün.",
+      "textTooLong": "Yapıştırılan metin {{max}} KB'tan büyük. Daha küçük içe aktarmalara bölün.",
       "skippedLines": "Bu satırlar atlanıyor:",
       "lineError": "Satır {{line}}: {{error}}",
       "validCount": "{{total}} IOC'den {{valid}} tanesi içe aktarılmaya hazır",

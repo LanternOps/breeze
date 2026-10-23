@@ -74,6 +74,9 @@ export default function ThreatDetail({
     setError(undefined);
     setErrorKind("none");
     setNotFound(false);
+    // Never show the previous threat (or its rule) under a new load's error.
+    setThreat(null);
+    setRule(null);
     if (!threatId) {
       setThreat(null);
       setRule(null);

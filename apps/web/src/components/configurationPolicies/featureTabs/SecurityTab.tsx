@@ -105,6 +105,11 @@ export default function SecurityTab({
   const [overrideDraft, setOverrideDraft] = useState(false);
   const [ruleSetsBlocking, setRuleSetsBlocking] = useState(false);
   const shellInherited = isInherited && !overrideDraft;
+  // The draft ends once the policy has its own link; a later Revert must land
+  // back on the read-only inherited view, not a stale draft.
+  useEffect(() => {
+    if (existingLink) setOverrideDraft(false);
+  }, [existingLink]);
   const policyOwner = useRuleSetPolicyOwner(orgId, partnerId);
   const gateHighlightIds = gateRuleSetIds(errorDetail);
   const effectiveLink = existingLink ?? parentLink;

@@ -136,7 +136,7 @@ export default function RuleEditorDialog({
             className="mt-1 w-full rounded-md border bg-background p-3 font-mono text-xs"
           />
           {sourceTooLarge && (
-            <span className="mt-1 block text-xs text-destructive">{t("detectionRules.dialog.sourceTooLarge")}</span>
+            <span className="mt-1 block text-xs text-destructive">{t("detectionRules.dialog.sourceTooLarge", { max: YARA_MAX_RULE_SOURCE_BYTES / 1024 })}</span>
           )}
         </label>
         <p className="text-xs text-muted-foreground">{t("detectionRules.dialog.checkedOnSave")}</p>

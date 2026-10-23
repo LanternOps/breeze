@@ -90,6 +90,19 @@ describe('ThreatDetail', () => {
     expect(screen.getByTestId('threat-rule-name').textContent).toBe('ioc_advisory_md5_0123456789abcdef');
   });
 
+  it('passes agent-escaped matched strings through untouched — a stored \\x00 renders as four characters', async () => {
+    const rule = { ...yaraRule, matchedStrings: [{ id: '$i0', offset: 12, data: 'MZ\\x00\\x90' }] };
+    route({ details: ok({ data: { threat: quarantinedThreat, rule } }), list: ok({ data: [quarantinedThreat] }) });
+
+    render(<ThreatDetail threatId="t1" />);
+    await settle();
+
+    const row = screen.getByTestId('threat-rule-string-0').textContent ?? '';
+    expect(row).toContain('MZ\\x00\\x90');
+    expect(row).not.toContain('\\\\x00');
+    expect(row).not.toContain('\u0000');
+  });
+
   it('a 404 from /details is not found, never another threat from the list', async () => {
     route({ details: fail(404), list: ok({ data: [{ ...quarantinedThreat, id: 'x9', name: 'Somebody else' }] }) });
 
