@@ -5001,7 +5001,8 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
       .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI note', runId: 'run-9' }])
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]) // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }]); // re-read under the lock
     dbMocks.updateReturning
       .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }])
       .mockResolvedValueOnce([{ id: 'draft-1' }]);
@@ -5020,7 +5021,8 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
   it('resolving without an aiDraftId writes the unchanged status_changed payload', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]) // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }]); // re-read under the lock
     dbMocks.updateReturning.mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 

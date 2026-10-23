@@ -1653,18 +1653,27 @@ export async function changeTicketStatus(
     draftToConsume = { id: draft.id, runId: draft.runId };
   }
 
+  // #8972 W0: ticket row lock first (after any draft lock), then the CAS.
+  // Everything the patch below derives from the row (stamps, the pause fold,
+  // the #8973 SLA recompute) is read UNDER that lock: a first response or a
+  // breach stamped while this waited freezes an arm, and the recompute must
+  // see it rather than overwrite the frozen deadline from the unlocked
+  // pre-read. A status change meanwhile still fails the CAS below (409).
+  await lockTicketOrThrow(ticketId);
+  const current = await getTicketOrThrow(ticketId);
+
   const now = importMode ? importMode.at : new Date();
   const patch: Partial<typeof tickets.$inferInsert> = { status: toStatus, statusId: resolvedStatusId ?? null, updatedAt: now };
   if (importMode) (patch as Record<string, unknown>).updatedAt = importUpdatedAt(importMode.at);
 
   if (toStatus === 'resolved') {
-    patch.resolvedAt = ticket.resolvedAt ?? now;
+    patch.resolvedAt = current.resolvedAt ?? now;
     patch.resolutionNote = resolutionNote;
     patch.pendingReason = null;
   } else if (toStatus === 'closed') {
     patch.closedAt = now;
     patch.closedBy = actorUserFk(actor);
-    patch.resolvedAt = ticket.resolvedAt ?? now;
+    patch.resolvedAt = current.resolvedAt ?? now;
     patch.pendingReason = null;
   } else if (toStatus === 'open' && (fromStatus === 'resolved' || fromStatus === 'closed')) {
     // Reopen: clear resolution/close stamps (and recompute the resolution
@@ -1689,15 +1698,13 @@ export async function changeTicketStatus(
   if (!wasPaused && willBePaused) {
     patch.slaPausedAt = now;
   } else if (wasPaused && !willBePaused) {
-    if (ticket.slaPausedAt) {
-      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(ticket.slaPausedAt).getTime()) / 60_000));
-      patch.slaPausedMinutes = (ticket.slaPausedMinutes ?? 0) + elapsedMinutes;
+    if (current.slaPausedAt) {
+      const elapsedMinutes = Math.max(0, Math.floor((now.getTime() - new Date(current.slaPausedAt).getTime()) / 60_000));
+      patch.slaPausedMinutes = (current.slaPausedMinutes ?? 0) + elapsedMinutes;
     }
     patch.slaPausedAt = null;
   }
 
-  // #8972 W0: ticket row lock first (after any draft lock), then the CAS.
-  await lockTicketOrThrow(ticketId);
   // #8973 W3 (spec §4.3): pause end accrues business minutes, then the
   // unfrozen targets are recomputed — in this same CAS statement. The
   // freeze is judged on the row BEFORE this write, except that a reopen
@@ -1706,7 +1713,7 @@ export async function changeTicketStatus(
   // pause before resolved_at freezes it.
   if ((wasPaused && !willBePaused) || reopening) {
     const calendar = await loadTicketCalendar(db, null);
-    const clock = slaClockRowOf(ticket);
+    const clock = slaClockRowOf(current);
     const accrued = wasPaused && !willBePaused ? accruePauseEnd(clock, calendar, now) : null;
     if (accrued) patch.slaPausedBusinessMinutes = accrued.slaPausedBusinessMinutes;
     Object.assign(patch, computeSlaDeadlines({
@@ -2201,11 +2208,16 @@ export async function updateTicketFields(
     (patch as Record<string, unknown>)[key] = fields[key] ?? null;
   }
   Object.assign(patch, slaRestampPatch);
+  // #8972 W0: ticket row lock before the ticket write and its feed comment —
+  // and before the SLA recompute below, which judges "frozen" on the row it
+  // reads under this lock: a first response or breach stamped while this
+  // waited must keep its deadline, not be recomputed from the pre-read.
+  await lockTicketOrThrow(ticketId);
   // #8973 W3 (spec §4.3): a #6691 restamp or an explicit SLA override
   // recomputes the unfrozen deadlines from the new target, in this statement.
   // A frozen arm (answered / resolved / already breached) keeps its deadline.
   if ('responseSlaMinutes' in patch || 'resolutionSlaMinutes' in patch) {
-    const clock = slaClockRowOf(ticket);
+    const clock = slaClockRowOf(await getTicketOrThrow(ticketId));
     Object.assign(patch, computeSlaDeadlines({
       ...clock,
       responseSlaMinutes: 'responseSlaMinutes' in patch ? patch.responseSlaMinutes ?? null : clock.responseSlaMinutes,
@@ -2231,8 +2243,6 @@ export async function updateTicketFields(
       sql`${tickets.fieldProvenance} || ${JSON.stringify(provenanceStamp)}::jsonb`;
   }
 
-  // #8972 W0: ticket row lock before the ticket write and its feed comment.
-  await lockTicketOrThrow(ticketId);
   const updated = await db
     .update(tickets)
     .set(patch)

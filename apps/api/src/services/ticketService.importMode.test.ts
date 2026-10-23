@@ -252,7 +252,7 @@ describe('assignTicket in import mode', () => {
 
 describe('changeTicketStatus in import mode', () => {
   it('resolves without a note, at the source time, with no event, outbox, audit or triage feedback', async () => {
-    state.selectQueue.push([storedTicket({ status: 'open' })]);
+    state.selectQueue.push([storedTicket({ status: 'open' })], [storedTicket({ status: 'open' })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'resolved' }, {}, actor, at(LATER));
     const [update] = state.updates;
     expect(update!.set).toMatchObject({ status: 'resolved', resolvedAt: LATER });
@@ -267,23 +267,23 @@ describe('changeTicketStatus in import mode', () => {
 
   it('resolved then closed keeps both source times', async () => {
     const closedAt = new Date('2021-03-10T08:00:00.000Z');
-    state.selectQueue.push([storedTicket({ status: 'resolved', resolvedAt: LATER })]);
+    state.selectQueue.push([storedTicket({ status: 'resolved', resolvedAt: LATER })], [storedTicket({ status: 'resolved', resolvedAt: LATER })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'closed' }, {}, actor, at(closedAt));
     expect(state.updates[0]!.set).toMatchObject({ status: 'closed', closedAt, resolvedAt: LATER, closedBy: null });
     // Closing straight from open stamps resolved_at at the close time, as live does with now.
     state.updates.length = 0;
-    state.selectQueue.push([storedTicket({ status: 'open' })]);
+    state.selectQueue.push([storedTicket({ status: 'open' })], [storedTicket({ status: 'open' })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'closed' }, {}, actor, at(closedAt));
     expect(state.updates[0]!.set).toMatchObject({ closedAt, resolvedAt: closedAt });
     expectNoSideEffects();
   });
 
   it('skips the SLA pause bookkeeping: an imported ticket has no targets to pause', async () => {
-    state.selectQueue.push([storedTicket({ status: 'open' })]);
+    state.selectQueue.push([storedTicket({ status: 'open' })], [storedTicket({ status: 'open' })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'pending' }, {}, actor, at(LATER));
     expect(state.updates[0]!.set).not.toHaveProperty('slaPausedAt');
     state.updates.length = 0;
-    state.selectQueue.push([storedTicket({ status: 'pending', slaPausedAt: CREATED })]);
+    state.selectQueue.push([storedTicket({ status: 'pending', slaPausedAt: CREATED })], [storedTicket({ status: 'pending', slaPausedAt: CREATED })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'open' }, {}, actor, at(LATER));
     expect(state.updates[0]!.set).not.toHaveProperty('slaPausedMinutes');
   });
@@ -318,7 +318,7 @@ describe('updateTicketFields in import mode', () => {
   });
 
   it('a live priority change on an open ticket still restamps (unchanged)', async () => {
-    state.selectQueue.push([storedTicket({ status: 'open', responseSlaMinutes: 120, resolutionSlaMinutes: 960 })]);
+    state.selectQueue.push([storedTicket({ status: 'open', responseSlaMinutes: 120, resolutionSlaMinutes: 960 })], [storedTicket({ status: 'open', responseSlaMinutes: 120, resolutionSlaMinutes: 960 })]); // pre-read, then the re-read under the ticket lock
     await updateTicketFields(TICKET, { priority: 'urgent' }, { kind: 'user', userId: AGENT });
     expect(mocks.orgSla).toHaveBeenCalled();
     expect(state.updates[0]!.set).toMatchObject({ responseSlaMinutes: 60, resolutionSlaMinutes: 480 });

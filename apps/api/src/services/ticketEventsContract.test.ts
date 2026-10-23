@@ -323,10 +323,10 @@ describe('ticket-events producer→consumer contract', () => {
   // ── changeTicketStatus (resolve) → ticket.status_changed ─────────────────
 
   it('changeTicketStatus to resolved: emitted event feeds handleTicketEvent → requester email with resolution note', async () => {
-    // Service: ticket lookup for changeTicketStatus
-    hoisted.selectQueue.push([{
-      id: 't-c3', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null
-    }]);
+    // Service: ticket lookup for changeTicketStatus, then its re-read under
+    // the ticket lock (#8972 W0)
+    const row = { id: 't-c3', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null };
+    hoisted.selectQueue.push([row], [row]);
     // Service: update returning
     hoisted.updateReturningQueue.push([{ id: 't-c3', status: 'resolved' }]);
     // Service: comment insert returning

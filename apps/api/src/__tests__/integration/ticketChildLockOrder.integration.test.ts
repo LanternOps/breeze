@@ -21,7 +21,8 @@ import {
   ticketChecklistTemplates, ticketComments, ticketEmailLinks, ticketExternalRefs, tickets,
 } from '../../db/schema';
 import {
-  addTicketComment, deleteTicketComment, editTicketComment, linkAlertToTicket, unlinkAlertFromTicket, type TicketActor,
+  addTicketComment, changeTicketStatus, deleteTicketComment, editTicketComment, linkAlertToTicket, unlinkAlertFromTicket,
+  updateTicketFields, type TicketActor,
 } from '../../services/ticketService';
 import { applyChecklistTemplateToTicket } from '../../services/ticketChecklistTemplateService';
 import { claimMessageLink } from '../../services/ticketEmailLinks';
@@ -46,10 +47,11 @@ async function seed() {
   return { partner, org, user, ctx, actor };
 }
 
-async function insertTicket(orgId: string, partnerId: string) {
+async function insertTicket(orgId: string, partnerId: string, extra: Partial<typeof tickets.$inferInsert> = {}) {
   const [row] = await getTestDb().insert(tickets).values({
     orgId, partnerId, subject: 'lock order', source: 'api', priority: 'normal',
     ticketNumber: `LCK-${crypto.randomUUID().slice(0, 8)}`,
+    ...extra,
   }).returning({ id: tickets.id });
   return row!.id;
 }
@@ -314,6 +316,61 @@ describe('ticket-child writers lock the ticket row first (#8972 W0)', () => {
     expectNoDeadlock(r);
     const labels = await getTestDb().select({ label: ticketChecklistItems.label }).from(ticketChecklistItems).where(eq(ticketChecklistItems.ticketId, ticketId));
     expect(labels.map((x) => x.label)).toEqual(['from template']);
+  }, CASE_TIMEOUT);
+
+  // ── #8973 W3 hand-off: SLA deadlines are recomputed from the LOCKED row ──
+  // A first response (B here; addTicketComment / sendTicketDraft in
+  // production) freezes the response deadline. A writer that recomputes the
+  // unfrozen arms must judge "frozen" on the row it holds locked, or it
+  // overwrites the frozen deadline from its unlocked pre-read.
+
+  const FROZEN_DUE = new Date('2026-01-05T10:00:00.000Z');
+  const FROZEN_WARN = new Date('2026-01-05T09:00:00.000Z');
+  /** B's first response: stamps first_response_at and freezes the response arm. */
+  const stampFirstResponse = (ticketId: string) => (tx: Tx) => tx.execute(sql`
+    UPDATE tickets SET first_response_at = now(),
+      response_due_at = ${FROZEN_DUE.toISOString()}::timestamp,
+      response_warn_at = ${FROZEN_WARN.toISOString()}::timestamp
+    WHERE id = ${ticketId}::uuid`);
+  const responseArm = async (ticketId: string) => {
+    const [row] = await getTestDb().select({ due: tickets.responseDueAt, warn: tickets.responseWarnAt })
+      .from(tickets).where(eq(tickets.id, ticketId));
+    return { due: row?.due?.toISOString(), warn: row?.warn?.toISOString() };
+  };
+
+  runDb('a pause end keeps a response deadline frozen while it waited for the ticket lock', async () => {
+    const f = await seed();
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000);
+    const ticketId = await insertTicket(f.org.id, f.partner.id, {
+      status: 'pending', createdAt: hoursAgo(3), slaPausedAt: hoursAgo(2), responseSlaMinutes: 60,
+      responseDueAt: hoursAgo(2), responseWarnAt: hoursAgo(2.2),
+    });
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => changeTicketStatus(ticketId, { status: 'open' }, {}, f.actor)),
+      stampFirstResponse(ticketId),
+    );
+    expectNoDeadlock(r);
+    const [row] = await getTestDb().select({ status: tickets.status, slaPausedAt: tickets.slaPausedAt })
+      .from(tickets).where(eq(tickets.id, ticketId));
+    expect(row).toMatchObject({ status: 'open', slaPausedAt: null });
+    expect(await responseArm(ticketId)).toEqual({ due: FROZEN_DUE.toISOString(), warn: FROZEN_WARN.toISOString() });
+  }, CASE_TIMEOUT);
+
+  runDb('an SLA override keeps a response deadline frozen while it waited for the ticket lock', async () => {
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id, { status: 'open', responseSlaMinutes: 60 });
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => updateTicketFields(ticketId, { responseSlaMinutes: 240 }, f.actor)),
+      stampFirstResponse(ticketId),
+    );
+    expectNoDeadlock(r);
+    const [row] = await getTestDb().select({ minutes: tickets.responseSlaMinutes }).from(tickets).where(eq(tickets.id, ticketId));
+    expect(row?.minutes).toBe(240);
+    expect(await responseArm(ticketId)).toEqual({ due: FROZEN_DUE.toISOString(), warn: FROZEN_WARN.toISOString() });
   }, CASE_TIMEOUT);
 
   runDb('an edit still answers 404 for a comment of another ticket, and still edits nothing', async () => {
