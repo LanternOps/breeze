@@ -317,11 +317,11 @@ export default function AlertList({
               data-testid={`alert-severity-chip-${sev}`}
               className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-xs font-medium"
             >
-              {t(`alertList.${sev}`)}
+              {t(/* i18n-dynamic */ `alertList.${sev}`)}
               <button
                 type="button"
                 data-testid={`alert-severity-chip-${sev}-remove`}
-                aria-label={`${t('alertList.clearAll')}: ${t(`alertList.${sev}`)}`}
+                aria-label={`${t('alertList.clearAll')}: ${t(/* i18n-dynamic */ `alertList.${sev}`)}`}
                 onClick={() => {
                   setSeverityFilter(prev => prev.filter(x => x !== sev));
                   setCurrentPage(1);
@@ -366,7 +366,7 @@ export default function AlertList({
           >
             {severityFilter.length > 1 && (
               <option value="multiple" disabled>
-                {severityFilter.map(sev => t(`alertList.${sev}`)).join(', ')}
+                {severityFilter.map(sev => t(/* i18n-dynamic */ `alertList.${sev}`)).join(', ')}
               </option>
             )}
             <option value="all">{t('alertList.allSeverity')}</option>

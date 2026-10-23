@@ -206,16 +206,23 @@ export const DASHBOARD_METRICS = {
     testId: 'dashboard-security-title-link',
   },
   'security.score': {
-    kind: 'exempt',
-    reason: 'A score is not an entity count; linked after security scope parity is fixed (security wave).',
+    kind: 'section',
+    href: () => '/security/score',
+    visible: gatedBy('/security'),
+    testId: 'dashboard-security-score-link',
+    reason: 'A score is not an entity count; opens the score breakdown page.',
   },
   'security.trendCaption': {
-    kind: 'exempt',
-    reason: 'Sparkline samples are not entities; caption linked after security scope parity is fixed.',
+    kind: 'section',
+    href: () => '/security/trends',
+    visible: gatedBy('/security'),
+    testId: 'dashboard-security-trend-link',
+    reason: 'Sparkline samples are not entities; the caption opens the trends page. The sparkline itself stays plain.',
   },
   'security.atRisk': {
     kind: 'exempt',
-    reason: 'No list computes at-risk the same way /security/dashboard does (Gate B #6); exempt unless an equality test proves one.',
+    reason:
+      'Gate B #6: "at risk" is posture riskLevel medium|high; no web list reproduces it (the /devices/posture report partitions by management-product freshness). Pinned by apps/api security/dashboard.atRisk.test.ts.',
   },
   'security.threats': {
     kind: 'count',

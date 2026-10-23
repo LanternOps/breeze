@@ -22,6 +22,7 @@ import KpiStrip from './KpiStrip';
 import { parseAlertsHash } from '../alerts/alertsHash';
 import { parseVulnHash } from '../vulnerabilities/vulnHash';
 import { parseThreatsHash } from '../security/threatsHash';
+import { DASHBOARD_METRICS } from './dashboardLinks';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AlertsSummary, DeviceStats, SecurityOverview, VulnerabilityStats } from './types';
 
@@ -153,5 +154,25 @@ describe('security posture card', () => {
     viewerRef.current = noPermViewer;
     render(<SecurityPostureCard security={loaded(security)} />);
     expect(screen.queryByTestId('dashboard-security-threats-link')).toBeNull();
+    expect(screen.queryByTestId('dashboard-security-score-link')).toBeNull();
+  });
+
+  it('score and trend caption are section links; the sparkline and at-risk count stay text', () => {
+    const withTrend = {
+      ...security,
+      trend: [
+        { timestamp: '2026-10-01T00:00:00.000Z', score: 70 },
+        { timestamp: '2026-10-02T00:00:00.000Z', score: 75 },
+      ],
+    };
+    render(<SecurityPostureCard security={loaded(withTrend)} />);
+    expect(hrefOf('dashboard-security-score-link')).toBe('/security/score');
+    expect(hrefOf('dashboard-security-trend-link')).toBe('/security/trends');
+    expect(DASHBOARD_METRICS['security.score'].kind).toBe('section');
+    expect(DASHBOARD_METRICS['security.trendCaption'].kind).toBe('section');
+    // Gate B #6: no list matches "N at risk" (dashboard.atRisk.test.ts in the API).
+    expect(DASHBOARD_METRICS['security.atRisk'].kind).toBe('exempt');
+    expect(screen.queryByTestId('dashboard-security-at-risk-link')).toBeNull();
+    expect(document.querySelector('[data-metric="security.atRisk"]')!.tagName).toBe('SPAN');
   });
 });
