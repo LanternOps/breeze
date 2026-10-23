@@ -24,7 +24,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Authority is structural.** Every broker read and write passes through the ceiling: `GrantInactiveError` when `ceiling.status !== 'active'`, `assertWithinCeiling(ceiling, { orgId })` for org-owned blocks, grantor identity for user-owned blocks. Prompt text never widens anything; memory is context, never authority (spec §8.3).
 - **W02 contract consumed, not re-implemented:** `GrantCeiling`, `resolveGrantCeiling`, `assertWithinCeiling`, `GrantInactiveError`, `CeilingViolationError` from `apps/api/src/services/wisp/grantAuthority.ts`, exactly as written in the orchestrator doc.
 - **Tenancy ceremony** (`docs/agents/tenancy-rls.md`): RLS enabled + forced + policies in the creating migration; both composite FKs that reach `organizations`/`users` via the anchor are `DEFERRABLE INITIALLY IMMEDIATE`; `content jsonb` is `excludedOpen`-class data (never exported). Registration decision and justification: Task 2.
-- **Migration** file is `apps/api/migrations/2027-01-02-100200-ai-memory-blocks.sql`. Newest on `origin/main` at plan time: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing and bump only if W01/W02 slots have moved. It writes no rows, so no `breeze.scope` election is needed. Status/kind columns are `text` + CHECK, never `pgEnum`.
+- **Migration** file is `apps/api/migrations/2027-01-04-100200-ai-memory-blocks.sql`. Newest on `origin/main` at plan time: `2027-01-03-140000-report-type-client-profitability.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing and bump only if W01/W02 slots have moved. It writes no rows, so no `breeze.scope` election is needed. Status/kind columns are `text` + CHECK, never `pgEnum`.
 - **Six registries** for `remember` and `recall`: `aiTools` map (`services/aiToolNames.ts:43`), `TOOL_TIERS` (`services/aiAgentSdkTools.ts:191`), `TOOL_CAPABILITY` (`services/aiAgents/agentToolCatalog.ts:97`), MCP `tool()` in `createBreezeMcpServer` (`services/aiAgentSdkTools.ts:4336`), `toolInputSchemas` (`services/aiToolSchemas.ts:192`), `TOOL_PERMISSIONS` (`services/aiGuardrails.ts:911`). `confirm_memory` / `retract_memory` go in `HUMAN_ONLY_TOOLS` (`services/aiToolExposure.ts:15`) and therefore in **four** of the six: never `TOOL_TIERS`, never MCP (`aiAgentSdkTools.registryParity.contract.test.ts:141` fails a human-only tool that is tiered; `operator_plan` is the precedent — `services/aiToolsAiOperator.ts:65`). The spec is Todd's sign-off for these two `aiToolExposure.ts` entries (§8.3, §14).
 - **Web mutations** go through `runAction` (`apps/web/src/lib/runAction.ts:91`); settings pages register in `apps/web/src/lib/settingsCatalog.ts`; every new `en` key is added to all 7 other locale dirs (`de-DE`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR`) — `apps/web/src/lib/i18n/localeParity.test.ts` enforces exact key parity.
 - **Tests:** Vitest beside source; one file via `cd apps/api && npx vitest run <path>`; never `pnpm --filter <pkg> test -- --run <path>`. Integration suites need `pnpm test-stack up` (tear down after). Red first.
@@ -46,7 +46,7 @@ Inputs the spec implies but no single acceptance line covers; each is pinned by 
 ## File structure
 
 **API — create**
-- `apps/api/migrations/2027-01-02-100200-ai-memory-blocks.sql` — table, CHECKs, composite FKs, indexes, RLS, GRANT.
+- `apps/api/migrations/2027-01-04-100200-ai-memory-blocks.sql` — table, CHECKs, composite FKs, indexes, RLS, GRANT.
 - `apps/api/src/db/schema/aiMemoryBlocks.ts` — Drizzle table `aiMemoryBlocks` (+ `export * from './aiMemoryBlocks'` in `schema/index.ts`).
 - `packages/shared/src/types/wispMemory.ts` — the closed value lists (`MEMORY_OWNER_KINDS`, `MEMORY_BLOCK_TYPES`, `MEMORY_CONFIDENCES`, `MEMORY_BLOCK_STATUSES`) and the `MemoryBlockDto` the web page renders (+ export from `packages/shared/src/types/index.ts`).
 - `apps/api/src/services/wisp/memoryBroker.ts` — agent-side: `recallForGrant`, `rememberForGrant`, `renderMemoryForPrompt` (system context, ceiling-filtered).
@@ -113,7 +113,7 @@ export interface AuthContext { /* … */ wispGrant?: { grantId: string; grantRev
 ### Task 1: Migration, Drizzle schema, shared constants, RLS integration test
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100200-ai-memory-blocks.sql`
+- Create: `apps/api/migrations/2027-01-04-100200-ai-memory-blocks.sql`
 - Create: `apps/api/src/db/schema/aiMemoryBlocks.ts`; Modify: `apps/api/src/db/schema/index.ts` (append `export * from './aiMemoryBlocks';` after `:170`)
 - Create: `packages/shared/src/types/wispMemory.ts`; Modify: `packages/shared/src/types/index.ts` (append export)
 - Test: `apps/api/src/__tests__/integration/aiMemoryBlocksRls.integration.test.ts`
@@ -195,7 +195,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/migrations/2027-01-02-100200-ai-memory-blocks.sql apps/api/src/db/schema/aiMemoryBlocks.ts apps/api/src/db/schema/index.ts packages/shared/src/types/wispMemory.ts packages/shared/src/types/index.ts apps/api/src/__tests__/integration/aiMemoryBlocksRls.integration.test.ts
+git add apps/api/migrations/2027-01-04-100200-ai-memory-blocks.sql apps/api/src/db/schema/aiMemoryBlocks.ts apps/api/src/db/schema/index.ts packages/shared/src/types/wispMemory.ts packages/shared/src/types/index.ts apps/api/src/__tests__/integration/aiMemoryBlocksRls.integration.test.ts
 git commit -m "feat(wisp): ai_memory_blocks table with owner_kind-branched RLS (W03)"
 ```
 
@@ -235,7 +235,7 @@ Run: the Task 1 integration command. Expected: the new case PASSES already (FK c
 - [ ] **Step 3: Register and document**
 
 - `PARTNER_TENANT_TABLES`: `['ai_memory_blocks', 'tenant_partner_id']` with a comment block (Wisp W03; anchor + owner sub-axes; FK-cascaded owners; not in cascade/merge/export lists and why; functional proof `aiMemoryBlocksRls.integration.test.ts`).
-- One comment line each in `tenantCascade.ts` (beside `fix_memory`), `orgMergeRegistry.ts` and `tenantExportPolicyRegistry.ts`: "ai_memory_blocks: deliberately absent — no `org_id` column; owner rows cascade by FK; see migration 2027-01-02-100200 header." This is the grep target the tenancy doc asks for.
+- One comment line each in `tenantCascade.ts` (beside `fix_memory`), `orgMergeRegistry.ts` and `tenantExportPolicyRegistry.ts`: "ai_memory_blocks: deliberately absent — no `org_id` column; owner rows cascade by FK; see migration 2027-01-04-100200 header." This is the grep target the tenancy doc asks for.
 
 - [ ] **Step 4: Run the contract suites green**
 

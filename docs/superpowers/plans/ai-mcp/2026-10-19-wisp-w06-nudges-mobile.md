@@ -22,7 +22,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Dark by default.** Every new route returns 404 and the digest worker's `initialize*` returns before constructing a Worker when `wispEnabled()` (`apps/api/src/config/env.ts`, W02) is false. `notifyUser` is never reached when the flag is off because its only callers are W05's tool and the digest. No `.env.example` change: W06 adds no flag.
 - **Entitlement is commercial, not a kill switch** (spec §10): new routes sit under W02's `wispRoutes`, which already carries `requireEntitlement('wisp')` from W04.
 - **Tenancy ceremony** (`docs/agents/tenancy-rls.md`): both new tables ship RLS enable + force + policies in the creating migration. Neither has `org_id`, so neither enters `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts` or `CORE_TENANT_EXPORT_POLICY` (precedent: `2026-09-25-ticket-push-preferences.sql` header comment). Registration lists: `USER_ID_SCOPED_TABLES` and `PARTNER_TENANT_TABLES` in `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts`.
-- **Migration slot** `2027-01-02-100500-wisp-nudge-preferences.sql`. Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing (newest on main at plan time: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`; W01–W05 occupy `100000`–`100400`). Idempotent; no inner `BEGIN;`; it writes no rows so no `set_config` line is needed.
+- **Migration slot** `2027-01-04-100500-wisp-nudge-preferences.sql`. Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing (newest on main at plan time: `2027-01-03-140000-report-type-client-profitability.sql`; W01–W05 occupy `100000`–`100400`). Idempotent; no inner `BEGIN;`; it writes no rows so no `set_config` line is needed.
 - **Status/kind columns are `text` + CHECK, never `pgEnum`.**
 - **Push payloads are lock-screen safe**: title ≤ 60 chars, body ≤ 120 chars, no org or device names beyond what Wisp itself wrote into `title`/`body`; `collapseId` ≤ 64 bytes (APNs 400 BadCollapseId otherwise — `expoPush.ts:292-297`).
 - **`createNotification` contract** (`apps/api/src/services/userNotifications.ts:50-60`): cross-user insert needs a system context, and a caller that may already be inside a request context wraps in `runOutsideDbContext` first. No network call inside an open DB context (#1105).
@@ -47,7 +47,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 ## File structure
 
 **API (`apps/api/`)**
-- `migrations/2027-01-02-100500-wisp-nudge-preferences.sql` — create `wisp_nudge_preferences`, `wisp_partner_nudge_settings`, RLS.
+- `migrations/2027-01-04-100500-wisp-nudge-preferences.sql` — create `wisp_nudge_preferences`, `wisp_partner_nudge_settings`, RLS.
 - `src/db/schema/wispNudgePreferences.ts` — Drizzle for both tables; exported from `src/db/schema/index.ts`.
 - `src/services/wisp/nudgeLinks.ts` — the two deep-link formats and their parser.
 - `src/services/wisp/nudgePreferences.ts` — read/upsert prefs, read partner urgent-capable set.
@@ -72,7 +72,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 ### Task 1: Migration, Drizzle schema and RLS registration
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100500-wisp-nudge-preferences.sql`
+- Create: `apps/api/migrations/2027-01-04-100500-wisp-nudge-preferences.sql`
 - Create: `apps/api/src/db/schema/wispNudgePreferences.ts`
 - Modify: `apps/api/src/db/schema/index.ts` (after line 62 `export * from './ticketPushPreferences';`)
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (`PARTNER_TENANT_TABLES` map at :235, `USER_ID_SCOPED_TABLES` set at :1163)

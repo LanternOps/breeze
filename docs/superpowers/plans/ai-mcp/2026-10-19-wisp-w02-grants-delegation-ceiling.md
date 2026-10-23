@@ -23,7 +23,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Authority is structural.** The `ai_agent` principal stays; no synthetic user, no impersonation, no prompt text widens anything. Every check goes through `assertWithinCeiling`.
 - **No new profile, tier or bypass.** W02 must not add to `AI_AGENT_RUN_PROFILES`; the `assessment` profile is W05's.
 - **Tenancy ceremony.** RLS enable + force + policies in the creating migration; composite FK to `organizations(id, partner_id)` is `DEFERRABLE INITIALLY IMMEDIATE`; `wisp_grants` (has an `org_id` column) is registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY`, `PARTNER_TENANT_TABLES` and `ORG_AXIS_POLICY_EXCLUDED_TABLES`; `wisp_grant_revisions` in `PARTNER_TENANT_TABLES`; every `jsonb` column on an org-cascade table is `excludedOpen`. Org-cascade + export-policy suites run under **Integration Tests** before the PR.
-- **Migrations** are `2027-01-02-100100-wisp-grants.sql` and `2027-01-02-100110-ai-workspace-execute-permission.sql` (newest shipped at plan time: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing). Idempotent, no inner `BEGIN`/`COMMIT`; a file that writes rows elects `SELECT set_config('breeze.scope', 'system', true);` first. Status/kind columns are `text` + CHECK, never `pgEnum`.
+- **Migrations** are `2027-01-04-100100-wisp-grants.sql` and `2027-01-04-100110-ai-workspace-execute-permission.sql` (newest shipped at plan time: `2027-01-03-140000-report-type-client-profitability.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing). Idempotent, no inner `BEGIN`/`COMMIT`; a file that writes rows elects `SELECT set_config('breeze.scope', 'system', true);` first. Status/kind columns are `text` + CHECK, never `pgEnum`.
 - **Step-up, not `requireMfa()`.** Grant create/refresh consume a `wisp_grant` step-up grant (TTL 600 s; resource digest `sha256:` of `${grantorUserId}:${partnerId}:${orgId ?? '*'}:${requestedCeilingHash}`), the primitive `routes/partnerAiScriptPolicy.ts:140-167` uses.
 - **Grants are self-only.** INSERT only by the grantor; UPDATE by the grantor, or by a partner admin restricted to tighten/revoke **plus the two operational settings `budget_cents_per_day` / `floor_tick_minutes` (w00 A6 — budget and tick are not authority)**; nobody substitutes the grantor or widens a revision. Refresh = new revision, never a mutated old one; existing work stays pinned to the revision it was admitted under.
 - **Defaults** (spec §4.2, §9, §16; w00 A6): `expires_at` = now + 90 days; `budget_cents_per_day` 200; `floor_tick_minutes` **30** (bounds 15–240); `grantee` `'wisp'`. Plan-driven values arrive with W01/W05.
@@ -43,8 +43,8 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 ## File structure
 
 **Create**
-- `apps/api/migrations/2027-01-02-100100-wisp-grants.sql` — tables, RLS, triggers, column adds, `users (id, partner_id)` unique.
-- `apps/api/migrations/2027-01-02-100110-ai-workspace-execute-permission.sql` — permission catalog row.
+- `apps/api/migrations/2027-01-04-100100-wisp-grants.sql` — tables, RLS, triggers, column adds, `users (id, partner_id)` unique.
+- `apps/api/migrations/2027-01-04-100110-ai-workspace-execute-permission.sql` — permission catalog row.
 - `apps/api/src/db/schema/wisp.ts` — `wispGrants`, `wispGrantRevisions`, row types, `WispCeilingSnapshot` type.
 - `apps/api/src/db/wispGrantsMigration.test.ts`, `apps/api/src/db/aiWorkspaceExecutePermissionMigration.test.ts` — static migration contracts.
 - `apps/api/src/services/wisp/grantAuthority.ts` (+ `.test.ts`) — `GrantCeiling`, `resolveGrantCeiling`, `assertWithinCeiling`, errors, `computeLiveHumanTerm`, `ceilingSnapshotHash`.
@@ -112,10 +112,10 @@ it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
 
 ---
 
-### Task 2: Migration `2027-01-02-100100-wisp-grants.sql` + Drizzle schema
+### Task 2: Migration `2027-01-04-100100-wisp-grants.sql` + Drizzle schema
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100100-wisp-grants.sql`
+- Create: `apps/api/migrations/2027-01-04-100100-wisp-grants.sql`
 - Create: `apps/api/src/db/schema/wisp.ts`
 - Modify: `apps/api/src/db/schema/aiAgents.ts` (`aiAgentRuns`, after `taskAttemptOrdinal` line 197), `apps/api/src/db/schema/aiOperatorTasks.ts` (after `requesterUserId` line 150), `apps/api/src/db/schema/index.ts` (add `export * from './wisp';` after line 85)
 - Test: `apps/api/src/db/wispGrantsMigration.test.ts` (new, static), `pnpm db:migrate && pnpm db:check-drift`
@@ -139,7 +139,7 @@ Precedents to copy: shape-3 RLS block from `apps/api/migrations/2026-09-25-time-
 - [ ] **Step 1: Write the failing static migration test** (`apps/api/src/db/wispGrantsMigration.test.ts`, pattern `aiModelsPremiumPermissionMigration.test.ts`):
 
 ```ts
-const FILE = path.resolve(__dirname, '../../migrations/2027-01-02-100100-wisp-grants.sql');
+const FILE = path.resolve(__dirname, '../../migrations/2027-01-04-100100-wisp-grants.sql');
 it('exists and has no inner transaction', () => { expect(sql).not.toMatch(/^\s*(BEGIN|COMMIT)\s*;/im); });
 it('enables + forces RLS on both tables in the creating file', () => {
   for (const t of ['wisp_grants', 'wisp_grant_revisions']) {
@@ -314,7 +314,7 @@ it('wisp_grant digest binds grantor, partner, scope and the requested ceiling', 
 **Files:**
 - Modify: `packages/shared/src/constants/permissions.ts` (after `AI_MODELS_PREMIUM`, line 229), `packages/shared/src/constants/permissions.test.ts`
 - Modify: `apps/api/src/db/seed.ts` (`DEFAULT_PERMISSIONS`, line 122 block)
-- Create: `apps/api/migrations/2027-01-02-100110-ai-workspace-execute-permission.sql`, `apps/api/src/db/aiWorkspaceExecutePermissionMigration.test.ts`
+- Create: `apps/api/migrations/2027-01-04-100110-ai-workspace-execute-permission.sql`, `apps/api/src/db/aiWorkspaceExecutePermissionMigration.test.ts`
 - Modify: `apps/api/src/services/aiGuardrails.ts` lines 1353-1356 (+ the LANDMINE comment above them)
 - Modify: `apps/api/src/services/aiGuardrails.workspaceToolSurface.contract.test.ts:76-83`, `apps/api/src/services/aiGuardrails.workspace.contract.test.ts:105`
 
@@ -682,7 +682,7 @@ it('the ceiling is memoised for 15 s inside one run frame (two tool calls → on
 - [ ] **Step 1: Write the suite** (it is red until run against the migrated test stack; keep each case independent):
 
 ```ts
-describe('wisp_grants RLS + ownership (2027-01-02-100100)', () => {
+describe('wisp_grants RLS + ownership (2027-01-04-100100)', () => {
   it('cross-partner forge: partner B context inserting a grant with partner_id = A → 42501', …);
   it('non-grantor insert: partner A context with userId = u2 inserting grantor_user_id = u1 → 42501', …);
   it('org of another partner: composite (org_id, partner_id) FK rejects → 23503', …);
@@ -737,7 +737,7 @@ Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEp
 
 1. **`ai_agents:use` does not exist** (`packages/shared/src/constants/permissions.ts` has `ai_agents:read|write`, `ai_sessions:use`). Grant creation and the live human term gate on `ai_sessions:use` (the existing "may use in-product AI" capability, seeded on Partner Technician / Org Admin). If Todd wants a dedicated key, add `ai_agents:use` the way Task 5 adds `ai_workspace:execute`.
 2. **`users.status` has no `suspended`** (`active | invited | disabled`): `disabled` or a missing user maps to `grantor_suspended`; `grantor_access_lost` = no partner membership, no `ai_sessions:use`, or live ∩ snapshot orgs empty. Partial narrowing shrinks the ceiling silently (spec §4.4).
-3. **Second migration file** `2027-01-02-100110-ai-workspace-execute-permission.sql` for the permission row (keeps the W02 DDL file DML-free and mirrors the `ai_models:premium` precedent). Sorts between W02's and W03's slots.
+3. **Second migration file** `2027-01-04-100110-ai-workspace-execute-permission.sql` for the permission row (keeps the W02 DDL file DML-free and mirrors the `ai_models:premium` precedent). Sorts between W02's and W03's slots.
 4. **`GET /api/v1/wisp/grants/preview`** added: the mint route (`routes/auth/mfa.ts`) only hashes client-supplied resources, so the client must learn `requestedCeilingHash` from the server first. The mint route never trusts a body `grantorUserId` — it uses `auth.user.id`.
 5. **Depth guard** is `grant.requestedByRunId` (optional, additive to the w00 `grant` shape) and a thrown `GrantDepthExceededError` (code `grant_depth_exceeded`, w00 A11), not a skip reason; W07's `requestSpecialist.requestedByRunId` is the producer.
 6. **Admin tighten-only is a trigger** (`wisp_grants_update_guard`, ERRCODE 42501); RLS cannot compare OLD/NEW. w00 A6 resolved the §9 vs §4.2 reading: budget and tick are operational settings a partner admin may change (within bounds); the **ceiling** stays tighten/revoke-only. The trigger and `PATCH /grants/:id/settings` implement that split in W02.
@@ -768,7 +768,7 @@ Mint the step-up with `mintStepUpGrant({ userId, operation: 'wisp_grant', authEp
 ### Task 15: User pause / resume, `partner_disabled`, and the `wisp.grant.*` bus events
 
 **Files:**
-- Modify: `apps/api/migrations/2027-01-02-100100-wisp-grants.sql` (the `paused_reason` CHECK now lists `'user_paused'` and `'partner_disabled'` — edited in Task 2 above), `apps/api/src/db/schema/wisp.ts` (`WispGrantPauseReason`)
+- Modify: `apps/api/migrations/2027-01-04-100100-wisp-grants.sql` (the `paused_reason` CHECK now lists `'user_paused'` and `'partner_disabled'` — edited in Task 2 above), `apps/api/src/db/schema/wisp.ts` (`WispGrantPauseReason`)
 - Modify: `apps/api/src/services/wisp/grants.ts` (+ `grants.test.ts`), `apps/api/src/services/wisp/grantLifecycle.ts` or wherever Task 8's reconcilers live (+ tests), `apps/api/src/routes/wisp.ts` (+ `wisp.test.ts`)
 - Modify: `apps/api/src/services/eventBus.ts` (`EventType` union + `EVENT_TYPES`: `WISP_GRANT_CREATED: 'wisp.grant.created'`, `WISP_GRANT_RESUMED: 'wisp.grant.resumed'`), `apps/api/src/services/eventBus.test.ts`
 

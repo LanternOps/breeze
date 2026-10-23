@@ -23,7 +23,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Entitlement is the commercial switch, never a kill-switch override.** `requireEntitlement('wisp')` (W01) on every `/api/v1/wisp/*` route; `hasEntitlement(partnerId, 'wisp')` inside `createSession` when `wispGrantId` is present. Entitled + flag off = 404.
 - **Authority is structural.** Under a grant, every tool call — Tier 1 included — passes `resolveGrantCeiling(grantId, revisionId)` + `assertWithinCeiling(ceiling, check)` (W02) **before** `checkGuardrails`; the session's `toolAuth.accessibleOrgIds` is intersected with `ceiling.orgIds` for the call. No prompt text widens anything; the `user_session` principal stays (no synthetic user).
 - **Tenancy ceremony.** RLS enable + force + policy in the creating migration; `wisp_threads` and `wisp_thread_sessions` are shape 3 (`breeze_has_partner_access(partner_id)`) in `PARTNER_TENANT_TABLES`; `wisp_thread_sessions` also carries `org_id`, so it is registered in `CORE_ORG_CASCADE_DELETE_ORDER` (alphabetical), `orgMergeRegistry.ts` and `CORE_TENANT_EXPORT_POLICY` (precedent: `migration_window_orgs`, migration `2026-12-25-120000-migration-windows.sql`). **`wisp_thread_attachments` (w00 A24) is shape 1** (`org_id NOT NULL`, `breeze_has_org_access(org_id)`, auto-discovered by rls-coverage — no `PARTNER_TENANT_TABLES` entry) with `partner_id` denormalised, and is registered in all three org registries. `wisp_threads.focus_org_id` is a nullable org pointer on a partner-axis table: composite deferrable FK, `ON DELETE SET NULL (focus_org_id)` (PG 15+ column-list form; the stack runs `pgvector/pgvector:pg16`). The two new `ai_sessions` columns get an export-policy classification. Composite FKs to `org_id` are `DEFERRABLE INITIALLY IMMEDIATE`. Run org-cascade, export-policy and rls-coverage suites under a test stack before the PR.
-- **Migration** `apps/api/migrations/2027-01-02-100300-wisp-threads.sql` (w00 slot). Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing and bump if anything newer than `2027-01-02-100200-*` landed. Idempotent; no inner `BEGIN;`; it writes no rows, so no `set_config` is needed (say so in its header comment).
+- **Migration** `apps/api/migrations/2027-01-04-100300-wisp-threads.sql` (w00 slot). Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing and bump if anything newer than `2027-01-04-100200-*` landed. Idempotent; no inner `BEGIN;`; it writes no rows, so no `set_config` is needed (say so in its header comment).
 - **Status columns are `text` + CHECK**, never `pgEnum`.
 - **No new AI tools in this wave** (the model-written summary tool is not W04), so the six tool registries are untouched.
 - **Web mutations** go through `runAction` (`apps/web/src/lib/runAction.ts`); every new file with a mutating `fetchWithAuth` is added to `TARGET_GLOBS` in `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` (a literal file list). Every new `en` key is added to all eight locale files (`apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/ai.json`); `localeParity.test.ts` enforces it.
@@ -47,7 +47,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2027-01-02-100300-wisp-threads.sql` | Create `wisp_threads` (incl. `focus_org_id`), `wisp_thread_sessions`, `wisp_thread_attachments`; add `ai_sessions.wisp_grant_id`, `ai_sessions.wisp_grant_revision_id`; RLS; grants |
+| `apps/api/migrations/2027-01-04-100300-wisp-threads.sql` | Create `wisp_threads` (incl. `focus_org_id`), `wisp_thread_sessions`, `wisp_thread_attachments`; add `ai_sessions.wisp_grant_id`, `ai_sessions.wisp_grant_revision_id`; RLS; grants |
 | `apps/api/src/db/schema/wispThreads.ts` (new) | Drizzle tables `wispThreads`, `wispThreadSessions`, `wispThreadAttachments`; exported from `schema/index.ts` |
 | `apps/api/src/db/schema/ai.ts` | Two new nullable columns on `aiSessions` |
 | `apps/api/src/services/wisp/threads.ts` (new) | The four w00 exports + `setThreadFocus` (w00 A24) + `WispThread` type |
@@ -75,7 +75,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 ### Task 1: Migration, Drizzle schema and tenancy registrations
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100300-wisp-threads.sql`
+- Create: `apps/api/migrations/2027-01-04-100300-wisp-threads.sql`
 - Create: `apps/api/src/db/schema/wispThreads.ts`
 - Modify: `apps/api/src/db/schema/index.ts` (add `export * from './wispThreads';` after line 73 `export * from './aiAgents';`)
 - Modify: `apps/api/src/db/schema/ai.ts` (`aiSessions`, after `continuedFromSessionId` ~line 118)
@@ -183,7 +183,7 @@ describe('wisp_threads / wisp_thread_sessions RLS (shape 3)', () => {
 Run: `pnpm test-stack up && cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/wispThreadsRls.integration.test.ts`
 Expected: FAIL — `relation "wisp_threads" does not exist`.
 
-- [ ] **Step 3: Write the migration** `2027-01-02-100300-wisp-threads.sql` per the shape above. Header comment states: partner-axis shape 3 for the two thread tables, shape 1 for `wisp_thread_attachments` (org-cascade/merge/export registered), `wisp_thread_sessions` also org-cascade-registered, `focus_org_id` column-list `SET NULL`, no rows written (no `set_config`), FKs to `wisp_grants`/`wisp_grant_revisions` declared in SQL only to avoid schema import cycles (same rule as `ai_sessions.agent_id`).
+- [ ] **Step 3: Write the migration** `2027-01-04-100300-wisp-threads.sql` per the shape above. Header comment states: partner-axis shape 3 for the two thread tables, shape 1 for `wisp_thread_attachments` (org-cascade/merge/export registered), `wisp_thread_sessions` also org-cascade-registered, `focus_org_id` column-list `SET NULL`, no rows written (no `set_config`), FKs to `wisp_grants`/`wisp_grant_revisions` declared in SQL only to avoid schema import cycles (same rule as `ai_sessions.agent_id`).
 
 - [ ] **Step 4: Write the Drizzle schema** `apps/api/src/db/schema/wispThreads.ts`:
 
@@ -217,7 +217,7 @@ Expected: PASS (every `org_id` table present; `wisp_thread_sessions` classified;
 - [ ] **Step 8: Commit**
 
 ```bash
-git add apps/api/migrations/2027-01-02-100300-wisp-threads.sql apps/api/src/db/schema/wispThreads.ts apps/api/src/db/schema/index.ts apps/api/src/db/schema/ai.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts
+git add apps/api/migrations/2027-01-04-100300-wisp-threads.sql apps/api/src/db/schema/wispThreads.ts apps/api/src/db/schema/index.ts apps/api/src/db/schema/ai.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/wispThreadsRls.integration.test.ts
 git commit -m "feat(wisp): wisp_threads (+focus_org_id), wisp_thread_sessions, wisp_thread_attachments and ai_sessions grant columns (W04 T1)"
 ```
 

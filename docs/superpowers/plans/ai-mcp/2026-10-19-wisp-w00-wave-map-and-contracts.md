@@ -17,7 +17,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **Entitlement is the commercial switch, never a kill-switch override** (spec §10). Routes: `requireEntitlement('wisp')`; queued work re-checks at claim time.
 - **Authority is structural** (spec §4): every effect, read, dispatch and memory delivery under a grant passes `assertWithinCeiling` (W02). No prompt text ever widens anything. The `ai_agent` principal stays; no synthetic user, no impersonation.
 - **Tenancy ceremony** (CLAUDE.md + `docs/agents/tenancy-rls.md`): RLS enable + force + policies in the creating migration; composite FKs to `org_id` are `DEFERRABLE INITIALLY IMMEDIATE`; every new table registered in `CORE_ORG_CASCADE_DELETE_ORDER` / `orgMergeRegistry.ts` / `CORE_TENANT_EXPORT_POLICY` (org-axis) or `PARTNER_TENANT_TABLES` (partner-axis) as the shape requires; every `jsonb` column `excludedOpen`. Run the org-cascade + export-policy suites under **Integration Tests** before the PR.
-- **Migrations** sort after the newest on `origin/main`. At plan time that is `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`. Slots below are `2027-01-02-10NN00-wisp-*.sql`; **re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing** and bump if needed. Any migration that writes rows elects `SELECT set_config('breeze.scope', 'system', true);` first.
+- **Migrations** sort after the newest on `origin/main`. At plan time that is `2027-01-03-140000-report-type-client-profitability.sql`. Slots below are `2027-01-04-10NN00-wisp-*.sql`; **re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing** and bump if needed. Any migration that writes rows elects `SELECT set_config('breeze.scope', 'system', true);` first.
 - **Status/kind columns are `text` + CHECK, never `pgEnum`** (execution-plane precedent).
 - **Six registries** for every new AI tool: `aiTools` map, `TOOL_TIERS`, `TOOL_CAPABILITY`, MCP `tool()` in `createBreezeMcpServer`, `toolInputSchemas` (`aiToolSchemas.ts`), `TOOL_PERMISSIONS` (`aiGuardrails.ts`). `aiToolExposure.ts` deny lists change only with Todd's sign-off; the spec is that sign-off for the changes it names (§4.6, §7.5).
 - **Web mutations** go through `runAction`; new en locale keys are added to all 7 locales; settings pages register in `settingsPageRegistry`.
@@ -92,7 +92,7 @@ export async function recallForGrant(ceiling: GrantCeiling, q: { owners?: Memory
 export async function rememberForGrant(ceiling: GrantCeiling, block: Omit<MemoryBlock,'id'|'status'|'createdAt'|'updatedAt'|'authoredByGrantId'|'authoredByGrantRevisionId'|'tenantPartnerId'|'supersededById'>): Promise<MemoryBlock>; // status 'unconfirmed'
 export function renderMemoryForPrompt(blocks: MemoryBlock[]): string; // wrapUntrustedData(...) + UNTRUSTED_TOOL_OUTPUT_RULE
 ```
-- Table `ai_memory_blocks` (migration slot `2027-01-02-100200`): `tenant_partner_id NOT NULL`, `owner_kind text CHECK IN ('user','org','partner')`, `owner_user_id`, `owner_org_id`, CHECK `(owner_kind='user' AND owner_user_id IS NOT NULL AND owner_org_id IS NULL) OR (owner_kind='org' AND owner_org_id IS NOT NULL AND owner_user_id IS NULL) OR (owner_kind='partner' AND owner_user_id IS NULL AND owner_org_id IS NULL)`; composite FKs `(owner_user_id, tenant_partner_id)` → users and `(owner_org_id, tenant_partner_id)` → organizations (deferrable). RLS branches on `owner_kind`. `content jsonb` `excludedOpen`. Retention: `concern_outcome` 180 days (reaper in W05).
+- Table `ai_memory_blocks` (migration slot `2027-01-04-100200`): `tenant_partner_id NOT NULL`, `owner_kind text CHECK IN ('user','org','partner')`, `owner_user_id`, `owner_org_id`, CHECK `(owner_kind='user' AND owner_user_id IS NOT NULL AND owner_org_id IS NULL) OR (owner_kind='org' AND owner_org_id IS NOT NULL AND owner_user_id IS NULL) OR (owner_kind='partner' AND owner_user_id IS NULL AND owner_org_id IS NULL)`; composite FKs `(owner_user_id, tenant_partner_id)` → users and `(owner_org_id, tenant_partner_id)` → organizations (deferrable). RLS branches on `owner_kind`. `content jsonb` `excludedOpen`. Retention: `concern_outcome` 180 days (reaper in W05).
 - Human-side service `memoryService.ts`: `confirmBlock(auth, id)`, `retractBlock(auth, id)`, `listBlocksForUser(auth)`, `listBlocksForOrg(auth, orgId)`, `listBlocksForPartner(auth)` — RLS-enforced, request context.
 - Tools: `remember` (T2), `recall` (T1), `confirm_memory` / `retract_memory` (in `HUMAN_ONLY_TOOLS`, never agent-callable).
 
@@ -150,14 +150,14 @@ export async function requestSpecialist(input: { grantId: string; grantRevisionI
 
 | Wave | File |
 |---|---|
-| W01 | `2027-01-02-100000-partner-entitlements.sql` (per the entitlements spec; its own doc names an older slot — this one supersedes) |
-| W02 | `2027-01-02-100100-wisp-grants.sql` (grants, revisions, `ai_agent_runs.grant_*`, `ai_operator_tasks.grant_*`) |
-| W03 | `2027-01-02-100200-ai-memory-blocks.sql` |
-| W04 | `2027-01-02-100300-wisp-threads.sql` |
-| W05 | `2027-01-02-100400-wisp-concerns-watches.sql` |
-| W06 | `2027-01-02-100500-wisp-nudge-preferences.sql` |
-| W07 | none expected (`ai_agent_runs.parent_grant_revision_id`, `depth` → `2027-01-02-100600-wisp-specialist-lineage.sql` if the builder keeps them as columns rather than `metadata`) |
-| W08 | `2027-01-02-100700-wisp-thread-links.sql` (A35) and `2027-01-02-100800-wisp-partner-settings.sql` (`ALTER TABLE wisp_partner_nudge_settings ADD COLUMN enabled`, A35) |
+| W01 | `2027-01-04-100000-partner-entitlements.sql` (per the entitlements spec; its own doc names an older slot — this one supersedes) |
+| W02 | `2027-01-04-100100-wisp-grants.sql` (grants, revisions, `ai_agent_runs.grant_*`, `ai_operator_tasks.grant_*`) |
+| W03 | `2027-01-04-100200-ai-memory-blocks.sql` |
+| W04 | `2027-01-04-100300-wisp-threads.sql` |
+| W05 | `2027-01-04-100400-wisp-concerns-watches.sql` |
+| W06 | `2027-01-04-100500-wisp-nudge-preferences.sql` |
+| W07 | none expected (`ai_agent_runs.parent_grant_revision_id`, `depth` → `2027-01-04-100600-wisp-specialist-lineage.sql` if the builder keeps them as columns rather than `metadata`) |
+| W08 | `2027-01-04-100700-wisp-thread-links.sql` (A35) and `2027-01-04-100800-wisp-partner-settings.sql` (`ALTER TABLE wisp_partner_nudge_settings ADD COLUMN enabled`, A35) |
 
 The 2026-10-23 amendments change **columns inside existing slots**, never add slots to W02–W06: W02 adds `'user_paused'` to the `paused_reason` CHECK (A29); W05 makes `wisp_concerns.org_id` nullable and adds `signature` (A30) plus `wisp_concern_recipients.feedback` (A34); W06 adds the brief and proactivity columns to `wisp_nudge_preferences` (A28, A29).
 
@@ -178,7 +178,7 @@ Seven planners verified the contracts against the checkout. The following correc
 - A8. `wisp_grants` has a nullable `org_id`, so it is **both** partner-axis for RLS and registered as an org-cascade table (cascade order, merge registry `leave-for-erasure`, export policy) plus `ORG_AXIS_POLICY_EXCLUDED_TABLES`.
 - A9. `ai_memory_blocks` is registered **partner-axis** (`PARTNER_TENANT_TABLES`, anchor column `tenant_partner_id`); it is **not** in the org cascade/merge/export registries (those engines key on a literal `org_id` column); org/user owners cascade through `ON DELETE CASCADE` composite FKs.
 - A10. `wisp_thread_sessions` carries `partner_id` (shape-3 RLS needs it). #7603 session continuation is **refused** for Wisp sessions (it would drop the grant).
-- A11. Lineage columns (W07 migration `2027-01-02-100600-wisp-specialist-lineage.sql`): `ai_agent_runs` and `ai_operator_tasks` gain `requested_by_run_id`, `parent_grant_revision_id`, `depth`. The admission depth guard keys on `grant.requestedByRunId` and throws `grant_depth_exceeded` (not a skip reason).
+- A11. Lineage columns (W07 migration `2027-01-04-100600-wisp-specialist-lineage.sql`): `ai_agent_runs` and `ai_operator_tasks` gain `requested_by_run_id`, `parent_grant_revision_id`, `depth`. The admission depth guard keys on `grant.requestedByRunId` and throws `grant_depth_exceeded` (not a skip reason).
 - A12. Concern `subject_id` is a soft reference (no FK), so concerns stay out of the device/ticket cascade lists; the pollers reconcile dangling subjects. `wisp_watches` copies the `connection_health_incidents` partner-anchored / org-optional shape.
 - A13. `ai_agent_runs_profile_chk` is widened for `'assessment'`; the exhaustive `never` sites (`AGENT_PROFILE_ROLE`, `outcomeToolsForProfile`, `profileCaps`, `STREAK_NEUTRAL_PROFILES`) and `aiAgentSchedulesPartnerRls.integration.test.ts` are updated in W05. An assessment needs an effective agent for its org (`resolveEffectiveAgentSystem`); none ⇒ digest path only.
 
@@ -220,7 +220,7 @@ Todd asked (2026-10-23) for a comparison against the always-on agents shipped si
 - Mobile preferences row: brief time picker (Off / 07:00 / 08:00 / 09:00). Web: W08 renders the brief as the first card of the home.
 
 **A29 (W02 + W06). User pause and a proactivity dial.** Today a user's only off-switch is revoke, and re-enabling needs step-up.
-- `pauseGrant` reason union gains `'user_paused'`; the `paused_reason` CHECK in `2027-01-02-100100-wisp-grants.sql` includes it. `POST /wisp/grants/:id/pause` and `POST /wisp/grants/:id/resume` (grantor only; no step-up — pausing never widens; resume keeps the current revision). `resumeGrant` refuses a grant whose `paused_reason` is not `'user_paused'` (`not_user_paused`, 409): system reasons resume only through their own reconcilers. W02 Task 8's reconcilers and W05's `reconcileEntitlements` **never** resume a `user_paused` grant. Watches of a user-paused grant stop like any paused grant and restart on resume (`stopWatchesForInactiveGrants` already does the stop; resume sets `status='active'`, `next_due_at = now` on watches stopped with `stopped_reason = 'paused'`).
+- `pauseGrant` reason union gains `'user_paused'`; the `paused_reason` CHECK in `2027-01-04-100100-wisp-grants.sql` includes it. `POST /wisp/grants/:id/pause` and `POST /wisp/grants/:id/resume` (grantor only; no step-up — pausing never widens; resume keeps the current revision). `resumeGrant` refuses a grant whose `paused_reason` is not `'user_paused'` (`not_user_paused`, 409): system reasons resume only through their own reconcilers. W02 Task 8's reconcilers and W05's `reconcileEntitlements` **never** resume a `user_paused` grant. Watches of a user-paused grant stop like any paused grant and restart on resume (`stopWatchesForInactiveGrants` already does the stop; resume sets `status='active'`, `next_due_at = now` on watches stopped with `stopped_reason = 'paused'`).
 - `wisp_nudge_preferences.proactivity text NOT NULL DEFAULT 'normal' CHECK (proactivity IN ('quiet','normal','chatty'))` (Muse's reduce/increase/disable). `decideNudgeDelivery` maps it to a push severity floor: `quiet` → push only `high` (everything else in-app + digest); `normal` → `medium` and above; `chatty` → everything incl. `info`. The brief (A28) and approval-card nudges (an `approvalIntentId` present) always push. In-app rows are always written.
 - Web header + mobile sheet gain "Pause Wisp / Resume" and the dial lives with the other nudge preferences (mobile Settings is the home; web gets it in W08).
 

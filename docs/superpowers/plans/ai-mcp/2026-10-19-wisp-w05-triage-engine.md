@@ -22,7 +22,7 @@ depends_on: [W02, W03, W04]
 - **Dark by default.** Nothing in this wave changes runtime behaviour unless `wispEnabled()` (`apps/api/src/config/env.ts`, W02) is true: the wake scheduler's tick returns early, the subscriber returns early, routes 404. Flag off ⇒ `pnpm test` and the integration suites are unchanged except for the new files.
 - **Authority is structural.** Every read of concerns/watches on behalf of a grant is filtered by `GrantCeiling.orgIds`; every run is admitted via `createAndEnqueueAgentRun({ grant })` (W02 step 1d). No prompt text widens anything. Agent DB contexts keep `userId: null`.
 - **Tenancy ceremony** (`docs/agents/tenancy-rls.md`): RLS enabled + forced + policies in the creating migration; the composite `(org_id, partner_id) → organizations(id, partner_id)` FK is `DEFERRABLE INITIALLY IMMEDIATE`; every new `org_id` table is registered in `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts`, `CORE_TENANT_EXPORT_POLICY`; every `jsonb` column is `excludedOpen`. **Subject refs carry no `device_id`/`ticket_id` column** (see Task 1), so the device/ticket cascade lists are deliberately not touched.
-- **Migration** slot `2027-01-02-100400-wisp-concerns-watches.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` sorts before it at commit time (newest on this checkout: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`; W02–W04 take `100100`–`100300`). Idempotent; no inner `BEGIN`/`COMMIT`; status/kind columns are `text` + CHECK, never `pgEnum`.
+- **Migration** slot `2027-01-04-100400-wisp-concerns-watches.sql`; re-check `ls apps/api/migrations/*.sql | sort | tail -1` sorts before it at commit time (newest on this checkout: `2027-01-03-140000-report-type-client-profitability.sql`; W02–W04 take `100100`–`100300`). Idempotent; no inner `BEGIN`/`COMMIT`; status/kind columns are `text` + CHECK, never `pgEnum`.
 - **Profiles are exhaustive.** Adding `'assessment'` to `AI_AGENT_RUN_PROFILES` (`packages/shared/src/types/aiAgents.ts:1134`) breaks four `never`-exhaustive sites until Task 2 updates them: `AGENT_PROFILE_ROLE` (`agentModelRole.ts:16`), `outcomeToolsForProfile` (`outcomeTools.ts:169`), `profileCaps` (`runService.ts:964`), and the DB CHECK `ai_agent_runs_profile_chk` (asserted equal to the enum by `aiAgentSchedulesPartnerRls.integration.test.ts:648`).
 - **Assessment limits** (w00): 15 turns, 25 ¢, 300 s wall clock, Tier 1 + auto-approved T2 only (`maxActionsPerRun: 0`; every write goes through an outcome tool → intent).
 - **Budget semantics** (spec §9, w00 `budget.ts`): UTC day window; exhausted ⇒ model calls stop, deterministic concern updates + in-app digest continue, floor tick suspended, grantor told **once per window**; `pauseGrant(..., 'budget_exhausted')` is **not** called.
@@ -63,7 +63,7 @@ depends_on: [W02, W03, W04]
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2027-01-02-100400-wisp-concerns-watches.sql` | 3 tables + RLS, `wisp_grants.last_floor_tick_at`, `ai_agent_runs_profile_chk` widened, `ai_agent_runs` grant/org/profile index |
+| `apps/api/migrations/2027-01-04-100400-wisp-concerns-watches.sql` | 3 tables + RLS, `wisp_grants.last_floor_tick_at`, `ai_agent_runs_profile_chk` widened, `ai_agent_runs` grant/org/profile index |
 | `apps/api/src/db/schema/wispConcerns.ts` | Drizzle for `wisp_concerns`, `wisp_concern_recipients`, `wisp_watches` |
 | `packages/shared/src/types/wispConcerns.ts`, `packages/shared/src/validators/wispConcerns.ts` | Shared unions, DTOs, Zod for outcome-tool inputs and route bodies |
 | `apps/api/src/services/wisp/concerns.ts` | Concern facts + recipient state + backoff + reaper (`upsertConcern`, `resolveConcern`, `listConcernsForCeiling`, `recipientState`, `nextBackoff`, …) |
@@ -85,7 +85,7 @@ depends_on: [W02, W03, W04]
 ### Task 1: Migration, Drizzle schema, tenancy registrations
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100400-wisp-concerns-watches.sql`
+- Create: `apps/api/migrations/2027-01-04-100400-wisp-concerns-watches.sql`
 - Create: `apps/api/src/db/schema/wispConcerns.ts`
 - Modify: `apps/api/src/db/schema/index.ts` (add `export * from './wispConcerns';` after line 73's `./aiAgents`)
 - Modify: `apps/api/src/services/tenantCascade.ts:1112-1119` (insert `'wisp_concern_recipients'`, `'wisp_concerns'`, `'wisp_watches'` between `'webhooks'` and `'yara_rule_sets'` — W04's `'wisp_thread_sessions'` sorts between `wisp_concerns` and `wisp_watches`)
@@ -151,7 +151,7 @@ Expected: all PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/api/migrations/2027-01-02-100400-wisp-concerns-watches.sql apps/api/src/db/schema/wispConcerns.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/wispConcernsRls.integration.test.ts
+git add apps/api/migrations/2027-01-04-100400-wisp-concerns-watches.sql apps/api/src/db/schema/wispConcerns.ts apps/api/src/db/schema/index.ts apps/api/src/services/tenantCascade.ts apps/api/src/services/orgMergeRegistry.ts apps/api/src/services/tenantExportPolicyRegistry.ts apps/api/src/__tests__/integration/rls-coverage.integration.test.ts apps/api/src/__tests__/integration/wispConcernsRls.integration.test.ts
 git commit -m "feat(wisp): wisp_concerns, wisp_concern_recipients, wisp_watches with RLS and tenancy registrations (W05)"
 ```
 

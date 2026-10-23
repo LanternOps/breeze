@@ -19,7 +19,7 @@ tracking_issue: (assigned by register_feature)
 
 ## Global Constraints
 
-- Migration file is exactly `apps/api/migrations/2027-01-02-100000-partner-entitlements.sql` (W00 slot; supersedes the spec's `2026-10-14-…` name). Newest committed at plan time: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`. Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing; bump only if something newer landed.
+- Migration file is exactly `apps/api/migrations/2027-01-04-100000-partner-entitlements.sql` (W00 slot; supersedes the spec's `2026-10-14-…` name). Newest committed at plan time: `2027-01-03-140000-report-type-client-profitability.sql`. Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing; bump only if something newer landed.
 - Idempotent SQL; no inner `BEGIN;`/`COMMIT;`; RLS `ENABLE` + `FORCE` + policy in the same file; the file writes no rows, so no `set_config('breeze.scope', …)` is needed.
 - Tenancy shape 3 (partner-axis): `partner_id` only, **no `org_id`**. Registration is `PARTNER_TENANT_TABLES` **only** — do NOT add it to `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts` or `CORE_TENANT_EXPORT_POLICY` (those suites reject unrequired entries; Task 11 proves they stay green without one).
 - Six plans, derived from the pg enum `plan_type` (`apps/api/src/db/schema/orgs.ts:15`): `free`, `starter`, `community`, `pro`, `enterprise`, `unlimited`.
@@ -51,7 +51,7 @@ tracking_issue: (assigned by register_feature)
 | `apps/api/src/openapi.ts:378`, `:2136`; `apps/api/src/__tests__/integration/db-utils.ts:183` | Plan enum sweep (Task 1) |
 | `apps/api/src/db/schema/planType.enums.test.ts` | Pins pg enum ↔ shared constant ↔ OpenAPI (Task 1) |
 | `packages/shared/src/entitlements/{registry,index}.ts` (+ `registry.test.ts`) | Registry, types, grace constant (Task 2) |
-| `apps/api/migrations/2027-01-02-100000-partner-entitlements.sql` | Table + RLS (Task 3) |
+| `apps/api/migrations/2027-01-04-100000-partner-entitlements.sql` | Table + RLS (Task 3) |
 | `apps/api/src/db/schema/partnerEntitlements.ts` | Drizzle table (Task 3) |
 | `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:279` | `PARTNER_TENANT_TABLES` entry (Task 3) |
 | `apps/api/src/__tests__/integration/partnerEntitlementsRls.integration.test.ts` | Real-Postgres contract (Tasks 3, 4) |
@@ -227,7 +227,7 @@ Expected: PASS ×2; tsc clean.
 ### Task 3: `partner_entitlements` migration, Drizzle schema, RLS registration, integration contract
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100000-partner-entitlements.sql`
+- Create: `apps/api/migrations/2027-01-04-100000-partner-entitlements.sql`
 - Create: `apps/api/src/db/schema/partnerEntitlements.ts`
 - Modify: `apps/api/src/db/schema/index.ts` (append `export * from './partnerEntitlements';`)
 - Modify: `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts:279` (insert `['partner_entitlements', 'partner_id'],` after the `time_suggestion_decisions` entry with a two-line comment: shape 3, no org_id, partner-axis only)
@@ -264,7 +264,7 @@ Expected: FAIL — relation `partner_entitlements` does not exist.
 
 ```sql
 -- Partner Entitlements W1 (spec docs/superpowers/specs/billing/2026-09-07-partner-entitlements-design.md §4;
--- Wisp W00 slot 2027-01-02-100000). RLS shape 3 (partner-axis). NO org_id: registered in
+-- Wisp W00 slot 2027-01-04-100000). RLS shape 3 (partner-axis). NO org_id: registered in
 -- PARTNER_TENANT_TABLES only; partner purge finds it via information_schema (cascadeDeletePartner).
 CREATE TABLE IF NOT EXISTS partner_entitlements (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),

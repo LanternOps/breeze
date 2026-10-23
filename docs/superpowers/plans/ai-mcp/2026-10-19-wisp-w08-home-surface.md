@@ -23,7 +23,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 - **No model call to render the home** (spec §17.2 anti-goal check). `GET /wisp/home` reads tables only. Brief sections come from the stored `user_notifications.metadata.brief` W06 Task 13 wrote. Nothing on the page widens a ceiling or satisfies an approval outside the existing approval-card components.
 - **Tenancy ceremony** (`docs/agents/tenancy-rls.md`): `wisp_thread_links` ships RLS enable + force + policy in the creating migration, in the `connection_health_incidents` dual-axis shape (`2026-12-29-100100-connection-health-incidents.sql`); it is registered in `DUAL_AXIS_TENANT_TABLES`, `CORE_ORG_CASCADE_DELETE_ORDER`, `orgMergeRegistry.ts` (`repoint`) and `CORE_TENANT_EXPORT_POLICY` (`label` is text and exported; no json columns). `org_id NULL` rows (partner-level kinds: `organization` with no org, `user`, partner-scoped `run`/`task`) are visible only to partner-scoped sessions.
 - **Links are soft references** (`entity_id uuid` with no FK — ten target tables; a deleted entity resolves to `null` and the row is pruned on next read). Nothing in this wave adds a column to a core entity table.
-- **Migration slots** `2027-01-02-100700-wisp-thread-links.sql` and `2027-01-02-100800-wisp-partner-settings.sql`. Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing (newest on main at plan time: `2027-01-01-000000-s1-integrations-last-full-agent-sync.sql`; W01–W07 occupy `100000`–`100600`). Idempotent; no inner `BEGIN;`/`COMMIT;`; a file that writes rows elects `SELECT set_config('breeze.scope','system',true);` first.
+- **Migration slots** `2027-01-04-100700-wisp-thread-links.sql` and `2027-01-04-100800-wisp-partner-settings.sql`. Re-check `ls apps/api/migrations/*.sql | sort | tail -1` before committing (newest on main at plan time: `2027-01-03-140000-report-type-client-profitability.sql`; W01–W07 occupy `100000`–`100600`). Idempotent; no inner `BEGIN;`/`COMMIT;`; a file that writes rows elects `SELECT set_config('breeze.scope','system',true);` first.
 - **Status/kind columns are `text` + CHECK, never `pgEnum`.**
 - **Chat tool tiers** (quorum 2): `link_entity` is a Tier-2 registry entry that auto-executes without a card (same posture as `raise_concern`, W05 Task 11b, and `remember`, W03) because it mutates durable thread context and plain Tier 1 bypasses agent allowlists (`aiGuardrails.ts:262-280`); `list_links` is Tier 1. Neither is ever available to a session without `wispGrant` (W04 Task 4 gate). No `z.undefined()` anywhere in a tool schema.
 - **Web mutations** go through `runAction` (`apps/web/src/lib/runAction.ts:91`); every new web file with a mutating `fetchWithAuth` is added to `TARGET_GLOBS` in `apps/web/src/lib/__tests__/no-silent-mutations.test.ts:35`. URL state (selected concern, selected home section) lives in `window.location.hash`, never query params.
@@ -46,8 +46,8 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2027-01-02-100700-wisp-thread-links.sql` | `wisp_thread_links` + RLS |
-| `apps/api/migrations/2027-01-02-100800-wisp-partner-settings.sql` | `ALTER TABLE wisp_partner_nudge_settings ADD COLUMN enabled` (one partner settings row; w00 A35 fold) |
+| `apps/api/migrations/2027-01-04-100700-wisp-thread-links.sql` | `wisp_thread_links` + RLS |
+| `apps/api/migrations/2027-01-04-100800-wisp-partner-settings.sql` | `ALTER TABLE wisp_partner_nudge_settings ADD COLUMN enabled` (one partner settings row; w00 A35 fold) |
 | `apps/api/src/db/schema/wispThreadLinks.ts` | Drizzle `wispThreadLinks` |
 | `packages/shared/src/types/wisp.ts`, `validators/wisp.ts` | `BreezeEntityRef`, `WISP_ENTITY_KINDS`, `WispThreadLink`, `WispHomePayload`, `linkEntitySchema`, `partnerSettingsSchema` |
 | `apps/api/src/services/wisp/entityRefs.ts` | `resolveEntityRef` — per-kind read path, returns `{ orgId, label, status, href }` or a refusal |
@@ -67,7 +67,7 @@ tracking_issue: (assigned by register_feature after all wave plans exist)
 ### Task 1: Migration, Drizzle schema and tenancy registration for `wisp_thread_links`
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100700-wisp-thread-links.sql`, `apps/api/src/db/schema/wispThreadLinks.ts`
+- Create: `apps/api/migrations/2027-01-04-100700-wisp-thread-links.sql`, `apps/api/src/db/schema/wispThreadLinks.ts`
 - Modify: `apps/api/src/db/schema/index.ts` (after W04's `export * from './wispThreads';`), `apps/api/src/services/tenantCascade.ts` (`CORE_ORG_CASCADE_DELETE_ORDER`, before `wisp_threads`' dependents), `apps/api/src/services/orgMergeRegistry.ts` (`repoint`, beside `connection_health_incidents` at `:902`), `apps/api/src/services/tenantExportPolicy.ts` (`CORE_TENANT_EXPORT_POLICY`), `apps/api/src/__tests__/integration/rls-coverage.integration.test.ts` (`DUAL_AXIS_TENANT_TABLES`)
 - Test: `apps/api/src/__tests__/integration/wispThreadLinksRls.integration.test.ts`
 
@@ -173,7 +173,7 @@ Routes (grantor-only via W04's `loadOwnThread` helper, existence-neutral 404): `
 ### Task 6: Partner enable switch
 
 **Files:**
-- Create: `apps/api/migrations/2027-01-02-100800-wisp-partner-settings.sql` (`ALTER TABLE wisp_partner_nudge_settings ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;`), `apps/api/src/services/wisp/partnerSettings.ts` (+ test), `apps/api/src/routes/wispPartnerSettings.ts` (+ test)
+- Create: `apps/api/migrations/2027-01-04-100800-wisp-partner-settings.sql` (`ALTER TABLE wisp_partner_nudge_settings ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;`), `apps/api/src/services/wisp/partnerSettings.ts` (+ test), `apps/api/src/routes/wispPartnerSettings.ts` (+ test)
 - Modify: W06's Drizzle `wispPartnerNudgeSettings` (+ `enabled`), W02's `services/wisp/grants.ts` `createGrant` (refuse `partner_disabled` 403 when `enabled === false`), W05's floor tick in `jobs/wispWakeScheduler.ts` (call `reconcilePartnerDisabled(partnerId)` before scheduling), W06 Task 6's partner settings card on Settings → AI Agents (the switch UI, `runAction`), W00 export policy classification for the new boolean (`open`)
 
 **Interfaces:**
