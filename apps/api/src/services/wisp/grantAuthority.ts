@@ -21,7 +21,7 @@
  * is the literal `*:*` (w00 A3).
  */
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema/orgs';
@@ -305,9 +305,10 @@ export function inSystemContext<T>(fn: () => Promise<T>): Promise<T> {
 export async function computeLiveHumanTerm(userId: string, partnerId: string): Promise<LiveHumanTerm> {
   // Lazy: run admission, the run loop and release import this module, and the
   // permission resolver / auth middleware graphs are not theirs to load.
-  const [{ getUserPermissions }, { computeAccessibleOrgIds }] = await Promise.all([
+  const [{ getUserPermissions }, { computeAccessibleOrgIds }, { notHiddenOrgType }] = await Promise.all([
     import('../permissions'),
     import('../../middleware/auth'),
+    import('../unassignedPool/visibility'),
   ]);
   // One system transaction for the whole term: getUserPermissions and
   // computeAccessibleOrgIds both reuse an ambient system context.
@@ -329,13 +330,14 @@ export async function computeLiveHumanTerm(userId: string, partnerId: string): P
     const reach = await computeAccessibleOrgIds('partner', partnerId, null, userId);
     const reachable = reach.orgIds ?? [];
     // computeAccessibleOrgIds always grants the partner's hidden Quick Support
-    // org (it holds only ad-hoc support sessions with outsiders' devices). It is
-    // never delegable to Wisp, and it must not keep a grantor whose real reach
-    // shrank to nothing looking "ok".
+    // org (it holds only ad-hoc support sessions with outsiders' devices). Hidden
+    // orgs (Quick Support, the holding org) are never delegable to Wisp, and must
+    // not keep a grantor whose real reach shrank to nothing looking "ok". This
+    // only NARROWS the ceiling; it selects no targets.
     const orgIds = reachable.length === 0 ? [] : (await db
       .select({ id: organizations.id })
       .from(organizations)
-      .where(and(inArray(organizations.id, reachable), ne(organizations.type, 'quick_support')))
+      .where(and(inArray(organizations.id, reachable), notHiddenOrgType()))
       .limit(reachable.length))
       .map((o) => o.id);
     if (orgIds.length === 0) return { ok: false, reason: 'grantor_access_lost' };

@@ -308,12 +308,14 @@ CREATE TRIGGER wisp_grant_revisions_immutable_guard BEFORE UPDATE OR DELETE ON w
 
 -- ---------------------------------------------------------------------------
 -- 7. Runs and Operator tasks pin the grant + revision they were admitted under.
---    Both-or-none. ON DELETE RESTRICT for the reason ai_agent_runs_task_org_fk
---    gives (a column-scoped SET NULL would trip the both-or-none CHECK).
---    Erasure order is safe: cascadeDeletePartner deletes child orgs (and so
---    runs/tasks) before the partner-axis sweep, and the org cascade order
---    lists ai_agent_runs / ai_operator_tasks before wisp_grants; the plain
---    grant_id FKs make that ordering an FK edge, not alphabetical luck.
+--    Both-or-none. The (grant_revision_id, grant_id) FK is ON DELETE SET NULL
+--    over BOTH columns, so the both-or-none CHECK holds: a revision is only
+--    ever deleted with its grant, by erasure, and the erasure contract
+--    (orgCascadeFkOnDelete) needs the edge cleared by Postgres rather than by
+--    ordering. The plain grant_id FK stays RESTRICT: both ends are in the org
+--    cascade set, so it makes "runs/tasks before wisp_grants" an FK edge the
+--    topological order honours. The pin guard below lets only this FK action
+--    (pg_trigger_depth() > 1, both columns to NULL) clear a pin.
 -- ---------------------------------------------------------------------------
 ALTER TABLE ai_agent_runs ADD COLUMN IF NOT EXISTS grant_id uuid;
 ALTER TABLE ai_agent_runs ADD COLUMN IF NOT EXISTS grant_revision_id uuid;
@@ -321,7 +323,7 @@ ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_grant_link_chk
 ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_grant_link_chk CHECK ((grant_id IS NULL) = (grant_revision_id IS NULL));
 ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_grant_revision_fk;
 ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_grant_revision_fk
-  FOREIGN KEY (grant_revision_id, grant_id) REFERENCES wisp_grant_revisions (id, grant_id) ON DELETE RESTRICT;
+  FOREIGN KEY (grant_revision_id, grant_id) REFERENCES wisp_grant_revisions (id, grant_id) ON DELETE SET NULL;
 ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_grant_fk;
 ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_grant_fk
   FOREIGN KEY (grant_id) REFERENCES wisp_grants (id) ON DELETE RESTRICT;
@@ -333,7 +335,7 @@ ALTER TABLE ai_operator_tasks DROP CONSTRAINT IF EXISTS ai_operator_tasks_grant_
 ALTER TABLE ai_operator_tasks ADD CONSTRAINT ai_operator_tasks_grant_link_chk CHECK ((grant_id IS NULL) = (grant_revision_id IS NULL));
 ALTER TABLE ai_operator_tasks DROP CONSTRAINT IF EXISTS ai_operator_tasks_grant_revision_fk;
 ALTER TABLE ai_operator_tasks ADD CONSTRAINT ai_operator_tasks_grant_revision_fk
-  FOREIGN KEY (grant_revision_id, grant_id) REFERENCES wisp_grant_revisions (id, grant_id) ON DELETE RESTRICT;
+  FOREIGN KEY (grant_revision_id, grant_id) REFERENCES wisp_grant_revisions (id, grant_id) ON DELETE SET NULL;
 ALTER TABLE ai_operator_tasks DROP CONSTRAINT IF EXISTS ai_operator_tasks_grant_fk;
 ALTER TABLE ai_operator_tasks ADD CONSTRAINT ai_operator_tasks_grant_fk
   FOREIGN KEY (grant_id) REFERENCES wisp_grants (id) ON DELETE RESTRICT;
@@ -351,7 +353,10 @@ CREATE OR REPLACE FUNCTION public.wisp_grant_link_tenant_guard() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'UPDATE'
-     AND (NEW.grant_id IS DISTINCT FROM OLD.grant_id OR NEW.grant_revision_id IS DISTINCT FROM OLD.grant_revision_id) THEN
+     AND (NEW.grant_id IS DISTINCT FROM OLD.grant_id OR NEW.grant_revision_id IS DISTINCT FROM OLD.grant_revision_id)
+     -- The revision FK's ON DELETE SET NULL during erasure (an RI action, so
+     -- trigger depth > 1) clears both columns; a direct UPDATE never may.
+     AND NOT (pg_trigger_depth() > 1 AND NEW.grant_id IS NULL AND NEW.grant_revision_id IS NULL) THEN
     -- Nested IFs: OLD.error_code exists only on ai_agent_runs.
     IF TG_TABLE_NAME = 'ai_agent_runs' THEN
       IF NOT (OLD.status = 'failed' AND OLD.error_code = 'enqueue_failed') THEN

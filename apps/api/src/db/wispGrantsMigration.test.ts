@@ -58,7 +58,8 @@ describe('2027-01-04-100100-wisp-grants.sql', () => {
       expect(sql).toContain(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS grant_id uuid`);
       expect(sql).toContain(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS grant_revision_id uuid`);
       expect(sql).toContain(`${t}_grant_link_chk`);
-      expect(sql).toMatch(new RegExp(`${t}_grant_revision_fk[\\s\\S]*?REFERENCES wisp_grant_revisions \\(id, grant_id\\)[\\s\\S]*?ON DELETE RESTRICT`));
+      expect(sql).toMatch(new RegExp(`${t}_grant_revision_fk[\\s\\S]*?REFERENCES wisp_grant_revisions \\(id, grant_id\\) ON DELETE SET NULL;`));
+      expect(sql).toMatch(new RegExp(`${t}_grant_fk[\\s\\S]*?REFERENCES wisp_grants \\(id\\) ON DELETE RESTRICT;`));
     }
   });
 

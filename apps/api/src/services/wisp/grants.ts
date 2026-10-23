@@ -18,6 +18,7 @@
  */
 import { and, desc, eq, isNull, max, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import { db } from '../../db';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantPauseReason, WispGrantRow, WispGrantStatus } from '../../db/schema/wisp';
@@ -126,18 +127,6 @@ function toGrant(row: WispGrantRow): WispGrant {
     budgetCentsPerDay: row.budgetCentsPerDay,
     floorTickMinutes: row.floorTickMinutes,
   };
-}
-
-function pgErrorInfo(err: unknown): { code: string | null; constraint: string | null } {
-  if (!err || typeof err !== 'object') return { code: null, constraint: null };
-  const e = err as { code?: unknown; constraint_name?: unknown; constraint?: unknown; cause?: unknown };
-  const pick = (o: { code?: unknown; constraint_name?: unknown; constraint?: unknown }) => ({
-    code: typeof o.code === 'string' ? o.code : null,
-    constraint: typeof o.constraint_name === 'string' ? o.constraint_name : typeof o.constraint === 'string' ? o.constraint : null,
-  });
-  const direct = pick(e);
-  if (direct.code) return direct;
-  return e.cause && typeof e.cause === 'object' ? pick(e.cause as never) : direct;
 }
 
 function systemContext<T>(fn: () => Promise<T>): Promise<T> {
@@ -338,8 +327,7 @@ export async function createGrant(input: { auth: AuthContext; scope: WispGrantSc
       return linked;
     });
   } catch (err) {
-    const info = pgErrorInfo(err);
-    if (info.code === '23505' && (info.constraint === null || info.constraint === ONE_LIVE_PER_SCOPE_INDEX)) {
+    if (isPgUniqueViolation(err, ONE_LIVE_PER_SCOPE_INDEX)) {
       throw new WispGrantError('already_active', 'You already have Wisp turned on for this scope.');
     }
     throw err;
@@ -400,7 +388,7 @@ export async function refreshGrant(input: { auth: AuthContext; grantId: string; 
   } catch (err) {
     // Two concurrent refreshes compute the same revision n+1; the loser trips
     // wisp_grant_revisions_grant_rev_uq. Not a server error: tell it to retry.
-    if (pgErrorInfo(err).code === '23505') {
+    if (isPgUniqueViolation(err, 'wisp_grant_revisions_grant_rev_uq')) {
       throw new WispGrantError('not_active', 'This Wisp grant changed while refreshing; try again.');
     }
     throw err;

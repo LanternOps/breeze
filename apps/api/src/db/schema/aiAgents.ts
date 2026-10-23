@@ -202,8 +202,8 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // Wisp W02 (Wisp design §4.3): the delegation grant + the revision this run
   // was admitted under. Both NULL for every non-Wisp run, both set otherwise
   // (`ai_agent_runs_grant_link_chk`). FKs (grant_revision_id, grant_id) ->
-  // wisp_grant_revisions(id, grant_id) and grant_id -> wisp_grants(id), both
-  // ON DELETE RESTRICT, are SQL-ONLY
+  // wisp_grant_revisions(id, grant_id) (ON DELETE SET NULL, erasure only) and
+  // grant_id -> wisp_grants(id) (ON DELETE RESTRICT) are SQL-ONLY
   // (migrations/2027-01-04-100100-wisp-grants.sql), like `taskId` above.
   grantId: uuid('grant_id'),
   grantRevisionId: uuid('grant_revision_id'),

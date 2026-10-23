@@ -646,6 +646,24 @@ describe('erasure with grants present', () => {
     expect(revs).toEqual([]);
   });
 
+  it('cascadeDeleteOrg succeeds with a run pinned to the org-scoped grant (revision FK clears, pin guard allows the RI action)', async () => {
+    const t = await seedTenant();
+    const g = await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgId: t.org.id, orgIds: [t.org.id] });
+    const [agent] = await withSystemDbAccessContext(() => db.insert(aiAgents).values({
+      partnerId: t.partner.id, orgId: null, kind: 'triage', name: 'Triage', enabled: true, mode: 'shadow', model: null,
+      toolAllowlist: [], protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+      limits: {}, triggers: { alertSeverities: ['critical'] }, recipients: { userIds: [], roleIds: [] }, instructions: null,
+      cooldownSeconds: 0, createdBy: t.admin.id,
+    } as never).returning({ id: aiAgents.id }));
+    await withDbAccessContext(SYSTEM_CTX, () => db.insert(aiAgentRuns).values({
+      agentId: agent!.id, orgId: t.org.id, triggerKind: 'manual', dedupeKey: `x:${randomUUID()}`, modeAtStart: 'shadow',
+      policySnapshot: {} as never, status: 'completed', grantId: g.grantId, grantRevisionId: g.revisionId,
+    } as never));
+    await expect(cascadeDeleteOrg(t.org.id, t.admin.id)).resolves.toBeDefined();
+    const left = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(wispGrants).where(eq(wispGrants.id, g.grantId)));
+    expect(left).toEqual([]);
+  });
+
   it('cascadeDeletePartner erases grants and revisions without tripping the FK cycle', async () => {
     const t = await seedTenant();
     await seedGrant({ partnerId: t.partner.id, grantorUserId: t.grantor.id, orgIds: [t.org.id] });

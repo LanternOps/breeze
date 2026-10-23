@@ -291,7 +291,7 @@ describe('refreshGrant', () => {
   });
 
   it('a concurrent refresh that loses the revision race is a 409-class not_active, not a 500', async () => {
-    h.results.push([grantRow()], [{ maxRevision: 1 }], Object.assign(new Error('dup'), { cause: { code: '23505' } }));
+    h.results.push([grantRow()], [{ maxRevision: 1 }], Object.assign(new Error('dup'), { cause: { code: '23505', constraint_name: 'wisp_grant_revisions_grant_rev_uq' } }));
     await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' })).rejects.toMatchObject({ code: 'not_active' });
   });
 
