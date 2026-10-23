@@ -1332,17 +1332,17 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Entrez au moins un appareil ID",
-      "createScan": "Impossible de créer un scan"
+      "createScan": "Impossible de créer un scan",
+      "devicesRequired": "Sélectionnez au moins un appareil",
+      "devicesNotReady": "La liste des appareils est encore en cours de chargement ou est incomplète. Attendez la fin du chargement, puis réessayez."
     },
     "title": "Créer un balayage",
     "form": {
       "policyOptional": "Politique (optionnelle)",
       "noPolicy": "Pas de politique (configuration manuelle)",
-      "deviceIds": "IDs des appareils",
-      "deviceIdsHelp": "Un UUID par ligne, ou séparé par virgule.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Classes de détection"
+      "detectionClasses": "Classes de détection",
+      "devices": "Appareils",
+      "devicesHelp": "Choisissez les appareils à analyser."
     },
     "actions": {
       "creating": "Création…",
@@ -1407,6 +1407,10 @@
       "showingSearch": "Affichage de {{visible}} sur {{pageCount}} sur cette page ({{total}} au total)",
       "showingTotal": "Affichage de {{visible}} résultats sur {{total}}",
       "pageOf": "Page {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risque accepté",
+      "markedFalsePositive": "Marqué comme faux positif"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1449,17 @@
       "detectionClasses": "Classes de détection",
       "scheduleType": "Type de calendrier",
       "intervalMinutes": "Intervalle (minutes)",
-      "cronExpression": "Expression cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expression cron (UTC)",
+      "cronNextRun": "Prochaine exécution (votre heure locale) : {{time}}"
     },
     "schedule": {
       "manual": "Manuel",
       "interval": "Intervalle",
       "cron": "Cron",
-      "everyMinutes": "Chaque {{minutes}}m"
+      "everyMinutes": "Chaque {{minutes}}m",
+      "paused": "En pause",
+      "pausedTitle": "La planification est désactivée pour cette politique ; elle ne s'exécutera pas automatiquement"
     },
     "table": {
       "name": "Nom",
@@ -2282,5 +2289,8 @@
       "awaitingEvaluation": "En attente d'évaluation",
       "vendorOrgMismatch": "L'éditeur signale une autre organisation"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Vous n'avez pas accès à cette organisation"
   }
 }

@@ -1332,17 +1332,17 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Informe pelo menos um ID de dispositivo",
-      "createScan": "Falha ao criar varredura"
+      "createScan": "Falha ao criar varredura",
+      "devicesRequired": "Selecione pelo menos um dispositivo",
+      "devicesNotReady": "A lista de dispositivos ainda está carregando ou está incompleta. Aguarde a conclusão e tente novamente."
     },
     "title": "Criar varredura",
     "form": {
       "policyOptional": "Política (opcional)",
       "noPolicy": "Sem política (configuração manual)",
-      "deviceIds": "IDs de dispositivos",
-      "deviceIdsHelp": "Um UUID por linha ou separados por vírgula.",
-      "deviceIdsPlaceholder": "uuid-dispositivo-1\nuuid-dispositivo-2",
-      "detectionClasses": "Classes de detecção"
+      "detectionClasses": "Classes de detecção",
+      "devices": "Dispositivos",
+      "devicesHelp": "Escolha os dispositivos a serem verificados."
     },
     "actions": {
       "creating": "Criando...",
@@ -1407,6 +1407,10 @@
       "showingSearch": "Mostrando {{visible}} de {{pageCount}} nesta página ({{total}} no total)",
       "showingTotal": "Mostrando {{visible}} de {{total}} achados",
       "pageOf": "Página {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risco aceito",
+      "markedFalsePositive": "Marcado como falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1449,17 @@
       "detectionClasses": "Classes de detecção",
       "scheduleType": "Tipo de agendamento",
       "intervalMinutes": "Intervalo (minutos)",
-      "cronExpression": "Expressão cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expressão cron (UTC)",
+      "cronNextRun": "Próxima execução (seu horário local): {{time}}"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Intervalo",
       "cron": "Cron",
-      "everyMinutes": "A cada {{minutes}}m"
+      "everyMinutes": "A cada {{minutes}}m",
+      "paused": "Pausado",
+      "pausedTitle": "O agendamento está desativado para esta política, então ela não será executada automaticamente"
     },
     "table": {
       "name": "Nome",
@@ -2282,5 +2289,8 @@
       "awaitingEvaluation": "Aguardando avaliação",
       "vendorOrgMismatch": "O fornecedor informa outra organização"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Você não tem acesso a esta organização"
   }
 }

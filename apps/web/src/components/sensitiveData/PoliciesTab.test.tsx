@@ -58,6 +58,74 @@ beforeEach(() => {
   toastMock.mockReset();
 });
 
+function routeList(policies: unknown[], listStatus = 200) {
+  fetchMock.mockImplementation(async (rawUrl: string | URL | Request, init?: RequestInit) => {
+    const url = String(rawUrl);
+    if (!init?.method && url === '/sensitive-data/policies') {
+      return listStatus === 200 ? jsonRes({ data: policies }) : jsonRes({ error: 'denied' }, listStatus);
+    }
+    return jsonRes({ success: true });
+  });
+}
+
+describe('sensitive-data PoliciesTab (#9697, #9683)', () => {
+  it('shows the no-access state on a 403', async () => {
+    routeList([], 403);
+    render(<PoliciesTab />);
+    expect(await screen.findByText(/You don't have access to this organization/i)).toBeInTheDocument();
+    expect(screen.queryByText('Failed to fetch policies')).not.toBeInTheDocument();
+  });
+
+  it('labels the cron field UTC and previews the next run', async () => {
+    routeList([{ ...POLICY, schedule: { type: 'cron', cron: '0 2 * * *' } }]);
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('0 2 * * * (UTC)');
+    fireEvent.click(row.querySelectorAll('button')[1]); // edit
+
+    expect(await screen.findByText('Cron Expression (UTC)')).toBeInTheDocument();
+    expect(screen.getByTestId('sensitive-policy-cron-next-run')).toHaveTextContent(/Next run/);
+  });
+
+  it('shows a paused badge when schedule.enabled is false', async () => {
+    routeList([{ ...POLICY, schedule: { type: 'cron', cron: '0 2 * * *', enabled: false } }]);
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('Paused');
+  });
+
+  it('does not show a paused badge for a running schedule', async () => {
+    routeList([{ ...POLICY, schedule: { type: 'cron', cron: '0 2 * * *' } }]);
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    expect(row).not.toHaveTextContent('Paused');
+  });
+
+  it('preserves schedule.enabled=false when the policy is edited and saved', async () => {
+    routeList([{ ...POLICY, schedule: { type: 'cron', cron: '0 2 * * *', enabled: false } }]);
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    fireEvent.click(row.querySelectorAll('button')[1]); // edit
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+    expect(JSON.parse(String(put[1]?.body)).schedule).toMatchObject({ type: 'cron', cron: '0 2 * * *', enabled: false });
+  });
+
+  it('does not invent schedule.enabled for a policy that never had it', async () => {
+    routeList([{ ...POLICY, schedule: { type: 'cron', cron: '0 2 * * *' } }]);
+    render(<PoliciesTab />);
+    const row = (await screen.findByText('Find credentials')).closest('tr') as HTMLElement;
+    fireEvent.click(row.querySelectorAll('button')[1]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(true));
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')!;
+    expect(JSON.parse(String(put[1]?.body)).schedule).not.toHaveProperty('enabled');
+  });
+});
+
 describe('sensitive-data PoliciesTab delete confirmation (#3531)', () => {
   it('delete failure: toasts, keeps the dialog open, does not refetch the list', async () => {
     routeFetch({ status: 500, payload: { error: 'Delete blew up' } });

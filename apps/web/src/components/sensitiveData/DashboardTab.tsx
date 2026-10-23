@@ -4,7 +4,8 @@ import { ShieldAlert, AlertTriangle, CheckCircle, Activity } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { useStableT } from '@/lib/i18n/useStableT';
-import { RISK_CHART_COLORS, DATA_TYPE_CHART_COLORS } from './constants';
+import { RISK_CHART_COLORS, DATA_TYPE_CHART_COLORS, dataTypeLabel } from './constants';
+import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
 
 type DashboardData = {
   totals: {
@@ -30,7 +31,7 @@ function StatCard({ label, value, icon, accent }: { label: string; value: number
   );
 }
 
-function BarChart({ data, colorMap, title }: { data: Record<string, number>; colorMap: Record<string, string>; title: string }) {
+function BarChart({ data, colorMap, title, labelFor }: { data: Record<string, number>; colorMap: Record<string, string>; title: string; labelFor?: (key: string) => string }) {
   const { t } = useTranslation('security');
   const entries = Object.entries(data);
   const max = Math.max(...entries.map(([, v]) => v), 1);
@@ -47,7 +48,7 @@ function BarChart({ data, colorMap, title }: { data: Record<string, number>; col
         {entries.map(([key, count]) => (
           <div key={key}>
             <div className="flex items-center justify-between text-sm">
-              <span className="capitalize">{key.replace('_', ' ')}</span>
+              <span className={labelFor ? undefined : 'capitalize'}>{labelFor ? labelFor(key) : key.replace('_', ' ')}</span>
               <span className="font-medium">{count}</span>
             </div>
             <div className="mt-1 h-2 w-full rounded-full bg-muted">
@@ -122,13 +123,23 @@ export default function DashboardTab() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [forbidden, setForbidden] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     async function fetch() {
       try {
         setLoading(true);
+        setError(undefined);
+        setForbidden(false);
         const res = await fetchWithAuth('/sensitive-data/dashboard');
+        if (res.status === 403) {
+          if (!cancelled) {
+            setData(null);
+            setForbidden(true);
+          }
+          return;
+        }
         if (!res.ok) {
           throw new Error(
             stableT('sensitiveDataDashboardTab.errors.fetchDashboard', {
@@ -140,6 +151,7 @@ export default function DashboardTab() {
         if (!cancelled) setData(json.data);
       } catch (err) {
         if (!cancelled) {
+          setData(null);
           setError(
             err instanceof Error
               ? err.message
@@ -162,6 +174,8 @@ export default function DashboardTab() {
     );
   }
 
+  if (forbidden) return <SensitiveDataAccessDenied />;
+
   if (error) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
@@ -182,7 +196,7 @@ export default function DashboardTab() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <BarChart data={data.byDataType} colorMap={DATA_TYPE_CHART_COLORS} title={t('sensitiveDataDashboardTab.charts.findingsByDataType', { defaultValue: 'Findings by Data Type' })} />
+        <BarChart labelFor={dataTypeLabel} data={data.byDataType} colorMap={DATA_TYPE_CHART_COLORS} title={t('sensitiveDataDashboardTab.charts.findingsByDataType', { defaultValue: 'Findings by Data Type' })} />
         <PieChart data={data.byRisk} colorMap={RISK_CHART_COLORS} title={t('sensitiveDataDashboardTab.charts.riskDistribution', { defaultValue: 'Risk Distribution' })} />
       </div>
     </div>

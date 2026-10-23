@@ -1332,17 +1332,17 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Geben Sie mindestens eine Geräte-ID ein",
-      "createScan": "Scan konnte nicht erstellt werden"
+      "createScan": "Scan konnte nicht erstellt werden",
+      "devicesRequired": "Wählen Sie mindestens ein Gerät aus",
+      "devicesNotReady": "Die Geräteliste wird noch geladen oder ist unvollständig. Warten Sie, bis sie fertig ist, und versuchen Sie es erneut."
     },
     "title": "Scan erstellen",
     "form": {
       "policyOptional": "Richtlinie (optional)",
       "noPolicy": "Keine Richtlinie (manuelle Konfiguration)",
-      "deviceIds": "Geräte-IDs",
-      "deviceIdsHelp": "Ein UUID pro Zeile oder durch Kommas getrennt.",
-      "deviceIdsPlaceholder": "Geräte-UUID-1\nGeräte-UUID-2",
-      "detectionClasses": "Erkennungsklassen"
+      "detectionClasses": "Erkennungsklassen",
+      "devices": "Geräte",
+      "devicesHelp": "Wählen Sie die zu scannenden Geräte aus."
     },
     "actions": {
       "creating": "Erstellen...",
@@ -1407,6 +1407,10 @@
       "showingSearch": "Es werden {{visible}} von {{pageCount}} auf dieser Seite angezeigt ({{total}} insgesamt)",
       "showingTotal": "Zeigt {{visible}} von {{total}} Befunden",
       "pageOf": "Seite {{page}} von {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risiko akzeptiert",
+      "markedFalsePositive": "Als Fehlalarm markiert"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1449,17 @@
       "detectionClasses": "Erkennungsklassen",
       "scheduleType": "Zeitplantyp",
       "intervalMinutes": "Intervall (Minuten)",
-      "cronExpression": "Cron-Ausdruck",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron-Ausdruck (UTC)",
+      "cronNextRun": "Nächste Ausführung (Ihre Ortszeit): {{time}}"
     },
     "schedule": {
       "manual": "Manuell",
       "interval": "Intervall",
       "cron": "Cron",
-      "everyMinutes": "Alle {{minutes}}m"
+      "everyMinutes": "Alle {{minutes}}m",
+      "paused": "Pausiert",
+      "pausedTitle": "Die Zeitplanung ist für diese Richtlinie deaktiviert, sie wird nicht automatisch ausgeführt"
     },
     "table": {
       "name": "Name",
@@ -2282,5 +2289,8 @@
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Sie haben keinen Zugriff auf diese Organisation"
   }
 }

@@ -1332,17 +1332,17 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Enter at least one device ID",
-      "createScan": "Failed to create scan"
+      "createScan": "Failed to create scan",
+      "devicesRequired": "Select at least one device",
+      "devicesNotReady": "The device list is still loading or incomplete. Wait for it to finish, then try again."
     },
     "title": "Create Scan",
     "form": {
       "policyOptional": "Policy (optional)",
       "noPolicy": "No policy (manual config)",
-      "deviceIds": "Device IDs",
-      "deviceIdsHelp": "One UUID per line, or comma-separated.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Detection Classes"
+      "detectionClasses": "Detection Classes",
+      "devices": "Devices",
+      "devicesHelp": "Choose the devices to scan."
     },
     "actions": {
       "creating": "Creating...",
@@ -1407,6 +1407,10 @@
       "showingSearch": "Showing {{visible}} of {{pageCount}} on this page ({{total}} total)",
       "showingTotal": "Showing {{visible}} of {{total}} findings",
       "pageOf": "Page {{page}} of {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risk accepted",
+      "markedFalsePositive": "Marked as false positive"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1449,17 @@
       "detectionClasses": "Detection Classes",
       "scheduleType": "Schedule Type",
       "intervalMinutes": "Interval (minutes)",
-      "cronExpression": "Cron Expression",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron Expression (UTC)",
+      "cronNextRun": "Next run (your local time): {{time}}"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Interval",
       "cron": "Cron",
-      "everyMinutes": "Every {{minutes}}m"
+      "everyMinutes": "Every {{minutes}}m",
+      "paused": "Paused",
+      "pausedTitle": "Scheduling is turned off for this policy, so it will not run automatically"
     },
     "table": {
       "name": "Name",
@@ -2282,5 +2289,8 @@
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "You don't have access to this organization"
   }
 }
