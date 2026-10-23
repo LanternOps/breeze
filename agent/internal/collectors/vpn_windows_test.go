@@ -5,6 +5,7 @@ package collectors
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestWindowsVPNServiceQuery runs the real service query (#8763). It pins the
@@ -13,8 +14,13 @@ import (
 // would make vpnServiceSignals drop every provider's service signal — and the
 // output really is "Name<TAB>DisplayName" for running services only.
 // Selected by name in .github/workflows/ci.yml (Windows collector job).
+// vpnServiceTestTimeout is test-only: tolerates PowerShell cold start on CI.
+const vpnServiceTestTimeout = 90 * time.Second
+
 func TestWindowsVPNServiceQuery(t *testing.T) {
-	out, err := windowsVPNServiceListing()
+	// This test exercises a real PowerShell on purpose; the production 10 s
+	// deadline flaked on cold hosted runners (#9814), so allow a generous one.
+	out, err := windowsVPNServiceListingWithTimeout(vpnServiceTestTimeout)
 	if err != nil {
 		t.Fatalf("service query failed (exit status must be 0 without Zscaler drivers): %v", err)
 	}
