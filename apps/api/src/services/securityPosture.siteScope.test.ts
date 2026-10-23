@@ -180,7 +180,7 @@ describe('getSecurityPostureTrend — device weighting (#9643)', () => {
     state.rows = [row(100, 90), row(0, 10)];
     const points = await getSecurityPostureTrend({ orgIds: [ORG], days: 7 });
 
-    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(selection).toHaveProperty('devicesAudited', securityPostureOrgSnapshots.devicesAudited);
     expect(points.map((p) => p.overall)).toEqual([90]);
   });
@@ -189,7 +189,7 @@ describe('getSecurityPostureTrend — device weighting (#9643)', () => {
     state.rows = [row(100, 90), row(0, 10)];
     const points = await getSecurityPostureTrend({ orgIds: [ORG], siteIds: [SITE], days: 7 });
 
-    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const selection = (db.select as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     const compiled = dialect.sqlToQuery(selection.devicesAudited as never);
     expect(compiled.sql).toContain('count(*)');
     expect(points.map((p) => p.overall)).toEqual([90]);
