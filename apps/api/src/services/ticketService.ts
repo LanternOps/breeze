@@ -36,6 +36,8 @@ import {
   loadTicketCalendar,
   slaClockRowOf,
 } from './ticketSlaDeadlines';
+import { resolveBusinessCalendar } from './businessCalendars/resolve';
+import { calendarPatchForOrgMove } from './businessCalendars/reresolve';
 
 export type { OpenWindow, TicketWriteMode } from './ticketWriteMode';
 
@@ -1263,9 +1265,16 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
 
   // #8973 W3 (spec §4.3): the deadlines are anchored on created_at, so the
   // insert carries an explicit created_at (= updated_at, as before) instead of
-  // the column default, and the stored due/warn are computed from it. W4
-  // resolves and snapshots the org's calendar here; W3 has none (24×7).
+  // the column default, and the stored due/warn are computed from it.
+  // W4 (spec §4.2): the org's business calendar is resolved on the caller's
+  // connection (org override → partner default → none, Gate B1) and its
+  // current revision is snapshotted on the ticket; later hours edits apply to
+  // new tickets only. An imported ticket carries null targets (§4.3 of the
+  // import spec) and keeps the 24×7 snapshot.
   const createdAt = importMode ? importMode.at : new Date();
+  const slaCalendarRevisionId = importMode
+    ? null
+    : (await resolveBusinessCalendar(db, { partnerId: org.partnerId, orgId: input.orgId })).revisionId;
   const slaDeadlines = computeSlaDeadlines(
     slaClockRowOf({
       createdAt,
@@ -1277,7 +1286,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
       resolvedAt: null,
       slaBreachReason: null,
     }),
-    await loadTicketCalendar(db, null),
+    await loadTicketCalendar(db, slaCalendarRevisionId),
   );
 
   const insertValues = {
@@ -1302,6 +1311,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     category: null,
     responseSlaMinutes: effectiveSla.responseMinutes,
     resolutionSlaMinutes: effectiveSla.resolutionMinutes,
+    slaCalendarRevisionId,
     workKind,
     ticketType,
     // Provenance keys follow the update path's field names (camelCase).
@@ -1685,7 +1695,7 @@ export async function changeTicketStatus(
   // or close out of a pause still recomputes resolution with the accrued
   // pause before resolved_at freezes it.
   if ((wasPaused && !willBePaused) || reopening) {
-    const calendar = await loadTicketCalendar(db, null);
+    const calendar = await loadTicketCalendar(db, ticket.slaCalendarRevisionId);
     const clock = slaClockRowOf(ticket);
     const accrued = wasPaused && !willBePaused ? accruePauseEnd(clock, calendar, now) : null;
     if (accrued) patch.slaPausedBusinessMinutes = accrued.slaPausedBusinessMinutes;
@@ -2190,7 +2200,7 @@ export async function updateTicketFields(
       ...clock,
       responseSlaMinutes: 'responseSlaMinutes' in patch ? patch.responseSlaMinutes ?? null : clock.responseSlaMinutes,
       resolutionSlaMinutes: 'resolutionSlaMinutes' in patch ? patch.resolutionSlaMinutes ?? null : clock.resolutionSlaMinutes,
-    }, await loadTicketCalendar(db, null)));
+    }, await loadTicketCalendar(db, ticket.slaCalendarRevisionId)));
   }
   if (requesterChanged) Object.assign(patch, requesterPatch);
   if (budgetChanged) Object.assign(patch, budgetPatch);
@@ -2498,7 +2508,7 @@ export async function addTicketComment(
             firstResponseAt: sql`LEAST(COALESCE(${tickets.firstResponseAt}, ${at}::timestamp), ${at}::timestamp)`,
             updatedAt: importUpdatedAt(importMode.at),
             // #8973: every first-response writer freezes through freezeResponse.
-            ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(tx as unknown as typeof db, null), importMode.at),
+            ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(tx as unknown as typeof db, ticket.slaCalendarRevisionId), importMode.at),
           } as unknown as Partial<typeof tickets.$inferInsert>)
           .where(eq(tickets.id, ticketId));
         stamped = !ticket.firstResponseAt;
@@ -2510,7 +2520,7 @@ export async function addTicketComment(
           firstResponseAt: respondedAt,
           updatedAt: respondedAt,
           // #8973: the response deadline freezes in the same statement.
-          ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(tx as unknown as typeof db, null), respondedAt),
+          ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(tx as unknown as typeof db, ticket.slaCalendarRevisionId), respondedAt),
         })
         .where(eq(tickets.id, ticketId));
       stamped = true;
@@ -2922,6 +2932,7 @@ export async function applyAiFieldUpdates(
       slaPausedBusinessMinutes: tickets.slaPausedBusinessMinutes,
       resolvedAt: tickets.resolvedAt,
       slaBreachReason: tickets.slaBreachReason,
+      slaCalendarRevisionId: tickets.slaCalendarRevisionId,
     })
     .from(tickets)
     .where(and(eq(tickets.id, ticketId), eq(tickets.orgId, orgId)))
@@ -3025,7 +3036,7 @@ export async function applyAiFieldUpdates(
         ...slaClockRowOf({ ...ticket, firstResponseAt: null }),
         responseSlaMinutes: 'responseSlaMinutes' in restamp ? restamp.responseSlaMinutes ?? null : ticket.responseSlaMinutes,
         resolutionSlaMinutes: 'resolutionSlaMinutes' in restamp ? restamp.resolutionSlaMinutes ?? null : ticket.resolutionSlaMinutes,
-      }, await loadTicketCalendar(db, null));
+      }, await loadTicketCalendar(db, ticket.slaCalendarRevisionId));
       const deadlineColumns = {
         responseSlaMinutes: ['responseDueAt', 'responseWarnAt'],
         resolutionSlaMinutes: ['resolutionDueAt', 'resolutionWarnAt'],
@@ -3164,7 +3175,7 @@ export async function sendTicketDraft(
         firstResponseAt: respondedAt,
         updatedAt: respondedAt,
         // #8973: the response deadline freezes in the same statement.
-        ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(db, null), respondedAt),
+        ...freezeResponse(slaClockRowOf(ticket), await loadTicketCalendar(db, ticket.slaCalendarRevisionId), respondedAt),
       })
       .where(eq(tickets.id, ticketId));
     firstResponseStamped = true;
@@ -3950,9 +3961,13 @@ export async function moveTicketOrg(
     // the person stays with their organization, and the ticket keeps the
     // submitter name/email SNAPSHOT, so "who filed this" survives the move even
     // though the link to the live contact row does not.
+    // #8973 W4 (spec §4.3 "Move-org"): re-resolve the business calendar for
+    // the TARGET org and recompute the unfrozen deadlines on it, in this same
+    // statement. A source-org calendar is never left referenced.
+    const calendarPatch = await calendarPatchForOrgMove(tx, ticket, { orgId: targetOrgId, partnerId: targetMeta.partnerId });
     const [row] = await tx
       .update(tickets)
-      .set({ orgId: targetOrgId, deviceId: null, requesterContactId: null, updatedAt: new Date() })
+      .set({ orgId: targetOrgId, deviceId: null, requesterContactId: null, ...calendarPatch, updatedAt: new Date() })
       .where(and(
         eq(tickets.id, ticketId),
         eq(tickets.orgId, ticket.orgId),

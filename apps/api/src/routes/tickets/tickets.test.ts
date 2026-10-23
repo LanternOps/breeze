@@ -195,7 +195,9 @@ vi.mock('../../db/schema', () => ({
     deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type',
     // #8973 W3 stored deadlines.
     responseDueAt: 'response_due_at', resolutionDueAt: 'resolution_due_at',
-    responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at'
+    responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at',
+    // #8973 W4 calendar snapshot.
+    slaCalendarRevisionId: 'sla_calendar_revision_id'
   },
   ticketStatuses: { id: 'id', name: 'name', color: 'color' },
   ticketComments: { ticketId: 'ticketId', deletedAt: 'deletedAt', createdAt: 'createdAt' },
@@ -2468,5 +2470,63 @@ describe('stored SLA deadlines in the staff queue (#8973)', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data).toMatchObject({ responseDueAt: '2026-06-11T11:00:00.000Z', slaBusinessMinutesRemaining: null });
+  });
+});
+
+// #8973 W4 (spec §4.3 readers 5–6): business minutes remaining, computed
+// server-side only when the ticket has a calendar revision; the page's
+// revisions are loaded ONCE per distinct revision id (no per-row query).
+const { loadTicketCalendarsMock } = vi.hoisted(() => ({ loadTicketCalendarsMock: vi.fn() }));
+vi.mock('../../services/ticketSlaDeadlines', async () => {
+  const actual = await vi.importActual<typeof import('../../services/ticketSlaDeadlines')>('../../services/ticketSlaDeadlines');
+  return { ...actual, loadTicketCalendars: loadTicketCalendarsMock };
+});
+
+describe('slaBusinessMinutesRemaining (#8973 W4)', () => {
+  const NY = {
+    revision: { timezone: 'America/New_York', intervals: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, startMinute: 540, endMinute: 1020 })) },
+    holidays: [],
+  };
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Monday 10:00 New York.
+    vi.setSystemTime(new Date('2030-06-03T14:00:00Z'));
+    loadTicketCalendarsMock.mockReset().mockImplementation(async (_db: unknown, ids: Array<string | null>) =>
+      new Map(ids.filter((id): id is string => id === 'rev-ny').map((id) => [id, NY])));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const row = (id: string, rev: string | null) => ({
+    id, internalNumber: id, subject: 'Printer', slaCalendarRevisionId: rev,
+    firstResponseAt: null, resolvedAt: null, slaBreachReason: null,
+    responseDueAt: '2030-06-03T15:00:00.000Z', resolutionDueAt: '2030-06-04T17:00:00.000Z',
+    responseWarnAt: null, resolutionWarnAt: null,
+  });
+
+  it('the list fills it only for rows with a revision, from one batch load', async () => {
+    dbSelectMock.mockResolvedValue([row('t-1', 'rev-ny'), row('t-2', null), row('t-3', 'rev-ny')]);
+    const res = await makeApp().request('/tickets');
+    const body = await res.json();
+    expect(loadTicketCalendarsMock).toHaveBeenCalledTimes(1);
+    expect(loadTicketCalendarsMock.mock.calls[0]![1]).toEqual(['rev-ny', null, 'rev-ny']);
+    // Mon 10:00 → response Mon 11:00 = 60; resolution Tue 13:00 = 420 + 240.
+    expect(body.data[0].slaBusinessMinutesRemaining).toEqual({ response: 60, resolution: 660 });
+    expect(body.data[1].slaBusinessMinutesRemaining).toBeNull();
+    expect(body.data[2].slaBusinessMinutesRemaining).toEqual({ response: 60, resolution: 660 });
+  });
+
+  it('the detail payload fills it when the ticket has a revision', async () => {
+    dbSelectMock
+      .mockResolvedValueOnce([{ ...STUB_TICKET, ...row(TICKET_ID, 'rev-ny') }])
+      .mockResolvedValue([]);
+    const res = await makeApp().request(`/tickets/${TICKET_ID}`);
+    const body = await res.json();
+    expect(body.data.slaBusinessMinutesRemaining).toEqual({ response: 60, resolution: 660 });
+  });
+
+  it('a revision the reader cannot load reads null, never a wall-clock guess', async () => {
+    dbSelectMock.mockResolvedValue([row('t-1', 'rev-gone')]);
+    const res = await makeApp().request('/tickets');
+    expect((await res.json()).data[0].slaBusinessMinutesRemaining).toBeNull();
   });
 });
