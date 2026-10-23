@@ -1076,7 +1076,7 @@
         },
         "client_profitability": {
           "name": "Lucratividade por cliente",
-          "description": "Receita faturada por cliente no período, por fonte (recorrente, projetos, produtos, outros), com as horas registradas e uma estimativa opcional do custo de mão de obra a partir de uma única taxa horária. Os valores que usam essa taxa são identificados como estimativas. Um conjunto de totais por moeda, nunca convertido."
+          "description": "Receita faturada por cliente no período, por fonte (recorrente, mão de obra, produtos, IA, outros), com as horas registradas e uma estimativa opcional do custo de mão de obra a partir de uma única taxa horária. Os valores que usam essa taxa são identificados como estimativas. Um conjunto de totais por moeda, nunca convertido."
         },
         "backup_status": {
           "name": "Relatório de status de backup",

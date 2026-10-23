@@ -198,7 +198,7 @@ describe('buildReportPdf: client_profitability', () => {
     vi.mocked(autoTable).mockClear();
     const src = (category: 'recurring' | 'labor' | 'product' | 'ai' | 'other') => ({
       category, currencyCode: 'USD', revenue: '100.00', costBearingRevenue: '80.00', cost: '50.00',
-      grossMargin: '30.00', marginPct: 0.375, costCoveragePct: 0.8, unknownCostRevenue: '20.00', linesMissingCost: 1,
+      grossMargin: '30.00', marginPct: 0.375, costCoveragePct: 0.8, unknownCostRevenue: '20.00', linesMissingCost: 1, partialCostBundles: 0,
     });
     const text = build(partnerSummary({
       groupBy: 'source', orgs: [],

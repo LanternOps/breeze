@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -106,6 +107,49 @@ describe('ClientProfitabilityOptionsFields', () => {
     render(<ClientProfitabilityOptionsFields value={DEFAULT_CLIENT_PROFITABILITY_OPTIONS} onChange={onChange} />);
     await userEvent.setup().click(screen.getByTestId('client-profitability-labor-enabled'));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ laborCostEnabled: true, laborCostCurrency: 'EUR' }));
+  });
+
+  it('enabled before the partner currency loads: the currency follows it once it resolves', async () => {
+    function Harness() {
+      const [v, setV] = useState(DEFAULT_CLIENT_PROFITABILITY_OPTIONS);
+      return <ClientProfitabilityOptionsFields value={v} onChange={setV} />;
+    }
+    const { rerender } = render(<Harness />);
+    await userEvent.setup().click(screen.getByTestId('client-profitability-labor-enabled'));
+    expect(screen.getByTestId('client-profitability-labor-currency')).toHaveValue('USD');
+    partnerCurrency = { currency: 'EUR', loading: false, failed: false, retry: () => {} };
+    rerender(<Harness />);
+    expect(screen.getByTestId('client-profitability-labor-currency')).toHaveValue('EUR');
+  });
+
+  it('a currency the user picked before the partner currency resolved is never overwritten', async () => {
+    function Harness() {
+      const [v, setV] = useState(DEFAULT_CLIENT_PROFITABILITY_OPTIONS);
+      return <ClientProfitabilityOptionsFields value={v} onChange={setV} />;
+    }
+    const { rerender } = render(<Harness />);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('client-profitability-labor-enabled'));
+    await user.selectOptions(screen.getByTestId('client-profitability-labor-currency'), 'GBP');
+    partnerCurrency = { currency: 'EUR', loading: false, failed: false, retry: () => {} };
+    rerender(<Harness />);
+    expect(screen.getByTestId('client-profitability-labor-currency')).toHaveValue('GBP');
+  });
+
+  it('a stored rate is never re-seeded when the partner currency resolves later', () => {
+    function Harness() {
+      const [v, setV] = useState(enabled('45', 'USD'));
+      return <ClientProfitabilityOptionsFields value={v} onChange={setV} />;
+    }
+    const { rerender } = render(<Harness />);
+    partnerCurrency = { currency: 'EUR', loading: false, failed: false, retry: () => {} };
+    rerender(<Harness />);
+    expect(screen.getByTestId('client-profitability-labor-currency')).toHaveValue('USD');
+  });
+
+  it('a stored currency outside the supported list falls back to the default instead of passing through', () => {
+    const options = clientProfitabilityOptionsFromConfig({ laborCostPerHour: { amount: '45', currencyCode: 'XYZ' } });
+    expect(options).toMatchObject({ laborCostEnabled: true, laborCostAmount: '45', laborCostCurrency: 'USD' });
   });
 
   it('an existing stored currency is left alone when the partner currency differs', () => {

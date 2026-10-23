@@ -274,7 +274,7 @@ const defaultTemplates: ReportTemplate[] = [
     id: 'client_profitability',
     name: 'Client profitability',
     description:
-      'Billed revenue per client for the period by source (recurring, projects, products, other), with the hours logged against it and an optional labor-cost estimate from one blended hourly rate. Figures using that rate are labelled as estimates. One set of totals per currency, never converted.',
+      'Billed revenue per client for the period by source (recurring, labor, product, AI, other), with the hours logged against it and an optional labor-cost estimate from one blended hourly rate. Figures using that rate are labelled as estimates. One set of totals per currency, never converted.',
     defaults: {
       name: 'Client profitability',
       type: 'client_profitability',

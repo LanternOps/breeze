@@ -43,6 +43,9 @@ import {
   LABOR_ESTIMATE_LABEL,
   LABOR_RATE_CURRENCY_NOTE,
   MULTI_CURRENCY_HOURS_NOTE,
+  NO_HOURS_NOTE,
+  PARTNER_RATE_SCOPE_NOTE,
+  partialBundleNote,
 } from './clientProfitabilityReport';
 import { NO_ORGS_NOTE, PARTNER_ORG_LIST_NOTE, SITE_RESTRICTED_NOTE } from './common';
 
@@ -207,13 +210,69 @@ describe('generateClientProfitabilityReport', () => {
     expect(s.notes).toContain(MULTI_CURRENCY_HOURS_NOTE);
   });
 
-  it('zero hours → effective rate null; the labor estimate is a measured 0.00', async () => {
+  it('zero hours → effective rate null and NO labor estimate (unlogged time is not zero labor), with a note', async () => {
     queueExecute(NAMES, WORKED_FOLD, []);
     const s = await run({ laborCostPerHour: { amount: '45.00', currencyCode: 'USD' } });
     expect(s.orgs[0]!.hours.total).toBe(0);
     expect(s.orgs[0]!.money[0]).toMatchObject({
-      effectiveServiceRate: null, revenuePerHour: null, estimatedLaborCost: '0.00', estimatedContributionAfterLabor: '1200.00',
+      effectiveServiceRate: null, revenuePerHour: null, estimatedLaborCost: null, estimatedContributionAfterLabor: null,
     });
+    expect(s.byCurrency[0]).toMatchObject({ estimatedLaborCost: null, estimatedContributionAfterLabor: null });
+    expect(s.notes).toContain(NO_HOURS_NOTE);
+  });
+
+  it('partner byCurrency: estimate figures sum the attributed clients when every client in the currency is attributed', async () => {
+    queueExecute(NAMES, [
+      ...WORKED_FOLD,
+      fold(ORG_B, 'USD', 'product', { revenue: '100.00', cbr: '100.00', cost: '40.00' }),
+      fold(ORG_B, 'USD', 'labor', { revenue: '300.00', missing: 2 }),
+    ], [...WORKED_HOURS, hours(ORG_B, 'USD', 120)]);
+    const s = await run({ laborCostPerHour: { amount: '45.00', currencyCode: 'USD' } }, partnerScope());
+    // Acme: 750.00 (worked fixture). Globex: 60 + 300 − 2 h × 45 = 270.00.
+    expect(s.orgs.find((o) => o.orgId === ORG_B)!.money[0]!.estimatedContributionAfterLabor).toBe('270.00');
+    expect(s.byCurrency[0]).toMatchObject({
+      revenue: '1900.00', grossMargin: '260.00', estimatedLaborCost: '540.00', estimatedContributionAfterLabor: '1020.00',
+      effectiveServiceRate: 108.33, // (1000 + 300) / 12 h
+    });
+    expect(s.notes).not.toContain(PARTNER_RATE_SCOPE_NOTE);
+    expect(s.notes.some((n) => n === LABOR_RATE_CURRENCY_NOTE('USD'))).toBe(false);
+  });
+
+  it('partner byCurrency: one unattributed client in the currency blanks the partner-wide rate and estimate (same population as margin)', async () => {
+    queueExecute(NAMES, [
+      ...WORKED_FOLD,
+      fold(ORG_B, 'USD', 'labor', { revenue: '300.00', missing: 2 }),
+      fold(ORG_B, 'EUR', 'labor', { revenue: '80.00', missing: 1 }),
+    ], [...WORKED_HOURS, hours(ORG_B, 'USD', 120)]);
+    const s = await run({ laborCostPerHour: { amount: '45.00', currencyCode: 'USD' } }, partnerScope());
+    expect(s.orgs.find((o) => o.orgId === ORG_A)!.money[0]!.estimatedContributionAfterLabor).toBe('750.00');
+    const usd = s.byCurrency.find((m) => m.currencyCode === 'USD')!;
+    expect(usd).toMatchObject({
+      revenue: '1800.00', estimatedLaborCost: null, estimatedContributionAfterLabor: null, effectiveServiceRate: null, revenuePerHour: null,
+    });
+    expect(s.notes).toContain(PARTNER_RATE_SCOPE_NOTE);
+    expect(s.notes).toContain(LABOR_RATE_CURRENCY_NOTE('USD')); // EUR revenue exists, the rate is USD
+  });
+
+  it('JPY and USD clients are never summed together', async () => {
+    queueExecute(NAMES, [
+      fold(ORG_A, 'USD', 'product', { revenue: '500.00', cbr: '500.00', cost: '300.00' }),
+      fold(ORG_B, 'JPY', 'product', { revenue: '5000.00', cbr: '5000.00', cost: '3000.00' }),
+    ], []);
+    const s = await run({}, partnerScope());
+    expect(s.byCurrency.map((m) => [m.currencyCode, m.revenue, m.cost])).toEqual([['JPY', '5000.00', '3000.00'], ['USD', '500.00', '300.00']]);
+  });
+
+  it('partial-cost bundles: counted across currencies and noted; no note without one', async () => {
+    queueExecute(NAMES, [
+      fold(ORG_A, 'USD', 'product', { revenue: '400.00', missing: 1, partial: 1 }),
+      fold(ORG_B, 'EUR', 'product', { revenue: '300.00', missing: 1, partial: 1 }),
+    ], []);
+    const s = await run({}, partnerScope());
+    expect(s.notes).toContain(partialBundleNote(2));
+    expect(s.sources.map((r) => r.partialCostBundles)).toEqual([1, 1]);
+    queueExecute(NAMES, WORKED_FOLD, WORKED_HOURS);
+    expect((await run({})).notes.some((n) => n.includes('bundle'))).toBe(false);
   });
 
   it('effective rate excludes product and AI revenue; revenue per hour includes it', async () => {

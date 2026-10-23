@@ -162,8 +162,8 @@ function drawByClient(doc: jsPDF, chrome: PdfChrome, s: ClientProfitabilitySumma
   const body: string[][] = [];
   for (const o of s.orgs) {
     if (o.money.length === 0) {
-      // no revenue: the client's hours still print, money stays blank
-      body.push([orgLabel(o), '', '', '', '', '', '', '', hoursCell(o.hours.total), '']);
+      // no revenue: the client's hours still print; money is unmeasured (N/A), never blank or 0
+      body.push([orgLabel(o), NA, NA, NA, NA, NA, NA, NA, hoursCell(o.hours.total), NA]);
       continue;
     }
     for (const m of o.money) {

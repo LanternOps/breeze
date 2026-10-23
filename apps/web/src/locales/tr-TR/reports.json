@@ -1076,7 +1076,7 @@
         },
         "client_profitability": {
           "name": "Müşteri karlılığı",
-          "description": "Dönem için müşteri başına faturalanan gelir; kaynağa göre (yinelenen, projeler, ürünler, diğer), bunlara karşılık kaydedilen saatler ve tek bir ortak saatlik ücretten isteğe bağlı iş gücü maliyeti tahmini ile. Bu ücreti kullanan rakamlar tahmin olarak etiketlenir. Para birimi başına bir toplam kümesi, asla dönüştürülmez."
+          "description": "Dönem için müşteri başına faturalanan gelir; kaynağa göre (yinelenen, iş gücü, ürünler, yapay zekâ, diğer), bunlara karşılık kaydedilen saatler ve tek bir ortak saatlik ücretten isteğe bağlı iş gücü maliyeti tahmini ile. Bu ücreti kullanan rakamlar tahmin olarak etiketlenir. Para birimi başına bir toplam kümesi, asla dönüştürülmez."
         },
         "backup_status": {
           "name": "Yedekleme Durumu Raporu",

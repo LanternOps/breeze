@@ -95,7 +95,10 @@ export const NO_REVENUE_HOURS_NOTE =
 export const UNATTRIBUTED_HOURS_NOTE =
   'Time entries with no organization (internal work) are shown once as unattributed time; they are not spread across clients.';
 export const PARTNER_RATE_SCOPE_NOTE =
-  'Partner-wide rate and labor-estimate figures cover only the clients whose hours are attributed to that currency; the hours of other clients and internal time are not in them.';
+  'Partner-wide rate and labor-estimate figures for a currency are blank when any client billed in it cannot have its hours attributed to it, so they always cover the same clients as the margin beside them. '
+  + 'They never include internal time or the hours of clients with no revenue in the period.';
+export const NO_HOURS_NOTE =
+  'A client with revenue but no completed time logged in the period has no rate or labor estimate: unlogged time is not zero labor cost.';
 export const partialBundleNote = (n: number): string =>
   `${n} bundle ${n === 1 ? 'line has' : 'lines have'} a component with no recorded cost; ${n === 1 ? 'it counts' : 'they count'} as unknown cost here, while the invoice margin panel counts the missing component as zero.`;
 export const LABOR_RATE_CURRENCY_NOTE = (currencyCode: string): string =>
@@ -193,7 +196,11 @@ function moneyRow(currency: string, acc: Acc, labor: Labor | null): Profitabilit
 
 /** One attributed client's labor figures in its currency. */
 function laborFor(acc: Acc, minutes: number, rate: LaborRate | null, currency: string): Labor {
-  const laborCost = rate !== null && rate.currencyCode === currency ? laborCostMinor(minutes, rate, currency) : null;
+  // No completed time is "not measured", never a zero labor cost: a client
+  // whose technicians forgot to log time must not look like the best margin.
+  const laborCost = rate !== null && rate.currencyCode === currency && minutes > 0
+    ? laborCostMinor(minutes, rate, currency)
+    : null;
   return {
     minutes,
     serviceMinor: acc.mix.recurring + acc.mix.labor,
@@ -367,6 +374,8 @@ export async function generateClientProfitabilityReport(
       target.billable += Number(r.billable_minutes);
       target.included += Number(r.included_minutes);
       target.nonBillable += Number(r.non_billable_minutes);
+      // Only the org-less (internal) row can have a NULL currency: the CHECK
+      // time_entries_currency_required_when_org_chk stamps every org entry.
       if (r.currency_code !== null) target.currencies.add(String(r.currency_code));
     }
 
@@ -375,6 +384,8 @@ export async function generateClientProfitabilityReport(
     if (scope.kind === 'organization') orgIds.add(scope.orgId);
     const orgs: ClientProfitabilityOrgRow[] = [];
     const attributedByCurrency = new Map<string, Labor[]>();
+    /** Currencies billed to at least one client whose hours are NOT attributed to them. */
+    const partialCurrencies = new Set<string>();
     for (const orgId of orgIds) {
       const perCurrency = byOrg.get(orgId) ?? new Map<string, Acc>();
       const minutes = minutesByOrg.get(orgId) ?? newMinutes();
@@ -386,7 +397,10 @@ export async function generateClientProfitabilityReport(
           : 'multi_currency';
       const money = currencies.map((currency) => {
         const acc = perCurrency.get(currency)!;
-        if (attribution !== 'single_currency') return moneyRow(currency, acc, null);
+        if (attribution !== 'single_currency') {
+          partialCurrencies.add(currency);
+          return moneyRow(currency, acc, null);
+        }
         const labor = laborFor(acc, totalMinutes(minutes), rate, currency);
         attributedByCurrency.set(currency, [...(attributedByCurrency.get(currency) ?? []), labor]);
         return moneyRow(currency, acc, labor);
@@ -406,7 +420,10 @@ export async function generateClientProfitabilityReport(
     }
     const byCurrency = sortedKeys(currencyAcc).map((currency) => {
       const attributed = attributedByCurrency.get(currency) ?? [];
-      if (attributed.length === 0) return moneyRow(currency, currencyAcc.get(currency)!, null);
+      // Partner-wide rate and estimate figures must cover the same clients as
+      // the revenue and margin on the row: blank when any client billed in
+      // this currency is not attributed to it.
+      if (attributed.length === 0 || partialCurrencies.has(currency)) return moneyRow(currency, currencyAcc.get(currency)!, null);
       const sum = (pick: (l: Labor) => number) => attributed.reduce((t, l) => t + pick(l), 0);
       const estimated = attributed.every((l) => l.laborCost !== null);
       return moneyRow(currency, currencyAcc.get(currency)!, {
@@ -426,7 +443,7 @@ export async function generateClientProfitabilityReport(
         return {
           category, currencyCode: currency, revenue: m.revenue, costBearingRevenue: m.costBearingRevenue, cost: m.cost,
           grossMargin: m.grossMargin, marginPct: m.marginPct, costCoveragePct: m.costCoveragePct,
-          unknownCostRevenue: m.unknownCostRevenue, linesMissingCost: m.linesMissingCost,
+          unknownCostRevenue: m.unknownCostRevenue, linesMissingCost: m.linesMissingCost, partialCostBundles: m.partialCostBundles,
         };
       })
       .sort((a, b) => categoryIndex(a.category) - categoryIndex(b.category) || a.currencyCode.localeCompare(b.currencyCode));
@@ -439,8 +456,10 @@ export async function generateClientProfitabilityReport(
     const withHours = orgs.filter((o) => o.hours.total > 0);
     if (orgs.some((o) => o.hoursAttribution === 'multi_currency')) notes.push(MULTI_CURRENCY_HOURS_NOTE);
     if (withHours.some((o) => o.hoursAttribution === 'no_revenue')) notes.push(NO_REVENUE_HOURS_NOTE);
+    if (orgs.some((o) => o.money.length > 0 && o.hours.total === 0)) notes.push(NO_HOURS_NOTE);
     if (unattributedHours !== null) notes.push(UNATTRIBUTED_HOURS_NOTE);
-    if (scope.kind === 'partner' && (unattributedHours !== null || withHours.some((o) => o.hoursAttribution !== 'single_currency'))) {
+    if (scope.kind === 'partner'
+      && (partialCurrencies.size > 0 || unattributedHours !== null || withHours.some((o) => o.hoursAttribution === 'no_revenue'))) {
       notes.push(PARTNER_RATE_SCOPE_NOTE);
     }
     if (rate !== null) {

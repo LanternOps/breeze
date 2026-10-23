@@ -1,5 +1,6 @@
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { isZeroDecimal, type ClientProfitabilityGroupBy, type ReportPeriodInput } from '@breeze/shared';
+import { CURRENCY_CODES, isZeroDecimal, type ClientProfitabilityGroupBy, type ReportPeriodInput } from '@breeze/shared';
 import { currencyLabel, currencyOptions } from '@/lib/currencies';
 import { usePartnerCurrency } from '@/lib/usePartnerCurrency';
 import {
@@ -56,8 +57,16 @@ export function clientProfitabilityOptionsFromConfig(config: Record<string, unkn
     groupBy: isGroupBy(config.groupBy) ? config.groupBy : null,
     laborCostEnabled: hasRate,
     laborCostAmount: hasRate ? (rate!.amount as string) : DEFAULT_CLIENT_PROFITABILITY_OPTIONS.laborCostAmount,
-    laborCostCurrency: hasRate ? (rate!.currencyCode as string) : DEFAULT_CLIENT_PROFITABILITY_OPTIONS.laborCostCurrency,
+    // A stored code outside the supported list never passes through (the
+    // server would refuse it); the user sees the default and can change it.
+    laborCostCurrency: hasRate && isKnownCurrency(rate!.currencyCode as string)
+      ? (rate!.currencyCode as string)
+      : DEFAULT_CLIENT_PROFITABILITY_OPTIONS.laborCostCurrency,
   };
+}
+
+function isKnownCurrency(code: string): boolean {
+  return (CURRENCY_CODES as readonly string[]).includes(code);
 }
 
 /** The config the create POST / edit PUT carries: exactly the keys
@@ -92,6 +101,15 @@ export function ClientProfitabilityOptionsFields({ value, onChange }: FieldProps
   const { t, i18n } = useTranslation('reports');
   const { currency: partnerCurrency } = usePartnerCurrency();
   const amountInvalid = value.laborCostEnabled && !isLaborAmountValid(value.laborCostAmount, value.laborCostCurrency);
+  // The rate's currency follows the partner currency when it resolves AFTER
+  // the estimate was switched on — unless the user picked a currency, or the
+  // report already stored a rate (a stored currency always wins).
+  const seedable = useRef(!value.laborCostEnabled);
+  const currencyTouched = useRef(false);
+  useEffect(() => {
+    if (!seedable.current || currencyTouched.current || !value.laborCostEnabled || !partnerCurrency) return;
+    if (value.laborCostCurrency !== partnerCurrency) onChange({ ...value, laborCostCurrency: partnerCurrency });
+  }, [partnerCurrency, value, onChange]);
   return (
     <div className="space-y-4">
       <ReportPeriodField
@@ -163,7 +181,10 @@ export function ClientProfitabilityOptionsFields({ value, onChange }: FieldProps
               <select
                 data-testid="client-profitability-labor-currency"
                 value={value.laborCostCurrency}
-                onChange={(event) => onChange({ ...value, laborCostCurrency: event.target.value })}
+                onChange={(event) => {
+                  currencyTouched.current = true;
+                  onChange({ ...value, laborCostCurrency: event.target.value });
+                }}
                 className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm"
               >
                 {currencyOptions(value.laborCostCurrency).map((code) => (

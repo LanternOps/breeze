@@ -1076,7 +1076,7 @@
         },
         "client_profitability": {
           "name": "Kundenrentabilität",
-          "description": "Abgerechneter Umsatz pro Kunde für den Zeitraum nach Quelle (wiederkehrend, Projekte, Produkte, Sonstiges), mit den dazu erfassten Stunden und einer optionalen Schätzung der Arbeitskosten aus einem einheitlichen Stundensatz. Zahlen, die diesen Satz verwenden, sind als Schätzungen gekennzeichnet. Je Währung eine Summe, nie umgerechnet."
+          "description": "Abgerechneter Umsatz pro Kunde für den Zeitraum nach Quelle (wiederkehrend, Arbeit, Produkte, KI, Sonstiges), mit den dazu erfassten Stunden und einer optionalen Schätzung der Arbeitskosten aus einem einheitlichen Stundensatz. Zahlen, die diesen Satz verwenden, sind als Schätzungen gekennzeichnet. Je Währung eine Summe, nie umgerechnet."
         },
         "backup_status": {
           "name": "Sicherungsstatusbericht",

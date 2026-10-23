@@ -1076,7 +1076,7 @@
         },
         "client_profitability": {
           "name": "Rentabilidad por cliente",
-          "description": "Ingresos facturados por cliente en el período, por fuente (recurrentes, proyectos, productos, otros), con las horas registradas y una estimación opcional del costo laboral a partir de una tarifa por hora única. Las cifras que usan esa tarifa se rotulan como estimaciones. Un conjunto de totales por moneda, nunca convertido."
+          "description": "Ingresos facturados por cliente en el período, por fuente (recurrentes, mano de obra, productos, IA, otros), con las horas registradas y una estimación opcional del costo laboral a partir de una tarifa por hora única. Las cifras que usan esa tarifa se rotulan como estimaciones. Un conjunto de totales por moneda, nunca convertido."
         },
         "backup_status": {
           "name": "Informe de estado de respaldo",

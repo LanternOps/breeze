@@ -1076,7 +1076,7 @@
         },
         "client_profitability": {
           "name": "Rentabilité client",
-          "description": "Revenus facturés par client sur la période, par origine (récurrent, projets, produits, autre), avec les heures saisies correspondantes et une estimation facultative du coût de main-d'œuvre à partir d'un taux horaire unique. Les chiffres qui utilisent ce taux sont signalés comme des estimations. Un jeu de totaux par devise, jamais converti."
+          "description": "Revenus facturés par client sur la période, par origine (récurrent, main-d'œuvre, produits, IA, autre), avec les heures saisies correspondantes et une estimation facultative du coût de main-d'œuvre à partir d'un taux horaire unique. Les chiffres qui utilisent ce taux sont signalés comme des estimations. Un jeu de totaux par devise, jamais converti."
         },
         "backup_status": {
           "name": "Rapport d’état des sauvegardes",

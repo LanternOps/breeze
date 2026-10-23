@@ -368,7 +368,8 @@ For each client in the period: what you billed, what the billed goods and servic
 - Recurring revenue with no recorded cost is treated as service revenue (the included time is the cost of serving a managed contract). That share is printed on its own line ("of which recurring revenue with no recorded cost"), so a resold licence billed through a contract is visible as an assumption.
 - Product, AI and other revenue with no recorded cost is left out of the estimate and printed beside it.
 - It is one blended rate for every technician, and it assumes no labor is already inside a line's recorded cost. Every figure that uses it is labelled **Estimated contribution after labor (uniform rate)**.
-- The rate applies only to clients whose hours are attributed to the rate's currency; no FX conversion is applied. With no rate set, the report shows hours only and no estimate.
+- The rate applies only to clients whose hours are attributed to the rate's currency; no FX conversion is applied. A client with revenue but no completed time logged in the period gets no estimate -- unlogged time is not a zero labor cost. With no rate set, the report shows hours only and no estimate.
+- Partner-wide, a currency's rate and estimate figures are left blank when any client billed in that currency cannot have its hours attributed to it, so they always cover the same clients as the margin beside them.
 
 The labor rate is an option of this report, not a partner setting: it is stored on the report definition, edited in the report's options, and never appears on a customer document.
 

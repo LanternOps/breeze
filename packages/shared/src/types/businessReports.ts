@@ -472,9 +472,11 @@ export type ClientProfitabilityGroupBy = 'organization' | 'source';
  * revenue the margin is measured on) is printed beside every margin.
  *
  * The rate and labor-estimate fields are null unless the client's hours are
- * attributed to this currency (`hoursAttribution: 'single_currency'`); the
- * estimate fields are also null when no labor rate is set or it is in another
- * currency. `estimatedContributionAfterLabor` = grossMargin + NULL-cost labor
+ * attributed to this currency (`hoursAttribution: 'single_currency'`) and
+ * some completed time was logged; the estimate fields are also null when no
+ * labor rate is set or it is in another currency. On a partner-wide
+ * `byCurrency` row they are null when any client billed in the currency is
+ * not attributed to it, so they cover the same clients as the margin. `estimatedContributionAfterLabor` = grossMargin + NULL-cost labor
  * and recurring revenue − estimatedLaborCost (Gate B 6).
  */
 export type ProfitabilityMoneyRow = {
@@ -529,6 +531,7 @@ export type ClientProfitabilitySourceRow = {
   costCoveragePct: number | null;
   unknownCostRevenue: string;
   linesMissingCost: number;
+  partialCostBundles: number;
 };
 
 /**

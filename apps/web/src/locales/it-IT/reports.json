@@ -1076,7 +1076,7 @@
         },
         "client_profitability": {
           "name": "Redditività per cliente",
-          "description": "Ricavi fatturati per cliente nel periodo, per fonte (ricorrenti, progetti, prodotti, altro), con le ore registrate e una stima facoltativa del costo del lavoro basata su un'unica tariffa oraria. I valori che usano quella tariffa sono indicati come stime. Un insieme di totali per valuta, mai convertito."
+          "description": "Ricavi fatturati per cliente nel periodo, per fonte (ricorrenti, manodopera, prodotti, IA, altro), con le ore registrate e una stima facoltativa del costo del lavoro basata su un'unica tariffa oraria. I valori che usano quella tariffa sono indicati come stime. Un insieme di totali per valuta, mai convertito."
         },
         "backup_status": {
           "name": "Report sullo stato dei backup",
