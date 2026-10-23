@@ -68,7 +68,7 @@ async function seedElevation(opts: {
   site?: string;
   partner?: string;
   device?: string;
-  status?: 'pending' | 'auto_approved' | 'denied';
+  status?: 'pending' | 'auto_approved' | 'approved' | 'actuating' | 'denied';
 } = {}): Promise<string> {
   const status = opts.status ?? 'pending';
   const [row] = await getTestDb()
@@ -84,7 +84,7 @@ async function seedElevation(opts: {
       reason: 'UAC consent UI observed for C:\\Temp\\setup.exe',
       targetExecutablePath: 'C:\\Temp\\setup.exe',
       status,
-      ...(status === 'auto_approved' ? { approvedAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000) } : {}),
+      ...(['auto_approved', 'approved', 'actuating'].includes(status) ? { approvedAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000) } : {}),
       ...(status === 'denied' ? { denialReason: 'Blocked by PAM rule "no installers"' } : {}),
     })
     .returning({ id: elevationRequests.id });
@@ -279,7 +279,7 @@ describe('recordElevationDeviceUnable (#9517)', () => {
     expect((await readRequest(id)).status).toBe('pending');
   });
 
-  it.each(['auto_approved', 'denied'] as const)('records but does not close a %s request', async (status) => {
+  it.each(['auto_approved', 'approved', 'actuating', 'denied'] as const)('records but does not close a %s request', async (status) => {
     const id = await seedElevation({ status });
 
     const result = await report(id, 'helper_unavailable', 'no helper lifecycle manager to spawn one');

@@ -1881,7 +1881,7 @@
     "disabledDescription": "Abilita l'inoltro log sopra per configurare le impostazioni di connessione.",
     "enable": {
       "title": "Abilita inoltro log",
-      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store con una pianificazione ricorrente."
+      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store man mano che ogni dispositivo li segnala."
     },
     "connection": {
       "title": "Connessione",

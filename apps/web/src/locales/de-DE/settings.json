@@ -1881,7 +1881,7 @@
     "disabledDescription": "Aktivieren Sie oben die Protokollweiterleitung, um die Verbindungseinstellungen zu konfigurieren.",
     "enable": {
       "title": "Aktivieren Sie die Protokollweiterleitung",
-      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle in einem wiederkehrenden Zeitplan an Ihren Protokollspeicher weitergeleitet."
+      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle an Ihren Protokollspeicher weitergeleitet, sobald jedes Gerät sie meldet."
     },
     "connection": {
       "title": "Verbindung",

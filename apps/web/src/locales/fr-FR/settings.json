@@ -1881,7 +1881,7 @@
     "disabledDescription": "Activez le transfert de journal ci-dessus pour configurer les paramètres de connexion.",
     "enable": {
       "title": "Activer le transfert de journaux",
-      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux selon un calendrier récurrent."
+      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux au fur et à mesure que chaque appareil les signale."
     },
     "connection": {
       "title": "Connexion",
