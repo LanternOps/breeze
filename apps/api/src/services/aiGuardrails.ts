@@ -18,6 +18,7 @@ import { rateLimiter } from './rate-limit';
 import { TOOL_RATE_LIMITS, resolveToolRateLimitMultiplier, scaleToolRateLimit, type ToolRateLimitScope } from './aiToolRateLimits';
 export { listEffectiveToolRateLimits, type EffectiveToolRateLimit } from './aiToolRateLimits';
 import { getRedis } from './redis';
+import { humanizeToolAction } from './actionIntents/actionLabel';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import type { AuthContext } from '../middleware/auth';
@@ -804,6 +805,39 @@ export const TIER3_INPUT_AWARE_TOOLS: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
+ * Tool Catalog W03 (#5218). Every NON-action input key that an input-aware
+ * branch of `checkGuardrails` / `resolveApprovalScope` reads to pick a tier or
+ * an approval scope. A flow step's tier is fixed at save time, so the flow
+ * validator requires each of these (plus the action selector and any
+ * LIVE_READ_INPUT_FLAGS flag) to be literal — a template must never choose its
+ * own tier at run time. Pinned by aiGuardrails.tierDecidingKeys.contract.test.ts;
+ * a new input-aware branch needs an entry here.
+ *
+ * (event_logs_query's payload-aware classification is chat-session only and
+ * never applies to a flow, which runs without a chat session.)
+ */
+export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]>> = {
+  // isInputAwareTier3: comment + isPublic === true escalates to tier 3.
+  manage_tickets: ['isPublic'],
+  // isInputAwareTier3: featureType === 'maintenance' or an HP CMSL inlineSettings payload.
+  manage_policy_feature_link: ['featureType', 'inlineSettings'],
+  // resolveApprovalScope: isolate === false is four-eyes.
+  s1_isolate_device: ['isolate'],
+  // isProposalRunScript: a proposalId changes the tier source entirely.
+  run_script: ['proposalId'],
+  // resolveApprovalScope: update_org with a `status` key is four-eyes.
+  manage_organizations: ['status'],
+};
+
+/** The action selector, the input-aware keys, and the live-read flag, in that order. */
+export function tierDecidingInputKeys(toolName: string): string[] {
+  const keys = [TOOL_ACTION_INPUT_KEYS[toolName] ?? 'action', ...(TIER_DECIDING_INPUT_KEYS[toolName] ?? [])];
+  const liveFlag = LIVE_READ_INPUT_FLAGS[toolName];
+  if (liveFlag) keys.push(liveFlag);
+  return keys;
+}
+
+/**
  * Why a proposal-backed `run_script` was refused a tier, when the input named
  * a `proposalId` but `loadProposalGuardrailContext` could not hand back a
  * reviewed risk tier for it (#7129). Deliberately collapses "no such id" and
@@ -1137,6 +1171,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   read_artifact: { resource: 'ai_agents', action: 'read' },
   // Same permission as the editor's GET /orgs/:orgId/trust-page.
   get_trust_page_status: { resource: 'organizations', action: 'read' },
+  // Tool Catalog W03 (#5218): flows reuse the automations permissions.
+  draft_flow: { resource: 'automations', action: 'write' },
+  validate_flow: { resource: 'automations', action: 'read' },
+  get_flow: { resource: 'automations', action: 'read' },
+  list_flows: { resource: 'automations', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -3057,7 +3096,7 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
 /**
  * Build a human-readable description of what the tool is about to do.
  */
-function buildApprovalDescription(
+export function buildApprovalDescription(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>
@@ -3085,7 +3124,7 @@ function buildApprovalDescription(
     // so the approver knows what they approve; like the ticket copy, it never
     // echoes the message text (that is in the input details below the card).
     case 'send_endpoint_message': {
-      if (action !== 'send') { parts.push(`${toolName}${action ? `: ${action}` : ''}`); break; }
+      if (action !== 'send') { parts.push(humanizeToolAction(toolName, action)); break; }
       const t = (input.targets && typeof input.targets === 'object' ? input.targets : {}) as Record<string, unknown>;
       const count = (k: string) => (Array.isArray(t[k]) ? (t[k] as unknown[]).length : 0);
       const reach = [
@@ -3144,7 +3183,7 @@ function buildApprovalDescription(
         const kindLabel = input.kind === 'resolution_note' ? 'resolution note' : 'reply';
         parts.push(`Store AI ${kindLabel} draft on ticket #${shortTicketId}`);
       } else {
-        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+        parts.push(humanizeToolAction(toolName, action));
       }
       break;
     }
@@ -3173,7 +3212,7 @@ function buildApprovalDescription(
           '(creates a per-organization agent policy override if this organization does not already have one)',
         );
       } else {
-        parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+        parts.push(humanizeToolAction(toolName, action));
       }
       break;
 
@@ -3183,7 +3222,11 @@ function buildApprovalDescription(
       break;
 
     case 'file_operations':
-      parts.push(`File ${action}: ${input.path}`);
+      // #9853: a permanent delete cannot be restored from the agent trash; the
+      // approver must see that before approving.
+      parts.push(action === 'delete' && input.permanent === true
+        ? `File delete (permanent, cannot be restored): ${input.path}`
+        : `File ${action}: ${input.path}`);
       break;
 
     case 'diagnose_connectivity':
@@ -3325,7 +3368,7 @@ function buildApprovalDescription(
       break;
 
     case 'registry_operations':
-      parts.push(`Registry ${action}: ${input.keyPath}`);
+      parts.push(`Registry ${action?.replace(/_/g, ' ')}: ${input.keyPath}`);
       if (input.valueName) parts.push(`\\${input.valueName}`);
       if (input.deviceId) parts.push(`on device ${(input.deviceId as string).slice(0, 8)}...`);
       break;
@@ -3430,7 +3473,7 @@ function buildApprovalDescription(
     }
 
     default:
-      parts.push(`${toolName}${action ? `: ${action}` : ''}`);
+      parts.push(humanizeToolAction(toolName, action));
   }
 
   return parts.join(' ');

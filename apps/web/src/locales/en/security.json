@@ -311,6 +311,8 @@
     "no": "No",
     "noDevicesFound": "No devices found.",
     "none": "None",
+    "unknown": "Unknown",
+    "tpmNotReported": "Not reported by the agent",
     "os": "OS",
     "pageOf": "Page {{page}} of {{totalPages}}",
     "partial": "Partial",
@@ -423,6 +425,8 @@
     "osFilterLabel": "Operating system"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Could not update the recommendation.",
+    "affectsOrgs": "Affects {{count}} organizations",
     "adminAccounts": "Admin Accounts",
     "allCategories": "All categories",
     "allPriorities": "All priorities",
@@ -431,18 +435,19 @@
     "completed": "Completed",
     "critical": "Critical",
     "criticalHigh": "Critical + High",
-    "devices": "Devices:",
+    "devices": "Devices: {{value}}",
     "dismiss": "Dismiss",
     "dismissed": "Dismissed",
-    "effort": "Effort:",
+    "effort": "Effort: {{value}}",
     "encryption": "Encryption",
     "firewall": "Firewall",
     "hideSteps": "Hide steps",
     "high": "High",
-    "impact": "Impact:",
+    "impact": "Impact: {{value}}",
     "invalidResponseFromServer": "Invalid response from server",
     "low": "Low",
     "markComplete": "Mark Complete",
+    "reopen": "Reopen",
     "medium": "Medium",
     "next": "Next",
     "noRecommendationsMatchYourFilters": "No recommendations match your filters.",
@@ -457,10 +462,13 @@
     "vulnMgmt": "Vuln. Mgmt",
     "priorityFilterLabel": "Priority",
     "categoryFilterLabel": "Category",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "remediationSteps_one": "{{count}} remediation step",
+    "remediationSteps_other": "{{count}} remediation steps"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
+    "accessRevealed": "revealed the key",
     "bitlocker": "BitLocker",
     "cancel": "Cancel",
     "collectNow": "Collect now",
@@ -486,6 +494,7 @@
     "rotate": "Rotate",
     "rotateKey": "Rotate key",
     "rotateRecoveryKey": "Rotate recovery key",
+    "rotateVolume": "Volume",
     "thisAccessHasBeenRecordedInThe": "This access has been recorded in the audit trail."
   },
   "securityS1ThreatList": {
@@ -608,7 +617,10 @@
     "viewDetails": "View details",
     "vulnerabilities": "Vulnerabilities",
     "weakAdmins": "Weak admins",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "bitlockerPartial": "BitLocker partial",
+    "filevaultPartial": "FileVault partial",
+    "refreshTooltip": "Reloads the latest security snapshot. Scores are recomputed on a schedule, not on click."
   },
   "securitySecurityPageHeader": {
     "refresh": "Refresh",
@@ -810,9 +822,10 @@
     "precision": "Precision",
     "recentEvidence": "Recent evidence",
     "refresh": "Refresh",
+    "refreshing": "Refreshing",
     "repeatSignalUsers": "Repeat signal users",
     "retry": "Retry",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Review rules-v0 risk scores, evidence, and evaluation labels.",
+    "reviewUserRiskScoresEvidenceAnd": "Review user risk scores, the evidence behind them, and your evaluation labels.",
     "scoreImpact": "{{value}} impact",
     "scoresEvidenceAndLabelsWillAppearHere": "Scores, evidence, and labels will appear here when the user-risk v0 producer is enabled.",
     "selectAUserToInspectRiskEvidence": "Select a user to inspect risk evidence.",
@@ -821,7 +834,41 @@
     "truePositive": "True positive",
     "truePositiveLabelSaved": "True positive label saved",
     "userRisk": "User Risk",
-    "userRiskScoringIsDisabledForThis": "User risk scoring is disabled for this organization."
+    "userRiskScoringIsDisabledForThis": "User risk scoring is disabled for this organization.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Multi-factor authentication gaps",
+        "description": "Accounts that do not have MFA enabled."
+      },
+      "authFailureRisk": {
+        "label": "Failed sign-in attempts",
+        "description": "Repeated failed logins, which can point to password guessing or credential stuffing."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Unusual session activity",
+        "description": "Sign-ins from unfamiliar locations, devices, or at unusual times."
+      },
+      "threatExposureRisk": {
+        "label": "Threat exposure",
+        "description": "Threats detected on the devices this user works from."
+      },
+      "softwareViolationRisk": {
+        "label": "Software policy violations",
+        "description": "Installed software that breaks your software policies."
+      },
+      "deviceSecurityRisk": {
+        "label": "Device security posture",
+        "description": "Weak security health on the user's devices, such as missing protections or patches."
+      },
+      "staleAccessRisk": {
+        "label": "Stale access",
+        "description": "Accounts or access that have gone unused for a long time."
+      },
+      "recentImpactRisk": {
+        "label": "Recent risk events",
+        "description": "Risk events recorded for this user in the last few days."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Active",
@@ -989,7 +1036,13 @@
       "flow": "Flow",
       "status": "Status",
       "riskTierTitle": "Risk tier {{tier}}",
-      "signer": "Signer: {{signer}}"
+      "signer": "Signer: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Device could not act: no PAM helper available",
+        "sessionUnavailable": "Device could not act: user's session unavailable",
+        "helperStartFailed": "Device could not act: PAM helper failed to start",
+        "generic": "Device could not act on this request"
+      }
     },
     "actions": {
       "respond": "Respond",
@@ -1288,17 +1341,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Enter at least one device ID",
-      "createScan": "Failed to create scan"
+      "createScan": "Failed to create scan",
+      "devicesRequired": "Select at least one device",
+      "devicesNotReady": "The device list is still loading or incomplete. Wait for it to finish, then try again.",
+      "devicesLoadFailed": "The device list could not be loaded. Use Retry in the device list, then try again."
     },
     "title": "Create Scan",
     "form": {
       "policyOptional": "Policy (optional)",
       "noPolicy": "No policy (manual config)",
-      "deviceIds": "Device IDs",
-      "deviceIdsHelp": "One UUID per line, or comma-separated.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Detection Classes"
+      "detectionClasses": "Detection Classes",
+      "devices": "Devices",
+      "devicesHelp": "Choose the devices to scan."
     },
     "actions": {
       "creating": "Creating...",
@@ -1363,6 +1417,10 @@
       "showingSearch": "Showing {{visible}} of {{pageCount}} on this page ({{total}} total)",
       "showingTotal": "Showing {{visible}} of {{total}} findings",
       "pageOf": "Page {{page}} of {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risk accepted",
+      "markedFalsePositive": "Marked as false positive"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1401,14 +1459,18 @@
       "detectionClasses": "Detection Classes",
       "scheduleType": "Schedule Type",
       "intervalMinutes": "Interval (minutes)",
-      "cronExpression": "Cron Expression",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron Expression (UTC)",
+      "cronNextRun": "Next run (your local time): {{time}}",
+      "cronExpressionZone": "Cron Expression ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Interval",
       "cron": "Cron",
-      "everyMinutes": "Every {{minutes}}m"
+      "everyMinutes": "Every {{minutes}}m",
+      "paused": "Paused",
+      "pausedTitle": "Scheduling is turned off for this policy, so it will not run automatically"
     },
     "table": {
       "name": "Name",
@@ -1733,7 +1795,7 @@
     "unknown": "unknown"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Hardening",
+    "title": "CIS Benchmarks",
     "description": "Configuration baselines, compliance scoring, and remediation tracking.",
     "messages": {
       "loadFailed": "Failed to load CIS data"
@@ -1826,6 +1888,11 @@
     "badges": {
       "allOrgs": "All orgs",
       "partnerWideTitle": "Partner-wide baseline — applies to devices in every organization"
+    },
+    "scanAll": {
+      "title": "Scan all organizations?",
+      "message": "“{{name}}” is a partner-wide baseline. With no organization selected it scans all {{orgCount}} organizations. Select an organization first to scan only its devices.",
+      "confirm": "Scan all"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1908,10 +1975,38 @@
       "status": "Status",
       "approval": "Approval",
       "requested": "Requested",
-      "completed": "Completed"
+      "completed": "Completed",
+      "decision": "Decision"
     },
     "loading": "Loading remediations...",
-    "empty": "No remediations found."
+    "empty": "No remediations found.",
+    "decision": {
+      "approve": "Approve",
+      "reject": "Reject",
+      "approveTitle": "Approve remediation?",
+      "rejectTitle": "Reject remediation?",
+      "approveMessage": "This queues CIS check {{checkId}} to run on {{device}}. The agent will change the device's configuration.",
+      "rejectMessage": "This cancels the pending remediation for CIS check {{checkId}} on {{device}}. Nothing will run on the device.",
+      "noteLabel": "Note (optional)",
+      "approved": "Remediation for {{checkId}} approved and queued.",
+      "rejected": "Remediation for {{checkId}} rejected.",
+      "approveFailed": "Failed to approve remediation",
+      "rejectFailed": "Failed to reject remediation",
+      "queueFailed": "The approval was recorded but the remediation could not be queued. It is back to pending approval; try again.",
+      "mfaRequired": "Approving or rejecting a remediation requires a session signed in with multi-factor authentication. Sign out and sign in again with MFA.",
+      "ownRequest": "You requested this remediation, so another user must approve it."
+    },
+    "detail": {
+      "toggle": "Toggle details",
+      "approvedBy": "Approved by",
+      "approvedAt": "Approved at",
+      "note": "Approval note",
+      "beforeState": "Before",
+      "afterState": "After",
+      "rollbackHint": "Rollback hint",
+      "noEvidence": "No evidence recorded for this remediation yet.",
+      "unknownApprover": "Unknown user"
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Audit Baselines",
@@ -2221,5 +2316,8 @@
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "You don't have access to this organization"
   }
 }

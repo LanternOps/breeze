@@ -34,6 +34,7 @@ import { TOOL_PERMISSIONS, TIER3_ACTIONS } from './aiGuardrails';
 import { TOOL_TIERS } from './aiAgentSdkTools';
 import { registerDeliverableTools } from './aiToolsDeliverables';
 import type { AiTool } from './aiTools';
+import { expectDefaultPageFits } from './aiToolOutputBudget.testkit';
 
 const NAMES = ['list_deliverables', 'manage_deliverables', 'manage_key_dates'] as const;
 const MANAGE_ACTIONS = ['create', 'update', 'deactivate', 'deliver', 'waive', 'reopen', 'reschedule', 'link_evidence'] as const;
@@ -41,6 +42,8 @@ const KEY_DATE_ACTIONS = ['list', 'create', 'update', 'delete'] as const;
 const ORG = '11111111-1111-4111-8111-111111111111';
 const OCC = '22222222-2222-4222-8222-222222222222';
 const RUN = '33333333-3333-4333-8333-333333333333';
+const CONTRACT_A = '77777777-7777-4777-8777-777777777777';
+const CONTRACT_B = '88888888-8888-4888-8888-888888888888';
 const auth = { user: { id: 'u1', email: 'u1@example.com' }, scope: 'partner', partnerId: 'p1', accessibleOrgIds: [ORG] } as never;
 const call = async (name: string, input: Record<string, unknown>, as = auth) => JSON.parse(await aiTools.get(name)!.handler(input, as));
 
@@ -190,6 +193,124 @@ describe('deliverable AI tools — handlers', () => {
   it('rethrows an unexpected error rather than masking it as a tool result', async () => {
     svc.listDeliverables.mockRejectedValue(new Error('db down'));
     await expect(aiTools.get('list_deliverables')!.handler({ orgId: ORG }, auth)).rejects.toThrow('db down');
+  });
+});
+
+// ── list_deliverables paging + link_evidence documentId (#9313) ─────────────
+
+describe('list_deliverables paging (#9313)', () => {
+  const summary = (i: number) => ({
+    id: `${String(i).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    orgId: ORG, contractId: i % 2 ? CONTRACT_A : null, name: `Quarterly security review ${i}`,
+    description: 'd'.repeat(300), instructions: 'i'.repeat(600), cadence: 'quarterly',
+    anchorDueDate: '2026-01-15', effectiveFrom: '2026-01-01', effectiveUntil: null, leadDays: 7, graceDays: 14,
+    artifactRequired: true, completionMode: 'on_ticket_resolve', ownerUserId: ORG, portalVisible: true, active: true,
+    sortOrder: i, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    contractName: 'Managed Services Agreement', nextDue: '2026-12-15',
+    lastDelivered: { at: '2026-09-15T00:00:00.000Z', late: false, note: 'n'.repeat(200) }, openCount: 1, status: 'on_track',
+  });
+  const all = Array.from({ length: 60 }, (_, i) => summary(i));
+  beforeEach(() => { svc.listDeliverables.mockResolvedValue(all); });
+  const idsOf = (o: { deliverables: Array<{ id: string }> }) => o.deliverables.map((d) => d.id);
+
+  it('default page fits the chat budget uncompacted and reports hasMore', async () => {
+    const raw = await aiTools.get('list_deliverables')!.handler({ orgId: ORG }, auth);
+    expectDefaultPageFits('list_deliverables', raw);
+    const out = JSON.parse(raw);
+    expect(out.hasMore).toBe(true);
+    expect(out.nextCursor).toEqual(expect.any(String));
+    expect(out.showing).toBe(out.deliverables.length);
+    expect(out.deliverables[0]).toEqual(expect.objectContaining({ id: all[0]!.id, name: all[0]!.name, cadence: 'quarterly', contractName: 'Managed Services Agreement', nextDue: '2026-12-15', status: 'on_track', openCount: 1, portalVisible: true, active: true }));
+    expect(out.deliverables[0]).toHaveProperty('lastDelivered');
+    expect(out.deliverables[0]).not.toHaveProperty('description');
+    expect(out.deliverables[0]).not.toHaveProperty('instructions');
+  });
+
+  it('following nextCursor returns every row exactly once', async () => {
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let guard = 0; guard < 20; guard++) {
+      const out = await call('list_deliverables', { orgId: ORG, ...(cursor ? { cursor } : {}) });
+      seen.push(...idsOf(out));
+      if (!out.hasMore) { expect(out.nextCursor).toBeNull(); break; }
+      cursor = out.nextCursor;
+    }
+    expect(seen).toEqual(all.map((d) => d.id));
+    expect(new Set(seen).size).toBe(60);
+  });
+
+  it('includeDetails adds description and instructions', async () => {
+    const out = await call('list_deliverables', { orgId: ORG, includeDetails: true, limit: 2 });
+    expect(out.deliverables[0]).toEqual(expect.objectContaining({ description: 'd'.repeat(300), instructions: 'i'.repeat(600) }));
+  });
+
+  it('refuses a cursor replayed with a different contractId', async () => {
+    const first = await call('list_deliverables', { orgId: ORG, contractId: CONTRACT_A });
+    const out = await call('list_deliverables', { orgId: ORG, contractId: CONTRACT_B, cursor: first.nextCursor });
+    expect(first.nextCursor).toEqual(expect.any(String));
+    expect(out).toMatchObject({ code: 'CURSOR_MISMATCH' });
+    expect(out).not.toHaveProperty('deliverables');
+  });
+
+  it('refuses a cursor replayed across includeInactive, but not across includeDetails', async () => {
+    const first = await call('list_deliverables', { orgId: ORG });
+    const flipped = await call('list_deliverables', { orgId: ORG, includeInactive: true, cursor: first.nextCursor });
+    expect(flipped).toMatchObject({ code: 'CURSOR_MISMATCH' });
+    const explicitFalse = await call('list_deliverables', { orgId: ORG, includeInactive: false, cursor: first.nextCursor });
+    expect(explicitFalse).toHaveProperty('deliverables');
+    const detailed = await call('list_deliverables', { orgId: ORG, includeDetails: true, cursor: first.nextCursor });
+    expect(detailed).toHaveProperty('deliverables');
+  });
+
+  it('passes contractId / includeInactive filters to the service', async () => {
+    await call('list_deliverables', { orgId: ORG, contractId: CONTRACT_A, includeInactive: true });
+    expect(svc.listDeliverables).toHaveBeenLastCalledWith(ORG, { contractId: CONTRACT_A, includeInactive: true }, expect.anything());
+  });
+
+  it('does not leak lastDelivered.note into rows', async () => {
+    const out = await call('list_deliverables', { orgId: ORG, limit: 1 });
+    expect(out.deliverables[0].lastDelivered).toEqual({ at: '2026-09-15T00:00:00.000Z', late: false });
+  });
+
+  it('exposes limit/offset/cursor/includeDetails on the Zod schema', () => {
+    const ok = toolInputSchemas.list_deliverables!.safeParse({ orgId: ORG, limit: 10, offset: 0, cursor: 'x', includeDetails: true });
+    expect(ok.success).toBe(true);
+  });
+});
+
+describe('manage_deliverables link_evidence documentId (#9313)', () => {
+  const DOC = '66666666-6666-4666-8666-666666666666';
+  it('links a library document as evidence', async () => {
+    svc.addEvidence.mockResolvedValue({ id: OCC });
+    await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: DOC });
+    expect(svc.addEvidence).toHaveBeenCalledWith(ORG, OCC, { kind: 'document', documentId: DOC }, expect.anything());
+  });
+  it('refuses both ids together', async () => {
+    svc.addEvidence.mockClear();
+    const out = await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: DOC, reportRunId: RUN });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(svc.addEvidence).not.toHaveBeenCalled();
+  });
+  it('refuses neither id', async () => {
+    svc.addEvidence.mockClear();
+    const out = await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(svc.addEvidence).not.toHaveBeenCalled();
+  });
+  it('rejects a non-UUID documentId without calling the service', async () => {
+    svc.addEvidence.mockClear();
+    const out = await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: 'nope' });
+    expect(out).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(svc.addEvidence).not.toHaveBeenCalled();
+    expect(toolInputSchemas.manage_deliverables!.safeParse({ action: 'link_evidence', documentId: 'nope' }).success).toBe(false);
+  });
+  it('treats an empty reportRunId as absent when documentId is given', async () => {
+    svc.addEvidence.mockResolvedValue({ id: OCC });
+    await call('manage_deliverables', { action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: DOC, reportRunId: '' });
+    expect(svc.addEvidence).toHaveBeenLastCalledWith(ORG, OCC, { kind: 'document', documentId: DOC }, expect.anything());
+  });
+  it('accepts documentId on the Zod schema', () => {
+    expect(toolInputSchemas.manage_deliverables!.safeParse({ action: 'link_evidence', orgId: ORG, occurrenceId: OCC, documentId: DOC }).success).toBe(true);
   });
 });
 

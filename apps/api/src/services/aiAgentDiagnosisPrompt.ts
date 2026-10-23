@@ -53,19 +53,22 @@ export const BREEZE_AGENT_WINDOWS_FACTS: readonly BreezeAgentFact[] = [
     ],
   },
   {
-    text: 'Link speed: powershell Get-NetAdapter per interface when its 5 min cache expires; on error a second Get-NetAdapter runs at once, then the result (0 on failure) is cached 5 min.',
+    text: 'Link speed: read in-process from the IP Helper interface table (one GetIfTable2Ex snapshot per metrics cycle, no PowerShell); per-interface results are cached 5 min, a failed table read yields 0.',
     anchors: [
       { file: 'internal/collectors/metrics.go', contains: ['speedCacheTTL = 5 * time.Minute', 'c.speedCache[ifaceName] = cachedSpeed{speed: speed, at: time.Now()}'] },
-      { file: 'internal/collectors/bandwidth_windows.go', contains: ['Get-NetAdapter -Name', 'Get-NetAdapter -InterfaceDescription'] },
+      { file: 'internal/collectors/bandwidth_windows.go', contains: ['windows.GetIfTable2Ex(windows.MibIfTableNormal, &table)'], absent: ['"powershell"', 'exec.Command', 'commandOutput('] },
+      { file: 'internal/collectors/linkspeed_table.go', contains: ['linkSpeedTableTTL = 30 * time.Second'] },
     ],
   },
   {
-    text: 'Every 5 min: security status, about seven serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-BitLockerVolume twice, Get-LocalGroupMember, Win32_AccountPolicy), plus a concurrent Get-BitLockerVolume for recovery keys.',
+    text: 'Every 5 min: security status, four serial PowerShell calls (SecurityCenter2 AntiVirusProduct, Get-MpComputerStatus, Get-NetFirewallProfile, Get-LocalGroupMember); the slow probes (Get-BitLockerVolume twice, Win32_AccountPolicy) are cached 30 min (10 min after an error), and the recovery-key Get-BitLockerVolume runs at most every 30 min.',
     anchors: [
       { file: 'internal/heartbeat/heartbeat.go', contains: ['shouldSendSecurity := now.Sub(h.lastSecurityUpdate) > 5*time.Minute', 'go h.sendRecoveryKeys()'] },
       { file: 'internal/security/windows_security_center_windows.go', contains: ['root/SecurityCenter2 -ClassName AntiVirusProduct'] },
       { file: 'internal/security/defender_windows.go', contains: ['Get-MpComputerStatus'] },
       { file: 'internal/security/status.go', contains: ['Get-NetFirewallProfile', 'Get-BitLockerVolume -MountPoint $env:SystemDrive', 'Get-BitLockerVolume | Select-Object MountPoint', 'Get-LocalGroupMember', 'Win32_AccountPolicy'] },
+      { file: 'internal/security/slow_probe.go', contains: ['slowProbeTTL = 30 * time.Minute', 'slowProbeErrorTTL = 10 * time.Minute'] },
+      { file: 'internal/heartbeat/handlers_encryption.go', contains: ['recoveryKeyCollectInterval = 30 * time.Minute'] },
       { file: 'internal/security/recoverykeys.go', contains: ['Get-BitLockerVolume'] },
     ],
   },

@@ -98,7 +98,8 @@ export interface DashboardDto {
   securityScore: SecurityScoreTileDto;
   devicesProtected: DevicesProtectedTileDto;
   patchesApplied: PatchesAppliedTileDto;
-  backup: BackupTileDto;
+  /** Absent when the org turned portal Backups off (#9351). */
+  backup?: BackupTileDto;
   support: SupportTileDto;
   actionItems: ActionItemsTileDto;
   awaitingYou: AwaitingYouTileDto;
@@ -339,6 +340,10 @@ export interface PortalRunDto {
   startedAt: string | null;
   completedAt: string | null;
   rowCount: number | null;
+  /** True when the stored result carries tabular `rows`, i.e. the CSV artifact
+   *  can be rendered. Executive summaries have none; the CSV route 422s for
+   *  them, so the client offers CSV only when this is true. */
+  csvAvailable: boolean;
   createdAt: string;
 }
 

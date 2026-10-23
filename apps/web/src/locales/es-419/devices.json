@@ -445,6 +445,14 @@
         "message": "Instala Homebrew como el usuario que tiene la sesión iniciada, usando una copia fija y verificada por suma de comprobación del instalador oficial. Requiere una sesión de consola con permisos de administrador y una credencial de sudo activa o sin contraseña; de lo contrario, la instalación falla y el error se informa de vuelta.",
         "confirm": "Instalar Homebrew"
       },
+      "restartAgent": {
+        "title": "¿Reiniciar el agente de Breeze?",
+        "message": "Pedir al watchdog de {{hostname}} que reinicie el servicio del agente de Breeze. El watchdog lo toma en su próxima conexión, normalmente en menos de un minuto, y solo se conecta mientras el agente está detenido.",
+        "watchdogLastSeen": "Último reporte del watchdog: {{date}}.",
+        "watchdogStale": "El watchdog reportó por última vez {{date}}, hace demasiado para tomar la solicitud; se rechazará hasta que vuelva a conectarse.",
+        "watchdogNeverSeen": "El watchdog no ha reportado, así que la solicitud se rechazará hasta que se conecte.",
+        "confirm": "Reiniciar agente"
+      },
       "bulkDeleteManual": {
         "title": "¿Eliminar {{count}} activos manuales?",
         "message": "Esto elimina permanentemente los activos manuales seleccionados. No se puede deshacer.",
@@ -477,6 +485,10 @@
     "reRunAgentInventoryCollectorsSo": "Recopilar inventario ahora",
     "refresh": "Actualizar",
     "reboot": "Reiniciar",
+    "forceRebootNow": "Forzar reinicio ahora",
+    "forceRebootHint": "Reinicia de inmediato y cierra las apps en ejecución. Se pierde el trabajo no guardado.",
+    "forceRebootAgentUpgradeRequired": "Se requiere actualizar el agente: el reinicio forzado necesita el agente {{version}} o posterior",
+    "forceRebootQueued": "Reinicio forzado en cola para {{hostname}}. Se ejecuta en cuanto no haya nada más en ejecución en el dispositivo.",
     "wake": "Despertar",
     "rebootToSafeMode": "Reiniciar en modo seguro",
     "deploySoftware": "Implementar software",
@@ -492,7 +504,8 @@
     "power": "Energía",
     "shutdown": "Apagar",
     "deviceSettings": "Configuración del dispositivo",
-    "installHomebrew": "Instalar Homebrew"
+    "installHomebrew": "Instalar Homebrew",
+    "restartAgent": "Reiniciar agente"
   },
   "deviceActivityFeed": {
     "activity": "Actividad",
@@ -868,7 +881,12 @@
     "devices": "Dispositivos",
     "devicesCrumbOtherOrg": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo sigue siendo {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Abre la pestaña Dispositivos de {{deviceOrg}}; tu organización de trabajo no cambia",
-    "switchOrgFailed": "No se pudo cambiar de organización. Inténtalo de nuevo."
+    "switchOrgFailed": "No se pudo cambiar de organización. Inténtalo de nuevo.",
+    "restartAgent": {
+      "queued": "Se solicitó el reinicio del agente en {{hostname}}. El watchdog lo ejecutará en su próxima conexión.",
+      "alreadyPending": "Ya hay un reinicio del agente de {{hostname}} esperando al watchdog.",
+      "failed": "No se pudo solicitar el reinicio del agente en {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Descripción general",
@@ -1017,7 +1035,9 @@
       "label": "aprobación",
       "byRing": "definida por el anillo de actualización vinculado",
       "manualOnly": "solo aprobaciones manuales (sin anillo de actualización vinculado)"
-    }
+    },
+    "chainResolutionRule": "Primero decide el nivel: Dispositivo gana a Grupo de dispositivos, luego Sitio, Organización y Socio. La prioridad (gana el número más bajo) solo desempata entre políticas del mismo nivel. Las funciones tachadas fueron anuladas por una política más cercana.",
+    "featureOverriddenBy": "Anulada por {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "No se pudieron recuperar las actividades",
@@ -1342,6 +1362,7 @@
     "drive": "Unidad",
     "size": "Tamaño",
     "used": "Usado",
+    "usedPercent": "% usado",
     "health": "Salud",
     "noDiskInventoryReported": "No se informó ningún inventario de disco.",
     "networkAdapters": "Adaptadores de red",
@@ -2052,6 +2073,7 @@
       "excludedCategoryTitle": "El anillo de actualización {{ring}} excluye la categoría de este parche, así que las ejecuciones programadas lo omiten.",
       "excludedAppRuleTitle": "Una regla de bloqueo o fijación de aplicación del anillo de actualización vinculado retiene este parche, así que las ejecuciones programadas lo omiten.",
       "excludedRingReferenceTitle": "Retenido: la directiva de parches de este dispositivo vincula un anillo de actualización que ya no existe o no está disponible para este socio. Corrija el anillo de actualización de la directiva para reanudar la aplicación de parches.",
+      "excludedDeclinedTitle": "Rechazado: este parche fue rechazado explícitamente, por lo que la aprobación automática del anillo no lo instalará. Apruébelo de nuevo para permitirlo.",
       "pending": "Aprobación pendiente",
       "needsApprovalRingTitle": "El anillo de actualización {{ring}} no aprueba este parche automáticamente. Apruébelo manualmente para instalarlo.",
       "needsApprovalNoRingTitle": "La directiva de parches de este dispositivo no tiene un anillo de actualización vinculado, así que este parche solo se instala tras una aprobación manual.",
@@ -2476,7 +2498,7 @@
     "showFindings": "Mostrar hallazgos",
     "stats": {
       "accepted": "Aceptado",
-      "kev": "Kev",
+      "kev": "Explotada conocida",
       "mitigated": "mitigado",
       "open": "Abierto",
       "patchReady": "Parche listo",
@@ -2494,9 +2516,9 @@
     "statusLabel": "Etiqueta de estado",
     "table": {
       "actions": "Acciones",
-      "cve": "Cve",
-      "cvss": "cvss",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Riesgo",
       "severity": "Gravedad",
       "status": "Estado"
@@ -2679,7 +2701,7 @@
       "message_one": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con {{count}} dispositivo restante? Los que estén sin conexión lo ejecutarán en su próximo registro.",
       "message_other": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{count}} dispositivos restantes? Los que estén sin conexión lo ejecutarán en su próximo registro."
     },
-    "importFromRmm": "Importar desde otro RMM",
+    "importFromRmm": "Importar campos personalizados desde otro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} solo se aplica a dispositivos con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivos de red",
@@ -3013,6 +3035,29 @@
     "submitting": "Procesando…",
     "cancel": "Cancelar",
     "genericError": "No se pudo iniciar el modo de mantenimiento."
+  },
+  "forceRebootDialog": {
+    "title": "Forzar reinicio ahora",
+    "description": "Reinicia {{hostname}} de inmediato y cierra las apps en ejecución, en lugar de esperarlas.",
+    "hostnameLabel": "Dispositivo",
+    "osLabel": "Sistema operativo",
+    "commandLabel": "Comando",
+    "noEffectOnOs": "En {{os}} un reinicio nunca espera a las apps, así que esto equivale a un reinicio inmediato normal.",
+    "warning": "Se perderá el trabajo no guardado en las apps abiertas de este dispositivo. El reinicio sigue esperando a cualquier comando que ya se esté ejecutando en el dispositivo.",
+    "typeHostname": "Escribe {{hostname}} para confirmar",
+    "stepUpHeading": "Confirma tu identidad",
+    "stepUpPasskeyNote": "Confirmarás con tu clave de acceso.",
+    "stepUpCodeLabel": "Código del autenticador",
+    "noStepUpFactor": "Agrega una app de autenticación o una clave de acceso a tu cuenta antes de forzar el reinicio de un dispositivo.",
+    "mfaRequired": "Primero completa el inicio de sesión con MFA y vuelve a intentarlo.",
+    "stepUpFailed": "No se pudo verificar. Ingresa un código nuevo y vuelve a intentarlo.",
+    "deviceOffline": "Este dispositivo no está en línea. Un reinicio forzado solo se envía a un dispositivo que esté en línea ahora.",
+    "agentUpgradeRequired": "El agente de este dispositivo es demasiado antiguo para un reinicio forzado. Actualiza primero el agente.",
+    "genericError": "No se pudo enviar el reinicio forzado.",
+    "cancel": "Cancelar",
+    "confirm": "Forzar reinicio ahora",
+    "submitStepUp": "Verificar y forzar reinicio",
+    "submitting": "Enviando…"
   },
   "moveDeviceOrgDialog": {
     "title": "Mover a otra organización",
@@ -3439,6 +3484,8 @@
     "health": {
       "empty": {
         "title": "Todavía no se está monitoreando nada",
+        "titleWithCheck": "Sin datos de estado SNMP",
+        "descriptionWithCheck": "Hay una verificación de red activa para este dispositivo, por lo que la accesibilidad sigue monitoreándose. Activa SNMP para recopilar también datos de estado.",
         "action": "Configurar monitoreo",
         "benefit": {
           "printer": "Activa SNMP para ver los niveles de tóner y tinta, las bandejas de papel, los contadores de páginas y los errores de la impresora.",

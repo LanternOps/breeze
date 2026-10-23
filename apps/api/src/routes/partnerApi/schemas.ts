@@ -740,6 +740,12 @@ export const partnerTicketExportRecordSchema = z.object({
   resolutionSlaMinutes: z.number().int().nullable(),
   slaBreachedAt: nullableTimestamp,
   slaBreachReason: z.string().max(1000).nullable(),
+  // #8973: the stored SLA deadlines (read-only, additive). Null when the
+  // target is null. *_warnAt is the 80% "breaching soon" point.
+  responseDueAt: nullableTimestamp,
+  resolutionDueAt: nullableTimestamp,
+  responseWarnAt: nullableTimestamp,
+  resolutionWarnAt: nullableTimestamp,
   createdAt: partnerExportTimestampSchema,
   updatedAt: partnerExportTimestampSchema,
   // The migration window that imported the ticket (#8313), null for a live

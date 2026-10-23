@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
       "summary": "{{filtered}} / {{total}} politikaları",
       "inheritsBadge": "Devralıyor",
-      "statusFilterLabel": "Durum"
+      "statusFilterLabel": "Durum",
+      "partnerPolicy": "İş ortağı",
+      "partnerPolicyAppliesOnlyWhereAssigned": "İş ortağı politikası — yalnızca atandığı yerde geçerlidir. İş ortağı çapında olması için tüm kuruluşlara atayın."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -739,7 +741,7 @@
         "muteAlertNotificationsDuringWindow": "Pencere sırasında yeni uyarı oluşturulmaz.",
         "suppressAlerts2": "Uyarıları bastır",
         "suppressPatching": "Yamalamayı engelle",
-        "delayPatchInstallationsDuringWindow": "Pencere sırasında yama kurulumlarını geciktirin.",
+        "delayPatchInstallationsDuringWindow": "Pencere sırasında zamanlanan yüklemeler atlanır ve bir sonraki zamanlanmış çalışmada yapılır.",
         "suppressPatching2": "bastırmaYaması",
         "suppressAutomations": "Otomasyonları bastırın",
         "pauseAutomationRunsDuringWindow": "Pencere sırasında otomasyon çalışmalarını duraklatın.",
@@ -748,15 +750,16 @@
         "pauseScriptExecutionDuringWindow": "Pencere sırasında komut dosyasının yürütülmesini duraklatın.",
         "suppressScripts2": "bastırmaScriptleri",
         "rebootIfARebootIsPending": "Yeniden başlatma bekleniyorsa yeniden başlat",
-        "duringTheWindowRebootDevicesThatHave": "Pencere sırasında, yeniden başlatma bekleyen aygıtları yeniden başlatın. Windows oturum açmış kullanıcıyı yeniden başlatmadan ~5 dakika önce uyarır; Linux, oturum açmış kullanıcılara bir uyarı vererek yeniden başlatmayı 15 dakika sonrasına planlar. macOS desteklenmiyor.",
+        "duringTheWindowRebootDevicesThatHave": "Pencere sırasında, yeniden başlatması bekleyen cihazları yeniden başlatır. Uyarı süresi, cihazın yama ilkesindeki yeniden başlatma gecikmesinden gelir. macOS desteklenmez.",
         "rebootIfPending": "yeniden başlatma IfPending",
-        "maintenanceRebootIfPendingToggle": "bakım-yeniden başlatma-eğer-beklemede-geçiş",
         "notifyOnStart": "Başlangıçta bildir",
         "sendNotificationWhenWindowOpens": "Pencere açıldığında bildirim gönder.",
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Sonunda bildir",
         "sendNotificationWhenWindowCloses": "Pencere kapatıldığında bildirim gönder.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Haftalık pencereler, seçilen saat diliminde her pazar başlangıç saatinde açılır.",
+        "monthlyOpensOnTheFirst": "Aylık pencereler, seçilen saat diliminde her ayın 1'inde başlangıç saatinde açılır."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Aracı toplama",
@@ -887,7 +890,10 @@
         "noRingManualApprovalHint": "Bağlı halka yok — yamalar yalnızca elle onaydan sonra kurulur.",
         "unavailableRingOption": "Kullanılamayan halka",
         "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
-        "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir."
+        "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
+        "ringDetailsNoHold": "Kullanıma sunma sırası {{order}} · onay öncesi bekleme yok",
+        "ringDetailsWithHold_one": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme",
+        "ringDetailsWithHold_other": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",
@@ -1332,8 +1338,8 @@
       "recentViolations": "Son İhlaller",
       "noCurrentSoftwareViolations": "Mevcut yazılım ihlali yok.",
       "violationS": "ihlalleri",
-      "remediation": "Düzeltme:",
-      "checked": "Kontrol edildi:",
+      "remediation": "Düzeltme: {{value}}",
+      "checked": "Kontrol edildi: {{date}}",
       "deactivatePolicy": "Politikayı Devre Dışı Bırak",
       "areYouSureYouWantToDeactivate": "Devre dışı bırakmak istediğinizden emin misiniz?",
       "thePolicyWillBeMarkedInactiveAnd": "? Politika etkin değil olarak işaretlenecek ve uyumluluk verileri temizlenecek.",
@@ -1432,6 +1438,8 @@
       "error": "Hata",
       "deploymentComplete": "Dağıtım tamamlandı",
       "inProgress": "Devam ediyor",
+      "completedWithErrors": "Hatalarla tamamlandı",
+      "scheduledFor": "Zamanlandı: {{time}}",
       "autoRefreshing": "Her 5 saniyede bir otomatik olarak yenilenir",
       "queuedOffline": "Sıraya alındı — cihaz çevrimdışı",
       "cancelled": "İptal edildi",
@@ -1587,16 +1595,15 @@
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Cihazlar getirilemedi",
-      "devicesWith": "Cihazlar",
-      "by": "yazan",
+      "devicesWith": "{{name}} yüklü cihazlar",
+      "by": "yayıncı: {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Bu yazılıma sahip cihaz bulunamadı.",
       "hostname": "Ana Bilgisayar Adı",
       "oS": "İşletim Sistemi",
       "version": "Sürüm",
       "lastSeen": "Son Görülme",
-      "device": "cihaz",
-      "total": "toplam",
-      "s": "s"
+      "deviceTotal_one": "toplam {{count}} cihaz",
+      "deviceTotal_other": "toplam {{count}} cihaz"
     },
     "policyForm": {
       "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",

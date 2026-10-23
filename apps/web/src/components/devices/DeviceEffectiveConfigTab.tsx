@@ -174,12 +174,41 @@ const LEVEL_LABELS: Record<AssignmentLevel, string> = {
 
 type SettingsSummaryItem = { label: string; value: string };
 
+// #9565: the fields that describe each feature at a glance, in display order.
+// Without a pick list the summary followed JSONB key order, so the Maintenance
+// card led with "Timezone / Recurrence / Notify On End" and never showed the
+// duration. Picked keys that are absent are skipped and the remaining slots
+// fall back to key order; a feature with no entry keeps key order entirely.
+const FEATURE_SUMMARY_KEYS: Partial<Record<FeatureType, readonly string[]>> = {
+  maintenance: ["windowStart", "durationHours", "recurrence", "timezone"],
+  patch: ["scheduleFrequency", "scheduleTime", "rebootPolicy", "sources"],
+  warranty: ["enabled", "warnDays", "criticalDays"],
+  event_log: ["minimumLevel", "retentionDays", "collectCategories", "collectionIntervalMinutes"],
+  backup: ["backupMode", "destinationConfigId", "paths"],
+  sensitive_data: ["detectionClasses", "scheduleType", "intervalMinutes", "cron"],
+};
+
+/** Reorders `settings` so the picked keys come first; the rest keep key order. */
+function orderSummaryEntries(
+  settings: Record<string, unknown>,
+  pickedKeys: readonly string[] | undefined,
+): Array<[string, unknown]> {
+  const entries = Object.entries(settings);
+  if (!pickedKeys || pickedKeys.length === 0) return entries;
+  const picked = pickedKeys
+    .filter((key) => Object.prototype.hasOwnProperty.call(settings, key))
+    .map((key): [string, unknown] => [key, settings[key]]);
+  const pickedSet = new Set(pickedKeys);
+  return [...picked, ...entries.filter(([key]) => !pickedSet.has(key))];
+}
+
 function summarizeSettings(
   settings: Record<string, unknown> | null,
+  pickedKeys?: readonly string[],
 ): SettingsSummaryItem[] {
   if (!settings || Object.keys(settings).length === 0) return [];
   const items: SettingsSummaryItem[] = [];
-  for (const [key, value] of Object.entries(settings)) {
+  for (const [key, value] of orderSummaryEntries(settings, pickedKeys)) {
     if (value === null || value === undefined) continue;
     // Format key from camelCase/snake_case to readable
     const label = key
@@ -223,14 +252,34 @@ function summarizeFeatureSettings(
   feature: ResolvedFeature,
   approvalItem: (ringLinked: boolean) => SettingsSummaryItem,
 ): SettingsSummaryItem[] {
-  if (featureType !== "patch") return summarizeSettings(feature.inlineSettings);
+  const pickedKeys = FEATURE_SUMMARY_KEYS[featureType];
+  if (featureType !== "patch") return summarizeSettings(feature.inlineSettings, pickedKeys);
   const settings = feature.inlineSettings;
   const hasSettings = !!settings && Object.keys(settings).length > 0;
   if (!hasSettings && !feature.featurePolicyId) return [];
   const remaining = Object.fromEntries(
     Object.entries(settings ?? {}).filter(([key]) => !PATCH_UNUSED_APPROVAL_KEYS.has(key)),
   );
-  return [approvalItem(!!feature.featurePolicyId), ...summarizeSettings(remaining)].slice(0, 4);
+  return [approvalItem(!!feature.featurePolicyId), ...summarizeSettings(remaining, pickedKeys)].slice(0, 4);
+}
+
+/**
+ * #9565: does this chain row supply the device's effective value for `ft`?
+ * A row lists every feature its policy links, but only the closest winner
+ * (see the resolver's level → priority → age ordering) actually applies.
+ */
+function chainEntryContributes(
+  entry: InheritanceEntry,
+  ft: FeatureType,
+  features: Record<string, ResolvedFeature>,
+): boolean {
+  const winner = features[ft];
+  return (
+    !!winner &&
+    winner.sourcePolicyId === entry.policyId &&
+    winner.sourceLevel === entry.level &&
+    winner.sourceTargetId === entry.targetId
+  );
 }
 
 // ── Component ────────────────────────────────────────────────────────
@@ -493,10 +542,16 @@ export default function DeviceEffectiveConfigTab({
           <h4 className="font-semibold mb-3">
             {t("deviceEffectiveConfigTab.inheritanceChain")}
           </h4>
-          <p className="text-xs text-muted-foreground mb-4">
+          <p className="text-xs text-muted-foreground">
             {t(
               "deviceEffectiveConfigTab.policiesAreResolvedUsingClosestWins",
             )}{" "}
+          </p>
+          <p
+            data-testid="inheritance-chain-rule"
+            className="mt-1 mb-4 text-xs text-muted-foreground"
+          >
+            {t("deviceEffectiveConfigTab.chainResolutionRule")}
           </p>
           <div className="overflow-hidden rounded-md border">
             <table className="min-w-full divide-y">
@@ -540,14 +595,35 @@ export default function DeviceEffectiveConfigTab({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
-                        {entry.featureTypes.map((ft) => (
-                          <span
-                            key={ft}
-                            className="inline-flex items-center rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground"
-                          >
-                            {FEATURE_META[ft]?.label ?? ft}
-                          </span>
-                        ))}
+                        {entry.featureTypes.map((ft) => {
+                          const label = FEATURE_META[ft]?.label ?? ft;
+                          if (chainEntryContributes(entry, ft, features)) {
+                            return (
+                              <span
+                                key={ft}
+                                data-testid="chain-feature-contributed"
+                                className="inline-flex items-center rounded-full border bg-muted/50 px-2 py-0.5 text-xs text-foreground"
+                              >
+                                {label}
+                              </span>
+                            );
+                          }
+                          // A closer policy won this feature: keep the chip so
+                          // the row still shows what the policy links, but grey
+                          // it out and name the winner.
+                          return (
+                            <span
+                              key={ft}
+                              data-testid="chain-feature-overridden"
+                              title={t("deviceEffectiveConfigTab.featureOverriddenBy", {
+                                policy: features[ft]?.sourcePolicyName ?? "",
+                              })}
+                              className="inline-flex items-center rounded-full border border-dashed px-2 py-0.5 text-xs text-muted-foreground/70 line-through"
+                            >
+                              {label}
+                            </span>
+                          );
+                        })}
                       </div>
                     </td>
                   </tr>

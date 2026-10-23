@@ -450,9 +450,17 @@ export function decidePatchApproval(
   manualApprovalSet: Set<string>,
   categoryRuleMap: Map<string, CategoryRule>,
   ringAutoApprove: RingAutoApproveConfig,
-  now: Date
+  now: Date,
+  declinedSet: Set<string> = new Set()
 ): PatchApprovalDecision {
   const MANUAL: PatchApprovalDecision = { denied: 'awaiting_manual_approval' };
+
+  // Priority 0: an explicit decline is terminal (#9369) — no category rule or
+  // ring auto-approve may re-approve it. The caller resolves decline vs. a
+  // later re-approval into the two sets, so a patch is in at most one.
+  if (declinedSet.has(patch.patchId)) {
+    return { denied: 'explicitly_declined' };
+  }
 
   // Priority 1: Manual approval
   if (manualApprovalSet.has(patch.patchId)) {

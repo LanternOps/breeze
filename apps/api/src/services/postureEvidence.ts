@@ -52,6 +52,7 @@ import {
 } from '@breeze/shared';
 import { trustCisFrameworkViewEnabled } from '../config/env';
 import { cisFindingSchema } from '../db/schema/cisHardening';
+import { averageCisScore, cisDeviceScore } from './cisScore';
 
 export interface PostureEvidencePolicy {
   sites: string[];
@@ -521,6 +522,7 @@ export async function loadPostureEvidence(
         deviceId: cisBaselineResults.deviceId,
         passedChecks: cisBaselineResults.passedChecks,
         totalChecks: cisBaselineResults.totalChecks,
+        score: cisBaselineResults.score,
         checkedAt: cisBaselineResults.checkedAt
       })
       .from(cisBaselineResults)
@@ -530,8 +532,12 @@ export async function loadPostureEvidence(
       if (cisSeen.has(r.deviceId)) continue; // desc order → first seen is the latest scan
       cisSeen.add(r.deviceId);
       if (!withinDays(asOf, r.checkedAt, policy.maxSecurityStatusAgeDays)) continue;
+      // A scan that evaluated nothing stores score 100 (summarizeCisFindings); that is
+      // absence of evidence, not a pass.
+      const pct = cisDeviceScore(r);
+      if (pct === null) continue;
       cisByDevice.set(r.deviceId, {
-        pct: r.totalChecks > 0 ? Math.round((r.passedChecks / r.totalChecks) * 100) : 0,
+        pct,
         checkedAt: r.checkedAt ?? null,
       });
       if (r.id) cisFreshResultIds.push(r.id);
@@ -718,11 +724,9 @@ export async function loadPostureEvidence(
     };
   });
 
-  const cisValues = [...cisByDevice.values()].map((v) => v.pct);
-  controls.hardening_baseline.aggregatePct =
-    policy.includeCis && cisValues.length > 0
-      ? Math.round(cisValues.reduce((a, b) => a + b, 0) / cisValues.length)
-      : null;
+  controls.hardening_baseline.aggregatePct = policy.includeCis
+    ? averageCisScore([...cisByDevice.values()].map((v) => v.pct))
+    : null;
 
   if (policy.includeCis && policy.includeCisSafeguards) {
     controls.hardening_baseline.safeguards = computeSafeguardEvidence(deviceRows, cisByDevice, safeguardFindings);

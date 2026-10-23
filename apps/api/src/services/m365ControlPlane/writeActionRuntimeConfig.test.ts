@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isM365CustomerGraphActionsOnboardingEnabledForOrg,
   isM365GraphActionsEnabledForOrg,
+  m365GraphActionsAvailability,
+  m365CustomerGraphActionsOnboardingAvailability,
   loadM365CustomerGraphActionsRuntimeConfig,
   validateM365CustomerGraphActionsRuntimeConfigAtBoot,
 } from './writeActionRuntimeConfig';
@@ -366,5 +368,36 @@ describe('isM365GraphActionsEnabledForOrg', () => {
       M365_GRAPH_ACTIONS_TOOLS_ENABLED: 'true',
       M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ORG_ID,
     })).not.toThrow();
+  });
+});
+
+describe('M365 Graph actions availability reasons (#9319)', () => {
+  const on = { M365_GRAPH_ACTIONS_TOOLS_ENABLED: 'true', M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: ORG_ID };
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'breeze-m365-actions-runtime-'));
+    signingJwkFile = join(tempDir, 'executor-signing.jwk');
+    writeSigningJwk();
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('tools: names the switch that is off and the boolean helper is unchanged', () => {
+    expect(m365GraphActionsAvailability(ORG_ID, {})).toBe('instance_disabled');
+    expect(isM365GraphActionsEnabledForOrg(ORG_ID, {})).toBe(false);
+    expect(m365GraphActionsAvailability(OTHER_ORG_ID, on)).toBe('org_not_enabled');
+    expect(isM365GraphActionsEnabledForOrg(OTHER_ORG_ID, on)).toBe(false);
+    expect(m365GraphActionsAvailability(ORG_ID, on)).toBe('enabled');
+    expect(m365GraphActionsAvailability(OTHER_ORG_ID, { ...on, M365_GRAPH_ACTIONS_TOOLS_ORG_IDS: '*' })).toBe('enabled');
+  });
+
+  it('onboarding: flag off → instance_disabled, unlisted → org_not_enabled, listed → enabled', () => {
+    const off = validEnv({ M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED: 'false' });
+    expect(m365CustomerGraphActionsOnboardingAvailability(ORG_ID, off)).toBe('instance_disabled');
+    expect(isM365CustomerGraphActionsOnboardingEnabledForOrg(ORG_ID, off)).toBe(false);
+    expect(m365CustomerGraphActionsOnboardingAvailability(OTHER_ORG_ID, validEnv())).toBe('org_not_enabled');
+    expect(m365CustomerGraphActionsOnboardingAvailability(ORG_ID, validEnv())).toBe('enabled');
   });
 });

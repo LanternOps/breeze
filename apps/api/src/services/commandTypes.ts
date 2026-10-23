@@ -156,6 +156,9 @@ export const CommandTypes = {
 
   // Safe mode reboot (Windows only)
   REBOOT_SAFE_MODE: 'reboot_safe_mode',
+  // #8729: immediate reboot that force-closes running apps (/f on Windows).
+  // Queued only by POST /devices/:id/force-reboot (step-up, interactive session).
+  FORCE_REBOOT: 'force_reboot',
   // Wake-on-LAN — sent to a relay agent on the target's LAN, not the offline target itself
   WAKE_ON_LAN: 'wake_on_lan',
   // On-demand inventory refresh — agent re-runs every send*Inventory collector,

@@ -71,11 +71,13 @@ const CONFIG = vi.hoisted(() => {
 vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
   loadM365CustomerGraphReadRuntimeConfig: () => CONFIG['customer-graph-read'],
   isM365CustomerGraphReadOnboardingEnabledForOrg: () => true,
+  m365CustomerGraphReadOnboardingAvailability: () => 'enabled',
 }));
 vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../services/m365ControlPlane/writeActionRuntimeConfig')>()),
   loadM365CustomerGraphActionsRuntimeConfig: () => CONFIG['customer-graph-actions'],
   isM365CustomerGraphActionsOnboardingEnabledForOrg: () => true,
+  m365CustomerGraphActionsOnboardingAvailability: () => 'enabled' as const,
 }));
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);

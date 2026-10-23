@@ -239,6 +239,15 @@ export default function IntegrationsPage({
   const claims = getJwtClaims();
   const callbackOrgId = currentOrgId
     || (claims.scope === "organization" ? claims.orgId ?? null : null);
+  // #9318: name the org every card below configures. Same id the cards and the
+  // save calls use (callbackOrgId), so the label cannot disagree with the write
+  // target.
+  const scopeOrgName = useOrgStore((value) => {
+    const organizations = (value as { organizations?: { id: string; name: string }[] }).organizations;
+    return callbackOrgId && Array.isArray(organizations)
+      ? organizations.find((org) => org.id === callbackOrgId)?.name ?? null
+      : null;
+  });
   // Deep-link support: the URL hash selects the initial tab — and sub-tab — on
   // load, e.g. /integrations#psa or /integrations#huntress.
   //
@@ -525,6 +534,28 @@ export default function IntegrationsPage({
           </button>
         }
       />
+
+      {callbackOrgId && (
+        <div
+          data-testid="integrations-scope-bar"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border bg-muted/30 px-4 py-2 text-sm"
+        >
+          <span className="text-muted-foreground">{t("integrationsPage.scopeBar.configuringFor")}</span>
+          <strong data-testid="integrations-scope-org" className="font-semibold text-foreground">
+            {scopeOrgName ?? t("integrationsPage.scopeBar.thisOrganization")}
+          </strong>
+          {!isOrgScoped && (
+            <button
+              type="button"
+              data-testid="integrations-scope-change"
+              onClick={() => window.dispatchEvent(new CustomEvent("breeze:open-org-switcher"))}
+              className="text-primary underline-offset-2 hover:underline"
+            >
+              {t("integrationsPage.scopeBar.change")}
+            </button>
+          )}
+        </div>
+      )}
 
       <ConnectionHealthPanel />
 

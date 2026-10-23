@@ -17,6 +17,12 @@ interface UiState {
   openShortcutsHelp: () => void;
   closeShortcutsHelp: () => void;
   toggleShortcutsHelp: () => void;
+
+  // Mounted editors holding unsaved input (useRegisterDirtyForm). While > 0
+  // the bare-key shortcuts that navigate or write are suppressed.
+  dirtyFormCount: number;
+  registerDirtyForm: () => void;
+  unregisterDirtyForm: () => void;
 }
 
 export const useUiStore = create<UiState>()((set) => ({
@@ -35,4 +41,8 @@ export const useUiStore = create<UiState>()((set) => ({
   closeShortcutsHelp: () => set({ isShortcutsHelpOpen: false }),
   toggleShortcutsHelp: () =>
     set((s) => ({ isShortcutsHelpOpen: !s.isShortcutsHelpOpen, isCommandPaletteOpen: false })),
+
+  dirtyFormCount: 0,
+  registerDirtyForm: () => set((s) => ({ dirtyFormCount: s.dirtyFormCount + 1 })),
+  unregisterDirtyForm: () => set((s) => ({ dirtyFormCount: Math.max(0, s.dirtyFormCount - 1) })),
 }));

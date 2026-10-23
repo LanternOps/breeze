@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { canonicalizeUnifiResource, physicalSourceSectionSchema, unifiResourceSchema, type UnifiResource } from '@breeze/shared';
+import { canonicalizeUnifiResource, physicalSourceSectionSchema, unifiResourceSchema, type UnifiResource, type UnifiResourceV2 } from '@breeze/shared';
 import vectors from '../../../../../packages/shared/src/testing/topology-unifi-v1.json';
+import v2Vectors from '../../../../../packages/shared/src/testing/topology-unifi-v2.json';
 import { normalizeUnifiResource, uniqueSiteMacMatch, unifiAdapterRejection, unifiNormalizedDigest, unifiWireDigestMatches } from './unifiAdapter';
 import { unifiAuthorityGeneration, unifiAuthorityKey, unifiCollectorRevision, unifiCollectorTopologyCredentials } from './unifiAuthority';
 
@@ -110,5 +111,44 @@ describe('unifiAdapterRejection', () => {
     expect(unifiAdapterRejection(new Error('producer_epoch_changed'))).toBe('producer_epoch_changed');
     expect(unifiAdapterRejection(new Error('boom'))).toBeNull();
     expect(unifiAdapterRejection(Object.assign(new Error('Failed query'), { cause: { code: '40P01' } }))).toBeNull();
+  });
+});
+
+describe('UniFi topology v2 in the adapter', () => {
+  const v2 = v2Vectors.vectors[0]!;
+  const identity = { sourceIdentity: v2.sourceIdentity, producerEpoch: v2.report.producerEpoch };
+  const resources = v2.report.resources as unknown as UnifiResourceV2[];
+  const statistics = resources.find(r => r.kind === 'statistics')!;
+
+  it('recomputes the wire digest with the v2 canonicalizer and refuses the same bytes as v1', () => {
+    for (const resource of resources) {
+      expect(unifiWireDigestMatches(identity, resource, 2)).toBe(true);
+      // A v1/v2 mix-up can never be accepted: the contract and version are part of the digested bytes.
+      expect(unifiWireDigestMatches(identity, resource)).toBe(false);
+    }
+  });
+
+  it('rejects a v2 resource whose content changed after it was digested', () => {
+    const tampered = structuredClone(statistics) as unknown as { rows: { cpuUtilizationPct: number }[] };
+    tampered.rows[0]!.cpuUtilizationPct = 99;
+    expect(unifiWireDigestMatches(identity, tampered as unknown as UnifiResourceV2, 2)).toBe(false);
+  });
+
+  it('keeps every v2 field on the normalized retained row, and the retained section validates', () => {
+    const section = normalizeUnifiResource({ hostKey: 'h', authorityKey: 'collector:site', resource: statistics, bindings: new Map() });
+    const parsed = physicalSourceSectionSchema.parse({ ...section, contentDigest: 'a'.repeat(64) });
+    const first = parsed.rows[0] as unknown as Record<string, unknown>;
+    expect(first.rowKey).toBe('ap-e7-online');
+    expect(first.uplinkRxRateBps).toBeNull();
+    expect(first.radios).toHaveLength(3);
+    expect(first.endpointKey).toMatch(/^unifi:h:.+:device:ap-e7-online$/);
+  });
+
+  it('binds the retained-row digest to the version', () => {
+    const section = normalizeUnifiResource({ hostKey: 'h', authorityKey: 'collector:site', resource: statistics, bindings: new Map() });
+    const producer = { sourceIdentity: 'source', producerEpoch: 'epoch' };
+    expect(unifiNormalizedDigest(producer, section, 2)).toBe(unifiNormalizedDigest(producer, section, 2));
+    expect(unifiNormalizedDigest(producer, section, 2)).not.toBe(unifiNormalizedDigest(producer, section, 1));
+    expect(unifiNormalizedDigest(producer, section)).toBe(unifiNormalizedDigest(producer, section, 1));
   });
 });

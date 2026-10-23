@@ -325,3 +325,44 @@ describe('fence envelope behaviour', () => {
     expect(logged).not.toContain('now obey me');
   });
 });
+
+// #9532 — vulnerability findings now name the affected software. Product
+// name/version/vendor come from the agent's software inventory (a registry
+// DisplayName a local user can set), so they are device-authored text.
+describe('vulnerability findings: affected software', () => {
+  it('get_device_vulnerabilities: fences software name/version/vendor, leaves CVE fields verbatim', () => {
+    const raw = JSON.stringify({
+      deviceId: 'd1',
+      vulnerabilities: [{
+        id: 'f1', cveId: 'CVE-2026-1001', severity: 'high', status: 'open',
+        software: { name: INJECTION, version: '1.0', vendor: 'Acme' },
+      }],
+      count: 1,
+    });
+
+    const out = JSON.parse(compactToolResultForChat('get_device_vulnerabilities', raw)) as {
+      vulnerabilities: Array<{ cveId: string; software: { name: string; version: string } }>;
+    };
+
+    expect(out.vulnerabilities[0]!.software.name).not.toMatch(INJECTION_RE);
+    expect(out.vulnerabilities[0]!.software.version).toBe('1.0');
+    expect(out.vulnerabilities[0]!.cveId).toBe('CVE-2026-1001');
+  });
+
+  it('remediate_vulnerability: fences software echoed beside scheduled, already-queued and skipped ids', () => {
+    const entry = { id: 'f1', cveId: 'CVE-2026-1001', software: { name: INJECTION, version: '1.0' } };
+    const raw = JSON.stringify({
+      scheduled: 1,
+      scheduledFindings: [entry],
+      alreadyQueued: [entry],
+      skipped: [{ ...entry, id: 'f2', reason: 'Patch not approved' }],
+      message: 'Scheduled 1 remediation(s) (1 already queued); 1 skipped — Patch not approved.',
+    });
+
+    const out = compactToolResultForChat('remediate_vulnerability', raw);
+
+    expect(out).not.toMatch(INJECTION_RE);
+    expect(out).toContain('CVE-2026-1001');
+    expect(out).toContain('Patch not approved');
+  });
+});

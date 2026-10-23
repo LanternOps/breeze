@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 /**
  * The `warranty` mapping target (#3257 W08 Task 4, Open Decision 7).
@@ -198,13 +199,17 @@ describe('applyWarrantyImport', () => {
     expect(upsert.onConflictDoUpdate.mock.calls[0]![0].setWhere).toBeDefined();
   });
 
-  it('drops the guard from the statement when the operator opted in', async () => {
+  it('drops only the PROVIDER arm of the write guard when the operator opted in — the agent-owned arms stay', async () => {
     rigExisting(null);
     const upsert = captureUpsert();
 
     await applyWarrantyImport(tx, { deviceId: DEVICE, orgId: ORG, warrantyEndDate: inDays(30) }, { overrideProvider: true });
 
-    expect(upsert.onConflictDoUpdate.mock.calls[0]![0].setWhere).toBeUndefined();
+    const setWhere = upsert.onConflictDoUpdate.mock.calls[0]![0].setWhere;
+    expect(setWhere).toBeDefined();
+    const { sql: text, params } = new PgDialect().sqlToQuery(setWhere);
+    expect(text).not.toContain("'provider'");
+    expect(params).toEqual(expect.arrayContaining(['agent_plist', 'agent_cmsl']));
   });
 
   it('reports an identical re-import as skipped-already-set and issues no write', async () => {
@@ -297,5 +302,75 @@ describe('coerceWarrantyValue', () => {
 
   it('rejects a manufacturer longer than the column', () => {
     expect(coerceWarrantyValue('manufacturer', 'x'.repeat(101))).toEqual({ ok: false, reason: 'too_long' });
+  });
+});
+
+describe('agent-owned warranty rows are never stomped by an import (#5511 W01, D9)', () => {
+  const agentRow = (dataSource: string, manufacturer: string): ExistingWarranty => ({
+    dataSource,
+    warrantyStartDate: null,
+    warrantyEndDate: null,
+    manufacturer,
+    status: 'active',
+  });
+
+  it('refuses an agent_cmsl row', async () => {
+    rigExisting(agentRow('agent_cmsl', 'hp'));
+    const upsert = captureUpsert();
+
+    const outcome = await applyWarrantyImport(
+      tx,
+      { deviceId: DEVICE, orgId: ORG, warrantyEndDate: inDays(400) },
+      { overrideProvider: false },
+    );
+
+    expect(outcome).toBe('skipped-provider-owned');
+    expect(upsert.values).not.toHaveBeenCalled();
+  });
+
+  it('refuses an agent_plist row — the pre-existing macOS exposure', async () => {
+    rigExisting(agentRow('agent_plist', 'apple'));
+    const upsert = captureUpsert();
+
+    const outcome = await applyWarrantyImport(
+      tx,
+      { deviceId: DEVICE, orgId: ORG, warrantyEndDate: inDays(400) },
+      { overrideProvider: false },
+    );
+
+    expect(outcome).toBe('skipped-provider-owned');
+    expect(upsert.values).not.toHaveBeenCalled();
+  });
+
+  it('refuses an agent-owned row even with overrideProvider — that flag only ever meant "override a VENDOR lookup"', async () => {
+    rigExisting(agentRow('agent_cmsl', 'hp'));
+    const upsert = captureUpsert();
+
+    const outcome = await applyWarrantyImport(
+      tx,
+      { deviceId: DEVICE, orgId: ORG, warrantyEndDate: inDays(400) },
+      { overrideProvider: true },
+    );
+
+    expect(outcome).toBe('skipped-provider-owned');
+    expect(upsert.values).not.toHaveBeenCalled();
+  });
+
+  it('still writes when nothing owns the row, and keeps the partial-index arbiter', async () => {
+    rigExisting(null);
+    const upsert = captureUpsert();
+
+    const outcome = await applyWarrantyImport(
+      tx,
+      { deviceId: DEVICE, orgId: ORG, warrantyEndDate: inDays(400) },
+      { overrideProvider: false },
+    );
+
+    expect(outcome).toBe('applied');
+    // 42P10 guard: device_warranty_device_id_idx is PARTIAL, so the statement
+    // must repeat the predicate or Postgres cannot infer the arbiter.
+    expect(upsert.onConflictDoUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ targetWhere: expect.anything() }),
+    );
   });
 });

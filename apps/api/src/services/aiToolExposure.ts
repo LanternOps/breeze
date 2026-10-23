@@ -39,6 +39,9 @@ export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, str
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Tool Catalog W03 (#5218, Decision 6): an operator agent authoring flows
+  // needs the managed_by_agent_id story first, not a side door.
+  'draft_flow',
   // Endpoint messaging (#8742 W02): text shown to end users under the MSP's
   // brand is authored in a human chat session and approved card by card; an
   // operator agent never proposes one.

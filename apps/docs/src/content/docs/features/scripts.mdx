@@ -149,7 +149,7 @@ Each script's detail page also shows a **Provenance panel**: whether it was writ
 
 4. **Fill in parameters.** If the script defines parameters, fill in the values. Required parameters are marked with an asterisk. Boolean parameters show as checkboxes; select parameters show as dropdowns.
 
-5. **Select target devices.** The device list shows only devices with a compatible OS. Filter by hostname search, site, or status (online/offline/maintenance). Click checkboxes to select individual devices, or click **Select all online** to target all compatible online devices. An **Advanced Filters** button opens the full filter builder for complex targeting. To run on saved device groups instead, switch **Run on** to **Device groups**; see [Running on device groups](#running-on-device-groups).
+5. **Select target devices.** The device list shows only devices with a compatible OS. Filter by hostname search, site, or status (online/offline/maintenance). Click checkboxes to select individual devices, or click **Select all** to select every device listed. An **Advanced Filters** button opens the full filter builder for complex targeting. To run on saved device groups instead, switch **Run on** to **Device groups**; see [Running on device groups](#running-on-device-groups).
 
 6. **Confirm and execute.** Click **Execute**. A confirmation banner appears showing the script name, device count, and run-as context. Click **Confirm Execute** to dispatch the script. A progress indicator shows submission status across all targeted devices.
 
@@ -173,6 +173,15 @@ Navigate to **Scripts** and click a script name to open the editor, then click *
 - **Sort columns.** Click column headers (Script, Device, Status, Started, Duration, Exit Code) to sort ascending or descending.
 - **View details.** Click any execution row to open the detail view with full stdout, stderr, exit code, error messages, and timing information.
 - **Paginate.** Results are paginated with 10 per page by default.
+
+### Script Execution History on a device
+
+Each device also has its own history. Open a device from **Devices** and select the **Scripts** tab, titled **Script Execution History**. It lists every script run reported for that device, regardless of who started it.
+
+- **Scripts view.** A toggle switches between **Latest per script** (one row per script, showing its most recent run and a run count) and **All runs** (every execution, newest first).
+- **Columns.** Script, Status, Started, Completed and Duration; the latest-per-script view also shows Last run and Last output.
+- **Execution Details.** Click a row to see the run context, start and completion times, duration, exit code, and the full standard output and standard error, each with a copy-to-clipboard button. A run with no output shows **No output**.
+- **Run again.** Open an execution and click **Run again** to rerun that script on this device (see below). After a single-device run, Breeze brings you back to this tab with the new execution highlighted.
 
 ### Run again
 

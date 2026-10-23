@@ -74,6 +74,7 @@ describe('CoveJsonRpcClient.login', () => {
       params: { partner: CREDS.partnerName, username: CREDS.username, password: CREDS.password },
     });
     // No visa on the very first call — there is none yet.
+    expect(calls[0]!.body.visa).toBeUndefined();
     expect(calls[0]!.body.params.visa).toBeUndefined();
   });
 
@@ -121,8 +122,12 @@ describe('CoveJsonRpcClient.call — visa chaining', () => {
     await client.call('EnumeratePartners', { parentPartnerId: 1000 });
     await client.call('EnumerateAccountStatistics', { query: {} });
 
-    expect(calls[1]!.body.params.visa).toBe('visa-after-login');   // from Login
-    expect(calls[2]!.body.params.visa).toBe('visa-2');             // from EnumeratePartners
+    // The visa is a top-level envelope field, a sibling of `method` — Cove
+    // answers a visa inside `params` with "Visa is inconsistent/corrupted".
+    expect(calls[1]!.body.visa).toBe('visa-after-login');   // from Login
+    expect(calls[2]!.body.visa).toBe('visa-2');             // from EnumeratePartners
+    expect(calls[1]!.body.params).toEqual({ parentPartnerId: 1000 });
+    expect(calls[2]!.body.params).toEqual({ query: {} });
   });
 
   it('refuses a call before login rather than sending a visa-less request', async () => {
@@ -147,7 +152,8 @@ describe('CoveJsonRpcClient.call — one re-login on an expired visa', () => {
     expect(calls.map((c) => c.body.method)).toEqual([
       'Login', 'EnumeratePartners', 'Login', 'EnumeratePartners',
     ]);
-    expect(calls[3]!.body.params.visa).toBe('visa-after-relogin');
+    expect(calls[3]!.body.visa).toBe('visa-after-relogin');
+    expect(calls[3]!.body.params.visa).toBeUndefined();
   });
 
   it('gives up after ONE re-login — a second expiry is not retried again', async () => {

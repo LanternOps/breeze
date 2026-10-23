@@ -33,6 +33,7 @@ import { LINE_TYPE_LABELS } from './lineTypes';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import PeriodOutcomeRow from './PeriodOutcomeRow';
 import HourBlockPanel from './HourBlockPanel';
+import RelatedContractsNotice, { ActivateOverlapConfirm, overlappingSiblings } from './RelatedContractsNotice';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -108,6 +109,10 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // confirm step — matching the bulk-list Cancel. Pause/resume/activate are
   // reversible and fire immediately.
   const [cancelOpen, setCancelOpen] = useState(false);
+  // #9303: Activate confirms first when another live contract in the org bills
+  // on the same cadence over an overlapping term (double-billing guard).
+  const overlapping = useMemo(() => overlappingSiblings(detail.relatedContracts), [detail.relatedContracts]);
+  const [activateOverlapOpen, setActivateOverlapOpen] = useState(false);
   const [estimate, setEstimate] = useState<ContractEstimate | null>(null);
   const [estimateFailed, setEstimateFailed] = useState(false);
   const estByLine = useMemo(() => {
@@ -175,12 +180,29 @@ export default function ContractDetail({ detail, onChanged }: Props) {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await runAction<{ data?: { invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null; overages?: OverageSummary[] } }>({
+      const result = await runAction<{ data?: { generated?: boolean; skipped?: string; invoiceId?: string; priceBookGaps?: PriceBookGap[]; uncoveredDevices?: UncoveredDevices | null; overages?: OverageSummary[] } }>({
         request: () => generateContractInvoice(contract.id),
         errorFallback: t('contracts.contractDetail.errors.generateInvoice'),
-        successMessage: t('contracts.contractDetail.toast.invoiceGenerated'),
+        // #9508: a 200 with `generated: false` is a skipped run, not an invoice.
+        // An empty message suppresses runAction's success toast; the skip reason
+        // is toasted below instead.
+        successMessage: (r) => (r?.data?.generated === false
+          ? ''
+          : t('contracts.contractDetail.toast.invoiceGenerated')),
         onUnauthorized: UNAUTHORIZED,
       });
+      if (result?.data?.generated === false) {
+        const reason = result.data.skipped;
+        const known = ['already_billed', 'not_due', 'renewal_pending', 'expired'];
+        showToast({
+          type: 'warning',
+          message: reason && known.includes(reason)
+            ? t(/* i18n-dynamic */ `contracts.contractDetail.toast.skipped.${reason}`)
+            : t('contracts.contractDetail.toast.skipped.unknown'),
+        });
+        refresh();
+        return;
+      }
       const invoiceId = result?.data?.invoiceId;
       // Multi-currency wave 3 (#3775): a catalog line with no price in the
       // contract's currency was still billed — at the contract's stamped
@@ -297,12 +319,19 @@ export default function ContractDetail({ detail, onChanged }: Props) {
   // editor's draft path, which this action deliberately does not touch.
   const canChangeCurrency = can('contracts', 'manage') && contract.status === 'active';
   const currencySubmittable = !!currencyMode && currencyConfirmed && targetCurrency !== currency;
+  // #9346: folding a sibling draft in re-files deliverables and agreements onto
+  // this contract; the sections that list them read on mount, so remount them.
+  const [adoptedTick, setAdoptedTick] = useState(0);
+  const adoptDraft = can('contracts', 'write') && (contract.status === 'draft' || contract.status === 'active')
+    ? { contractId: contract.id, onAdopted: () => { setAdoptedTick((n) => n + 1); onChanged(); } }
+    : undefined;
 
   return (
     <div className="space-y-6" data-testid="contract-detail">
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header (read-only) + lines + period history ───────────────── */}
         <div className="space-y-6">
+          <RelatedContractsNotice related={detail.relatedContracts} adopt={adoptDraft} />
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header">
             <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
               <div>
@@ -378,9 +407,10 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             )}
             {contract.terms && (
               <div className="mt-4 border-t pt-3">
-                {/* contract.terms is the free-text note appended to the Notes block
-                    on generated invoices (contractService.ts:1899). It is NOT the
-                    legal agreement — that is a signed agreement, listed below. */}
+                {/* contract.terms is the free-text note printed as the Notes block
+                    on generated invoices (generateDueInvoice); contract.notes above
+                    is internal-only (#9347). It is NOT the legal agreement — that
+                    is a signed agreement, listed below. */}
                 <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.invoiceNote')}</dt>
                 <dd className="mt-1 whitespace-pre-wrap text-sm">{contract.terms}</dd>
               </div>
@@ -513,10 +543,16 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             </h3>
             <p className="px-3 py-1 text-xs text-muted-foreground">{t('contracts.contractDetail.documents.subtitle')}</p>
             <div className="px-3 pb-3">
-              <SignedAgreementsPage lockedContractId={contract.id} />
+              <SignedAgreementsPage key={adoptedTick} lockedContractId={contract.id} />
             </div>
           </section>
-          <ContractDeliverablesSection contractId={contract.id} orgId={contract.orgId} />
+          <ContractDeliverablesSection
+            key={adoptedTick}
+            contractId={contract.id}
+            orgId={contract.orgId}
+            contractStartDate={contract.startDate}
+            contractIsDraft={contract.status === 'draft'}
+          />
         </div>
 
         {/* ── status + lifecycle + generate ─────────────────────────────── */}
@@ -546,7 +582,11 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                   <button
                     key={verb}
                     type="button"
-                    onClick={destructive ? () => setCancelOpen(true) : () => void transition(verb)}
+                    onClick={destructive
+                      ? () => setCancelOpen(true)
+                      : verb === 'activate' && overlapping.length > 0
+                        ? () => setActivateOverlapOpen(true)
+                        : () => void transition(verb)}
                     disabled={busy}
                     data-testid={`contract-${verb}-btn`}
                     className={`inline-flex w-full items-center justify-center rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
@@ -723,6 +763,14 @@ export default function ContractDetail({ detail, onChanged }: Props) {
           </div>
         </div>
       </Dialog>
+
+      <ActivateOverlapConfirm
+        open={activateOverlapOpen}
+        siblings={overlapping}
+        busy={busy}
+        onClose={() => setActivateOverlapOpen(false)}
+        onConfirm={() => { setActivateOverlapOpen(false); void transition('activate'); }}
+      />
 
       <ConfirmDialog
         open={cancelOpen}

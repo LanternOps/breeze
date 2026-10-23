@@ -86,7 +86,7 @@ describe('service deliverables routes (live DB, partner token)', () => {
     // Summary joins the contract name and reports on_track with no occurrences.
     const list = await json(await client.get(base));
     expect(list.data).toHaveLength(1);
-    expect(list.data[0]).toMatchObject({ contractName: 'Best plan', nextDue: null, openCount: 0 });
+    expect(list.data[0]).toMatchObject({ contractName: 'Best plan', nextDue: '2026-10-31', openCount: 0 });
 
     // The contract-side filtered view resolves the org from the contract.
     const viaContract = await client.get(`/api/v1/contracts/${contractId}/deliverables`);

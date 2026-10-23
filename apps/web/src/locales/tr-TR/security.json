@@ -311,6 +311,8 @@
     "no": "Hayır",
     "noDevicesFound": "Cihaz bulunamadı.",
     "none": "Hiçbiri",
+    "unknown": "Bilinmiyor",
+    "tpmNotReported": "Ajan tarafından bildirilmedi",
     "os": "İşletim Sistemi",
     "pageOf": "Sayfa {{page}} / {{totalPages}}",
     "partial": "Kısmi",
@@ -423,6 +425,8 @@
     "osFilterLabel": "İşletim sistemi"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Öneri güncellenemedi.",
+    "affectsOrgs": "{{count}} kuruluşu etkiliyor",
     "adminAccounts": "Yönetici Hesapları",
     "allCategories": "Tüm kategoriler",
     "allPriorities": "Tüm öncelikler",
@@ -431,18 +435,19 @@
     "completed": "Tamamlandı",
     "critical": "Kritik",
     "criticalHigh": "Kritik + Yüksek",
-    "devices": "Cihazlar:",
+    "devices": "Cihazlar: {{value}}",
     "dismiss": "Kapat",
     "dismissed": "Görevden alındı",
-    "effort": "Çaba:",
+    "effort": "Çaba: {{value}}",
     "encryption": "Şifreleme",
     "firewall": "Güvenlik Duvarı",
     "hideSteps": "Adımları gizle",
     "high": "Yüksek",
-    "impact": "Etki:",
+    "impact": "Etki: {{value}}",
     "invalidResponseFromServer": "Sunucudan geçersiz yanıt",
     "low": "Düşük",
     "markComplete": "Tamamlandı Olarak İşaretle",
+    "reopen": "Yeniden aç",
     "medium": "Orta",
     "next": "Sonraki",
     "noRecommendationsMatchYourFilters": "Filtrelerinizle eşleşen öneri yok.",
@@ -457,10 +462,13 @@
     "vulnMgmt": "Vuln. Yönetim",
     "priorityFilterLabel": "Öncelik",
     "categoryFilterLabel": "Kategori",
-    "statusFilterLabel": "Öneri durumu"
+    "statusFilterLabel": "Öneri durumu",
+    "remediationSteps_one": "{{count}} düzeltme adımı",
+    "remediationSteps_other": "{{count}} düzeltme adımı"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Yeni bir BitLocker kurtarma şifresi oluşturulacak ve emanet edilecektir; yeni anahtar yerleştirildikten sonra eskisi çıkarılır.",
+    "accessRevealed": "anahtarı gösterdi",
     "bitlocker": "BitLocker",
     "cancel": "İptal",
     "collectNow": "Şimdi topla",
@@ -486,6 +494,7 @@
     "rotate": "Döndür",
     "rotateKey": "Döndürme tuşu",
     "rotateRecoveryKey": "Kurtarma anahtarını döndür",
+    "rotateVolume": "Birim",
     "thisAccessHasBeenRecordedInThe": "Bu erişim denetim takibine kaydedildi."
   },
   "securityS1ThreatList": {
@@ -608,7 +617,10 @@
     "viewDetails": "Ayrıntıları görüntüle",
     "vulnerabilities": "Güvenlik Açıkları",
     "weakAdmins": "Zayıf yöneticiler",
-    "unknown": "Bilinmiyor"
+    "unknown": "Bilinmiyor",
+    "bitlockerPartial": "BitLocker kısmi",
+    "filevaultPartial": "FileVault kısmi",
+    "refreshTooltip": "En son güvenlik anlık görüntüsünü yeniden yükler. Puanlar tıklamayla değil, zamanlanmış olarak yeniden hesaplanır."
   },
   "securitySecurityPageHeader": {
     "refresh": "Yenile",
@@ -810,9 +822,10 @@
     "precision": "Hassasiyet",
     "recentEvidence": "Son kanıtlar",
     "refresh": "Yenile",
+    "refreshing": "Yenileniyor",
     "repeatSignalUsers": "Tekrar sinyali kullanıcıları",
     "retry": "Tekrar dene",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Kuralları-v0 risk puanlarını, kanıtları ve değerlendirme etiketlerini gözden geçirin.",
+    "reviewUserRiskScoresEvidenceAnd": "Kullanıcı risk puanlarını, bunların dayandığı kanıtları ve değerlendirme etiketlerinizi gözden geçirin.",
     "scoreImpact": "{{value}} etki",
     "scoresEvidenceAndLabelsWillAppearHere": "Kullanıcı riski v0 üreticisi etkinleştirildiğinde puanlar, kanıtlar ve etiketler burada görünecektir.",
     "selectAUserToInspectRiskEvidence": "Risk kanıtlarını incelemek için bir kullanıcı seçin.",
@@ -821,7 +834,41 @@
     "truePositive": "Gerçek pozitif",
     "truePositiveLabelSaved": "Gerçek pozitif etiketi kaydedildi",
     "userRisk": "Kullanıcı Riski",
-    "userRiskScoringIsDisabledForThis": "Bu kuruluş için kullanıcı risk puanlaması devre dışı bırakıldı."
+    "userRiskScoringIsDisabledForThis": "Bu kuruluş için kullanıcı risk puanlaması devre dışı bırakıldı.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Çok faktörlü kimlik doğrulama eksikleri",
+        "description": "MFA’sı etkin olmayan hesaplar."
+      },
+      "authFailureRisk": {
+        "label": "Başarısız oturum açma denemeleri",
+        "description": "Parola tahmini veya kimlik bilgisi doldurma saldırısına işaret edebilecek tekrarlanan başarısız oturum açmalar."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Olağan dışı oturum etkinliği",
+        "description": "Tanınmayan konumlardan veya cihazlardan ya da olağan dışı saatlerde yapılan oturum açmalar."
+      },
+      "threatExposureRisk": {
+        "label": "Tehdit maruziyeti",
+        "description": "Kullanıcının çalıştığı cihazlarda tespit edilen tehditler."
+      },
+      "softwareViolationRisk": {
+        "label": "Yazılım ilkesi ihlalleri",
+        "description": "Yazılım ilkelerinizi ihlal eden yüklü yazılımlar."
+      },
+      "deviceSecurityRisk": {
+        "label": "Cihaz güvenlik durumu",
+        "description": "Kullanıcının cihazlarında eksik koruma veya yama gibi zayıf güvenlik durumu."
+      },
+      "staleAccessRisk": {
+        "label": "Eskimiş erişim",
+        "description": "Uzun süredir kullanılmayan hesaplar veya erişimler."
+      },
+      "recentImpactRisk": {
+        "label": "Son risk olayları",
+        "description": "Bu kullanıcı için son günlerde kaydedilen risk olayları."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Aktif",
@@ -989,7 +1036,13 @@
       "flow": "Akış",
       "status": "Durum",
       "riskTierTitle": "Risk katmanı {{tier}}",
-      "signer": "İmzalayan: {{signer}}"
+      "signer": "İmzalayan: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Cihaz işlem yapamadı: kullanılabilir PAM yardımcısı yok",
+        "sessionUnavailable": "Cihaz işlem yapamadı: kullanıcının oturumu kullanılamıyor",
+        "helperStartFailed": "Cihaz işlem yapamadı: PAM yardımcısı başlatılamadı",
+        "generic": "Cihaz bu isteği işleyemedi"
+      }
     },
     "actions": {
       "respond": "Yanıtla",
@@ -1288,17 +1341,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "En az bir cihaz kimliğini girin",
-      "createScan": "Tarama oluşturulamadı"
+      "createScan": "Tarama oluşturulamadı",
+      "devicesRequired": "En az bir cihaz seçin",
+      "devicesNotReady": "Cihaz listesi hâlâ yükleniyor veya eksik. Tamamlanmasını bekleyin ve tekrar deneyin.",
+      "devicesLoadFailed": "Cihaz listesi yüklenemedi. Cihaz listesindeki Yeniden dene düğmesini kullanın, ardından tekrar deneyin."
     },
     "title": "Tarama Oluştur",
     "form": {
       "policyOptional": "Politika (isteğe bağlı)",
       "noPolicy": "Politika yok (manuel yapılandırma)",
-      "deviceIds": "Cihaz Kimlikleri",
-      "deviceIdsHelp": "Satır başına bir UUID veya virgülle ayrılmış.",
-      "deviceIdsPlaceholder": "cihaz-uuid-1\ncihaz-uuid-2",
-      "detectionClasses": "Algılama Sınıfları"
+      "detectionClasses": "Algılama Sınıfları",
+      "devices": "Cihazlar",
+      "devicesHelp": "Taranacak cihazları seçin."
     },
     "actions": {
       "creating": "Oluşturuluyor...",
@@ -1363,6 +1417,10 @@
       "showingSearch": "Bu sayfada {{pageCount}} / {{visible}} gösteriliyor (toplam {{total}})",
       "showingTotal": "{{total}} bulgulardan {{visible}} gösteriliyor",
       "pageOf": "Sayfa {{page}} / {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risk kabul edildi",
+      "markedFalsePositive": "Yanlış pozitif olarak işaretlendi"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1401,14 +1459,18 @@
       "detectionClasses": "Algılama Sınıfları",
       "scheduleType": "Zamanlama Türü",
       "intervalMinutes": "Aralık (dakika)",
-      "cronExpression": "Cron İfadesi",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron İfadesi (UTC)",
+      "cronNextRun": "Sonraki çalışma (yerel saatiniz): {{time}}",
+      "cronExpressionZone": "Cron İfadesi ({{zone}})"
     },
     "schedule": {
       "manual": "Manuel",
       "interval": "Aralık",
       "cron": "Cron",
-      "everyMinutes": "Her {{minutes}}m"
+      "everyMinutes": "Her {{minutes}}m",
+      "paused": "Duraklatıldı",
+      "pausedTitle": "Bu ilke için zamanlama kapalı, bu yüzden otomatik olarak çalışmayacak"
     },
     "table": {
       "name": "Ad",
@@ -1733,7 +1795,7 @@
     "unknown": "bilinmiyor"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Sertleştirme",
+    "title": "CIS Benchmarks",
     "description": "Yapılandırma temelleri, uyumluluk puanlaması ve iyileştirme takibi.",
     "messages": {
       "loadFailed": "CIS verileri yüklenemedi"
@@ -1826,6 +1888,11 @@
     "badges": {
       "allOrgs": "Tüm kuruluşlar",
       "partnerWideTitle": "İş ortağı çapında temel — her kuruluştaki cihazlar için geçerlidir"
+    },
+    "scanAll": {
+      "title": "Tüm kuruluşlar taransın mı?",
+      "message": "“{{name}}” iş ortağı genelinde bir temeldir. Kuruluş seçilmediğinde {{orgCount}} kuruluşun tamamını tarar. Yalnızca bir kuruluşun cihazlarını taramak için önce o kuruluşu seçin.",
+      "confirm": "Tümünü tara"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1908,10 +1975,38 @@
       "status": "Durum",
       "approval": "Onay",
       "requested": "İstendi",
-      "completed": "Tamamlandı"
+      "completed": "Tamamlandı",
+      "decision": "Karar"
     },
     "loading": "Düzeltmeler yükleniyor...",
-    "empty": "Hiçbir düzeltme bulunamadı."
+    "empty": "Hiçbir düzeltme bulunamadı.",
+    "decision": {
+      "approve": "Onayla",
+      "reject": "Reddet",
+      "approveTitle": "Düzeltme onaylansın mı?",
+      "rejectTitle": "Düzeltme reddedilsin mi?",
+      "approveMessage": "Bu işlem CIS denetimi {{checkId}} için {{device}} üzerinde çalıştırılmak üzere kuyruğa alır. Ajan cihazın yapılandırmasını değiştirecek.",
+      "rejectMessage": "Bu işlem {{device}} üzerindeki CIS denetimi {{checkId}} için bekleyen düzeltmeyi iptal eder. Cihazda hiçbir şey çalışmaz.",
+      "noteLabel": "Not (isteğe bağlı)",
+      "approved": "{{checkId}} düzeltmesi onaylandı ve kuyruğa alındı.",
+      "rejected": "{{checkId}} düzeltmesi reddedildi.",
+      "approveFailed": "Düzeltme onaylanamadı",
+      "rejectFailed": "Düzeltme reddedilemedi",
+      "queueFailed": "Onay kaydedildi ancak düzeltme kuyruğa alınamadı. Yeniden onay bekliyor; tekrar deneyin.",
+      "mfaRequired": "Bir düzeltmeyi onaylamak veya reddetmek için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Çıkış yapıp MFA ile yeniden giriş yapın.",
+      "ownRequest": "Bu düzeltmeyi siz istediniz; başka bir kullanıcının onaylaması gerekir."
+    },
+    "detail": {
+      "toggle": "Ayrıntıları aç/kapat",
+      "approvedBy": "Onaylayan",
+      "approvedAt": "Onay zamanı",
+      "note": "Onay notu",
+      "beforeState": "Önce",
+      "afterState": "Sonra",
+      "rollbackHint": "Geri alma ipucu",
+      "noEvidence": "Bu iyileştirme için henüz kanıt kaydedilmedi.",
+      "unknownApprover": "Bilinmeyen kullanıcı"
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Denetim Esasları",
@@ -2221,5 +2316,8 @@
       "awaitingEvaluation": "Değerlendirme bekleniyor",
       "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Bu kuruluşa erişiminiz yok"
   }
 }

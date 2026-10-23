@@ -812,6 +812,19 @@ export async function enterMaintenanceMode(
 }
 
 /**
+ * "Force reboot now" (#8729): POST /devices/:id/force-reboot. The body is
+ * `.strict()` on the server — only the step-up grant, when the server asked for
+ * one. Errors arrive as DeviceActionError with the route's `code`
+ * (STEP_UP_REQUIRED, MFA_REQUIRED, DEVICE_OFFLINE, AGENT_UPGRADE_REQUIRED).
+ */
+export async function forceRebootDevice(
+  deviceId: string,
+  body: { stepUpGrant?: string }
+): Promise<any> {
+  return gatedRequest(`/devices/${deviceId}/force-reboot`, body, 'Failed to force reboot the device');
+}
+
+/**
  * Exit. The route's exit branch is `.strict()` — send exactly this. Exit is
  * un-gated but liveness-truthful: the server returns the device to its REAL
  * status (online/offline by last-seen), never a blind 'online', so callers must

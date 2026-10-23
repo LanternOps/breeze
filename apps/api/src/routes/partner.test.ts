@@ -13,6 +13,9 @@ vi.mock('../db', () => ({
   }
 }));
 
+const emailMock = vi.hoisted(() => ({ getEmailService: vi.fn() }));
+vi.mock('../services/email', () => emailMock);
+
 vi.mock('../db/schema', () => ({
   partners: {
     id: 'id', name: 'name', slug: 'slug', status: 'status', settings: 'settings'
@@ -56,16 +59,16 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 // Multi-currency wave 7 (#3779): the dashboard's per-currency MRR comes from
-// contractService. This file mocks `../db` wholesale, so mock the service
+// contractMrr (#9828). This file mocks `../db` wholesale, so mock the service
 // rather than extending the db.select mock queue with its two reads.
-vi.mock('../services/contractService', () => ({
+vi.mock('../services/contractMrr', () => ({
   summarizeActiveContractMrrByOrg: vi.fn(async () => new Map([
     ['org-123', [{ currencyCode: 'EUR', amount: '410.00' }, { currencyCode: 'USD', amount: '1230.00' }]],
   ])),
 }));
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { partnerRoutes } from './partner';
 
 describe('partner routes', () => {
@@ -177,6 +180,18 @@ describe('partner routes', () => {
       } finally {
         vi.unstubAllEnvs();
       }
+    });
+
+    it('reports emailConfigured=true when an email transport exists, false when not (#9256)', async () => {
+      emailMock.getEmailService.mockReturnValueOnce({ sendEmail: vi.fn() });
+      mockPartnerRow();
+      const on = await app.request('/partner/me', { headers: { Authorization: 'Bearer token' } });
+      expect((await on.json()).emailConfigured).toBe(true);
+
+      emailMock.getEmailService.mockReturnValueOnce(null);
+      mockPartnerRow();
+      const off = await app.request('/partner/me', { headers: { Authorization: 'Bearer token' } });
+      expect((await off.json()).emailConfigured).toBe(false);
     });
 
     it('drops a non-http(s) meeting URL and nulls when unset', async () => {

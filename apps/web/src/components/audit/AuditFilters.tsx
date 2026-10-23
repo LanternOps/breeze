@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Calendar, Check, ChevronDown, Loader2, Search, User, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
+import { auditActionFilterOptions, auditPrefixLabel } from '@/lib/auditFormat';
 
 type DatePreset = 'today' | '7d' | '30d' | 'custom';
 
@@ -28,8 +29,23 @@ type UserOption = {
   email: string;
 };
 
-const actionOptions = ['login', 'update', 'delete', 'create', 'export', 'access'];
-const resourceOptions = ['policy', 'report', 'dataset', 'identity', 'automation', 'asset'];
+// #9672: options are real server-side values. Actions are dotted-code prefixes
+// derived from the audit catalog; resources are the resource_type values the
+// API writes. Both are matched as prefixes, not substrings.
+const actionOptions = auditActionFilterOptions();
+const resourceOptions = [
+  'device',
+  'device_group',
+  'script',
+  'user',
+  'organization',
+  'site',
+  'alert',
+  'configuration_policy',
+  'automation',
+  'report',
+  'ticket'
+];
 
 export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
   const { t } = useTranslation('admin');
@@ -39,22 +55,6 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
     '7d': t('audit.auditFilters.presets.last7Days'),
     '30d': t('audit.auditFilters.presets.last30Days'),
     custom: t('audit.auditFilters.presets.custom')
-  };
-  const actionLabels: Record<string, string> = {
-    login: t('audit.auditFilters.actions.login'),
-    update: t('audit.auditFilters.actions.update'),
-    delete: t('audit.auditFilters.actions.delete'),
-    create: t('audit.auditFilters.actions.create'),
-    export: t('audit.auditFilters.actions.export'),
-    access: t('audit.auditFilters.actions.access')
-  };
-  const resourceLabels: Record<string, string> = {
-    policy: t('audit.auditFilters.resources.policy'),
-    report: t('audit.auditFilters.resources.report'),
-    dataset: t('audit.auditFilters.resources.dataset'),
-    identity: t('audit.auditFilters.resources.identity'),
-    automation: t('audit.auditFilters.resources.automation'),
-    asset: t('audit.auditFilters.resources.asset')
   };
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -123,8 +123,8 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
 
   const handleClear = () => {
     setDatePreset('7d');
-    setCustomStart('2024-05-21');
-    setCustomEnd('2024-05-28');
+    setCustomStart('');
+    setCustomEnd('');
     setUserSearch('');
     setSelectedUserId(undefined);
     setSelectedActions([]);
@@ -270,9 +270,10 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
             {actionOptions.map(action => (
               <label
                 key={action}
+                data-testid={`audit-action-option-${action}`}
                 className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm"
               >
-                <span className="text-foreground">{actionLabels[action]}</span>
+                <span className="text-foreground">{auditPrefixLabel(action)}</span>
                 <input
                   type="checkbox"
                   checked={selectedActions.includes(action)}
@@ -290,9 +291,10 @@ export default function AuditFilters({ onApply, onClear }: AuditFiltersProps) {
             {resourceOptions.map(resource => (
               <label
                 key={resource}
+                data-testid={`audit-resource-option-${resource}`}
                 className="flex items-center justify-between rounded-md border bg-background px-3 py-2 text-sm"
               >
-                <span className="text-foreground">{resourceLabels[resource]}</span>
+                <span className="text-foreground">{auditPrefixLabel(resource)}</span>
                 <input
                   type="checkbox"
                   checked={selectedResources.includes(resource)}

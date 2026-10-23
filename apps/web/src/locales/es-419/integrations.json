@@ -7,6 +7,7 @@
     "unavailable": "Los detalles de la conexión no están disponibles.",
     "onboardingUnavailable": "La incorporación de lectura de Microsoft Graph del cliente no está habilitada para esta organización.",
     "notAvailableOnInstance": "Aún no está disponible en esta instancia de Breeze.",
+    "notEnabledForOrg": "Aún no está habilitado para esta organización. Pide a tu administrador de Breeze que lo habilite.",
     "callback": {
       "active": "Se completó el consentimiento de Microsoft. El estado actualizado de la conexión se muestra a continuación.",
       "degraded": "Se completó el consentimiento de Microsoft, pero la conexión requiere atención. Los detalles actualizados se muestran a continuación."
@@ -82,7 +83,9 @@
         "intune_devices": "Dispositivos de Intune",
         "ca_policies": "Acceso condicional",
         "skus": "Licencias",
-        "secure_score": "Puntuación de seguridad"
+        "secure_score": "Puntuación de seguridad",
+        "signin_events": "Eventos de inicio de sesión",
+        "unknown": "Tipo de datos no reconocido"
       }
     },
     "errors": {
@@ -91,6 +94,7 @@
       "consent_cancelled": "Se canceló el consentimiento de Microsoft.",
       "conditional_access_blocked": "Microsoft bloqueó este inicio de sesión: la directiva de acceso condicional del inquilino lo interrumpió (por ejemplo, una comprobación del dispositivo). Vuelva a intentarlo desde un navegador en el que confíe el inquilino o consulte al administrador del inquilino.",
       "consent_provider_error": "Microsoft devolvió un error durante el inicio de sesión. Vuelva a intentarlo; si se repite, revise los registros de inicio de sesión del inquilino.",
+      "user_consent_blocked": "Su organización requiere que un administrador apruebe el inicio de sesión en esta aplicación. Inicie sesión con un administrador global o apruébela en Entra → Aplicaciones empresariales → Solicitudes de consentimiento del administrador.",
       "admin_role_required": "Un administrador global o administrador de roles con privilegios debe otorgar el consentimiento.",
       "tenant_mismatch": "El administrador con el que iniciaste sesión pertenece a un inquilino de Microsoft distinto al de esta conexión. Inicia sesión con un administrador del inquilino conectado.",
       "tenant_already_bound": "Este inquilino de Microsoft ya está conectado a otra organización.",
@@ -103,6 +107,7 @@
       "manifest_stale": "Los permisos otorgados usan un manifiesto anterior. Vuelve a otorgar el consentimiento.",
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
+      "executor_unavailablePending": "No se pudo completar la conexión. Vuelve a intentar con Conectar; si sigue fallando, comunícate con soporte.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
     },
     "stepTitle": "Acceso de lectura",
@@ -124,6 +129,7 @@
     "unavailable": "Los detalles de la conexión no están disponibles.",
     "onboardingUnavailable": "La incorporación de acciones de Microsoft Graph del cliente no está habilitada para esta organización.",
     "notAvailableOnInstance": "Aún no está disponible en esta instancia de Breeze.",
+    "notEnabledForOrg": "Aún no está habilitado para esta organización. Pide a tu administrador de Breeze que lo habilite.",
     "callback": {
       "active": "Se completó el consentimiento de Microsoft. El estado actualizado de la conexión se muestra a continuación.",
       "degraded": "Se completó el consentimiento de Microsoft, pero la conexión requiere atención. Los detalles actualizados se muestran a continuación."
@@ -175,6 +181,7 @@
       "consent_cancelled": "Se canceló el consentimiento de Microsoft.",
       "conditional_access_blocked": "Microsoft bloqueó este inicio de sesión: la directiva de acceso condicional del inquilino lo interrumpió (por ejemplo, una comprobación del dispositivo). Vuelva a intentarlo desde un navegador en el que confíe el inquilino o consulte al administrador del inquilino.",
       "consent_provider_error": "Microsoft devolvió un error durante el inicio de sesión. Vuelva a intentarlo; si se repite, revise los registros de inicio de sesión del inquilino.",
+      "user_consent_blocked": "Su organización requiere que un administrador apruebe el inicio de sesión en esta aplicación. Inicie sesión con un administrador global o apruébela en Entra → Aplicaciones empresariales → Solicitudes de consentimiento del administrador.",
       "admin_role_required": "Un administrador global o administrador de roles con privilegios debe otorgar el consentimiento.",
       "tenant_mismatch": "El administrador con el que iniciaste sesión pertenece a un inquilino de Microsoft distinto al de esta conexión. Inicia sesión con un administrador del inquilino conectado.",
       "tenant_already_bound": "Este inquilino de Microsoft ya está conectado a otra organización.",
@@ -186,6 +193,7 @@
       "manifest_stale": "Los permisos otorgados usan un manifiesto anterior. Vuelve a otorgar el consentimiento.",
       "organization_probe_failed": "Falló la comprobación de la organización de Microsoft. Vuelve a probar la conexión.",
       "executor_unavailable": "El servicio de verificación no está disponible. Vuelve a intentarlo más tarde.",
+      "executor_unavailablePending": "No se pudo completar la conexión. Vuelve a intentar con Conectar; si sigue fallando, comunícate con soporte.",
       "unknown": "La verificación requiere atención. Vuelve a probar la conexión o inicia el consentimiento nuevamente."
     },
     "stepTitle": "Acciones de administrador",
@@ -258,8 +266,10 @@
   "m365TenantPanel": {
     "loading": "Cargando las conexiones de Microsoft 365.",
     "consentUnavailable": "La conexión basada en consentimiento aún no está disponible en esta instancia de Breeze.",
+    "consentNotEnabledForOrg": "La conexión basada en consentimiento aún no está habilitada para esta organización. Pide a tu administrador de Breeze que la habilite.",
     "selectOrganization": "Selecciona una organización para conectar su inquilino de Microsoft 365.",
     "noTenantForOrg": "No hay ningún inquilino de Microsoft 365 conectado a {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · conectado a {{orgName}}",
     "noTenant": "No hay ningún inquilino de Microsoft 365 conectado a esta organización",
     "tenantId": "ID del inquilino",
     "copyTenantId": "Copiar ID del inquilino",
@@ -330,6 +340,7 @@
     "retry": "Reintentar",
     "since": "desde {{time}}",
     "fix": "Corregir",
+    "remedy": { "reconnect": "Vuelva a conectarse desde la aplicación cliente (p. ej., agregue de nuevo el servidor MCP). No requiere acción en Breeze." },
     "truncated": "Se muestran los primeros {{count}}",
     "recentlyResolved": "Resueltas recientemente ({{count}})",
     "resolution": {
@@ -537,6 +548,11 @@
     "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configurando integraciones para",
+      "thisOrganization": "esta organización",
+      "change": "Cambiar"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notificaciones",
     "security": "Seguridad",
@@ -579,7 +595,7 @@
     "hidePassword": "Ocultar contraseña",
     "portalLabelToggle": "Mostrar el nombre del proveedor en el portal del cliente",
     "portalLabelHelp": "Desactivado de forma predeterminada: los clientes ven \"Copia de seguridad gestionada en la nube\" en lugar del nombre del fabricante.",
-    "credentialsHelp": "Cree un usuario dedicado de la consola de Cove con rol de solo lectura, una contraseña única y sin autenticación de dos factores. Breeze solo lee el estado; nunca modifica nada en Cove.",
+    "credentialsHelp": "Cree un usuario de API de Cove (Management → Users → API Users) bajo su cliente de nivel superior. Ingrese el nombre de ese cliente como nombre de partner, el nombre de inicio de sesión del usuario de API como usuario y su token como contraseña. Breeze solo lee el estado; nunca modifica nada en Cove.",
     "test": "Probar conexión",
     "syncNow": "Sincronizar ahora",
     "reauthRequired": "Credenciales rechazadas",
@@ -647,7 +663,6 @@
     "microsoft365IntegrationIsNotEnabledOnThis": "La conexión directa heredada no está habilitada en esta instancia.",
     "anAdministratorEnablesItBySetting": "Un administrador lo habilita configurando",
     "onTheAPIServerThenReloadingThisPage": "en el servidor API, luego recargando esta página.",
-    "connectAnEntraAzureADAppRegistrationSo2": "Conecte un registro de aplicación Entra (Azure AD) para que el asistente AI pueda buscar usuarios, administrar grupos, deshabilitar cuentas y restablecer contraseñas para el inquilino de esta organización.",
     "connection": "Conexión",
     "enterTheTenantIdAppClientIdAnd": "Ingrese la identificación del inquilino, la identificación de la aplicación (cliente) y un secreto de cliente del registro de su aplicación Entra. Breeze realiza una llamada Graph en vivo para verificar las credenciales antes de guardar.",
     "howToGetTheTenantIdAppId": "Cómo obtener la identificación del inquilino, la identificación de la aplicación y el secreto del cliente",
@@ -677,7 +692,6 @@
     "permissionsListedBelowThen": "permisos enumerados a continuación, entonces",
     "grantAdminConsent": "Conceder consentimiento de administrador",
     "tenantID": "ID del inquilino",
-    "contosoOnmicrosoftComOrTenantGUID": "contoso.onmicrosoft.com o inquilino GUID",
     "appClientID": "Aplicación (cliente) ID",
     "applicationClientId": "identificación de la aplicación (cliente)",
     "clientSecret": "secreto del cliente",
@@ -699,7 +713,22 @@
     "saveAndVerify": "Guardar y verificar",
     "legacyBadge": "Heredado",
     "precedenceNote": "Esta conexión directa heredada tiene prioridad sobre la conexión basada en consentimiento para este inquilino.",
-    "disconnectConfirm": "¿Desconectar la conexión directa heredada? Breeze elimina las credenciales guardadas del registro de aplicación. El registro de aplicación sigue existiendo en Microsoft Entra."
+    "disconnectConfirm": "¿Desconectar la conexión directa heredada? Breeze elimina las credenciales guardadas del registro de aplicación. El registro de aplicación sigue existiendo en Microsoft Entra.",
+    "legacyHeading": "Microsoft 365: registro de aplicación heredado (solo asistente de IA)",
+    "legacyHeadingForOrg": "Microsoft 365: registro de aplicación heredado (solo asistente de IA) para {{orgName}}",
+    "legacyScopeSummary": "Un registro de aplicación de Entra con secreto de cliente para el tenant de esta organización. Solo habilita las acciones del asistente de IA que se indican abajo.",
+    "powersHeading": "Habilita",
+    "powersList": "Seis acciones del asistente de IA: buscar usuario, actividad de inicio de sesión, listar grupos, miembros de grupo, deshabilitar usuario y restablecer contraseña.",
+    "doesNotPowerHeading": "No habilita",
+    "doesNotPowerSync": "La sincronización del tenant (usuarios, licencias, inicios de sesión, Acceso condicional, Secure Score)",
+    "doesNotPowerQueryTools": "Herramientas de IA y MCP",
+    "doesNotPowerReports": "Informes y evidencia de M365 basados en ellas",
+    "useConnectWithMicrosoft": "Use Conectar con Microsoft, arriba, en su lugar.",
+    "searchAllApplicationsFirst": ". Antes de crear una aplicación nueva, busque en ",
+    "allApplications": "Todas las aplicaciones",
+    "searchAllApplicationsFirst2": " (no en Aplicaciones propias) si ya existe una aplicación de Breeze en este tenant. ",
+    "tenantIdGuidPlaceholder": "ID de tenant (GUID), p. ej. 00000000-0000-0000-0000-000000000000",
+    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com."
   },
   "monitoringIntegration": {
     "deviceHealth": "Estado del dispositivo",

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { isFormDirtyBlocking, shouldHandleBareKey } from '@/lib/keyboard/bareKeyGuard';
 
 export interface QueueKeyboardHandlers {
   onMove: (delta: 1 | -1) => void;
@@ -10,19 +11,15 @@ export interface QueueKeyboardHandlers {
   onEscape: () => void;
 }
 
-const EDITABLE = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
-
-function isEditing(): boolean {
-  const el = document.activeElement as HTMLElement | null;
-  return !!el && (EDITABLE.has(el.tagName) || el.isContentEditable);
-}
-
 export function useQueueKeyboard(h: QueueKeyboardHandlers): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // j/k only move the selection and must keep working when held down, so
+      // they skip the typing-cadence check (they still feed the clock).
+      const bare = shouldHandleBareKey(e, { ignoreCadence: e.key === 'j' || e.key === 'k' });
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === 'Escape') { h.onEscape(); return; } // Escape works even from inputs (blur + back)
-      if (isEditing()) return;
+      if (!bare || isFormDirtyBlocking()) return;
       switch (e.key) {
         case 'j': case 'ArrowDown': e.preventDefault(); h.onMove(1); break;
         case 'k': case 'ArrowUp': e.preventDefault(); h.onMove(-1); break;

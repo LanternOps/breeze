@@ -16,6 +16,7 @@ const UPCOMING_WINDOW_DAYS = 90;
 interface ContractOption {
   id: string;
   name: string;
+  startDate?: string | null;
 }
 
 /** A failed load keeps the server's message so the tab can say WHY. */
@@ -104,8 +105,8 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
     setContracts('loading');
     (async () => {
       try {
-        const list = await unwrapData<Array<{ id: string; name: string }>>(await orgFetch(CONTRACTS_PATH));
-        if (!cancelled) setContracts((Array.isArray(list) ? list : []).map((c) => ({ id: c.id, name: c.name })));
+        const list = await unwrapData<Array<{ id: string; name: string; startDate?: string | null }>>(await orgFetch(CONTRACTS_PATH));
+        if (!cancelled) setContracts((Array.isArray(list) ? list : []).map((c) => ({ id: c.id, name: c.name, startDate: c.startDate ?? null })));
       } catch (err) {
         console.error('[OrgServiceTab] failed to load contracts', err);
         if (!cancelled) setContracts('failed');
@@ -214,6 +215,7 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
         fetcher={orgFetch}
         orgId={orgId}
         groupByContract
+        selectable
         onSelect={setSelected}
         refreshKey={refreshKey}
       />

@@ -720,6 +720,8 @@
       "timeout": "Délai d’exécution du script dépassé",
       "pending": "Le script attend son exécution",
       "queued": "Le script est en attente d'envoi à l'appareil",
+      "queuedAwaitingPickup": "Aucune session d'agent active ne l'a encore récupéré. Le script sera livré lors du prochain contact de l'agent de l'appareil.",
+      "deviceOffline": "L'appareil est hors ligne. Le script sera livré lorsqu'il se reconnectera.",
       "cancelling": "Arrêt demandé — en attente de confirmation de l'appareil.",
       "cancelled": "Le script a été arrêté sur l'appareil"
     },
@@ -743,7 +745,8 @@
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
       "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
-      "queuedOffline": "En file d'attente — appareil hors ligne"
+      "queuedOffline": "En file d'attente — appareil hors ligne",
+      "queuedAwaitingPickup": "En file d'attente — en attente de récupération par l'appareil"
     }
   },
   "executionHistory": {
@@ -774,7 +777,8 @@
       "failedCancelTooLate": "Échec — votre demande d'arrêt est arrivée trop tard",
       "timeoutCancelTooLate": "Délai dépassé — votre demande d'arrêt est arrivée trop tard",
       "cancelFailed": "Échec de l'arrêt — l'appareil n'a pas pu arrêter le processus",
-      "queuedOffline": "En file d'attente — appareil hors ligne"
+      "queuedOffline": "En file d'attente — appareil hors ligne",
+      "queuedAwaitingPickup": "En file d'attente — en attente de récupération"
     },
     "summary": "{{shown}} sur {{total}}",
     "headers": {

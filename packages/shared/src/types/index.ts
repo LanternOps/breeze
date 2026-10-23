@@ -703,12 +703,11 @@ export interface InheritableEventLogSettings {
 
 export interface InheritableDefaultSettings {
   policyDefaults?: Record<string, string>;
+  /** Org level only: a `device_groups.id` (static group) applied at enrollment (#9617). */
   deviceGroup?: string;
-  alertThreshold?: string;
   autoEnrollment?: {
     enabled: boolean;
     requireApproval: boolean;
-    sendWelcome: boolean;
   };
   agentUpdatePolicy?: string;
   maintenanceWindow?: string;
@@ -953,6 +952,7 @@ export * from './portalService';
 
 export * from './loginContext';
 export * from './ssoDiscovery';
+export * from './ssoPresets';
 export * from './publicQuote';
 
 // ============================================
@@ -996,6 +996,7 @@ export * from './topologyDiagnostics';
 
 // Physical topology collection contracts (M2 #5998)
 export * from './topologyPhysical';
+export * from './topologyUnifiV2';
 
 // Interface measurement telemetry contracts (M3 #5999)
 export * from './topologyTelemetry';

@@ -237,6 +237,14 @@ const ALLOWED_TAG_NAMES = new Set([
   // into unbounded tag cardinality. Neither carries a tenant, device or job id.
   'patch_reconcile_stage',
   'patch_reconcile_repeat',
+  // #9632: closest-wins patch scheduling. `patch_scheduler_stage` is a closed
+  // 2-value set (closest_wins_resolve_failed | closest_wins_winner_unschedulable)
+  // and `update_ring_stage` a closed 1-value set (device_count_failed), all
+  // string literals at fixed call sites in jobs/patchSchedulerWorker.ts and
+  // routes/updateRingsHelpers.ts. No policy, ring, tenant or device id: those
+  // stay in the console line next to each capture.
+  'patch_scheduler_stage',
+  'update_ring_stage',
   // #4137: `dispatch-backup` is a one-shot (`attempts: 1`) because Phase 3 of
   // processDispatchBackup commits per-target child `backup_jobs` rows, so a
   // retry duplicates them. Two consequences of that trade are things an
@@ -481,6 +489,16 @@ const ALLOWED_TAG_NAMES = new Set([
   'ai_reservation_id',
   'ai_invocation_id',
   'ai_agent_run_id',
+  // #9451 / #7717: the keyed credit debit outbox. `ai_credit_debit_id` =
+  // ai_credit_debits.id (opaque UUID, what /admin/ai-billing re-drives by);
+  // `ai_credit_debit_source` is the enum 'compute' | 'invocation'. The two
+  // counts are the sweep's operator-backlog alert: small integers.
+  // (three counts: failed debits, dead settlements, stale undelivered debits)
+  'ai_credit_debit_id',
+  'ai_credit_debit_source',
+  'ai_failed_credit_debits',
+  'ai_dead_pending_settlements',
+  'ai_stale_undelivered_credit_debits',
   // AI chargeback W10 (#7608): the UTC billing month ('YYYY-MM-01') of a
   // monthly close that failed or found expired usage — with `org_id`, the key
   // an operator needs to find the ai_usage_charge_runs slot. A date, one value

@@ -36,7 +36,7 @@ concurrency:
 
 env:
   PNPM_VERSION: '10.34.5'
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.26.10'
 
 # SR-007: least-privilege default. CI runs on every PR (including forks) and
 # only needs to read the repo. Any job needing more must opt in per-job.
@@ -1168,6 +1168,40 @@ jobs:
       - name: Typecheck Office Add-in Core
         run: pnpm --filter=@breeze/office-addin-core typecheck
 
+  # @breeze/document-ui (#9414): the shared customer-document renderer web and
+  # portal consume. App-gated like test-shared, not area-gated: any packages/**
+  # diff classifies as code+app, and both web and portal depend on it.
+  test-document-ui:
+    name: Test Document UI
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.app == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Document UI tests
+        run: pnpm --filter @breeze/document-ui exec vitest run
+
+      - name: Typecheck Document UI
+        run: pnpm --filter=@breeze/document-ui typecheck
+
   test-excel-addin:
     name: Test Excel Add-in
     runs-on: ubuntu-latest
@@ -2139,6 +2173,26 @@ jobs:
           if ($skips -ne 0) { throw "$skips of the absent-account tests SKIPPED - the runner could not reach the never-provisioned state they assert against, so the #4587 netapi32 fix has no live coverage here" }
           if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
+      # #9253: the YARA-X engine never started under a Windows service because
+      # yaraxwasm hands os.Stderr (an invalid handle without a console) to the
+      # wasm guest. yarac.EnsureEngine swaps an unusable stderr for NUL. These
+      # are the only tests that exercise NUL as the guest's stderr on Windows;
+      # assert all three ran and passed rather than trusting the exit code.
+      - name: Run Windows YARA-X unusable-stderr tests (must not skip)
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/yarascan/yarac -run '^Test(EngineStartsWithUnusableStderr|EnsureUsableStderrKeepsAWorkingStderr|EnsureUsableStderrReplacesAnUnusableStderr)$' -timeout 8m -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          $skips = @($out | Select-String -Pattern '^--- SKIP: Test').Count
+          if ($skips -ne 0) { throw "$skips of the unusable-stderr tests SKIPPED" }
+          if ($passes -ne 3) { throw "expected exactly 3 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
+
       # internal/config's Windows owner/DACL code had never run in CI, which is
       # how #7394 shipped: an elevated administrator running
       # `breeze-agent enroll` was refused SYSTEM as the ProgramData owner
@@ -2573,6 +2627,23 @@ jobs:
           if ($exit -ne 0) { throw "go test failed (exit $exit)" }
           $passes = @($out | Select-String -Pattern '^--- PASS: TestWindowsVPNServiceQuery').Count
           if ($passes -ne 1) { throw "TestWindowsVPNServiceQuery did not run - renamed or removed without updating this step" }
+
+      # #9267: link speed is read in-process via GetIfTable2Ex. These are the
+      # only tests that exercise the real Windows getLinkSpeed (it must never
+      # spawn PowerShell again) and the real MIB_IF_TABLE2 read; elsewhere
+      # they only compile.
+      - name: Run Windows link-speed tests
+        working-directory: agent
+        env:
+          CGO_ENABLED: "0"
+        shell: pwsh
+        run: |
+          $out = go test ./internal/collectors -run '^(TestGetLinkSpeedWindowsNeverSpawnsProcess|TestReadIfTable2LinkSpeedsLive)$' -v 2>&1
+          $exit = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host $_ }
+          if ($exit -ne 0) { throw "go test failed (exit $exit)" }
+          $passes = @($out | Select-String -Pattern '^--- PASS: Test').Count
+          if ($passes -ne 2) { throw "expected exactly 2 top-level PASS lines, got $passes - a test in the -run filter was renamed, removed, or added without updating this count" }
 
       # internal/backup is the third instance of the same gap: its
       # upload_error_class_codes_windows_test.go pins the Win32 permanent-error
@@ -3093,6 +3164,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # Restore the cached .deb closure so a normal run never touches the Ubuntu
+      # mirror (#9753). The key lives in the shared composite action. Caches
+      # are ref-scoped and CI does not run on push to main, so this job only
+      # READS what `tauri-apt-cache-seed.yml` saves from main; a run that
+      # misses falls back to the network path below (and its own save is
+      # visible only to that ref).
+      - name: Cache Tauri apt packages
+        id: tauri-apt-cache
+        uses: ./.github/actions/tauri-apt-cache
+
       - name: Install Tauri system dependencies
         # Bound the STEP, not just the commands inside it. The per-command
         # deadlines below sum to ~27.75m worst case (3 attempts x 8m, plus two
@@ -3108,7 +3189,26 @@ jobs:
         # step timeout, leaving 23m for the Rust work regardless of how badly
         # the mirror behaves.
         timeout-minutes: 12
+        env:
+          TAURI_DEBS_DIR: ${{ steps.tauri-apt-cache.outputs.dir }}
+          TAURI_CACHE_HIT: ${{ steps.tauri-apt-cache.outputs.cache-hit }}
         run: |
+          # Cache hit: install the saved .deb closure with dpkg. No apt-get
+          # update, no mirror traffic (#9753). Any failure here falls through to
+          # the network path below, which is also the cache-miss path.
+          if [ "${TAURI_CACHE_HIT}" = "true" ] && ls "${TAURI_DEBS_DIR}"/*.deb >/dev/null 2>&1; then
+            if sudo timeout --kill-after=30s 3m dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
+              echo "Tauri system dependencies installed from cache (no mirror access)."
+              exit 0
+            fi
+            echo "::warning::cached .deb install failed; falling back to the network install"
+            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
+          fi
+          # Network path. Download into a private archives dir so the .debs can
+          # be copied into the cache dir once the install succeeds.
+          TAURI_PKGS=($(grep -v '^#' .github/tauri-apt-packages.txt))
+          TAURI_ARCHIVES=$(mktemp -d)
+          chmod 755 "$TAURI_ARCHIVES"  # let apt's sandbox user traverse it
           # The Azure apt mirror (azure.archive.ubuntu.com) is intermittently
           # degraded and can crawl at 1-4 min/package, blowing this job's
           # timeout before Rust ever compiles — a transient infra flake that
@@ -3149,12 +3249,22 @@ jobs:
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 && \
             sudo timeout --kill-after=30s 5m apt-get install -y --no-install-recommends "${APT_SOURCES[@]}" \
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
-              libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+              -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
           }
           attempts=3
           for attempt in $(seq 1 "${attempts}"); do
             if install_deps; then
               echo "Tauri system dependencies installed (attempt ${attempt})."
+              # Seed the cache (saved by the post step only on a cache miss).
+              # Never leave a partial/empty dir behind: cache keys are immutable,
+              # so saving one would poison every later run for this key.
+              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
+              if ! { ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1 \
+                     && sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ \
+                     && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"; }; then
+                echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
+                sudo rm -rf "${TAURI_DEBS_DIR}"
+              fi
               exit 0
             fi
             if [ "${attempt}" -eq "${attempts}" ]; then
@@ -4540,7 +4650,7 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
+    needs: [changes, workspace-runtime, docs-check, lint, release-ledger, typecheck, check-migrations, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-shared, test-document-ui, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, lint-agent, test-agent, agent-windows-manifest-guard, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract, topology-browser-gate]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -4574,6 +4684,7 @@ jobs:
           TEST_PORTAL_RESULT: ${{ needs.test-portal.result }}
           TEST_VIEWER_RESULT: ${{ needs.test-viewer.result }}
           TEST_SHARED_RESULT: ${{ needs.test-shared.result }}
+          TEST_DOCUMENT_UI_RESULT: ${{ needs.test-document-ui.result }}
           TEST_OFFICE_ADDIN_CORE_RESULT: ${{ needs.test-office-addin-core.result }}
           TEST_EXCEL_ADDIN_RESULT: ${{ needs.test-excel-addin.result }}
           TEST_WORD_ADDIN_RESULT: ${{ needs.test-word-addin.result }}
@@ -4658,6 +4769,7 @@ jobs:
              { [[ "${PORTAL_CHANGED}" == "false" ]] && [[ "${TEST_PORTAL_RESULT}" != "skipped" ]]; } || \
              [[ "${TEST_VIEWER_RESULT}" != "success" ]] || \
              [[ "${TEST_SHARED_RESULT}" != "success" ]] || \
+             [[ "${TEST_DOCUMENT_UI_RESULT}" != "success" ]] || \
              { [[ "${ADDINS_CHANGED}" == "true" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "success" ]]; } || \
              { [[ "${ADDINS_CHANGED}" != "true" ]] && [[ "${ADDINS_CHANGED}" != "false" ]]; } || \
              { [[ "${ADDINS_CHANGED}" == "false" ]] && [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]]; } || \
@@ -4732,6 +4844,7 @@ jobs:
              [[ "${TEST_PORTAL_RESULT}" != "skipped" ]] || \
              [[ "${TEST_VIEWER_RESULT}" != "skipped" ]] || \
              [[ "${TEST_SHARED_RESULT}" != "skipped" ]] || \
+             [[ "${TEST_DOCUMENT_UI_RESULT}" != "skipped" ]] || \
              [[ "${TEST_OFFICE_ADDIN_CORE_RESULT}" != "skipped" ]] || \
              [[ "${TEST_EXCEL_ADDIN_RESULT}" != "skipped" ]] || \
              [[ "${TEST_WORD_ADDIN_RESULT}" != "skipped" ]] || \

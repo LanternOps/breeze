@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Confirmar aprovação do patch",
-      "selectedOrganization": "a organização selecionada",
-      "messageOne": "Aprovar patch em {{count}} dispositivo em {{org}}?",
-      "messageMany": "Aprovar patch em {{count}} dispositivos em {{org}}?"
+      "selectedRing": "(sem nome)",
+      "messageRingOne": "Aprovar patch em {{count}} dispositivo em todas as organizações no anel {{ring}}?",
+      "messageRingMany": "Aprovar patch em {{count}} dispositivos em todas as organizações no anel {{ring}}?",
+      "messagePartnerWide": "Aprovar patch para todas as organizações do seu parceiro?"
     },
     "checkingAccess": "Verificando seu acesso..."
   },
@@ -259,7 +260,9 @@
       "moderate": "Moderada",
       "low": "Baixa",
       "unrated": "Sem classificação",
-      "unratedNote": "Não será aprovado automaticamente"
+      "unratedNote": "Não será aprovado automaticamente",
+      "derivedNote": "Classificação derivada",
+      "derivedTooltip": "O fornecedor não publicou uma classificação para esta atualização. Esta gravidade foi derivada da classificação e do título."
     },
     "approval": {
       "pending": "Pendente",
@@ -307,6 +310,7 @@
       "os": "SO",
       "release": "Lançamento",
       "approval": "Aprovação",
+      "devices": "Dispositivos",
       "actions": "Ações"
     },
     "releaseUnknown": "Desconhecida",
@@ -319,6 +323,23 @@
       "badgeDevices_other": "Falha na instalação em {{count}} dispositivos",
       "noReason": "Nenhum motivo informado pelo agente",
       "failedAt": "Última tentativa de instalação falhou: {{when}}"
+    },
+    "outstandingDevices": {
+      "badge_one": "{{count}} dispositivo",
+      "badge_other": "{{count}} dispositivos",
+      "none": "Nenhum dispositivo no escopo ainda precisa deste patch",
+      "open": "Mostrar os dispositivos que ainda precisam de {{title}}",
+      "heading": "Dispositivos que ainda precisam de {{title}}",
+      "loading": "Carregando dispositivos…",
+      "error": "Não foi possível carregar a lista de dispositivos.",
+      "showing": "Mostrando {{shown}} de {{total}}",
+      "loadMore": "Carregar mais",
+      "lastChecked": "Última verificação: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Versão do pacote {{version}}",
+      "id": "ID do catálogo {{id}}",
+      "title": "Outra entrada do catálogo tem o mesmo título. Cada uma é aprovada separadamente."
     }
   },
   "patchesPage": {
@@ -359,7 +380,8 @@
       "createRing": "Falha ao criar anel de atualização",
       "deleteRing": "Falha ao excluir anel",
       "approveUnknown": "Status de aprovação desconhecido — não foi possível ler a resposta do servidor. Atualize para confirmar quais patches foram aprovados.",
-      "approveAbortedWithFailures": "{{message}} (O servidor também rejeitou {{count}} patches antes disso.)"
+      "approveAbortedWithFailures": "{{message}} (O servidor também rejeitou {{count}} patches antes disso.)",
+      "checkRingLinks": "Falha ao verificar quais políticas usam este anel — nada foi excluído"
     },
     "toast": {
       "ringSaved": "Anel de atualização salvo",
@@ -389,7 +411,13 @@
       "createTitle": "Criar anel de atualização"
     },
     "truncatedNotice": "Exibindo {{shown}} de {{total}} patches. Os filtros aqui apenas restringem o que já foi carregado, então o restante não pode ser alcançado nesta visualização — use a API de patches para percorrer o catálogo completo.",
-    "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante."
+    "shiftedNotice": "Exibindo {{shown}} de {{total}} patches — o catálogo mudou enquanto carregava. Recarregue para ver o restante.",
+    "ringDelete": {
+      "title": "Excluir {{name}}?",
+      "messageOne": "1 política deixará de aplicar patches agendados até que você escolha outro anel.",
+      "messageMany": "{{count}} políticas deixarão de aplicar patches agendados até que você escolha outro anel.",
+      "confirm": "Excluir anel"
+    }
   },
   "patchJobsList": {
     "empty": "Ainda não há trabalhos de patch. Trabalhos criados por políticas, anéis de atualização ou pelo assistente de IA aparecerão aqui.",
@@ -591,5 +619,24 @@
     "orEnterAPackageIDManually": "Ou insira manualmente um ID de pacote",
     "removeRuleFor": "Remover regra de {{application}}",
     "scopeNote": "Estas regras se aplicam a todos os dispositivos cuja política de configuração vincula este anel."
+  },
+  "patchDetails": {
+    "unknown": "Desconhecido",
+    "source": "Origem",
+    "packageId": "KB / ID do pacote",
+    "severity": "Gravidade",
+    "releaseDate": "Data de lançamento",
+    "firstSeen": "Visto pela primeira vez no catálogo",
+    "rings": {
+      "title": "Anéis de atualização",
+      "note": "Quando cada anel aprova automaticamente este patch (regra no nível do anel; as exceções por categoria não são exibidas).",
+      "none": "Nenhum anel de atualização configurado.",
+      "manual": "Sem aprovação automática — requer aprovação manual",
+      "immediate": "Aprovado automaticamente de imediato",
+      "needsDate": "Retido — sem data de lançamento para iniciar a janela de {{count}} dias",
+      "autoApproves": "Aprovado automaticamente em {{date}}",
+      "hold_one": "Atraso de {{count}} dia",
+      "hold_other": "Atraso de {{count}} dias"
+    }
   }
 }

@@ -44,7 +44,10 @@
  */
 import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { canonicalizeUnifiResource, unifiEndpointKey, type TopologyScope, type UnifiDigestIdentity, type UnifiResource, type UnifiTopologyV1 } from '@breeze/shared';
+import {
+  canonicalizeUnifiResource, canonicalizeUnifiResourceV2, UNIFI_TOPOLOGY_NORMALIZED_V2_CONTRACT, unifiEndpointKey,
+  type TopologyScope, type UnifiDigestIdentity, type UnifiResource, type UnifiResourceV2, type UnifiTopologyV1, type UnifiTopologyV2,
+} from '@breeze/shared';
 import { assertInTransaction, db } from '../../db';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { topologyCollectionSources, unifiControllerSites } from '../../db/schema';
@@ -54,6 +57,7 @@ import { canonicalFactValue } from './collectionFactKeys';
 import { ingestTopologySourceReport } from './collectionIngest';
 import { captureException } from '../sentry';
 import { ingestUnifiInterfaceTelemetry } from './unifiInterfaceMetrics';
+import { materializeUnifiWifiCurrentState, type AcceptedUnifiV2Resource } from './unifiWifiMaterializer';
 import type { NormalizedTopologyReport, UnifiSourceSection } from './collectionTypes';
 import { currentUnifiCollectorTopology, ensureUnifiTopologyAuthority, resolveUnifiSourceScope, unifiAuthorityKey, unifiHostKey, type UnifiCollectorAuthority } from './unifiAuthority';
 
@@ -67,16 +71,18 @@ export function uniqueSiteMacMatch(scope: TopologyScope, mac: string, rows: Scop
 }
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
-/** Recompute the collector's resource digest (shared canonicalization v1). */
-export function unifiWireDigestMatches(identity: UnifiDigestIdentity, resource: UnifiResource): boolean {
-  return sha256(canonicalizeUnifiResource(identity, resource)) === resource.contentDigest;
+/** Recompute the collector's resource digest: shared canonicalization v1 by default, v2 for a `topologyV2` report. */
+export function unifiWireDigestMatches(identity: UnifiDigestIdentity, resource: UnifiResource | UnifiResourceV2, version: 1 | 2 = 1): boolean {
+  const canonical = version === 2 ? canonicalizeUnifiResourceV2(identity, resource as UnifiResourceV2) : canonicalizeUnifiResource(identity, resource as UnifiResource);
+  return sha256(canonical) === resource.contentDigest;
 }
 
 const SECTION_KIND = { device_list: 'unifi_device_list', client_list: 'unifi_client_list', device_details: 'unifi_device_details', statistics: 'unifi_statistics' } as const;
 type UnnormalizedSection = Omit<UnifiSourceSection, 'contentDigest'>;
 /** Pure: wire resource → retained section without digest (rows sorted by rowKey). */
-export function normalizeUnifiResource(input: { hostKey: string; authorityKey: string; resource: UnifiResource; bindings: ReadonlyMap<string, string> }): UnnormalizedSection {
-  const { resource } = input;
+export function normalizeUnifiResource(input: { hostKey: string; authorityKey: string; resource: UnifiResource | UnifiResourceV2; bindings: ReadonlyMap<string, string> }): UnnormalizedSection {
+  // A v2 row is the v1 row plus typed Wi-Fi fields; the spreads below carry those fields into the retained row unchanged.
+  const resource = input.resource as UnifiResource;
   const key = (kind: 'device' | 'mac' | 'client', value: string) => unifiEndpointKey({ hostKey: input.hostKey, controllerSiteId: resource.controllerSiteId, kind, value });
   const bind = (mac: string | null) => { const m = canonicalMac(mac); return m ? input.bindings.get(m) ?? null : null; };
   const uplink = (id: string | null) => (id ? key('device', id) : null);
@@ -97,10 +103,10 @@ export function normalizeUnifiResource(input: { hostKey: string; authorityKey: s
   } as UnnormalizedSection;
 }
 /** Normalized-section digest, bound to the scoped producer identity and epoch. */
-export function unifiNormalizedDigest(producer: { sourceIdentity: string; producerEpoch: string }, section: UnnormalizedSection | UnifiSourceSection): string {
+export function unifiNormalizedDigest(producer: { sourceIdentity: string; producerEpoch: string }, section: UnnormalizedSection | UnifiSourceSection, version: 1 | 2 = 1): string {
   const { contentDigest: _digest, rows, ...rest } = section as UnifiSourceSection;
   const ordered = [...(rows as { rowKey: string }[])].sort((a, b) => (a.rowKey < b.rowKey ? -1 : a.rowKey > b.rowKey ? 1 : 0));
-  return sha256(JSON.stringify(canonicalFactValue({ contract: 'unifi_topology_normalized_v1', sourceIdentity: producer.sourceIdentity, producerEpoch: producer.producerEpoch, section: { ...rest, rows: ordered } })));
+  return sha256(JSON.stringify(canonicalFactValue({ contract: version === 2 ? UNIFI_TOPOLOGY_NORMALIZED_V2_CONTRACT : 'unifi_topology_normalized_v1', sourceIdentity: producer.sourceIdentity, producerEpoch: producer.producerEpoch, section: { ...rest, rows: ordered } })));
 }
 
 /** Agent-reported NIC MACs of devices in exactly this scope (D16: the only binding source). */
@@ -113,7 +119,7 @@ async function siteMacCandidates(scope: TopologyScope, macs: string[]): Promise<
       AND lower(replace(btrim(dn.mac_address), '-', ':')) IN (SELECT jsonb_array_elements_text(${JSON.stringify(macs)}::jsonb))`);
   return rows.map(r => ({ id: String(r.id), orgId: String(r.org_id), siteId: String(r.site_id), mac: String(r.mac) }));
 }
-async function bindingsFor(scope: TopologyScope, resource: UnifiResource): Promise<Map<string, string>> {
+async function bindingsFor(scope: TopologyScope, resource: UnifiResource | UnifiResourceV2): Promise<Map<string, string>> {
   if (resource.kind !== 'device_list' && resource.kind !== 'client_list') return new Map();
   const macs = [...new Set((resource.rows as { mac: string | null }[]).map(r => canonicalMac(r.mac)).filter((m): m is string => m !== null))];
   const candidates = await siteMacCandidates(scope, macs);
@@ -151,10 +157,10 @@ async function noteCoverage(collector: UnifiCollectorAuthority, notes: Map<strin
   }
 }
 
-/** Synchronous ingest of one collector upload. Callers own the transaction and
- * system DB context; each resource runs in its own savepoint so one rejected
- * controller site never discards another's receipt. */
-export async function adaptUnifiTopology(deviceId: string, collector: UnifiCollectorAuthority, report: UnifiTopologyV1): Promise<UnifiTopologyReceipt> {
+/** Synchronous ingest of one collector upload (`topologyV1` or `topologyV2`; the version is bound into the
+ * digests and the retained-row contract). Callers own the transaction and system DB context; each resource
+ * runs in its own savepoint so one rejected controller site never discards another's receipt. */
+export async function adaptUnifiTopology(deviceId: string, collector: UnifiCollectorAuthority, report: UnifiTopologyV1 | UnifiTopologyV2): Promise<UnifiTopologyReceipt> {
   assertInTransaction('adaptUnifiTopology');
   ensureUnifiTopologyAuthority();
   const base = { reportSequence: report.sequence };
@@ -165,6 +171,8 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
   const scopes = new Map<string, TopologyScope | null>();
   const coverage = new Map<string, string | null>();
   const resources: UnifiResourceReceipt[] = [];
+  // v2 resources that received an accepted structural receipt; the Wi-Fi materializer consumes only these.
+  const acceptedV2: AcceptedUnifiV2Resource[] = [];
   // Resolve every controller-site scope first (reads only), then take every
   // site-state lock this upload can need in ONE ascending pass before any
   // resource runs (lockTopologySiteStates: never state(T), root(H), state(H)).
@@ -187,7 +195,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
       if (note) coverage.set(resource.controllerSiteId, note);
       resources.push({ ...out, accepted: false, reason });
     };
-    if (!unifiWireDigestMatches(current, resource)) { reject('content_digest_mismatch'); continue; }
+    if (!unifiWireDigestMatches(current, resource, report.version)) { reject('content_digest_mismatch'); continue; }
     const scope = scopes.get(resource.controllerSiteId)!;
     if (!scope) { reject('controller_site_unmapped', 'controller_site_unmapped'); continue; }
     if (scope.orgId !== collector.orgId) { reject('controller_site_other_org', 'controller_site_other_org'); continue; }
@@ -199,7 +207,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
       const receipt = await db.transaction(async () => {
         const producer = await resolveTopologyPhysicalProducer({ producerKind: 'unifi', deviceId, scope, authorityKey, collectorId: collector.id });
         const section = normalizeUnifiResource({ hostKey, authorityKey, resource, bindings: await bindingsFor(scope, resource) });
-        const contentDigest = unifiNormalizedDigest(producer, section);
+        const contentDigest = unifiNormalizedDigest(producer, section, report.version);
         const key = { protocol: section.kind, contextKey: authorityKey, addressFamily: 'any' as const };
         const [source] = await db.select({ producerEpoch: topologyCollectionSources.producerEpoch, contentDigest: topologyCollectionSources.contentDigest,
           baseSnapshotId: topologyCollectionSources.baseSnapshotId, revokedAt: topologyCollectionSources.revokedAt }).from(topologyCollectionSources)
@@ -211,7 +219,7 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
         const normalized: NormalizedTopologyReport = source && !source.revokedAt && source.baseSnapshotId && source.producerEpoch === producer.producerEpoch && source.contentDigest === contentDigest
           ? { reportKind: 'unchanged', confirmation: { key, producerEpoch: producer.producerEpoch, baseSnapshotId: source.baseSnapshotId, ...envelope } }
           : { reportKind: 'full', snapshot: { key, producerEpoch: producer.producerEpoch, ...envelope, section: { ...section, contentDigest } as UnifiSourceSection,
-            manifest: { contract: 'unifi_topology_v1', controllerSiteId: resource.controllerSiteId,
+            manifest: { contract: report.version === 2 ? 'unifi_topology_v2' : 'unifi_topology_v1', controllerSiteId: resource.controllerSiteId,
               resources: [{ kind: resource.kind, outcome: resource.outcome, rowCount: resource.rowCount, ...(resource.omittedRowCount !== undefined ? { omittedRowCount: resource.omittedRowCount } : {}) }] } } };
         return ingestTopologySourceReport(producer, normalized);
       });
@@ -220,9 +228,10 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
         : { ...out, accepted: false, reason: receipt.reason ?? 'not_accepted' });
       // M3 Task 4: accepted port details also feed link/speed telemetry. Its
       // own savepoint; a telemetry failure never changes the structural receipt.
+      if (receipt.accepted && report.version === 2) acceptedV2.push({ resource: resource as UnifiResourceV2, scope, authorityKey });
       if (receipt.accepted && resource.kind === 'device_details') {
         try {
-          await ingestUnifiInterfaceTelemetry({ deviceId, collector, scope, authorityKey, report, resource });
+          await ingestUnifiInterfaceTelemetry({ deviceId, collector, scope, authorityKey, report, resource: resource as UnifiResource });
         } catch (error) {
           console.error('[unifi] port telemetry ingest failed; topology receipt unaffected:', error instanceof Error ? error.message : error);
           captureException(error);
@@ -232,6 +241,16 @@ export async function adaptUnifiTopology(deviceId: string, collector: UnifiColle
       const reason = unifiAdapterRejection(error);
       if (!reason) throw error;
       reject(reason);
+    }
+  }
+  // Wi-Fi current state (v2 only): one batched upsert for the whole poll, in its own savepoint. A refusal is
+  // observable but never flips an accepted structural receipt or the legacy telemetry.
+  if (report.version === 2 && acceptedV2.length > 0) {
+    try {
+      await materializeUnifiWifiCurrentState({ collector, report, accepted: acceptedV2 });
+    } catch (error) {
+      console.error('[unifi] wifi current-state materialization failed; topology receipt unaffected:', error instanceof Error ? error.message : error);
+      captureException(error);
     }
   }
   await noteCoverage(collector, coverage);

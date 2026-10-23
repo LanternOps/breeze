@@ -1,4 +1,5 @@
 import { navigateTo } from '@/lib/navigation';
+import { normalizeOsFingerprint } from './osFingerprint';
 import { ActionError } from '@/lib/runAction';
 import { useNetworkAssetMutations } from '../devices/networkDevice/settings/useNetworkAssetMutations';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -177,7 +178,7 @@ export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     reachability: asset.reachability,
     lastSeen: asset.lastSeenAt ?? asset.updatedAt ?? asset.createdAt,
     openPorts: normalizeOpenPorts(asset.openPorts),
-    osFingerprint: asset.osFingerprint ?? undefined,
+    osFingerprint: normalizeOsFingerprint(asset.osFingerprint) ?? undefined,
     snmpData: asset.snmpData ?? undefined,
     responseTimeMs: asset.responseTimeMs ?? null,
     linkedDeviceId: asset.linkedDeviceId,
@@ -203,7 +204,7 @@ export function toDetail(asset: DiscoveredAsset): AssetDetail {
   return {
     ...asset,
     openPorts: asset.openPorts ?? [],
-    osFingerprint: asset.osFingerprint ?? '—',
+    osFingerprint: normalizeOsFingerprint(asset.osFingerprint) ?? '—',
     snmpData: asset.snmpData ?? {},
     linkedDeviceId: asset.linkedDeviceId ?? undefined
   };

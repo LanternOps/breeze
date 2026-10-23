@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { navigateTo } from '@/lib/navigation';
 import { useHashState } from '@/lib/useHashState';
@@ -16,6 +16,7 @@ import { listContractDocuments, type ContractDocument } from '../../lib/api/cont
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
+import { showToast } from '../shared/Toast';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
@@ -46,23 +47,47 @@ export default function ContractWorkspace({ contractId }: Props) {
   // Active contracts are read-mostly; an explicit toggle reveals the editor.
   const [editing, setEditing] = useState(false);
 
+  // Mirrors `detail` for `load()` without making it a dependency: a background
+  // refresh (editor autosave -> onChanged) must not change `load`'s identity and
+  // retrigger the mount effect.
+  // Holds the id of the contract currently on screen, so a `contractId` prop
+  // change is treated as a fresh first load rather than a background refresh.
+  const shownIdRef = useRef<string | null>(null);
+  shownIdRef.current = detail?.contract.id ?? null;
+  // Sequence guard: overlapping refreshes (two quick autosaves) must not let a
+  // slower, older response overwrite a newer one.
+  const loadSeqRef = useRef(0);
+
+  // First load shows the full-page spinner / error state. Once a detail is on
+  // screen, a refetch is a background refresh (#9305): keep the tree mounted
+  // (focus, the editor's per-field "Saved" cue), swap in the new detail on
+  // arrival, and report a failure as a toast rather than replacing the page.
   const load = useCallback(async () => {
     if (isNew) { setLoading(false); return; }
     if (!contractId) { setError(stableT('contracts.contractWorkspace.errors.missingContractId')); setLoading(false); return; }
+    const background = shownIdRef.current === contractId;
+    const seq = ++loadSeqRef.current;
+    const fail = (message: string) => {
+      if (background) showToast({ type: 'error', message });
+      else setError(message);
+    };
     try {
-      setLoading(true);
-      setError(undefined);
+      if (!background) { setLoading(true); setError(undefined); }
       const res = await getContract(contractId);
+      if (seq !== loadSeqRef.current) return;
       if (res.status === 401) return UNAUTHORIZED();
-      if (res.status === 404) { setError(stableT('contracts.contractWorkspace.errors.notFound')); return; }
+      if (res.status === 404) { fail(stableT('contracts.contractWorkspace.errors.notFound')); return; }
       if (!res.ok) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
       const body = (await res.json().catch(() => null)) as { data: ContractDetailData } | null;
       if (!body) throw new Error(stableT('contracts.contractWorkspace.errors.loadContract'));
+      if (seq !== loadSeqRef.current) return;
       setDetail(body.data);
+      setError(undefined);
     } catch (err) {
-      setError(err instanceof Error ? err.message : stableT('contracts.contractWorkspace.errors.loadContract'));
+      if (seq !== loadSeqRef.current) return;
+      fail(err instanceof Error ? err.message : stableT('contracts.contractWorkspace.errors.loadContract'));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [isNew, contractId, stableT]);
 
@@ -80,6 +105,11 @@ export default function ContractWorkspace({ contractId }: Props) {
   // "First by created_at" (spec §6) = the LAST element: the service orders
   // desc(createdAt).
   const [firstAgreement, setFirstAgreement] = useState<ContractDocument | null>(null);
+  // #9304: "created from quote" provenance. It used to be written into the
+  // contract's Notes, which print on every generated invoice; now it is derived
+  // from the executed agreement the accept flow files against this contract.
+  // Only a quote-sourced document whose quote still exists qualifies.
+  const [sourceQuote, setSourceQuote] = useState<{ id: string; number: string } | null>(null);
   const [recordOpen, setRecordOpen] = useState(false);
   // Bumped after a recording so the pill below re-reads the agreement list.
   const [recordedTick, setRecordedTick] = useState(0);
@@ -96,7 +126,11 @@ export default function ContractWorkspace({ contractId }: Props) {
         if (!res?.ok) return;               // decoration; a failure is silent
         const body = (await res.json().catch(() => null)) as { data?: ContractDocument[] } | null;
         const docs = body?.data ?? [];
-        if (!cancelled && docs.length) setFirstAgreement(docs[docs.length - 1]!);
+        if (cancelled) return;
+        if (docs.length) setFirstAgreement(docs[docs.length - 1]!);
+        // Oldest first, matching the agreement pill above.
+        const fromQuote = [...docs].reverse().find((d) => d.sourceKind === 'quote' && d.quoteId && d.quoteNumber);
+        setSourceQuote(fromQuote ? { id: fromQuote.quoteId!, number: fromQuote.quoteNumber! } : null);
       } catch {
         // no pill; never a page-level error
       }
@@ -129,7 +163,7 @@ export default function ContractWorkspace({ contractId }: Props) {
     );
   }
 
-  if (error || !detail) {
+  if (!detail) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive" data-testid="contract-workspace-error">
         {error ?? t('contracts.contractWorkspace.errors.unavailable')}
@@ -167,6 +201,12 @@ export default function ContractWorkspace({ contractId }: Props) {
                   template: firstAgreement.templateName,
                   n: firstAgreement.templateVersionNumber,
                 })}
+              </a>
+            )}
+            {sourceQuote && (
+              <a href={`/billing/quotes/${sourceQuote.id}`} data-testid="contract-from-quote-pill"
+                 className="inline-flex shrink-0 items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70">
+                {t('agreements.contractPill.fromQuote', { number: sourceQuote.number })}
               </a>
             )}
           </div>

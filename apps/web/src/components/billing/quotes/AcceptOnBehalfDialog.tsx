@@ -11,6 +11,18 @@ import { type Quote, type QuoteLine, formatMoney } from './quoteTypes';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
+/** #9303: an org contract that already existed on the same cadence as a draft
+ *  this accept just created (the accept-on-behalf response's
+ *  `overlappingContracts`). */
+interface OverlappingContract { id: string; name: string; status: string; intervalMonths: number }
+
+interface AcceptOnBehalfResult {
+  invoiceId: string;
+  invoiceNumber: string | null;
+  contractIds?: string[];
+  overlappingContracts?: OverlappingContract[];
+}
+
 /** Parses the variable names out of a 422 CONTRACT_VARIABLES_UNRESOLVED message
  *  ("Contract variables unresolved: a, b") — the same message shape
  *  `assertQuoteSendGates` (`quoteLifecycle.ts`) has always thrown for both a
@@ -52,6 +64,8 @@ interface Props {
    *  the honest answer while we don't know. Matches the server's own
    *  `!== false` default: only `false` suppresses the line. */
   autoEmailInvoiceOnAccept?: boolean;
+  /** #9256: from the quote detail payload; `false` = no email transport. Omitted = unknown (no fetch). */
+  emailConfigured?: boolean;
   /** Called after a successful accept, so the workspace can reload and switch
    *  to the converted view. Never called on failure. */
   onAccepted: () => void;
@@ -70,7 +84,7 @@ interface Props {
  *
  *  Its own file: QuoteActions.tsx is already 1551 lines, and this surface has a
  *  fetch, a form and five conditional consequences of its own. */
-export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, recipients, autoEmailInvoiceOnAccept, onAccepted }: Props) {
+export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, recipients, autoEmailInvoiceOnAccept, emailConfigured, onAccepted }: Props) {
   const { t } = useTranslation('billing');
   const [method, setMethod] = useState<QuoteAcceptOnBehalfMethod>('verbal');
   const [reference, setReference] = useState('');
@@ -85,6 +99,10 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   // an upload failure never blocks or undoes the acceptance itself.
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  // #9303: set after a successful accept when the org already had a contract
+  // on the same cadence. The dialog then shows a notice linking both instead of
+  // closing, and onAccepted (the workspace reload) waits for "Done".
+  const [overlapNotice, setOverlapNotice] = useState<{ newContractIds: string[]; existing: OverlappingContract[] } | null>(null);
   // Whether accepting will email the invoice to the customer, from the quote
   // detail response's own partner-flag field (#6636) — never fetched here.
   // Strict `=== true`: `undefined` (older payload/fixture, field not loaded)
@@ -104,6 +122,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     setSubmitting(false);
     setEvidenceFile(null);
     setEvidenceError(null);
+    setOverlapNotice(null);
   }, [open, quote.billToName, recipients]);
 
   const currency = quote.currencyCode ?? 'USD';
@@ -126,7 +145,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
     if (submitting || !ready) return;
     setSubmitting(true);
     try {
-      await runAction({
+      const accepted = await runAction({
         request: () => acceptQuoteOnBehalf(quote.id, {
           method,
           reference: reference.trim(),
@@ -155,7 +174,7 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
         // `invoiceNumber` is the number the ACCEPT allocated. Never
         // `quote.quoteNumber`: that is the quote's own number, and naming it in
         // "Invoice … issued" tells the tech a document exists that does not.
-        parseSuccess: (data) => (data as { data: { invoiceId: string; invoiceNumber: string | null } }).data,
+        parseSuccess: (data) => (data as { data: AcceptOnBehalfResult }).data,
         // A recurring-only quote leaves the invoice in draft with no number
         // allocated, so there is no number to name — say what actually happened
         // rather than printing a blank where a number belongs.
@@ -186,6 +205,11 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
           }
         }
       }
+      const existing = accepted?.overlappingContracts ?? [];
+      if (existing.length > 0) {
+        setOverlapNotice({ newContractIds: accepted?.contractIds ?? [], existing });
+        return;
+      }
       onAccepted();
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
@@ -194,6 +218,56 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
       setSubmitting(false);
     }
   }, [submitting, ready, quote.id, method, reference, signerName, signerEmail, evidenceFile, onAccepted, autoEmail, hasRecipients, t]);
+
+  if (overlapNotice) {
+    // The accept already happened: every way out of this view must run
+    // onAccepted so the workspace reloads into the converted quote.
+    return (
+      <Dialog
+        open={open}
+        onClose={onAccepted}
+        title={t('quotes.actions.acceptOnBehalf.overlap.title')}
+        labelledBy="quote-accept-overlap-title"
+        maxWidth="md"
+        className="p-6"
+      >
+        <div data-testid="quote-accept-overlap-notice" role="alert">
+          <h3 id="quote-accept-overlap-title" className="text-base font-semibold text-foreground">
+            {t('quotes.actions.acceptOnBehalf.overlap.title')}
+          </h3>
+          <p className="mt-2 text-sm text-muted-foreground">{t('quotes.actions.acceptOnBehalf.overlap.body')}</p>
+          <ul className="mt-4 space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-700 dark:bg-amber-950/40">
+            {overlapNotice.newContractIds.map((id) => (
+              <li key={id}>
+                <a href={`/contracts/${id}`} data-testid={`quote-accept-overlap-new-${id}`} className="font-medium text-primary hover:underline">
+                  {t('quotes.actions.acceptOnBehalf.overlap.newContract')}
+                </a>
+              </li>
+            ))}
+            {overlapNotice.existing.map((c) => (
+              <li key={c.id}>
+                <span className="text-muted-foreground">{t('quotes.actions.acceptOnBehalf.overlap.existingContract')}: </span>
+                <a href={`/contracts/${c.id}`} data-testid={`quote-accept-overlap-existing-${c.id}`} className="font-medium text-primary hover:underline">
+                  {c.name}
+                </a>
+                <span className="text-muted-foreground"> ({t(/* i18n-dynamic */ `contracts.shared.status.${c.status}`)})</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={onAccepted}
+            data-testid="quote-accept-overlap-done"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            {t('quotes.actions.acceptOnBehalf.overlap.done')}
+          </button>
+        </div>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog
@@ -313,14 +387,19 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
             {t('quotes.actions.acceptOnBehalf.consequenceContracts')}
           </li>
         )}
-        {autoEmail && hasRecipients && (
+        {autoEmail && emailConfigured === false && (
+          <li data-testid="accept-on-behalf-consequence-email">
+            {t('quotes.actions.acceptOnBehalf.consequenceEmailNotConfigured')}
+          </li>
+        )}
+        {autoEmail && emailConfigured !== false && hasRecipients && (
           <li data-testid="accept-on-behalf-consequence-email">
             {t('quotes.actions.acceptOnBehalf.consequenceEmail', { recipients: recipients.join(', ') })}
           </li>
         )}
         {/* The API exposes no signal for the server's org-billing-contact
             fallback, so with no recorded recipients don't promise an email. */}
-        {autoEmail && !hasRecipients && (
+        {autoEmail && emailConfigured !== false && !hasRecipients && (
           <li data-testid="accept-on-behalf-consequence-email-none">
             {t('quotes.actions.acceptOnBehalf.consequenceEmailNoRecipient')}
           </li>

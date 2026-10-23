@@ -71,7 +71,7 @@
         "autoIssue": "Emisión automática",
         "renewal": "Renovación",
         "estimatedPerPeriod": "Est. / período",
-        "notes": "Notas",
+        "notes": "Notas internas",
         "invoiceNote": "Nota en la factura"
       },
       "values": {
@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} línea(s) superan la cantidad incluida y no se facturaron: {{names}}",
         "uncoveredDevices": "Factura generada, pero {{count}} dispositivo(s) no se facturan en ninguna línea de este contrato: {{breakdown}}",
         "priceBookGaps": "{{count}} línea(s) de catálogo facturada(s) con el precio guardado en el contrato — no hay precio en {{currency}} en el catálogo: {{lines}}",
-        "draftDeleted": "Borrador eliminado"
+        "draftDeleted": "Borrador eliminado",
+        "skipped": {
+          "already_billed": "No se generó ninguna factura: este período de facturación ya fue facturado.",
+          "not_due": "No se generó ninguna factura: este contrato aún no está listo para facturarse.",
+          "renewal_pending": "No se generó ninguna factura: este contrato superó su fecha de finalización y está a la espera de su renovación.",
+          "expired": "No se generó ninguna factura: este contrato venció.",
+          "unknown": "No se generó ninguna factura para este contrato."
+        }
       },
       "cancelConfirm": {
         "title": "¿Cancelar este contrato?",
@@ -221,8 +228,8 @@
       },
       "content": {
         "title": "Contenido",
-        "notesOptional": "Notas (opcional, se agregan al bloque de Notas de las facturas generadas)",
-        "termsOptional": "Nota en la factura (opcional, se agrega al bloque de Notas de las facturas generadas)",
+        "notesOptional": "Notas internas (nunca se muestran al cliente)",
+        "termsOptional": "Nota en la factura (opcional, se imprime en cada factura generada)",
         "termsPlaceholder": "p.ej. Neto 30. Se renueva automáticamente a menos que se cancele 30 días antes."
       },
       "lines": {
@@ -645,6 +652,38 @@
         "loadMore": "Cargar más",
         "invoiceRemoved": "Factura del exceso eliminada: horas no facturadas"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Esta organización tiene {{count}} contrato más",
+      "title_other": "Esta organización tiene {{count}} contratos más",
+      "overlapWarning": "Otro contrato factura con la misma periodicidad en fechas que se superponen. Si activa ambos, se le cobra al cliente por los dos.",
+      "sameCadence": "Misma periodicidad, fechas superpuestas",
+      "perPeriod": "{{amount}} por período",
+      "estimateUnavailable": "Estimación por período no disponible",
+      "deliverables_one": "{{count}} entregable",
+      "deliverables_other": "{{count}} entregables",
+      "signedAgreements_one": "{{count}} acuerdo firmado",
+      "signedAgreements_other": "{{count}} acuerdos firmados",
+      "activateConfirm": {
+        "title": "¿Activar junto con otro contrato?",
+        "message": "Esta organización ya tiene un contrato que factura con la misma periodicidad en fechas que se superponen. Si activa este, se le cobra al cliente por los dos.",
+        "confirm": "Activar de todos modos"
+      },
+      "adopt": {
+        "action": "Integrar en este contrato",
+        "title": "¿Integrar “{{name}}” en este contrato?",
+        "message": "Úselo cuando “{{name}}” cubra los mismos servicios que este contrato, para que al cliente no se le cobre dos veces.",
+        "deliverables_one": "Su {{count}} entregable pasa a este contrato, con su historial.",
+        "deliverables_other": "Sus {{count}} entregables pasan a este contrato, con su historial.",
+        "agreements_one": "Su {{count}} acuerdo firmado se vincula a este contrato.",
+        "agreements_other": "Sus {{count}} acuerdos firmados se vinculan a este contrato.",
+        "noLines": "Sus líneas no se copian. Las líneas y los precios de este contrato no cambian.",
+        "deleted": "Después, “{{name}}” se elimina. Esta acción no se puede deshacer.",
+        "confirm": "Integrar y eliminar borrador",
+        "success": "“{{name}}” se integró en este contrato",
+        "error": "No se pudo integrar el borrador en este contrato",
+        "collision": "Estos nombres de entregables ya existen en este contrato: {{names}}. Cámbielos de nombre o elimínelos en uno de los dos y vuelva a intentarlo."
+      }
     }
   },
   "agreements": {
@@ -693,7 +732,8 @@
       }
     },
     "contractPill": {
-      "under": "Bajo {{template}} v{{n}}"
+      "under": "Bajo {{template}} v{{n}}",
+      "fromQuote": "Desde la cotización {{number}}"
     },
     "recordSigned": {
       "title": "Registrar acuerdo firmado",
@@ -1312,6 +1352,7 @@
         "consequenceInvoice": "Se emitirá y numerará ahora una factura por {{amount}}.",
         "consequenceContracts": "Las líneas recurrentes se convierten en contratos en borrador que activas después.",
         "consequenceEmail": "La factura se enviará por correo electrónico a {{recipients}}.",
+        "consequenceEmailNotConfigured": "No hay un servicio de correo configurado; la factura no se enviará por correo. Compártela desde la página de la factura.",
         "consequenceDraft": "Esta propuesta nunca se envió. Lo primero que el cliente verá de ella será la factura.",
         "submit": "Aceptar y emitir factura",
         "success": "Propuesta aceptada. Factura {{number}} emitida.",
@@ -1326,7 +1367,14 @@
         "evidenceAttached": "Evidencia adjuntada.",
         "evidenceError": "La aceptación quedó registrada, pero no se pudo adjuntar el archivo de evidencia. Adjúntalo desde la página de la propuesta.",
         "consequenceEmailNoRecipient": "Esta cotización no tiene destinatarios registrados, por lo que es posible que la factura no se envíe por correo. Envíasela al cliente tú mismo si es necesario.",
-        "successNoRecipient": "Cotización aceptada. Factura {{number}} emitida. Es posible que no se haya enviado por correo: esta cotización no tiene destinatarios registrados."
+        "successNoRecipient": "Cotización aceptada. Factura {{number}} emitida. Es posible que no se haya enviado por correo: esta cotización no tiene destinatarios registrados.",
+        "overlap": {
+          "title": "Esta organización ya tiene un contrato con la misma periodicidad",
+          "body": "La aceptación creó un nuevo borrador de contrato. Si lo activa además del existente, se le cobra al cliente por los dos. Revise ambos antes de activar cualquiera.",
+          "newContract": "Nuevo borrador de esta cotización",
+          "existingContract": "Contrato existente",
+          "done": "Listo"
+        }
       },
       "declineOnBehalf": {
         "button": "Rechazar en nombre del cliente",
@@ -1536,76 +1584,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Cantidad estimada: se factura la cantidad real de {{set}} en cada período de facturación.",
         "setDevices": "dispositivos",
         "setSeats": "licencias",
-        "setGroup": "dispositivos en “{{name}}”",
-        "atSite": "{{set}} en {{site}}",
-        "allowanceBill": "Incluye {{included}}; las unidades adicionales se facturan a {{price}} cada una.",
-        "allowanceFlag": "Incluye {{included}}; las unidades adicionales se informan para revisión y no se facturan automáticamente."
+        "setGroup": "dispositivos en “{{name}}”"
       },
       "additionalItems": "Artículos adicionales",
       "contract": {
-        "download": "Descargar acuerdo",
-        "previewTitle": "Acuerdo {{name}}",
         "unavailable": "Archivo del acuerdo no disponible",
         "versionFooter": "{{name}} — versión {{version}}"
       },
-      "agreements": {
-        "heading": "Acuerdos",
-        "termsTitle": "Términos y condiciones",
-        "read": "Leer",
-        "hide": "Ocultar",
-        "readTime": "~{{minutes}} min de lectura",
-        "sectionsReadTime_one": "{{count}} sección · ~{{minutes}} min de lectura",
-        "sectionsReadTime_other": "{{count}} secciones · ~{{minutes}} min de lectura",
-        "pdfDocument": "Documento PDF",
-        "unavailable": "No disponible",
-        "untitled": "Acuerdo"
-      },
-      "draft": "Borrador",
-      "empty": "Esta propuesta aún no tiene ningún contenido.",
-      "imageUnavailable": "Imagen no disponible",
-      "issued": "Emitido",
-      "preparedFor": "preparado para",
-      "taxId": "ID fiscal: {{id}}",
-      "imageZoomAria": "Ver imagen más grande",
       "preview": {
         "description": "Esto es lo que su cliente ve en el enlace de su propuesta.",
         "downloadPdf": "Descargar PDF",
-        "preparing": "Preparando…"
-      },
-      "pricing": "Precios",
-      "pricingScrollAria": "Precios: desplácese hacia los lados para ver más columnas",
-      "proposal": "Propuesta",
-      "proposalImageAlt": "Imagen de propuesta",
-      "recurrence": {
-        "annual": "Anual",
-        "monthly": "Mensual"
-      },
-      "table": {
-        "amount": "Cantidad",
-        "description": "Descripción",
-        "qty": "Cantidad",
-        "tax": "Impuesto",
-        "unitPrice": "Precio unitario"
-      },
-      "totals": {
-        "annualRecurring": "Recurrente anual",
-        "depositDue": "Depósito adeudado",
-        "depositDueNow": "Depósito a pagar ahora",
-        "dueOnAcceptance": "Vencimiento al momento de la aceptación",
-        "firstPeriodSubtotal": "Subtotal del primer período",
-        "firstPeriodTotal": "Total del primer período",
-        "monthlyRecurring": "Recurrente mensual",
-        "recurringNote": "Al aceptar esta propuesta se facturan los cargos únicos ahora. Las líneas recurrentes facturan según su propio horario.",
-        "remainingBalance": "Saldo restante (según los términos)",
-        "subtotal": "Total parcial",
-        "tax": "Impuesto"
-      },
-      "unsupportedBlock": "Este tipo de bloque aún no es compatible con este visor.",
-      "validUntil": "Válido hasta"
+        "preparing": "Preparando…",
+        "loading": "Cargando la vista del cliente…",
+        "loadError": "No se pudo cargar la vista del cliente de esta propuesta.",
+        "retry": "Reintentar",
+        "signatureInert": "Aquí firma su cliente"
+      }
     },
     "page": {
       "accessDenied": "No tiene permiso para ver cotizaciones.",
@@ -2152,36 +2148,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Cobrar a",
-    "documentType": "Factura",
-    "due": "Pendiente",
-    "empty": "Esta factura aún no tiene ninguna partida.",
-    "fallbackTitle": "Factura",
-    "issued": "Emitido",
-    "laborLine": "Mano de obra",
     "preview": {
       "description": "Esto es lo que su cliente ve en su factura.",
       "downloadError": "No se pudo descargar la factura PDF.",
       "downloadPdf": "Descargar PDF",
-      "preparing": "Preparando…"
+      "loadError": "No se pudo cargar la vista del cliente de esta factura.",
+      "loading": "Cargando la vista del cliente…",
+      "preparing": "Preparando…",
+      "retry": "Reintentar"
     },
-    "table": {
-      "amount": "Cantidad",
-      "description": "Descripción",
-      "qty": "Cantidad",
-      "tax": "Impuesto",
-      "unitPrice": "Precio unitario"
-    },
-    "terms": "Términos y condiciones",
-    "ticketHeader": "Ticket n.º {{number}}",
-    "ticketWork": "Trabajo de ticket",
-    "totals": {
-      "amountDue": "Monto adeudado",
-      "paid": "Pagado",
-      "subtotal": "Total parcial",
-      "tax": "Impuesto",
-      "total": "Total"
-    }
+    "ticketHeader": "Ticket n.º {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Facturas",
@@ -2468,7 +2444,7 @@
     "documents": "Documentos",
     "connections": "Conexiones",
     "rates": "Tarifas",
-    "payments": "Payments"
+    "payments": "Pagos"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2806,6 +2782,10 @@
       "confirm": "Confirmar",
       "failed": "Verificación fallida. Inténtelo de nuevo.",
       "unavailable": "No se pudo iniciar la verificación"
+    },
+    "notEnabled": {
+      "title": "Los pagos automáticos no están habilitados para su cuenta",
+      "hint": "Los pagos automáticos aún no se han activado. Pida a su administrador de Breeze que los habilite y luego vuelva para solicitar la inscripción a sus clientes."
     }
   },
   "reminders": {

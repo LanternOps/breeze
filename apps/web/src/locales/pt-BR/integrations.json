@@ -7,6 +7,7 @@
     "unavailable": "Os detalhes da conexão não estão disponíveis.",
     "onboardingUnavailable": "A integração de leitura do Microsoft Graph do cliente não está habilitada para esta organização.",
     "notAvailableOnInstance": "Ainda não disponível nesta instância do Breeze.",
+    "notEnabledForOrg": "Ainda não habilitado para esta organização. Peça ao administrador do Breeze para habilitar.",
     "callback": {
       "active": "O consentimento da Microsoft foi concluído. O status atualizado da conexão é exibido abaixo.",
       "degraded": "O consentimento da Microsoft foi concluído, mas a conexão precisa de atenção. Os detalhes atualizados são exibidos abaixo."
@@ -82,7 +83,9 @@
         "intune_devices": "Dispositivos do Intune",
         "ca_policies": "Acesso Condicional",
         "skus": "Licenças",
-        "secure_score": "Pontuação de segurança"
+        "secure_score": "Pontuação de segurança",
+        "signin_events": "Eventos de entrada",
+        "unknown": "Tipo de dados não reconhecido"
       }
     },
     "errors": {
@@ -91,6 +94,7 @@
       "consent_cancelled": "O consentimento da Microsoft foi cancelado.",
       "conditional_access_blocked": "A Microsoft bloqueou este login: a política de Acesso Condicional do locatário o interrompeu (por exemplo, uma verificação do dispositivo). Tente novamente em um navegador confiável para o locatário ou fale com o administrador do locatário.",
       "consent_provider_error": "A Microsoft retornou um erro durante o login. Tente novamente; se o erro se repetir, verifique os logs de entrada do locatário.",
+      "user_consent_blocked": "Sua organização exige que um administrador aprove o login neste aplicativo. Entre com um Administrador Global ou aprove-o no Entra → Aplicativos empresariais → Solicitações de consentimento do administrador.",
       "admin_role_required": "Um Administrador Global ou Administrador de Função com Privilégios deve conceder o consentimento.",
       "tenant_mismatch": "O administrador com que você entrou pertence a um locatário da Microsoft diferente do desta conexão. Entre com um administrador do locatário conectado.",
       "tenant_already_bound": "Este locatário da Microsoft já está conectado a outra organização.",
@@ -103,6 +107,7 @@
       "manifest_stale": "As permissões concedidas usam um manifesto antigo. Conceda o consentimento novamente.",
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
+      "executor_unavailablePending": "Não foi possível concluir a conexão. Tente Conectar novamente; se continuar falhando, entre em contato com o suporte.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
     },
     "stepTitle": "Acesso de leitura",
@@ -124,6 +129,7 @@
     "unavailable": "Os detalhes da conexão não estão disponíveis.",
     "onboardingUnavailable": "A integração de ações do Microsoft Graph do cliente não está habilitada para esta organização.",
     "notAvailableOnInstance": "Ainda não disponível nesta instância do Breeze.",
+    "notEnabledForOrg": "Ainda não habilitado para esta organização. Peça ao administrador do Breeze para habilitar.",
     "callback": {
       "active": "O consentimento da Microsoft foi concluído. O status atualizado da conexão é exibido abaixo.",
       "degraded": "O consentimento da Microsoft foi concluído, mas a conexão precisa de atenção. Os detalhes atualizados são exibidos abaixo."
@@ -175,6 +181,7 @@
       "consent_cancelled": "O consentimento da Microsoft foi cancelado.",
       "conditional_access_blocked": "A Microsoft bloqueou este login: a política de Acesso Condicional do locatário o interrompeu (por exemplo, uma verificação do dispositivo). Tente novamente em um navegador confiável para o locatário ou fale com o administrador do locatário.",
       "consent_provider_error": "A Microsoft retornou um erro durante o login. Tente novamente; se o erro se repetir, verifique os logs de entrada do locatário.",
+      "user_consent_blocked": "Sua organização exige que um administrador aprove o login neste aplicativo. Entre com um Administrador Global ou aprove-o no Entra → Aplicativos empresariais → Solicitações de consentimento do administrador.",
       "admin_role_required": "Um Administrador Global ou Administrador de Função com Privilégios deve conceder o consentimento.",
       "tenant_mismatch": "O administrador com que você entrou pertence a um locatário da Microsoft diferente do desta conexão. Entre com um administrador do locatário conectado.",
       "tenant_already_bound": "Este locatário da Microsoft já está conectado a outra organização.",
@@ -186,6 +193,7 @@
       "manifest_stale": "As permissões concedidas usam um manifesto antigo. Conceda o consentimento novamente.",
       "organization_probe_failed": "A verificação da organização da Microsoft falhou. Teste a conexão novamente.",
       "executor_unavailable": "O serviço de verificação não está disponível. Tente novamente mais tarde.",
+      "executor_unavailablePending": "Não foi possível concluir a conexão. Tente Conectar novamente; se continuar falhando, entre em contato com o suporte.",
       "unknown": "A verificação precisa de atenção. Teste a conexão novamente ou reinicie o consentimento."
     },
     "stepTitle": "Ações de administrador",
@@ -258,8 +266,10 @@
   "m365TenantPanel": {
     "loading": "Carregando conexões do Microsoft 365.",
     "consentUnavailable": "A conexão baseada em consentimento ainda não está disponível nesta instância do Breeze.",
+    "consentNotEnabledForOrg": "A conexão baseada em consentimento ainda não está habilitada para esta organização. Peça ao administrador do Breeze para habilitá-la.",
     "selectOrganization": "Selecione uma organização para conectar o locatário do Microsoft 365 dela.",
     "noTenantForOrg": "Nenhum locatário do Microsoft 365 conectado a {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · conectado a {{orgName}}",
     "noTenant": "Nenhum locatário do Microsoft 365 conectado a esta organização",
     "tenantId": "ID do locatário",
     "copyTenantId": "Copiar ID do locatário",
@@ -330,6 +340,7 @@
     "retry": "Tentar novamente",
     "since": "desde {{time}}",
     "fix": "Corrigir",
+    "remedy": { "reconnect": "Reconecte pelo aplicativo cliente (por exemplo, adicione o servidor MCP novamente). Nenhuma ação no Breeze." },
     "truncated": "Mostrando os primeiros {{count}}",
     "recentlyResolved": "Resolvidos recentemente ({{count}})",
     "resolution": {
@@ -537,6 +548,11 @@
     "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configurando integrações para",
+      "thisOrganization": "esta organização",
+      "change": "Alterar"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notificações",
     "security": "Segurança",
@@ -579,7 +595,7 @@
     "hidePassword": "Ocultar a senha",
     "portalLabelToggle": "Mostrar o nome do provedor no portal do cliente",
     "portalLabelHelp": "Desativado por padrão: os clientes veem \"Backup gerenciado em nuvem\" em vez do nome do fabricante.",
-    "credentialsHelp": "Crie um usuário dedicado do console do Cove com função somente leitura, uma senha exclusiva e sem autenticação em duas etapas. O Breeze apenas lê o status e nunca altera nada no Cove.",
+    "credentialsHelp": "Crie um usuário de API do Cove (Management → Users → API Users) no seu cliente de nível superior. Informe o nome desse cliente como nome do parceiro, o nome de login do usuário de API como usuário e o token dele como senha. O Breeze apenas lê o status; nunca altera nada no Cove.",
     "test": "Testar conexão",
     "syncNow": "Sincronizar agora",
     "reauthRequired": "Credenciais recusadas",
@@ -647,7 +663,6 @@
     "microsoft365IntegrationIsNotEnabledOnThis": "A conexão direta herdada não está habilitada nesta instância. ",
     "anAdministratorEnablesItBySetting": "Um administrador habilita isso definindo",
     "onTheAPIServerThenReloadingThisPage": "no servidor API e recarregando esta página. ",
-    "connectAnEntraAzureADAppRegistrationSo2": "Conecte um registro de aplicativo Entra (Azure AD) para que o assistente de IA possa procurar usuários, gerenciar grupos, desabilitar contas e redefinir senhas para o locatário desta organização. ",
     "connection": "Conexão",
     "enterTheTenantIdAppClientIdAnd": "Insira o ID do locatário, o ID do aplicativo (cliente) e um segredo do cliente do registro do seu aplicativo Entra. Breeze faz uma chamada gráfica ao vivo para verificar as credenciais antes de salvar. ",
     "howToGetTheTenantIdAppId": "Como obter o ID do locatário, o ID do aplicativo e o segredo do cliente",
@@ -677,7 +692,6 @@
     "permissionsListedBelowThen": "permissões listadas abaixo, então",
     "grantAdminConsent": "Conceder consentimento do administrador",
     "tenantID": "ID do locatário",
-    "contosoOnmicrosoftComOrTenantGUID": "contoso.onmicrosoft.com ou GUID do locatário",
     "appClientID": "ID do aplicativo (cliente)",
     "applicationClientId": "ID do aplicativo (cliente)",
     "clientSecret": "Segredo do cliente ",
@@ -699,7 +713,22 @@
     "saveAndVerify": "Salvar e verificar",
     "legacyBadge": "Legado",
     "precedenceNote": "Esta conexão direta legada tem prioridade sobre a conexão baseada em consentimento para este locatário.",
-    "disconnectConfirm": "Desconectar a conexão direta legada? O Breeze exclui as credenciais armazenadas do registro de aplicativo. O registro de aplicativo continua no Microsoft Entra."
+    "disconnectConfirm": "Desconectar a conexão direta legada? O Breeze exclui as credenciais armazenadas do registro de aplicativo. O registro de aplicativo continua no Microsoft Entra.",
+    "legacyHeading": "Microsoft 365: registro de aplicativo legado (somente assistente de IA)",
+    "legacyHeadingForOrg": "Microsoft 365: registro de aplicativo legado (somente assistente de IA) para {{orgName}}",
+    "legacyScopeSummary": "Um registro de aplicativo do Entra com segredo do cliente para o locatário do Entra desta organização. Ele habilita apenas as ações do assistente de IA listadas abaixo.",
+    "powersHeading": "Habilita",
+    "powersList": "Seis ações do assistente de IA: consulta de usuário, atividade de entrada, listar grupos, membros do grupo, desativar usuário e redefinir senha.",
+    "doesNotPowerHeading": "Não habilita",
+    "doesNotPowerSync": "A sincronização do locatário (usuários, licenças, entradas, Acesso Condicional, Secure Score)",
+    "doesNotPowerQueryTools": "As ferramentas de IA e MCP",
+    "doesNotPowerReports": "Os relatórios e evidências do M365 baseados nelas",
+    "useConnectWithMicrosoft": "Use “Conectar com a Microsoft”, acima, em vez disso.",
+    "searchAllApplicationsFirst": ". Antes de criar um novo aplicativo, procure em ",
+    "allApplications": "Todos os aplicativos",
+    "searchAllApplicationsFirst2": " (não em Aplicativos próprios) um aplicativo Breeze já existente neste locatário do Entra. ",
+    "tenantIdGuidPlaceholder": "ID do locatário (GUID), por exemplo 00000000-0000-0000-0000-000000000000",
+    "tenantIdGuidHint": "Use o ID do diretório (locatário), um GUID, na Visão geral do registro de aplicativo do Entra, não o domínio contoso.onmicrosoft.com."
   },
   "monitoringIntegration": {
     "deviceHealth": "Integridade do dispositivo",

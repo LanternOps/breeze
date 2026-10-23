@@ -1,13 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RestoreWizard from './RestoreWizard';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
+const authState = vi.hoisted(() => ({ user: { mfaEnabled: true } as { mfaEnabled?: boolean } | null }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   restoreAccessTokenFromCookie: vi.fn(async () => true),
+  useAuthStore: (selector: (state: typeof authState) => unknown) => selector(authState),
 }));
 const showToastMock = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (input: unknown) => showToastMock(input) }));
@@ -25,6 +27,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('RestoreWizard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.user = { mfaEnabled: true };
   });
 
   it('shows restore history and renders the latest restore job after creation', async () => {
@@ -287,6 +290,118 @@ describe('RestoreWizard', () => {
     expect(screen.getByTestId('restore-review-snapshot').textContent).toContain('Not verified');
   });
 
+  const goToReview = async (integrityStatus?: string) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', integrityStatus }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+  };
+
+  it('tells a user with a second factor, on the Review step, that an unverified restore will ask for it (#9629)', async () => {
+    await goToReview('unattested');
+    const note = screen.getByTestId('restore-review-second-factor-note');
+    expect(note.textContent).toContain('This restore point is not verified');
+    expect(note.textContent).toContain('confirm with your second factor');
+    expect(note.getAttribute('data-tone')).toBe('info');
+    expect(screen.queryByRole('link', { name: /set up/i })).toBeNull();
+  });
+
+  it('warns a user without a second factor, with a set-up link, before Start (#9629)', async () => {
+    authState.user = { mfaEnabled: false };
+    await goToReview('unattested_legacy');
+    const note = screen.getByTestId('restore-review-second-factor-note');
+    expect(note.getAttribute('data-tone')).toBe('warning');
+    const link = within(note).getByRole('link');
+    expect(link.getAttribute('href')).toBe('/settings/profile');
+  });
+
+  it.each(['attested', 'producer_only', 'pending', 'attestation_failed', 'something_new', undefined])('shows no second-factor note for a %s snapshot (#9629)', async (status) => {
+    authState.user = { mfaEnabled: false };
+    await goToReview(status);
+    expect(screen.queryByTestId('restore-review-second-factor-note')).toBeNull();
+  });
+
+  it('puts a short "needs second factor" hint on an unverified snapshot card only when none is enrolled (#9629)', async () => {
+    authState.user = { mfaEnabled: false };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [
+          { id: 'snap-1', label: 'Server snapshot', integrityStatus: 'unattested' },
+          { id: 'snap-2', label: 'Newer snapshot', integrityStatus: 'attested' },
+        ] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+    const hints = screen.getAllByTestId('snapshot-second-factor-hint');
+    expect(hints).toHaveLength(1);
+    expect(hints[0].textContent).toBe('Needs second factor');
+  });
+
+  it('leads the Latest restore job panel with device and restore type; the command id is behind a copy control (#9626)', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', deviceName: 'DC01',
+          restoreType: 'selective', status: 'completed', targetPath: null,
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z',
+          completedAt: '2026-03-31T11:05:00.000Z', commandId: 'cmd-9f3a', errorSummary: null,
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    const summary = screen.getByTestId('restore-job-summary');
+    expect(summary.textContent).toContain('DC01');
+    expect(summary.textContent).toContain('Selective');
+    expect(summary.textContent).not.toContain('cmd-9f3a');
+    fireEvent.click(screen.getByRole('button', { name: /copy command id/i }));
+    expect(writeText).toHaveBeenCalledWith('cmd-9f3a');
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Command ID copied' }));
+  });
+
+  it('toasts an error when the command id cannot be copied (#9626)', async () => {
+    const writeText = vi.fn(async () => { throw new Error('denied'); });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', restoreType: 'full', status: 'completed',
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z', commandId: 'cmd-9f3a',
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    fireEvent.click(screen.getByRole('button', { name: /copy command id/i }));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Could not copy the command ID' }));
+  });
+
+  it.each([null, {}])('treats an unknown second-factor state (%j) as informational, not a set-up warning (#9629)', async (user) => {
+    authState.user = user as { mfaEnabled?: boolean } | null;
+    await goToReview('unattested');
+    expect(screen.getByTestId('restore-review-second-factor-note').getAttribute('data-tone')).toBe('info');
+    expect(screen.queryByTestId('snapshot-second-factor-hint')).toBeNull();
+  });
+
   it('cancels a queued restore from the Latest restore job panel', async () => {
     const pendingJob = {
       id: 'restore-2',
@@ -505,7 +620,7 @@ describe('RestoreWizard', () => {
 
     await screen.findByText('Latest restore job');
     expect(screen.getAllByText('running').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Command: cmd-history-1/i)).toBeTruthy();
+    expect(screen.getByText('cmd-history-1')).toBeTruthy();
     expect(screen.getByText(/Target path: \/restore-target/i)).toBeTruthy();
   });
 
@@ -905,12 +1020,15 @@ describe('RestoreWizard', () => {
       });
     };
 
-    it('names the device on each snapshot card', async () => {
+    it('names each device in the picker and on the chosen device\'s snapshot card', async () => {
       mockApi([]);
       render(<RestoreWizard />);
-      await screen.findByText('Restore Wizard');
-      expect(await screen.findByText('FRONT-DESK-01')).toBeTruthy();
-      expect(screen.getByText('ACCOUNTING-02')).toBeTruthy();
+      const select = await screen.findByTestId('restore-device-select');
+      // #9627: devices are picked first; the cards list one device at a time.
+      expect(screen.getByRole('option', { name: 'FRONT-DESK-01 (1 snapshot)' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'ACCOUNTING-02 (1 snapshot)' })).toBeTruthy();
+      fireEvent.change(select, { target: { value: 'device-1' } });
+      expect(screen.getByRole('button', { name: /Nightly/i }).textContent).toContain('FRONT-DESK-01');
     });
 
     it('titles history rows with the device, not the restore job UUID', async () => {
@@ -929,8 +1047,8 @@ describe('RestoreWizard', () => {
       ]);
       render(<RestoreWizard />);
       await screen.findByText('Restore Wizard');
-      expect(await screen.findByText(/Restore as VM/i)).toBeTruthy();
-      expect(screen.getByText(/Instant boot/i)).toBeTruthy();
+      expect((await screen.findAllByText(/Restore as VM/i)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Instant boot/i).length).toBeGreaterThan(0);
     });
 
     it('does not dump the raw result payload JSON', async () => {
@@ -945,7 +1063,7 @@ describe('RestoreWizard', () => {
     it('uses the singular for a single selected file on Review', async () => {
       mockApi([], [{ name: 'a.txt', path: '/a.txt', type: 'file', sizeBytes: 1 }]);
       render(<RestoreWizard />);
-      await screen.findByText('Restore Wizard');
+      fireEvent.change(await screen.findByTestId('restore-device-select'), { target: { value: 'device-1' } });
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
       fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
@@ -1005,5 +1123,225 @@ describe('RestoreWizard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Up' }));
     expect(((await screen.findByRole('checkbox', { name: /root\.txt/i })) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText(/2 files? selected|2/)).toBeTruthy();
+  });
+  describe('scopes step 1 to one device (#9627)', () => {
+    // Newest-first, as GET /backup/snapshots returns them: the org's newest
+    // snapshot belongs to FILESERVER, not the device the operator came for.
+    const multiDeviceSnapshots = [
+      { id: 'snap-b2', deviceId: 'dev-b', deviceName: 'FILESERVER', label: 'FS newest', createdAt: '2026-10-20T10:00:00.000Z' },
+      { id: 'snap-a1', deviceId: 'dev-a', deviceName: 'DC01', label: 'DC nightly', createdAt: '2026-10-19T10:00:00.000Z' },
+      { id: 'snap-b1', deviceId: 'dev-b', deviceName: 'FILESERVER', label: 'FS older', createdAt: '2026-10-18T10:00:00.000Z' },
+    ];
+
+    beforeEach(() => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({ data: [] });
+      });
+    });
+
+    it('preselects no snapshot and lists none until a device is chosen', async () => {
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('');
+      expect(screen.queryByRole('button', { name: /FS newest/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
+      expect((screen.getByRole('button', { name: /Continue/i }) as HTMLButtonElement).disabled).toBe(true);
+      // Nothing reached the browse endpoint: no snapshot is selected.
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/browse'))).toBe(false);
+    });
+
+    it('lists only the chosen device\'s snapshots and names the device on Review', async () => {
+      render(<RestoreWizard />);
+      fireEvent.change(await screen.findByTestId('restore-device-select'), { target: { value: 'dev-a' } });
+
+      const dcCard = screen.getByRole('button', { name: /DC nightly/i });
+      expect(dcCard.className).toContain('border-primary');
+      expect(screen.queryByRole('button', { name: /FS newest/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /FS older/i })).toBeNull();
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      expect(screen.getByTestId('restore-review-device').textContent).toContain('DC01');
+      expect(screen.getByTestId('restore-review-snapshot').textContent).toContain('DC nightly');
+    });
+
+    it('switching device drops the previous device\'s snapshot', async () => {
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+      fireEvent.change(select, { target: { value: 'dev-a' } });
+      expect(screen.getByRole('button', { name: /DC nightly/i }).className).toContain('border-primary');
+
+      fireEvent.change(select, { target: { value: 'dev-b' } });
+      expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
+      // The newest snapshot of the newly chosen device, never the old pick.
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).toContain('border-primary');
+      expect(screen.getByRole('button', { name: /FS older/i }).className).not.toContain('border-primary');
+    });
+
+    it('does not swap a carried snapshot that is no longer listed for another one', async () => {
+      // Single-device org: without the guard, the device would be implied and
+      // its newest snapshot silently substituted for the one the link named.
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots.filter((snap) => snap.deviceId === 'dev-b') });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({ data: [] });
+      });
+      render(<RestoreWizard initialSnapshotId="snap-gone" initialSelectedPaths={['/a.txt']} />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('');
+      expect(screen.getByTestId('restore-carried-snapshot-missing')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /FS newest/i })).toBeNull();
+      expect((screen.getByRole('button', { name: /Continue/i }) as HTMLButtonElement).disabled).toBe(true);
+
+      // An explicit device choice then works as usual.
+      fireEvent.change(select, { target: { value: 'dev-b' } });
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).toContain('border-primary');
+    });
+
+    it('restores the chosen device\'s snapshot after a switch, not the earlier pick', async () => {
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        if (url === '/backup/restore' && init?.method === 'POST') {
+          return makeJsonResponse({ data: { id: 'restore-1', snapshotId: 'snap-a1', deviceId: 'dev-a', restoreType: 'full', status: 'pending', createdAt: '2026-10-21T10:00:00.000Z', updatedAt: '2026-10-21T10:00:00.000Z' } });
+        }
+        return makeJsonResponse({ data: [] });
+      });
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+      fireEvent.change(select, { target: { value: 'dev-b' } });
+      fireEvent.click(screen.getByRole('button', { name: /FS older/i }));
+      fireEvent.change(select, { target: { value: 'dev-a' } });
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      expect(screen.getByTestId('restore-review-device').textContent).toContain('DC01');
+      fireEvent.click(screen.getByRole('button', { name: /Start restore/i }));
+
+      await waitFor(() => {
+        const post = fetchMock.mock.calls.find(([url, init]) => String(url) === '/backup/restore' && init?.method === 'POST');
+        expect(post).toBeTruthy();
+        expect(JSON.parse(String(post![1]!.body)).snapshotId).toBe('snap-a1');
+      });
+    });
+
+    it('selects nothing for a carried snapshot no longer listed in a multi-device org', async () => {
+      render(<RestoreWizard initialSnapshotId="snap-gone" />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('');
+      expect(screen.getByTestId('restore-carried-snapshot-missing')).toBeTruthy();
+      expect((screen.getByRole('button', { name: /Continue/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('scopes a single-device org to that device and its newest snapshot without a click', async () => {
+      fetchMock.mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/backup/snapshots') return makeJsonResponse({ data: multiDeviceSnapshots.filter((snap) => snap.deviceId === 'dev-b') });
+        if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+        return makeJsonResponse({ data: [] });
+      });
+      render(<RestoreWizard />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('dev-b');
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).toContain('border-primary');
+      expect(screen.queryByTestId('restore-carried-snapshot-missing')).toBeNull();
+    });
+
+    it('clears carried selective paths when the operator switches to another device', async () => {
+      render(<RestoreWizard initialSnapshotId="snap-b1" initialSelectedPaths={['/Documents/report.txt']} />);
+      const select = await screen.findByTestId('restore-device-select');
+      fireEvent.change(select, { target: { value: 'dev-a' } });
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+      }
+      expect(screen.getByText('0 files selected')).toBeTruthy();
+      expect((screen.getByRole('button', { name: /Start restore/i }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('scopes to the device of a snapshot carried in from SnapshotBrowser', async () => {
+      render(<RestoreWizard initialSnapshotId="snap-b1" />);
+      const select = await screen.findByTestId('restore-device-select');
+
+      expect((select as HTMLSelectElement).value).toBe('dev-b');
+      expect(screen.getByRole('button', { name: /FS older/i }).className).toContain('border-primary');
+      expect(screen.getByRole('button', { name: /FS newest/i }).className).not.toContain('border-primary');
+      expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
+    });
+  });
+});
+
+describe('RestoreWizard folder selection (#9628)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const mockTree = (fileCount: number) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({
+          data: [{ name: 'Finance', path: '/Finance', type: 'directory', fileCount }],
+        });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  };
+
+  const openSelectStep = async (initialSelectedPaths?: string[]) => {
+    render(<RestoreWizard initialSnapshotId="snap-1" initialSelectedPaths={initialSelectedPaths} />);
+    await screen.findByText('Restore Wizard');
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    if (!initialSelectedPaths) fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    return screen.findByRole('checkbox', { name: /Select folder Finance/i });
+  };
+
+  it('renders a checkbox with the file count on a directory row and selects it', async () => {
+    mockTree(12);
+    const checkbox = (await openSelectStep()) as HTMLInputElement;
+    expect(screen.getByText('12 files')).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('shows the folder as indeterminate when only some of its files are selected', async () => {
+    mockTree(12);
+    const checkbox = (await openSelectStep(['/Finance/q3.xlsx'])) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.indeterminate).toBe(true);
+  });
+
+  it('asks before selecting a folder that expands past 1,000 files, and respects a refusal', async () => {
+    mockTree(5000);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const checkbox = (await openSelectStep()) as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(confirmSpy.mock.calls[0]![0]).toContain('5000');
+    expect(checkbox.checked).toBe(false);
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    confirmSpy.mockRestore();
   });
 });

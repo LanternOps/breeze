@@ -197,6 +197,16 @@ export default function M365TenantSection({
   ) ?? null;
   const tenantName = identity ? identity.displayName || identity.tenantId : null;
   const consentTarget = identity?.displayName || orgName;
+  // #9318: the heading names the organization in every state, so a technician
+  // can see which customer the connection is written to. orgName comes from the
+  // same store selection (orgId) the read/actions calls use.
+  const panelHeading = tenantName
+    ? (orgName
+      ? t("m365TenantPanel.tenantConnectedToOrg", { tenantName, orgName })
+      : tenantName)
+    : (orgName
+      ? t("m365TenantPanel.noTenantForOrg", { orgName })
+      : t("m365TenantPanel.noTenant"));
 
   const legacyBlock = (
     <section key="legacy" data-testid="m365-legacy">
@@ -224,6 +234,7 @@ export default function M365TenantSection({
         <M365Integration
           onStatusChange={setLegacyStatus}
           legacyBadge={legacyConnected}
+          consentAvailable={layout === "consent-available"}
           showPrecedenceNote={legacyConnected && consentConnected}
         />
       </div>
@@ -237,7 +248,12 @@ export default function M365TenantSection({
           data-testid="m365-consent-unavailable"
           className="rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
         >
-          {t("m365TenantPanel.consentUnavailable")}
+          {/* Either product's org-level switch being off means the instance
+              itself has consent turned on, so "not available on this instance"
+              would be wrong (#9319). */}
+          {read?.onboardingAvailability === "org_not_enabled" || actions?.onboardingAvailability === "org_not_enabled"
+            ? t("m365TenantPanel.consentNotEnabledForOrg")
+            : t("m365TenantPanel.consentUnavailable")}
         </p>
       )}
       {layout === "no-org" && (
@@ -264,13 +280,10 @@ export default function M365TenantSection({
           <div className="min-w-0 flex-1">
             <h2
               id="m365-tenant-panel-title"
-              title={tenantName ?? undefined}
+              title={tenantName ? panelHeading : undefined}
               className="truncate text-lg font-semibold text-foreground"
             >
-              {tenantName
-                ?? (orgName
-                  ? t("m365TenantPanel.noTenantForOrg", { orgName })
-                  : t("m365TenantPanel.noTenant"))}
+              {panelHeading}
             </h2>
             {identity?.tenantId && (
               <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">

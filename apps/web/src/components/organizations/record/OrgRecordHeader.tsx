@@ -120,6 +120,8 @@ export default function OrgRecordHeader({
   const statusLabel = statusLabelKey ? tSettings(/* i18n-dynamic */ statusLabelKey) : org.status;
 
   const primary = summary?.contacts?.primary ?? null;
+  const sitePrimaries = summary?.contacts?.sitePrimaries ?? [];
+  const sitePrimary = sitePrimaries[0];
   const siteCount = summary?.sites.count;
   const billingAddress = formatAddress({
     line1: org.billingAddressLine1,
@@ -201,6 +203,38 @@ export default function OrgRecordHeader({
                     {primary.phone}
                   </a>
                 )}
+              </div>
+            ) : sitePrimary ? (
+              // #9317: no org-level primary, but a site has one — say so instead of "none".
+              <div
+                data-testid="org-record-site-primary-contact"
+                className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm"
+              >
+                <span className="text-muted-foreground">{t('orgRecord.header.noOrgPrimaryContact')}</span>
+                <span>
+                  {t('orgRecord.header.sitePrimaryContact', { siteName: sitePrimary.siteName })}{' '}
+                  <span className="font-medium">{sitePrimary.name}</span>
+                </span>
+                {sitePrimary.email && (
+                  <a className="inline-flex items-center gap-1 text-primary hover:underline" href={`mailto:${sitePrimary.email}`}>
+                    <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+                    {sitePrimary.email}
+                  </a>
+                )}
+                {sitePrimary.phone && (
+                  <a className="inline-flex items-center gap-1 text-primary hover:underline" href={`tel:${sitePrimary.phone}`}>
+                    <Phone className="h-3.5 w-3.5" aria-hidden="true" />
+                    {sitePrimary.phone}
+                  </a>
+                )}
+                {sitePrimaries.length > 1 && (
+                  <span className="text-muted-foreground">
+                    {t('orgRecord.header.moreSitePrimaries', { count: sitePrimaries.length - 1 })}
+                  </span>
+                )}
+                <a data-testid="org-record-primary-contact-link" href="#contacts" className="text-primary hover:underline">
+                  {t('orgRecord.header.setOrgPrimaryLink')}
+                </a>
               </div>
             ) : (
               summary && (

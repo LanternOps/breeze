@@ -3,9 +3,8 @@ import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { quotes, quoteBlocks, quoteLines } from '../db/schema/quotes';
+import { quotes, quoteBlocks } from '../db/schema/quotes';
 import { partners } from '../db/schema/orgs';
-import { portalBranding } from '../db/schema/portal';
 import { acceptQuoteSchema, declineQuoteSchema, ERROR_CODES } from '@breeze/shared';
 import { verifyQuoteAcceptToken, isQuoteAcceptJtiRevoked, revokeQuoteAcceptJti, type QuoteAcceptClaims } from '../services/quoteAcceptToken';
 import { resolveMergedOrgIds } from '../services/orgMerge';
@@ -14,19 +13,15 @@ import { acceptQuote, emitAcceptInvoiceIssued, resolveAcceptInvoiceUrl, autoEmai
 import { notifyQuoteOutcome } from '../services/quoteOutcomeNotify';
 import { readQuoteImage, loadCustomerLineImage } from '../services/quoteImageStorage';
 import { QuoteServiceError } from '../services/quoteTypes';
-import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../services/quoteService';
-import { loadContractBlockRenderData, renderContractBlocksForClient } from '../services/contractTemplateRender';
+import { loadContractBlockRenderData } from '../services/contractTemplateRender';
 import { ContractTemplateServiceError } from '../services/contractTemplateService';
 import { isQuoteExpired } from '../services/quoteExpiry';
-import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../services/quoteMath';
 import { captureException } from '../services/sentry';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
-import { toPublicQuoteHeader, toPublicQuotePresentation } from '../services/publicQuoteDto';
+import { toPublicQuotePresentation } from '../services/publicQuoteDto';
 import { resolveQuoteLinkOrgGate, PUBLIC_LINK_ORG_UNAVAILABLE, type PublicLinkOrgGate } from '../services/publicLinkOrgGate';
-import { resolveThemeId, resolvePageSize } from '../services/documentThemes';
-import { resolvePartnerDocumentLocale } from '../services/documentLocale';
-import { resolveDocumentBrand } from '../services/partnerDocumentBrand';
 import { isPayOnAcceptAvailable, resolveAcceptCheckoutUrl } from '../services/quoteAcceptCheckout';
+import { assembleCustomerQuoteDocument } from '../services/customerQuoteDocument';
 
 /**
  * Unauthenticated, token-gated quote acceptance surface for prospects without a
@@ -114,39 +109,29 @@ quotesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) => 
           .where(eq(partners.id, quote.partnerId)).limit(1);
         return { superseded: true as const, partnerName: p?.name ?? 'your provider' };
       }
-      const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, quote.id)).orderBy(quoteBlocks.sortOrder));
-      const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, quote.id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-      const [partner] = await db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1);
-      // supportEmail/supportPhone travel with the branding so the public
-      // proposal page can tell a prospect how to reach the company asking them
-      // to sign. Both are the MSP's own published contact details, already
-      // surfaced to signed-in customers by /portal/branding.
-      const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
+      // The customer document (#9418): the one assembler every quote surface
+      // uses. 'public' keeps the public link's status mapping (sent → viewed)
+      // and refuses a retired status (410, mapped below); the token scopes the
+      // asset paths. Branding carries the MSP's published support contact so the
+      // page can tell a prospect how to reach the company asking them to sign.
+      const enc = encodeURIComponent(token);
+      const doc = await assembleCustomerQuoteDocument(quote, 'public', {
+        assets: {
+          lineImage: (l) => `/quotes/public/${enc}/line-image/${l.id}`,
+          contractFile: (blockId) => `/quotes/public/${enc}/contract-file/${blockId}`,
+        },
+      });
       // Cosmetic view-stamping only — must never fail the render. Mirrors the
-      // authenticated counterpart at portal/quotes.ts:48.
+      // authenticated counterpart in portal/quotes.ts. After assembly, so a
+      // proposal that failed to render is not recorded as viewed.
       try { await markQuoteViewed(quote.id, quote.orgId); } catch (err) { console.error('[quotesPublic] quote markViewed failed', { id: quote.id, err }); }
-      // Derive the amount accept actually invoices (one-time only) so the prospect
-      // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
-      // plus the deposit due + per-category subtotals for the summary panel.
-      const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
-      // Resolves every `contract` block's pinned template version (system context)
-      // and replaces its raw authoring content with the token-gated render contract.
-      // Public link serves sent (stamped) quotes: quote.documentLocale is the
-      // render locale; null only for pre-wave-5 sends, which resolve to the
-      // partner's language — the same fallback the quote PDF uses.
-      const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/quotes/public/${encodeURIComponent(token)}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
-      const serializedLines = attachCustomerLineImages(lines, (lineId) => `/quotes/public/${encodeURIComponent(token)}/line-image/${lineId}`);
-      // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
-      // sent quote's frozen presentation always wins over the partner's live
-      // theme/pageSize columns.
-      const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
-      const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
-      const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
-      return { owner: { partnerId: quote.partnerId }, payload: { quote: toPublicQuoteHeader(quote, totals), blocks, lines: serializedLines, branding: {
-        partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
-        supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
-        theme, pageSize,
-      }, presentation: toPublicQuotePresentation(theme, pageSize) } };
+      const { theme, pageSize } = doc.branding;
+      return { owner: { partnerId: quote.partnerId }, payload: {
+        quote: doc.quote, blocks: doc.blocks, lines: doc.lines,
+        branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Proposal' },
+        presentation: toPublicQuotePresentation(theme, pageSize),
+        documentLocale: doc.documentLocale,
+      } };
     }));
     if (data && 'superseded' in data) {
       // Deliberately withhold the successor: the latest email is the customer's

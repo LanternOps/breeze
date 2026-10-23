@@ -6,6 +6,7 @@ import {
   readFileSync,
 } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import type { M365Availability } from './availability';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CREDENTIAL_VERSION = /^[0-9a-f]{32}$/;
@@ -232,14 +233,21 @@ export function loadM365CustomerGraphActionsRuntimeConfig(
   };
 }
 
+export function m365CustomerGraphActionsOnboardingAvailability(
+  orgId: string,
+  source: Environment = process.env,
+): M365Availability {
+  if (!flagEnabled(source.M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED)) return 'instance_disabled';
+  if (!CANONICAL_UUID.test(orgId)) return 'org_not_enabled';
+  const allowlist = loadM365CustomerGraphActionsRuntimeConfig(source).onboardingOrgIds;
+  return allowlist === '*' || allowlist.includes(orgId) ? 'enabled' : 'org_not_enabled';
+}
+
 export function isM365CustomerGraphActionsOnboardingEnabledForOrg(
   orgId: string,
   source: Environment = process.env,
 ): boolean {
-  if (!flagEnabled(source.M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED)) return false;
-  if (!CANONICAL_UUID.test(orgId)) return false;
-  const allowlist = loadM365CustomerGraphActionsRuntimeConfig(source).onboardingOrgIds;
-  return allowlist === '*' || allowlist.includes(orgId);
+  return m365CustomerGraphActionsOnboardingAvailability(orgId, source) === 'enabled';
 }
 
 /**
@@ -250,14 +258,22 @@ export function isM365CustomerGraphActionsOnboardingEnabledForOrg(
  * boot. Disabled unless M365_GRAPH_ACTIONS_TOOLS_ENABLED is truthy AND the
  * org is allowlisted (or the allowlist is the literal wildcard).
  */
+export function m365GraphActionsAvailability(
+  orgId: string,
+  source: Environment = process.env,
+): M365Availability {
+  if (!flagEnabled(source.M365_GRAPH_ACTIONS_TOOLS_ENABLED)) return 'instance_disabled';
+  if (!CANONICAL_UUID.test(orgId)) return 'org_not_enabled';
+  const allowlist = parseGraphActionsToolsOrgIds(source);
+  return allowlist === '*' || allowlist.includes(orgId) ? 'enabled' : 'org_not_enabled';
+}
+
+/** Boolean gate over {@link m365GraphActionsAvailability}; same cheap, env-only evaluation. */
 export function isM365GraphActionsEnabledForOrg(
   orgId: string,
   source: Environment = process.env,
 ): boolean {
-  if (!flagEnabled(source.M365_GRAPH_ACTIONS_TOOLS_ENABLED)) return false;
-  if (!CANONICAL_UUID.test(orgId)) return false;
-  const allowlist = parseGraphActionsToolsOrgIds(source);
-  return allowlist === '*' || allowlist.includes(orgId);
+  return m365GraphActionsAvailability(orgId, source) === 'enabled';
 }
 
 export function validateM365CustomerGraphActionsRuntimeConfigAtBoot(

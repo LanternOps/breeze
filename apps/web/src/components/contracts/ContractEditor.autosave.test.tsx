@@ -127,6 +127,15 @@ describe('ContractEditor — blur autosave (existing contract)', () => {
     expect((api.updateContract as any).mock.calls[0][1]).toEqual({ notes: null });
   });
 
+  // #9347: contract notes are internal-only; only the Invoice note prints.
+  it('labels Notes as internal and the Invoice note as the text invoices print', async () => {
+    render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
+    const notesLabel = (await screen.findByTestId('contract-form-notes')).closest('label')!;
+    const termsLabel = screen.getByTestId('contract-form-terms').closest('label')!;
+    expect(notesLabel).toHaveTextContent('Internal notes (never shown to the customer)');
+    expect(termsLabel).toHaveTextContent('Invoice note (optional, printed on every generated invoice)');
+  });
+
   it('does not PATCH when a field blurs unchanged', async () => {
     render(<ContractEditor detail={draftDetail} onChanged={vi.fn()} />);
     const nameInput = await screen.findByTestId('contract-form-name');

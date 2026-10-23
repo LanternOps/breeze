@@ -193,6 +193,7 @@ export * from './monitorDefinitions';
 export * from './monitorEpisodes';
 export * from './monitorConversions';
 export * from './toolSources';
+export * from './flows';
 export * from './topology';
 
 export * from "./topologyCollections";
@@ -226,6 +227,7 @@ export * from './pamEpochTransferConfig';
 export * from './assetPhysicalPlacements';
 export * from './serviceCatalogs';
 export * from './connectionHealth';
+export * from './circuits';
 export * from './endpointMessages';
 export * from './emailOptouts';
 export * from './endpointConversations';

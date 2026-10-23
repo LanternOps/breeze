@@ -1,6 +1,6 @@
 import { MIGRATION_WINDOW_MAX_ORGS } from '../../services/migrationWindowLimits';
 import { z } from 'zod';
-import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema } from '@breeze/shared';
+import { orgPaymentSettingsPatchSchema, partnerPaymentSettingsPatchSchema, newPartnerPurchaseSelectionSchema } from '@breeze/shared';
 import { envFlag } from '../../utils/envFlag';
 import type { StepUpOperation } from '../../services/mfaStepUpGrant';
 import { MAINTENANCE_MAX_BULK_DEVICES, MAINTENANCE_MAX_DURATION_HOURS } from '../../services/maintenanceStepUpLimits';
@@ -39,6 +39,7 @@ export const registerSchema = z.object({
 
 export const registerPartnerSchema = z.object({
   companyName: z.string().min(2).max(255),
+  purchaseSelection: newPartnerPurchaseSelectionSchema,
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().min(1).max(255),
@@ -167,6 +168,7 @@ const STEP_UP_OPERATIONS = [
   'agent_rollback',
   'device_maintenance',
   'device_move_org',
+  'device_force_reboot',
   'parked_device_assign',
   'parked_device_assign_bulk',
   'pre_assignment_enable',
@@ -215,6 +217,13 @@ export const moveOrgStepUpResource = z.object({
   targetSiteId: z.string().uuid(),
   acceptCurrencyMismatch: z.boolean().optional(),
 });
+// #8729 force reboot: one device. `.strict()` AND last in `stepUpResource`
+// below: the union parses the body before the per-operation schema does, and a
+// loose `{ deviceId }` member placed earlier would match (and strip) the
+// richer device bindings such as move-org's.
+export const forceRebootStepUpResource = z.object({
+  deviceId: z.string().uuid(),
+}).strict();
 // Parked-device assignment bindings. Mirror the pre-assignment route bodies
 // (routes/preAssignment.ts): one device + destination, or a batch of them.
 export const parkedAssignStepUpResource = z.object({
@@ -323,7 +332,7 @@ export const callerVerificationAdministrativeStepUpResource = z.object({
   entraOid: z.string().min(1).max(64),
   reason: z.string().trim().min(20).max(2000),
 }).strict();
-const stepUpResource = z.union([callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource]);
+const stepUpResource = z.union([callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),

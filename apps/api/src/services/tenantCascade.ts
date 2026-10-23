@@ -323,6 +323,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // ai_credit_debits (#9451): keyed credit debit outbox, shape 1, NOT NULL
+  // org_id ON DELETE CASCADE. Leaf: no FKs in, and source_id deliberately has
+  // no FK (ai_agent_runs / ai_invocations), so its position is alphabetical.
+  'ai_credit_debits',
   // AI device file read policy: only the org override row cascades; the
   // partner default has org_id NULL and never participates.
   'ai_data_policies',
@@ -501,6 +505,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'capacity_predictions',
   'capacity_thresholds',
   'catalog_item_org_pricing',
+  'circuit_served_sites',
+  'circuit_terminations',
+  'circuits',
   'cis_baseline_results',
   'cis_baselines',
   'cis_remediation_actions',
@@ -675,6 +682,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
+  // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
+  // child-before-parent constraint of its own.
+  'flows',
   'google_workspace_connections',
   'group_membership_log',
   // W03 Task 12 (#6859): org-scoped, no device_id — the retirement recovery

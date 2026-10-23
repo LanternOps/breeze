@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isM365CustomerGraphReadOnboardingEnabledForOrg,
   isM365GraphReadToolsEnabledForOrg,
+  m365GraphReadToolsAvailability,
+  m365CustomerGraphReadOnboardingAvailability,
   loadM365CustomerGraphReadRuntimeConfig,
   validateM365CustomerGraphReadRuntimeConfigAtBoot,
 } from './runtimeConfig';
@@ -362,5 +364,43 @@ describe('M365 Graph read tools rollout flag', () => {
       M365_GRAPH_READ_TOOLS_ENABLED: 'true',
       M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID,
     })).not.toThrow();
+  });
+});
+
+describe('M365 Graph read availability reasons (#9319)', () => {
+  const on = { M365_GRAPH_READ_TOOLS_ENABLED: 'true', M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID };
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'breeze-m365-runtime-'));
+    signingJwkFile = join(tempDir, 'executor-signing.jwk');
+    writeSigningJwk();
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('tools: names the switch that is off and the boolean helper is unchanged', () => {
+    const off = { M365_GRAPH_READ_TOOLS_ENABLED: 'false', M365_GRAPH_READ_TOOLS_ORG_IDS: ORG_ID };
+    expect(m365GraphReadToolsAvailability(ORG_ID, off)).toBe('instance_disabled');
+    expect(isM365GraphReadToolsEnabledForOrg(ORG_ID, off)).toBe(false);
+    expect(m365GraphReadToolsAvailability(OTHER_ORG_ID, on)).toBe('org_not_enabled');
+    expect(isM365GraphReadToolsEnabledForOrg(OTHER_ORG_ID, on)).toBe(false);
+    expect(m365GraphReadToolsAvailability('not-a-uuid', { ...on, M365_GRAPH_READ_TOOLS_ORG_IDS: '*' })).toBe('org_not_enabled');
+    expect(m365GraphReadToolsAvailability(ORG_ID, on)).toBe('enabled');
+    expect(isM365GraphReadToolsEnabledForOrg(ORG_ID, on)).toBe(true);
+    expect(m365GraphReadToolsAvailability(OTHER_ORG_ID, { ...on, M365_GRAPH_READ_TOOLS_ORG_IDS: '*' })).toBe('enabled');
+  });
+
+  it('onboarding: flag off → instance_disabled, unlisted → org_not_enabled, listed/star → enabled', () => {
+    const off = validEnv({ M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED: 'false' });
+    expect(m365CustomerGraphReadOnboardingAvailability(ORG_ID, off)).toBe('instance_disabled');
+    expect(isM365CustomerGraphReadOnboardingEnabledForOrg(ORG_ID, off)).toBe(false);
+    expect(m365CustomerGraphReadOnboardingAvailability(OTHER_ORG_ID, validEnv())).toBe('org_not_enabled');
+    expect(isM365CustomerGraphReadOnboardingEnabledForOrg(OTHER_ORG_ID, validEnv())).toBe(false);
+    expect(m365CustomerGraphReadOnboardingAvailability(ORG_ID, validEnv())).toBe('enabled');
+    expect(m365CustomerGraphReadOnboardingAvailability(OTHER_ORG_ID, validEnv({
+      M365_CUSTOMER_GRAPH_READ_ONBOARDING_ORG_IDS: '*',
+    }))).toBe('enabled');
   });
 });

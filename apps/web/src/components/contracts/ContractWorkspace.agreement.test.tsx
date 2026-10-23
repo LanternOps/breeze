@@ -69,3 +69,40 @@ describe('ContractWorkspace agreement pill', () => {
       .toHaveAttribute('href', '#signed-agreements');
   });
 });
+
+// #9304: provenance moved off contract Notes (which printed on every invoice until #9347) to
+// a header pill derived from the quote-sourced executed agreement.
+describe('ContractWorkspace created-from-quote pill', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getContract.mockResolvedValue(resp({ data: { contract: { id: 'ct-1', name: 'Q-2026-0001 — Monthly', status: 'draft' } } }));
+  });
+
+  it('names the source quote and links to it when the agreement came from a quote', async () => {
+    api.listContractDocuments.mockResolvedValue(resp({ data: [
+      doc({ sourceKind: 'quote', quoteId: 'q-77', quoteNumber: 'Q-2026-0001' }),
+    ] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    const pill = await screen.findByTestId('contract-from-quote-pill');
+    expect(pill).toHaveTextContent('From quote Q-2026-0001');
+    expect(pill).toHaveAttribute('href', '/billing/quotes/q-77');
+  });
+
+  it('renders no quote pill for an agreement requested outside a quote', async () => {
+    api.listContractDocuments.mockResolvedValue(resp({ data: [
+      doc({ sourceKind: 'request', quoteId: null, quoteNumber: null }),
+    ] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    await screen.findByTestId('contract-under-agreement-pill');
+    expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
+  });
+
+  it('renders no quote pill once the source quote is deleted (link nulled)', async () => {
+    api.listContractDocuments.mockResolvedValue(resp({ data: [
+      doc({ sourceKind: 'quote', quoteId: null, quoteNumber: null }),
+    ] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    await screen.findByTestId('contract-under-agreement-pill');
+    expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
+  });
+});

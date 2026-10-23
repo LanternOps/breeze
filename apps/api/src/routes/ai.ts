@@ -35,13 +35,16 @@ import { runPreFlightChecks, abortActivePlan, settleBlockedTurnForNewMessage } f
 import { sanitizeThrownToolError } from '../services/aiToolErrors';
 import { redactPersistedToolInput } from '../services/aiToolOutput';
 import { streamingSessionManager } from '../services/streamingSessionManager';
+import { registerAiAttachRoute } from './aiAttach';
 import { drainPendingRunResults } from '../services/workspace/chatRunBridge';
 import {
   checkBudgetDetailed,
   getUsageSummary,
+  getAggregateUsageSummary,
   updateBudget,
   getSessionHistory,
 } from '../services/aiCostTracker';
+import { aiDenialBody } from '../services/aiDenialCode';
 import { createTicket, changeTicketStatus, TicketServiceError, type TicketActor } from '../services/ticketService';
 import { createTimeEntry, TimeEntryServiceError } from '../services/timeEntryService';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -344,6 +347,10 @@ aiRoutes.get(
   }
 );
 
+// GET /sessions/:id/stream - Attach to the session's current turn (#9427).
+// Same ownership surface as GET /sessions/:id; see routes/aiAttach.ts.
+registerAiAttachRoute(aiRoutes);
+
 // DELETE /sessions/:id - Close a session
 aiRoutes.delete(
   '/sessions/:id',
@@ -514,7 +521,7 @@ aiRoutes.post(
     // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
     // check them with the resolved funding before reserving.
     const denial = await checkBudgetDetailed(session.orgId, turn.funding);
-    if (denial) return c.json({ error: denial.message }, 402);
+    if (denial) return c.json(aiDenialBody(denial), 402);
 
     const binding = turnBindingFrom(turn);
     // S8: no stable request identity reaches this surface — the client sends
@@ -803,6 +810,8 @@ aiRoutes.post(
       // W03: a stored model that went ineligible is recoverable (choose another), never a silent switch.
       if (preflight.code) return c.json({ error: err, code: preflight.code, recoverable: true }, preflight.status === 503 ? 503 : 409);
       if (preflight.status === 503) return c.json({ error: err }, 503);
+      // The credit / plan gate (and spend caps): 402, with a code the client can act on.
+      if (preflight.status === 402) return c.json(preflight.billingCode ? { error: err, code: preflight.billingCode } : { error: err }, 402);
       if (err === 'Session not found') return c.json({ error: err }, 404);
       if (err.includes('rate limit') || err.includes('Rate limit')) return c.json({ error: err }, 429);
       if (err.includes('budget') || err.includes('Budget')) return c.json({ error: err }, 402);
@@ -888,10 +897,12 @@ aiRoutes.post(
       const settle = await settleBlockedTurnForNewMessage(priorSession);
       if (settle !== 'concluded') {
         await abortTopology();
+        // #9427: coded so a client can attach to the running turn instead.
         return c.json({
           error: settle === 'not_blocked_on_approvals'
             ? 'A message is already being processed for this session'
             : 'The assistant is wrapping up the previous turn — please try again in a moment',
+          code: 'turn_in_progress',
         }, 409);
       }
     }
@@ -1043,7 +1054,7 @@ aiRoutes.post(
       // The topology runtime is bound by the transition itself, and only when
       // this request wins the slot (PR #7147 F1).
       if (!streamingSessionManager.tryTransitionToProcessing(activeSession, budgetDispatch.reservationId, { topologyInvestigation: topology?.runtime, turnBinding: binding, turnDisplay: turnDisplayFrom(model) })) {
-        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session' }, 409) };
+        return { kind: 'refused', response: c.json({ error: 'A message is already being processed for this session', code: 'turn_in_progress' }, 409) };
       }
 
       writeRouteAudit(c, {
@@ -1055,11 +1066,17 @@ aiRoutes.post(
       });
 
       try {
-        await db.insert(aiMessages).values({
+        const [userRow] = await db.insert(aiMessages).values({
           sessionId,
           role: 'user',
           content: sanitizedContent,
-        });
+        }).returning({ id: aiMessages.id });
+        // #9427: the anchor an attaching client splices this turn's replay
+        // after. Set before the turn is pushed.
+        activeSession.turnUserMessageId = userRow?.id ?? null;
+        if (!userRow) {
+          console.warn('[AI] User message insert returned no row; attaching clients get no turn anchor', { sessionId });
+        }
       } catch (err) {
         console.error('[AI] Failed to save user message to DB:', err);
         activeSession.state = 'idle';
@@ -1121,6 +1138,11 @@ aiRoutes.post(
     const { activeSession, events } = dispatch;
 
     return streamSSE(c, async (stream) => {
+      // #9427: a client that goes away stops listening at once; the turn is
+      // NOT interrupted (another surface may be attached to it).
+      stream.onAbort(() => {
+        activeSession.eventBus.unsubscribe(subscriptionId);
+      });
 
       try {
         for await (const event of events) {
@@ -1444,20 +1466,11 @@ aiRoutes.get(
     const orgId = c.req.query('orgId') || auth.orgId;
 
     if (!orgId) {
-      // System/partner users without a specific org: no org to resolve an
-      // effective budget for, so budget stays null. #4388: alerts.fired must
-      // still be present (empty) so callers can read it unconditionally.
-      return c.json({
-        daily: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        monthly: { inputTokens: 0, outputTokens: 0, totalCostCents: 0, messageCount: 0 },
-        budget: null,
-        billedTo: 'platform' as const,
-        // #4388 W04: present (null) on every /ai/usage response, same
-        // rationale as `alerts.fired` above: callers read `usage.credits`
-        // unconditionally.
-        credits: null,
-        alerts: { fired: [] },
-      });
+      // System/partner users on "All organizations" (#9667): aggregate usage
+      // over exactly the orgs this caller can access. No single org means no
+      // effective budget to resolve, so budget stays null. #4388: alerts.fired
+      // is present (empty) so callers can read it unconditionally.
+      return c.json(await getAggregateUsageSummary(auth.accessibleOrgIds));
     }
 
     if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
 import { useUiStore } from '../../stores/uiStore';
+import { useAuthStore } from '../../stores/auth';
 import { CREATE_SHORTCUTS, GO_TO_SHORTCUTS, type CreateShortcut, type GoToShortcut } from '../../lib/keyboard/goToShortcuts';
 
 function Kbd({ children }: { children: ReactNode }) {
@@ -55,6 +56,7 @@ export default function KeyboardShortcutsHelp() {
   const { t } = useTranslation('common');
   const open = useUiStore((s) => s.isShortcutsHelpOpen);
   const close = useUiStore((s) => s.closeShortcutsHelp);
+  const charKeysOn = useAuthStore((s) => s.user?.preferences?.characterKeyShortcuts !== false);
   const [mod, setMod] = useState('Ctrl');
 
   useEffect(() => {
@@ -66,6 +68,8 @@ export default function KeyboardShortcutsHelp() {
     { keys: ['/'], label: t('layout.shortcuts.searchSlash') },
     { keys: [mod === '⌘' ? '⌥1–9' : 'Alt+1–9'], label: t('layout.shortcuts.paletteNumber') },
     { keys: ['['], label: t('layout.shortcuts.cycleSidebar') },
+    { keys: [`${mod}+O`], label: t('layout.shortcuts.orgSwitcher') },
+    { keys: [`${mod}+Shift+A`], label: t('layout.shortcuts.aiSidebar') },
     { keys: [`${mod}+Shift+H`], label: t('layout.shortcuts.help') },
     { keys: ['?'], label: t('layout.shortcuts.showThis') },
     { keys: ['Esc'], label: t('layout.shortcuts.close') },
@@ -136,6 +140,12 @@ export default function KeyboardShortcutsHelp() {
       </div>
 
       <p className="mt-5 text-xs text-muted-foreground">{t('layout.shortcuts.typingNote')}</p>
+      <p className="mt-2 text-xs text-muted-foreground" data-testid="char-key-state">
+        {charKeysOn ? t('layout.shortcuts.charKeysOn') : t('layout.shortcuts.charKeysOff')}{' '}
+        <a href="/settings/profile#character-key-shortcuts" className="underline hover:text-foreground">
+          {t('layout.shortcuts.charKeysManage')}
+        </a>
+      </p>
     </Dialog>
   );
 }

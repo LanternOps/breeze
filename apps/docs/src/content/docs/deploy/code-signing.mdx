@@ -31,16 +31,16 @@ The CI/CD release pipeline produces the following artifacts:
 |----------|----------|--------|----------------|
 | Breeze Agent | Windows | `.exe`, `.msi` | **Unsigned in the public release** (self-host edition signing inputs — sign them yourself, see below) |
 | Breeze Agent | macOS | `.pkg`, binary | Apple Developer ID + notarization |
-| Breeze Viewer | Windows | `.exe`, `.msi` | LanternOps Authenticode (Azure Artifact Signing or SSL.com eSigner) |
+| Breeze Viewer | Windows | `.exe`, `.msi` | LanternOps Authenticode (SSL.com eSigner) |
 | Breeze Viewer | macOS | `.app`, `.dmg` | Apple Developer ID + notarization |
-| Breeze Helper | Windows | `.exe` | LanternOps Authenticode (Azure Artifact Signing or SSL.com eSigner) |
+| Breeze Helper | Windows | `.exe` | LanternOps Authenticode (SSL.com eSigner) |
 | Breeze Helper | macOS | `.app` | Apple Developer ID + notarization |
 
 ---
 
 ## Windows Code Signing
 
-The Windows **Viewer and Helper** installers are Authenticode-signed by LanternOps in the GitHub Actions release workflow. The release operator can use Azure Artifact Signing or SSL.com eSigner; both paths are timestamped and must pass the same publisher verification before an artifact is uploaded.
+The Windows **Viewer and Helper** installers are Authenticode-signed by LanternOps in the GitHub Actions release workflow using SSL.com eSigner. Signatures are timestamped and must pass publisher and certificate verification before an artifact is uploaded.
 
 The Windows **agent** artifacts (`.exe` binaries and `breeze-agent.msi`) are no longer Authenticode-signed by the public pipeline — they are published unsigned as the exact pre-signing build outputs, so a deployment can sign them under its own certificate. An unsigned agent MSI will trip SmartScreen unless you sign it; see [Sign Your Own Agent Packages](/deploy/sign-your-own-packages/) for the supported signing path.
 
@@ -48,15 +48,15 @@ The Windows **agent** artifacts (`.exe` binaries and `breeze-agent.msi`) are no 
 
 <Steps>
 
-1. The release workflow selects exactly one configured Windows signing provider and fails if the provider value is invalid.
+1. The release workflow validates the configured Windows signing provider (SSL.com eSigner is the only one) and fails closed on any other value, so a stale setting can never select a lane that does not exist.
 
-2. Azure authenticates with a short-lived OIDC token. SSL.com eSigner authenticates with credentials scoped to the tag's signing environment. The two providers run in separate jobs, so the SSL.com job never receives Azure's OIDC permission.
+2. SSL.com eSigner authenticates with credentials scoped to the tag's signing environment (`signing-production` for stable tags, `signing-prerelease` for prereleases). No signing job holds an OIDC token.
 
-3. The SSL.com path stages its signing toolchain from a checksum-verified archive before any credential is used, rather than letting the signing action fetch it unverified at run time.
+3. The signing job stages its toolchain from a checksum-verified archive before any credential is used, rather than letting the signing action fetch it unverified at run time.
 
-4. The selected provider Authenticode-signs and RFC 3161-timestamps the Viewer and Helper installers.
+4. The signing job Authenticode-signs and RFC 3161-timestamps the Viewer and Helper installers.
 
-5. Both providers verify through the same script before upload: signature status, signer certificate, RFC 3161 timestamp, certificate validity window, and that the publisher is LanternOps. The SSL.com path additionally requires the exact configured SHA-256 certificate thumbprint; Azure does not pin one, because its certificates are short-lived and rotate automatically.
+5. A verification script runs before upload and checks signature status, signer certificate, RFC 3161 timestamp, certificate validity window, that the publisher is LanternOps, and that the signer certificate matches the exact configured SHA-256 thumbprint. A convergence gate then confirms the signing job ran and succeeded; a skipped or failed signing job blocks the release.
 
 6. Signed artifacts are uploaded to the GitHub release together with a signed release manifest.
 

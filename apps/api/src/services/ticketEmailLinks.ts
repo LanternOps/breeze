@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { ticketEmailLinks } from '../db/schema';
+import { lockTicketForWrite } from './ticketRowLock';
 
 // Cross-channel email<->ticket association + idempotency ledger (spec §4).
 // See apps/api/src/db/schema/ticketEmailLinks.ts for the tenancy contract.
@@ -54,6 +55,11 @@ export type ClaimResult =
 // (onConflictDoNothing) and it reads back the winner's row instead.
 export async function claimMessageLink(input: ClaimInput): Promise<ClaimResult> {
   const messageId = normalizeMessageId(input.messageId);
+  // #8972 W0: ticket first. Inserting first held the (partner_id, message_id)
+  // slot while the FK check waited on the ticket, which deadlocked against a
+  // ticket-first writer claiming the same message. A ticket this context
+  // cannot lock leaves the INSERT to answer exactly as before (FK / RLS).
+  await lockTicketForWrite(db, input.ticketId);
   const inserted = await db
     .insert(ticketEmailLinks)
     .values({

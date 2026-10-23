@@ -135,10 +135,13 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/reportSeries/combine.ts': 'report: multi-org series Combine candidates, series-eligible orgs only (hidden org types excluded)',
   'services/reportSeries/reconcile.ts': 'report: multi-org series repair sweep, mirrors the targets.ts eligibility rule in SQL',
   'services/reportSeries/targets.ts': 'report: multi-org series target orgs (org-level report definitions, not devices; hidden org types excluded)',
+  'services/scriptLastRun.ts': 'read model: Script Library LAST RUN column (#9563); a max(created_at) over existing script_executions, joining devices only to apply the caller site restriction; selects no targets and dispatches nothing',
   'services/backupProviders/mapping.ts': 'vendor-customer to org mapping: which org a backup customer is shown under; the holding org and Quick Support are never candidates',
   'services/edrProviders/mapping.ts': 'vendor-tenant to org mapping: the holding org and Quick Support are never candidates',
+  'services/flows/ownedReferences.ts': 'validation: checks that device ids named literally in a flow draft belong to the flow owner org (#5218); selects no targets and dispatches nothing',
   'services/timeSuggestionService.ts': 'billing: time suggestions',
   'jobs/patchComplianceReportWorker.ts': 'report: patch compliance summary for the requesting org',
+  'services/patchOutstandingDevices.ts': 'listing: devices that still need a patch, shown on the approval list (#8728); excludes parked and Quick Support devices like the compliance view',
   'services/workloads/imageCompliance.ts': 'report: container image term of patch compliance (W06); the org-scope form excludes parked and Quick Support devices like the report it feeds',
   // --- examined device readers (jobs, services, ee) ---
   'services/aiAgentRunSiteScope.ts': 'site-allowlist filter for AI run listings shown to a person',
@@ -147,6 +150,7 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/aiToolsCompliance.ts': 'compliance report joins; device-targeted actions go through the central device gate',
   'services/aiToolsDns.ts': 'joins devices only to show hostname on org-scoped DNS event/policy listings',
   'services/aiToolsHuntress.ts': 'joins devices only for hostname display on org-scoped incident/agent listings',
+  'services/aiToolsVulnerability.ts': 'joins devices only to apply the caller\'s site axis to the CVE/software labels of finding ids the caller named or a device-gated read returned (#9532); selects no targets',
   'services/alertCorrelationRca.ts': 'human-facing root-cause read model for the alert correlation route',
   'services/automationReadProjection.ts': 'projects automation run history to a viewer\'s allowed sites',
   'services/drReadAuthorization.ts': 'request-path read filtering of DR plans/executions by site/device authority for a human caller',
@@ -159,6 +163,8 @@ const VISIBILITY_MODULES: Record<string, string> = {
   'services/monitors/listServiceMonitors.ts': 'scopes candidates via auth.orgCondition/site/device axes, re-checks org access per row',
   'services/partnerTrustEvidenceCard.ts': 'review card for one partner, emailed to human admins; not an action selector',
   'services/patchInstallFailures.ts': 'per-patch failure counts for patch dashboards; RLS-scoped read, no action selection',
+  'services/patchSeverityOverlay.ts': 'effective per-device severity/category SQL fragments + aggregate for the patch catalog list (#9387 gap 1); read model only, applied inside a device_patches query the caller already scoped via resolveOutstandingDeviceScope, selects no targets',
+  'services/patchSeveritySource.ts': 'provenance (vendor/derived) of device-reported severities for the patch catalog read path (#9387 gap 2); RLS + resolveOutstandingDeviceScope-scoped read, selects no targets',
   'services/scriptProposals/queries.ts': 'Proposal detail read model for the UI; device ids derived from an org-scoped proposal row',
   'services/softwarePolicyInstallPreview.ts': 'Dry-run device count shown to the operator before confirming a fleet install',
   'services/ticketTriage.ts': 'Site-scoped read model/aggregate for ticket-triage quality stats',
@@ -188,6 +194,8 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/backupRestoreIntegrity.ts': 'reinstall reattach (#8318 §5.4): reads the ONE device that took a snapshot, to date the snapshot against its install incarnation; selects no targets',
+  'services/deviceInstallBoundary/index.ts': 'reinstall reattach (#8318 §5): locks the ONE device row a reattach confirm names (a reattach target is never parked); selects no targets',
   'services/yaraScanRefs.ts': 'YARA rule-set refs (#6263 W03a): looks up the ONE device (by id) of a scan the caller already created; selects no targets, and a security_scan to a parked device is refused by command delivery',
   'services/endpointMessaging/chat.ts': 'request path (#8743): opens/messages ONE device the caller named and reached under RLS + the site axis; selects no targets, and chat_open/chat_message to a parked device is refused by command delivery',
   'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
@@ -305,6 +313,7 @@ const EXEMPT: Record<string, string> = {
   'services/brainDeviceContext.ts': 'request path: all queries gated by auth.orgCondition from the request\'s auth context',
   'services/callerVerification/gate.ts': 'request path: single id+orgId device check inside a per-request gate flow',
   'services/callerVerification/service.ts': 'request path: device/contact reads scoped via actor and reachable contacts on request paths',
+  'services/circuits.ts': 'request path: site-gated circuit writes and reads; devices and discovered assets are read by id only to label a termination, nothing is selected to act on',
   'services/commandResultHandlers.ts': 'agent self-service: result handlers keyed to the device resolved by the agent transport',
   'services/customFields/import/resolveDevice.ts': 'request path: system-scope read bounded by the caller\'s request-time accessibleOrgIds/site reach',
   'services/customFields/queries.ts': 'request path: per-device reads and writes with the device supplied by the request route',

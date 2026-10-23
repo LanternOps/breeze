@@ -170,20 +170,6 @@ const providerDescriptions: Record<PsaProvider, {
   }
 };
 
-const syncIntervalLabelKeys: Record<PsaConnectionFormValues['syncInterval'], string> = {
-  '15m': 'longTail.psa.PsaConnectionForm.syncIntervals.every15Minutes',
-  '30m': 'longTail.psa.PsaConnectionForm.syncIntervals.every30Minutes',
-  '1h': 'longTail.psa.PsaConnectionForm.syncIntervals.everyHour',
-  '6h': 'longTail.psa.PsaConnectionForm.syncIntervals.every6Hours',
-  '24h': 'longTail.psa.PsaConnectionForm.syncIntervals.daily'
-};
-
-const syncDirectionLabelKeys: Record<PsaConnectionFormValues['syncDirection'], string> = {
-  inbound: 'longTail.psa.PsaConnectionForm.syncDirections.inbound',
-  outbound: 'longTail.psa.PsaConnectionForm.syncDirections.outbound',
-  bidirectional: 'longTail.psa.PsaConnectionForm.syncDirections.bidirectional'
-};
-
 export default function PsaConnectionForm({
   onSubmit,
   onCancel,
@@ -245,7 +231,6 @@ export default function PsaConnectionForm({
 
   const selectedProvider = useWatch({ control, name: 'provider' });
   const selectedOwnerScope = useWatch({ control, name: 'ownerScope' });
-  const syncEnabled = useWatch({ control, name: 'syncEnabled' });
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
 
   const credentialHint = providerDescriptions[selectedProvider];
@@ -467,95 +452,16 @@ export default function PsaConnectionForm({
         </div>
       </div>
 
-      <div className="space-y-4 border-t pt-6">
+      {/* #9655: no PSA ticket sync worker exists (POST /psa/connections/:id/sync
+          returns 501), so the sync controls are not rendered. The stored sync
+          settings keep their form values and are still sent unchanged. */}
+      <div className="space-y-2 border-t pt-6">
         <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           {t('longTail.psa.PsaConnectionForm.sections.syncSettings')}
         </h3>
-        <div className="space-y-4">
-          <label className="flex items-start gap-3">
-            <input
-              type="checkbox"
-              className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
-              {...register('syncEnabled')}
-            />
-            <div>
-              <span className="text-sm font-medium">{t('longTail.psa.PsaConnectionForm.sync.enable')}</span>
-              <p className="text-xs text-muted-foreground">
-                {t('longTail.psa.PsaConnectionForm.sync.enableHelp')}
-              </p>
-            </div>
-          </label>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <div className="space-y-2">
-              <label htmlFor="sync-interval" className="text-sm font-medium">
-                {t('longTail.psa.PsaConnectionForm.fields.syncInterval')}
-              </label>
-              <select
-                id="sync-interval"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                disabled={!syncEnabled}
-                {...register('syncInterval')}
-              >
-                {Object.entries(syncIntervalLabelKeys).map(([value, labelKey]) => (
-                  <option key={value} value={value}>
-                    {t(/* i18n-dynamic */ labelKey)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-2">
-              <label htmlFor="sync-direction" className="text-sm font-medium">
-                {t('longTail.psa.PsaConnectionForm.fields.syncDirection')}
-              </label>
-              <select
-                id="sync-direction"
-                className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-                disabled={!syncEnabled}
-                {...register('syncDirection')}
-              >
-                {Object.entries(syncDirectionLabelKeys).map(([value, labelKey]) => (
-                  <option key={value} value={value}>
-                    {t(/* i18n-dynamic */ labelKey)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="flex items-start gap-3">
-              <input
-                type="checkbox"
-                className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                disabled={!syncEnabled}
-                {...register('syncOnClose')}
-              />
-              <div>
-                <span className="text-sm font-medium">{t('longTail.psa.PsaConnectionForm.sync.autoClose')}</span>
-                <p className="text-xs text-muted-foreground">
-                  {t('longTail.psa.PsaConnectionForm.sync.autoCloseHelp')}
-                </p>
-              </div>
-            </label>
-
-            <label className="flex items-start gap-3">
-              <input
-                type="checkbox"
-                className="mt-1 h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                disabled={!syncEnabled}
-                {...register('includeNotes')}
-              />
-              <div>
-                <span className="text-sm font-medium">{t('longTail.psa.PsaConnectionForm.sync.notes')}</span>
-                <p className="text-xs text-muted-foreground">
-                  {t('longTail.psa.PsaConnectionForm.sync.notesHelp')}
-                </p>
-              </div>
-            </label>
-          </div>
-        </div>
+        <p className="text-sm text-muted-foreground" data-testid="psa-ticket-sync-unavailable">
+          {t('longTail.psa.PsaConnectionForm.sync.unavailable')}
+        </p>
       </div>
 
       <div className="flex flex-col gap-3 border-t pt-6 sm:flex-row sm:justify-between">

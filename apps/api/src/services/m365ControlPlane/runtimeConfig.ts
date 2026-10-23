@@ -6,6 +6,7 @@ import {
   readFileSync,
 } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import type { M365Availability } from './availability';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CREDENTIAL_VERSION = /^[0-9a-f]{32}$/;
@@ -231,14 +232,21 @@ export function loadM365CustomerGraphReadRuntimeConfig(
   };
 }
 
+export function m365CustomerGraphReadOnboardingAvailability(
+  orgId: string,
+  source: Environment = process.env,
+): M365Availability {
+  if (!flagEnabled(source.M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED)) return 'instance_disabled';
+  if (!CANONICAL_UUID.test(orgId)) return 'org_not_enabled';
+  const allowlist = loadM365CustomerGraphReadRuntimeConfig(source).onboardingOrgIds;
+  return allowlist === '*' || allowlist.includes(orgId) ? 'enabled' : 'org_not_enabled';
+}
+
 export function isM365CustomerGraphReadOnboardingEnabledForOrg(
   orgId: string,
   source: Environment = process.env,
 ): boolean {
-  if (!flagEnabled(source.M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED)) return false;
-  if (!CANONICAL_UUID.test(orgId)) return false;
-  const allowlist = loadM365CustomerGraphReadRuntimeConfig(source).onboardingOrgIds;
-  return allowlist === '*' || allowlist.includes(orgId);
+  return m365CustomerGraphReadOnboardingAvailability(orgId, source) === 'enabled';
 }
 
 /**
@@ -247,14 +255,22 @@ export function isM365CustomerGraphReadOnboardingEnabledForOrg(
  * loadM365CustomerGraphReadRuntimeConfig (which requires all executor envs) —
  * this is called on hot AI-tool-registration paths, not just at boot.
  */
+export function m365GraphReadToolsAvailability(
+  orgId: string,
+  source: Environment = process.env,
+): M365Availability {
+  if (!flagEnabled(source.M365_GRAPH_READ_TOOLS_ENABLED)) return 'instance_disabled';
+  if (!CANONICAL_UUID.test(orgId)) return 'org_not_enabled';
+  const allowlist = parseGraphReadToolsOrgIds(source);
+  return allowlist === '*' || allowlist.includes(orgId) ? 'enabled' : 'org_not_enabled';
+}
+
+/** Boolean gate over {@link m365GraphReadToolsAvailability}; same cheap, env-only evaluation. */
 export function isM365GraphReadToolsEnabledForOrg(
   orgId: string,
   source: Environment = process.env,
 ): boolean {
-  if (!flagEnabled(source.M365_GRAPH_READ_TOOLS_ENABLED)) return false;
-  if (!CANONICAL_UUID.test(orgId)) return false;
-  const allowlist = parseGraphReadToolsOrgIds(source);
-  return allowlist === '*' || allowlist.includes(orgId);
+  return m365GraphReadToolsAvailability(orgId, source) === 'enabled';
 }
 
 export function validateM365CustomerGraphReadRuntimeConfigAtBoot(

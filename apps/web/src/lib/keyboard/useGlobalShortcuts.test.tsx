@@ -5,6 +5,9 @@ const navigateToMock = vi.hoisted(() => vi.fn(async () => 'soft' as const));
 vi.mock('@/lib/navigation', () => ({ navigateTo: navigateToMock }));
 
 import { useUiStore } from '../../stores/uiStore';
+import { useRegisterDirtyForm } from './useRegisterDirtyForm';
+import { resetTypingCadence } from './bareKeyGuard';
+import { useQueueKeyboard } from '../../components/tickets/useQueueKeyboard';
 import { CHORD_TIMEOUT_MS, SIDEBAR_CYCLE_MODE_EVENT, useGlobalShortcuts } from './useGlobalShortcuts';
 import { CREATE_SHORTCUTS, GO_TO_SHORTCUTS } from './goToShortcuts';
 import { CREATE_INTENT_STORAGE_KEY } from './createIntent';
@@ -21,7 +24,9 @@ function press(key: string, init: Partial<KeyboardEventInit> & { target?: EventT
 beforeEach(() => {
   vi.useFakeTimers();
   navigateToMock.mockClear();
-  useUiStore.setState({ isCommandPaletteOpen: false, isShortcutsHelpOpen: false });
+  resetTypingCadence();
+  window.sessionStorage.clear();
+  useUiStore.setState({ isCommandPaletteOpen: false, isShortcutsHelpOpen: false, dirtyFormCount: 0 });
 });
 
 afterEach(() => {
@@ -244,5 +249,139 @@ describe('useGlobalShortcuts', () => {
     unmount();
     press('/');
     expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+  });
+});
+
+describe('bare-key guards (#9316)', () => {
+  const gap = (ms: number) => act(() => { vi.advanceTimersByTime(ms); });
+
+  it('typing "acc" 50ms apart on body does not start the c c create chord', () => {
+    renderHook(() => useGlobalShortcuts());
+    press('a'); gap(50); press('c'); gap(50); press('c');
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(CREATE_INTENT_STORAGE_KEY)).toBeNull();
+  });
+
+  it('c, a pause past the cadence window, then c still creates', () => {
+    renderHook(() => useGlobalShortcuts());
+    press('c'); gap(700); press('c');
+    expect(navigateToMock).toHaveBeenCalledWith('/contracts/new');
+  });
+
+  it('/ typed 50ms after another printable key does not open the palette; alone it does', () => {
+    renderHook(() => useGlobalShortcuts());
+    press('x'); gap(50); press('/');
+    expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+    gap(700); press('/');
+    expect(useUiStore.getState().isCommandPaletteOpen).toBe(true);
+  });
+
+  it.each([
+    ['textbox', 'div', { role: 'textbox', tabindex: '0' }],
+    ['combobox', 'div', { role: 'combobox' }],
+    ['searchbox', 'div', { role: 'searchbox' }],
+    ['spinbutton', 'div', { role: 'spinbutton' }],
+  ])('ignores keys on a role=%s element', (_n, tag, attrs) => {
+    renderHook(() => useGlobalShortcuts());
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    document.body.appendChild(el);
+    for (const k of ['g', 'c', '/', '[']) { press(k, { target: el }); gap(700); }
+    press('d', { target: el });
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+    el.remove();
+  });
+
+  it('ignores keys inside an aria-modal dialog', () => {
+    renderHook(() => useGlobalShortcuts());
+    const dlg = document.createElement('div');
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    const btn = document.createElement('button');
+    dlg.appendChild(btn);
+    document.body.appendChild(dlg);
+    for (const k of ['g', 'c', '/', '[']) { press(k, { target: btn }); gap(700); }
+    press('d', { target: btn });
+    expect(navigateToMock).not.toHaveBeenCalled();
+    expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+    dlg.remove();
+  });
+
+  it('still lets ? close the cheat sheet dialog', () => {
+    renderHook(() => useGlobalShortcuts());
+    const dlg = document.createElement('div');
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.setAttribute('aria-labelledby', 'keyboard-shortcuts-title');
+    const btn = document.createElement('button');
+    dlg.appendChild(btn);
+    document.body.appendChild(dlg);
+    useUiStore.setState({ isShortcutsHelpOpen: true });
+    press('?', { target: btn, shiftKey: true });
+    expect(useUiStore.getState().isShortcutsHelpOpen).toBe(false);
+    dlg.remove();
+  });
+
+  it('a registered dirty form blocks g/c chords but not ?', () => {
+    renderHook(() => useGlobalShortcuts());
+    const form = renderHook(({ d }) => useRegisterDirtyForm(d), { initialProps: { d: true } });
+    press('g'); press('d');
+    expect(navigateToMock).not.toHaveBeenCalled();
+    press('?', { shiftKey: true });
+    expect(useUiStore.getState().isShortcutsHelpOpen).toBe(true);
+    useUiStore.setState({ isShortcutsHelpOpen: false });
+    form.rerender({ d: false });
+    gap(700); press('g'); press('d');
+    expect(navigateToMock).toHaveBeenCalledWith('/devices');
+  });
+
+  it('a form that turns dirty mid-chord cancels the chord', () => {
+    renderHook(() => useGlobalShortcuts());
+    press('g');
+    useUiStore.setState({ dirtyFormCount: 1 });
+    press('d');
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('role=textbox with aria-readonly=true does not suppress shortcuts', () => {
+    renderHook(() => useGlobalShortcuts());
+    const el = document.createElement('div');
+    el.setAttribute('role', 'textbox');
+    el.setAttribute('aria-readonly', 'true');
+    document.body.appendChild(el);
+    press('/', { target: el });
+    expect(useUiStore.getState().isCommandPaletteOpen).toBe(true);
+    el.remove();
+  });
+
+  it('? is ignored while typing in a field', () => {
+    renderHook(() => useGlobalShortcuts());
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    press('?', { target: input, shiftKey: true });
+    expect(useUiStore.getState().isShortcutsHelpOpen).toBe(false);
+    input.remove();
+  });
+
+  it('held j still moves the queue when the global hook registered first', () => {
+    const onMove = vi.fn();
+    renderHook(() => useGlobalShortcuts());
+    renderHook(() => useQueueKeyboard({
+      onMove, onOpen: vi.fn(), onAssignMe: vi.fn(), onFocusReply: vi.fn(),
+      onFocusInternal: vi.fn(), onResolve: vi.fn(), onEscape: vi.fn(),
+    }));
+    press('j'); gap(50); press('j'); gap(50); press('j');
+    expect(onMove).toHaveBeenCalledTimes(3);
+  });
+
+  it('dirty form registration is released on unmount', () => {
+    renderHook(() => useGlobalShortcuts());
+    const form = renderHook(() => useRegisterDirtyForm(true));
+    expect(useUiStore.getState().dirtyFormCount).toBe(1);
+    form.unmount();
+    expect(useUiStore.getState().dirtyFormCount).toBe(0);
+    press('g'); press('d');
+    expect(navigateToMock).toHaveBeenCalledWith('/devices');
   });
 });

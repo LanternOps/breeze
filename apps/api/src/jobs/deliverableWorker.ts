@@ -15,11 +15,12 @@
  * unit alone and the sweep carries on.
  */
 import { Queue, Worker } from 'bullmq';
-import { and, eq, gte, isNull, lt, lte, or } from 'drizzle-orm';
+import { and, eq, gte, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
+import { contracts } from '../db/schema/contracts';
 import { buildAutomationEligibleOrgPredicate } from '../services/tenantStatus';
 import {
   materializeOccurrences, openDueOccurrencesForDeliverable,
@@ -57,9 +58,11 @@ function errMessage(err: unknown): string {
 }
 
 /**
- * Spec §5.2. Contract status is deliberately NOT consulted: generateDueInvoice
- * flips a contract to `expired` the day after its final invoice while service
- * runs on for months. The effective window is the authority.
+ * Spec §5.2. The effective window is the authority, not contract status:
+ * generateDueInvoice flips a contract to `expired` the day after its final
+ * invoice while service runs on for months.
+ * One exception (#9309, D1 amendment): `draft`, the one status that means
+ * "not agreed yet", pauses its deliverables.
  */
 export async function runDeliverableSweep(asOf: Date = new Date()): Promise<DeliverableSweepResult> {
   const today = utcToday(asOf);
@@ -75,8 +78,16 @@ export async function runDeliverableSweep(asOf: Date = new Date()): Promise<Deli
       .from(serviceDeliverables)
       .where(and(
         eq(serviceDeliverables.active, true),
-        lte(serviceDeliverables.effectiveFrom, today),
+        // #9308: effective_from - lead_days <= today. A one-time item applied from a
+        // template has effective_from == its due date; gating on effective_from alone
+        // visited it first on the due date, so its lead window never applied.
+        // planOccurrences still drops any due date before effective_from.
+        sql`${serviceDeliverables.effectiveFrom} <= ${today}::date + ${serviceDeliverables.leadDays}`,
         or(isNull(serviceDeliverables.effectiveUntil), gte(serviceDeliverables.effectiveUntil, today)),
+        // #9309: a draft contract is not agreed yet — its deliverables open no
+        // ticket and go missed against nothing. Draft only: expired/paused keep
+        // sweeping (D1). activateContract re-bases them onto the real start.
+        sql`not exists (select 1 from ${contracts} where ${contracts.id} = ${serviceDeliverables.contractId} and ${contracts.status} = 'draft')`,
         // An archived tenant inside its purge countdown gets no tickets.
         buildAutomationEligibleOrgPredicate(serviceDeliverables.orgId),
       )), 'deliverableSweep.selectDue'));
@@ -146,6 +157,12 @@ export async function runDeliverableSweep(asOf: Date = new Date()): Promise<Deli
  * applyContractCancelledToDeliverables re-reads the contract and applies
  * nothing unless it is STILL cancelled, and only touches deliverables whose
  * effective_until is NULL.
+ *
+ * `contract.activated` is deliberately NOT consumed (#9309): it is emitted by
+ * both activate (draft -> active) and resume (paused -> active) and carries no
+ * prior status, and a late replay would re-base deliverables added after
+ * activation. activateContract re-bases a draft's unmaterialized deliverables
+ * inside its own transaction instead, so a dropped or replayed event is a no-op.
  */
 export async function handleContractEvent(event: ContractEvent, asOf: Date = new Date()): Promise<void> {
   if (event?.type !== 'contract.cancelled') return;

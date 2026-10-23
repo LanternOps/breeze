@@ -7,11 +7,16 @@ import DeliverableForm from '../deliverables/DeliverableForm';
 import DeliverableTable from '../deliverables/DeliverableTable';
 import OccurrenceDrawer from '../deliverables/OccurrenceDrawer';
 import ApplyTemplateModal from '../deliverables/ApplyTemplateModal';
+import { MoveHereDialog } from '../deliverables/MoveDeliverablesDialogs';
 import { Dialog } from '../shared/Dialog';
 
 interface Props {
   contractId: string;
   orgId: string;
+  /** The contract's start date; the default effectiveFrom for new deliverables (#9308). */
+  contractStartDate?: string | null;
+  /** The contract is still a draft: the sweep opens no tickets for it (#9309). */
+  contractIsDraft?: boolean;
 }
 
 /**
@@ -20,10 +25,11 @@ interface Props {
  * occurrence history in a drawer. The org record's Service tab shows the same
  * table across every contract of the org; this section pins it to one.
  */
-export default function ContractDeliverablesSection({ contractId, orgId }: Props) {
+export default function ContractDeliverablesSection({ contractId, orgId, contractStartDate, contractIsDraft = false }: Props) {
   const { t } = useTranslation('deliverables');
   const [adding, setAdding] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [movingHere, setMovingHere] = useState(false);
   const [selected, setSelected] = useState<Deliverable | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((n) => n + 1);
@@ -33,6 +39,14 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
       <div className="flex items-center justify-between border-b px-3 py-2">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('section.title')}</h3>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMovingHere(true)}
+            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+            data-testid="contract-deliverables-move-here"
+          >
+            {t('move.hereAction')}
+          </button>
           <button
             type="button"
             onClick={() => setApplyingTemplate(true)}
@@ -52,6 +66,12 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
         </div>
       </div>
 
+      {contractIsDraft && (
+        <p className="border-b px-3 py-1.5 text-xs text-muted-foreground" data-testid="contract-deliverables-paused">
+          {t('section.pausedDraft')}
+        </p>
+      )}
+
       <DeliverableTable
         fetcher={fetchWithAuth}
         orgId={orgId}
@@ -67,6 +87,7 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
             fetcher={fetchWithAuth}
             orgId={orgId}
             contractId={contractId}
+            contractStartDate={contractStartDate}
             onSaved={() => {
               setAdding(false);
               refresh();
@@ -83,6 +104,19 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
           deliverable={selected}
           onClose={() => setSelected(null)}
           onChanged={refresh}
+        />
+      )}
+
+      {movingHere && (
+        <MoveHereDialog
+          fetcher={fetchWithAuth}
+          orgId={orgId}
+          targetContractId={contractId}
+          onClose={() => setMovingHere(false)}
+          onMoved={() => {
+            setMovingHere(false);
+            refresh();
+          }}
         />
       )}
 

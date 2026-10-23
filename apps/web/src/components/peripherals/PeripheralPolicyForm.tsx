@@ -22,12 +22,57 @@ type PeripheralPolicy = {
   action: string;
   isActive: boolean;
   exceptions?: Array<Record<string, unknown>>;
+  targetType?: string;
+  targetIds?: {
+    siteIds?: string[];
+    groupIds?: string[];
+    deviceIds?: string[];
+  } | null;
 };
 
 type PeripheralPolicyFormProps = {
   policy?: PeripheralPolicy | null;
   onClose: (refresh?: boolean) => void;
 };
+
+// The form has no target picker (#9620). On edit it shows the current target
+// read-only and leaves targetType/targetIds out of the body, which the API
+// treats as "unchanged".
+function targetSummary(
+  policy: PeripheralPolicy,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string | null {
+  const ids = policy.targetIds ?? {};
+  switch (policy.targetType) {
+    case "organization":
+      return t("peripheralPolicyForm.targets.organization");
+    case "site":
+      return t("peripheralPolicyForm.targets.site", { total: ids.siteIds?.length ?? 0 });
+    case "group":
+      return t("peripheralPolicyForm.targets.group", { total: ids.groupIds?.length ?? 0 });
+    case "device":
+      return t("peripheralPolicyForm.targets.device", { total: ids.deviceIds?.length ?? 0 });
+    default:
+      return null;
+  }
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** UTC ISO instant → `YYYY-MM-DDTHH:mm` in the browser's local zone (what datetime-local shows). */
+function isoToLocalInput(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** datetime-local value (browser local time) → UTC ISO instant; "" when empty/invalid. */
+function localInputToIso(value: string): string {
+  if (!value) return "";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+}
 
 const emptyException = (): ExceptionRule => ({
   vendor: "",
@@ -76,6 +121,8 @@ export default function PeripheralPolicyForm({
     }));
   });
 
+  const targetLabel = isEdit && policy ? targetSummary(policy, t) : null;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -85,8 +132,6 @@ export default function PeripheralPolicyForm({
       name,
       deviceClass,
       action,
-      targetType: "organization",
-      targetIds: {},
       isActive,
       exceptions: exceptions
         .filter((ex) => ex.vendor || ex.product || ex.serialNumber)
@@ -101,8 +146,14 @@ export default function PeripheralPolicyForm({
     };
 
     if (isEdit) {
+      // Targeting is not editable here: omit it so the API keeps the stored
+      // targetType/targetIds rather than widening the policy to the org (#9620).
       body.id = policy!.id;
-    } else if (isPartnerScope) {
+    } else {
+      body.targetType = "organization";
+      body.targetIds = {};
+    }
+    if (!isEdit && isPartnerScope) {
       // Create-only: updates never move a policy between ownership axes.
       body.ownerScope = ownerScope;
     }
@@ -239,10 +290,12 @@ export default function PeripheralPolicyForm({
           )}
 
           <div>
-            <label className="text-sm font-medium">
+            <label className="text-sm font-medium" htmlFor="peripheral-policy-name">
               {t("common:labels.name")}
             </label>
             <input
+              id="peripheral-policy-name"
+              data-testid="peripheral-policy-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
@@ -251,12 +304,31 @@ export default function PeripheralPolicyForm({
             />
           </div>
 
+          {targetLabel && (
+            <div data-testid="peripheral-policy-target-section">
+              <span className="text-sm font-medium">
+                {t("peripheralPolicyForm.appliesTo")}
+              </span>
+              <p
+                className="mt-1 rounded-md border bg-muted/30 px-3 py-2 text-sm"
+                data-testid="peripheral-policy-target"
+              >
+                {targetLabel}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t("peripheralPolicyForm.targetReadOnlyHint")}
+              </p>
+            </div>
+          )}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="text-sm font-medium">
+              <label className="text-sm font-medium" htmlFor="peripheral-policy-device-class">
                 {t("peripheralPolicyForm.deviceClass")}
               </label>
               <select
+                id="peripheral-policy-device-class"
+                data-testid="peripheral-policy-device-class"
                 value={deviceClass}
                 onChange={(e) => setDeviceClass(e.target.value)}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -276,10 +348,12 @@ export default function PeripheralPolicyForm({
               </select>
             </div>
             <div>
-              <label className="text-sm font-medium">
+              <label className="text-sm font-medium" htmlFor="peripheral-policy-action">
                 {t("peripheralPolicyForm.action")}
               </label>
               <select
+                id="peripheral-policy-action"
+                data-testid="peripheral-policy-action"
                 value={action}
                 onChange={(e) => setAction(e.target.value)}
                 className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -301,10 +375,12 @@ export default function PeripheralPolicyForm({
           </div>
 
           <div className="flex items-center gap-3">
-            <label className="text-sm font-medium">
+            <label className="text-sm font-medium" htmlFor="peripheral-policy-active">
               {t("common:states.active")}
             </label>
             <button
+              id="peripheral-policy-active"
+              data-testid="peripheral-policy-active"
               type="button"
               role="switch"
               aria-checked={isActive}
@@ -358,37 +434,44 @@ export default function PeripheralPolicyForm({
                     </button>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-3">
-                    <input
-                      value={ex.vendor}
-                      onChange={(e) =>
-                        updateException(idx, "vendor", e.target.value)
-                      }
-                      placeholder={t("peripheralPolicyForm.vendor")}
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      value={ex.product}
-                      onChange={(e) =>
-                        updateException(idx, "product", e.target.value)
-                      }
-                      placeholder={t("peripheralPolicyForm.product")}
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      value={ex.serialNumber}
-                      onChange={(e) =>
-                        updateException(idx, "serialNumber", e.target.value)
-                      }
-                      placeholder={t("peripheralPolicyForm.serialNumber")}
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
+                    {(
+                      [
+                        ["vendor", t("peripheralPolicyForm.vendor")],
+                        ["product", t("peripheralPolicyForm.product")],
+                        ["serialNumber", t("peripheralPolicyForm.serialNumber")],
+                      ] as const
+                    ).map(([field, label]) => (
+                      <div key={field}>
+                        <label
+                          htmlFor={`peripheral-policy-exception-${field}-${idx}`}
+                          className="sr-only"
+                        >
+                          {label}
+                        </label>
+                        <input
+                          id={`peripheral-policy-exception-${field}-${idx}`}
+                          data-testid={`peripheral-policy-exception-${field}-${idx}`}
+                          value={ex[field]}
+                          onChange={(e) =>
+                            updateException(idx, field, e.target.value)
+                          }
+                          placeholder={label}
+                          className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                        />
+                      </div>
+                    ))}
                   </div>
                   <div className="grid gap-2 sm:grid-cols-3">
                     <div className="flex items-center gap-2">
-                      <label className="text-xs text-muted-foreground">
+                      <label
+                        htmlFor={`peripheral-policy-exception-allow-${idx}`}
+                        className="text-xs text-muted-foreground"
+                      >
                         {t("peripheralPolicyForm.allow")}
                       </label>
                       <input
+                        id={`peripheral-policy-exception-allow-${idx}`}
+                        data-testid={`peripheral-policy-exception-allow-${idx}`}
                         type="checkbox"
                         checked={ex.allow}
                         onChange={(e) =>
@@ -397,28 +480,49 @@ export default function PeripheralPolicyForm({
                         className="rounded border"
                       />
                     </div>
-                    <input
-                      value={ex.reason}
-                      onChange={(e) =>
-                        updateException(idx, "reason", e.target.value)
-                      }
-                      placeholder={t("peripheralPolicyForm.reason")}
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
-                    <input
-                      type="datetime-local"
-                      value={ex.expiresAt ? ex.expiresAt.slice(0, 16) : ""}
-                      onChange={(e) =>
-                        updateException(
-                          idx,
-                          "expiresAt",
-                          e.target.value
-                            ? new Date(e.target.value).toISOString()
-                            : "",
-                        )
-                      }
-                      className="h-8 rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
-                    />
+                    <div>
+                      <label
+                        htmlFor={`peripheral-policy-exception-reason-${idx}`}
+                        className="sr-only"
+                      >
+                        {t("peripheralPolicyForm.reason")}
+                      </label>
+                      <input
+                        id={`peripheral-policy-exception-reason-${idx}`}
+                        data-testid={`peripheral-policy-exception-reason-${idx}`}
+                        value={ex.reason}
+                        onChange={(e) =>
+                          updateException(idx, "reason", e.target.value)
+                        }
+                        placeholder={t("peripheralPolicyForm.reason")}
+                        className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        htmlFor={`peripheral-policy-exception-expires-${idx}`}
+                        className="sr-only"
+                      >
+                        {t("peripheralPolicyForm.expiresAt")}
+                      </label>
+                      {/* datetime-local reads/writes the browser's LOCAL time;
+                          the stored value is a UTC ISO instant (#9621). */}
+                      <input
+                        id={`peripheral-policy-exception-expires-${idx}`}
+                        data-testid={`peripheral-policy-exception-expires-${idx}`}
+                        title={t("peripheralPolicyForm.expiresAt")}
+                        type="datetime-local"
+                        value={isoToLocalInput(ex.expiresAt)}
+                        onChange={(e) =>
+                          updateException(
+                            idx,
+                            "expiresAt",
+                            localInputToIso(e.target.value),
+                          )
+                        }
+                        className="h-8 w-full rounded-md border bg-background px-2 text-xs focus:outline-hidden focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
                   </div>
                 </div>
               ))}

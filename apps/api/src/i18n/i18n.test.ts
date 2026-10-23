@@ -12,11 +12,11 @@ describe('tApi', () => {
   });
 
   it('translates a PDF key in English', () => {
-    expect(tApi('en', 'pdf:invoice.title')).toBe('INVOICE');
+    expect(tApi('en', 'pdf:quote.title')).toBe('QUOTE');
   });
 
   it('translates a PDF key in pt-BR', () => {
-    expect(tApi('pt-BR', 'pdf:invoice.title')).toBe('FATURA');
+    expect(tApi('pt-BR', 'pdf:quote.title')).toBe('COTAÇÃO');
   });
 
   it('translates a notification key in English', () => {
@@ -53,11 +53,11 @@ describe('tApi', () => {
     // Run two tApi calls "in parallel" — they must not interfere (no global
     // language state is mutated between calls).
     const [enResult, ptBrResult] = await Promise.all([
-      Promise.resolve(tApi('en', 'pdf:invoice.title')),
-      Promise.resolve(tApi('pt-BR', 'pdf:invoice.title')),
+      Promise.resolve(tApi('en', 'pdf:quote.title')),
+      Promise.resolve(tApi('pt-BR', 'pdf:quote.title')),
     ]);
-    expect(enResult).toBe('INVOICE');
-    expect(ptBrResult).toBe('FATURA');
+    expect(enResult).toBe('QUOTE');
+    expect(ptBrResult).toBe('COTAÇÃO');
   });
 });
 

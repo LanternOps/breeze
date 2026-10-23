@@ -48,11 +48,12 @@ vi.mock('../../middleware/auth', async () => {
   };
 });
 
+import { listLatestSecurityPosture } from '../../services/securityPosture';
 import { dashboardRoutes } from './dashboard';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 
-function buildApp(): Hono {
+function buildApp(authOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', {
@@ -63,6 +64,7 @@ function buildApp(): Hono {
       user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
       canAccessOrg: () => true,
       orgCondition: () => undefined,
+      ...authOverrides,
     } as any);
     await next();
   });
@@ -145,5 +147,65 @@ describe('GET /score-breakdown — requirePermission(devices, read)', () => {
     const res = await app.request('/security/score-breakdown', { method: 'GET' });
 
     expect(res.status).not.toBe(403);
+  });
+});
+
+// #9639: the header org switcher sends ?orgId=<selected org>. Score must
+// narrow to it (within the caller's accessible orgs), not aggregate the book.
+describe('GET /score-breakdown — selected organization (#9639)', () => {
+  const ORG_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const ORG_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const ORG_OTHER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const partnerAuth = {
+    scope: 'partner',
+    orgId: null,
+    partnerId: 'pppppppp-pppp-4ppp-8ppp-pppppppppppp',
+    accessibleOrgIds: [ORG_A, ORG_B],
+    canAccessOrg: (id: string) => id === ORG_A || id === ORG_B,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({
+      permissions: [{ resource: 'devices', action: 'read' }],
+      allowedSiteIds: undefined,
+    });
+  });
+
+  it('narrows posture to the selected org', async () => {
+    const res = await buildApp(partnerAuth).request(`/security/score-breakdown?orgId=${ORG_A}`);
+
+    expect(res.status).toBe(200);
+    expect(listLatestSecurityPosture).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(listLatestSecurityPosture).mock.calls[0]![0]).toMatchObject({ orgIds: [ORG_A] });
+  });
+
+  it('returns 403 for an org outside the caller\'s access and reads nothing', async () => {
+    const res = await buildApp(partnerAuth).request(`/security/score-breakdown?orgId=${ORG_OTHER}`);
+
+    expect(res.status).toBe(403);
+    expect(listLatestSecurityPosture).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a malformed orgId', async () => {
+    const res = await buildApp(partnerAuth).request('/security/score-breakdown?orgId=not-a-uuid');
+
+    expect(res.status).toBe(400);
+    expect(listLatestSecurityPosture).not.toHaveBeenCalled();
+  });
+
+  it('denies an org-scoped caller selecting another org (403)', async () => {
+    const res = await buildApp({ orgId: ORG_A, accessibleOrgIds: [ORG_A], canAccessOrg: (id: string) => id === ORG_A })
+      .request(`/security/score-breakdown?orgId=${ORG_B}`);
+
+    expect(res.status).toBe(403);
+    expect(listLatestSecurityPosture).not.toHaveBeenCalled();
+  });
+
+  it('keeps every accessible org when no org is selected', async () => {
+    const res = await buildApp(partnerAuth).request('/security/score-breakdown');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(listLatestSecurityPosture).mock.calls[0]![0]).toMatchObject({ orgIds: [ORG_A, ORG_B] });
   });
 });

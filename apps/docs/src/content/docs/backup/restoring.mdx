@@ -55,7 +55,7 @@ A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows
 
 <Steps>
 1. Go to **Backup → Restore** in the console to open the **Restore Wizard**.
-2. Select the snapshot to restore from.
+2. Choose the device whose backup you want to restore, then select one of its snapshots. The wizard lists one device's snapshots at a time and selects nothing until a device is chosen (it picks the device for you only when you arrive from the **Snapshots** tab or the organization has a single backed-up device). The review step names the source device.
 3. Choose **Full Restore**.
 4. Choose the destination:
    - **Staging folder on the device** — the default. Files are restored under the device's system temp directory (`breeze-restore/<original path>`); the originals are never overwritten. (Earlier releases labelled this option "Original location", which it never was.) To restore in place — overwriting the originals — choose **Alternate path** and type in the original root path yourself.
@@ -67,7 +67,7 @@ A `system_image` snapshot taken by a v0.112.0 or later agent on Linux or Windows
 
 <Steps>
 1. Go to **Backup → Restore** in the console to open the **Restore Wizard**. (The **Snapshots** tab links to it from the snapshot file list.)
-2. Select the snapshot.
+2. Choose the device, then select the snapshot. Arriving from the **Snapshots** tab, the snapshot and its device are already selected.
 3. Choose **Selective Restore**.
 4. Browse the file tree and check the boxes next to the individual files you want to recover. Selection is per-file — checking a folder is not supported, and the API rejects a folder path submitted directly; select the files inside it instead.
 5. Choose the destination path (see the staging-folder default above).

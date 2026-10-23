@@ -9,6 +9,10 @@ export interface QuoteForContract {
   orgId: string;
   partnerId: string;
   quoteNumber: string;
+  /** #9778: quote title; names the contract when non-blank. */
+  title?: string | null;
+  /** #9778: client (organization) name, appended to a titled contract name. */
+  orgName?: string | null;
   currencyCode: string;
   terms: string | null;
 }
@@ -94,6 +98,25 @@ const CADENCES: ReadonlyArray<{ key: 'monthly' | 'annual'; intervalMonths: numbe
   { key: 'annual', intervalMonths: 12, label: 'Annual' },
 ];
 
+// contracts.name is varchar(255).
+const CONTRACT_NAME_MAX = 255;
+
+/**
+ * #9778: "<title> — <client> (<cadence>)" so a contracts list is scannable.
+ * A quote with no title keeps the legacy "<quote number> — <cadence>".
+ * The title/client portion is truncated so the cadence suffix always survives.
+ */
+export function contractNameForQuote(quote: QuoteForContract, cadenceLabel: string): string {
+  const title = quote.title?.trim();
+  if (!title) return `${quote.quoteNumber} — ${cadenceLabel}`;
+  const client = quote.orgName?.trim();
+  const suffix = ` (${cadenceLabel})`;
+  const head = client ? `${title} — ${client}` : title;
+  const room = CONTRACT_NAME_MAX - suffix.length;
+  const clipped = head.length > room ? `${head.slice(0, room - 1).trimEnd()}…` : head;
+  return `${clipped}${suffix}`;
+}
+
 export function buildContractSpecsFromQuote(
   quote: QuoteForContract,
   lines: QuoteLineForContract[],
@@ -113,13 +136,16 @@ export function buildContractSpecsFromQuote(
     specs.push({
       orgId: quote.orgId,
       partnerId: quote.partnerId,
-      name: `${quote.quoteNumber} — ${cadence.label}`,
+      name: contractNameForQuote(quote, cadence.label),
       billingTiming: 'advance',
       intervalMonths: cadence.intervalMonths,
       startDate,
       endDate,
       currencyCode: quote.currencyCode,
-      notes: `Auto-created from accepted quote ${quote.quoteNumber}`,
+      // #9304: provenance never goes in notes — it lives in the name and the
+      // executed agreement. Notes are the MSP's internal notes (#9347); the
+      // quote's terms become the Invoice note that generated invoices print.
+      notes: null,
       terms: quote.terms ?? null,
       createdBy,
       lines: group.map((l, i) => {

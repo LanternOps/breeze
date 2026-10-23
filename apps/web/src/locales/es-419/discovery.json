@@ -342,6 +342,8 @@
       "subnets": "Subredes"
     },
     "configuredCount": "Perfiles {{count}} configurados",
+    "configuredCount_one": "{{count}} perfil configurado",
+    "configuredCount_other": "{{count}} perfiles configurados",
     "empty": "Aún no hay perfiles de descubrimiento. Cree su primer perfil para comenzar a escanear.",
     "lastRun": "Última ejecución {{time}}",
     "loading": "Cargando perfiles de descubrimiento...",
@@ -438,6 +440,8 @@
       "selectSite": "Seleccione un sitio antes de guardar."
     },
     "configuredCount": "líneas base {{count}} configuradas",
+    "configuredCount_one": "{{count}} línea base configurada",
+    "configuredCount_other": "{{count}} líneas base configuradas",
     "subnetTopologyNote": "Las subredes de aquí también identifican las redes de este sitio en el mapa de topología."
   },
   "networkChangeDetailModal": {

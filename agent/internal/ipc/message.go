@@ -280,6 +280,12 @@ type AuthRequest struct {
 	// SupportsChat advertises that this Assist helper renders endpoint live
 	// chat windows (#8743). Drives the chat scope grant. Additive.
 	SupportsChat bool `json:"supportsChat,omitempty"`
+
+	// SupportsTargetedPamDismiss advertises that this SYSTEM helper honours
+	// PamDismissConsentRequest.Instance (dismiss one specific consent.exe and
+	// nothing else). Additive: older helpers omit it and are never sent a
+	// targeted dismissal, because they would ignore the target (#8995).
+	SupportsTargetedPamDismiss bool `json:"supportsTargetedPamDismiss,omitempty"`
 }
 
 // AuthResponse is sent by the root daemon back to the user helper.
@@ -386,7 +392,25 @@ type PamDialogResult struct {
 // the broker time to receive the helper's correlated response.
 type PamDismissConsentRequest struct {
 	DeadlineUnixMs int64 `json:"deadlineUnixMs"`
+	// Instance, when set, restricts the dismissal to that one consent.exe
+	// process: the helper must leave every other UAC prompt alone and report
+	// no_consent_window if the instance is gone. Absent on the deny path, which
+	// keeps its untargeted behaviour. Only sent to helpers that advertised
+	// AuthRequest.SupportsTargetedPamDismiss — an older helper would ignore the
+	// field and dismiss whatever prompt it found (#8995).
+	Instance *PamConsentInstance `json:"instance,omitempty"`
 }
+
+// PamConsentInstance identifies one consent.exe process by PID plus its
+// creation time (Unix nanoseconds, from GetProcessTimes), so a reused PID can
+// never be mistaken for the original prompt.
+type PamConsentInstance struct {
+	PID             uint32 `json:"pid"`
+	CreatedUnixNano int64  `json:"createdUnixNano"`
+}
+
+// Valid reports whether both halves of the identity are present.
+func (i PamConsentInstance) Valid() bool { return i.PID != 0 && i.CreatedUnixNano > 0 }
 
 // PamDismissConsentResult reports whether the helper dismissed consent.exe.
 type PamDismissConsentResult struct {

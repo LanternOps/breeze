@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AiCostIndicator from './AiCostIndicator';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { formatCurrency } from '@/lib/i18n/format';
+import { useFeaturesStore } from '@/stores/featuresStore';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
@@ -210,5 +211,44 @@ describe('AiCostIndicator post-turn refresh (defect: stale header through a comp
       await Promise.resolve();
     });
     expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #9450: a Buy credits link sits next to the balance, hosted billing only.
+describe('AiCostIndicator Buy credits link (#9450)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector: any) => selector({ isAuthenticated: true }));
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        daily: { totalCostCents: 0, messageCount: 0 },
+        monthly: { totalCostCents: 0, messageCount: 0 },
+        budget: null,
+        credits: { remaining: 0, includedBalance: 0, purchasedBalance: 0, fetchedAt: '2026-09-01T00:00:00.000Z' },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const setHosted = (billing: boolean) =>
+    useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+  it('links to the billing credits page when hosted billing is configured', async () => {
+    setHosted(true);
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('a[href="/billing/credits"]')?.textContent).toBe('Buy credits');
+  });
+
+  it('shows no link when billing is not configured (self-hosted)', async () => {
+    setHosted(false);
+    const { container } = render(<AiCostIndicator />);
+    await act(async () => { await Promise.resolve(); });
+    expect(container.textContent).toContain('0 credits');
+    expect(container.querySelector('a[href="/billing/credits"]')).toBeNull();
   });
 });

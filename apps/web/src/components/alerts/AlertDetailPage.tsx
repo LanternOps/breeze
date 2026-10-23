@@ -206,7 +206,12 @@ export default function AlertDetailPage({ alertId }: AlertDetailPageProps) {
     try {
       setActionInProgress(true);
       await runAction({
-        request: () => fetchWithAuth(`/alerts/${alertId}/resolve`, { method: 'POST' }),
+        request: () => fetchWithAuth(`/alerts/${alertId}/resolve`, {
+          method: 'POST',
+          // Same body the alerts drawer sends. A bodyless POST still carries the
+          // JSON content type and the API validator rejects it as malformed (#9622).
+          body: JSON.stringify({ note: '' }),
+        }),
         errorFallback: t('alertDetailPage.failedToResolveAlert'),
         successMessage: t('alertDetailPage.alertResolved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })

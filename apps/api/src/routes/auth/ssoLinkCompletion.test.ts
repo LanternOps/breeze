@@ -120,7 +120,7 @@ vi.mock('./helpers', () => ({
 
 import { finalizeSsoPendingLink } from './ssoLinkCompletion';
 import { db } from '../../db';
-import { users, ssoProviders, organizationUsers, userSsoIdentities } from '../../db/schema';
+import { users, ssoProviders, organizationUsers, partnerUsers, userSsoIdentities } from '../../db/schema';
 import { consumeSsoPendingLink, restoreConsumedSsoPendingLink } from '../../services/ssoPendingLink';
 import { getUserEpochs } from '../../services';
 import { issueUserSession } from '../../services/userSession';
@@ -197,6 +197,13 @@ function wire(opts: {
   tableRows.set(ssoProviders, [opts.provider === undefined ? [PROVIDER_ROW] : opts.provider ? [opts.provider] : []]);
   tableRows.set(organizationUsers, [opts.membership === undefined ? [MEMBERSHIP_ROW] : opts.membership ? [opts.membership] : []]);
   tableRows.set(userSsoIdentities, [opts.identity === undefined ? [] : opts.identity ? [opts.identity] : []]);
+}
+
+// #9377: the audit event objects handed to writeRouteAudit for `action`.
+function auditEventsFor(action: string): Array<Record<string, unknown>> {
+  return auditSpy.mock.calls
+    .map((call: unknown[]) => call[1] as Record<string, unknown>)
+    .filter((event) => event.action === action);
 }
 
 function lastRejectionReason(): unknown {
@@ -430,5 +437,64 @@ describe('finalizeSsoPendingLink — live revalidation guards (#4067)', () => {
       expect.objectContaining({ mfa: true }),
       expect.any(Object),
     );
+  });
+});
+
+// #9377: finalizeSsoPendingLink runs from the unauthenticated /link/confirm (no
+// request auth, no ambient partner scope), so a partner-level provider's rows
+// reach the partner audit trail only through an explicit top-level partnerId;
+// org-level rows must carry their orgId (an org_id NULL row lands in no
+// tenant's trail at all).
+describe('finalizeSsoPendingLink — audit tenancy (#9377)', () => {
+  const PARTNER_ID = '00000000-0000-4000-8000-0000000000dd';
+  const PARTNER_RECORD = { ...RECORD, providerOrgId: null, providerPartnerId: PARTNER_ID };
+  const PARTNER_PROVIDER_ROW = { ...PROVIDER_ROW, orgId: null, partnerId: PARTNER_ID, name: 'MSP IdP' };
+
+  const wirePartner = (opts: { identity?: Record<string, unknown> | null } = {}) => {
+    wire({ record: PARTNER_RECORD, provider: PARTNER_PROVIDER_ROW, identity: opts.identity });
+    tableRows.set(partnerUsers, [[{ roleId: 'role-p', roleScope: 'partner' }]]);
+  };
+
+  it('attributes sso.identity.linked to the partner for a partner-level provider', async () => {
+    wirePartner();
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+
+    expect(outcome.ok).toBe(true);
+    expect(auditEventsFor('sso.identity.linked')).toEqual([
+      expect.objectContaining({ orgId: null, partnerId: PARTNER_ID }),
+    ]);
+  });
+
+  it('attributes a post-provider sso.link.ceremony_rejected (identity_in_use) to the partner', async () => {
+    wirePartner({ identity: { id: 'identity-x', userId: 'someone-else' } });
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: false });
+
+    expect(outcome).toEqual({ ok: false, error: 'identity_in_use' });
+    expect(auditEventsFor('sso.link.ceremony_rejected')).toEqual([
+      expect.objectContaining({ orgId: null, partnerId: PARTNER_ID }),
+    ]);
+  });
+
+  it('attributes an early sso.link.ceremony_rejected to the record\'s partner', async () => {
+    wire({ record: PARTNER_RECORD });
+
+    const outcome = await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: 'someone-else' });
+
+    expect(outcome).toEqual({ ok: false, error: 'link_expired' });
+    expect(auditEventsFor('sso.link.ceremony_rejected')).toEqual([
+      expect.objectContaining({ orgId: null, partnerId: PARTNER_ID, details: expect.objectContaining({ reason: 'user_binding_mismatch' }) }),
+    ]);
+  });
+
+  it('keeps an early sso.link.ceremony_rejected for an org-level provider in the org trail', async () => {
+    wire();
+
+    await finalizeSsoPendingLink(c, 'hash-1', { breezeMfaVerified: true, expectedUserId: 'someone-else' });
+
+    expect(auditEventsFor('sso.link.ceremony_rejected')).toEqual([
+      expect.objectContaining({ orgId: ORG_ID, partnerId: null }),
+    ]);
   });
 });

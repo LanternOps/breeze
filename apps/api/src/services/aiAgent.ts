@@ -8,11 +8,12 @@
 
 import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
-import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
 import type { OfferingOptions } from '@breeze/shared';
 import { buildSessionContextSnapshot } from './aiSessionOrgAnchor';
+import { CHAT_SESSION_TYPES } from './aiChatSessionTypes';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { getActiveDeviceContext } from './brainDeviceContext';
@@ -301,8 +302,13 @@ export async function getSession(
   return session ?? null;
 }
 
+// #9427: the session types the conversation list, search and attach serve.
+export { CHAT_SESSION_TYPES } from './aiChatSessionTypes';
+
 export async function listSessions(auth: AuthContext, options: { status?: string; page?: number; limit?: number }) {
-  const conditions = [eq(aiSessions.userId, auth.user.id)];
+  // #9427: chat conversations only — script-builder, MCP, helper and client-AI
+  // sessions belong to other surfaces and must never be listed here.
+  const conditions = [eq(aiSessions.userId, auth.user.id), inArray(aiSessions.type, [...CHAT_SESSION_TYPES])];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
   if (options.status) conditions.push(eq(aiSessions.status, options.status as 'active' | 'closed' | 'expired'));
@@ -322,7 +328,11 @@ export async function listSessions(auth: AuthContext, options: { status?: string
       turnCount: aiSessions.turnCount,
       totalCostCents: aiSessions.totalCostCents,
       lastActivityAt: aiSessions.lastActivityAt,
-      createdAt: aiSessions.createdAt
+      createdAt: aiSessions.createdAt,
+      // #9427: what a client needs to open the conversation elsewhere.
+      orgId: aiSessions.orgId,
+      type: aiSessions.type,
+      deviceId: aiSessions.deviceId,
     })
     .from(aiSessions)
     .where(and(...conditions))
@@ -794,12 +804,24 @@ export async function buildSystemPrompt(auth: AuthContext, pageContext?: AiPageC
 // Search Sessions
 // ============================================
 
+export interface AiSessionSearchResult {
+  id: string;
+  title: string | null;
+  matchedContent: string;
+  createdAt: Date;
+  status: 'active' | 'closed' | 'expired';
+  type: string;
+  orgId: string;
+  deviceId: string | null;
+}
+
 export async function searchSessions(
   auth: AuthContext,
   query: string,
   options: { limit?: number }
-): Promise<Array<{ id: string; title: string | null; matchedContent: string; createdAt: Date }>> {
-  const conditions: SQL[] = [eq(aiSessions.userId, auth.user.id)];
+): Promise<AiSessionSearchResult[]> {
+  // #9427: chat conversations only (see listSessions); applied to both queries.
+  const conditions: SQL[] = [eq(aiSessions.userId, auth.user.id), inArray(aiSessions.type, [...CHAT_SESSION_TYPES])];
   const orgCondition = auth.orgCondition(aiSessions.orgId);
   if (orgCondition) conditions.push(orgCondition);
   // Topology M4-D2: applied to BOTH the title and the message-content query,
@@ -815,7 +837,11 @@ export async function searchSessions(
     .select({
       id: aiSessions.id,
       title: aiSessions.title,
-      createdAt: aiSessions.createdAt
+      createdAt: aiSessions.createdAt,
+      status: aiSessions.status,
+      type: aiSessions.type,
+      orgId: aiSessions.orgId,
+      deviceId: aiSessions.deviceId,
     })
     .from(aiSessions)
     .where(and(
@@ -831,7 +857,11 @@ export async function searchSessions(
       sessionId: aiMessages.sessionId,
       content: aiMessages.content,
       sessionTitle: aiSessions.title,
-      sessionCreatedAt: aiSessions.createdAt
+      sessionCreatedAt: aiSessions.createdAt,
+      status: aiSessions.status,
+      type: aiSessions.type,
+      orgId: aiSessions.orgId,
+      deviceId: aiSessions.deviceId,
     })
     .from(aiMessages)
     .innerJoin(aiSessions, eq(aiMessages.sessionId, aiSessions.id))
@@ -845,12 +875,15 @@ export async function searchSessions(
 
   // Merge and deduplicate by session ID
   const seen = new Set<string>();
-  const results: Array<{ id: string; title: string | null; matchedContent: string; createdAt: Date }> = [];
+  const results: AiSessionSearchResult[] = [];
 
   for (const t of titleMatches) {
     if (!seen.has(t.id)) {
       seen.add(t.id);
-      results.push({ id: t.id, title: t.title, matchedContent: t.title ?? '', createdAt: t.createdAt });
+      results.push({
+        id: t.id, title: t.title, matchedContent: t.title ?? '', createdAt: t.createdAt,
+        status: t.status, type: t.type, orgId: t.orgId, deviceId: t.deviceId,
+      });
     }
   }
 
@@ -868,7 +901,11 @@ export async function searchSessions(
         id: m.sessionId,
         title: m.sessionTitle,
         matchedContent: snippet,
-        createdAt: m.sessionCreatedAt
+        createdAt: m.sessionCreatedAt,
+        status: m.status,
+        type: m.type,
+        orgId: m.orgId,
+        deviceId: m.deviceId,
       });
     }
   }

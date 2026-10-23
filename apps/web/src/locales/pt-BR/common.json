@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} aprovação pendente",
     "pendingApprovals_other": "{{count}} aprovações pendentes",
     "tickets": "Chamados",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de segurança",
     "remoteAccess": "Acesso Remoto",
     "scripts": "Scripts",
     "patches": "Correções",
@@ -30,6 +30,7 @@
     "aiForOffice": "IA para Office",
     "networkMonitor": "Rede",
     "jobs": "Jobs",
+    "flows": "Fluxos",
     "monitoring": "Monitoramento",
     "networkDiscovery": "Descoberta de Rede",
     "edr": "EDR",
@@ -110,7 +111,7 @@
     "timeSync": "Sincronização de horário",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments",
+    "payments": "Pagamentos",
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitações de serviço",
     "ticketsProblems": "Problemas",
@@ -770,9 +771,9 @@
     },
     "search": {
       "prompt": "Pesquisar no Breeze",
-      "placeholder": "Pesquisar dispositivos, scripts, alertas, usuários e configurações…",
+      "placeholder": "Pesquisar dispositivos, scripts, alertas e configurações…",
       "searching": "Pesquisando…",
-      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas, usuários e configurações.",
+      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas e configurações.",
       "noResults": "Nenhum resultado encontrado. Tente outra busca.",
       "navigationHint": "Use as setas para navegar e Enter para abrir",
       "closeHint": "Esc para fechar",
@@ -862,6 +863,8 @@
       "cycleSidebar": "Alternar o modo da barra lateral",
       "help": "Abrir o painel de ajuda",
       "showThis": "Mostrar este cartão",
+      "orgSwitcher": "Abrir o seletor de organização",
+      "aiSidebar": "Mostrar ou ocultar a barra lateral de IA",
       "close": "Fechar uma caixa de diálogo ou menu",
       "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo.",
       "create": "Criar",
@@ -873,7 +876,10 @@
         "invoice": "Nova fatura",
         "contract": "Novo contrato",
         "script": "Novo script"
-      }
+      },
+      "charKeysOn": "Os atalhos de tecla única estão ativados.",
+      "charKeysOff": "Os atalhos de tecla única estão desativados. Apenas atalhos com Ctrl/Cmd funcionam.",
+      "charKeysManage": "Alterar nas configurações do perfil"
     }
   },
   "migrationBanner": {
@@ -1147,27 +1153,10 @@
           "basicInformation": "Informações básicas",
           "connectionDetails": "Detalhes da conexão",
           "credentials": "Credenciais",
-          "syncSettings": "Configurações de sincronização"
+          "syncSettings": "Sincronização de tickets"
         },
         "sync": {
-          "autoClose": "Fechar tickets PSA automaticamente",
-          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Breeze forem resolvidos.",
-          "enable": "Ativar sincronização",
-          "enableHelp": "Manter tickets e vínculos de alertas atualizados em uma programação.",
-          "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do ticket PSA."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirecional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Diariamente",
-          "every15Minutes": "A cada 15 minutos",
-          "every30Minutes": "A cada 30 minutos",
-          "every6Hours": "A cada 6 horas",
-          "everyHour": "A cada hora"
+          "unavailable": "A sincronização de tickets ainda não está disponível. As conexões podem ser testadas e usadas para importar empresas como organizações; nenhum dado de ticket é trocado entre o Breeze e o seu PSA."
         },
         "testDirtyHint": "Salve primeiro — o teste verifica as credenciais armazenadas, não suas edições não salvas.",
         "validation": {
@@ -1191,7 +1180,7 @@
         },
         "connectionCount": "{{filtered}} de {{total}} conexões",
         "empty": {
-          "noConnections": "Conecte um provedor PSA para começar a sincronizar tickets.",
+          "noConnections": "Conecte um provedor PSA para testá-lo e importar suas empresas.",
           "noMatches": "Nenhuma conexão corresponde à sua pesquisa ou filtros.",
           "title": "Nenhuma conexão PSA configurada"
         },
@@ -1225,7 +1214,7 @@
           "tryAgain": "Tentar novamente"
         },
         "delete": {
-          "activeWarning": "Esta conexão está ativa. A sincronização de tickets será interrompida imediatamente.",
+          "activeWarning": "Esta conexão está ativa. Ao excluí-la, a conexão é removida imediatamente.",
           "confirm": "Tem certeza de que deseja excluir {{name}}?",
           "irreversible": "Esta ação não pode ser desfeita.",
           "title": "Excluir conexão PSA",
@@ -1244,10 +1233,10 @@
         "modal": {
           "addDescription": "Configure uma nova conexão PSA para sua organização.",
           "addTitle": "Adicionar conexão PSA",
-          "editDescription": "Atualize os detalhes da conexão PSA e as preferências de sincronização.",
+          "editDescription": "Atualize os detalhes da conexão PSA.",
           "editTitle": "Editar conexão PSA"
         },
-        "subtitle": "Conecte seu PSA para sincronizar tickets e vincular alertas.",
+        "subtitle": "Teste conexões PSA e importe empresas como organizações.",
         "test": {
           "failedMessage": "Não foi possível conectar ao provedor PSA.",
           "failedTitle": "Conexão falhou",
@@ -1262,8 +1251,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "Sincronize sua primeira conexão PSA para ver tickets aqui.",
-          "title": "Nenhum ticket PSA sincronizado"
+          "noTickets": "A sincronização de tickets ainda não está disponível, então os tickets do PSA não são importados.",
+          "title": "Nenhum ticket do PSA"
         },
         "filters": {
           "allStatuses": "Todos os status",
@@ -1271,7 +1260,7 @@
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
-          "ticket": "Ticket",
+          "ticket": "Chamado",
           "updated": "Atualizado"
         },
         "searchPlaceholder": "Pesquisar tickets",
@@ -1396,6 +1385,12 @@
           "signingSecret": "Use este segredo para verificar assinaturas de webhook."
         },
         "invalidJsonPreview": "JSON inválido no modelo.",
+        "otherEvents": {
+          "allEvents": "Todos os eventos (*)",
+          "allEventsHint": "Este webhook está inscrito em todos os eventos, então os eventos individuais abaixo não são usados. Remova \"Todos os eventos\" para escolher eventos específicos.",
+          "remove": "Remover {{event}}",
+          "title": "Outros eventos assinados"
+        },
         "payload": {
           "previewEmpty": "A prévia aparece quando o JSON estiver válido.",
           "subtitle": "Defina o formato do payload JSON enviado ao seu destino.",
@@ -1701,7 +1696,7 @@
         "errors": {
           "stopFailed": "Falha ao parar o cronômetro."
         },
-        "ticketFallback": "ticket",
+        "ticketFallback": "chamado",
         "stopTimer": "Parar cronômetro",
         "descriptionPlaceholder": "Em que você trabalhou?",
         "billable": "Faturável",
@@ -2219,7 +2214,7 @@
         },
         "loading": "Carregando incidentes...",
         "tryAgain": "Tentar novamente",
-        "title": "Incidentes",
+        "title": "Incidentes de segurança",
         "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
@@ -2249,6 +2244,11 @@
         "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Técnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente não encontrado",
           "fetchFailed": "Falha ao buscar incidente"
@@ -2352,6 +2352,8 @@
         "clientId": "ID do cliente: {{clientId}}",
         "unverifiedLabel": "Integração não verificada",
         "unverifiedDescription": "O Breeze não verificou esta integração. O nome é autodeclarado e pode se passar por um aplicativo confiável. Aprove somente se você iniciou esta conexão e reconhece o destino de retorno abaixo.",
+        "metadataHostedAt": "Detalhes do app publicados por {{host}}",
+        "localhostRedirectWarning": "Este app receberá o acesso neste computador. Continue somente se você mesmo iniciou esta conexão.",
         "callbackLabel": "O código de autorização será enviado para:",
         "missingRedirectTitle": "Não é possível verificar o destino de retorno",
         "missingRedirectDescription": "Esta solicitação de autorização não incluiu um destino de retorno, portanto não pode ser aprovada com segurança. Volte ao seu cliente MCP e inicie a conexão novamente.",
@@ -2379,7 +2381,7 @@
           },
           "search": {
             "title": "Pesquise qualquer coisa",
-            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas, usuários ou configurações instantaneamente."
+            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas ou configurações instantaneamente."
           },
           "switchOrgs": {
             "title": "Troque de organização",

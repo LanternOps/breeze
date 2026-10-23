@@ -12,6 +12,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { runAction, ActionError } from '@/lib/runAction';
 import InheritedField from '../shared/InheritedField';
+import OrgPortalPreviewPanel from './OrgPortalPreviewPanel';
 
 type PortalSettings = {
   enableTickets: boolean;
@@ -37,6 +38,7 @@ type PortalSettings = {
   enableHourBlock: boolean;
   enablePatchDetail: boolean;
   enableVulnerabilityDetail: boolean;
+  enablePhysicalPlacement: boolean;
   enableTrustPageEditing: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
@@ -99,7 +101,8 @@ type VisibilityToggleKey =
   | 'enableNetworkAlerts'
   | 'enableHourBlock'
   | 'enablePatchDetail'
-  | 'enableVulnerabilityDetail';
+  | 'enableVulnerabilityDetail'
+  | 'enablePhysicalPlacement';
 
 const VISIBILITY_TOGGLES: Array<{
   key: VisibilityToggleKey;
@@ -217,6 +220,14 @@ const VISIBILITY_TOGGLES: Array<{
     labelKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.label',
     descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail.description',
   },
+  // Sensitive (environment visibility W1, #8775): shows every portal login of the org
+  // where devices are physically placed (rack and room). Deliberately left out of
+  // enableAllVisibility(); listed in PORTAL_SENSITIVE_FLAG_KEYS so the Enable-all test guards it.
+  {
+    key: 'enablePhysicalPlacement',
+    labelKey: 'orgPortalSettingsEditor.visibility.toggles.enablePhysicalPlacement.label',
+    descriptionKey: 'orgPortalSettingsEditor.visibility.toggles.enablePhysicalPlacement.description',
+  },
 ];
 
 type OrgPortalSettingsEditorProps = {
@@ -317,6 +328,7 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
             enableHourBlock: draft.enableHourBlock && draft.enableSupportUsage,
             enablePatchDetail: draft.enablePatchDetail,
             enableVulnerabilityDetail: draft.enableVulnerabilityDetail,
+            enablePhysicalPlacement: draft.enablePhysicalPlacement,
             enableTrustPageEditing: draft.enableTrustPageEditing,
             supportEmail: draft.supportEmail?.trim() || null,
             supportPhone: draft.supportPhone?.trim() || null,
@@ -536,6 +548,8 @@ export default function OrgPortalSettingsEditor({ orgId, onDirty, onSave }: OrgP
           </div>
         </div>
       </section>
+
+      <OrgPortalPreviewPanel orgId={orgId} />
 
       <div className="flex justify-end">
         <button

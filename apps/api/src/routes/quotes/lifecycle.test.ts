@@ -87,6 +87,7 @@ vi.mock('../../services/quoteAcceptService', () => ({
     quote: { id: 'q1', orgId: 'org1', partnerId: 'p1', status: 'converted', quoteNumber: 'Q-2026-0001', revisionNumber: 1 },
     acceptanceId: 'acc1', invoiceId: 'inv1', invoiceIssued: true, invoiceNumber: 'INV-2026-0007',
     contractIds: ['c1'], pax8OrderId: null, contractDocumentIds: [], superseded: undefined,
+    overlappingContracts: [{ id: 'c0', name: 'Hand-built draft', status: 'draft', intervalMonths: 1 }],
   })),
   emitAcceptInvoiceIssued: vi.fn(),
   resolveAcceptInvoiceUrl: vi.fn(async () => 'https://portal.example/invoice/tok'),
@@ -817,6 +818,25 @@ describe('POST /:id/accept-on-behalf', () => {
       payUrl: 'https://portal.example/invoice/tok',
     });
     expect(body.data.quote.status).toBe('converted');
+  });
+
+  // #9303: the on-behalf UI names the org's existing same-cadence contracts
+  // after the accept, so the tech sees the double-billing risk before activating.
+  it('passes the overlapping existing contracts through to a contracts reader', async () => {
+    const res = await appWith('partner', ['quotes:accept', 'contracts:read']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    const body = await res.json();
+    expect(body.data.overlappingContracts).toEqual([
+      { id: 'c0', name: 'Hand-built draft', status: 'draft', intervalMonths: 1 },
+    ]);
+  });
+
+  // quotes:accept alone does not grant reading contracts; the contract names
+  // are withheld rather than leaked through the accept response.
+  it('withholds the overlapping contracts from a caller without contracts:read', async () => {
+    const res = await appWith('partner', ['quotes:accept']).request(`/${QUOTE_ID}/accept-on-behalf`, jsonReq(BODY));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.overlappingContracts).toEqual([]);
   });
 
   // The UI's success toast says "Invoice <number> issued". Without the ALLOCATED

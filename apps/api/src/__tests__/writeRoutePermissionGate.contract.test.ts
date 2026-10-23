@@ -106,6 +106,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/agents/:id/commands/:commandId/pam-observations': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/pamReconciliation.ts
   'POST /api/v1/agents/:id/pam/reconciliation-bindings': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
+  // routes/agents/pamElevationUnable.ts (#9517)
+  'POST /api/v1/agents/:id/pam/elevation-unable': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   // routes/agents/patches.ts
   'PUT /api/v1/agents/:id/patches/pending': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
   'PUT /api/v1/agents/:id/patches/installed': 'device credential: agentAuthMiddleware (agent bearer token), device-scoped',
@@ -359,6 +361,8 @@ const WRITE_ROUTES_WITHOUT_PERMISSION_GATE: Record<string, string> = {
   'POST /api/v1/system/setup-complete': 'own account: sets caller\'s own setupCompletedAt',
   // routes/tickets/emailWebhook.ts
   'POST /api/v1/webhooks/tickets/email-inbound': 'webhook: Inbound email provider HMAC verified via provider.verify',
+  // routes/topology/interfaceRole.ts
+  'PATCH /api/v1/topology/interfaces/:id/role': 'equivalent check: requireTopologySiteAccess(write) on the interface\'s own site via assertTopologySiteWrite; the site comes from the interface row, not a path param',
   // routes/topology/templateApplications.ts
   'POST /api/v1/topology/template-applications/preview': 'equivalent check: requireTopologySiteAccess(write) per site in service; writes preview journal',
   'POST /api/v1/topology/template-applications': 'equivalent check: requireTopologySiteAccess(write) re-checked per site at apply',

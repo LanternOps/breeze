@@ -13,7 +13,7 @@
 
 import { fetchWithAuth } from '../../stores/auth';
 import type { StatusPillRole } from '../../components/billing/shared/statusPillRoles';
-import type { ContractLineType, HourBlockEstimate } from '@breeze/shared';
+import type { ContractLineType, HourBlockEstimate, RelatedContract } from '@breeze/shared';
 
 export type { ContractLineType };
 
@@ -165,6 +165,9 @@ export interface ContractDetail {
   contract: ContractSummary;
   lines: ContractLine[];
   periods: ContractBillingPeriod[];
+  /** #9303: the org's other draft/active/paused contracts. Absent on payloads
+   *  from callers that do not ask for it; treat absent as "none known". */
+  relatedContracts?: RelatedContract[];
 }
 
 export interface ListContractsQuery {
@@ -271,6 +274,16 @@ export function updateContract(id: string, body: unknown): Promise<Response> {
 
 export function deleteContract(id: string): Promise<Response> {
   return fetchWithAuth(`/contracts/${id}`, { method: 'DELETE' });
+}
+
+/** #9346: fold the org's draft `sourceContractId` into contract `id` (moves its
+ *  deliverables and agreements here, then deletes it). */
+export function adoptDraftContract(id: string, sourceContractId: string): Promise<Response> {
+  return fetchWithAuth(`/contracts/${id}/adopt-draft`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sourceContractId }),
+  });
 }
 
 export function addContractLine(id: string, body: unknown): Promise<Response> {

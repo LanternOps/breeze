@@ -12,7 +12,8 @@ import {
   Unplug,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { M365_PERMISSION_PROFILES } from "@breeze/shared";
+import { M365_PERMISSION_PROFILES, isM365SyncDomain } from "@breeze/shared";
+import type { M365SyncDomain } from "@breeze/shared";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { getJwtClaims } from "../../lib/authScope";
@@ -22,7 +23,8 @@ import { navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime, formatRelativeTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
-import type { M365ConsentStepSummary } from "./m365ConsentSummary";
+import { parseOnboardingAvailability } from "./m365ConsentSummary";
+import type { M365ConsentStepSummary, M365OnboardingAvailability } from "./m365ConsentSummary";
 
 const STATUSES = [
   "pending-consent",
@@ -40,6 +42,7 @@ const STABLE_ERROR_CODES = [
   "consent_cancelled",
   "conditional_access_blocked",
   "consent_provider_error",
+  "user_consent_blocked",
   "admin_role_required",
   "tenant_mismatch",
   "tenant_already_bound",
@@ -65,10 +68,13 @@ const GRANT_HEALTH_STATES = [
 ] as const;
 type GrantHealthState = (typeof GRANT_HEALTH_STATES)[number];
 
-const SYNC_DOMAINS = [
-  "users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score",
-] as const;
-type SyncDomain = (typeof SYNC_DOMAINS)[number];
+// The domain vocabulary comes from @breeze/shared (M365_SYNC_DOMAINS), the same
+// list the API's summary is built from, so the two cannot drift. A domain this
+// bundle still does not know (a newer API, a rolling deploy) degrades to an
+// "unknown" label; it must never fail the envelope and hide the tenant (#9392).
+const SYNC_DOMAIN_WIRE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+// Bounds the parse, not the vocabulary: well above the real domain count.
+const MAX_SYNC_DOMAINS = 64;
 
 const SYNC_STATUSES = [
   "success", "partial", "needs_consent", "throttled", "error", "never",
@@ -76,7 +82,10 @@ const SYNC_STATUSES = [
 type SyncStatus = (typeof SYNC_STATUSES)[number];
 
 type SyncDomainState = {
-  domain: SyncDomain;
+  /** The wire name, kept for React keys only; never rendered. */
+  wireDomain: string;
+  /** `null` when this bundle does not know the domain. */
+  domain: M365SyncDomain | null;
   status: SyncStatus;
   asOf: string | null;
   truncated: boolean;
@@ -142,6 +151,7 @@ type Envelope = {
     requiredGrants: Grant[];
   };
   onboardingEnabled: boolean;
+  onboardingAvailability: M365OnboardingAvailability;
   connection: Connection | null;
   syncEnabled: boolean;
   sync: SyncSummary | null;
@@ -281,14 +291,15 @@ function parseSyncDomain(value: unknown): SyncDomainState | null {
   if (!isRecord(value) || !hasExactKeys(value, ["domain", "status", "asOf", "truncated", "unlicensed"])) return null;
   const asOf = parseTimestamp(value.asOf);
   if (
-    typeof value.domain !== "string" || !(SYNC_DOMAINS as readonly string[]).includes(value.domain)
+    typeof value.domain !== "string" || !SYNC_DOMAIN_WIRE_PATTERN.test(value.domain)
     || typeof value.status !== "string" || !(SYNC_STATUSES as readonly string[]).includes(value.status)
     || asOf === undefined
     || typeof value.truncated !== "boolean"
     || typeof value.unlicensed !== "boolean"
   ) return null;
   return {
-    domain: value.domain as SyncDomain,
+    wireDomain: value.domain,
+    domain: isM365SyncDomain(value.domain) ? value.domain : null,
     status: value.status as SyncStatus,
     asOf,
     truncated: value.truncated,
@@ -304,7 +315,7 @@ function parseSync(value: unknown): SyncSummary | null | undefined {
   const users = parseCount(value.users);
   const devices = parseCount(value.devices);
   if (
-    !Array.isArray(value.domains) || value.domains.length > SYNC_DOMAINS.length
+    !Array.isArray(value.domains) || value.domains.length > MAX_SYNC_DOMAINS
     || lastSuccessAt === undefined || users === undefined || devices === undefined
   ) return undefined;
   const domains = value.domains.map(parseSyncDomain);
@@ -313,9 +324,17 @@ function parseSync(value: unknown): SyncSummary | null | undefined {
 }
 
 function parseEnvelope(value: unknown): Envelope | null {
-  if (!isRecord(value) || !hasExactKeys(value, [
+  if (!isRecord(value)) return null;
+  // `onboardingAvailability` is optional on the wire (an API that predates it
+  // omits it); every other key stays strictly required.
+  const { onboardingAvailability: rawAvailability, ...rest } = value;
+  if (!hasExactKeys(rest, [
     "profile", "onboardingEnabled", "connection", "syncEnabled", "sync",
   ])) return null;
+  const onboardingAvailability = typeof value.onboardingEnabled === "boolean"
+    ? parseOnboardingAvailability(rawAvailability, value.onboardingEnabled)
+    : null;
+  if (onboardingAvailability === null) return null;
   if (!isRecord(value.profile) || !hasExactKeys(value.profile, ["id", "displayName", "manifestVersion", "requiredGrants"])) return null;
   const grants = parseGrants(value.profile.requiredGrants);
   const connection = parseConnection(value.connection);
@@ -338,6 +357,7 @@ function parseEnvelope(value: unknown): Envelope | null {
       requiredGrants: grants,
     },
     onboardingEnabled: value.onboardingEnabled,
+    onboardingAvailability,
     connection,
     syncEnabled: value.syncEnabled,
     sync,
@@ -660,6 +680,7 @@ export default function M365CustomerGraphReadCard({
   const summary = useMemo<M365ConsentStepSummary>(() => ({
     loadState,
     onboardingEnabled: data?.onboardingEnabled ?? false,
+    onboardingAvailability: data?.onboardingAvailability ?? "instance_disabled",
     connection: connection
       ? {
           tenantId: connection.tenantId,
@@ -689,50 +710,66 @@ export default function M365CustomerGraphReadCard({
     : t("m365CustomerGraphRead.grants.unexpectedAlert");
   const canRetestConnection = connection?.status === "active" || connection?.status === "degraded";
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
+  // "Retest" wording only makes sense where the Retest button is shown; a
+  // connection still pending consent has to be connected again instead.
+  const errorKey = (code: string) => (code === "executor_unavailable" && connection && !canRetestConnection
+    ? "executor_unavailablePending"
+    : code);
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
+    // The callback banner above already says this; don't repeat it.
+    if (callbackResult === connection.lastErrorCode) return null;
     // The banner below already says this, in words an administrator can act on.
     if (connection.grantHealth === "manifest-stale" && connection.lastErrorCode === "manifest_stale") {
       return null;
     }
     return isStableErrorCode(connection.lastErrorCode)
-      ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${connection.lastErrorCode}`)
+      ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${errorKey(connection.lastErrorCode)}`)
       : t("m365CustomerGraphRead.errors.unknown");
-  }, [connection, t]);
+  }, [connection, callbackResult, canRetestConnection, t]);
   const syncChips = useMemo(() => {
     const chips: { key: string; label: string }[] = [];
     for (const entry of data?.sync?.domains ?? []) {
-      const domain = t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`);
-      if (entry.unlicensed) {
+      const domain = entry.domain
+        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.sync.domains.${entry.domain}`)
+        : t("m365CustomerGraphRead.sync.domains.unknown");
+      if (entry.unlicensed && entry.domain) {
         // Its own sentence, not "{{domain}}: unlicensed": the actionable fact is
-        // that the TENANT needs Entra ID P1, not that a sync went wrong.
-        chips.push({ key: `${entry.domain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
+        // that the TENANT needs Entra ID P1, not that a sync went wrong. Only for
+        // a known domain: the card cannot say which license an unknown one needs,
+        // so that falls through to its status chip.
+        chips.push({ key: `${entry.wireDomain}:unlicensed`, label: t("m365CustomerGraphRead.sync.chips.unlicensed") });
       } else if (entry.status === "throttled") {
-        chips.push({ key: `${entry.domain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:throttled`, label: t("m365CustomerGraphRead.sync.chips.throttled", { domain }) });
       } else if (entry.status === "needs_consent") {
-        chips.push({ key: `${entry.domain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:needs-consent`, label: t("m365CustomerGraphRead.sync.chips.needsConsent", { domain }) });
       } else if (entry.status === "error") {
-        chips.push({ key: `${entry.domain}:error`, label: t("m365CustomerGraphRead.sync.chips.error", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:error`, label: t("m365CustomerGraphRead.sync.chips.error", { domain }) });
       } else if (entry.status === "partial" || entry.truncated) {
-        chips.push({ key: `${entry.domain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
+        chips.push({ key: `${entry.wireDomain}:partial`, label: t("m365CustomerGraphRead.sync.chips.partial", { domain }) });
       }
       // 'success' and 'never' get no chip: the summary line already says whether
       // anything has ever synced, and a chip per healthy domain is noise.
     }
-    return chips;
+    // Two domains can produce the same sentence (signin_activity and
+    // signin_events both need Entra ID P1; two unrecognized domains share one
+    // label). One chip per distinct sentence.
+    const seen = new Set<string>();
+    return chips.filter((chip) => !seen.has(chip.label) && !!seen.add(chip.label));
   }, [data, t]);
   const callbackCopy = callbackResult === "active"
     ? t("m365CustomerGraphRead.callback.active")
     : callbackResult === "degraded"
       ? t("m365CustomerGraphRead.callback.degraded")
       : callbackResult && callbackResult !== "confirm-tenant"
-        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${callbackResult}`)
+        ? t(/* i18n-dynamic */ `m365CustomerGraphRead.errors.${errorKey(callbackResult)}`)
         : null;
   const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
   const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);
 
-  // Onboarding is gated by an instance-level server flag, not by anything the
-  // org can change. With nothing connected there is nothing to manage, so the
+  // Onboarding is gated by server-side switches the org cannot change: an
+  // instance-wide flag AND a per-org allowlist (`onboardingAvailability` says
+  // which one is off, #9319). With nothing connected there is nothing to manage, so the
   // card collapses to its header and one neutral status line instead of a
   // permission list and a Connect button that can never be pressed.
   const instanceUnavailable = loadState === "ready" && !!data && !data.onboardingEnabled && !connection;
@@ -814,7 +851,9 @@ export default function M365CustomerGraphReadCard({
 
       {instanceUnavailable && (
         <p id={instanceUnavailableId} className="mt-4 text-sm text-muted-foreground">
-          {t("m365CustomerGraphRead.notAvailableOnInstance")}
+          {data?.onboardingAvailability === "org_not_enabled"
+            ? t("m365CustomerGraphRead.notEnabledForOrg")
+            : t("m365CustomerGraphRead.notAvailableOnInstance")}
         </p>
       )}
 

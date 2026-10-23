@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Serviceleistungen",
+    "pausedDraft": "Pausiert, bis der Vertrag aktiviert wird. Ein Entwurf eröffnet keine Tickets; bei der Aktivierung werden noch nicht begonnene Leistungen auf den Vertragsbeginn verschoben (oder auf heute, falls er bereits vorbei ist).",
     "empty": "Noch keine Leistungen. Fügen Sie die wiederkehrenden Berichte und Reviews hinzu, die diesem Kunden zustehen."
   },
   "table": {
@@ -46,7 +47,8 @@
     "addEvidence": "Nachweis hinzufügen",
     "removeEvidence": "Nachweis entfernen",
     "save": "Speichern",
-    "cancel": "Abbrechen"
+    "cancel": "Abbrechen",
+    "retry": "Erneut versuchen"
   },
   "form": {
     "name": "Name",
@@ -90,6 +92,7 @@
     "evidence": "Nachweis",
     "noEvidence": "Kein Nachweis angehängt",
     "late": "Verspätet",
+    "awaitingEvidenceHint": "Ticket gelöst – Nachweis anhängen, um abzuschließen",
     "rescheduledFrom": "Verschoben von {{date}}",
     "deliveryNote": "Lieferhinweis",
     "waivedReason": "Grund für den Erlass",
@@ -100,11 +103,23 @@
     "upload": "Hochladen",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Checkliste anzeigen",
-    "hideChecklist": "Checkliste ausblenden"
+    "hideChecklist": "Checkliste ausblenden",
+    "linkDocument": "Vorhandenes Dokument verknüpfen",
+    "linkDocumentSelect": "Dokument als Nachweis auswählen",
+    "linkDocumentLoading": "Dokumente werden geladen…",
+    "linkDocumentPlaceholder": "Dokument auswählen…",
+    "linkDocumentEmpty": "Die Dokumentenbibliothek dieser Organisation enthält noch keine Dokumente.",
+    "linkAgreement": "Unterzeichnete Vereinbarung verknüpfen",
+    "linkAgreementSelect": "Unterzeichnete Vereinbarung als Nachweis auswählen",
+    "linkAgreementLoading": "Unterzeichnete Vereinbarungen werden geladen…",
+    "linkAgreementPlaceholder": "Unterzeichnete Vereinbarung auswählen…",
+    "linkAgreementEmpty": "Für diese Organisation gibt es noch keine unterzeichneten Vereinbarungen.",
+    "link": "Verknüpfen"
   },
   "evidence": {
     "reportRun": "Berichtslauf",
     "document": "Dokument",
+    "signedAgreement": "Unterzeichnete Vereinbarung",
     "reportRunId": "ID des Berichtslaufs"
   },
   "upcoming": {
@@ -123,7 +138,11 @@
     "uploadFailed": "Die Nachweisdatei konnte nicht hochgeladen werden.",
     "tooLarge": "Diese Datei ist größer als 10 MB.",
     "unsupportedType": "Es können nur PDF-, JPEG-, PNG- und WebP-Dateien angehängt werden.",
-    "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut."
+    "storageUnavailable": "Die Dokumentenspeicherung ist derzeit nicht verfügbar. Versuchen Sie es in Kürze erneut.",
+    "linkFailed": "Das Dokument konnte nicht verknüpft werden.",
+    "libraryLoadFailed": "Die Dokumentenbibliothek konnte nicht geladen werden.",
+    "agreementsLoadFailed": "Unterzeichnete Vereinbarungen konnten nicht geladen werden.",
+    "agreementsForbidden": "Sie haben keine Berechtigung, unterzeichnete Vereinbarungen anzuzeigen."
   },
   "confirm": {
     "deactivate": "{{name}} deaktivieren? Offene Vorkommen werden geschlossen und keine neuen mehr geplant.",
@@ -169,7 +188,8 @@
     "evidenceAdded": "Nachweis hinzugefügt",
     "evidenceRemoved": "Nachweis entfernt",
     "deactivated": "Leistung deaktiviert",
-    "evidenceUploaded": "Nachweis hochgeladen"
+    "evidenceUploaded": "Nachweis hochgeladen",
+    "evidenceLinked": "Dokument als Nachweis verknüpft"
   },
   "templates": {
     "pageTitle": "Leistungsvorlagen",
@@ -232,5 +252,33 @@
       "itemDeleted": "Leistung entfernt",
       "applied": "Vorlagenset angewendet"
     }
+  },
+  "move": {
+    "action": "Zu Vertrag verschieben…",
+    "toTitle": "Leistungen zu einem Vertrag verschieben",
+    "selected": "Ausgewählt: {{count}}",
+    "selectRow": "{{name}} auswählen",
+    "target": "Zielvertrag",
+    "confirm": "Verschieben",
+    "moved": "Leistungen verschoben",
+    "hereAction": "Leistungen hierher verschieben aus…",
+    "hereTitle": "Leistungen hierher verschieben",
+    "hereHelp": "Wählen Sie Leistungen aus den anderen Verträgen dieser Organisation aus, die auf diesen Vertrag verschoben werden sollen.",
+    "hereEmpty": "In dieser Organisation gibt es keine weiteren Leistungen.",
+    "collision": "Es wurde nichts verschoben. Diese Namen existieren bereits im Zielvertrag: {{names}}"
+  },
+  "bulk": {
+    "select": "{{name}} auswählen",
+    "selectAll": "Alle Leistungen auswählen",
+    "count_one": "{{count}} ausgewählt",
+    "count_other": "{{count}} ausgewählt",
+    "reschedule": "Auswahl verschieben",
+    "clear": "Zurücksetzen",
+    "newDate": "Neues Fälligkeitsdatum",
+    "done_one": "{{count}} Termin verschoben",
+    "done_other": "{{count}} Termine verschoben",
+    "partial": "{{moved}} verschoben, {{refused}} konnten nicht verschoben werden",
+    "none": "Keine der ausgewählten Leistungen hat einen offenen Termin zum Verschieben.",
+    "failed": "Die ausgewählten Termine konnten nicht verschoben werden."
   }
 }

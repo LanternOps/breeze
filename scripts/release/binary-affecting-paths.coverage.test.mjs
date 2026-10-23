@@ -25,7 +25,7 @@ const jobs = new Map(
 const BINARY_JOBS = [
   'build-agent', 'build-recovery-media', 'build-windows-unsigned', 'build-macos-agent',
   'build-macos-installer-app', 'build-viewer', 'build-helper', 'build-viewer-macos', 'build-helper-macos',
-  'resolve-windows-signing-provider', 'sign-windows-tauri-azure', 'sign-windows-tauri-sslcom',
+  'resolve-windows-signing-provider', 'sign-windows-tauri-sslcom',
   'sign-windows-tauri', 'package-windows-updater', 'merge-viewer-update-manifest', 'build-binaries-image',
 ];
 

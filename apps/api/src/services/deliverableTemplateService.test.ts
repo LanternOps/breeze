@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
@@ -523,6 +523,89 @@ describe('item writes are scoped to the set in the path', () => {
     const { sql, params } = compile((db as any).where.mock.calls.at(-1)?.[0]);
     expect(params).toEqual(expect.arrayContaining(['i-foreign', 's1']));
     expect(sql).toContain('"set_id"');
+  });
+});
+
+// #9315 — a template item decides whether its deliverable is portal-visible.
+// Template apply used to hard-code `portalVisible: true`, so internal onboarding
+// items ("Billing configured", "Agreement signed") always landed in the portal.
+describe('portalVisible on template items (#9315)', () => {
+  beforeEach(() => {
+    dbMocks.rows.length = 0;
+    createdCalls.length = 0;
+    refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockReset().mockResolvedValue(undefined);
+  });
+  // `vi.spyOn` on the chain's existing vi.fn returns that same mock, so call
+  // history is what leaks between tests. Clear it up front (exception-safe,
+  // unlike a trailing mockRestore) and restore any wrapper afterwards.
+  beforeEach(async () => {
+    const { db } = await import('../db');
+    (db as any).values.mockClear();
+    (db as any).set.mockClear();
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+  const orgSet = { id: 's1', orgId: 'org1', partnerId: null, name: 'Onboarding' };
+  const base = { leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
+
+  it('applyTemplateSet copies each item’s portalVisible instead of forcing true', async () => {
+    const items = [
+      { id: 'i1', setId: 's1', name: 'Billing configured', cadence: 'one_time', description: null, ...base, portalVisible: false },
+      { id: 'i2', setId: 's1', name: 'Patch report', cadence: 'monthly', description: null, ...base, portalVisible: true },
+    ];
+    dbMocks.rows.push([orgSet], items, []);
+    await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin);
+    expect(createdCalls.map((c) => [c.input.name, c.input.portalVisible])).toEqual([
+      ['Billing configured', false],
+      ['Patch report', true],
+    ]);
+  });
+
+  it('addTemplateItem defaults portalVisible by cadence: off for one_time, on for recurring', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    dbMocks.rows.push([orgSet], [{ id: 'i1' }]);
+    await addTemplateItem('s1', { name: 'Agreement signed', cadence: 'one_time', ...base }, partnerAdmin);
+    expect(values.mock.calls.at(-1)![0]).toMatchObject({ portalVisible: false });
+
+    dbMocks.rows.push([orgSet], [{ id: 'i2' }]);
+    await addTemplateItem('s1', { name: 'Patch report', cadence: 'monthly', ...base }, partnerAdmin);
+    expect(values.mock.calls.at(-1)![0]).toMatchObject({ portalVisible: true });
+  });
+
+  it('an explicit portalVisible wins over the cadence default on create', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    dbMocks.rows.push([orgSet], [{ id: 'i1' }]);
+    await addTemplateItem('s1', { name: 'Kickoff call', cadence: 'one_time', ...base, portalVisible: true }, partnerAdmin);
+    expect(values.mock.calls.at(-1)![0]).toMatchObject({ portalVisible: true });
+  });
+
+  it('createTemplateSet resolves portalVisible for every nested item', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    dbMocks.rows.push([{ ...orgSet }], [{ id: 'i1' }], [{ id: 'i2' }]);
+    await createTemplateSet({
+      ownerScope: 'organization', orgId: 'org1', name: 'Onboarding',
+      items: [{ name: 'Billing configured', cadence: 'one_time', ...base }, { name: 'Patch report', cadence: 'monthly', ...base }],
+    }, partnerAdmin);
+    const itemWrites = values.mock.calls.map(([v]) => v as Record<string, unknown>).filter((v) => 'cadence' in v);
+    expect(itemWrites.map((v) => [v.name, v.portalVisible])).toEqual([
+      ['Billing configured', false],
+      ['Patch report', true],
+    ]);
+  });
+
+  it('updateTemplateItem patches portalVisible only when supplied', async () => {
+    const { db } = await import('../db');
+    const setSpy = vi.spyOn(db as any, 'set');
+    dbMocks.rows.push([orgSet], [{ id: 'i1' }]);
+    await updateTemplateItem('s1', 'i1', { portalVisible: false }, partnerAdmin);
+    expect(setSpy.mock.calls.at(-1)![0]).toMatchObject({ portalVisible: false });
+
+    // A cadence change does not silently re-derive a stored choice.
+    dbMocks.rows.push([orgSet], [{ id: 'i1' }]);
+    await updateTemplateItem('s1', 'i1', { cadence: 'one_time' }, partnerAdmin);
+    expect(setSpy.mock.calls.at(-1)![0]).not.toHaveProperty('portalVisible');
   });
 });
 

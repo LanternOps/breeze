@@ -49,6 +49,19 @@ describe('OrganizationForm slug auto-derive', () => {
     });
   });
 
+  it('has no Max devices input and submits no maxDevices (#9260)', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<OrganizationForm onSubmit={onSubmit} />);
+
+    expect(screen.queryByLabelText(/max devices/i)).toBeNull();
+    await user.type(screen.getByLabelText('Organization name'), 'Acme Corp');
+    await user.click(screen.getByRole('button', { name: 'Save organization' }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty('maxDevices');
+  });
+
   it('stops syncing once the slug is manually edited', async () => {
     const user = userEvent.setup();
     render(<OrganizationForm />);

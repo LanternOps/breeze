@@ -41,6 +41,21 @@ vi.mock('./actorContext', () => ({
 // above don't provide. Its own classification behavior is unit-tested where
 // it lives, policyDecidable.test.ts; this file only needs to prove
 // `revalidateApprovedIntentForRelease` CONSULTS it and reacts to ok/rejected.
+// B-W04 (#6158): the mcp_api origin rebuild (its own suite covers the internals).
+vi.mock('../mcpPrincipalAuth', () => ({
+  rebuildMcpOriginAuthContext: vi.fn(async () => ({
+    auth: {
+      principal: { kind: 'api_key', apiKeyId: 'key-1' },
+      user: { id: 'user-1' },
+      token: {},
+      orgId: 'org-1',
+      accessibleOrgIds: ['org-1'],
+      canAccessOrg: (id: string) => id === 'org-1',
+    },
+    credential: { kind: 'api_key', scopes: ['ai:execute'] },
+  })),
+  checkMcpOriginReleaseAuthority: vi.fn(() => ({ ok: true })),
+}));
 vi.mock('./policyDecidable', () => ({
   validateAuthorizationKeys: vi.fn((keys: string[]) => ({ ok: keys, rejected: [] })),
 }));
@@ -87,6 +102,7 @@ import { policyDecideEnabled } from '../../config/env';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
 import { buildAuthContextForIntent } from './actorContext';
+import { rebuildMcpOriginAuthContext, checkMcpOriginReleaseAuthority } from '../mcpPrincipalAuth';
 import { SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { requireCallerVerification } from '../callerVerification/gate';
 import { loadPinnedCallerBackend } from './callerTarget';
@@ -1047,5 +1063,53 @@ describe('revalidateApprovedIntentForRelease caller verification consume (#6354 
     expect(other).toMatchObject({ ok: true });
     expect(requireCallerVerification).not.toHaveBeenCalled();
     expect(loadPinnedCallerBackend).not.toHaveBeenCalled();
+  });
+});
+
+describe('revalidateApprovedIntentForRelease mcp_api origin branch (B-W04 #6158)', () => {
+  const args = { deviceId: 'dev-1', command: 'whoami' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+  const mcpIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    source: 'mcp_api',
+    originPrincipalKind: 'api_key',
+    originPrincipalId: 'key-1',
+    actionName: 'execute_command',
+    arguments: args,
+    argumentDigest: digest,
+    ...overrides,
+  });
+
+  it('rebuilds from the origin credential, never the user-owned context, then runs RBAC on it', async () => {
+    const result = await revalidateApprovedIntentForRelease(mcpIntent(), { boundArgumentDigest: digest });
+    expect(result.ok).toBe(true);
+    expect(rebuildMcpOriginAuthContext).toHaveBeenCalledTimes(1);
+    expect(checkMcpOriginReleaseAuthority).toHaveBeenCalledTimes(1);
+    expect(buildAuthContextForIntent).not.toHaveBeenCalled();
+    const rbacAuth = vi.mocked(checkToolPermission).mock.calls[0]?.[2] as { token: unknown; principal: unknown };
+    expect(rbacAuth.token).toEqual({});
+    expect(rbacAuth.principal).toEqual({ kind: 'api_key', apiKeyId: 'key-1' });
+  });
+
+  it('a rebuild failure terminalises with its specific errorCode', async () => {
+    vi.mocked(rebuildMcpOriginAuthContext).mockResolvedValueOnce({ error: 'mcp_origin_revoked' });
+    const result = await revalidateApprovedIntentForRelease(mcpIntent(), { boundArgumentDigest: digest });
+    expect(result).toEqual({ ok: false, errorCode: 'mcp_origin_revoked' });
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('an authority failure terminalises with its errorCode before RBAC', async () => {
+    vi.mocked(checkMcpOriginReleaseAuthority).mockReturnValueOnce({ ok: false, errorCode: 'mcp_intents_disabled' });
+    const result = await revalidateApprovedIntentForRelease(mcpIntent(), { boundArgumentDigest: digest });
+    expect(result).toEqual({ ok: false, errorCode: 'mcp_intents_disabled' });
+    expect(checkToolPermission).not.toHaveBeenCalled();
+  });
+
+  it('a user-session mcp_api intent (agent graduation / AI operator) keeps the user-owned rebuild', async () => {
+    await revalidateApprovedIntentForRelease(
+      mcpIntent({ originPrincipalKind: 'user_session', originPrincipalId: null }),
+      { boundArgumentDigest: digest },
+    );
+    expect(rebuildMcpOriginAuthContext).not.toHaveBeenCalled();
+    expect(buildAuthContextForIntent).toHaveBeenCalledTimes(1);
   });
 });

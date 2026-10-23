@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { RelationshipExclusionSummary, TopologyView } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { topologyWrite } from './topologyApi';
 import { runAction, handleActionError } from '../../lib/runAction';
 
 /**
@@ -18,7 +18,7 @@ const base = (siteId: string, relationshipId: string) =>
 
 export function hideTopologyRelationship(input: { siteId: string; relationshipId: string; view: TopologyView; reason: string; errorFallback: string; successMessage: string }) {
   return runAction({
-    request: () => fetchWithAuth(base(input.siteId, input.relationshipId), {
+    request: () => topologyWrite(base(input.siteId, input.relationshipId), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ view: input.view, reason: input.reason }),
     }),
     errorFallback: input.errorFallback, successMessage: input.successMessage,
@@ -27,7 +27,7 @@ export function hideTopologyRelationship(input: { siteId: string; relationshipId
 
 export function restoreTopologyRelationship(input: { siteId: string; relationshipId: string; exclusionId: string; errorFallback: string; successMessage: string }) {
   return runAction({
-    request: () => fetchWithAuth(`${base(input.siteId, input.relationshipId)}/${encodeURIComponent(input.exclusionId)}`, { method: 'DELETE' }),
+    request: () => topologyWrite(`${base(input.siteId, input.relationshipId)}/${encodeURIComponent(input.exclusionId)}`, { method: 'DELETE' }),
     errorFallback: input.errorFallback, successMessage: input.successMessage,
   });
 }

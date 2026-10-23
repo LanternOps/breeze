@@ -87,6 +87,8 @@ const EXEMPT_TABLES: ReadonlySet<string> = new Set<string>([
 // NOTE: device_commands is the canonical prior example (agent WS path, system-
 // scoped by design) — see apps/api/src/db/schema/devices.ts.
 const INTENTIONAL_UNSCOPED: ReadonlySet<string> = new Set<string>([
+  'billing_device_snapshots', // Billing-owned daily capacity evidence. Forced owner-only RLS; no core tenant role can read/write, even with a forged partner context.
+  'billing_capacity_changes', // Billing-owned notice/payment operation ledger. Forced owner-only RLS, revoked from breeze_app; only authenticated billing service exposes the owning partner's summary.
   'device_commands', // Agent WS path: system-scoped command queue, no tenant isolation needed.
   'container_image_upstream_cache', // Workload image currency W05 (#8194, spec §9.3): global cache of what PUBLIC registries serve per registry/repository:tag — no tenant column by design (fleet-wide dedup, D13). Forced RLS, single system-only policy, NO permissive SELECT (keys are derived from what tenants run). Written only by the imageCurrencyWorker for anonymous lookups that succeeded; private/failed results land only on the tenant's own device_workloads rows. No org_id/device_id, so no cascade, merge or export registration applies.
   'pam_epoch_transfer_config', // PAM ownership epochs W6 (#8208): one-row deployment switch the device-move guard trusts over the forgeable breeze.* GUCs. No tenant column. Forced RLS, single system-only policy, AND no breeze_app privilege at all (migration + ensureAppRole.ts REVOKE ALL) — a breeze_app session can claim system scope, so the grant, not RLS, is the barrier. Read only through SECURITY DEFINER breeze_pam_epoch_transfer_enabled(); written only by the table owner. No org_id/device_id, so no cascade, merge or export registration.
@@ -605,6 +607,10 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // forge proof: toolSourcesPartnerRls.integration.test.ts.
   'tool_sources',
   'tool_source_tools',
+  // flows (Tool Catalog W03, #5218): org_id XOR partner_id config table,
+  // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
+  // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
+  'flows',
   'users',
   // connection_health_incidents (#8845, spec 2026-10-15 connection health
   // §2.1): partner_id always set, org_id NULL only for a partner-owned
@@ -948,6 +954,9 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // needs a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
   'tool_sources',
   'tool_source_tools',
+  // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
+  // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
+  'flows',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',

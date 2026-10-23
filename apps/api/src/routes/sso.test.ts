@@ -154,12 +154,9 @@ vi.mock('../services/sso', async () => ({
       throw new Error(`OIDC endpoint rejected (internal): ${label}`);
     }
   },
-  PROVIDER_PRESETS: {
-    okta: {
-      scopes: 'openid profile email',
-      attributeMapping: { email: 'email', name: 'name' }
-    }
-  }
+  // The REAL preset table so the preset tests resolve the shipped keys (#9601:
+  // the web sent 'azure' while the table is keyed 'azure-ad').
+  PROVIDER_PRESETS: (await vi.importActual<typeof import('../services/sso')>('../services/sso')).PROVIDER_PRESETS
 }));
 
 vi.mock('../services', () => ({
@@ -518,7 +515,7 @@ import {
 import { createPendingDomain, verifyDomain, isSsoProvisioningBlocked, isDomainVerifiedForOrg } from '../services/ssoDomainVerification';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { getUserPermissions } from '../services/permissions';
-import { writeRouteAudit } from '../services/auditEvents';
+import { derivePartnerAttribution, writeRouteAudit } from '../services/auditEvents';
 import { auditLogin } from './auth/helpers';
 
 const PROVIDER_UUID = '00000000-0000-4000-8000-000000000001';
@@ -845,7 +842,7 @@ describe('sso routes', () => {
       orgId: ORG_UUID,
       name: 'Okta',
       type: 'oidc',
-      scopes: 'openid profile email',
+      scopes: 'openid profile email groups',
       authorizationUrl: 'https://issuer.example.com/auth',
       tokenUrl: 'https://issuer.example.com/token',
       userInfoUrl: 'https://issuer.example.com/userinfo',
@@ -853,6 +850,69 @@ describe('sso routes', () => {
       createdBy: USER_UUID,
       status: 'inactive'
     }));
+  });
+
+  // #9601: the preset key the create route reads must be the one the API
+  // publishes from GET /sso/presets. The web form used to send 'azure', which
+  // matched nothing, so the provider was created with no attribute mapping.
+  describe('preset keys (#9601)', () => {
+    const postPreset = (preset: string) => app.request('/sso/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Entra', type: 'oidc', preset })
+    });
+
+    it('applies the azure-ad preset scopes and given/family name mapping', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('azure-ad');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        scopes: 'openid profile email',
+        attributeMapping: expect.objectContaining({ firstName: 'given_name', lastName: 'family_name' })
+      }));
+    });
+
+    it("maps the legacy 'azure' value (stale web bundles) to the azure-ad preset", async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('azure');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        attributeMapping: expect.objectContaining({ firstName: 'given_name', lastName: 'family_name' })
+      }));
+    });
+
+    it('rejects an unknown preset with 400 instead of silently ignoring it', async () => {
+      const res = await postPreset('not-a-preset');
+
+      expect(res.status).toBe(400);
+      // The caller is told which ids are valid, not a bare "Invalid input".
+      const body = await res.json();
+      expect(body.error).toContain('preset');
+      expect(body.error).toContain('"azure-ad"|"okta"|"google"|"auth0"');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('treats an empty preset (Custom configuration) as no preset', async () => {
+      const valuesMock = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Entra' }])
+      });
+      vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+      const res = await postPreset('');
+
+      expect(res.status).toBe(201);
+      expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ attributeMapping: undefined }));
+    });
   });
 
   it('creates a SAML provider without discovery', async () => {
@@ -3667,7 +3727,7 @@ describe('sso routes', () => {
       );
       expect(auditLogin).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ scope: 'partner', method: 'sso-partner', orgId: null, userId: USER_UUID })
+        expect.objectContaining({ scope: 'partner', method: 'sso-partner', orgId: null, partnerId: PARTNER_UUID, userId: USER_UUID })
       );
     });
 
@@ -4222,6 +4282,55 @@ describe('sso routes', () => {
           details: expect.objectContaining({ reason: 'idp_verify_failed', userId: USER_UUID }),
         })
       );
+    });
+
+    // #9377: /callback is unauthenticated, so a partner-level provider's link
+    // rows reach the partner audit trail only via an explicit top-level
+    // partnerId. Feed the (mocked) writeRouteAudit argument to the real
+    // derivation with a no-auth context to get the partner_id the row persists.
+    const persistedLinkPartnerIds = (action: string): Array<string | null> =>
+      vi.mocked(writeRouteAudit).mock.calls
+        .map(([, event]) => event)
+        .filter((event) => event.action === action)
+        .map((event) => derivePartnerAttribution({ req: { header: () => undefined } } as any, event));
+
+    it('attributes sso.identity.linked to the partner for a partner-level provider (#9377)', async () => {
+      primeLinkCallback({ linkUserId: USER_UUID, provider: PARTNER_PROVIDER });
+      vi.mocked(db.select).mockReturnValueOnce(sel([])); // (provider, sub) not in use
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([]) }))
+      } as any);
+
+      const res = await doCallback();
+
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinked=1');
+      expect(persistedLinkPartnerIds('sso.identity.linked')).toEqual([PARTNER_UUID]);
+    });
+
+    it('attributes sso.identity.link_rejected (idp_verify_failed) to the partner for a partner-level provider (#9377)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      primeLinkCallback({ linkUserId: USER_UUID, provider: PARTNER_PROVIDER });
+      vi.mocked(verifyIdTokenSignature).mockRejectedValueOnce(
+        Object.assign(new Error('Invalid nonce'), { failureKind: 'nonce' })
+      );
+
+      const res = await doCallback();
+
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=idp_verify_failed');
+      expect(persistedLinkPartnerIds('sso.identity.link_rejected')).toEqual([PARTNER_UUID]);
+    });
+
+    it('attributes sso.identity.link_rejected (binding failure) to the partner for a partner-level provider (#9377)', async () => {
+      primeLinkCallback({
+        linkUserId: USER_UUID,
+        provider: PARTNER_PROVIDER,
+        linkingUser: { ...ACTIVE_LINKING_USER, status: 'suspended' },
+      });
+
+      const res = await doCallback();
+
+      expect(res.headers.get('location')).toBe('/settings/profile?ssoLinkError=session_invalid');
+      expect(persistedLinkPartnerIds('sso.identity.link_rejected')).toEqual([PARTNER_UUID]);
     });
 
     it('callback link mode rejects an email mismatch (no insert)', async () => {

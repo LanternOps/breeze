@@ -342,6 +342,8 @@
       "subnets": "Subnets"
     },
     "configuredCount": "{{count}} profiles configured",
+    "configuredCount_one": "{{count}} profile configured",
+    "configuredCount_other": "{{count}} profiles configured",
     "empty": "No discovery profiles yet. Create your first profile to start scanning.",
     "lastRun": "Last run {{time}}",
     "loading": "Loading discovery profiles...",
@@ -438,6 +440,8 @@
       "selectSite": "Select a site before saving."
     },
     "configuredCount": "{{count}} baselines configured",
+    "configuredCount_one": "{{count}} baseline configured",
+    "configuredCount_other": "{{count}} baselines configured",
     "subnetTopologyNote": "Subnets here also identify this site's networks on the topology map."
   },
   "networkChangeDetailModal": {

@@ -549,9 +549,10 @@ export default function PatchTab({
                 </option>
               )}
               {rings.map((ring) => (
+                // #9565: the ring's name, as everywhere else — no bracketed
+                // rollout order. Order and hold are spelled out below.
                 <option key={ring.id} value={ring.id}>
-                  [{ring.ringOrder}] {ring.name}
-                  {ring.deferralDays > 0 ? ` (${ring.deferralDays}d hold)` : ""}
+                  {ring.name}
                 </option>
               ))}
             </select>
@@ -578,6 +579,22 @@ export default function PatchTab({
               )}
             </button>
           </div>
+        )}
+        {selectedRing && (
+          <p
+            data-testid="approval-ring-details"
+            className="mt-1.5 text-xs text-muted-foreground"
+          >
+            {selectedRing.deferralDays > 0
+              ? i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringDetailsWithHold",
+                  { order: selectedRing.ringOrder, count: selectedRing.deferralDays },
+                )
+              : i18n.t(
+                  "policies:configurationPolicies.featureTabs.patchTab.ringDetailsNoHold",
+                  { order: selectedRing.ringOrder },
+                )}
+          </p>
         )}
         {ringsError && (
           <p className="mt-2 text-xs text-destructive">{ringsError}</p>
@@ -1221,6 +1238,7 @@ export default function PatchTab({
               ringEditorMode === "edit" ? (selectedRing?.id ?? "edit") : "new"
             }
             onSubmit={handleRingEditorSubmit}
+            existingRingOrders={rings.map((ring) => ring.ringOrder)}
             onCancel={() => setRingEditorOpen(false)}
             loading={ringSubmitting}
             submitLabel={

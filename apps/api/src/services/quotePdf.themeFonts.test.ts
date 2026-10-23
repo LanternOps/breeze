@@ -39,8 +39,8 @@ afterEach(() => {
   textSpy.mockRestore();
 });
 
-// A quote that exercises every draw call in renderLineTable and
-// renderRecurringSummary: a section label, the tax column, a per-table
+// A quote that exercises every draw call the shared table/totals module makes
+// for a quote: a section label, the tax column, a per-table
 // subtotal, a device-set estimate sentence, a two-row category breakdown, and
 // the deposit variant of the summary (bold + emphasis + remaining-balance rows).
 const quote = {
@@ -96,7 +96,7 @@ function fontForPrefix(prefix: string): string | undefined {
   return state.draws.find((d) => d.text.startsWith(prefix))?.font;
 }
 
-describe('quotePdf line table + recurring summary theme fonts (#4438)', () => {
+describe('quotePdf line table + totals theme fonts (#4438)', () => {
   it('draws the whole condensed-theme table and summary in the resolved theme fonts', async () => {
     const condensed = registerThemeFonts(
       // Throwaway doc: registerThemeFonts needs one to register the TTFs on,
@@ -106,10 +106,11 @@ describe('quotePdf line table + recurring summary theme fonts (#4438)', () => {
     );
     await render('condensed');
 
-    // Section label + column headers are document chrome → the heading face.
+    // Section label → the heading face; the shared module's column headers use the
+    // body bold face (as the invoice's do), so the two documents agree (W3b).
     expect(fontFor('Recurring services')).toBe(condensed.heading.bold);
-    for (const header of ['QTY', 'DESCRIPTION', 'UNIT', 'TAX', 'TOTAL']) {
-      expect(fontFor(header), header).toBe(condensed.heading.bold);
+    for (const header of ['QTY', 'DESCRIPTION', 'UNIT PRICE', 'TAX', 'AMOUNT']) {
+      expect(fontFor(header), header).toBe(condensed.body.bold);
     }
 
     // Row text is body copy: the title in the body bold face, everything else
@@ -117,7 +118,7 @@ describe('quotePdf line table + recurring summary theme fonts (#4438)', () => {
     expect(fontFor('Managed IT Support')).toBe(condensed.body.bold);
     expect(fontFor('Monitoring and helpdesk coverage')).toBe(condensed.body.regular);
     expect(fontForPrefix('Estimated quantity —')).toBe(condensed.body.regular);
-    expect(fontFor('$1,200.00')).toBe(condensed.body.regular);
+    expect(fontFor('$500.00')).toBe(condensed.body.regular);
     expect(fontFor('$120.00')).toBe(condensed.body.regular);
     expect(fontFor('$1,200.00/mo')).toBe(condensed.body.regular);
 
@@ -128,15 +129,14 @@ describe('quotePdf line table + recurring summary theme fonts (#4438)', () => {
     // Category breakdown rows and the roll-up rows: regular labels/amounts.
     expect(fontFor('Service')).toBe(condensed.body.regular);
     expect(fontFor('Other')).toBe(condensed.body.regular);
-    expect(fontFor('One-time')).toBe(condensed.body.regular);
-    expect(fontFor('Monthly')).toBe(condensed.body.regular);
-    expect(fontFor('Tax (10.00%)')).toBe(condensed.body.regular);
+    expect(fontFor('Monthly recurring')).toBe(condensed.body.regular);
+    expect(fontFor('Tax (10%)')).toBe(condensed.body.regular);
     expect(fontFor('First-period total')).toBe(condensed.body.regular);
 
-    // The deposit summary's three figures are the emphasised rows → body bold.
+    // The deposit summary's emphasised rows → body bold; the remainder is a regular row.
     expect(fontFor('Due on acceptance')).toBe(condensed.body.bold);
     expect(fontFor('Deposit due now')).toBe(condensed.body.bold);
-    expect(fontFor('Remaining balance (due per terms)')).toBe(condensed.body.bold);
+    expect(fontForPrefix('Remaining balance')).toBe(condensed.body.regular);
 
     // The blanket version of every assertion above: a themed document must not
     // contain a single hard-coded Helvetica draw — that is exactly the bug

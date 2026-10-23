@@ -98,6 +98,7 @@
     "loading": "Carregando aprovações recentes…",
     "error": "Não foi possível carregar as aprovações recentes.",
     "retry": "Tentar novamente",
+    "decisionReasonLabel": "Motivo do aprovador",
     "empty": "Nada foi finalizado recentemente.",
     "status": {
       "failed": "Falhou",
@@ -160,5 +161,19 @@
     "orderNote": "Os efeitos são executados nesta ordem. O login é desativado por último, então interromper antes nunca deixa e-mails sem roteamento.",
     "empty": "Este plano não contém efeitos.",
     "invalid": "Não foi possível exibir este plano por completo. Não o aprove."
+  },
+  "intentStatus": {
+    "title": "Status da aprovação",
+    "waitingForApprovers": "Aguardando os aprovadores",
+    "notFound": "Não foi possível encontrar essa aprovação.",
+    "status": {
+      "pending_approval": "Aprovação pendente",
+      "in_progress": "Em andamento",
+      "completed": "Concluída",
+      "failed": "Falhou",
+      "rejected": "Rejeitada",
+      "expired": "Expirada",
+      "cancelled": "Cancelada"
+    }
   }
 }

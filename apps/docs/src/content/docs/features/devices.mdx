@@ -358,7 +358,10 @@ there if you no longer want it to run.
 
 Elsewhere in the product a waiting step reads **"Queued — device offline"**
 rather than Failed, so a nightly automation over a fleet of sleeping laptops no
-longer shows a wall of red. The trade-off is worth knowing: **work that used to
+longer shows a wall of red. A script run reads **"Queued — waiting for the
+device to pick it up"** instead when the device itself still reports online but
+no agent session has taken the command yet; it is delivered on the agent's next
+check-in. The trade-off is worth knowing: **work that used to
 fail fast now sits pending for up to a week.** If a step is only meaningful
 against a live device, set it to skip instead — see the offline behaviour control
 in [Automations](/features/automations/) and the patch-policy equivalent in

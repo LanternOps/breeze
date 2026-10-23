@@ -78,6 +78,13 @@ describe('BackupHealthOverview', () => {
     expect(coverage.textContent).toContain('10');
   });
 
+  it('explains "recent backup" versus a failed latest run (#9626)', async () => {
+    render(<BackupHealthOverview orgId="org-1" />);
+    const note = await screen.findByTestId('backup-health-definition');
+    expect(note.textContent).toContain('48 hours');
+    expect(note.textContent).toContain('latest run');
+  });
+
   it('shows the stale banner only when the API says the data is stale', async () => {
     render(<BackupHealthOverview orgId="org-1" />);
     await screen.findByTestId('backup-health-coverage');

@@ -65,7 +65,8 @@ describe('DeviceScriptHistory status labels (#5318)', () => {
 
   it.each([
     ['pending', 'Pending'],
-    ['queued', 'Queued — device offline'],
+    // #9563 — no deviceStatus prop here, so the neutral copy, not "offline".
+    ['queued', 'Queued — awaiting pickup'],
     ['cancelling', 'Stopping…'],
     ['cancelled', 'Cancelled'],
     ['timeout', 'Timeout'],

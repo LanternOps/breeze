@@ -181,6 +181,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
   tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
 
+  // Tool Catalog W03 (#5218). Two orgs may each own a flow with the same slug
+  // (`flows_org_slug_uq` is per-org), so a plain repoint aborts on 23505 and a
+  // dedupe-DELETE would silently destroy a draft.
+  flows: { kind: 'custom', note: 'repoint org_id; a loser flow whose slug collides with a survivor flow is renamed <slug>_m<n> first so no flow is silently dropped (flows_org_slug_uq); moved flows that name a renamed loser tool source have their step tool references rewritten (resolve phase, before mergeToolSources renames)' },
+
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
   // `leave-for-erasure` (org_id is trigger-immutable,
@@ -603,6 +608,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // deferrable (org_id, offering_partner_id) composite FK holds after the repoint.
   ai_model_assignments: { kind: 'repoint-dedupe', key: ['surface', 'role'], keyWhere: '{org_id} IS NOT NULL' },
   ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
+  ai_credit_debits: { kind: 'repoint' }, // #9451: undelivered/failed credit debits are obligations, so they follow the survivor (leave-for-erasure would delete them unbilled with the loser shell). idempotency_key is GLOBALLY unique, so a repoint can never collide; no composite FKs. Merges are same-partner, so the billed partner is unchanged.
   ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
@@ -888,6 +894,9 @@ const REPOINT_TABLES: readonly string[] = [
   "caller_verifications",
   "capacity_predictions",
   "capacity_thresholds",
+  "circuit_served_sites",
+  "circuit_terminations",
+  "circuits",
   "cis_baseline_results",
   "cis_baselines",
   "cis_remediation_actions",

@@ -700,7 +700,13 @@
         "quality": "Qualité"
       },
       "failovers": "Basculements",
-      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible"
+      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible",
+      "titleBy": {
+        "model": "Utilisation de l'IA par modèle",
+        "organization": "Utilisation de l'IA par organisation",
+        "technician": "Utilisation de l'IA par technicien",
+        "feature": "Utilisation de l'IA par fonctionnalité"
+      }
     },
     "link": {
       "summary": "Modèle : {{model}} — défini sous Fournisseurs et modèles d'IA → Valeurs par défaut par fonctionnalité",
@@ -777,13 +783,10 @@
     "maintenancePlaceholder": "par exemple dimanche 02h00-06h00, 02h00-04h00, ou 24h/24",
     "maintenanceInvalid": "Utilisez une fenêtre UTC comme <first>Dim 02:00-04:00</first> ou <second>02:00-04:00</second>, ou <always>24/7</always> pour l’all-on. Laisse vide pour que les organisations le configurent.",
     "maintenanceHelp": "Fenêtre temporelle (UTC) pour les mises à jour et redémarrages automatiques. Utilisez <always>24/7</always> pour le mode toujours activé, ou laissez vide pour que les organisations le configurent individuellement.",
-    "deviceGroup": "Groupe de périphériques par défaut",
-    "alertThreshold": "Seuil d’alerte par défaut",
     "autoEnrollment": {
       "title": "Inscription automatique",
       "enable": "Activez l’inscription automatique pour les nouveaux appareils",
-      "requireApproval": "Exigez l’approbation de l’administrateur",
-      "sendWelcome": "Envoyer une notification de bienvenue"
+      "requireApproval": "Exigez l’approbation de l’administrateur"
     },
     "enrollment": {
       "title": "Inscription des appareils",
@@ -1030,8 +1033,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Entreprise",
+      "devices": "Appareils et agents",
       "security": "Sécurité et accès",
       "communications": "Communications",
+      "ai": "IA",
       "branding": "Image de marque"
     },
     "aiFeatures": {
@@ -1060,11 +1065,11 @@
       },
       "company": {
         "label": "Entreprise",
-        "description": "Nom, adresse, contacts"
+        "description": "Nom, adresse, contacts, signature d’e-mail"
       },
       "regional": {
         "label": "Régional",
-        "description": "Fuseau horaire, formats, horaires"
+        "description": "Fuseau horaire, langue, formats, horaires"
       },
       "defaults": {
         "label": "Défauts",
@@ -1072,7 +1077,7 @@
       },
       "security": {
         "label": "Sécurité",
-        "description": "IP liste des permis et accès"
+        "description": "Mots de passe, sessions, MFA et liste d’IP autorisées"
       },
       "remoteAccess": {
         "label": "Accès à distance",
@@ -1080,11 +1085,11 @@
       },
       "eventLogs": {
         "label": "Journaux d’événements",
-        "description": "Transfert et conservation"
+        "description": "Transférer les journaux d’événements des appareils vers Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Alertes email et webhooks"
+        "description": "Adresse d’expédition, SMTP et valeurs par défaut de Slack et Pushover"
       },
       "ticketing": {
         "label": "Ticketterie",
@@ -1109,7 +1114,7 @@
       },
       "aiFeatures": {
         "label": "Fonctionnalités IA",
-        "description": "Valeurs par défaut de la détection d'anomalies et des solutions proposées"
+        "description": "Politique de données IA, détection d’anomalies et solutions proposées"
       },
       "branding": {
         "label": "Image de marque",
@@ -1126,6 +1131,14 @@
       "aiApprovals": {
         "label": "Délai d'approbation IA",
         "description": "Durée d'attente du chat IA pour l'approbation d'une action contrôlée"
+      },
+      "callerVerification": {
+        "label": "Vérification de l’appelant",
+        "description": "Contrôle d’identité des appelants pour les demandes d’assistance"
+      },
+      "knownGuests": {
+        "label": "Invités connus",
+        "description": "Appareils approuvés de visiteurs et de techniciens, par adresse MAC"
       }
     },
     "saved": "Paramètres partenaires enregistrés",
@@ -1388,6 +1401,14 @@
     "never": "Jamais",
     "downloadInstaller": "Télécharger un installateur préconfiguré",
     "downloading": "Téléchargement...",
+    "installerDialogTitle": "Télécharger le programme d’installation pour « {{name}} »",
+    "installerDialogDescription": "Le programme d’installation est généré pour un nombre fixe d’appareils. Chaque appareil qui l’exécute en utilise un.",
+    "installerDeviceCount": "Nombre d’appareils",
+    "installerDeviceCountRemaining": "Il reste {{count}} inscriptions sur cette clé.",
+    "installerDeviceCountRemaining_one": "Il reste {{count}} inscription sur cette clé.",
+    "installerDeviceCountRemaining_other": "Il reste {{count}} inscriptions sur cette clé.",
+    "installerDeviceCountUnlimited": "Cette clé n’a aucune limite d’utilisation.",
+    "installerDeviceCountRange": "Saisissez un nombre entier de 1 à {{max}}.",
     "rotate": "Renouveler",
     "page": "Page {{current}} de {{total}}",
     "previous": "Précédent",
@@ -1401,7 +1422,10 @@
     "retrySites": "Réessayer",
     "createASite": "Créer un site",
     "maxUsage": "Utilisation maximale (optionnelle)",
-    "defaultDeviceLimit": "50 (par défaut)",
+    "defaultDeviceLimit": "{{count}} (valeur par défaut de l’organisation)",
+    "expiresAtHelp": "Laissez vide pour {{duration}} (valeur par défaut de l’organisation).",
+    "usageFromDefault": "par défaut",
+    "usageFromDefaultTitle": "La limite d’appareils provient de la valeur par défaut de l’organisation.",
     "maxUsageHelp": "Nombre maximal d’agents pouvant s’inscrire avec cette clé.",
     "expiresAt": "Expire à (optionnel)",
     "creating": "Création…",
@@ -1457,16 +1481,16 @@
       "inviter_name": "Nom de l'expéditeur de l'invitation",
       "expires_days": "Jours avant l'expiration de l'invitation",
       "cta_button": "Bouton",
-      "client_name": "Client name",
-      "setup_link": "Automatic payments setup link",
-      "ach_mode_text": "Available payment methods",
-      "payment_method": "Saved payment method",
-      "schedule_text": "Payment schedule",
-      "fee_text": "Processing fee terms",
-      "stopped_by": "Who stopped automatic payments",
-      "open_invoices_text": "Open invoice summary",
-      "expires_on": "Card expiry date",
-      "update_link": "Payment method update link",
+      "client_name": "Nom du client",
+      "setup_link": "Lien de configuration des paiements automatiques",
+      "ach_mode_text": "Moyens de paiement disponibles",
+      "payment_method": "Moyen de paiement enregistré",
+      "schedule_text": "Calendrier des paiements",
+      "fee_text": "Conditions des frais de traitement",
+      "stopped_by": "Personne ayant arrêté les paiements automatiques",
+      "open_invoices_text": "Récapitulatif des factures impayées",
+      "expires_on": "Date d’expiration de la carte",
+      "update_link": "Lien de mise à jour du moyen de paiement",
       "amount_due": "Montant dû",
       "charge_date": "Date de prélèvement",
       "fee_amount": "Frais de traitement",
@@ -1487,15 +1511,15 @@
       "approval_expires": "Date limite d’approbation",
       "approval_status": "Statut de l’approbation"
     },
-    "billingPayments": "Billing & payments",
-    "supportPortal": "Support & portal",
+    "billingPayments": "Facturation et paiements",
+    "supportPortal": "Assistance et portail",
     "labels": {
-      "autopay_request": "Automatic payments request",
-      "autopay_enrolled": "Automatic payments confirmed",
-      "autopay_stopped": "Automatic payments stopped",
+      "autopay_request": "Demande de paiements automatiques",
+      "autopay_enrolled": "Paiements automatiques confirmés",
+      "autopay_stopped": "Paiements automatiques arrêtés",
       "autopay_paused": "Paiements automatiques suspendus",
       "autopay_resumed": "Paiements automatiques repris",
-      "card_expiring": "Saved card expiring",
+      "card_expiring": "Carte enregistrée arrivant à expiration",
       "payment_receipt": "Reçu de paiement en ligne",
       "payment_failed": "Le paiement n’a pas pu être effectué",
       "ticket_approval_requested_approver": "Demande d’approbation de travaux (approbateur)",
@@ -1792,27 +1816,13 @@
     "deviceGroup": {
       "title": "Groupe de périphériques par défaut",
       "description": "Les nouveaux appareils inscrits sont automatiquement ajoutés à ce groupe.",
-      "options": {
-        "AllManagedDevices": "Tous les appareils gérés",
-        "CriticalInfrastructure": "Infrastructures critiques",
-        "RemoteStaff": "Personnel à distance",
-        "Contractors": "Entrepreneurs"
-      }
-    },
-    "alertSeverity": {
-      "title": "Sévérité par défaut de l’alerte",
-      "description": "Les alertes inférieures à cette gravité sont transmises uniquement dans le flux résumé.",
-      "options": {
-        "critical": "Critique uniquement",
-        "high": "Haut et critique",
-        "medium": "Moyen et au-dessus"
-      }
+      "none": "Aucun",
+      "unavailable": "Groupe sélectionné (indisponible)"
     },
     "autoEnrollment": {
       "title": "Inscription automatique",
       "enable": "Activer l’inscription automatique",
-      "requireApproval": "Exigez l’approbation de l’administrateur",
-      "sendWelcome": "Envoyer un message de bienvenue"
+      "requireApproval": "Exigez l’approbation de l’administrateur"
     },
     "agentUpdates": {
       "title": "Politique de mise à jour des agents",
@@ -1863,7 +1873,7 @@
     "disabledDescription": "Activez le transfert de journal ci-dessus pour configurer les paramètres de connexion.",
     "enable": {
       "title": "Activer le transfert de journaux",
-      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux selon un calendrier récurrent."
+      "description": "Une fois activés, les journaux d’événements sont transférés vers votre magasin de journaux au fur et à mesure que chaque appareil les signale."
     },
     "connection": {
       "title": "Connexion",
@@ -1952,6 +1962,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vue client",
+      "subtitle": "Aperçu : ce que voit {{who}}",
+      "whoOrganization": "votre client",
+      "pickerLabel": "Afficher en tant que",
+      "pickerAll": "Toute l’organisation",
+      "loading": "Chargement de l’aperçu…",
+      "loadFailed": "Impossible de charger la vue client.",
+      "on": "Activé",
+      "off": "Désactivé",
+      "notAvailable": "Un aperçu détaillé de cette section n’est pas encore disponible.",
+      "permissionWithheld": "Non affiché : vous avez besoin de {{permissions}} pour prévisualiser ceci.",
+      "tilesWithheld": "Certaines tuiles ne sont pas affichées : vous avez besoin de {{permissions}} pour les prévisualiser.",
+      "noteNoUser": "Les données liées aux tickets sont masquées. Choisissez un utilisateur du portail pour voir ce que cette personne voit.",
+      "readinessTitle": "Vérifications de préparation",
+      "readinessNone": "Aucun problème détecté.",
+      "fix": "Corriger",
+      "readiness": {
+        "documents_empty": "Documents est activé, mais aucun document n’est marqué Visible dans le portail : votre client voit une bibliothèque vide.",
+        "reports_empty": "Rapports est activé, mais il n’y a pas encore d’exécution de rapport : votre client voit une liste vide.",
+        "service_one_time_visible": "Service est activé et les éléments ponctuels sont toujours visibles pour votre client.",
+        "backups_no_data": "Sauvegardes est activé, mais il n’y a pas encore de données de sauvegarde à afficher.",
+        "dashboard_security_no_data": "Tableau de bord est activé, mais le score de sécurité n’a pas encore de données : cette tuile est vide pour votre client.",
+        "branding_unset": "L’image de marque du portail n’a jamais été définie (logo, couleurs, message d’accueil ou contact du support)."
+      }
+    },
     "loading": "Paramètres de chargement du portail...",
     "save": "Paramètres du portail d’enregistrement",
     "toasts": {
@@ -2063,6 +2099,10 @@
         "enableVulnerabilityDetail": {
           "label": "Détail des vulnérabilités",
           "description": "Affiche à chaque connexion au portail de cette organisation les constats CVE de chaque appareil et leur gravité (ID CVE, description, gravité, score CVSS, disponibilité d’un correctif, statut). Cela révèle quelles machines sont vulnérables. N’est pas activé par Activer toute la visibilité."
+        },
+        "enablePhysicalPlacement": {
+          "label": "Emplacement physique",
+          "description": "Montre à chaque connexion au portail de cette organisation où chaque appareil est physiquement installé (baie et salle). Cela révèle l'agencement physique de l'environnement. N’est pas activé par Activer toute la visibilité."
         },
         "enableHourBlock": {
           "label": "Heures de support",
@@ -2439,7 +2479,11 @@
     "sourceDefault": "Par défaut",
     "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
     "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
-    "thresholdsOff": "Désactivé"
+    "thresholdsOff": "Désactivé",
+    "todaysCost": "Coût du jour",
+    "monthlyCost": "Coût mensuel",
+    "messagesToday": "Messages du jour",
+    "tokensThisMonth": "Jetons du mois"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2952,6 +2996,7 @@
           "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
           "blocked_by_app_rule": "Bloquée par une règle d'application",
           "awaiting_manual_approval": "En attente d'approbation manuelle",
+          "explicitly_declined": "Refusé explicitement",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
           "ring_reference_invalid": "L'anneau de mise à jour de la stratégie est invalide",
           "device_not_in_org": "Appareil absent de cette organisation"
@@ -4350,6 +4395,13 @@
     "commitmentTermRange": "Durée d’engagement : saisissez un nombre entier de 1 à 120 mois."
   },
   "catalogItemsTab": {
+    "viewActive": "Actifs",
+    "viewArchived": "Archivés",
+    "typeLabel": {
+      "hardware": "Matériel",
+      "software": "Logiciel",
+      "service": "Service"
+    },
     "itemArchived": "Article archivé",
     "itemRestored": "élément restauré",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Le catalogue de produits est disponible uniquement pour les comptes partenaires.",
@@ -4698,6 +4750,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Aucun rôle trouvé. Essayez d’ajuster votre recherche ou vos filtres.",
     "cloneRole": "Rôle du clone : {{name}}",
+    "cloneDescription": "Copie de {{name}}",
     "clone": "Cloner",
     "edit": "Modifier",
     "delete": "Supprimer",
@@ -5376,6 +5429,8 @@
       "billingDescription": "Adresse fiscale et de facturation",
       "pax8": "Marché Pax8",
       "pax8Description": "Abonnements et commandes",
+      "cloudTenants": "Locataires cloud",
+      "cloudTenantsDescription": "Microsoft 365 et Google Workspace",
       "extensions": "Modules d'extension",
       "extensionsDescription": "Sections d'extensions tierces",
       "portalBranding": "Portail & Branding",
@@ -5702,16 +5757,12 @@
       "nameRequired": "Le nom de l’organisation est requis",
       "slugRequired": "Un slug est nécessaire",
       "slugFormat": "Utilisez uniquement les lettres minuscules, les chiffres et les traits d’union",
-      "maxDevicesRequired": "Ajoutez une limite maximale d’appareils",
-      "maxDevicesInteger": "Les appareils Max doivent être un nombre entier",
-      "maxDevicesMin": "Le maximum d’appareils doit être au moins 1",
       "contractEndAfterStart": "La fin du contrat doit avoir lieu à la date de début ou après"
     },
     "fields": {
       "name": "Nom de l’organisation",
       "slug": "Identifiant d’URL",
       "type": "Type d’organisation",
-      "maxDevices": "Appareils Max",
       "contractStart": "Début de contrat",
       "contractEnd": "Fin du contrat"
     },
@@ -6864,5 +6915,13 @@
     "loadFailed": "Impossible de charger les préférences d'e-mail.",
     "saveFailed": "Impossible d'enregistrer les préférences d'e-mail.",
     "retry": "Réessayer"
+  },
+  "characterKeyShortcuts": {
+    "title": "Raccourcis à touche unique",
+    "description": "Raccourcis à une seule touche comme g puis d, c puis c, /, ? et les touches de la file de tickets. Désactivez-les s'ils entrent en conflit avec un lecteur d'écran ou la saisie vocale. Ctrl/Cmd+K n'est pas concerné.",
+    "label": "Activer les raccourcis à touche unique",
+    "enabledToast": "Raccourcis à touche unique activés",
+    "disabledToast": "Raccourcis à touche unique désactivés",
+    "saveFailed": "Impossible d'enregistrer les raccourcis à touche unique."
   }
 }

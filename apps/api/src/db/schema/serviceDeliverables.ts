@@ -10,7 +10,7 @@ import { reports, reportRuns } from './reports';
 export const deliverableCadenceEnum = pgEnum('deliverable_cadence', ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time']);
 export const deliverableCompletionModeEnum = pgEnum('deliverable_completion_mode', ['explicit', 'on_ticket_resolve']);
 export const deliverableOccurrenceStatusEnum = pgEnum('deliverable_occurrence_status', ['scheduled', 'open', 'awaiting_evidence', 'delivered', 'missed', 'waived']);
-export const deliverableEvidenceKindEnum = pgEnum('deliverable_evidence_kind', ['document', 'report_run']);
+export const deliverableEvidenceKindEnum = pgEnum('deliverable_evidence_kind', ['document', 'report_run', 'contract_document']);
 
 /**
  * Spec #5573 §4.1. Org-owned; contract link optional. Composite FKs
@@ -98,7 +98,8 @@ export const serviceDeliverableOccurrences = pgTable('service_deliverable_occurr
   index('sd_occ_ticket_idx').on(t.ticketId).where(sql`${t.ticketId} IS NOT NULL`),
 ]);
 
-/** Spec #5573 §4.3. `document_id`'s FK to org_documents is added by W03. */
+/** Spec #5573 §4.3. `document_id`'s FK to org_documents is added by W03;
+ *  `contract_document_id` (#9312) references a signed agreement. */
 export const serviceDeliverableEvidence = pgTable('service_deliverable_evidence', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
@@ -107,11 +108,16 @@ export const serviceDeliverableEvidence = pgTable('service_deliverable_evidence'
   documentId: uuid('document_id'),
   reportId: uuid('report_id').references(() => reports.id, { onDelete: 'cascade' }),
   reportRunId: uuid('report_run_id').references(() => reportRuns.id, { onDelete: 'cascade' }),
+  /** #9312: a signed agreement referenced in place (never copied into
+   *  org_documents). Composite FK (contract_document_id, org_id) →
+   *  contract_documents(id, org_id) is SQL-only (DEFERRABLE). */
+  contractDocumentId: uuid('contract_document_id'),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
   index('sd_evidence_occurrence_idx').on(t.occurrenceId),
   index('sd_evidence_org_idx').on(t.orgId),
+  index('sd_evidence_contract_document_idx').on(t.contractDocumentId).where(sql`${t.contractDocumentId} IS NOT NULL`),
 ]);
 
 export type ServiceDeliverableRow = typeof serviceDeliverables.$inferSelect;

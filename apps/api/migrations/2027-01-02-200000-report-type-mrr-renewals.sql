@@ -1,0 +1,11 @@
+-- Business reports phase 2 W1 (#9829, feature #9828): the `mrr_renewals`
+-- business report type — contract MRR (base / overage / billed final term),
+-- paused and pending-activation contracts beside it, the renewal window and a
+-- billed-recurring series, as of run time.
+-- Generator: services/businessReports/mrrRenewalsReport.ts.
+--
+-- Enum add ONLY, in its own file: a label added by ALTER TYPE cannot be used
+-- until the transaction that added it commits (precedent:
+-- 2026-11-26-100400-report-type-ai-usage-by-client.sql).
+-- No DML, so no breeze.scope election. Idempotent via IF NOT EXISTS.
+ALTER TYPE report_type ADD VALUE IF NOT EXISTS 'mrr_renewals';

@@ -311,6 +311,8 @@
     "no": "Nein",
     "noDevicesFound": "Keine Geräte gefunden.",
     "none": "Keine",
+    "unknown": "Unbekannt",
+    "tpmNotReported": "Vom Agenten nicht gemeldet",
     "os": "Betriebssystem",
     "pageOf": "Seite {{page}} von {{totalPages}}",
     "partial": "Teilweise",
@@ -423,6 +425,8 @@
     "osFilterLabel": "Betriebssystem"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Die Empfehlung konnte nicht aktualisiert werden.",
+    "affectsOrgs": "Betrifft {{count}} Organisationen",
     "adminAccounts": "Admin-Konten",
     "allCategories": "Alle Kategorien",
     "allPriorities": "Alle Prioritäten",
@@ -431,18 +435,19 @@
     "completed": "Abgeschlossen",
     "critical": "Kritisch",
     "criticalHigh": "Kritisch + Hoch",
-    "devices": "Geräte:",
+    "devices": "Geräte: {{value}}",
     "dismiss": "Schließen",
     "dismissed": "Verworfen",
-    "effort": "Aufwand:",
+    "effort": "Aufwand: {{value}}",
     "encryption": "Verschlüsselung",
     "firewall": "Firewall",
     "hideSteps": "Schritte ausblenden",
     "high": "Hoch",
-    "impact": "Auswirkungen:",
+    "impact": "Auswirkungen: {{value}}",
     "invalidResponseFromServer": "Ungültige Antwort vom Server",
     "low": "Niedrig",
     "markComplete": "Als abgeschlossen markieren",
+    "reopen": "Wieder öffnen",
     "medium": "Mittel",
     "next": "Als nächstes",
     "noRecommendationsMatchYourFilters": "Keine Empfehlungen entsprechen Ihren Filtern.",
@@ -457,10 +462,13 @@
     "vulnMgmt": "Vuln. Mgmt",
     "priorityFilterLabel": "Priorität",
     "categoryFilterLabel": "Kategorie",
-    "statusFilterLabel": "Bearbeitungsstatus"
+    "statusFilterLabel": "Bearbeitungsstatus",
+    "remediationSteps_one": "{{count}} Abhilfeschritt",
+    "remediationSteps_other": "{{count}} Abhilfeschritte"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Es wird ein neues BitLocker-Wiederherstellungskennwort generiert und hinterlegt; Der alte wird entfernt, nachdem der neue Schlüssel angebracht wurde.",
+    "accessRevealed": "hat den Schlüssel angezeigt",
     "bitlocker": "BitLocker",
     "cancel": "Abbrechen",
     "collectNow": "Jetzt erfassen",
@@ -486,6 +494,7 @@
     "rotate": "Rotieren",
     "rotateKey": "Schlüssel rotieren",
     "rotateRecoveryKey": "Wiederherstellungsschlüssel rotieren",
+    "rotateVolume": "Laufwerk",
     "thisAccessHasBeenRecordedInThe": "Dieser Zugriff wurde im Audit Trail aufgezeichnet."
   },
   "securityS1ThreatList": {
@@ -608,7 +617,10 @@
     "weakAdmins": "Schwache Admins",
     "accessDeniedMessage": "Sie haben keine Berechtigung, die Sicherheitsdaten dieser Organisation anzuzeigen.",
     "someSecurityDataPermissionDenied": "Einige Sicherheitsdaten sind für Sie nicht sichtbar. Wenden Sie sich an einen Administrator, wenn Sie Zugriff benötigen.",
-    "unknown": "Unbekannt"
+    "unknown": "Unbekannt",
+    "bitlockerPartial": "BitLocker teilweise",
+    "filevaultPartial": "FileVault teilweise",
+    "refreshTooltip": "Lädt den neuesten Sicherheits-Snapshot neu. Die Bewertungen werden planmäßig neu berechnet, nicht beim Klicken."
   },
   "securitySecurityPageHeader": {
     "refresh": "Aktualisieren",
@@ -810,9 +822,10 @@
     "precision": "Präzision",
     "recentEvidence": "Aktuelle Beweise",
     "refresh": "Aktualisieren",
+    "refreshing": "Wird aktualisiert",
     "repeatSignalUsers": "Wiederholen Sie Signalbenutzer",
     "retry": "Versuchen Sie es noch einmal",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Überprüfen Sie die Risikobewertungen, Nachweise und Bewertungsbezeichnungen von Rules-v0.",
+    "reviewUserRiskScoresEvidenceAnd": "Überprüfen Sie die Risikobewertungen der Benutzer, die zugrunde liegenden Nachweise und Ihre Bewertungsbezeichnungen.",
     "scoreImpact": "{{value}} Schlag",
     "scoresEvidenceAndLabelsWillAppearHere": "Bewertungen, Beweise und Beschriftungen werden hier angezeigt, wenn der User-Risk-v0-Produzent aktiviert ist.",
     "selectAUserToInspectRiskEvidence": "Wählen Sie einen Benutzer aus, um Risikonachweise zu prüfen.",
@@ -821,7 +834,41 @@
     "truePositive": "Wirklich positiv",
     "truePositiveLabelSaved": "Echt-Positiv-Label gespeichert",
     "userRisk": "Benutzerrisiko",
-    "userRiskScoringIsDisabledForThis": "Die Benutzerrisikobewertung ist für diese Organisation deaktiviert."
+    "userRiskScoringIsDisabledForThis": "Die Benutzerrisikobewertung ist für diese Organisation deaktiviert.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lücken bei der Multi-Faktor-Authentifizierung",
+        "description": "Konten, für die MFA nicht aktiviert ist."
+      },
+      "authFailureRisk": {
+        "label": "Fehlgeschlagene Anmeldeversuche",
+        "description": "Wiederholte fehlgeschlagene Anmeldungen, die auf Passwort-Raten oder Credential Stuffing hindeuten können."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Ungewöhnliche Sitzungsaktivität",
+        "description": "Anmeldungen von unbekannten Orten oder Geräten oder zu ungewöhnlichen Zeiten."
+      },
+      "threatExposureRisk": {
+        "label": "Bedrohungsexposition",
+        "description": "Auf den Geräten des Benutzers erkannte Bedrohungen."
+      },
+      "softwareViolationRisk": {
+        "label": "Verstöße gegen Softwarerichtlinien",
+        "description": "Installierte Software, die gegen Ihre Softwarerichtlinien verstößt."
+      },
+      "deviceSecurityRisk": {
+        "label": "Sicherheitszustand der Geräte",
+        "description": "Schwacher Sicherheitszustand der Geräte des Benutzers, etwa fehlender Schutz oder fehlende Patches."
+      },
+      "staleAccessRisk": {
+        "label": "Veralteter Zugriff",
+        "description": "Konten oder Zugriffe, die lange nicht genutzt wurden."
+      },
+      "recentImpactRisk": {
+        "label": "Aktuelle Risikoereignisse",
+        "description": "Für diesen Benutzer in den letzten Tagen erfasste Risikoereignisse."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Aktiv",
@@ -989,7 +1036,13 @@
       "flow": "Fließen",
       "status": "Status",
       "riskTierTitle": "Risikostufe {{tier}}",
-      "signer": "Unterzeichner: {{signer}}"
+      "signer": "Unterzeichner: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Gerät konnte nicht handeln: kein PAM-Helfer verfügbar",
+        "sessionUnavailable": "Gerät konnte nicht handeln: Sitzung des Benutzers nicht verfügbar",
+        "helperStartFailed": "Gerät konnte nicht handeln: PAM-Helfer konnte nicht gestartet werden",
+        "generic": "Gerät konnte diese Anfrage nicht ausführen"
+      }
     },
     "actions": {
       "respond": "Antworten",
@@ -1288,17 +1341,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Geben Sie mindestens eine Geräte-ID ein",
-      "createScan": "Scan konnte nicht erstellt werden"
+      "createScan": "Scan konnte nicht erstellt werden",
+      "devicesRequired": "Wählen Sie mindestens ein Gerät aus",
+      "devicesNotReady": "Die Geräteliste wird noch geladen oder ist unvollständig. Warten Sie, bis sie fertig ist, und versuchen Sie es erneut.",
+      "devicesLoadFailed": "Die Geräteliste konnte nicht geladen werden. Verwenden Sie „Wiederholen“ in der Geräteliste und versuchen Sie es erneut."
     },
     "title": "Scan erstellen",
     "form": {
       "policyOptional": "Richtlinie (optional)",
       "noPolicy": "Keine Richtlinie (manuelle Konfiguration)",
-      "deviceIds": "Geräte-IDs",
-      "deviceIdsHelp": "Ein UUID pro Zeile oder durch Kommas getrennt.",
-      "deviceIdsPlaceholder": "Geräte-UUID-1\nGeräte-UUID-2",
-      "detectionClasses": "Erkennungsklassen"
+      "detectionClasses": "Erkennungsklassen",
+      "devices": "Geräte",
+      "devicesHelp": "Wählen Sie die zu scannenden Geräte aus."
     },
     "actions": {
       "creating": "Erstellen...",
@@ -1363,6 +1417,10 @@
       "showingSearch": "Es werden {{visible}} von {{pageCount}} auf dieser Seite angezeigt ({{total}} insgesamt)",
       "showingTotal": "Zeigt {{visible}} von {{total}} Befunden",
       "pageOf": "Seite {{page}} von {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risiko akzeptiert",
+      "markedFalsePositive": "Als Fehlalarm markiert"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1401,14 +1459,18 @@
       "detectionClasses": "Erkennungsklassen",
       "scheduleType": "Zeitplantyp",
       "intervalMinutes": "Intervall (Minuten)",
-      "cronExpression": "Cron-Ausdruck",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron-Ausdruck (UTC)",
+      "cronNextRun": "Nächste Ausführung (Ihre Ortszeit): {{time}}",
+      "cronExpressionZone": "Cron-Ausdruck ({{zone}})"
     },
     "schedule": {
       "manual": "Manuell",
       "interval": "Intervall",
       "cron": "Cron",
-      "everyMinutes": "Alle {{minutes}}m"
+      "everyMinutes": "Alle {{minutes}}m",
+      "paused": "Pausiert",
+      "pausedTitle": "Die Zeitplanung ist für diese Richtlinie deaktiviert, sie wird nicht automatisch ausgeführt"
     },
     "table": {
       "name": "Name",
@@ -1733,7 +1795,7 @@
     "unknown": "unbekannt"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Härten",
+    "title": "CIS Benchmarks",
     "description": "Konfigurationsbaselines, Compliance-Bewertung und Korrekturverfolgung.",
     "messages": {
       "loadFailed": "CIS-Daten konnten nicht geladen werden"
@@ -1826,6 +1888,11 @@
     "badges": {
       "allOrgs": "Alle Orgs",
       "partnerWideTitle": "Partnerweite Baseline – gilt für Geräte in jeder Organisation"
+    },
+    "scanAll": {
+      "title": "Alle Organisationen scannen?",
+      "message": "„{{name}}“ ist eine partnerweite Baseline. Ohne ausgewählte Organisation scannt sie alle {{orgCount}} Organisationen. Wählen Sie zuerst eine Organisation aus, um nur deren Geräte zu scannen.",
+      "confirm": "Alle scannen"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1908,10 +1975,38 @@
       "status": "Status",
       "approval": "Zustimmung",
       "requested": "Angefordert",
-      "completed": "Abgeschlossen"
+      "completed": "Abgeschlossen",
+      "decision": "Entscheidung"
     },
     "loading": "Abhilfemaßnahmen werden geladen...",
-    "empty": "Keine Abhilfemaßnahmen gefunden."
+    "empty": "Keine Abhilfemaßnahmen gefunden.",
+    "decision": {
+      "approve": "Genehmigen",
+      "reject": "Ablehnen",
+      "approveTitle": "Behebung genehmigen?",
+      "rejectTitle": "Behebung ablehnen?",
+      "approveMessage": "Damit wird die CIS-Prüfung {{checkId}} zur Ausführung auf {{device}} eingereiht. Der Agent ändert die Konfiguration des Geräts.",
+      "rejectMessage": "Damit wird die ausstehende Behebung für die CIS-Prüfung {{checkId}} auf {{device}} abgebrochen. Auf dem Gerät wird nichts ausgeführt.",
+      "noteLabel": "Notiz (optional)",
+      "approved": "Behebung für {{checkId}} genehmigt und eingereiht.",
+      "rejected": "Behebung für {{checkId}} abgelehnt.",
+      "approveFailed": "Behebung konnte nicht genehmigt werden",
+      "rejectFailed": "Behebung konnte nicht abgelehnt werden",
+      "queueFailed": "Die Genehmigung wurde gespeichert, die Behebung konnte jedoch nicht eingereiht werden. Sie wartet wieder auf Genehmigung; versuchen Sie es erneut.",
+      "mfaRequired": "Zum Genehmigen oder Ablehnen einer Behebung ist eine mit Multi-Faktor-Authentifizierung angemeldete Sitzung erforderlich. Melden Sie sich ab und mit MFA erneut an.",
+      "ownRequest": "Sie haben diese Behebung angefordert, daher muss ein anderer Benutzer sie genehmigen."
+    },
+    "detail": {
+      "toggle": "Details umschalten",
+      "approvedBy": "Genehmigt von",
+      "approvedAt": "Genehmigt am",
+      "note": "Genehmigungsnotiz",
+      "beforeState": "Vorher",
+      "afterState": "Nachher",
+      "rollbackHint": "Rollback-Hinweis",
+      "noEvidence": "Für diese Korrektur wurde noch kein Nachweis erfasst.",
+      "unknownApprover": "Unbekannter Benutzer"
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Audit-Baselines",
@@ -2221,5 +2316,8 @@
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
     }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Sie haben keinen Zugriff auf diese Organisation"
   }
 }

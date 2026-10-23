@@ -326,6 +326,13 @@ export default defineConfig({
       // persistence and the draft-preview-doesn't-persist rule.
       'src/services/invoiceService.issue.integration.test.ts',
       'src/services/invoicePdf.integration.test.ts',
+      // #9402 W1b: the customer-document assembler's row filter is SQL, so a
+      // mocked DB proves nothing about hidden lines — this runs it on Postgres
+      // under portal, staff and system contexts.
+      'src/services/customerDocument.integration.test.ts',
+      // #9418 W2a: the quote half — hidden lines and internal header columns
+      // never leave, on Postgres, under the same three contexts.
+      'src/services/customerDocument.quote.integration.test.ts',
       // Wave 3.5c (#4085): real-Postgres + real-Redis/BullMQ coverage for the
       // durable event-dispatch pipeline (enqueueRouteEvent, eventDispatchProcessor,
       // the event_delivery_receipts state machine) — a real Worker draining a

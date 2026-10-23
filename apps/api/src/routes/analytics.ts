@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, sql, gte, lte, ne, inArray, isNull, or, desc, type SQL } from 'drizzle-orm';
+import { and, eq, sql, gte, lt, lte, ne, inArray, isNull, or, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   analyticsDashboards,
@@ -15,8 +15,8 @@ import {
   metricAnomalyEpisodes,
   metricRollups,
   devices,
-  slaDefinitions as slaDefinitionsTable,
-  slaCompliance as slaComplianceTable
+  deviceGroupMemberships,
+  slaDefinitions as slaDefinitionsTable
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -24,10 +24,12 @@ import { captureException } from '../services/sentry';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { normalizeSiteAllowlist } from '../services/siteAllowlist';
 import { slaDefinitionOutOfScope, slaScopeNarrowed, type SlaTargetShape } from '../services/slaSiteScope';
+import { isDeviceInMaintenance } from '../services/maintenanceService';
 import { METRIC_ANOMALY_V1_SHADOW_VERSION } from '../services/metricAnomalies';
 
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 import { dateFromSqlValue } from '../services/portal/sqlTimestamp';
+import { resolveAnalyticsDateWindow, resolveAnalyticsOrgScope } from './analyticsQueryScope';
 export const analyticsRoutes = new Hono();
 const requireAnalyticsRead = requirePermission(
   PERMISSIONS.DEVICES_READ.resource,
@@ -37,6 +39,34 @@ const requireAnalyticsWrite = requirePermission(
   PERMISSIONS.ORGS_WRITE.resource,
   PERMISSIONS.ORGS_WRITE.action,
 );
+
+const SLA_MAINTENANCE_CHECK_CAP = 500;
+
+/**
+ * Start of the live SLA measurement window. With `excludeWeekends`, Saturday
+ * and Sunday do not count toward the window's length, so it reaches back far
+ * enough to cover the same number of weekdays.
+ */
+function slaWindowStart(now: Date, window: string, excludeWeekends: boolean): Date {
+  const since = new Date(now);
+  if (window === 'daily') since.setDate(since.getDate() - 1);
+  else if (window === 'weekly') since.setDate(since.getDate() - 7);
+  else since.setMonth(since.getMonth() - 1);
+  if (!excludeWeekends) return since;
+
+  // Count calendar days from the window name, not a ms diff (DST makes a
+  // 7-day window 169h, which would round up to 8).
+  const dayMs = 86_400_000;
+  let remaining =
+    window === 'daily' ? 1 : window === 'weekly' ? 7 : Math.round((now.getTime() - since.getTime()) / dayMs);
+  const cursor = new Date(now);
+  while (remaining > 0) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+    const dow = cursor.getUTCDay();
+    if (dow !== 0 && dow !== 6) remaining -= 1;
+  }
+  return cursor;
+}
 
 function getPagination(query: { page?: string; limit?: string }) {
   const page = Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1);
@@ -285,9 +315,13 @@ function mapWidgetToApi(widget: typeof dashboardWidgets.$inferSelect) {
 }
 
 const capacityQuerySchema = z.object({
+  orgId: z.string().optional(),
   deviceId: z.string().guid().optional(),
   metricType: z.string().min(1).optional().default('disk'),
-  range: z.string().optional().default('30d')
+  range: z.string().optional().default('30d'),
+  // Custom range (#9649): both or neither; validated by resolveAnalyticsDateWindow.
+  startDate: z.string().optional(),
+  endDate: z.string().optional()
 });
 
 const optionalBooleanQuery = z.preprocess((value) => {
@@ -413,6 +447,7 @@ const createSlaSchema = z.object({
 });
 
 const executiveSummarySchema = z.object({
+  orgId: z.string().optional(),
   periodType: z.enum(['daily', 'weekly', 'monthly']).optional(),
   range: z.string().optional(),
   startDate: z.string().optional(),
@@ -1439,25 +1474,36 @@ analyticsRoutes.get(
     const query = c.req.valid('query');
     const metricType = query.metricType.toLowerCase();
 
+    // The org switcher's selection (`?orgId=`) may only narrow the token's
+    // reach (#9648); the custom range must apply or fail loudly (#9649).
+    // Both are resolved before any query runs.
+    const orgScope = resolveAnalyticsOrgScope(auth, query.orgId);
+    if (!orgScope.ok) {
+      return c.json({ error: orgScope.error }, orgScope.status);
+    }
+    const dateWindow = resolveAnalyticsDateWindow(query, (range) => {
+      const normalized = range?.toLowerCase();
+      return normalized === '7d' ? 7 : normalized === '90d' ? 90 : 30;
+    });
+    if (!dateWindow.ok) {
+      return c.json({ error: dateWindow.error }, dateWindow.status);
+    }
+
     // Site-scope gate. RLS defends only the org axis; a site-restricted caller
     // must not drill into per-device capacity/metrics for devices in other
     // sites within the same org. `allowedDeviceIds === null` means unrestricted.
     const perms = c.get('permissions') as UserPermissions | undefined;
     let allowedDeviceIds: string[] | null = null;
-    if (perms?.allowedSiteIds && auth?.orgId) {
-      allowedDeviceIds = await resolveSiteAllowedDeviceIds(auth.orgId, perms);
+    const siteScopeOrgId = orgScope.orgId ?? auth?.orgId;
+    if (perms?.allowedSiteIds && siteScopeOrgId) {
+      allowedDeviceIds = await resolveSiteAllowedDeviceIds(siteScopeOrgId, perms);
       // Explicit per-device drill-down must target an in-scope device.
       if (query.deviceId && !(allowedDeviceIds ?? []).includes(query.deviceId)) {
         return c.json({ error: 'Device not found or access denied' }, 403);
       }
     }
 
-    const predictionOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(capacityPredictions.orgId)
-        : auth?.orgId
-          ? eq(capacityPredictions.orgId, auth.orgId)
-          : undefined;
+    const predictionOrgCondition = orgScope.orgCondition(capacityPredictions.orgId);
 
     // When site-restricted and no explicit deviceId, constrain per-device
     // predictions to the in-scope set while keeping org-wide rows (deviceId is
@@ -1472,6 +1518,9 @@ analyticsRoutes.get(
           )
         : undefined;
 
+    // Stored predictions are forward-looking (prediction dates after the last
+    // observation), so the history window below deliberately does not bound
+    // them; the window applies to the observed series the forecast is fitted on.
     const predictionWhere = and(
       eq(capacityPredictions.metricType, metricType),
       ...(predictionOrgCondition ? [predictionOrgCondition] : []),
@@ -1492,12 +1541,7 @@ analyticsRoutes.get(
       .orderBy(capacityPredictions.predictionDate);
 
     if (storedPredictions.length > 0) {
-      const thresholdOrgCondition =
-        typeof auth?.orgCondition === 'function'
-          ? auth.orgCondition(capacityThresholds.orgId)
-          : auth?.orgId
-            ? eq(capacityThresholds.orgId, auth.orgId)
-            : undefined;
+      const thresholdOrgCondition = orgScope.orgCondition(capacityThresholds.orgId);
 
       const thresholdWhere = and(
         eq(capacityThresholds.metricType, metricType),
@@ -1536,23 +1580,10 @@ analyticsRoutes.get(
       });
     }
 
-    const normalizedRange = query.range.toLowerCase();
-    const rangeDays = normalizedRange === '7d' ? 7 : normalizedRange === '90d' ? 90 : 30;
-    const rangeStart = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
+    const { since: rangeStart, until: rangeEnd } = dateWindow;
 
-    const metricsOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(devices.orgId)
-        : auth?.orgId
-          ? eq(devices.orgId, auth.orgId)
-          : undefined;
-
-    const rollupsOrgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(metricRollups.orgId)
-        : auth?.orgId
-          ? eq(metricRollups.orgId, auth.orgId)
-          : undefined;
+    const metricsOrgCondition = orgScope.orgCondition(devices.orgId);
+    const rollupsOrgCondition = orgScope.orgCondition(metricRollups.orgId);
 
     // device_metrics.deviceId is NOT NULL — constrain the broad (no-deviceId)
     // query to the in-scope device set when site-restricted, and short-circuit
@@ -1566,6 +1597,7 @@ analyticsRoutes.get(
       eq(metricRollups.bucketSeconds, 86400),
       eq(metricRollups.metricName, capacityRollupMetricName(metricType)),
       gte(metricRollups.bucketStart, rangeStart),
+      ...(rangeEnd ? [lt(metricRollups.bucketStart, rangeEnd)] : []),
       sql`${metricRollups.sampleCount} > 0`,
       sql`${metricRollups.avgValue} IS NOT NULL`,
       ...(rollupsOrgCondition ? [rollupsOrgCondition] : []),
@@ -1594,6 +1626,7 @@ analyticsRoutes.get(
 
     const metricsWhere = and(
       gte(deviceMetrics.timestamp, rangeStart),
+      ...(rangeEnd ? [lt(deviceMetrics.timestamp, rangeEnd)] : []),
       ...(metricsOrgCondition ? [metricsOrgCondition] : []),
       ...(query.deviceId ? [eq(deviceMetrics.deviceId, query.deviceId)] : []),
       ...(allowedDeviceIds !== null && !query.deviceId && allowedDeviceIds.length > 0
@@ -1845,61 +1878,103 @@ analyticsRoutes.get(
     // this caller cannot reach stays hidden (same gate as GET /analytics/sla).
     const compliancePerms = c.get('permissions') as UserPermissions | undefined;
     const visibleSla = await filterSlaDefinitionsForSiteScope(sla.orgId, compliancePerms, [sla]);
-    if (visibleSla.length === 0) {
+    // The shared gate treats `group` as an org aggregate, but a group figure
+    // spans members the caller's allowlist cannot be checked against: fail
+    // closed for narrowed callers.
+    const groupDeniedToNarrowed =
+      (sla.targetType ?? '').toLowerCase() === 'group' && slaScopeNarrowed(slaScopeAuthFor(compliancePerms));
+    if (visibleSla.length === 0 || groupDeniedToNarrowed) {
       return c.json({ error: 'Access denied' }, 403);
     }
 
-    const history = await db
-      .select()
-      .from(slaComplianceTable)
-      .where(eq(slaComplianceTable.slaId, slaId))
-      .orderBy(desc(slaComplianceTable.periodEnd))
-      .limit(12);
-
     const now = new Date();
     const measurementWindow = sla.measurementWindow ?? 'monthly';
-    const since = new Date(now);
-    if (measurementWindow === 'daily') {
-      since.setDate(since.getDate() - 1);
-    } else if (measurementWindow === 'weekly') {
-      since.setDate(since.getDate() - 7);
-    } else {
-      since.setMonth(since.getMonth() - 1);
+    const excludeWeekends = sla.excludeWeekends === true;
+    const since = slaWindowStart(now, measurementWindow, excludeWeekends);
+
+    // Devices the definition actually targets. Unknown / org-wide target types
+    // fall through to the whole org (the schema default).
+    const targetType = (sla.targetType ?? '').toLowerCase();
+    const targetIds: string[] = sla.targetIds ?? [];
+    const conditions: SQL[] = [
+      eq(devices.orgId, sla.orgId),
+      eq(devices.isEphemeral, false),
+      notParkedDeviceCondition(),
+      ne(devices.status, 'decommissioned')
+    ];
+    if (targetType === 'site' || targetType === 'device' || targetType === 'group') {
+      if (targetIds.length === 0) {
+        // A scoped definition with no targets measures nothing — never the whole org.
+        conditions.push(sql`false`);
+      } else if (targetType === 'site') {
+        conditions.push(inArray(devices.siteId, targetIds));
+      } else if (targetType === 'device') {
+        conditions.push(inArray(devices.id, targetIds));
+      } else {
+        conditions.push(
+          inArray(
+            devices.id,
+            db
+              .select({ id: deviceGroupMemberships.deviceId })
+              .from(deviceGroupMemberships)
+              .where(inArray(deviceGroupMemberships.groupId, targetIds))
+          )
+        );
+      }
     }
 
-    const [onlineCountResult] = await db
-      .select({ count: sql<number>`count(*)` })
+    let targetDevices = await db
+      .select({ id: devices.id, status: devices.status, lastSeenAt: devices.lastSeenAt })
       .from(devices)
-      .where(
-        and(
-          eq(devices.orgId, sla.orgId),
-          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-          eq(devices.status, 'online'),
-          gte(devices.lastSeenAt, since)
-        )
-      );
+      .where(and(...conditions));
 
-    const [totalCountResult] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(devices)
-      .where(
-        and(
-          eq(devices.orgId, sla.orgId),
-          eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-          ne(devices.status, 'decommissioned')
-        )
-      );
+    // Maintenance exclusion is a point-in-time check (devices in a window right
+    // now); historical window overlap needs the availability-interval work (#9273).
+    let maintenanceWindows: 'not_requested' | 'applied' | 'skipped_too_many_devices' | 'unavailable' = 'not_requested';
+    let excludedDevices = 0;
+    if (sla.excludeMaintenanceWindows === true) {
+      if (targetDevices.length > SLA_MAINTENANCE_CHECK_CAP) {
+        maintenanceWindows = 'skipped_too_many_devices';
+      } else {
+        maintenanceWindows = 'applied';
+        const inMaintenance = new Set<string>();
+        try {
+          for (let i = 0; i < targetDevices.length; i += 10) {
+            const chunk = targetDevices.slice(i, i + 10);
+            const statuses = await Promise.all(chunk.map((d) => isDeviceInMaintenance(d.id)));
+            statuses.forEach((st, idx) => {
+              if (st.active) inMaintenance.add(chunk[idx]!.id);
+            });
+          }
+        } catch (err) {
+          // Report the exclusion as unavailable rather than failing the read or
+          // silently half-applying it.
+          captureException(err);
+          inMaintenance.clear();
+          maintenanceWindows = 'unavailable';
+        }
+        excludedDevices = inMaintenance.size;
+        targetDevices = targetDevices.filter((d) => !inMaintenance.has(d.id));
+      }
+    }
 
-    const onlineCount = Number(onlineCountResult?.count ?? 0);
-    const totalCount = Number(totalCountResult?.count ?? 0);
+    const totalCount = targetDevices.length;
+    const onlineCount = targetDevices.filter(
+      (d) => d.status === 'online' && d.lastSeenAt && new Date(d.lastSeenAt) >= since
+    ).length;
     const liveUptime = totalCount > 0 ? (onlineCount / totalCount) * 100 : null;
+    const uptimeTarget = sla.uptimeTarget ?? null;
 
     return c.json({
       slaId,
       name: sla.name,
-      uptimeTarget: sla.uptimeTarget,
+      uptimeTarget,
       liveUptime,
-      history
+      meetsTarget: liveUptime !== null && uptimeTarget !== null ? liveUptime >= uptimeTarget : null,
+      exclusions: { weekends: excludeWeekends, maintenanceWindows, excludedDevices },
+      // Nothing writes sla_compliance yet (period-close history is #9273); an
+      // honest empty list beats a query that can never return rows.
+      history: []
     });
   }
 );
@@ -1916,12 +1991,12 @@ analyticsRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const query = c.req.valid('query');
-    const orgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(devices.orgId)
-        : auth?.orgId
-          ? eq(devices.orgId, auth.orgId)
-          : undefined;
+    // `?orgId=` (the org switcher) may only narrow the token's reach (#9648).
+    const orgScope = resolveAnalyticsOrgScope(auth, query.orgId);
+    if (!orgScope.ok) {
+      return c.json({ error: orgScope.error }, orgScope.status);
+    }
+    const orgCondition = orgScope.orgCondition(devices.orgId);
     // Site is an app-layer axis (RLS defends only the org), so a restricted
     // caller's site list is applied in SQL before anything is counted or
     // grouped. `undefined` = unrestricted; an empty (or malformed) list sees
@@ -2019,12 +2094,12 @@ analyticsRoutes.get(
   requireAnalyticsRead,
   async (c) => {
     const auth = c.get('auth');
-    const orgCondition =
-      typeof auth?.orgCondition === 'function'
-        ? auth.orgCondition(devices.orgId)
-        : auth?.orgId
-          ? eq(devices.orgId, auth.orgId)
-          : undefined;
+    // Same `?orgId=` narrowing as /executive-summary (#9648).
+    const orgScope = resolveAnalyticsOrgScope(auth, c.req.query('orgId'));
+    if (!orgScope.ok) {
+      return c.json({ error: orgScope.error }, orgScope.status);
+    }
+    const orgCondition = orgScope.orgCondition(devices.orgId);
     // Same site narrowing as /executive-summary: applied before grouping, and
     // an empty (or malformed) site list skips the query entirely.
     const perms = c.get('permissions') as UserPermissions | undefined;

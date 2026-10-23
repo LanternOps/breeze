@@ -20,7 +20,7 @@
  * so it carries the same visibility requirement as the audit trail itself.
  */
 import { Hono } from 'hono';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { INVOICE_OPEN_STATUSES, TICKET_OPEN_STATUSES, sqlStatusList } from '../services/openWorkStatuses';
 import { db } from '../db';
 import {
@@ -50,6 +50,15 @@ export interface OrgSummary {
   contacts?: {
     count: number;
     primary: { id: string; name: string; email: string | null; phone: string | null } | null;
+    /** Site-level primaries (max 3, by site name). Present only when `primary` is null and some exist. */
+    sitePrimaries?: Array<{
+      id: string;
+      name: string;
+      email: string | null;
+      phone: string | null;
+      siteId: string;
+      siteName: string;
+    }>;
   };
   portalUsers?: { count: number };
   lastActivityAt?: string | null;
@@ -259,6 +268,36 @@ orgSummaryRoutes.get(
           }
         : null,
     };
+
+    // #9317: a site-level primary with no org-level one is a valid state; surface
+    // it so the header doesn't claim there is no primary contact. Only queried
+    // when `primary` is null, and scoped to this org's own sites via the join.
+    if (!primaryContactRow) {
+      const sitePrimaryRows = await db
+        .select({
+          id: contacts.id,
+          name: contacts.name,
+          email: contacts.email,
+          phone: contacts.phone,
+          siteId: contacts.siteId,
+          siteName: sites.name,
+        })
+        .from(contacts)
+        .innerJoin(sites, and(eq(sites.id, contacts.siteId), eq(sites.orgId, id)))
+        .where(and(eq(contacts.orgId, id), eq(contacts.isPrimary, true), isNotNull(contacts.siteId)))
+        .orderBy(asc(sites.name), asc(contacts.id))
+        .limit(3);
+      if (sitePrimaryRows.length > 0) {
+        summary.contacts.sitePrimaries = sitePrimaryRows.map((r) => ({
+          id: r.id,
+          name: r.name ?? '',
+          email: r.email ?? null,
+          phone: r.phone ?? null,
+          siteId: r.siteId as string,
+          siteName: r.siteName,
+        }));
+      }
+    }
 
     if (can(PERMISSIONS.USERS_READ)) {
       const [row] = await db

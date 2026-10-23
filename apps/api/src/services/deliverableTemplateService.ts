@@ -7,8 +7,9 @@ import {
   type DeliverableTemplateItemRow,
 } from '../db/schema/deliverableTemplates';
 import type { AuthContext } from '../middleware/auth';
-import type {
-  CreateTemplateSetInput, UpdateTemplateSetInput, CreateTemplateItemInput, UpdateTemplateItemInput,
+import {
+  defaultPortalVisibleForCadence,
+  type CreateTemplateSetInput, type UpdateTemplateSetInput, type CreateTemplateItemInput, type UpdateTemplateItemInput,
 } from '@breeze/shared';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
@@ -225,6 +226,7 @@ export async function createTemplateSet(input: CreateTemplateSetInput, actor: Te
           completionMode: item.completionMode,
           sortOrder: item.sortOrder,
           autoEvidenceReportType: item.autoEvidenceReportType ?? null,
+          portalVisible: item.portalVisible ?? defaultPortalVisibleForCadence(item.cadence),
         }).returning();
         if (itemRow) items.push(itemRow);
       }
@@ -291,6 +293,7 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
       checklistTemplateId: input.checklistTemplateId ?? null,
       sortOrder: input.sortOrder,
       autoEvidenceReportType: input.autoEvidenceReportType ?? null,
+      portalVisible: input.portalVisible ?? defaultPortalVisibleForCadence(input.cadence),
     }).returning());
     if (!row) throw new TemplateServiceError('Insert returned no row', 500, 'INSERT_FAILED');
     return row;
@@ -319,6 +322,9 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
         ...(patch.checklistTemplateId !== undefined ? { checklistTemplateId: patch.checklistTemplateId ?? null } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
         ...(patch.autoEvidenceReportType !== undefined ? { autoEvidenceReportType: patch.autoEvidenceReportType } : {}),
+        // A cadence change alone never re-derives portalVisible: the stored
+        // value may be a deliberate choice the editor made.
+        ...(patch.portalVisible !== undefined ? { portalVisible: patch.portalVisible } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(deliverableTemplateItems.id, itemId), eq(deliverableTemplateItems.setId, set.id)))
@@ -494,7 +500,9 @@ export async function applyTemplateSet(
           autoEvidenceReportId,
           instructions: item.instructions ?? undefined,
           checklistTemplateId: item.checklistTemplateId ?? undefined,
-          portalVisible: true,
+          // #9315. The item decides. Internal onboarding steps must not land
+          // in the customer portal just because they came from a template.
+          portalVisible: item.portalVisible,
           sortOrder: item.sortOrder,
         }, deliverableActor, tx);
         out.push({ id: row.id, name: row.name, cadence: row.cadence as Cadence, anchorDueDate });

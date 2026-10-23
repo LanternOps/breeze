@@ -78,11 +78,11 @@ vi.mock('./aiAgent', () => ({
 }));
 
 const mockCheckAiRateLimit = vi.fn();
-const mockCheckBudget = vi.fn();
+const mockCheckBudgetDetailed = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: (...args: unknown[]) => mockCheckAiRateLimit(...args),
-  checkBudget: (...args: unknown[]) => mockCheckBudget(...args),
+  checkBudgetDetailed: (...args: unknown[]) => mockCheckBudgetDetailed(...args),
   getRemainingBudgetUsd: (...args: unknown[]) => mockGetRemainingBudgetUsd(...args),
 }));
 
@@ -98,6 +98,16 @@ vi.mock('./aiInputSanitizer', async (importOriginal) => ({
 // file — see the header comment.
 
 const mockWriteAuditEvent = vi.fn();
+// #9854: createSessionPreToolUse validates input against the full tool schema
+// before any approval. This suite's fixtures use placeholder ids/arguments the
+// real schemas reject, and it pins behaviour downstream of that check, so the
+// validator is stubbed to "valid". The check itself is pinned in
+// aiAgentSdk.test.ts ('#9854: input is validated before any approval').
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolSchemas')>()),
+  validateToolInput: () => ({ success: true }),
+}));
+
 vi.mock('./auditEvents', () => ({
   writeAuditEvent: (...args: unknown[]) => mockWriteAuditEvent(...args),
   requestLikeFromSnapshot: vi.fn(),
