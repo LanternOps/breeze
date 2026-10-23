@@ -24,6 +24,17 @@ type PeripheralPolicy = {
   isActive: boolean;
 };
 
+// `GET /peripherals/devices/:id/effective` row.
+type EffectivePolicy = {
+  id: string;
+  name: string | null;
+  source: string;
+  deviceClass: string;
+  action: string;
+  targetType: string | null;
+  priority: number;
+};
+
 type DevicePeripheralsTabProps = {
   deviceId: string;
   timezone?: string;
@@ -88,17 +99,28 @@ export default function DevicePeripheralsTab({ deviceId, timezone }: DevicePerip
   const fetchPolicies = useCallback(async () => {
     setLoadingPolicies(true);
     try {
-      const response = await fetchWithAuth('/peripherals/policies');
+      // The device's EFFECTIVE set (site/group/device targeting + partner-wide
+      // rows), resolved server-side — not every active policy of the org (#9621).
+      const response = await fetchWithAuth(`/peripherals/devices/${deviceId}/effective`);
       if (!response.ok) throw new Error('Failed to fetch policies');
       const json = await response.json();
-      const data = Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : [];
-      setPolicies(data.filter((p: PeripheralPolicy) => p.isActive));
+      const data = Array.isArray(json.data) ? json.data : [];
+      setPolicies(
+        data.map((p: EffectivePolicy): PeripheralPolicy => ({
+          id: p.id,
+          name: p.name ?? p.id.slice(0, 8),
+          deviceClass: p.deviceClass,
+          action: p.action,
+          targetType: p.targetType ?? p.source,
+          isActive: true,
+        })),
+      );
     } catch (err) {
       console.error('[DevicePeripheralsTab] Failed to fetch policies:', err);
     } finally {
       setLoadingPolicies(false);
     }
-  }, []);
+  }, [deviceId]);
 
   useEffect(() => {
     fetchEvents();
