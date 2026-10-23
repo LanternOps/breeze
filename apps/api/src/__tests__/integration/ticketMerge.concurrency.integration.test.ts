@@ -95,6 +95,8 @@ async function waitForWaiting(n: number, ms = 8_000): Promise<boolean> {
  */
 async function raceHeld(ticketId: string, first: () => Promise<unknown>, second: () => Promise<unknown>) {
   const deadlocksBefore = await deadlockCount();
+  // mergeTickets logs every retry; a retried 40P01 is still a deadlock.
+  const warn = vi.spyOn(console, 'warn');
   let locked!: () => void;
   const lockedP = new Promise<void>((r) => { locked = r; });
   let go!: () => void;
@@ -108,37 +110,62 @@ async function raceHeld(ticketId: string, first: () => Promise<unknown>, second:
   const a = first();
   a.catch(() => undefined);
   let b: Promise<unknown> = Promise.resolve();
+  let firstBlocked = false;
+  let secondBlocked = false;
   try {
-    await waitForWaiting(1);
+    firstBlocked = await waitForWaiting(1);
     b = second();
     b.catch(() => undefined);
-    await waitForWaiting(2, 3_000);
+    secondBlocked = await waitForWaiting(2, 3_000);
   } finally {
     go();
   }
   const [aRes, bRes] = await Promise.allSettled([a, b]);
   await h;
-  // pg_stat_database is updated asynchronously; give the stats collector a beat.
-  await new Promise((r) => setTimeout(r, 150));
-  return { first: outcome(aRes), second: outcome(bRes), deadlocks: (await deadlockCount()) - deadlocksBefore };
+  const mergeRetries = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('[ticketMerge] retrying'));
+  warn.mockRestore();
+  // pg_stat_database is flushed asynchronously (backup signal only; the retry log is primary).
+  await new Promise((r) => setTimeout(r, 1_100));
+  return {
+    first: outcome(aRes), second: outcome(bRes), firstBlocked, secondBlocked, mergeRetries,
+    deadlocks: (await deadlockCount()) - deadlocksBefore,
+  };
 }
 
-function expectNoDeadlock(r: { first: string; second: string; deadlocks: number }) {
+type RaceResult = Awaited<ReturnType<typeof raceHeld>>;
+
+/**
+ * No deadlock surfaced, none hidden by merge's one retry, and the interleaving
+ * actually happened: the first operation queued behind the holder, and (unless
+ * the pair cannot block, e.g. a SKIP LOCKED sweep) so did the second.
+ */
+function expectNoDeadlock(r: RaceResult, opts: { secondBlocks?: boolean } = {}) {
   expect([r.first, r.second].filter((o) => o.startsWith('40P01')), JSON.stringify(r)).toEqual([]);
-  expect(r.deadlocks, `Postgres deadlock counter (merge retries hide 40P01): ${JSON.stringify(r)}`).toBe(0);
+  expect(r.mergeRetries, `merge retried (a hidden 40P01): ${JSON.stringify(r)}`).toEqual([]);
+  expect(r.deadlocks, `Postgres deadlock counter: ${JSON.stringify(r)}`).toBe(0);
+  expect(r.firstBlocked, `first operation never queued behind the holder: ${JSON.stringify(r)}`).toBe(true);
+  if (opts.secondBlocks !== false) expect(r.secondBlocked, `second operation never queued: ${JSON.stringify(r)}`).toBe(true);
 }
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
-async function insertTicket(orgId: string, partnerId: string, extra: { deviceId?: string | null } = {}): Promise<string> {
+async function insertTicket(orgId: string, partnerId: string, extra: { deviceId?: string | null; id?: string } = {}): Promise<string> {
   return (await one<{ id: string }>(sql`
-    INSERT INTO tickets (org_id, partner_id, subject, source, priority, ticket_number, internal_number, device_id)
-    VALUES (${orgId}::uuid, ${partnerId}::uuid, 'merge race', 'api', 'normal', ${`MRC-${crypto.randomUUID().slice(0, 8)}`},
+    INSERT INTO tickets (id, org_id, partner_id, subject, source, priority, ticket_number, internal_number, device_id)
+    VALUES (${extra.id ?? crypto.randomUUID()}::uuid, ${orgId}::uuid, ${partnerId}::uuid, 'merge race', 'api', 'normal',
+            ${`MRC-${crypto.randomUUID().slice(0, 8)}`},
             ${`T-2026-${Math.floor(1000 + Math.random() * 8999)}`}, ${extra.deviceId ?? null}::uuid)
     RETURNING id`)).id;
 }
 
-async function seed() {
+/** Two fresh ids, in the requested order (merge locks its tickets ascending). */
+function idPair(order: 'src<dst' | 'src>dst'): { srcId: string; dstId: string } {
+  const [lo, hi] = [crypto.randomUUID(), crypto.randomUUID()].sort();
+  return order === 'src<dst' ? { srcId: lo!, dstId: hi! } : { srcId: hi!, dstId: lo! };
+}
+
+async function seed(order: 'src<dst' | 'src>dst' = 'src<dst') {
+  const ids = idPair(order);
   const partner = await createPartner({ name: 'MergeRace-Partner' });
   const user = await createUser({ partnerId: partner.id });
   const org = await createOrganization({ partnerId: partner.id, name: 'MergeRace-Org' });
@@ -148,8 +175,8 @@ async function seed() {
     currentPartnerId: partner.id, userId: user.id,
   };
   const actor: TicketActor = { kind: 'user', userId: user.id, name: 'Tech' };
-  const dst = await insertTicket(org.id, partner.id);
-  const src = await insertTicket(org.id, partner.id);
+  const dst = await insertTicket(org.id, partner.id, { id: ids.dstId });
+  const src = await insertTicket(org.id, partner.id, { id: ids.srcId });
   return { partner, user, org, orgB, ctx, actor, src, dst };
 }
 
@@ -174,17 +201,22 @@ async function expectNothingOnTombstone(tombstone: string) {
 }
 
 const ORDERS = [['writer first', true], ['merge first', false]] as const;
+const ID_ORDERS = ['src<dst', 'src>dst'] as const;
 
 // ── pairs ───────────────────────────────────────────────────────────────────
 
 describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
-  describe.each(ORDERS)('%s', (_label, writerFirst) => {
-    const pair = (s: Seed, writer: () => Promise<unknown>) => writerFirst
-      ? raceHeld(s.src, writer, () => merge(s, s.src, s.dst))
-      : raceHeld(s.src, () => merge(s, s.src, s.dst), writer);
+  describe.each(ID_ORDERS.flatMap((o) => ORDERS.map(([l, w]) => [`${l}, ${o}`, w, o] as const)))('%s', (_label, writerFirst, order) => {
+    const seed0 = seed;
+    const seedHere = () => seed0(order);
+    // The holder sits on the row both sides need first: the source for writers
+    // of the source, the survivor for movers of the survivor.
+    const pair = (s: Seed, writer: () => Promise<unknown>, hold: string = s.src) => writerFirst
+      ? raceHeld(hold, writer, () => merge(s, s.src, s.dst))
+      : raceHeld(hold, () => merge(s, s.src, s.dst), writer);
 
     runDb('comment edit', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const c = await insertComment(s.src, s.user.id, 'before');
       const r = await pair(s, () => asUser(s, () => editTicketComment(c, { content: 'after' }, s.actor, { canManageAny: true })));
       expectNoDeadlock(r);
@@ -193,14 +225,14 @@ describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
     }, CASE_TIMEOUT);
 
     runDb('comment add (source side)', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const r = await pair(s, () => asUser(s, () => addTicketComment(s.src, { content: 'racing', isPublic: true }, s.actor)));
       expectNoDeadlock(r);
       await expectNothingOnTombstone(s.src);
     }, CASE_TIMEOUT);
 
     runDb('draft send', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const d = await one<{ id: string }>(sql`
         INSERT INTO ticket_drafts (org_id, ticket_id, kind, content) VALUES (${s.org.id}::uuid, ${s.src}::uuid, 'reply', 'draft') RETURNING id`);
       const r = await pair(s, () => asUser(s, () => sendTicketDraft(s.src, d.id, undefined, s.actor)));
@@ -210,7 +242,7 @@ describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
     }, CASE_TIMEOUT);
 
     runDb('timer stop', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const e = await one<{ id: string }>(sql`
         INSERT INTO time_entries (partner_id, org_id, ticket_id, user_id, started_at, currency_code)
         VALUES (${s.partner.id}::uuid, ${s.org.id}::uuid, ${s.src}::uuid, ${s.user.id}::uuid, now() - interval '10 minutes', 'USD') RETURNING id`);
@@ -223,7 +255,7 @@ describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
     }, CASE_TIMEOUT);
 
     runDb('link add', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const x = await insertTicket(s.org.id, s.partner.id);
       const r = await pair(s, () => asUser(s, () => addTicketLink({
         source: { id: s.src, orgId: s.org.id }, target: { id: x, orgId: s.org.id }, linkType: 'caused_by',
@@ -233,17 +265,24 @@ describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
     }, CASE_TIMEOUT);
 
     runDb('moveTicketOrg of the survivor', async () => {
-      const s = await seed();
-      const r = await pair(s, () => sys(() => moveTicketOrg(s.dst, s.orgB.id, s.actor)));
+      const s = await seedHere();
+      const r = await pair(s, () => sys(() => moveTicketOrg(s.dst, s.orgB.id, s.actor)), s.dst);
       expectNoDeadlock(r);
       const rows = await q<{ id: string; org_id: string }>(sql`SELECT id, org_id FROM tickets WHERE id IN (${s.src}::uuid, ${s.dst}::uuid)`);
       const merged = await one<{ m: string | null }>(sql`SELECT merged_into_ticket_id AS m FROM tickets WHERE id = ${s.src}::uuid`);
-      // Whatever won, a tombstone sits in its survivor's org.
-      if (merged.m) expect(new Set(rows.map((x) => x.org_id)).size).toBe(1);
+      const mergeOutcome = writerFirst ? r.second : r.first;
+      if (merged.m) {
+        // Merge committed: the pair is still together — the move either carried
+        // the tombstone along or refused the changed survivor (CAS 409).
+        expect(new Set(rows.map((x) => x.org_id)).size).toBe(1);
+      } else {
+        // The move won: merge re-checked under its locks and refused the cross-org pair.
+        expect(mergeOutcome).toBe('refused:MERGE_CROSS_ORG');
+      }
     }, CASE_TIMEOUT);
 
     runDb('moveTicketOrg of the source', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const r = await pair(s, () => sys(() => moveTicketOrg(s.src, s.orgB.id, s.actor)));
       expectNoDeadlock(r);
       const src = await one<{ org_id: string; m: string | null }>(sql`SELECT org_id, merged_into_ticket_id AS m FROM tickets WHERE id = ${s.src}::uuid`);
@@ -252,7 +291,7 @@ describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
     }, CASE_TIMEOUT);
 
     runDb('device move of the survivor\'s device', async () => {
-      const s = await seed();
+      const s = await seedHere();
       const siteA = await createSite({ orgId: s.org.id });
       const siteB = await createSite({ orgId: s.orgB.id });
       const device = await createDevice({ orgId: s.org.id, siteId: siteA.id });
@@ -261,21 +300,30 @@ describe('merge vs every writer it can meet (#8972 W1, spec §3.5)', () => {
         deviceId: device.id, sourceOrgId: s.org.id, targetOrgId: s.orgB.id, targetSiteId: siteB.id,
         targetOrgName: 'B', deviceLinkGroupId: null, acceptCurrencyMismatch: false,
         actor: { userId: s.user.id, allowedSiteIds: undefined }, stepUp: null, via: 'generic_move',
-      }))));
+      }))), s.dst);
       expectNoDeadlock(r);
       const merged = await one<{ m: string | null }>(sql`SELECT merged_into_ticket_id AS m FROM tickets WHERE id = ${s.src}::uuid`);
       const rows = await q<{ org_id: string }>(sql`SELECT org_id FROM tickets WHERE id IN (${s.src}::uuid, ${s.dst}::uuid)`);
+      const mergeOutcome = writerFirst ? r.second : r.first;
       if (merged.m) expect(new Set(rows.map((x) => x.org_id)).size).toBe(1);
+      else expect(mergeOutcome).toBe('refused:MERGE_CROSS_ORG');
     }, CASE_TIMEOUT);
 
     runDb('SLA sweep tick', async () => {
-      const s = await seed();
+      const s = await seedHere();
       await getTestDb().execute(sql`
         UPDATE tickets SET response_sla_minutes = 1, response_due_at = now() - interval '1 hour',
                            created_at = now() - interval '2 hours'
          WHERE id = ${s.src}::uuid`);
       const r = await pair(s, () => sys(() => sweepTicketSlaBreaches()));
-      expectNoDeadlock(r);
+      // The sweep claims rows with SKIP LOCKED: it never queues behind the holder.
+      expect([r.first, r.second].filter((o) => o.startsWith('40P01'))).toEqual([]);
+      expect(r.mergeRetries).toEqual([]);
+      // Merge first: the sweep never stamps the (now merged) tombstone. Sweep
+      // first: a breach stamped before the merge stays as history.
+      if (!writerFirst) {
+        expect(await one(sql`SELECT sla_breached_at IS NULL AS clean FROM tickets WHERE id = ${s.src}::uuid`)).toEqual({ clean: true });
+      }
     }, CASE_TIMEOUT);
   });
 

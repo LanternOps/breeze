@@ -68,7 +68,8 @@ describe('movers carry merged tombstones (#8972 W1, spec §3.9)', () => {
     const b = await insertTicket(s.orgA.id, s.partner.id);
     await merge(s, a, dst);
     await merge(s, b, dst);
-    // Children that stay on a tombstone: its outbox history and its own merge note.
+    // What stays on a tombstone after a real merge: its ticket.status_changed
+    // outbox row and its own "Merged into" note — both must follow the move.
     await sys(() => moveTicketOrg(dst, s.orgB.id, s.actor));
     const rows = await q<{ id: string; org_id: string; merged_into_ticket_id: string | null }>(sql`
       SELECT id, org_id, merged_into_ticket_id FROM tickets WHERE id IN (${dst}::uuid, ${a}::uuid, ${b}::uuid)`);

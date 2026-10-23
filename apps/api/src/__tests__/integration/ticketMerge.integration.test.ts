@@ -11,7 +11,9 @@ import './setup';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { withDbAccessContext, type DbAccessContext } from '../../db';
-import { mergeTickets } from '../../services/ticketMerge';
+import { loadMergeTicketRows, mergeTickets } from '../../services/ticketMerge';
+import { previewMerge } from '../../services/ticketMerge/preview';
+import { db } from '../../db';
 import { MergeRefusedError, TicketMergedError } from '../../services/ticketMerge/errors';
 import { addTicketComment, type TicketActor } from '../../services/ticketService';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
@@ -436,4 +438,66 @@ describe('mergeTickets (#8972 W1, spec §3.3)', () => {
     expect(err).toBeInstanceOf(TicketMergedError);
     expect(err).toMatchObject({ mergedIntoTicketId: s.dst });
   }, T);
+
+  runDb('preview == execute: counts, dropped links and retained refs match what the merge does', async () => {
+    const s = await seed();
+    await insertComment(s.src, s.user.id, 'c1');
+    await getTestDb().execute(sql`
+      INSERT INTO ticket_checklist_items (org_id, ticket_id, label, position) VALUES (${s.org.id}::uuid, ${s.src}::uuid, 'x', 0)`);
+    const x = await insertTicket(s.org.id, s.partner.id);
+    await getTestDb().execute(sql`
+      INSERT INTO ticket_links (org_id, source_ticket_id, target_ticket_id, link_type) VALUES
+        (${s.org.id}::uuid, ${s.src}::uuid, ${s.dst}::uuid, 'caused_by'),
+        (${s.org.id}::uuid, ${x}::uuid, ${s.dst}::uuid, 'resolves'),
+        (${s.org.id}::uuid, ${x}::uuid, ${s.src}::uuid, 'resolves'),
+        (${s.org.id}::uuid, ${s.src}::uuid, ${x}::uuid, 'caused_by')`);
+    const p = (await one<{ id: string }>(sql`
+      INSERT INTO partner_service_principals (partner_id, name, scopes, created_by, updated_by)
+      VALUES (${s.partner.id}::uuid, 'psa', ARRAY['tickets:read','tickets:write'], ${s.user.id}::uuid, ${s.user.id}::uuid) RETURNING id`)).id;
+    await getTestDb().execute(sql`
+      INSERT INTO ticket_external_refs (ticket_id, org_id, partner_id, partner_service_principal_id, external_id) VALUES
+        (${s.dst}::uuid, ${s.org.id}::uuid, ${s.partner.id}::uuid, ${p}::uuid, 'D'),
+        (${s.src}::uuid, ${s.org.id}::uuid, ${s.partner.id}::uuid, ${p}::uuid, 'S')`);
+    const preview = await withDbAccessContext(s.ctx, async () => {
+      const rows = await loadMergeTicketRows(db, [s.src, s.dst]);
+      return previewMerge(db as never, rows.get(s.src)!, rows.get(s.dst)!);
+    });
+    expect(preview.eligible).toBe(true);
+    const res = await merge(s);
+    // The merge itself writes two notes after the re-point; the preview counts what MOVES.
+    expect(preview.counts).toEqual(res.counts);
+    expect(preview.droppedLinks).toEqual(res.droppedLinks);
+    expect(preview.retainedExternalRefs.map((r) => r.id)).toEqual(res.retainedExternalRefIds);
+    expect(preview.droppedLinks.map((d) => d.reason).sort()).toEqual(['between_pair', 'pair_unique']);
+  }, T);
+
+  describe('eligibility on real SQL (§3.1, D3)', () => {
+    const refused = async (s: Seed) => (await merge(s).then(() => null, (e: unknown) => e)) as MergeRefusedError;
+
+    runDb('MERGE_APPROVAL_STATE: an approval request on the source', async () => {
+      const s = await seed();
+      await getTestDb().execute(sql`
+        INSERT INTO ticket_approval_requests (org_id, ticket_id, trigger, origin, enforcement, expires_at)
+        VALUES (${s.org.id}::uuid, ${s.src}::uuid, 'budget', 'staff', 'soft', now() + interval '1 day')`);
+      expect(await refused(s)).toMatchObject({ code: 'MERGE_APPROVAL_STATE', side: 'source' });
+    }, T);
+
+    runDb('ORG_MERGING: the org is being merged', async () => {
+      const s = await seed();
+      await getTestDb().execute(sql`UPDATE organizations SET status = 'merging' WHERE id = ${s.org.id}::uuid`);
+      expect(await refused(s)).toMatchObject({ code: 'ORG_MERGING' });
+    }, T);
+
+    runDb('MERGE_WORK_KIND_MISMATCH: planned work into a support ticket', async () => {
+      const s = await seed();
+      await getTestDb().execute(sql`UPDATE tickets SET work_kind = 'deliverable' WHERE id = ${s.src}::uuid`);
+      expect(await refused(s)).toMatchObject({ code: 'MERGE_WORK_KIND_MISMATCH' });
+    }, T);
+
+    runDb('MERGE_SURVIVOR_INELIGIBLE: a closed survivor', async () => {
+      const s = await seed();
+      await getTestDb().execute(sql`UPDATE tickets SET status = 'closed', closed_at = now() WHERE id = ${s.dst}::uuid`);
+      expect(await refused(s)).toMatchObject({ code: 'MERGE_SURVIVOR_INELIGIBLE', side: 'survivor' });
+    }, T);
+  });
 });

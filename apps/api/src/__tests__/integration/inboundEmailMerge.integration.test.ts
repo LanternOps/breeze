@@ -9,13 +9,14 @@
 import './setup';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { withSystemDbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { mergeTickets } from '../../services/ticketMerge';
 import {
   findClosedTicketInPartner,
   findTicketInPartner,
   type SenderResolver,
 } from '../../services/inboundEmail/threadMatcher';
-import { createOrganization, createPartner } from './db-utils';
+import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -127,5 +128,29 @@ describe('inbound email after a merge (#8972 W1, spec §3.8)', () => {
     const lone = await ticket(s.org.id, s.partner.id, { status: 'closed', submitterEmail: 'enduser@acme.example', emailThreadKey: '<ticket-lone@in.example>' });
     const closed = await sys(() => findClosedTicketInPartner({ references: ['<ticket-lone@in.example>'], from: 'enduser@acme.example' }, s.partner.id, emailSender(s.org.id)));
     expect(closed?.id).toBe(lone.id);
+  });
+
+  runDb('after a REAL mergeTickets (not a hand-written tombstone), a header reply to the source lands on the survivor', async () => {
+    const partner = await createPartner({ name: 'InboundMerge-Real' });
+    const org = await createOrganization({ partnerId: partner.id, name: 'InboundMerge-Real-Org' });
+    const staff = await createUser({ partnerId: partner.id });
+    const dst = await ticket(org.id, partner.id, { submitterEmail: 'boss@acme.example', emailThreadKey: '<ticket-rdst@in.example>' });
+    const src = await ticket(org.id, partner.id, {
+      submitterEmail: 'enduser@acme.example', emailMessageId: '<orig-rsrc@mail.example>', emailThreadKey: '<ticket-rsrc@in.example>',
+    });
+    const ctx: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [org.id], accessiblePartnerIds: [partner.id],
+      currentPartnerId: partner.id, userId: staff.id,
+    };
+    await withDbAccessContext(ctx, () => mergeTickets(
+      { sourceTicketId: src.id, intoTicketId: dst.id, notifyRequester: false },
+      { kind: 'user', userId: staff.id, name: 'Tech' },
+    ));
+    const viaHeader = await sys(() => findTicketInPartner({ inReplyTo: '<orig-rsrc@mail.example>', from: 'enduser@acme.example' }, partner.id, emailSender(org.id)));
+    const viaToken = await sys(() => findTicketInPartner({ subject: `Re: [${src.internalNumber}]`, from: 'enduser@acme.example' }, partner.id, emailSender(org.id)));
+    const closed = await sys(() => findClosedTicketInPartner({ references: ['<ticket-rsrc@in.example>'], from: 'enduser@acme.example' }, partner.id, emailSender(org.id)));
+    expect(viaHeader?.id).toBe(dst.id);
+    expect(viaToken?.id).toBe(dst.id);
+    expect(closed).toBeNull();
   });
 });

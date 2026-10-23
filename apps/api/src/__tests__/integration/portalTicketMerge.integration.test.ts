@@ -148,6 +148,34 @@ describe('portal access after a merge (#8972 D1(b), real RLS)', () => {
     expect((await get(s, s.tokenA, `/tickets/${s.survivor}`)).status).toBe(404);
   }, T);
 
+  runDb('the survivor\'s attachments on an INTERNAL note stay hidden from the source requester', async () => {
+    const s = await seed();
+    const internal = await one<{ id: string }>(sql`
+      SELECT id FROM ticket_comments WHERE ticket_id = ${s.survivor}::uuid AND content = 'survivor internal note'`);
+    const att = await one<{ id: string }>(sql`
+      INSERT INTO ticket_attachments (org_id, ticket_id, comment_id, attached_at, storage_backend, data, content_type, byte_size, original_filename, sha256)
+      VALUES (${s.org.id}::uuid, ${s.survivor}::uuid, ${internal.id}::uuid, now(), 'db', '\\x01'::bytea, 'text/plain', 1, 'secret.txt', ${'b'.repeat(64)})
+      RETURNING id`);
+    expect((await get(s, s.tokenA, `/tickets/${s.survivor}/attachments/${att.id}/content`)).status).toBe(404);
+  }, T);
+
+  runDb('a reply to the tombstone itself is refused (409 TICKET_MERGED), never written', async () => {
+    const s = await seed();
+    const res = await s.srv.request(`/portal/tickets/${s.source}/comments`, {
+      method: 'POST', headers: { Authorization: `Bearer ${s.tokenA}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'reply on the old ticket' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'TICKET_MERGED' });
+    expect(await one(sql`SELECT count(*)::int AS n FROM ticket_comments WHERE content = 'reply on the old ticket'`)).toEqual({ n: 0 });
+  }, T);
+
+  runDb('the survivor\'s requester cannot read the tombstone', async () => {
+    const s = await seed();
+    const tokenB = await login(s.srv, s.b.email, s.org.id);
+    expect((await get(s, tokenB, `/tickets/${s.source}`)).status).toBe(404);
+  }, T);
+
   runDb('an unrelated colleague still cannot read the survivor', async () => {
     const s = await seed();
     expect((await get(s, s.tokenC, `/tickets/${s.survivor}`)).status).toBe(404);
