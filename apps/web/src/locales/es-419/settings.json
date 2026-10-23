@@ -1509,7 +1509,8 @@
       "approval_ask": "Solicitud de aprobación",
       "approval_snapshot": "Cifras de la aprobación",
       "approval_expires": "Fecha límite de aprobación",
-      "approval_status": "Estado de la aprobación"
+      "approval_status": "Estado de la aprobación",
+      "merged_into_number": "Número del ticket de destino"
     },
     "billingPayments": "Facturación y pagos",
     "supportPortal": "Soporte y portal",
@@ -1524,7 +1525,8 @@
       "payment_failed": "No se pudo completar el pago",
       "ticket_approval_requested_approver": "Solicitud de aprobación de trabajo (aprobador)",
       "ticket_approval_requested_notify": "Solicitud de aprobación de trabajo (informativa)",
-      "ticket_approval_decided": "Decisión sobre la aprobación de trabajo"
+      "ticket_approval_decided": "Decisión sobre la aprobación de trabajo",
+      "ticket_merged": "Ticket combinado"
     }
   },
   "inboundEmail": {
