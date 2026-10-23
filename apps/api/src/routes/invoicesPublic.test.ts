@@ -220,6 +220,16 @@ describe('GET /invoices/public/:token', () => {
     expect(data.branding).toMatchObject({ theme: 'condensed', pageSize: 'letter' });
   });
 
+  it('a void invoice falls back to the partner Branding logo/colour (#9676)', async () => {
+    resolveMock.mockResolvedValue(invoice({ status: 'void' }));
+    dbResults.push(
+      [{ ...PARTNER_ROW[0], settings: { branding: { logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' } } }],
+      [{ logoUrl: null, primaryColor: null }],
+    );
+    const { data } = await (await app().request(`/invoices/public/${TOKEN}`)).json();
+    expect(data.branding).toMatchObject({ logoUrl: 'https://cdn.example.test/p.png', primaryColor: '#112233' });
+  });
+
   // #5856: the route selects ticketId/ticketSubject for grouping, but the wire
   // DTO is the customer projection — ticket number + category only.
   it('carries ticket number and category but never ticketId or subject', async () => {

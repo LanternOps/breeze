@@ -14,7 +14,6 @@ const createWebhookSchema = (t: (key: string) => string) => z
     authType: z.enum(['hmac', 'bearer']),
     secret: z.string().optional(),
     bearerToken: z.string().optional(),
-    payloadTemplate: z.string().optional(),
     enabled: z.boolean().optional(),
     headers: z
       .array(
@@ -41,18 +40,6 @@ const createWebhookSchema = (t: (key: string) => string) => z
         path: ['bearerToken']
       });
     }
-
-    if (values.payloadTemplate?.trim()) {
-      try {
-        JSON.parse(values.payloadTemplate);
-      } catch {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: t('longTail.webhooks.WebhookForm.validation.payloadJsonRequired'),
-          path: ['payloadTemplate']
-        });
-      }
-    }
   });
 
 export type WebhookFormValues = z.infer<ReturnType<typeof createWebhookSchema>>;
@@ -68,7 +55,7 @@ type WebhookFormProps = {
 export const webhookEventOptions = [
   { value: 'device.online', label: 'Device Online', labelKey: 'longTail.webhooks.WebhookForm.events.deviceOnline.label', description: 'Triggered when a device connects.', descriptionKey: 'longTail.webhooks.WebhookForm.events.deviceOnline.description' },
   { value: 'device.offline', label: 'Device Offline', labelKey: 'longTail.webhooks.WebhookForm.events.deviceOffline.label', description: 'Triggered when a device disconnects.', descriptionKey: 'longTail.webhooks.WebhookForm.events.deviceOffline.description' },
-  { value: 'alert.created', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
+  { value: 'alert.triggered', label: 'Alert Created', labelKey: 'longTail.webhooks.WebhookForm.events.alertCreated.label', description: 'Triggered when an alert is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertCreated.description' },
   { value: 'alert.resolved', label: 'Alert Resolved', labelKey: 'longTail.webhooks.WebhookForm.events.alertResolved.label', description: 'Triggered when an alert is resolved.', descriptionKey: 'longTail.webhooks.WebhookForm.events.alertResolved.description' },
   { value: 'script.completed', label: 'Script Completed', labelKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.label', description: 'Triggered when a script finishes.', descriptionKey: 'longTail.webhooks.WebhookForm.events.scriptCompleted.description' },
   { value: 'ticket.created', label: 'Ticket Created', labelKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.label', description: 'Triggered when a ticket is created.', descriptionKey: 'longTail.webhooks.WebhookForm.events.ticketCreated.description' },
@@ -121,7 +108,6 @@ export default function WebhookForm({
       authType: 'hmac',
       secret: '',
       bearerToken: '',
-      payloadTemplate: '',
       enabled: true,
       headers: [],
       ...defaultValues
@@ -135,22 +121,7 @@ export default function WebhookForm({
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
   const authType = watch('authType');
-  const payloadTemplate = watch('payloadTemplate') ?? '';
   const enabled = watch('enabled') ?? true;
-
-  const payloadPreview = useMemo(() => {
-    if (!payloadTemplate.trim()) {
-      return { preview: '', error: '' };
-    }
-    try {
-      return {
-        preview: JSON.stringify(JSON.parse(payloadTemplate), null, 2),
-        error: ''
-      };
-    } catch {
-      return { preview: payloadTemplate, error: t('longTail.webhooks.WebhookForm.invalidJsonPreview') };
-    }
-  }, [payloadTemplate, t]);
 
   const handleGenerateSecret = () => {
     const secret = generateSecret();
@@ -341,45 +312,6 @@ export default function WebhookForm({
             </p>
           </div>
         )}
-      </div>
-
-      <div className="space-y-3 rounded-md border bg-muted/20 p-4">
-        <div>
-          <h3 className="text-sm font-semibold">{t('longTail.webhooks.WebhookForm.payload.title')}</h3>
-          <p className="text-xs text-muted-foreground">
-            {t('longTail.webhooks.WebhookForm.payload.subtitle')}
-          </p>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="space-y-2">
-            <label htmlFor="payload-template" className="text-sm font-medium">
-              {t('longTail.webhooks.WebhookForm.fields.templateJson')}
-            </label>
-            <textarea
-              id="payload-template"
-              rows={8}
-              placeholder='{"event":"device.online","device":{"id":"{{device.id}}"}}'
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-              {...register('payloadTemplate')}
-            />
-            {errors.payloadTemplate && (
-              <p className="text-sm text-destructive">{errors.payloadTemplate.message}</p>
-            )}
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">{t('longTail.webhooks.WebhookForm.fields.jsonPreview')}</label>
-            <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
-              {payloadPreview.preview ? (
-                <pre className="max-h-56 overflow-auto">{payloadPreview.preview}</pre>
-              ) : (
-                <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhookForm.payload.previewEmpty')}</p>
-              )}
-            </div>
-            {!errors.payloadTemplate && payloadPreview.error && (
-              <p className="text-xs text-destructive">{payloadPreview.error}</p>
-            )}
-          </div>
-        </div>
       </div>
 
       <div className="space-y-3 rounded-md border bg-muted/20 p-4">

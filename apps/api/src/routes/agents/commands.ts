@@ -126,6 +126,9 @@ const REGISTRY_DISPATCHED_COMMAND_TYPES = new Set([
   // #8743 W03: conversation / message state follows the chat command results.
   'chat_open',
   'chat_message',
+  // #9662: the incident action follows the execute_containment result.
+  // Registry-only, so both transports apply the same leaf handler.
+  'execute_containment',
 ]);
 
 const PAM_COMMAND_TYPES = new Set(['pam_apply_v2', 'pam_cleanup_v2']);

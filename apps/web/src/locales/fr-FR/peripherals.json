@@ -79,6 +79,14 @@
     "allOrganizations": "Toutes les organisations",
     "partnerWide": "(politique à l’échelle des partenaires)",
     "thisOrganization": "Cette organisation uniquement",
+    "appliesTo": "S'applique à",
+    "targets": {
+      "organization": "Tous les dispositifs",
+      "site": "Sites spécifiques ({{total}})",
+      "group": "Groupes de dispositifs spécifiques ({{total}})",
+      "device": "Dispositifs spécifiques ({{total}})"
+    },
+    "targetReadOnlyHint": "Les cibles ne peuvent pas être modifiées dans ce formulaire. L'enregistrement conserve les cibles actuelles.",
     "deviceClass": "Classe de dispositifs",
     "classes": {
       "storage": "Stockage",

@@ -112,6 +112,7 @@
     "close": "Close",
     "createALinkedTicketPreFilledFrom": "Create a linked ticket pre-filled from this alert",
     "createTicket": "Create ticket",
+    "viewTicket": "View ticket {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Silence this alert — stops notifications without resolving",
     "suppress": "Suppress",
     "dismissPermanentlyHidesThisAlertForGood": "Dismiss permanently — hides this alert for good (warranty expiry won't re-alert for the same end date; other conditions can still open a new alert if they recur)",

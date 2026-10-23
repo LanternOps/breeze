@@ -1,6 +1,50 @@
 package x11
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestParseXSocketInodes(t *testing.T) {
+	out := "Num RefCount Protocol Flags Type St Inode Path\n" +
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12345 /tmp/.X11-unix/X1\n" +
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12346 @/tmp/.X11-unix/X1\n" +
+		"0000000000000000: 00000002 00000000 00010000 0001 01 12347 /tmp/.X11-unix/X10\n" +
+		"0000000000000000: 00000002 00000000 00000000 0001 03 12348 /tmp/.X11-unix/X1\n" +
+		"0000000000000000: 00000002 00000000 00010000 0002 01 12349 /tmp/.X11-unix/X1\n" +
+		"0000000000000000: 00000002 00000000 invalid 0001 01 12350 /tmp/.X11-unix/X1\n" +
+		"0000000000000000: 00000002 00000000 00010000 0001 01 invalid /tmp/.X11-unix/X1\n" +
+		"0000000000000000: 00000002 00000000 00010000 0001 01 0 /tmp/.X11-unix/X1\n" +
+		"short line\n"
+	want := map[string]struct{}{"12345": {}, "12346": {}}
+	if got := parseXSocketInodes(out, "1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseXSocketInodes = %v, want %v", got, want)
+	}
+	if got := parseXSocketInodes("", "1"); len(got) != 0 {
+		t.Fatalf("empty input returned %v", got)
+	}
+}
+
+func TestHasXSocket(t *testing.T) {
+	inodes := map[string]struct{}{"12345": {}}
+	for _, tc := range []struct {
+		name  string
+		links []string
+		want  bool
+	}{
+		{"matching fd", []string{"/dev/tty2", "socket:[12345]"}, true},
+		{"different inode", []string{"socket:[99999]"}, false},
+		{"not a socket", []string{"pipe:[12345]", "/tmp/socket:[12345]"}, false},
+		{"malformed link", []string{"socket:[12345", "socket:[12345]extra"}, false},
+		{"empty listing", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasXSocket(tc.links, inodes); got != tc.want {
+				t.Fatalf("hasXSocket = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestParseAuthArg(t *testing.T) {
 	cases := []struct {

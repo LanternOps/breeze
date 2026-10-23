@@ -48,13 +48,16 @@ const policySchema = z.object({
   name: z.string().min(1).max(200),
   deviceClass: z.enum(peripheralDeviceClassEnum.enumValues),
   action: z.enum(peripheralPolicyActionEnum.enumValues),
-  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional().default('organization'),
+  // No schema defaults on targeting: this schema doubles as the update body, and
+  // an update that omits targetType/targetIds keeps the stored targeting (#9620).
+  // The create path applies the 'organization' / {} defaults itself.
+  targetType: z.enum(peripheralPolicyTargetTypeEnum.enumValues).optional(),
   priority: z.number().int().safe().min(0).max(1000).optional(),
   targetIds: z.object({
     siteIds: z.array(z.string().guid()).max(1000).optional(),
     groupIds: z.array(z.string().guid()).max(1000).optional(),
     deviceIds: z.array(z.string().guid()).max(5000).optional(),
-  }).optional().default({}),
+  }).optional(),
   exceptions: z.array(z.object({
     vendor: z.string().min(1).max(255).optional(),
     product: z.string().min(1).max(255).optional(),
@@ -219,6 +222,8 @@ function normalizeExceptionRule(rule: z.infer<typeof exceptionsSchema>['exceptio
   };
 }
 
+type PeripheralPolicyTargetType = (typeof peripheralPolicyTargetTypeEnum.enumValues)[number];
+
 function sanitizeTargetIds(targetIds: z.infer<typeof policySchema>['targetIds']): PeripheralPolicyTargetIds {
   if (!targetIds) return {};
   return {
@@ -226,6 +231,27 @@ function sanitizeTargetIds(targetIds: z.infer<typeof policySchema>['targetIds'])
     groupIds: targetIds.groupIds ?? [],
     deviceIds: targetIds.deviceIds ?? [],
   };
+}
+
+/**
+ * Targeting for an update (#9620). Omitting both fields keeps the stored
+ * targeting — the web form cannot edit targets, and must not widen a
+ * site/group/device policy to the whole org on save. targetIds omitted with
+ * the same targetType keeps the stored ids; switching targetType without
+ * naming new ids clears them rather than reinterpreting the old ones.
+ */
+function resolveUpdateTargeting(
+  payload: Pick<z.infer<typeof policySchema>, 'targetType' | 'targetIds'>,
+  existing: { targetType: PeripheralPolicyTargetType; targetIds: PeripheralPolicyTargetIds | null }
+): { targetType: PeripheralPolicyTargetType; targetIds: PeripheralPolicyTargetIds } {
+  const targetType = payload.targetType ?? existing.targetType;
+  if (payload.targetIds !== undefined) {
+    return { targetType, targetIds: sanitizeTargetIds(payload.targetIds) };
+  }
+  if (targetType === existing.targetType) {
+    return { targetType, targetIds: existing.targetIds ?? {} };
+  }
+  return { targetType, targetIds: sanitizeTargetIds({}) };
 }
 
 // Dual-axis access condition (#2131): org-owned rows the caller can reach OR
@@ -617,6 +643,7 @@ peripheralControlRoutes.post(
       }
 
       const oldDeviceIds = await resolvePeripheralPolicyDeviceIds(existing);
+      const targeting = resolveUpdateTargeting(payload, existing);
 
       const [updated] = await db
         .update(peripheralPolicies)
@@ -624,9 +651,9 @@ peripheralControlRoutes.post(
           name: payload.name,
           deviceClass: payload.deviceClass,
           action: payload.action,
-          targetType: payload.targetType,
+          targetType: targeting.targetType,
           priority: payload.priority ?? existing.priority,
-          targetIds: sanitizeTargetIds(payload.targetIds),
+          targetIds: targeting.targetIds,
           exceptions: payload.exceptions ?? [],
           isActive: payload.isActive ?? existing.isActive,
           updatedAt: now
@@ -691,9 +718,9 @@ peripheralControlRoutes.post(
         name: payload.name,
         deviceClass: payload.deviceClass,
         action: payload.action,
-        targetType: payload.targetType,
+        targetType: payload.targetType ?? 'organization',
         priority: payload.priority ?? 100,
-        targetIds: sanitizeTargetIds(payload.targetIds),
+        targetIds: sanitizeTargetIds(payload.targetIds ?? {}),
         exceptions: payload.exceptions ?? [],
         isActive: payload.isActive ?? true,
         createdBy: auth.user.id,

@@ -1385,6 +1385,14 @@
     "never": "Nunca",
     "downloadInstaller": "Descargar el instalador preconfigurado",
     "downloading": "Descargando...",
+    "installerDialogTitle": "Descargar instalador para \"{{name}}\"",
+    "installerDialogDescription": "El instalador se genera para una cantidad fija de dispositivos. Cada dispositivo que lo ejecuta consume uno.",
+    "installerDeviceCount": "Número de dispositivos",
+    "installerDeviceCountRemaining": "A esta clave le quedan {{count}} inscripciones.",
+    "installerDeviceCountRemaining_one": "A esta clave le queda {{count}} inscripción.",
+    "installerDeviceCountRemaining_other": "A esta clave le quedan {{count}} inscripciones.",
+    "installerDeviceCountUnlimited": "Esta clave no tiene límite de uso.",
+    "installerDeviceCountRange": "Ingresa un número entero de 1 a {{max}}.",
     "rotate": "Rotar",
     "page": "Página {{current}} de {{total}}",
     "previous": "Anterior",
@@ -4338,6 +4346,13 @@
     "commitmentTermRange": "Plazo de compromiso: ingresa un número entero de 1 a 120 meses."
   },
   "catalogItemsTab": {
+    "viewActive": "Activos",
+    "viewArchived": "Archivados",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Servicio"
+    },
     "itemArchived": "Artículo archivado",
     "itemRestored": "Artículo restaurado",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "El catálogo de productos está disponible únicamente para cuentas de socios.",

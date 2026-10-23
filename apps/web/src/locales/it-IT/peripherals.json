@@ -79,6 +79,14 @@
     "allOrganizations": "Tutte le organizzazioni",
     "partnerWide": "(criterio a livello partner)",
     "thisOrganization": "Solo questa organizzazione",
+    "appliesTo": "Si applica a",
+    "targets": {
+      "organization": "Tutti i dispositivi",
+      "site": "Siti specifici ({{total}})",
+      "group": "Gruppi di dispositivi specifici ({{total}})",
+      "device": "Dispositivi specifici ({{total}})"
+    },
+    "targetReadOnlyHint": "Le destinazioni non possono essere modificate in questo modulo. Il salvataggio mantiene le destinazioni attuali.",
     "deviceClass": "Classe dispositivo",
     "classes": {
       "storage": "Archiviazione",

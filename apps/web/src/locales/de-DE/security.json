@@ -443,6 +443,7 @@
     "invalidResponseFromServer": "Ungültige Antwort vom Server",
     "low": "Niedrig",
     "markComplete": "Als abgeschlossen markieren",
+    "reopen": "Wieder öffnen",
     "medium": "Mittel",
     "next": "Als nächstes",
     "noRecommendationsMatchYourFilters": "Keine Empfehlungen entsprechen Ihren Filtern.",
@@ -810,9 +811,10 @@
     "precision": "Präzision",
     "recentEvidence": "Aktuelle Beweise",
     "refresh": "Aktualisieren",
+    "refreshing": "Wird aktualisiert",
     "repeatSignalUsers": "Wiederholen Sie Signalbenutzer",
     "retry": "Versuchen Sie es noch einmal",
-    "reviewRulesV0RiskScoresEvidenceAnd": "Überprüfen Sie die Risikobewertungen, Nachweise und Bewertungsbezeichnungen von Rules-v0.",
+    "reviewUserRiskScoresEvidenceAnd": "Überprüfen Sie die Risikobewertungen der Benutzer, die zugrunde liegenden Nachweise und Ihre Bewertungsbezeichnungen.",
     "scoreImpact": "{{value}} Schlag",
     "scoresEvidenceAndLabelsWillAppearHere": "Bewertungen, Beweise und Beschriftungen werden hier angezeigt, wenn der User-Risk-v0-Produzent aktiviert ist.",
     "selectAUserToInspectRiskEvidence": "Wählen Sie einen Benutzer aus, um Risikonachweise zu prüfen.",
@@ -821,7 +823,41 @@
     "truePositive": "Wirklich positiv",
     "truePositiveLabelSaved": "Echt-Positiv-Label gespeichert",
     "userRisk": "Benutzerrisiko",
-    "userRiskScoringIsDisabledForThis": "Die Benutzerrisikobewertung ist für diese Organisation deaktiviert."
+    "userRiskScoringIsDisabledForThis": "Die Benutzerrisikobewertung ist für diese Organisation deaktiviert.",
+    "factors": {
+      "mfaRisk": {
+        "label": "Lücken bei der Multi-Faktor-Authentifizierung",
+        "description": "Konten, für die MFA nicht aktiviert ist."
+      },
+      "authFailureRisk": {
+        "label": "Fehlgeschlagene Anmeldeversuche",
+        "description": "Wiederholte fehlgeschlagene Anmeldungen, die auf Passwort-Raten oder Credential Stuffing hindeuten können."
+      },
+      "sessionAnomalyRisk": {
+        "label": "Ungewöhnliche Sitzungsaktivität",
+        "description": "Anmeldungen von unbekannten Orten oder Geräten oder zu ungewöhnlichen Zeiten."
+      },
+      "threatExposureRisk": {
+        "label": "Bedrohungsexposition",
+        "description": "Auf den Geräten des Benutzers erkannte Bedrohungen."
+      },
+      "softwareViolationRisk": {
+        "label": "Verstöße gegen Softwarerichtlinien",
+        "description": "Installierte Software, die gegen Ihre Softwarerichtlinien verstößt."
+      },
+      "deviceSecurityRisk": {
+        "label": "Sicherheitszustand der Geräte",
+        "description": "Schwacher Sicherheitszustand der Geräte des Benutzers, etwa fehlender Schutz oder fehlende Patches."
+      },
+      "staleAccessRisk": {
+        "label": "Veralteter Zugriff",
+        "description": "Konten oder Zugriffe, die lange nicht genutzt wurden."
+      },
+      "recentImpactRisk": {
+        "label": "Aktuelle Risikoereignisse",
+        "description": "Für diesen Benutzer in den letzten Tagen erfasste Risikoereignisse."
+      }
+    }
   },
   "securityVulnerabilitiesPage": {
     "active": "Aktiv",
@@ -989,7 +1025,13 @@
       "flow": "Fließen",
       "status": "Status",
       "riskTierTitle": "Risikostufe {{tier}}",
-      "signer": "Unterzeichner: {{signer}}"
+      "signer": "Unterzeichner: {{signer}}",
+      "deviceUnable": {
+        "helperUnavailable": "Gerät konnte nicht handeln: kein PAM-Helfer verfügbar",
+        "sessionUnavailable": "Gerät konnte nicht handeln: Sitzung des Benutzers nicht verfügbar",
+        "helperStartFailed": "Gerät konnte nicht handeln: PAM-Helfer konnte nicht gestartet werden",
+        "generic": "Gerät konnte diese Anfrage nicht ausführen"
+      }
     },
     "actions": {
       "respond": "Antworten",
@@ -1908,10 +1950,27 @@
       "status": "Status",
       "approval": "Zustimmung",
       "requested": "Angefordert",
-      "completed": "Abgeschlossen"
+      "completed": "Abgeschlossen",
+      "decision": "Entscheidung"
     },
     "loading": "Abhilfemaßnahmen werden geladen...",
-    "empty": "Keine Abhilfemaßnahmen gefunden."
+    "empty": "Keine Abhilfemaßnahmen gefunden.",
+    "decision": {
+      "approve": "Genehmigen",
+      "reject": "Ablehnen",
+      "approveTitle": "Behebung genehmigen?",
+      "rejectTitle": "Behebung ablehnen?",
+      "approveMessage": "Damit wird die CIS-Prüfung {{checkId}} zur Ausführung auf {{device}} eingereiht. Der Agent ändert die Konfiguration des Geräts.",
+      "rejectMessage": "Damit wird die ausstehende Behebung für die CIS-Prüfung {{checkId}} auf {{device}} abgebrochen. Auf dem Gerät wird nichts ausgeführt.",
+      "noteLabel": "Notiz (optional)",
+      "approved": "Behebung für {{checkId}} genehmigt und eingereiht.",
+      "rejected": "Behebung für {{checkId}} abgelehnt.",
+      "approveFailed": "Behebung konnte nicht genehmigt werden",
+      "rejectFailed": "Behebung konnte nicht abgelehnt werden",
+      "queueFailed": "Die Genehmigung wurde gespeichert, die Behebung konnte jedoch nicht eingereiht werden. Sie wartet wieder auf Genehmigung; versuchen Sie es erneut.",
+      "mfaRequired": "Zum Genehmigen oder Ablehnen einer Behebung ist eine mit Multi-Faktor-Authentifizierung angemeldete Sitzung erforderlich. Melden Sie sich ab und mit MFA erneut an.",
+      "ownRequest": "Sie haben diese Behebung angefordert, daher muss ein anderer Benutzer sie genehmigen."
+    }
   },
   "auditBaselinesAuditBaselinesPage": {
     "title": "Audit-Baselines",

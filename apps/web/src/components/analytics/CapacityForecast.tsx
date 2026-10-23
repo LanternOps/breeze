@@ -59,7 +59,7 @@ export default function CapacityForecast({
             {t('analytics.chartWidget.noData')}
           </div>
         ) : (
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" minHeight={240}>
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
             <XAxis dataKey="timestamp" tick={{ fontSize: 10 }} className="text-muted-foreground" />

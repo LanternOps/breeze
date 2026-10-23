@@ -134,6 +134,15 @@ vi.mock('../../db', () => ({
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
 }));
 
+// #9719: the bulk cancel must go through cancelDeviceCommands so the per-type
+// cancellation hooks run for every command it flips.
+const { cancelDeviceCommandsMock } = vi.hoisted(() => ({
+  cancelDeviceCommandsMock: vi.fn(async () => [] as unknown[]),
+}));
+vi.mock('../../services/commandCancelPropagation', () => ({
+  cancelDeviceCommands: cancelDeviceCommandsMock,
+}));
+
 vi.mock('../../db/schema', async (importOriginal) => ({
   // Spread the real schema so transitive imports (e.g. patchPolicies pulled in
   // via remoteSessionTeardown) resolve; override the tables this suite asserts
@@ -503,6 +512,18 @@ describe('admin/abuse — suspend mutation behavior', () => {
       expect(row.targetRole).toBe('agent');
       expect(row.payload).toEqual({ removeConfig: true });
     });
+
+    // #9719: other pending/sent commands are cancelled through the shared
+    // helper (UPDATE + per-type hooks), inside the suspend transaction.
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledTimes(1);
+    expect(cancelDeviceCommandsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: { reason: 'partner_suspended_for_abuse' },
+        executor: expect.anything(),
+        // A failing hook must never roll back the suspension itself.
+        isolateFailures: true,
+      }),
+    );
 
     // Sessions deleted (caller is not a member of partner here, so all users targeted).
     expect(txMockState.deletes).toContainEqual({ table: 'sessions' });

@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Confirmer l’approbation du correctif",
-      "selectedOrganization": "l’organisation sélectionnée",
-      "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
-      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?",
+      "selectedRing": "(sans nom)",
+      "messageRingOne": "Approuver le correctif sur {{count}} appareil dans toutes les organisations de l’anneau {{ring}} ?",
+      "messageRingMany": "Approuver le correctif sur {{count}} appareils dans toutes les organisations de l’anneau {{ring}} ?",
       "messagePartnerWide": "Approuver le correctif pour toutes les organisations de votre partenaire ?"
     },
     "checkingAccess": "Vérification de votre accès..."
@@ -614,5 +614,24 @@
     "orEnterAPackageIDManually": "Ou entrer un colis ID manuellement",
     "removeRuleFor": "Supprimer la règle pour {{application}}",
     "scopeNote": "Ces règles s'appliquent à chaque appareil dont la politique de configuration est liée à cet anneau."
+  },
+  "patchDetails": {
+    "unknown": "Inconnu",
+    "source": "Origine",
+    "packageId": "KB / ID de paquet",
+    "severity": "Gravité",
+    "releaseDate": "Date de publication",
+    "firstSeen": "Première apparition dans le catalogue",
+    "rings": {
+      "title": "Anneaux de mise à jour",
+      "note": "Quand chaque anneau approuve automatiquement ce correctif (règle au niveau de l’anneau; les exceptions par catégorie ne sont pas affichées).",
+      "none": "Aucun anneau de mise à jour configuré.",
+      "manual": "Pas d’approbation automatique — approbation manuelle requise",
+      "immediate": "Approuvé automatiquement immédiatement",
+      "needsDate": "Retenu — aucune date de publication pour démarrer la fenêtre de {{count}} jours",
+      "autoApproves": "Approuvé automatiquement le {{date}}",
+      "hold_one": "Report de {{count}} jour",
+      "hold_other": "Report de {{count}} jours"
+    }
   }
 }

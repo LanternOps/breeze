@@ -110,3 +110,52 @@ describe('PeripheralPolicyForm — org-owned create names its organization (#833
     });
   });
 });
+
+// #9620: the form has no targeting control. Editing a site/group/device-targeted
+// policy must not re-target it to the whole organization, and the form shows the
+// current target read-only.
+describe('PeripheralPolicyForm — edit keeps targeting (#9620)', () => {
+  const sitePolicy = {
+    id: 'pol-1',
+    name: 'Block USB at HQ',
+    deviceClass: 'storage',
+    action: 'block',
+    isActive: true,
+    targetType: 'site',
+    targetIds: { siteIds: ['site-1', 'site-2'] },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-aaaa', allOrgs: false, organizations: [orgA, orgB], organizationsLoaded: true, error: null });
+  });
+
+  it('does not send targeting on save, so the stored target is kept', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse());
+    render(<PeripheralPolicyForm policy={sitePolicy} onClose={() => {}} />);
+    typeName('Block USB at HQ (renamed)');
+    fireEvent.click(screen.getByRole('button', { name: /Update Policy/i }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    const body = postedBody();
+    expect(body).toMatchObject({ id: 'pol-1', name: 'Block USB at HQ (renamed)' });
+    expect(body).not.toHaveProperty('targetType');
+    expect(body).not.toHaveProperty('targetIds');
+  });
+
+  it('shows the current target read-only', () => {
+    render(<PeripheralPolicyForm policy={sitePolicy} onClose={() => {}} />);
+    expect(screen.getByTestId('peripheral-policy-target')).toHaveTextContent('Specific sites (2)');
+  });
+
+  it('still creates org-wide by default', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse());
+    render(<PeripheralPolicyForm onClose={() => {}} />);
+    expect(screen.queryByTestId('peripheral-policy-target')).toBeNull();
+    typeName('Block USB Storage');
+    fireEvent.click(screen.getByRole('button', { name: /Create Policy/i }));
+
+    await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
+    expect(postedBody()).toMatchObject({ targetType: 'organization', targetIds: {} });
+  });
+});

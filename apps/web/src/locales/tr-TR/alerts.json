@@ -112,6 +112,7 @@
     "close": "Kapat",
     "createALinkedTicketPreFilledFrom": "Bu uyarıdan önceden doldurulmuş bağlantılı bir bilet oluşturun",
     "createTicket": "Bilet oluştur",
+    "viewTicket": "Bileti görüntüle {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Bu uyarıyı sessize alın — bildirimleri çözüme kavuşturmadan durdurur",
     "suppress": "Bastır",
     "dismissPermanentlyHidesThisAlertForGood": "Kalıcı olarak kapat — bu uyarıyı tamamen gizler (garanti süresinin dolması aynı bitiş tarihi için yeniden uyarı vermez; diğer koşullar tekrarlanırsa yine de yeni bir uyarı açabilir)",

@@ -387,6 +387,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 5 * MB,
     note: 'carved out — 5MB agent connections ingest (#3516); same shape as heartbeat/inventory.',
   },
+  'agents/pamElevationUnable.ts': {
+    paths: ['/api/v1/agents/agent-1/pam/elevation-unable'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 8 KiB device-unable report (#9517), enforced on bytes read so a chunked body is capped too.',
+  },
   'agents/hardwareHealth.ts': {
     paths: ['/api/v1/agents/agent-1/hardware-health'],
     globalMaxSize: 2 * MB,

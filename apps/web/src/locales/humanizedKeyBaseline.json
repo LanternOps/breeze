@@ -1076,8 +1076,6 @@
   "common.longTail.psa.PsaConnectionForm.ownerScope.thisOrganizationOnly",
   "common.longTail.psa.PsaConnectionForm.sections.basicInformation",
   "common.longTail.psa.PsaConnectionForm.sections.connectionDetails",
-  "common.longTail.psa.PsaConnectionForm.sections.syncSettings",
-  "common.longTail.psa.PsaConnectionForm.syncIntervals.everyHour",
   "common.longTail.psa.PsaConnectionList.actions.importCompanies",
   "common.longTail.psa.PsaConnectionList.actions.syncNow",
   "common.longTail.psa.PsaConnectionList.allOrgs",

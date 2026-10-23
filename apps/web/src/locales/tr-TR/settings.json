@@ -1385,6 +1385,14 @@
     "never": "Hiçbir zaman",
     "downloadInstaller": "Önceden yapılandırılmış yükleyiciyi indirin",
     "downloading": "İndiriliyor...",
+    "installerDialogTitle": "\"{{name}}\" için yükleyiciyi indir",
+    "installerDialogDescription": "Yükleyici belirli sayıda cihaz için oluşturulur. Onu çalıştıran her cihaz bir hak kullanır.",
+    "installerDeviceCount": "Cihaz sayısı",
+    "installerDeviceCountRemaining": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountRemaining_one": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountRemaining_other": "Bu anahtarın {{count}} kayıt hakkı kaldı.",
+    "installerDeviceCountUnlimited": "Bu anahtarın kullanım sınırı yok.",
+    "installerDeviceCountRange": "1 ile {{max}} arasında bir tam sayı girin.",
     "rotate": "Döndür",
     "page": "Sayfa {{current}} / {{total}}",
     "previous": "Önceki",
@@ -4338,6 +4346,13 @@
     "commitmentTermRange": "Taahhüt süresi: 1 ile 120 ay arasında bir tam sayı girin."
   },
   "catalogItemsTab": {
+    "viewActive": "Etkin",
+    "viewArchived": "Arşivlenmiş",
+    "typeLabel": {
+      "hardware": "Donanım",
+      "software": "Yazılım",
+      "service": "Hizmet"
+    },
     "itemArchived": "Öğe arşivlendi",
     "itemRestored": "Öğe geri yüklendi",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Ürün kataloğu yalnızca iş ortağı hesaplarına açıktır.",

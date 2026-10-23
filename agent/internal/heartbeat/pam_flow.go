@@ -87,11 +87,12 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		sessionTarget = "requester_session"
 	}
 
-	// Defensive: the PamRunner contract (see etwlua.PamRunner) says the caller
-	// passes a nil runner when the broker is absent. Guard anyway so a wiring
-	// slip can't panic the ETW hot path — every supported flow needs a helper.
+	// No session broker (e.g. an interactive agent with no user-helper, or an
+	// event that beat hb.Start's broker setup): every supported flow needs a
+	// helper. Not reported (#9517): early in startup it is not proof, so the
+	// request is left for the server's stale-request expiry.
 	if h.pamFindSession == nil && h.sessionBroker == nil {
-		log.Warn("pam: no session broker available; skipping elevation flow",
+		log.Warn("pam: no session broker available; skipping elevation flow, request left pending",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
 			"targetWinSession", targetWinSession)
 		return
@@ -107,9 +108,13 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		// this session yet. Lease and spawn one rather than stranding the
 		// request (#8996). The lease is held until the flow returns.
 		var releaseLease func()
-		session, releaseLease = h.spawnPamHelperOnDemand(ctx, find, outcome.RequestID, targetWinSession)
+		var unable *pamUnable
+		session, releaseLease, unable = h.spawnPamHelperOnDemand(ctx, find, outcome.RequestID, targetWinSession)
 		defer releaseLease()
 		if session == nil {
+			// Tell the server, so it closes the request rather than offering
+			// it to a technician (#9517). nil unable = the flow was cancelled.
+			h.reportPamUnable(outcome.RequestID, unable)
 			return
 		}
 		log.Info("pam: on-demand SYSTEM helper ready; continuing elevation flow",

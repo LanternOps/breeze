@@ -162,6 +162,7 @@ vi.mock('../../services/dispatchDeviceCommand', () => ({
 // script_executions / deployment_results writes.
 vi.mock('../../services/commandCancelPropagation', () => ({
   propagateCancelledDeviceCommand: vi.fn(),
+  cancelDeviceCommands: vi.fn(),
 }));
 
 // #8296 — POST /:id/commands/:commandId/mark-failed terminalises the records
@@ -196,7 +197,7 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { dispatchWake } from '../../services/wakeOnLan';
 import { TrustDeniedError } from '../../services/partnerTrust.commands';
 import { consumeStepUpGrant, maintenanceResourceDigest, validateStepUpGrant } from '../../services/mfaStepUpGrant';
-import { propagateCancelledDeviceCommand } from '../../services/commandCancelPropagation';
+import { propagateCancelledDeviceCommand, cancelDeviceCommands } from '../../services/commandCancelPropagation';
 import { propagateTimedOutDeviceCommand } from '../../jobs/staleCommandReaper';
 import { applyAutomationActionTerminal } from '../../services/automationActionResults';
 import { MARK_FAILED_MIN_AGE_MS } from './commands';
@@ -1938,14 +1939,14 @@ describe('device commands routes', () => {
           }),
         }),
       });
-      txUpdate = vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue(opts.updated ? [opts.updated] : []),
-          }),
-        }),
-      });
-      txHandle = { select: txSelect, update: txUpdate };
+      // The flip + hooks live in cancelDeviceCommands (#9719); `txUpdate` is
+      // kept as the "was a flip attempted" probe the assertions below use.
+      txUpdate = vi.mocked(cancelDeviceCommands);
+      txUpdate.mockReset();
+      txUpdate.mockResolvedValue(
+        opts.updated ? [{ id: opts.updated.id, type: 'reboot', payload: null }] : [],
+      );
+      txHandle = { select: txSelect };
       vi.mocked(db.transaction).mockImplementation(async (cb: any) => cb(txHandle));
     };
 
@@ -1974,8 +1975,11 @@ describe('device commands routes', () => {
       // A crash between the flip and the propagation would otherwise leave a
       // cancelled command owning a still-`pending` script_executions /
       // deployment_results row that nothing ever revisits.
-      expect(propagateCancelledDeviceCommand).toHaveBeenCalledWith(
-        expect.objectContaining({ commandId: COMMAND_ID, type: 'reboot', executor: txHandle }),
+      expect(cancelDeviceCommands).toHaveBeenCalledWith(
+        expect.objectContaining({
+          executor: txHandle,
+          result: expect.objectContaining({ reason: 'user_cancelled' }),
+        }),
       );
     });
 
@@ -1991,7 +1995,7 @@ describe('device commands routes', () => {
       const body = await res.json();
       expect(body.status).toBe('sent');
       expect(txUpdate).not.toHaveBeenCalled();
-      expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
+      expect(cancelDeviceCommands).not.toHaveBeenCalled();
     });
 
     it('cancel: 409s and does NOT propagate when the CAS loses the race', async () => {
@@ -2011,7 +2015,6 @@ describe('device commands routes', () => {
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: 'Command is not pending' });
       expect(txUpdate).toHaveBeenCalledTimes(1);
-      expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
       expect(writeRouteAudit).not.toHaveBeenCalled();
     });
 
@@ -2027,7 +2030,7 @@ describe('device commands routes', () => {
 
       expect(res.status).toBe(404);
       expect(txUpdate).not.toHaveBeenCalled();
-      expect(propagateCancelledDeviceCommand).not.toHaveBeenCalled();
+      expect(cancelDeviceCommands).not.toHaveBeenCalled();
     });
   });
 

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { localDateInputValue } from './localDate';
+import { endOfLocalDayIso, localDateInputValue } from './localDate';
 
 describe('localDateInputValue', () => {
   const originalTz = process.env.TZ;
@@ -22,5 +22,18 @@ describe('localDateInputValue', () => {
 
   it('accepts an explicit date and zero-pads', () => {
     expect(localDateInputValue(new Date(2026, 0, 5, 12))).toBe('2026-01-05');
+  });
+
+  it('endOfLocalDayIso returns the last millisecond of the local day (#9654)', () => {
+    // MDT (UTC-6), MST (UTC-7) on a leap day, and the spring-forward day.
+    expect(endOfLocalDayIso('2099-06-30')).toBe('2099-07-01T05:59:59.999Z');
+    expect(endOfLocalDayIso('2028-02-29')).toBe('2028-03-01T06:59:59.999Z');
+    expect(endOfLocalDayIso('2026-03-08')).toBe('2026-03-09T05:59:59.999Z');
+  });
+
+  it('endOfLocalDayIso rejects malformed and non-existent dates', () => {
+    for (const bad of ['2026-02-31', '2026-13-01', '2026-00-10', '31/12/2026', '2026-1-5', '']) {
+      expect(endOfLocalDayIso(bad)).toBeNull();
+    }
   });
 });
