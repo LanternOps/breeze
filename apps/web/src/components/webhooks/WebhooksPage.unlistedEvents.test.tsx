@@ -84,6 +84,48 @@ describe('WebhooksPage edit — events without a checkbox (#9693)', () => {
     expect(body.events).toEqual(['device.online']);
   });
 
+  it('keeps a deliberately unchecked catalog event out while an unlisted chip stays', async () => {
+    await openEdit(['device.online', 'custom.thing']);
+    fireEvent.click(document.querySelector('input[type="checkbox"][value="device.online"]')!);
+    const body = await save();
+    expect(body.events).toEqual(['custom.thing']);
+  });
+
+  it('keeps "*" plus listed events, and re-enables the list when the "*" chip is removed', async () => {
+    await openEdit(['*', 'device.online']);
+    const fieldset = () => document.querySelector('input[type="checkbox"]')!.closest('fieldset')!;
+    expect(fieldset().disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove All events (*)' }));
+    expect(fieldset().disabled).toBe(false);
+    const body = await save();
+    expect(body.events).toEqual(['device.online']);
+  });
+
+  it('create mode: requires an event, then sends only the checked ones', async () => {
+    fetchWithAuth.mockImplementation((rawUrl: unknown, init?: RequestInit) => {
+      const url = String(rawUrl);
+      if (init?.method === 'POST') return json(webhook(['device.online']), 201);
+      if (url.startsWith('/webhooks')) return json({ data: [] });
+      return json({}, 404);
+    });
+    render(<WebhooksPage />);
+    fireEvent.click((await screen.findAllByRole('button', { name: /New Webhook/ }))[0]!);
+    const form = (await screen.findByRole('button', { name: 'Create Webhook' })).closest('form')!;
+    expect(form.querySelector('fieldset')!.disabled).toBe(false);
+    fireEvent.change(document.getElementById('webhook-name')!, { target: { value: 'N' } });
+    fireEvent.change(document.getElementById('webhook-url')!, { target: { value: 'https://hooks.example.com/n' } });
+    fireEvent.change(document.getElementById('webhook-secret')!, { target: { value: 'sekret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Webhook' }));
+    await waitFor(() => expect(document.body.textContent).toMatch(/at least one event/i));
+    const posted = () => fetchWithAuth.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'POST');
+    expect(posted()).toBe(false);
+    fireEvent.click(form.querySelector('input[type="checkbox"][value="device.online"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Create Webhook' }));
+    await waitFor(() => expect(posted()).toBe(true));
+    const [, init] = fetchWithAuth.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'POST')!;
+    expect(JSON.parse((init as RequestInit).body as string).events).toEqual(['device.online']);
+  });
+
   it('still requires at least one event after the last chip is removed', async () => {
     await openEdit(['custom.thing']);
     fireEvent.click(screen.getByRole('button', { name: 'Remove custom.thing' }));
