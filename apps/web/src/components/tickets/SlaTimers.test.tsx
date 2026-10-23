@@ -4,6 +4,7 @@ import { SlaTimers } from './SlaTimers';
 import type { TicketDetail } from './ticketConfig';
 
 const NOW = new Date(); // must match the component's default `now = new Date()`
+const inMin = (m: number) => new Date(NOW.getTime() + m * 60_000).toISOString();
 
 const mkTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
   id: 'tk-1',
@@ -39,7 +40,7 @@ const mkTicket = (overrides: Partial<TicketDetail> = {}): TicketDetail => ({
 
 describe('SlaTimers', () => {
   it('renders both timers with countdowns', () => {
-    render(<SlaTimers ticket={mkTicket({ responseSlaMinutes: 60, resolutionSlaMinutes: 240 })} />);
+    render(<SlaTimers ticket={mkTicket({ responseSlaMinutes: 60, resolutionSlaMinutes: 240, responseDueAt: inMin(50), resolutionDueAt: inMin(230) })} />);
     expect(screen.getByTestId('sla-timer-response')).toHaveTextContent(/left/);
     expect(screen.getByTestId('sla-timer-resolution')).toHaveTextContent(/left/);
   });
@@ -50,11 +51,13 @@ describe('SlaTimers', () => {
         ticket={mkTicket({
           responseSlaMinutes: 60,
           resolutionSlaMinutes: 240,
+          responseDueAt: inMin(50),
+          resolutionDueAt: inMin(230),
           firstResponseAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
         })}
       />
     );
-    expect(screen.getByTestId('sla-timer-response')).toHaveTextContent('Met');
+    expect(screen.getByTestId('sla-timer-response')).toHaveTextContent(/Met$/);
     // Resolution target is untouched by the first response.
     expect(screen.getByTestId('sla-timer-resolution')).toHaveTextContent(/left/);
   });
@@ -64,12 +67,13 @@ describe('SlaTimers', () => {
       <SlaTimers
         ticket={mkTicket({
           resolutionSlaMinutes: 240,
+          resolutionDueAt: inMin(230),
           status: 'resolved',
           resolvedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
         })}
       />
     );
-    expect(screen.getByTestId('sla-timer-resolution')).toHaveTextContent('Met');
+    expect(screen.getByTestId('sla-timer-resolution')).toHaveTextContent(/Met$/);
   });
 
   it('shows breached targets from slaBreachReason', () => {
@@ -78,6 +82,8 @@ describe('SlaTimers', () => {
         ticket={mkTicket({
           responseSlaMinutes: 60,
           resolutionSlaMinutes: 240,
+          responseDueAt: inMin(50),
+          resolutionDueAt: inMin(230),
           slaBreachedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
           slaBreachReason: 'response',
         })}
@@ -93,6 +99,7 @@ describe('SlaTimers', () => {
       <SlaTimers
         ticket={mkTicket({
           responseSlaMinutes: 60,
+          responseDueAt: inMin(50),
           status: 'pending',
           slaPausedAt: NOW.toISOString(),
           slaPausedMinutes: 0,
@@ -101,6 +108,30 @@ describe('SlaTimers', () => {
     );
     expect(screen.getByTestId('sla-timers-paused')).toBeInTheDocument();
     expect(screen.getByTestId('sla-timer-response')).toHaveTextContent('Paused');
+  });
+
+  it('shows "Met late" when the completion is after the stored due', () => {
+    render(
+      <SlaTimers
+        ticket={mkTicket({
+          responseSlaMinutes: 60,
+          responseDueAt: inMin(-30),
+          firstResponseAt: inMin(-5),
+        })}
+      />
+    );
+    expect(screen.getByTestId('sla-timer-response')).toHaveTextContent('Met late');
+  });
+
+  it('shows "Met" when the completion is exactly at the stored due', () => {
+    const due = inMin(-10);
+    render(<SlaTimers ticket={mkTicket({ responseDueAt: due, firstResponseAt: due })} />);
+    expect(screen.getByTestId('sla-timer-response')).toHaveTextContent(/Met$/);
+  });
+
+  it('renders no row when the stored due is null even if a target exists', () => {
+    render(<SlaTimers ticket={mkTicket({ responseSlaMinutes: 60, resolutionSlaMinutes: 240 })} />);
+    expect(screen.queryByTestId('sla-timers')).toBeNull();
   });
 
   it('renders nothing when the ticket has no SLA targets', () => {
@@ -113,6 +144,7 @@ describe('SlaTimers', () => {
       <SlaTimers
         ticket={mkTicket({
           responseSlaMinutes: 60,
+          responseDueAt: inMin(50),
           firstResponseAt: null,
           status: 'resolved',
           resolvedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
@@ -129,6 +161,7 @@ describe('SlaTimers', () => {
       <SlaTimers
         ticket={mkTicket({
           responseSlaMinutes: 60,
+          responseDueAt: inMin(50),
           firstResponseAt: null,
           status: 'resolved',
           resolvedAt: new Date(NOW.getTime() - 5 * 60_000).toISOString(),
