@@ -37,7 +37,9 @@ const {
 // #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
 // mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
 const { lockTicketForWriteMock } = vi.hoisted(() => ({
-  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'org-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string): Promise<{
+    id: string; orgId: string; partnerId: string; status: string; deletedAt: Date | null; workKind: string;
+  } | null> => ({ id, orgId: 'org-1', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support' })),
 }));
 vi.mock('../../services/ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
 
