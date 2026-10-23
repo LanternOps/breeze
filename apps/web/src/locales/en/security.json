@@ -2333,7 +2333,27 @@
       "iocInvalid": "Some IOCs are not valid. Fix the marked lines and try again."
     },
     "test": {
-      "requestFailed": "The test did not finish. Check your connection and try again."
+      "requestFailed": "The test did not finish. Check your connection and try again.",
+      "privacy": "The file is scanned on the Breeze server, in a sandbox, against this set's current rules, including changes that are not published yet. The file is not stored.",
+      "sandboxUnavailable": "File tests are not available on this server",
+      "sandboxUnavailableHelp": "The server cannot isolate the scan, so it does not run uploaded files. Rule editing, IOC import and device scans are not affected.",
+      "file": "File to test",
+      "filepath": "Path on device (optional)",
+      "filepathHelp": "Where the file would sit on a device. Rules that match on the path use it; it defaults to the file name.",
+      "run": "Run test",
+      "running": "Testing…",
+      "testedVersion": "Tested version {{version}}",
+      "unpublishedChanges": "Testing your unpublished changes.",
+      "noMatches": "No rules matched.",
+      "errors": {
+        "tooLarge": "The file is larger than {{max}} MB. Choose a smaller file.",
+        "busy": "Another test is running. Try again in a few seconds.",
+        "rateLimited": "You have run too many tests in the last few minutes. Try again later.",
+        "unavailable": "The rule checker is unavailable. Try again later.",
+        "noRules": "This set has no enabled rules to test.",
+        "compileFailed": "This set does not compile with its current rules, so nothing was scanned:",
+        "bodyTimeout": "The upload took too long. Try again."
+      }
     },
     "severity": {
       "low": "Low",

@@ -2333,7 +2333,27 @@
       "iocInvalid": "Alguns IOCs não são válidos. Corrija as linhas marcadas e tente novamente."
     },
     "test": {
-      "requestFailed": "O teste não terminou. Verifique sua conexão e tente novamente."
+      "requestFailed": "O teste não terminou. Verifique sua conexão e tente novamente.",
+      "privacy": "O arquivo é verificado no servidor do Breeze, em uma sandbox, com as regras atuais deste conjunto, incluindo alterações ainda não publicadas. O arquivo não é armazenado.",
+      "sandboxUnavailable": "Os testes de arquivo não estão disponíveis neste servidor",
+      "sandboxUnavailableHelp": "O servidor não consegue isolar a verificação, então não processa arquivos enviados. A edição de regras, a importação de IOCs e as varreduras dos dispositivos não são afetadas.",
+      "file": "Arquivo para testar",
+      "filepath": "Caminho no dispositivo (opcional)",
+      "filepathHelp": "Onde o arquivo ficaria em um dispositivo. As regras que comparam o caminho o usam; por padrão, é o nome do arquivo.",
+      "run": "Executar teste",
+      "running": "Testando…",
+      "testedVersion": "Versão testada {{version}}",
+      "unpublishedChanges": "Testando suas alterações não publicadas.",
+      "noMatches": "Nenhuma regra correspondeu.",
+      "errors": {
+        "tooLarge": "O arquivo tem mais de {{max}} MB. Escolha um arquivo menor.",
+        "busy": "Outro teste está em andamento. Tente novamente em alguns segundos.",
+        "rateLimited": "Você executou testes demais nos últimos minutos. Tente novamente mais tarde.",
+        "unavailable": "O verificador de regras está indisponível. Tente novamente mais tarde.",
+        "noRules": "Este conjunto não tem regras ativadas para testar.",
+        "compileFailed": "Este conjunto não compila com as regras atuais, então nada foi verificado:",
+        "bodyTimeout": "O envio demorou demais. Tente novamente."
+      }
     },
     "severity": {
       "low": "Baixa",

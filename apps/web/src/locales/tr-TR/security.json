@@ -2333,7 +2333,27 @@
       "iocInvalid": "Bazı IOC'ler geçerli değil. İşaretli satırları düzeltip yeniden deneyin."
     },
     "test": {
-      "requestFailed": "Test tamamlanmadı. Bağlantınızı denetleyip yeniden deneyin."
+      "requestFailed": "Test tamamlanmadı. Bağlantınızı denetleyip yeniden deneyin.",
+      "privacy": "Dosya, Breeze sunucusunda bir korumalı alanda, bu kümenin henüz yayımlanmamış değişiklikler dahil güncel kurallarıyla taranır. Dosya saklanmaz.",
+      "sandboxUnavailable": "Bu sunucuda dosya testleri kullanılamıyor",
+      "sandboxUnavailableHelp": "Sunucu taramayı yalıtamadığı için yüklenen dosyaları işlemez. Kural düzenleme, IOC içe aktarma ve cihaz taramaları etkilenmez.",
+      "file": "Test edilecek dosya",
+      "filepath": "Cihazdaki yol (isteğe bağlı)",
+      "filepathHelp": "Dosyanın bir cihazda bulunacağı yer. Yolu denetleyen kurallar bunu kullanır; varsayılan değer dosya adıdır.",
+      "run": "Testi çalıştır",
+      "running": "Test ediliyor…",
+      "testedVersion": "Test edilen sürüm {{version}}",
+      "unpublishedChanges": "Yayımlanmamış değişiklikleriniz test ediliyor.",
+      "noMatches": "Hiçbir kural eşleşmedi.",
+      "errors": {
+        "tooLarge": "Dosya {{max}} MB'tan büyük. Daha küçük bir dosya seçin.",
+        "busy": "Başka bir test çalışıyor. Birkaç saniye sonra yeniden deneyin.",
+        "rateLimited": "Son birkaç dakikada çok fazla test çalıştırdınız. Daha sonra yeniden deneyin.",
+        "unavailable": "Kural denetleyicisi kullanılamıyor. Daha sonra yeniden deneyin.",
+        "noRules": "Bu kümede test edilecek etkin kural yok.",
+        "compileFailed": "Bu küme güncel kurallarıyla derlenmiyor, bu nedenle hiçbir şey taranmadı:",
+        "bodyTimeout": "Yükleme çok uzun sürdü. Yeniden deneyin."
+      }
     },
     "severity": {
       "low": "Düşük",

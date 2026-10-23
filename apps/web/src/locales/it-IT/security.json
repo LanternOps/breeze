@@ -2333,7 +2333,27 @@
       "iocInvalid": "Alcuni IOC non sono validi. Correggi le righe segnalate e riprova."
     },
     "test": {
-      "requestFailed": "Il test non è stato completato. Controlla la connessione e riprova."
+      "requestFailed": "Il test non è stato completato. Controlla la connessione e riprova.",
+      "privacy": "Il file viene analizzato sul server Breeze, in una sandbox, con le regole attuali di questo set, comprese le modifiche non ancora pubblicate. Il file non viene conservato.",
+      "sandboxUnavailable": "I test dei file non sono disponibili su questo server",
+      "sandboxUnavailableHelp": "Il server non può isolare la scansione, quindi non elabora i file caricati. La modifica delle regole, l'importazione di IOC e le scansioni dei dispositivi non sono interessate.",
+      "file": "File da provare",
+      "filepath": "Percorso sul dispositivo (facoltativo)",
+      "filepathHelp": "Dove si troverebbe il file su un dispositivo. Lo usano le regole che verificano il percorso; per impostazione predefinita è il nome del file.",
+      "run": "Avvia test",
+      "running": "Test in corso…",
+      "testedVersion": "Versione testata {{version}}",
+      "unpublishedChanges": "Stai testando le modifiche non pubblicate.",
+      "noMatches": "Nessuna regola corrisponde.",
+      "errors": {
+        "tooLarge": "Il file supera i {{max}} MB. Scegli un file più piccolo.",
+        "busy": "È in corso un altro test. Riprova tra qualche secondo.",
+        "rateLimited": "Hai eseguito troppi test negli ultimi minuti. Riprova più tardi.",
+        "unavailable": "Il controllo delle regole non è disponibile. Riprova più tardi.",
+        "noRules": "Questo set non ha regole attive da testare.",
+        "compileFailed": "Questo set non si compila con le regole attuali, quindi non è stato analizzato nulla:",
+        "bodyTimeout": "Il caricamento ha richiesto troppo tempo. Riprova."
+      }
     },
     "severity": {
       "low": "Bassa",

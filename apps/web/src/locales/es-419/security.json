@@ -2333,7 +2333,27 @@
       "iocInvalid": "Algunos IOC no son válidos. Corrija las líneas marcadas e inténtelo de nuevo."
     },
     "test": {
-      "requestFailed": "La prueba no terminó. Revise su conexión e inténtelo de nuevo."
+      "requestFailed": "La prueba no terminó. Revise su conexión e inténtelo de nuevo.",
+      "privacy": "El archivo se escanea en el servidor de Breeze, en un entorno aislado, con las reglas actuales de este conjunto, incluidos los cambios aún no publicados. El archivo no se almacena.",
+      "sandboxUnavailable": "Las pruebas de archivos no están disponibles en este servidor",
+      "sandboxUnavailableHelp": "El servidor no puede aislar el escaneo, así que no procesa archivos cargados. La edición de reglas, la importación de IOC y los escaneos de dispositivos no se ven afectados.",
+      "file": "Archivo para probar",
+      "filepath": "Ruta en el dispositivo (opcional)",
+      "filepathHelp": "Dónde estaría el archivo en un dispositivo. La usan las reglas que comparan la ruta; de forma predeterminada es el nombre del archivo.",
+      "run": "Ejecutar prueba",
+      "running": "Probando…",
+      "testedVersion": "Versión probada {{version}}",
+      "unpublishedChanges": "Se están probando sus cambios sin publicar.",
+      "noMatches": "Ninguna regla coincidió.",
+      "errors": {
+        "tooLarge": "El archivo supera los {{max}} MB. Elija un archivo más pequeño.",
+        "busy": "Hay otra prueba en curso. Inténtelo de nuevo en unos segundos.",
+        "rateLimited": "Ejecutó demasiadas pruebas en los últimos minutos. Inténtelo más tarde.",
+        "unavailable": "El verificador de reglas no está disponible. Inténtelo más tarde.",
+        "noRules": "Este conjunto no tiene reglas habilitadas para probar.",
+        "compileFailed": "Este conjunto no compila con sus reglas actuales, así que no se escaneó nada:",
+        "bodyTimeout": "La carga tardó demasiado. Inténtelo de nuevo."
+      }
     },
     "severity": {
       "low": "Baja",

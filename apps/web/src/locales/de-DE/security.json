@@ -2333,7 +2333,27 @@
       "iocInvalid": "Einige IOCs sind ungültig. Korrigieren Sie die markierten Zeilen und versuchen Sie es erneut."
     },
     "test": {
-      "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+      "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "privacy": "Die Datei wird auf dem Breeze-Server in einer Sandbox mit den aktuellen Regeln dieses Satzes gescannt, einschließlich noch nicht veröffentlichter Änderungen. Die Datei wird nicht gespeichert.",
+      "sandboxUnavailable": "Dateitests sind auf diesem Server nicht verfügbar",
+      "sandboxUnavailableHelp": "Der Server kann den Scan nicht isolieren und führt daher keine hochgeladenen Dateien aus. Regelbearbeitung, IOC-Import und Gerätescans sind nicht betroffen.",
+      "file": "Zu testende Datei",
+      "filepath": "Pfad auf dem Gerät (optional)",
+      "filepathHelp": "Wo die Datei auf einem Gerät liegen würde. Regeln, die auf den Pfad prüfen, verwenden ihn; standardmäßig der Dateiname.",
+      "run": "Test starten",
+      "running": "Wird getestet…",
+      "testedVersion": "Getestete Version {{version}}",
+      "unpublishedChanges": "Ihre unveröffentlichten Änderungen werden getestet.",
+      "noMatches": "Keine Regel hat angeschlagen.",
+      "errors": {
+        "tooLarge": "Die Datei ist größer als {{max}} MB. Wählen Sie eine kleinere Datei.",
+        "busy": "Ein anderer Test läuft gerade. Versuchen Sie es in einigen Sekunden erneut.",
+        "rateLimited": "Sie haben in den letzten Minuten zu viele Tests ausgeführt. Versuchen Sie es später erneut.",
+        "unavailable": "Die Regelprüfung ist nicht verfügbar. Versuchen Sie es später erneut.",
+        "noRules": "Dieser Satz hat keine aktivierten Regeln zum Testen.",
+        "compileFailed": "Dieser Satz lässt sich mit seinen aktuellen Regeln nicht kompilieren, daher wurde nichts gescannt:",
+        "bodyTimeout": "Der Upload hat zu lange gedauert. Versuchen Sie es erneut."
+      }
     },
     "severity": {
       "low": "Niedrig",

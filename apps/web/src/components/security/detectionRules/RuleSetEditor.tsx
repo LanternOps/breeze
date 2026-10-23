@@ -12,6 +12,7 @@ import { RuleSetBadges, useOwnerLabel } from "./RuleSetList";
 import RuleSetRules from "./RuleSetRules";
 import RuleEditorDialog from "./RuleEditorDialog";
 import IocImportPanel from "./IocImportPanel";
+import RuleTestPanel from "./RuleTestPanel";
 import {
   describePublishOutcome,
   formatPublishOutcome,
@@ -386,6 +387,8 @@ export default function RuleSetEditor({
           }}
         />
       )}
+
+      {tab === "test" && <RuleTestPanel setId={set.id} />}
 
       {dialogRule !== undefined && (
         <RuleEditorDialog rule={dialogRule} onClose={() => setDialogRule(undefined)} onSubmit={submitRule} />

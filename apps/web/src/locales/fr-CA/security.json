@@ -2333,7 +2333,27 @@
       "iocInvalid": "Certains IOC ne sont pas valides. Corrigez les lignes signalées et réessayez."
     },
     "test": {
-      "requestFailed": "Le test ne s’est pas terminé. Vérifiez votre connexion et réessayez."
+      "requestFailed": "Le test ne s’est pas terminé. Vérifiez votre connexion et réessayez.",
+      "privacy": "Le fichier est balayé sur le serveur Breeze, dans un bac à sable, avec les règles actuelles de cet ensemble, y compris les modifications pas encore publiées. Le fichier n’est pas conservé.",
+      "sandboxUnavailable": "Les tests de fichiers ne sont pas offerts sur ce serveur",
+      "sandboxUnavailableHelp": "Le serveur ne peut pas isoler le balayage, donc il ne traite pas les fichiers téléversés. La modification des règles, l’importation d’IOC et les balayages des appareils ne sont pas touchés.",
+      "file": "Fichier à tester",
+      "filepath": "Chemin sur l’appareil (facultatif)",
+      "filepathHelp": "L’emplacement du fichier sur un appareil. Les règles qui portent sur le chemin l’utilisent; par défaut, c’est le nom du fichier.",
+      "run": "Lancer le test",
+      "running": "Test en cours…",
+      "testedVersion": "Version testée {{version}}",
+      "unpublishedChanges": "Vos modifications non publiées sont testées.",
+      "noMatches": "Aucune règle n’a correspondu.",
+      "errors": {
+        "tooLarge": "Le fichier dépasse {{max}} Mo. Choisissez un fichier plus petit.",
+        "busy": "Un autre test est en cours. Réessayez dans quelques secondes.",
+        "rateLimited": "Vous avez lancé trop de tests au cours des dernières minutes. Réessayez plus tard.",
+        "unavailable": "Le vérificateur de règles n’est pas disponible. Réessayez plus tard.",
+        "noRules": "Cet ensemble n’a aucune règle activée à tester.",
+        "compileFailed": "Cet ensemble ne compile pas avec ses règles actuelles, donc rien n’a été balayé :",
+        "bodyTimeout": "Le téléversement a pris trop de temps. Réessayez."
+      }
     },
     "severity": {
       "low": "Faible",
