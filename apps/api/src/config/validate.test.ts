@@ -3052,6 +3052,12 @@ describe('validateConfig', () => {
     });
   });
 
+  it('refuses BREEZE_WISP_ENABLED=true in production with ENABLE_2FA=false (grants need step-up proof)', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true', ENABLE_2FA: 'false' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires ENABLE_2FA/);
+    });
+  });
+
   it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
     withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
       expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);

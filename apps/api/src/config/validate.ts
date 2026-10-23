@@ -1619,6 +1619,18 @@ const envSchema = envObjectSchema
             message: 'BREEZE_WISP_ENABLED=true requires IS_HOSTED=true — Wisp is hosted-only (Wisp design §10).',
           });
         }
+        // A Wisp grant borrows a human's authority on a fresh step-up proof
+        // (Wisp design §4.2). With ENABLE_2FA off no step-up can be minted and
+        // the grant path degrades to "session only", so refuse it in production.
+        // Same falsy rule as envFlag('ENABLE_2FA', true).
+        const enable2fa = (data.ENABLE_2FA ?? '').trim().toLowerCase();
+        if (enable2fa !== '' && !['1', 'true', 'yes', 'on'].includes(enable2fa)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['ENABLE_2FA'],
+            message: 'BREEZE_WISP_ENABLED=true requires ENABLE_2FA to stay on — Wisp grants are created and refreshed on a step-up proof (Wisp design §4.2).',
+          });
+        }
       }
 
       // The multiplier is the only knob between vendor list price and what an
