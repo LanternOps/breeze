@@ -651,3 +651,59 @@ describe('planEffectStep — declared unobservable effects (R1a-0 Task 1e)', () 
       .resolves.toMatchObject({ action: 'settle', event: 'hand_off' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// R1a-0 review round (Opus): appended regression cases.
+// ---------------------------------------------------------------------------
+describe('planEffectStep — review-round fixes (R1a-0)', () => {
+  const s0: PlannedEffect = { ...mkEffect(0, 'google_signout'), accountExternalId: '101' };
+  const s1: PlannedEffect = { ...mkEffect(1, 'google_suspend_user'), accountExternalId: '101' };
+  const recipeFor = (plan: PlannedEffect[], declared: Record<string, string>) => {
+    buildPlan.mockReturnValue(plan);
+    h.readPlanApprovalAtRevision.mockResolvedValue(approvalRow({ effectSetDigest: sealOf(plan) }));
+    return { buildPlan, steps: { after: {} }, unobservableEffects: declared } as never;
+  };
+  const runWith = (r: never, checkpoint: Record<string, unknown> = { recipeInput: {} }) =>
+    planEffectStep({ task, recipe: r, checkpoint: checkpoint as never, now: new Date('2026-10-12T00:00:00Z') });
+
+  it('a plan-build failure with an approval row and an operation whose result is UNKNOWN hands off unknown_effect', async () => {
+    buildPlan.mockImplementation(() => { throw new Error('recipe code changed'); });
+    h.tables.set(aiOperatorPlanApprovals, [{ id: 'ap1' }]);
+    setOps([op(e0, { resultState: 'unknown', dispatchedAt: new Date() })]);
+    const out = await run() as { handoffSummary: string };
+    expect(out).toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(out.handoffSummary).toContain('may still be running');
+  });
+
+  it('a recorded-unobservable row whose carve-out no longer applies is re-probed and an unknown hands off (fail closed)', async () => {
+    const r = recipeFor([s0, s1], {});
+    setOps([op(s0, { result: { verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } } })]);
+    h.probeEffect.mockResolvedValue(probe('unknown'));
+    await expect(runWith(r)).resolves.toMatchObject({ action: 'settle', event: 'hand_off', outcome: 'unknown_effect' });
+    expect(h.probeEffect).toHaveBeenCalledTimes(1);
+    expect(h.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('the audit event for an unobservable record does not claim subsumption before it is known', async () => {
+    const r = recipeFor([s0, s1], { google_signout: 'google_suspend_user' });
+    setOps([op(s0)]);
+    h.probeEffect.mockResolvedValueOnce(probe('unknown')).mockResolvedValueOnce(probe('unsatisfied'));
+    await runWith(r);
+    const detail = h.appendTaskEvent.mock.calls
+      .map((c) => (c[1] as { eventType: string; detail: string }))
+      .find((e) => e.eventType === 'verification_recorded')!.detail;
+    expect(detail).toContain('unobservable');
+    expect(detail).toContain('google_suspend_user');
+    expect(detail).not.toMatch(/\(subsumed by/);
+  });
+
+  it('with a resume step, the move detail names each unobservable effect that was NOT subsumed', async () => {
+    const other = { ...s1, accountExternalId: '202' };
+    const r = recipeFor([s0, other], { google_signout: 'google_suspend_user' });
+    setOps([op(s0, { result: { verified: { ok: false, unobservable: true, subsumedBy: 'google_suspend_user' } } }),
+      op(other, { result: { verified: { ok: true } } })]);
+    const out = await runWith(r, { recipeInput: {}, resumeStepKey: 'after' }) as { settledDetail: string };
+    expect(out).toMatchObject({ action: 'move', toStepKey: 'after' });
+    expect(out.settledDetail).toContain('google_signout (ordinal 0)');
+  });
+});

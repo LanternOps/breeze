@@ -297,7 +297,7 @@ async function recordVerification(args: {
       orgId: args.orgId, taskId: args.taskId, eventType: 'verification_recorded', actor: { kind: 'coordinator' },
       stepKey: args.stepKey, targetId: null,
       detail: `${args.operationKey}: ${args.verified ? 'verified'
-        : args.unobservable ? `unobservable (subsumed by ${args.unobservable.subsumedBy} on the same account)`
+        : args.unobservable ? `unobservable; recorded, not verified (confirmable only by ${args.unobservable.subsumedBy} on the same account)`
           : 'not verified'} — ${args.detail}`.slice(0, 1000),
     });
   }));
@@ -451,12 +451,14 @@ async function buildRecipePlan(
  * What a plan-building failure means depends on what may already have run
  * (A.4). Read with its own narrow query, never `readPlanApprovalAtRevision`:
  * whether ANY approval row exists at the task's revision, and whether an
- * operation of `stepKey` (null = any step) is still `pending`.
+ * operation of `stepKey` (null = any step) is still unsettled — `pending`, or
+ * `unknown` (the reconciler's "may still land" state). Same pair as the
+ * schema's unsettled-operation index.
  */
 async function readPlanFailureContext(
   task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision'>,
   stepKey: string | null,
-): Promise<{ approvalExists: boolean; pendingOperation: boolean }> {
+): Promise<{ approvalExists: boolean; unsettledOperation: boolean }> {
   return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const approvals = await db
       .select({ id: aiOperatorPlanApprovals.id })
@@ -467,18 +469,18 @@ async function readPlanFailureContext(
         eq(aiOperatorPlanApprovals.planRevision, task.revision),
       ))
       .limit(1);
-    if (approvals.length === 0) return { approvalExists: false, pendingOperation: false };
-    const pending = await db
-      .select({ id: aiOperatorOperations.id, resultState: aiOperatorOperations.resultState })
+    if (approvals.length === 0) return { approvalExists: false, unsettledOperation: false };
+    const unsettled = await db
+      .select({ id: aiOperatorOperations.id })
       .from(aiOperatorOperations)
       .where(and(
         eq(aiOperatorOperations.orgId, task.orgId),
         eq(aiOperatorOperations.taskId, task.id),
-        eq(aiOperatorOperations.resultState, 'pending'),
+        inArray(aiOperatorOperations.resultState, ['pending', 'unknown']),
         ...(stepKey === null ? [] : [eq(aiOperatorOperations.taskStepKey, stepKey)]),
       ))
       .limit(1);
-    return { approvalExists: true, pendingOperation: pending.some((o) => o.resultState === 'pending') };
+    return { approvalExists: true, unsettledOperation: unsettled.length > 0 };
   }));
 }
 
@@ -487,7 +489,7 @@ async function readPlanFailureContext(
  * - no approval row at the revision → `fail`/`unresolved`: nothing was
  *   proposed or dispatched, so it is an integrity fault;
  * - an approval row → `hand_off`, `unknown_effect` if an operation is still
- *   pending, else `unresolved`: a person must look at a task that may have
+ *   unsettled, else `unresolved`: a person must look at a task that may have
  *   run part of its plan.
  */
 async function planBuildFailure(
@@ -497,9 +499,9 @@ async function planBuildFailure(
 ): Promise<EffectStepDirective> {
   const ctx = await readPlanFailureContext(task, stepKey);
   if (!ctx.approvalExists) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
-  return handOff(ctx.pendingOperation ? 'unknown_effect' : 'unresolved', built.detail,
+  return handOff(ctx.unsettledOperation ? 'unknown_effect' : 'unresolved', built.detail,
     `Breeze could not rebuild the approved plan for this task (${built.detail}). Nothing further was dispatched. `
-    + `${ctx.pendingOperation ? 'An earlier step may still be running; check the provider before retrying. ' : ''}`
+    + `${ctx.unsettledOperation ? 'An earlier step may still be running; check the provider before retrying. ' : ''}`
     + 'Review what was already done and complete the rest by hand.');
 }
 
@@ -752,8 +754,12 @@ export async function planEffectStep(args: {
         + 'to observe it, and no later step on the same account confirmed it. Check it by hand.',
     };
   }
+  const subsumedCount = unobservable.length - unsubsumed.length;
   return finish(`all ${effects.length} effect(s) of plan revision ${task.revision} done and observed`
-    + (unobservable.length > 0 ? `; ${unobservable.length} unobservable effect(s) subsumed or left to the next step` : ''));
+    + (subsumedCount > 0 ? `; ${subsumedCount} unobservable effect(s) subsumed on the same account` : '')
+    + (unsubsumed.length > 0
+      ? `; not observable and not subsumed, left to '${resume}': ${unsubsumed.map((e) => `${e.toolName} (ordinal ${e.ordinal})`).join(', ')}`
+      : ''));
 }
 
 // ---------------------------------------------------------------------------

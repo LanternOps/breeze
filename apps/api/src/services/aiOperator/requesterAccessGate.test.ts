@@ -188,7 +188,8 @@ function expectTargetsRead(i: number) {
   const p = eqs(reads[i]!.where);
   expect(p.get(aiOperatorTaskTargets.orgId)).toBe(ORG_ID);
   expect(p.get(aiOperatorTaskTargets.taskId)).toBe('task-1');
-  expect(nulls(reads[i]!.where)).toContain(aiOperatorTaskTargets.detachedAt);
+  // Detached rows are READ (and refused), never filtered out of the read.
+  expect(nulls(reads[i]!.where)).not.toContain(aiOperatorTaskTargets.detachedAt);
 }
 
 describe('requesterAccessLostForTargets (R1a-0 Task 1f)', () => {
@@ -229,7 +230,7 @@ describe('requesterAccessLostForTargets (R1a-0 Task 1f)', () => {
     await expect(lostForTargets()).resolves.toMatchObject({ lost: true });
   });
 
-  it('5: a task whose only target is detached (no live target) is lost; the read filters org, task and detached_at', async () => {
+  it('5: a task with no target rows at all is lost; the read is scoped by org and task', async () => {
     queueRead([{ id: USER_ID, partnerId: 'p1', status: 'active' }]);
     shared.getUserPermissions.mockResolvedValue(orgUser());
     queueRead([]);
@@ -391,5 +392,44 @@ describe('requesterAccessLostForTargets — ticket parity with the request-path 
     queueRead([target('ticket')]);
     queueRead([{ id: 'ticket-1', deviceId: null, deletedAt: null }]);
     await expect(lostForTargets()).resolves.toEqual({ lost: false, detail: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R1a-0 review round (Opus): appended regression cases.
+// ---------------------------------------------------------------------------
+describe('requesterAccessLostForTargets — review-round fixes (R1a-0)', () => {
+  beforeEach(() => { reads.length = 0; shared.selectMock.mockReset(); });
+  const user = () => queueRead([{ id: USER_ID, partnerId: 'p1', status: 'active' }]);
+
+  it('a DETACHED target alongside a live one is lost: the sealed plan may still act on the detached target', async () => {
+    user();
+    shared.getUserPermissions.mockResolvedValue(orgUser());
+    queueRead([target('ticket'), target('contact', { contactId: null, detachedAt: new Date('2026-10-20T00:00:00Z') })]);
+    queueRead([{ id: 'ticket-1', deviceId: null, deletedAt: null }]);
+    await expect(lostForTargets()).resolves.toMatchObject({ lost: true, detail: expect.stringMatching(/detached/) });
+  });
+
+  it('the target read is scoped by org_id and task_id and reads detached rows too (to refuse them)', async () => {
+    user();
+    shared.getUserPermissions.mockResolvedValue(orgUser());
+    queueRead([target('contact', { contactId: null, detachedAt: new Date() })]);
+    await expect(lostForTargets()).resolves.toMatchObject({ lost: true, detail: expect.stringMatching(/detached/) });
+    expect(reads[1]!.table).toBe(aiOperatorTaskTargets);
+    const p = eqs(reads[1]!.where);
+    expect(p.get(aiOperatorTaskTargets.orgId)).toBe(ORG_ID);
+    expect(p.get(aiOperatorTaskTargets.taskId)).toBe('task-1');
+  });
+
+  it('device and ticket-device site checks are made against the device\'s own site', async () => {
+    user();
+    const perms = orgUser({ allowedSiteIds: ['site-A'] });
+    shared.getUserPermissions.mockResolvedValue(perms);
+    queueRead([target('device'), target('ticket')]);
+    queueRead([{ id: DEVICE_ID, siteId: 'site-A' }]);
+    queueRead([{ id: 'ticket-1', deviceId: 'device-2', deletedAt: null }]);
+    queueRead([{ id: 'device-2', siteId: 'site-C' }]);
+    await expect(lostForTargets()).resolves.toEqual({ lost: false, detail: null });
+    expect(shared.canAccessSite.mock.calls).toEqual([[perms, 'site-A'], [perms, 'site-C']]);
   });
 });

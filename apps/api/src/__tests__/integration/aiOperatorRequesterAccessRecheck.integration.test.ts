@@ -206,7 +206,7 @@ describe('AI Operator — requester live-access recheck at the execute boundary'
 // coordinator's arm-based selection of this gate is unit-tested in
 // taskCoordinatorPlanApproval.test.ts; R1a's identity E2E drives it end to end.
 // ---------------------------------------------------------------------------
-import { contacts, organizationUsers as orgUsersTable } from '../../db/schema';
+import { aiOperatorTaskTargets as aiOperatorTaskTargetsR1a0, contacts, organizationUsers as orgUsersTable } from '../../db/schema';
 import { requesterAccessLostForTargets } from '../../services/aiOperator/requesterAccessGate';
 import { createTaskTarget, detachTargets } from '../../services/aiOperator/targetService';
 
@@ -264,13 +264,13 @@ describe('AI Operator — target-aware requester recheck (R1a-0, contact target)
     expect(check.detail).toMatch(/site-restricted/);
   });
 
-  it('a task whose only contact target was detached loses access (no live target)', async () => {
+  it('a task whose only contact target was detached loses access', async () => {
     const t = await seedTenant();
     const { task } = await createContactTask(t);
     await withSystemDbAccessContext(() => detachTargets(db, { orgId: t.orgId, taskId: task.id, reason: 'org_merged' }));
     const check = await requesterAccessLostForTargets(task);
     expect(check.lost).toBe(true);
-    expect(check.detail).toMatch(/no live target/);
+    expect(check.detail).toMatch(/detached/);
   });
 
   it("a revoked org membership loses access before any target is read", async () => {
@@ -293,5 +293,50 @@ describe('AI Operator — target-aware requester recheck (R1a-0, contact target)
     const check = await requesterAccessLostForTargets({ id: task.id, orgId: other.orgId, requesterUserId: other.requesterId });
     expect(check.lost).toBe(true);
     expect(check.detail).toMatch(/no live target/);
+  });
+});
+
+// ---- R1a-0 review round (Opus): appended ----
+import { createSite as createSiteR1a0 } from './db-utils';
+
+describe('AI Operator — target-aware requester recheck: review-round cases (R1a-0)', () => {
+  it('one detached contact target alongside a live one loses access (the sealed plan may still act on it)', async () => {
+    const t = await seedTenant();
+    const { task } = await createContactTask(t);
+    const [second] = await withSystemDbAccessContext(() =>
+      db.insert(contacts).values({ orgId: t.orgId, name: 'Second Person', email: `second-${randomUUID()}@customer.test` }).returning(),
+    );
+    const extra = await withSystemDbAccessContext(() => createTaskTarget(db, {
+      orgId: t.orgId, taskId: task.id, targetKind: 'contact', contactId: second!.id, targetLabel: 'Second Person', targetOrdinal: 1,
+    }));
+    await expect(requesterAccessLostForTargets(task)).resolves.toEqual({ lost: false, detail: null });
+    await withSystemDbAccessContext(() => detachTargets(db, { orgId: t.orgId, targetId: extra.id, reason: 'scope_invalidated' }));
+    const check = await requesterAccessLostForTargets(task);
+    expect(check.lost).toBe(true);
+    expect(check.detail).toMatch(/detached/);
+  });
+
+  it("a device target on a site outside the requester's sites loses access; on their site it keeps it", async () => {
+    const t = await seedTenant();
+    const { task } = await createContactTask(t);
+    // Replace the contact target with a device target on the tenant's site.
+    await withSystemDbAccessContext(() =>
+      db.delete(aiOperatorTaskTargetsR1a0).where(eq(aiOperatorTaskTargetsR1a0.taskId, task.id)),
+    );
+    await withSystemDbAccessContext(() => createTaskTarget(db, {
+      orgId: t.orgId, taskId: task.id, targetKind: 'device', deviceId: t.deviceId, targetLabel: 'host', targetOrdinal: 0,
+    }));
+    await withSystemDbAccessContext(() =>
+      db.update(orgUsersTable).set({ siteIds: [t.siteId] }).where(eq(orgUsersTable.id, t.orgUserRowId)),
+    );
+    await expect(requesterAccessLostForTargets(task)).resolves.toEqual({ lost: false, detail: null });
+
+    const otherSite = await createSiteR1a0({ orgId: t.orgId });
+    await withSystemDbAccessContext(() =>
+      db.update(orgUsersTable).set({ siteIds: [otherSite.id] }).where(eq(orgUsersTable.id, t.orgUserRowId)),
+    );
+    const check = await requesterAccessLostForTargets(task);
+    expect(check.lost).toBe(true);
+    expect(check.detail).toMatch(/site/);
   });
 });

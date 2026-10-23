@@ -287,6 +287,9 @@ describe('advanceTask — requester gate selected by checkpoint arm (R1a-0 Task 
       },
     };
     await coordinator.advanceTask(taskRow('fixture_identity', 'verify_outcome') as never, 4);
+    // The stub applied (the arm check passed and the probe step ran), so the
+    // absence of a gate call below is meaningful.
+    expect(planProbe).toHaveBeenCalledTimes(1);
     expect(requesterAccessLostForTargets).not.toHaveBeenCalled();
     expect(requesterAccessLost).not.toHaveBeenCalled();
   });

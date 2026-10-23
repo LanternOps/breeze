@@ -28,7 +28,7 @@
  * itself changed between delegation and this check is not specially handled;
  * flagged as a residual gap rather than silently assumed away.
  */
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { users } from '../../db/schema/users';
 import { devices } from '../../db/schema/devices';
@@ -137,9 +137,11 @@ function requesterCeiling(perms: UserPermissions): SiteCeilingAuth {
  *  4. a partner-scope requester's partner (`users.partner_id`) is the task
  *     org's `organizations.partner_id` — stated explicitly here, not left to
  *     `orgAccess` semantics;
- *  5. the task has at least one live target (`detached_at IS NULL`); the
- *     target rows, not the checkpoint, are the source of truth, because
- *     org-merge and ticket-move detaches write there;
+ *  5. the task has at least one live target (`detached_at IS NULL`) and NO
+ *     detached one: the sealed plan may still act on a detached target, and
+ *     re-checking only the live ones would let it. The target rows, not the
+ *     checkpoint, are the source of truth, because org-merge and ticket-move
+ *     detaches write there;
  *  6. per target: a device is in the org and on a site the requester can
  *     reach; a contact is in the org AND the requester carries no site or
  *     exact-device ceiling (`canMutateOrgWideGovernance` — a directory
@@ -199,19 +201,23 @@ export async function requesterAccessLostForTargets(
           deviceId: aiOperatorTaskTargets.deviceId,
           contactId: aiOperatorTaskTargets.contactId,
           ticketId: aiOperatorTaskTargets.ticketId,
+          detachedAt: aiOperatorTaskTargets.detachedAt,
         })
         .from(aiOperatorTaskTargets)
         .where(and(
           eq(aiOperatorTaskTargets.orgId, task.orgId),
           eq(aiOperatorTaskTargets.taskId, task.id),
-          isNull(aiOperatorTaskTargets.detachedAt),
         ))
         .limit(MAX_TARGETS_CHECKED + 1);
+      if (targets.length > MAX_TARGETS_CHECKED) {
+        return { lost: true, detail: `the task has more than ${MAX_TARGETS_CHECKED} targets to re-check` };
+      }
+      const detached = targets.find((t) => t.detachedAt !== null && t.detachedAt !== undefined);
+      if (detached) {
+        return { lost: true, detail: `task target ${detached.id} (${detached.targetKind}) was detached` };
+      }
       if (targets.length === 0) {
         return { lost: true, detail: 'the task has no live target' };
-      }
-      if (targets.length > MAX_TARGETS_CHECKED) {
-        return { lost: true, detail: `the task has more than ${MAX_TARGETS_CHECKED} live targets to re-check` };
       }
 
       for (const target of targets) {
