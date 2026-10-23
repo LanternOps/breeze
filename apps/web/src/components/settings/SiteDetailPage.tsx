@@ -395,6 +395,9 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   }
 
   const badge = statusBadge[site.status] ?? statusBadge.active;
+  // Null for a non-uuid org/site: render no link rather than a broader one that
+  // would claim devices the count above does not describe (R2).
+  const viewAllHref = siteDevicesHref(site.orgId, site.id);
 
   const statusLabel = saveState.hasUnsavedChanges
     ? t('siteDetailPage.saveStatus.unsaved')
@@ -782,13 +785,15 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
               <p className="mt-1 text-sm text-muted-foreground">
                 {t('siteDetailPage.devices.assigned')}
               </p>
-              <a
-                href={siteDevicesHref(site.orgId, site.id) ?? '/devices#deviceClass=agent'}
-                data-testid="site-detail-devices-view-all-link"
-                className="mt-4 inline-flex items-center gap-1.5 rounded-sm text-sm text-primary underline underline-offset-2 hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              >
-                {t('siteDetailPage.devices.viewAll')}
-              </a>
+              {viewAllHref && (
+                <a
+                  href={viewAllHref}
+                  data-testid="site-detail-devices-view-all-link"
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-sm text-sm text-primary underline underline-offset-2 hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                  {t('siteDetailPage.devices.viewAll')}
+                </a>
+              )}
             </div>
           )}
         </main>

@@ -281,6 +281,17 @@ describe('SiteDetailPage — devices tab count + site-filtered "View all" (#9791
     expect(readDeviceClassFromHash(hash)).toBe('agent');
   });
 
+  it('renders no "View all" link when the org id is not a uuid (never a broader fallback link)', async () => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === `/orgs/sites/${SITE_ID}`) return makeJsonResponse({ ...SITE_FROM_API, orgId: 'not-a-uuid', deviceCount: 7 });
+      return makeJsonResponse({ data: [] });
+    });
+    render(<SiteDetailPage siteId={SITE_ID} />);
+    await screen.findByTestId('site-detail-device-count');
+    expect(screen.queryByTestId('site-detail-devices-view-all-link')).toBeNull();
+  });
+
   it('link has a resting underline and a focus-visible ring', async () => {
     render(<SiteDetailPage siteId={SITE_ID} />);
     const cls = (await screen.findByTestId('site-detail-devices-view-all-link')).className;
