@@ -17,9 +17,8 @@ type Scan = {
   status: string;
   startedAt: string | null;
   completedAt: string | null;
-  summary: Record<string, unknown>;
+  summary?: { findings?: { total?: number } } & Record<string, unknown>;
   createdAt: string | null;
-  findings?: { total: number };
 };
 
 export default function ScansTab() {
@@ -137,7 +136,7 @@ export default function ScansTab() {
                     {scan.status}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-xs">{scan.findings?.total ?? '-'}</td>
+                <td className="px-4 py-3 text-xs">{scan.summary?.findings?.total ?? '-'}</td>
                 <td className="px-4 py-3 text-xs text-muted-foreground">
                   {scan.startedAt ? formatDateTime(scan.startedAt) : scan.createdAt ? formatDateTime(scan.createdAt) : '-'}
                 </td>

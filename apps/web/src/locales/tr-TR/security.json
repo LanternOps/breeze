@@ -311,6 +311,8 @@
     "no": "Hayır",
     "noDevicesFound": "Cihaz bulunamadı.",
     "none": "Hiçbiri",
+    "unknown": "Bilinmiyor",
+    "tpmNotReported": "Ajan tarafından bildirilmedi",
     "os": "İşletim Sistemi",
     "pageOf": "Sayfa {{page}} / {{totalPages}}",
     "partial": "Kısmi",
