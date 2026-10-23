@@ -31,7 +31,8 @@ depends_on: "#8868 W2 (Windows one-liner catch), for W4b only"
 - **Telemetry (exact):** env `BREEZE_INSTALL_PATH` ∈ `control_plane | artifact_fallback | agent_redeem_fallback`. Enroll body key `installPath`. Counter `breeze_agent_enroll_install_path_total{path}`, where `path` ∈ those three or `unknown`. No table, no column, no migration.
 - **`install.sh` fallback marker:** the line `# breeze-install-fallback: 1`.
 - **Signed manifest additions (top-level, optional, additive):** `installFallbackInterface: 1`. `release.yml` emits it only when the attached `install.sh` carries the marker, so no anchor ever points at a release whose script cannot honour the flags. Hosted manifests also carry `distribution: { repository, release }`. The Go updater (`json.Unmarshal`, no `DisallowUnknownFields`) and the API ignore unknown top-level keys today, and Tasks 3 and 5 pin that.
-- **Fallback flags (exact):** `--fallback-base`, `--fallback-release`, `--fallback-valid-until`, `--fallback-sha256 <name>=<hex>` (repeat once per asset), `--fallback-pkg-team-id`, `--fallback-pkg-identity-b64`.
+- **Fallback flags (exact):** `--fallback-schema 1`, `--fallback-base`, `--fallback-release`, `--fallback-valid-until`, `--fallback-sha256 <name>=<hex>` (repeat once per asset), `--fallback-pkg-team-id`, `--fallback-pkg-identity-b64`. A script that sees a `--fallback-schema` other than the one it supports ignores every fallback flag (spec §3.3 version skew). Scripts that predate the interface already `warn` and skip unknown arguments (`install.sh` arg loop), so they behave as today.
+- **Installed-version floor trust rule:** the floor only ever executes an installed binary that is a regular, non-symlink file owned by uid 0 and not group- or world-writable, inside directories that are each owned by uid 0 and not group- or world-writable, all the way up to `/`. On macOS, `/Library/Breeze/bin` is checked first and `/usr/local/bin` only under the same rule (Homebrew can own it; see `agent/installer/macos/install-location.sh`). Windows uses only `<ProgramFiles>\Breeze\breeze-agent.exe`. A binary that fails the rule is never executed: there is no floor, and the pinned release installs.
 - **Fallback requests:** never carry the enrollment token, the secret or an `Authorization` header. Every fallback `curl` uses `--proto '=https' --proto-redir '=https'`.
 - **Command length (D7):** see Task 17 for the budget numbers.
 - **Public repo:** fixtures use `*.example` / `*.invalid` hosts. No customer names, internal hostnames or IPs. The hosted distribution repository's name is not written anywhere until Todd creates it; code and tests use `example-owner/example-dist`.
@@ -177,8 +178,10 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
 - Produces:
   - `readVerifiedManifestDistribution(manifestBytes: Buffer, signatureBytes: Buffer): { repository: string; release: string } | null`. It verifies first and returns null when the field is absent or malformed (`repository` must pass `isValidReleaseSourceRepository`, `release` must match `INSTALL_FALLBACK_RELEASE_RE`).
   - `computeInstallFallbackValidUntil(tokenExpiresAt: Date, mintedAt: Date): string`
-  - `buildInstallFallback(input: { source: InstallFallbackSource; edition: 'self-host' | 'hosted'; manifest: { bytes: Buffer; signature: Buffer } | null; promotedVersions: string[]; tokenExpiresAt: Date; now: Date }): { anchor: InstallFallback | null; reason: InstallFallbackNullReason | null }`
-  - `type InstallFallbackNullReason = 'source_off' | 'no_manifest' | 'signature' | 'not_binaries_release' | 'interface_missing' | 'version_disagreement' | 'repository_mismatch' | 'asset_missing' | 'asset_duplicate' | 'edition_mismatch' | 'platform_trust' | 'signing_input' | 'publisher_missing' | 'hosted_not_enabled' | 'hosted_not_mirrored' | 'expired' | 'schema'` (`hosted_not_mirrored` is first returned in W6)
+  - `buildInstallFallback(input: { source: InstallFallbackSource; edition: 'self-host' | 'hosted'; manifest: { bytes: Buffer; signature: Buffer } | null; promotedRows: Array<{ platform: 'windows' | 'linux' | 'macos'; architecture: 'amd64' | 'arm64'; version: string; checksum: string }>; tokenExpiresAt: Date; now: Date }): { anchor: InstallFallback | null; reason: InstallFallbackNullReason | null }`
+    - Versions are compared normalized: `v${row.version.replace(/^v/, '')}` must equal `manifest.release`, the same normalization as `agentVersions.ts` ~L603. Rows store `0.124.0` (`binarySync.ts` ~L1596 strips the `v`).
+    - Each promoted row's `checksum` must equal the manifest entry for that platform's raw agent asset: `breeze-agent-windows-amd64.exe`, `breeze-agent-linux-<arch>`, `breeze-agent-darwin-<arch>`. A mismatch gives `row_checksum_mismatch`. Platforms commit independently (`binarySync.ts` ~L1739–1755), so a matching version alone does not prove matching bytes.
+  - `type InstallFallbackNullReason = 'source_off' | 'no_manifest' | 'signature' | 'not_binaries_release' | 'interface_missing' | 'version_disagreement' | 'row_checksum_mismatch' | 'repository_mismatch' | 'asset_missing' | 'asset_duplicate' | 'edition_mismatch' | 'platform_trust' | 'signing_input' | 'publisher_missing' | 'hosted_not_enabled' | 'hosted_not_mirrored' | 'expired' | 'schema'` (`hosted_not_mirrored` is first returned in W6)
   - `readVerifiedManifestInstallFallbackInterface(manifestBytes: Buffer, signatureBytes: Buffer): number | null`, beside the distribution reader
 
 - [ ] **Step 1: Write failing tests** in `build.test.ts`. Each null case asserts both `anchor === null` and the exact `reason`:
@@ -187,8 +190,10 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
   - `bad signature → signature`
   - `releaseKind server-only → not_binaries_release`. Promoted rows always come from the binaries release (`binarySync.ts` refuses a server-only release by name ~L198–216), so a server-only manifest on a row is a defect.
   - `manifest without installFallbackInterface, or with 2 → interface_missing`
-  - `promotedVersions disagree (v0.124.0 and v0.123.0) → version_disagreement`
-  - `promotedVersions all equal but differ from manifest.release → version_disagreement`
+  - `rows disagree (0.124.0 and 0.123.0) → version_disagreement`
+  - `rows all 0.123.0, manifest release v0.124.0 → version_disagreement`
+  - `rows store 0.124.0 (no v) and the manifest says v0.124.0 → anchor` (real-shape fixture; guards against comparing raw strings)
+  - `linux/arm64 row checksum differs from the manifest's breeze-agent-linux-arm64 entry → row_checksum_mismatch`
   - `github source repo ≠ manifest.repository → repository_mismatch`
   - `each consumed asset missing in turn → asset_missing` (`it.each(INSTALL_FALLBACK_ASSETS)`)
   - `duplicate entry → asset_duplicate`
@@ -273,14 +278,23 @@ The flip is one env var on the hosted API, set to `https://github.com/<owner>/<r
 - Consumes: `buildInstallFallback`, `resolveInstallFallbackSource`, `getBinaryEdition()`.
 - Produces: `getInstallFallbackForMint(args: { tokenExpiresAt: Date; now?: Date }): Promise<InstallFallback | null>`.
   - One query reads every `agent_versions` row with `component = 'agent'`, `is_latest = true` and `edition = getBinaryEdition()` for the five tuples `windows/amd64`, `linux/amd64`, `linux/arm64`, `macos/amd64`, `macos/arm64`. It selects `version, release_manifest, manifest_signature`.
-  - The manifest comes from the windows/amd64 row, else the first row that carries one. A row whose `release_manifest` is not schema 1 (the per-binary local manifest written at `binarySync.ts` ~L619) gives `no_manifest`.
+  - It also selects `checksum`, `platform` and `architecture` for `promotedRows`.
+  - Manifest resolution, first hit wins:
+    1. The windows/amd64 row's `release_manifest`/`manifest_signature`, when it is a schema-1 release artifact manifest. This is true for the official repository (raw pass-through) and for local mode with an official manifest pair (`binarySync.ts` ~L930).
+    2. `BINARY_SOURCE=local`: the volume's manifest pair, through the existing `loadOfficialLocalManifestPair` (`binarySync.ts` ~L702). Export it if needed; do not write a second reader.
+    3. `BINARY_SOURCE=github` (covers BYO forks, whose rows carry deployment-signed per-asset manifests from `applyDeploymentSigning`, `binarySync.ts` ~L2124–2154): fetch `getGithubReleaseArtifactManifestUrl(tag)` and `getGithubReleaseArtifactManifestSignatureUrl(tag)` (`binarySource.ts` ~L130–134). Use the same `safeFetchFollowingRedirects` + 1 MiB cap that `fetchSmallBuffer` uses (export a shared helper; do not copy it), with a 5 s timeout. Cache the verified pair in-process per tag for 1 h; failures are not cached.
+       - This fetches only the manifest from the repository the API already syncs from. It never fetches an asset and never touches the hosted distribution repo, so D5(a) holds.
+  - Nothing found, or the pair is not schema 1 → `no_manifest`.
   - It runs under the caller's DB context.
   - It never throws: any error → `null`, plus one `console.warn('[installFallback] anchor withheld', { reason })` per distinct reason per process.
 
 - [ ] **Step 1: Write failing tests.**
   - `index.test.ts` (DB mocked as in `devices.test.ts`):
     - `self-host github with a schema-1 manifest row → anchor`
-    - `local per-binary manifest row → null (no_manifest)`
+    - `local per-binary manifest row + a valid volume manifest pair → anchor` (step 2)
+    - `local per-binary manifest row + no volume pair → null (no_manifest)`
+    - `BYO GitHub fork: row carries a deployment-signed per-asset manifest → fetches the release manifest pair once, verifies it, returns an anchor; a second mint within 1 h does not refetch` (step 3; build the row with the real `applyDeploymentSigning` output shape)
+    - `GitHub manifest fetch times out → null, mint unaffected`
     - `db throws → null, no throw`
     - `INSTALLER_FALLBACK_SOURCE=off → null and no DB query`
   - `devices.test.ts`:
@@ -390,7 +404,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 
 **Behaviour to implement (normative detail in spec §3.3–3.5):**
 - Marker line `# breeze-install-fallback: 1` directly under the shebang comment block. Adding it is what makes the next full release's manifest carry `installFallbackInterface: 1` (Task 5), which is what turns anchors on for self-host. So the release that carries W4a is the first one with live anchors. W4b's Windows fallback also waits for it, because the anchor is all-or-nothing.
-- Parse the six fallback flags. Validate every value with the Global Constraints regexes, plus the asset name allowlist. Any invalid or missing value disarms the whole fallback, with one `warn` line that does not echo the values. `fallback_armed` is true only when all values are valid and `date -u +%Y-%m-%dT%H:%M:%SZ` is lexicographically less than `--fallback-valid-until`.
+- Parse the seven fallback flags. Validate every value with the Global Constraints regexes, plus the asset name allowlist. Any invalid or missing value disarms the whole fallback, with one `warn` line that does not echo the values. `fallback_armed` is true only when all values are valid and `date -u +%Y-%m-%dT%H:%M:%SZ` is lexicographically less than `--fallback-valid-until`.
 - `is_transport_failure <curl_rc> <http_code> <http_connect>`: true iff `rc ∈ {6,7,35,52,56}`, `http_code == 000` and `http_connect == 000`. Every other combination is false, including 60, 22, 28 and 5.
   - The pre-flight curl becomes `-w '%{http_code}:%{http_connect}'`.
   - When armed and the classifier says transport, print `Breeze: <server> is unreachable from this network (curl error <rc>); using the pinned release <tag> from the fallback source` and set `FALLBACK_ACTIVE=1`. Otherwise, today's `fatal` branches run unchanged. Rc 35 stays "TLS problem" when not armed.
@@ -401,8 +415,10 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 - Version metadata in fallback mode is the anchor's `release` and hash; there is no metadata fetch.
 - macOS pkg in fallback mode: the expected SHA, team ID and identity come from the anchor flags, replacing the `X-Breeze-*` headers. The `xar!` check, `pkgutil --check-signature` identity binding and `spctl --assess --type install` stay.
 - Backup in fallback mode uses `breeze-backup-linux-<arch>`. A missing anchor entry gives the existing non-fatal warning.
+- Parse `--fallback-schema`. Any value other than `1` disarms the fallback with one `warn`.
 - Installed-version floor, in fallback mode only:
-  - Linux: execute `"$INSTALL_DIR/$BINARY_NAME" version` directly. macOS: execute `resolve_macos_agent_bin`'s path.
+  - Candidate: on Linux `"$INSTALL_DIR/$BINARY_NAME"`; on macOS `/Library/Breeze/bin/breeze-agent`, then `/usr/local/bin/breeze-agent`. Execute it only if `trusted_root_owned_path <file>` passes the Global Constraints trust rule (`stat` owner and mode on the file and every ancestor; use `stat -c` on Linux and `stat -f` on macOS). Otherwise, there is no floor.
+  - Run `<candidate> version` by absolute path.
   - Parse with the existing `DOWNLOADED_VERSION` sed and compare with the existing `sort -t. -k1,1n -k2,2n -k3,3n` idiom.
   - If installed > pinned: skip download and replacement, print `Keeping the installed agent v<x> (newer than the pinned v<y>)`, and enroll with the installed binary.
   - An unparseable installed version means no floor.
@@ -417,7 +433,9 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
   - `one invalid flag (base with ?q) → fallback disarmed, warn printed, values not echoed`
   - `tampered agent at the fallback source → refused; nothing written to INSTALL_DIR`
   - `metadata ok, binary download transport failure → binary and backup come from the fallback`
-  - `floor: installed v9.9.9 shim → kept, no download of the agent asset, enroll uses it`
+  - `floor: installed v9.9.9 shim → kept, no download of the agent asset, enroll uses it` (run with a `stat` shim that reports uid 0 / mode 755 along the path, because CI is not root)
+  - `floor: installed binary in a group-writable dir (or owned by uid 501) → never executed (a sentinel file it would touch stays absent), pinned release installs`
+  - `--fallback-schema 2 → fallback disarmed, today's behaviour`
   - `fallback requests carry no token, secret or Authorization` (assert on the curl argv log)
   - `darwin: pkg from the fallback with a wrong team ID → refused` (existing `uname`/`pkgutil`/`spctl`/`installer` shim pattern from L1658–1699)
   - `no fallback flags → behaviour byte-for-byte as before`. The existing pre-flight tests stay green unchanged.
@@ -437,7 +455,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 **Behaviour:**
 - With `installFallback` null, the output is byte-identical to today.
 - With an anchor, the fetch captures `rc` and `%{http_code}:%{http_connect}`. A transport failure (same rule as Task 11) and an unexpired anchor fetch `<base>install.sh` with the https-only flags. The hash is checked in the user shell for an early friendly error.
-- Then `sudo sh -c` copies the file into a root-owned `mktemp`, re-checks the hash there and `exec bash`es that copy with `--server`, `--token`, the secret flag, and every `--fallback-*` flag (spec §3.5 "verify as root").
+- Then `sudo sh -c` creates a root-owned `mktemp -d` (mode 700), copies the file into it, re-checks the hash on that copy, and `exec bash`es that exact copy with `--server`, `--token`, the secret flag, and every `--fallback-*` flag (spec §3.5 "verify as root"). Any failure exits before `exec`.
 - The primary path also passes the `--fallback-*` flags, so `install.sh` can switch mid-run.
 - Every embedded value is re-validated with the shared regexes before interpolation. If any fails, the whole command falls back to the null-anchor form. Values go inside double quotes; Task 1's charset makes that safe.
 
@@ -446,6 +464,8 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
     - `primary ok → runs the control-plane install.sh with the fallback flags`
     - `primary rc 7 → fetches the fallback install.sh, verifies it, runs the root copy`
     - `tampered fallback install.sh → refused before sudo`
+    - `source swapped after the user-shell hash check` (a `sudo` shim that overwrites `$f` with a malicious script, then execs the rest) `→ the root-side hash check refuses; the malicious script never runs` (sentinel file absent). This proves the second check is load-bearing.
+    - `root-side copy or hash failure → exits non-zero without executing anything`
     - `HTML 200 from primary → today's [ERROR], no fallback`
     - `expired → today's [ERROR]`
     - `no fallback request carries the token`
@@ -478,7 +498,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
   - A script-block classifier `$bzT`. It walks `InnerException`, and returns false on any certificate marker:
     - `[Security.Authentication.AuthenticationException]` anywhere
     - `WebExceptionStatus.TrustFailure`
-    - HResult ∈ {`0x80090325`, `0x800B0109`, `0x800B010F`}, compared as signed int32 values
+    - an HResult in the certificate family, compared as signed int32: `(h -band 0xFFFFFF00) -eq 0x800B0100` (every `CERT_E_*`, including expired `0x800B0101`, untrusted root `0x800B0109` and CN mismatch `0x800B010F`), or `h` ∈ {`0x80090325` SEC_E_UNTRUSTED_ROOT, `0x80090327` SEC_E_CERT_UNKNOWN, `0x80090328` SEC_E_CERT_EXPIRED, `0x80090349` SEC_E_CERT_WRONG_USAGE, `0x80096004` TRUST_E_CERT_SIGNATURE}
   - Also false when any `WebException` has a `Response`, or for `ProxyNameResolutionFailure`.
   - It returns true for a `WebException` with status in spec §3.4's set and no `Response`, or for an `HttpRequestException` with no `StatusCode` whose inner chain holds a `SocketException` or `IOException`.
 - The metadata `catch`: if `$bzT` is true and `[string]::CompareOrdinal([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'), $fb.u) -lt 0`, then:
@@ -488,7 +508,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
   - Otherwise, throw #8868's message.
 - The download `catch` applies the same rule when `$src` is still `'cp'`, re-binding the URL and the hash together (Review Focus 2).
 - Fallback download (Gate B 9): resolve redirects with an https-only walker of at most five hops (`[Net.HttpWebRequest]` with `AllowAutoRedirect=$false`, reading `Location`). Then `Invoke-WebRequest -OutFile $exe -MaximumRedirection 0` on the final URL. The staging dir, MZ, Authenticode and checksum checks are unchanged.
-- Floor (fallback mode only): `$inst=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Breeze\breeze-agent.exe'`. Confirm `installDirName` in `agent/internal/serviceinstall/paths.go` is `Breeze`. If it exists and `[version]` of `& $inst version` (parsed `\d+\.\d+\.\d+`) is greater than the pinned version, skip the download and use `$exe=$inst`.
+- Floor (fallback mode only): `$inst=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Breeze\breeze-agent.exe'`. Confirm `installDirName` in `agent/internal/serviceinstall/paths.go` is `Breeze`. If it exists and `[version]` of `& $inst version` (parsed `\d+\.\d+\.\d+`) is greater than the pinned version, the run takes a separate **reuse** branch: no download and no MZ, Authenticode or anchor-checksum check (those verify a downloaded artifact, and the anchor hash cannot match a newer binary). Then `& $inst enroll …` and `& $inst service install`. The staging directory is not created.
 - `$env:BREEZE_INSTALL_PATH` is `control_plane` or `artifact_fallback` before `& $exe enroll`.
 
 - [ ] **Step 1: Write failing tests.**
@@ -503,6 +523,8 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
     - `HttpRequestException(StatusCode=503) → false`
     - `ProxyNameResolutionFailure → false`
     - `a localized (German) AuthenticationException message → false` (proves message text is not used)
+    - `SecureChannelFailure wrapping HResult 0x800B0101 (expired) → false`, and the same for `0x80090328`
+  - Floor (pwsh-executed, with the version probe stubbed): `a newer installed agent → reuse branch; the anchor checksum is never compared against it; enroll targets $inst`
   - String tests:
     - `null anchor → identical to the post-#8868-W2 snapshot`
     - `switches the whole run when the download fails after metadata succeeded` (the download catch re-assigns both `$expectedSha` and the URL)
@@ -555,7 +577,8 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
 - Consent:
   - "This Mac can't reach `<host>` directly. The agent can try an encrypted connection after it is installed. Install anyway?"
   - Secondary line: "You won't see which organization this Mac joins until it appears in the console."
-- Agent-redeem Done: "The Breeze agent is installed. It will finish enrolling on its own — check the console for this Mac."
+- Agent-redeem Done (bootstrap exited 0; it either enrolled synchronously or found the Mac already enrolled, `bootstrap.go` ~L275–280): "The Breeze agent is installed. Check the console to confirm this Mac appears under the expected organization."
+- Agent-redeem failure (bootstrap exited non-zero): show the agent's output and "The installer link may already be used. Download a fresh installer from the console and try again." `recoverable: false`, because a retry could replay a consumed single-use token. Today `InstallerApp.swift` ~L85–88 marks every installer failure retryable, so this mode must override that.
 - Ambiguous error: "The connection to `<host>` dropped after the request was sent, so this installer link may already be used. Download a fresh installer from the console and try again."
 
 - [ ] **Step 1: Write failing tests.**
@@ -566,6 +589,7 @@ Decision (Gate B 7): the macOS app reuses `bootstrap --install-data "|<token>|ht
   - `testAmbiguousFailureIsNotRecoverable`
   - `testRetryUsesTheSameClassification`
   - `testDefinitiveFailureKeepsTodaysError`
+  - `testAgentRedeemCommandFailureIsNotRecoverable` (a `commandFailed` from the agent-redeem command → `recoverable: false`, fresh-installer copy)
 - [ ] **Step 2: Run** `swift test`. Expected: FAIL.
 - [ ] **Step 3: Implement.** The app strings are English-only, as today; the app has no localization.
 - [ ] **Step 4: Run** `swift test`. Expected: PASS. In the PR, confirm that the CI `Build Agent (darwin/arm64)` job's "Test macOS installer" step ran these tests.
@@ -644,17 +668,33 @@ Spec §7.2's SNI-selective proxy recipe (nginx `stream` + `ssl_preread`, with th
 | L-W5 | the release carrying the W5 app | app reaches consent; the agent redeems; Done copy shown |
 | Gate H | hosted `INSTALLER_FALLBACK_SOURCE` flip | every leg above against hosted, after the distribution repo carries a hosted release |
 
+Every leg also records, for the fallback run versus a primary-path run on the same host, any Defender/EDR detection, SmartScreen prompt or Gatekeeper prompt (spec §3.7: tested, not promised). A difference blocks the gate until it is understood.
+
 Release notes for the release that carries W4a/W4b state four things: the fallback exists and which source it uses; it pins the release that was current when the command was copied; the 30-day re-copy rule; and that a failed fallback leaves no server-side trace.
+
+## Advisor quorum (Claude position, then `codex exec` read-only, xhigh)
+
+The quorum agreed with 14 of the 15 Gate B defaults. It disagreed on item 7's completion copy, which is now fixed. It found eight defects, all verified in code and folded in above:
+1. The floor could execute an attacker-owned `/usr/local/bin` binary as root. Fixed with the trust rule in Global Constraints and Task 11.
+2. BYO forks' rows carry deployment-signed per-asset manifests, so they would never get anchors. Fixed with manifest resolution step 3 in Task 6.
+3. Row versions lack the `v`. Fixed with normalization in Task 3.
+4. A matching version does not mean matching bytes across independently committed platforms. Fixed with `row_checksum_mismatch` in Task 3.
+5. The Windows floor kept the anchor checksum against a newer binary. Fixed with the reuse branch in Task 13.
+6. The certificate HResult list was too narrow. Fixed with the family rule in Task 13.
+7. The root-side copy check was untested. Fixed with the swap-after-check test in Task 12.
+8. The macOS copy promised deferred enrollment, and retry after a consumed token was possible. Fixed in Task 15.
+
+It also found two coverage gaps, both closed: the script-side schema flag (`--fallback-schema`) and the reputation observations in the lab gates.
 
 ## Gate B — decisions for Todd (default in brackets)
 
 1. **How a hosted release is declared mirrored (D5 ordering).** [A signed top-level `distribution: {repository, release}` in the hosted manifest, checked against the configured source.] The alternative, a config minimum mirrored release, cannot prove that a later release is mirrored.
 2. **`install.sh` source of truth.** [`apps/api/assets/scripts/install.sh`, read at runtime and attached by `release.yml`.] The alternative is the `uninstall.sh` precedent: a TS template plus golden copies, which means two places to edit.
-3. **`install.sh` fallback interface.** [Six separate argv flags, with the identity passed as base64.] The alternative is one `--fallback-spec` string.
+3. **`install.sh` fallback interface.** [Seven separate argv flags (including `--fallback-schema`), with the identity passed as base64.] The alternative is one `--fallback-spec` string.
 4. **Anchor completeness.** [All eight assets and the publisher are required (spec §3.2), so a BYO fork without macOS signing gets no fallback on any OS.] The alternative is per-OS partial anchors.
 5. **Non-GitHub mirror layout.** [`<base><tag>/<asset>`.]
 6. **Version reference.** [Every promoted agent row present must name the same version as the manifest; otherwise `null`.]
-7. **macOS app redemption.** [Reuse `bootstrap --install-data "|token|server"`; no new agent flags. An already-enrolled Mac exits 0 and the app shows the agent-redeem Done copy.]
+7. **macOS app redemption.** [Reuse `bootstrap --install-data "|token|server"`; no new agent flags. Bootstrap is synchronous, so exit 0 means enrolled or already enrolled. The Done copy claims neither and points at the console. A non-zero exit is non-retryable, with fresh-installer guidance.] (The quorum flagged the earlier "finishes on its own" copy; corrected.)
 8. **Length budgets.** [Plain Windows with an anchor ≤ 8,191; encoded Windows without an anchor ≤ 8,191; encoded with an anchor unbounded and documented; unix ≤ 4,096.]
 9. **PS 5.1 redirects.** [An https-only redirect walker, about 350 chars.] The alternative is hash-only integrity and accepting whatever .NET follows.
 10. **Executed `pwsh` tests in `test-web`.** [Yes. The suite fails in CI if `pwsh` is missing.] The alternative is string-only tests, leaving the lab as the only PowerShell execution.
