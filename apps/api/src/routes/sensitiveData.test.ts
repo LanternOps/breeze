@@ -502,7 +502,7 @@ describe('sensitive data routes', () => {
             { dataType: 'pci', risk: 'high', status: 'remediated', lastSeenAt: ago(23 * h), remediatedAt: ago(72 * h) },
             // remediated with no timestamp -> not counted
             { dataType: 'pci', risk: 'high', status: 'remediated', lastSeenAt: ago(1 * h), remediatedAt: null },
-            // open finding remediated recently is impossible; open rows never count
+            // status gate: only 'remediated' rows count, whatever their timestamps
             { dataType: 'pci', risk: 'high', status: 'open', lastSeenAt: ago(1 * h), remediatedAt: ago(1 * h) }
           ])
         })

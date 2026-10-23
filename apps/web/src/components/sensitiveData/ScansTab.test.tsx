@@ -35,7 +35,11 @@ describe('ScansTab findings column (#9682)', () => {
       ok: true,
       status: 200,
       json: async () => ({
-        data: [makeScan('a', { findings: { total: 42 } }), makeScan('b', {})],
+        data: [
+          makeScan('a', { findings: { total: 42 } }),
+          makeScan('b', {}),
+          makeScan('z', { findings: { total: 0 } }),
+        ],
       }),
     } as Response);
 
@@ -49,5 +53,8 @@ describe('ScansTab findings column (#9682)', () => {
     expect(findingsText(cellsA)).toContain('42');
     expect(findingsText(cellsB)).toContain('-');
     expect(findingsText(cellsB)).not.toContain('42');
+    // A genuine zero must render as 0, not the "-" placeholder.
+    const cellsZ = screen.getByText('host-z').closest('tr')!.querySelectorAll('td');
+    expect(findingsText(cellsZ)).toContain('0');
   });
 });
