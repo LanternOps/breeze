@@ -184,6 +184,22 @@ describe('manage_tags — site axis', () => {
     expect(await deviceTags(f.devOut)).toContain('wide-tag');
   });
 
+  // remove widens an agent's self-scope like add does (QV2: a negative-rule
+  // dynamic group can admit a device when a tag goes away), so pin it too.
+  it('remove: out-of-site device is denied with tags unchanged; in-site succeeds', async () => {
+    await run('manage_tags', f.orgCtxA, f.orgUnrestricted, { action: 'add', deviceId: f.devOut, tags: ['keep-out'] });
+    await run('manage_tags', f.orgCtxA, f.orgUnrestricted, { action: 'add', deviceId: f.devIn, tags: ['drop-in'] });
+    reevaluateMock.mockClear();
+    const denied = await run('manage_tags', f.orgCtxA, f.orgRestricted, { action: 'remove', deviceId: f.devOut, tags: ['keep-out'] });
+    expect(denied).toEqual({ error: 'Device not found or access denied' });
+    expect(await deviceTags(f.devOut)).toContain('keep-out');
+    expect(reevaluateMock).not.toHaveBeenCalled();
+
+    const ok = await run('manage_tags', f.orgCtxA, f.orgRestricted, { action: 'remove', deviceId: f.devIn, tags: ['drop-in'] });
+    expect(ok.success).toBe(true);
+    expect(await deviceTags(f.devIn)).not.toContain('drop-in');
+  });
+
   it('add: a device in another org is not found and untouched', async () => {
     const orgC = await createOrganization({ partnerId: f.partnerA });
     const siteC = await createSite({ orgId: orgC.id });

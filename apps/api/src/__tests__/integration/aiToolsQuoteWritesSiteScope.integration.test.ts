@@ -200,7 +200,7 @@ describe('manage_quotes writes — quote site axis + org/partner axes (real Post
   it('update: cross-org (same partner) and cross-partner quotes are refused or not found, rows unchanged', async () => {
     const sibling = await call(f, f.restricted, { action: 'update', quoteId: f.quoteSiblingOrg.id, patch: { title: 'hijacked' } });
     // RLS hides what the context cannot reach; the actor org gate is the backstop.
-    expect(['QUOTE_NOT_FOUND', 'ORG_DENIED']).toContain(sibling.code);
+    expect(sibling.code).toBe('QUOTE_NOT_FOUND');
     expect((await loadQuote(f.quoteSiblingOrg.id)).title).toBe('sibling org');
 
     const foreign = await call(f, f.restricted, { action: 'update', quoteId: f.quoteForeignPartner.id, patch: { title: 'hijacked' } });
@@ -214,7 +214,7 @@ describe('manage_quotes writes — quote site axis + org/partner axes (real Post
     expect(await linesFor(f.draftOut.id)).toHaveLength(0);
 
     const sibling = await call(f, f.restricted, { action: 'add_catalog_line', quoteId: f.quoteSiblingOrg.id, ...args });
-    expect(['QUOTE_NOT_FOUND', 'ORG_DENIED']).toContain(sibling.code);
+    expect(sibling.code).toBe('QUOTE_NOT_FOUND');
     expect(await linesFor(f.quoteSiblingOrg.id)).toHaveLength(0);
 
     const foreign = await call(f, f.restricted, { action: 'add_catalog_line', quoteId: f.quoteForeignPartner.id, ...args });
@@ -275,7 +275,7 @@ describe('manage_quotes writes — quote site axis + org/partner axes (real Post
     expect(await call(f, f.restricted, { action: 'create_pay_link', quoteId: f.sentOut.id })).toEqual(SITE_DENIED);
 
     const sibling = await call(f, f.restricted, { action: 'create_pay_link', quoteId: f.quoteSiblingOrg.id });
-    expect(['QUOTE_NOT_FOUND', 'ORG_DENIED']).toContain(sibling.code);
+    expect(sibling.code).toBe('QUOTE_NOT_FOUND');
     const foreign = await call(f, f.restricted, { action: 'create_pay_link', quoteId: f.quoteForeignPartner.id });
     expect(foreign).toEqual({ error: 'Quote not found', code: 'QUOTE_NOT_FOUND' });
     expect(getPartnerStripeClientMock).not.toHaveBeenCalled();
