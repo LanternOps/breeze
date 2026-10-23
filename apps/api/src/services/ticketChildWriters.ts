@@ -340,6 +340,18 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
       'Ticket merge re-point: runs only inside mergeInTx after the ticket locks, one statement per table in '
       + 'ticket_comments → TICKET_CHILD_ORG_REWRITE_LOCK_ORDER; same-org, ticket_id only (billing fields untouched).',
   },
+  'services/ticketMerge/movers.ts::carryMergedTombstonesInTx': {
+    tables: ['ticket_drafts', 'ticket_comments', 'ticket_links', 'time_entries', 'ticket_parts', 'ticket_alert_links',
+      'ticket_attachments', 'ticket_email_links', 'ticket_checklist_items', 'ticket_external_refs'],
+    lock: 'mover',
+    tombstoneGuard: false,
+    dynamicTables: true,
+    reason:
+      'Org movers carry merged tombstones (spec §3.9): called by moveTicketOrg and the device mover after the '
+      + 'survivor(s) and their children are re-stamped; locks the tombstones in one ascending batch, then the '
+      + 'ticket-axis per-ticket routine. A tombstone is read-only (every writer refuses it under its lock without '
+      + 'touching a child) and merge serializes with both movers on the per-org links lock, so it cannot cycle.',
+  },
   'services/ticketMerge/repoint.ts::repointTicketLinks': {
     tables: ['ticket_links'],
     lock: 'mover',

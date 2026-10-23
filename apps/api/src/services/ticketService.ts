@@ -21,6 +21,7 @@ import { removedTicketLinksFromRows, scheduleTicketLinkRemovalNotes, type Remove
 import { lockOrgTicketLinks } from './ticketLinkLock';
 import { lockTicketForWrite, lockTicketsForWrite } from './ticketRowLock';
 import { assertTicketNotMerged, isMergedTombstone } from './ticketMerge/errors';
+import { carryMergedTombstonesInTx } from './ticketMerge/movers';
 import { detachHumanWorkLinksForTicket } from './aiOperator/humanWorkService';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
@@ -4128,6 +4129,10 @@ export async function moveTicketOrg(
     }
     assertTicketNotMerged(row);
     updated = await revalidateTicketAssignee(ticketId, actor, tx, row);
+    // #8972 W1 (spec §3.9): every tombstone merged into this ticket moves with
+    // it — the full per-ticket routine — so tickets_merged_into_org_fk (deferred
+    // above) holds at commit.
+    await carryMergedTombstonesInTx(tx, [ticketId], targetOrgId);
     // #4524, reverse direction: ticket_comments has no org_id (child-via-parent
     // tenancy — see the TICKET_ORG_DENORMALIZED_TABLES comment above), so every
     // comment on this ticket travels into the target org while the run that

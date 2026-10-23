@@ -18,6 +18,7 @@
 import { and, eq, ne, sql } from 'drizzle-orm';
 import type { db } from '../../db';
 import { deviceCommands, devices, tickets } from '../../db/schema';
+import { carryMergedTombstonesInTx } from '../ticketMerge/movers';
 import type { AuthContext } from '../../middleware/auth';
 import {
   getDeviceOrgDenormalizedTables,
@@ -1226,6 +1227,16 @@ export async function moveDeviceOrgInTransaction(
               (source_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS source_moved,
               (target_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS target_moved`);
   const removedTicketLinks = removedTicketLinksFromRows(removedLinkRows);
+
+  // #8972 W1 (spec §3.9): a merged tombstone's device_id is NULL, so the
+  // `device_id = D` joins above never reach it; it moves with its survivor
+  // here (the full per-ticket routine), or tickets_merged_into_org_fk
+  // (deferred at the top) fails at commit.
+  await carryMergedTombstonesInTx(
+    tx,
+    (await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))).map((r) => r.id),
+    targetOrgId,
+  );
 
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
   // core.ts): alert_correlation_groups, alert_correlation_members and

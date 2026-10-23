@@ -68,6 +68,9 @@ vi.mock('./aiOperator/humanWorkService', () => ({
 }));
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
+// #8972 W1: the tombstone carrier is its own unit (ticketMergeMovers IT); the
+// moveTicketOrg statement-sequence tests below pin the survivor's own statements.
+vi.mock('./ticketMerge/movers', () => ({ carryMergedTombstonesInTx: vi.fn(async () => []) }));
 vi.mock('./ticketPush', async () => {
   const actual = await vi.importActual<typeof import('./ticketPush')>('./ticketPush');
   return { ...actual, isEligibleTicketRecipient: assigneeEligibleMock };
