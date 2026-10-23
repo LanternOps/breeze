@@ -700,7 +700,13 @@
         "quality": "Qualidade"
       },
       "failovers": "Acionamentos de backup",
-      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível"
+      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organização",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por recurso"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
@@ -2451,7 +2457,11 @@
     "sourceDefault": "Padrão",
     "selectOrgForEffectiveBudget": "Selecione uma organização para ver seu orçamento vigente, ou edite os valores padrão em todo o parceiro.",
     "editPartnerWideDefaults": "Editar valores padrão em todo o parceiro",
-    "thresholdsOff": "Desativado"
+    "thresholdsOff": "Desativado",
+    "todaysCost": "Custo de hoje",
+    "monthlyCost": "Custo mensal",
+    "messagesToday": "Mensagens de hoje",
+    "tokensThisMonth": "Tokens deste mês"
   },
   "aiAgentsPage": {
     "schedules": {

@@ -700,7 +700,13 @@
         "quality": "Kalite"
       },
       "failovers": "Yedeğe geçişler",
-      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar"
+      "failoversHelp": "Yapılandırılmış model başarısız olduğu veya kullanılamadığı için yedek modelin karşıladığı çağrılar",
+      "titleBy": {
+        "model": "Modele göre yapay zeka kullanımı",
+        "organization": "Kuruluşa göre yapay zeka kullanımı",
+        "technician": "Teknisyene göre yapay zeka kullanımı",
+        "feature": "Özelliğe göre yapay zeka kullanımı"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — Yapay Zeka Sağlayıcıları ve Modelleri → Özellik başına varsayılanlar altında ayarlanır",
@@ -2451,7 +2457,11 @@
     "sourceDefault": "Varsayılan",
     "selectOrgForEffectiveBudget": "Geçerli bütçesini görmek için bir kuruluş seçin veya iş ortağı çapındaki varsayılan ayarları düzenleyin.",
     "editPartnerWideDefaults": "İş ortağı çapındaki varsayılan ayarları düzenle",
-    "thresholdsOff": "Kapalı"
+    "thresholdsOff": "Kapalı",
+    "todaysCost": "Bugünkü maliyet",
+    "monthlyCost": "Aylık maliyet",
+    "messagesToday": "Bugünkü mesajlar",
+    "tokensThisMonth": "Bu ayki belirteçler"
   },
   "aiAgentsPage": {
     "schedules": {

@@ -700,7 +700,13 @@
         "quality": "Quality"
       },
       "failovers": "Failovers",
-      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable",
+      "titleBy": {
+        "model": "AI usage by model",
+        "organization": "AI usage by organization",
+        "technician": "AI usage by technician",
+        "feature": "AI usage by feature"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -2451,7 +2457,11 @@
     "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
     "editPartnerWideDefaults": "Edit partner-wide defaults",
     "thresholdsOff": "Off",
-    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again.",
+    "todaysCost": "Today's cost",
+    "monthlyCost": "Monthly cost",
+    "messagesToday": "Messages today",
+    "tokensThisMonth": "Tokens this month"
   },
   "aiAgentsPage": {
     "schedules": {

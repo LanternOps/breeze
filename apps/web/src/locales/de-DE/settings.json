@@ -700,7 +700,13 @@
         "quality": "Qualität"
       },
       "failovers": "Failover",
-      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war",
+      "titleBy": {
+        "model": "KI-Nutzung nach Modell",
+        "organization": "KI-Nutzung nach Organisation",
+        "technician": "KI-Nutzung nach Techniker",
+        "feature": "KI-Nutzung nach Funktion"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -2451,7 +2457,11 @@
     "sourceDefault": "Standard",
     "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
     "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
-    "thresholdsOff": "Aus"
+    "thresholdsOff": "Aus",
+    "todaysCost": "Kosten heute",
+    "monthlyCost": "Kosten im Monat",
+    "messagesToday": "Nachrichten heute",
+    "tokensThisMonth": "Token in diesem Monat"
   },
   "aiAgentsPage": {
     "schedules": {

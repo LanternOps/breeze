@@ -700,7 +700,13 @@
         "quality": "Qualità"
       },
       "failovers": "Failover",
-      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile"
+      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile",
+      "titleBy": {
+        "model": "Utilizzo dell'IA per modello",
+        "organization": "Utilizzo dell'IA per organizzazione",
+        "technician": "Utilizzo dell'IA per tecnico",
+        "feature": "Utilizzo dell'IA per funzionalità"
+      }
     },
     "link": {
       "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
@@ -2451,7 +2457,11 @@
     "sourceDefault": "Predefinito",
     "selectOrgForEffectiveBudget": "Seleziona un'organizzazione per vedere il suo budget effettivo, oppure modifica i valori predefiniti a livello di partner.",
     "editPartnerWideDefaults": "Modifica i valori predefiniti a livello di partner",
-    "thresholdsOff": "Disattivato"
+    "thresholdsOff": "Disattivato",
+    "todaysCost": "Costo di oggi",
+    "monthlyCost": "Costo mensile",
+    "messagesToday": "Messaggi di oggi",
+    "tokensThisMonth": "Token di questo mese"
   },
   "aiAgentsPage": {
     "schedules": {

@@ -700,7 +700,13 @@
         "quality": "Calidad"
       },
       "failovers": "Conmutaciones",
-      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible"
+      "failoversHelp": "Llamadas atendidas por un modelo de respaldo porque el configurado falló o no estaba disponible",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organización",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por función"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — se define en Proveedores y modelos de IA → Valores predeterminados por función",
@@ -2451,7 +2457,11 @@
     "sourceDefault": "Predeterminado",
     "selectOrgForEffectiveBudget": "Seleccione una organización para ver su presupuesto vigente, o edite los valores predeterminados de todo el socio.",
     "editPartnerWideDefaults": "Editar valores predeterminados de todo el socio",
-    "thresholdsOff": "Desactivado"
+    "thresholdsOff": "Desactivado",
+    "todaysCost": "Costo de hoy",
+    "monthlyCost": "Costo mensual",
+    "messagesToday": "Mensajes de hoy",
+    "tokensThisMonth": "Tokens de este mes"
   },
   "aiAgentsPage": {
     "schedules": {

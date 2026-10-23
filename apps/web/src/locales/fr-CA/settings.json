@@ -700,7 +700,13 @@
         "quality": "Qualité"
       },
       "failovers": "Basculements",
-      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible"
+      "failoversHelp": "Appels traités par un modèle de secours parce que le modèle configuré a échoué ou était indisponible",
+      "titleBy": {
+        "model": "Utilisation de l'IA par modèle",
+        "organization": "Utilisation de l'IA par organisation",
+        "technician": "Utilisation de l'IA par technicien",
+        "feature": "Utilisation de l'IA par fonctionnalité"
+      }
     },
     "link": {
       "summary": "Modèle : {{model}} — défini sous Fournisseurs et modèles d'IA → Valeurs par défaut par fonctionnalité",
@@ -2451,7 +2457,11 @@
     "sourceDefault": "Par défaut",
     "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
     "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
-    "thresholdsOff": "Désactivé"
+    "thresholdsOff": "Désactivé",
+    "todaysCost": "Coût du jour",
+    "monthlyCost": "Coût mensuel",
+    "messagesToday": "Messages du jour",
+    "tokensThisMonth": "Jetons du mois"
   },
   "aiAgentsPage": {
     "schedules": {
