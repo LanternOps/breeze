@@ -515,6 +515,17 @@ describe('advanceManualWork', () => {
     expect(h.settle).toHaveBeenCalledWith(expect.objectContaining({ event: 'hand_off', detail: expect.stringContaining('no longer reachable') }));
   });
 
+  it('the coordinator-opened first row (running, not yet linked) is NOT taken for a detached item', async () => {
+    h.selectQueue = [[], [{ id: CONTACT_TARGET }]];
+    h.readManualWork.mockResolvedValue([row(0, { stepState: 'running', checklistItemId: null, itemLabel: null })]);
+    h.ensureManualWorkItems.mockImplementation(async (_db: unknown, _t: unknown, items: unknown[]) => ({
+      ticketId: 't', itemIds: items.map((_, i) => `i${i}`), created: items.length,
+    }));
+    await advanceManualWork(args('manual_work', mwCp()));
+    expect(h.ensureManualWorkItems).toHaveBeenCalledTimes(1);
+    expect(h.settle).not.toHaveBeenCalled();
+  });
+
   it('more review items than the checklist bound are folded into one, never a throw', async () => {
     const flags = Array.from({ length: 40 }, (_, i) => ({ code: 'sole_group_owner', subject: `Group ${i}`, detail: 'd' }));
     const exceptions = Array.from({ length: 20 }, (_, i) => ({ toolName: 'google_suspend_user', classification: 'human_work', detail: `e${i}` }));

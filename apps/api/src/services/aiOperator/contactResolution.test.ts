@@ -221,7 +221,7 @@ describe('resolveProviderAccounts', () => {
 
   it('uses existing contact_external_links first (org-predicated) and looks up only the missing provider', async () => {
     // links, then the m365 actions connection id
-    h.selectQueue = [[{ system: 'm365', externalId: 'obj-linked' }], [{ id: 'm-conn' }]];
+    h.selectQueue = [[{ system: 'm365', externalId: 'obj-linked' }], [{ id: 'm-conn', profile: 'customer-graph-actions' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'Dana' });
     expect(r.accounts).toEqual([
       { provider: 'm365', externalId: 'obj-linked', principalLabel: 'dana@customer.example', connectionId: 'm-conn', fromLink: true },
@@ -232,7 +232,7 @@ describe('resolveProviderAccounts', () => {
   });
 
   it('a new person (no contact yet) is looked up on both providers by address', async () => {
-    h.selectQueue = [[{ id: 'm-conn' }]];
+    h.selectQueue = [[{ id: 'm-conn', profile: 'customer-graph-actions' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts.map((a) => a.provider).sort()).toEqual(['google', 'm365']);
     expect(h.m365Read).toHaveBeenCalledWith(ORG, { type: 'm365.user.get', userIdOrUpn: 'dana@customer.example' });
@@ -241,7 +241,7 @@ describe('resolveProviderAccounts', () => {
   it('REFUSES a provider account whose primary address is not the one asked for (alias -> another person)', async () => {
     h.m365Read.mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'obj-9', userPrincipalName: 'sam@customer.example', mail: 'sam@customer.example' } });
     h.dir.users.get.mockResolvedValue({ data: { id: '909', primaryEmail: 'sam@customer.example' } });
-    h.selectQueue = [[{ id: 'm-conn' }]];
+    h.selectQueue = [[{ id: 'm-conn', profile: 'customer-graph-actions' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts).toEqual([]);
     expect(r.problems.join(' ')).toMatch(/m365: dana@customer.example resolves to a different primary account \(sam@customer.example\)/);
@@ -250,7 +250,7 @@ describe('resolveProviderAccounts', () => {
 
   it('accepts an M365 account whose mail (not UPN) is the address asked for', async () => {
     h.m365Read.mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'obj-2', userPrincipalName: 'dana_ext@tenant.onmicrosoft.com', mail: 'Dana@customer.example' } });
-    h.selectQueue = [[{ id: 'm-conn' }]];
+    h.selectQueue = [[{ id: 'm-conn', profile: 'customer-graph-actions' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts.find((a) => a.provider === 'm365')).toMatchObject({ externalId: 'obj-2' });
   });
@@ -263,20 +263,27 @@ describe('resolveProviderAccounts', () => {
     expect(r.problems).toEqual([]);
   });
 
+  it('an org with only the READ-profile M365 connection is still looked up (the lookup reads through it)', async () => {
+    h.selectQueue = [[], [{ id: 'm-read', profile: 'customer-graph-read' }], []];
+    const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
+    expect(h.m365Read).toHaveBeenCalled();
+    expect(r.accounts.find((x) => x.provider === 'm365')).toMatchObject({ externalId: 'obj-1', connectionId: null });
+  });
+
   it('a Google connection that EXISTS but is unusable is a problem even with no link — never a silent skip', async () => {
     h.resolveContextByOrg.mockResolvedValue({ error: 'connection inactive' });
-    h.selectQueue = [[], [{ id: 'm-conn' }], [{ id: 'g-conn' }]];
+    h.selectQueue = [[], [{ id: 'm-conn', profile: 'customer-graph-actions' }], [{ id: 'g-conn' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts.map((x) => x.provider)).toEqual(['m365']);
     expect(r.problems).toEqual(['google connection unavailable']);
     // …and no Google connection row at all is not one.
-    h.selectQueue = [[], [{ id: 'm-conn' }], []];
+    h.selectQueue = [[], [{ id: 'm-conn', profile: 'customer-graph-actions' }], []];
     expect((await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' })).problems).toEqual([]);
   });
 
   it('both provider lookups resolve their connection in a context scoped to exactly this org', async () => {
     h.contexts = [];
-    h.selectQueue = [[], [{ id: 'm-conn' }], [{ id: 'g-conn' }]];
+    h.selectQueue = [[], [{ id: 'm-conn', profile: 'customer-graph-actions' }], [{ id: 'g-conn' }]];
     await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
     expect(h.contexts).toHaveLength(2);
     for (const c of h.contexts) expect(c).toMatchObject({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
@@ -286,7 +293,7 @@ describe('resolveProviderAccounts', () => {
     h.m365Read.mockResolvedValue({ ok: false, code: 'connection_not_ready', message: 'not ready' });
     h.dir.users.get.mockRejectedValue(new Error('google down'));
     // links (none), then the M365 connection row, then the Google connection row
-    h.selectQueue = [[], [{ id: 'm-conn' }], [{ id: 'g-conn' }]];
+    h.selectQueue = [[], [{ id: 'm-conn', profile: 'customer-graph-actions' }], [{ id: 'g-conn' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts).toEqual([]);
     expect(r.problems.join(' ')).toMatch(/m365.*connection_not_ready/);

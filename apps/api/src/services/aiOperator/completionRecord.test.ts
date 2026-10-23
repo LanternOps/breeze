@@ -87,6 +87,13 @@ describe('renderCompletionRecord', () => {
     expect(text).toContain(GUID);
   });
 
+  it('4d. snake_case, prefixed and plural keywords are still withheld', () => {
+    for (const leak of ['client_secret=abc', 'db_password=hunter2', 'passwords: hunter2', 'GOOGLE_API_KEY=xyz', 'my_tokens=1', 'access_token: q']) {
+      const { text } = renderCompletionRecord(data({ narrative: `note ${leak}` }));
+      expect(text, leak).not.toContain(leak);
+    }
+  });
+
   it('4c. one secret-shaped verification problem withholds only that problem', () => {
     const { text } = renderCompletionRecord(data({
       verification: { result: 'failed', detail: 'still in Google group Finance; refreshToken=abc123; Google account is still active' },

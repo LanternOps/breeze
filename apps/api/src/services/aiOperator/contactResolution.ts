@@ -139,7 +139,7 @@ export async function resolveProviderAccounts(
   const accounts: ResolvedProviderAccount[] = [];
   const email = person.email ? canonicalizeUserEmail(person.email) : null;
 
-  const { links, m365ConnectionId, googleConnected } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const { links, m365ConnectionId, m365Connected, googleConnected } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const linkRows = person.contactId
       ? await db
         .select({ system: contactExternalLinks.system, externalId: contactExternalLinks.externalId })
@@ -151,17 +151,21 @@ export async function resolveProviderAccounts(
         ))
         .limit(10)
       : [];
-    const [conn] = await db
-      .select({ id: m365Connections.id })
+    // Any profile counts as "this org uses Microsoft 365" (the lookup itself
+    // reads through the read profile); the actions row is the one frozen onto
+    // the account, since that is the connection the effects write through.
+    const m365Rows = await db
+      .select({ id: m365Connections.id, profile: m365Connections.profile })
       .from(m365Connections)
-      .where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.profile, 'customer-graph-actions')))
-      .limit(1);
+      .where(eq(m365Connections.orgId, orgId))
+      .limit(10);
+    const conn = m365Rows.find((r) => r.profile === 'customer-graph-actions');
     const [google] = await db
       .select({ id: googleWorkspaceConnections.id })
       .from(googleWorkspaceConnections)
       .where(eq(googleWorkspaceConnections.orgId, orgId))
       .limit(1);
-    return { links: linkRows, m365ConnectionId: conn?.id ?? null, googleConnected: Boolean(google) };
+    return { links: linkRows, m365ConnectionId: conn?.id ?? null, m365Connected: m365Rows.length > 0, googleConnected: Boolean(google) };
   }));
 
   const linked = (system: 'm365' | 'google') => links.find((l) => l.system === system)?.externalId ?? null;
@@ -171,7 +175,7 @@ export async function resolveProviderAccounts(
   const m365Linked = linked('m365');
   if (m365Linked) {
     accounts.push({ provider: 'm365', externalId: m365Linked, principalLabel: labelFor(m365Linked), connectionId: m365ConnectionId, fromLink: true });
-  } else if (email && m365ConnectionId) {
+  } else if (email && m365Connected) {
     // No connection row at all means "this org does not use Microsoft 365",
     // not a failed lookup. A row in ANY state is looked through, so a broken
     // connection surfaces as a problem instead of a provider silently skipped.

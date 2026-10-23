@@ -81,7 +81,12 @@ export interface CompletionRecordData {
  * partially masked: "set password to hunter2" with only the keyword masked
  * would still print the value.
  */
-const SECRET_WORDS = /-----BEGIN|\b(pass(word|wd|phrase|code)?|pwd|secrets?|credentials?|service[ _]?account[ _]?key|vault[ _]?ref|private[ _]?key|api[ _]?key|access[ _]?token|refresh[ _]?token|tokens?|pin|otp|recovery[ _]?(code|key)s?|bearer)\b/i;
+/**
+ * Keywords bounded by LETTERS, not `\b`: `_` and digits count as separators, so
+ * `client_secret=`, `db_password=` and `passwords:` match, while a keyword that
+ * is only the start of a longer word ("Passmore", "Secretaries") does not.
+ */
+const SECRET_WORDS = /-----BEGIN|(?<![a-z])(pass(word|wd|phrase|code)?s?|pwd|secrets?|credentials?|service[ _]?account[ _]?keys?|vault[ _]?refs?|private[ _]?keys?|api[ _]?keys?|access[ _]?tokens?|refresh[ _]?tokens?|tokens?|pins?|otps?|recovery[ _]?(code|key)s?|bearer)(?![a-z])/i;
 /** camelCase field names (`clientSecret`, `refreshToken`), which a word boundary misses. */
 const SECRET_CAMEL = /[a-z](Secret|Password|Passwd|Token|ApiKey|PrivateKey)\b/;
 /**
@@ -95,6 +100,19 @@ const SECRETISH = { test: (s: string) => SECRET_WORDS.test(s) || SECRET_CAMEL.te
 function clean(s: string, max = 500): string {
   const flat = s.replace(/[\r\n]+/g, ' ').trim();
   return (SECRETISH.test(flat) ? '[redacted]' : flat).slice(0, max);
+}
+
+/**
+ * The verification detail, cleaned per problem so one secret-shaped leftover
+ * does not withhold the list. Backstop: if the WHOLE detail is secret-shaped
+ * but no single problem is (a match spanning the separator), withhold it all.
+ * No current pattern admits `; `, so this guards future patterns, not today's.
+ */
+function verificationDetail(detail: string): string {
+  const parts = detail.split('; ').map((part) => clean(part, 300));
+  const flat = detail.replace(/[\r\n]+/g, ' ');
+  if (SECRETISH.test(flat) && !parts.includes('[redacted]')) return '[redacted]';
+  return parts.join('; ').slice(0, 800);
 }
 
 function outcomeText(e: CompletionRecordEffect): string {
@@ -150,7 +168,7 @@ export function renderCompletionRecord(data: CompletionRecordData): CompletionRe
       // Cleaned PER PROBLEM: one secret-shaped leftover withholds that one, not
       // the whole list a technician has to act on.
       ? [`- Final verification ${clean(data.verification.result, 32)}: ${
-        data.verification.detail.split('; ').map((part) => clean(part, 300)).join('; ').slice(0, 800)}`] : []),
+        verificationDetail(data.verification.detail)}`] : []),
     ...data.discoveryFlags.map((f) => `- Discovery: ${clean(f.code, 64)} (${clean(f.subject, 120)}): ${clean(f.detail, 300)}`),
   ];
   let unresolvedText = ['## Unresolved', ...(unresolvedItems.length > 0 ? unresolvedItems : ['- (nothing)'])].join('\n');

@@ -32,7 +32,9 @@ vi.mock('../../services/googleClient', async (orig) => ({
 import { db } from '../../db';
 import {
   aiAgents, aiOperatorTaskTargetAccounts, aiOperatorTaskTargets, aiOperatorTasks, contactExternalLinks, contacts,
+  m365Connections,
 } from '../../db/schema';
+import { M365_PERMISSION_PROFILES } from '@breeze/shared/m365';
 import { admitTask, type AdmitTaskInput } from '../../services/aiOperator/taskService';
 import { lockContactForRecipe } from '../../services/aiOperator/contactResolution';
 import { buildTaskActorAuthContext } from '../../services/actionIntents/actorContext';
@@ -66,6 +68,19 @@ async function seed() {
     orgId: null, partnerId: partner.id, kind: 'helpdesk', name: 'Helpdesk', createdBy: user.id,
     enabled: true, mode: 'shadow', toolAllowlist: [],
   }).returning());
+  // A Microsoft 365 connection row: admission only looks a person up in M365
+  // when the org uses it (the read itself is stubbed above).
+  const profile = M365_PERMISSION_PROFILES['customer-graph-actions'];
+  const grantKey = (g: { resourceApplicationId: string; appRoleId: string }) => `${g.resourceApplicationId}/${g.appRoleId}`;
+  await system(() => db.insert(m365Connections).values({
+    orgId: org.id, tenantId: randomUUID(), clientId: 'test-client-id',
+    profile: 'customer-graph-actions', authMode: 'application-certificate', credentialDomain: 'customer-graph-actions',
+    vaultRef: 'akv://test-vault.example/m365-customer-graph-actions/00000000000000000000000000000000',
+    credentialVersion: '00000000000000000000000000000000', permissionManifestVersion: profile.version, status: 'active',
+    observedGrants: [...(profile.applicationPermissionAssignments ?? [])]
+      .sort((x, y) => (grantKey(x) < grantKey(y) ? -1 : grantKey(x) > grantKey(y) ? 1 : 0)),
+    grantsVerifiedAt: new Date(),
+  } as never));
   return { partnerId: partner.id, orgId: org.id, userId: user.id, agentId: agent!.id };
 }
 type Tenant = Awaited<ReturnType<typeof seed>>;

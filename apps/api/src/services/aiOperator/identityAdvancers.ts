@@ -628,17 +628,20 @@ export async function advanceManualWork(a: StepAdvancerArgs): Promise<string> {
 
   const rows = await o.readManualWork(a.task.orgId, a.task.id);
   const linked = rows.filter((r) => r.checklistItemId !== null);
-  // Checked BEFORE creation. Items and their step rows are created and linked
-  // in one transaction, so an existing row with no link was detached — the
-  // ticket moved to another org, or the item was deleted. Re-creating it would
-  // open a second ticket here and reset ticked work; hand off instead.
+  // Checked BEFORE creation. An item's step row is linked and set `waiting` in
+  // the transaction that creates the item, so a `waiting` row with NO link was
+  // detached — the ticket moved to another org, or the item was deleted.
+  // (The coordinator opens the first row `running` and unlinked before this
+  // advancer ever runs; that one is not detached.) Re-creating would open a
+  // second ticket here and reset ticked work; hand off instead.
   const unreachable = linked.filter((r) => r.itemLabel === null);
-  if (rows.some((r) => r.checklistItemId === null) || unreachable.length > 0) {
+  const detached = rows.filter((r) => r.checklistItemId === null && r.stepState === 'waiting');
+  if (detached.length > 0 || unreachable.length > 0) {
     return handOff(o, a, 'a manual-work checklist item is no longer reachable from this task',
       'A ticket step this task was waiting on is no longer part of this organization (it was moved or removed). '
       + 'Nothing further was changed. Confirm the remaining work by hand.', cp);
   }
-  if (items.length > 0 && rows.length < items.length) {
+  if (items.length > 0 && linked.length < items.length) {
     let waitOn: string | null = null;
     const committed = await leasedWrite({
       orgId: a.task.orgId, taskId: a.task.id, revision: a.task.revision, leaseEpoch: a.leaseEpoch,
