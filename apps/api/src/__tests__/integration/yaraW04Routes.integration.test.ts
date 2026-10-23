@@ -255,7 +255,7 @@ describe('POST /security/yara/rule-sets/:id/ioc-import (real Postgres)', () => {
 const v1 = new Hono();
 v1.route('/api/v1/security', securityRoutes);
 
-function upload(actor: Actor, setId: string, body: Uint8Array) {
+function upload(actor: Actor, setId: string, body: BodyInit) {
   return v1.request(`/api/v1/security/yara/rule-sets/${setId}/test?filename=sample.bin`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${actor.token}`, 'Content-Type': 'application/octet-stream' },

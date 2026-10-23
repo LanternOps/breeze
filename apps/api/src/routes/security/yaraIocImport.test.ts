@@ -94,8 +94,8 @@ function mockLockedPhase(order: string[], opts: { existing?: Array<{ name: strin
 }
 
 function mockInsert() {
-  const values = vi.fn((rows: Array<{ name: string }>) => ({
-    returning: () => Promise.resolve(rows.map((r, i) => ({ id: `rule-${i}`, name: r.name }))),
+  const values = vi.fn((rows: Array<Record<string, unknown>>) => ({
+    returning: () => Promise.resolve(rows.map((r, i) => ({ id: `rule-${i}`, name: r.name as string }))),
   }));
   insertMock.mockReturnValueOnce({ values });
   return values;
