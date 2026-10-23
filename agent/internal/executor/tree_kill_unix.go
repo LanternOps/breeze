@@ -21,9 +21,18 @@ func startContained(running *runningExecution, cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	if afterStartHook != nil {
+		afterStartHook(cmd)
+	}
 	running.attachProcessGroup(capturePgid(cmd))
 	return nil
 }
+
+// afterStartHook, when non-nil, runs between cmd.Start returning and the pgid
+// being attached. Test-only seam: it holds open the window in which os/exec's
+// context watchdog (started inside cmd.Start) can already fire cmd.Cancel
+// before attachProcessGroup has run (#9815). Always nil in production.
+var afterStartHook func(cmd *exec.Cmd)
 
 // capturePgid reads the process group id immediately after Start.
 //
@@ -51,17 +60,44 @@ func capturePgid(cmd *exec.Cmd) int {
 // terminateProcessTree escalates against the whole process tree.
 func terminateProcessTree(running *runningExecution, graceSeconds int) error {
 	pgid := running.processGroup()
+	cmd := running.command()
 	if pgid <= 0 {
-		// Either no group was ever captured, or this kill is landing in the
-		// window between cmd.Start returning and attachProcessGroup — os/exec
-		// starts its context watchdog inside Start, so a cancel really can fire
-		// there. Both cases reach the leader only, so latch the execution as
-		// uncontained; otherwise attachProcessGroup would set contained=true a
-		// moment later and let this very cancel claim `terminated` while group
-		// members survived.
+		// This kill is landing in the window between cmd.Start returning and
+		// attachProcessGroup: os/exec starts its context watchdog inside Start,
+		// so a cancel (or timeout) really can fire here (#9815). The group
+		// already exists — the child joined it before exec, and Start does not
+		// return until exec succeeded — so derive it from the command instead
+		// of falling back to a leader-only kill that leaves children running.
+		pgid = ownProcessGroup(cmd)
+		if pgid > 0 {
+			running.attachProcessGroup(pgid)
+		}
+	}
+	if pgid <= 0 {
+		// No group to signal: the command was not configured to lead its own
+		// process group. The kill below reaches the leader only, so latch the
+		// execution as uncontained; otherwise a later attachProcessGroup would
+		// set contained=true and let this very cancel claim `terminated` while
+		// group members survived.
 		running.markContainmentLost()
 	}
-	return terminateProcessTreeUnix(pgid, running.command(), graceSeconds)
+	return terminateProcessTreeUnix(pgid, cmd, graceSeconds)
+}
+
+// ownProcessGroup returns the process group a started command leads, derived
+// without a syscall: setProcessGroup asks for Setpgid with Pgid 0, so the child
+// calls setpgid(0, 0) before exec and pgid == pid by construction. It returns 0
+// unless the command was configured that way and has a process, so it can
+// never name a group the command does not lead.
+func ownProcessGroup(cmd *exec.Cmd) int {
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return 0
+	}
+	attr := cmd.SysProcAttr
+	if attr == nil || !attr.Setpgid || attr.Pgid != 0 {
+		return 0
+	}
+	return cmd.Process.Pid
 }
 
 // terminateProcessTreeUnix escalates SIGTERM -> grace -> SIGKILL against the
