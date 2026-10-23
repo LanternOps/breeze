@@ -783,13 +783,10 @@
     "maintenancePlaceholder": "ör. Pazar 02:00-06:00, 02:00-04:00 veya 7/24",
     "maintenanceInvalid": "<first>Sun 02:00-04:00</first> veya <second>02:00-04:00</second> veya <always>24/7</always> gibi bir UTC penceresi kullanın. her zaman açık. Kuruluşların yapılandırmasına izin vermek için boş bırakın.",
     "maintenanceHelp": "Otomatik güncellemeler ve yeniden başlatmalar için zaman penceresi (UTC). Her zaman açık için <always>24/7</always> kullanın veya kuruluşların bunu ayrı ayrı yapılandırması için boş bırakın.",
-    "deviceGroup": "Varsayılan Cihaz Grubu",
-    "alertThreshold": "Varsayılan Uyarı Eşiği",
     "autoEnrollment": {
       "title": "Otomatik Kayıt",
       "enable": "Yeni cihazlar için otomatik kaydı etkinleştirin",
-      "requireApproval": "Yönetici onayı gerektir",
-      "sendWelcome": "Hoş geldiniz bildirimi gönder"
+      "requireApproval": "Yönetici onayı gerektir"
     },
     "enrollment": {
       "title": "Cihaz kaydı",
@@ -1816,27 +1813,13 @@
     "deviceGroup": {
       "title": "Varsayılan cihaz grubu",
       "description": "Yeni kaydedilen cihazlar bu gruba otomatik olarak eklenir.",
-      "options": {
-        "AllManagedDevices": "Tüm Yönetilen Cihazlar",
-        "CriticalInfrastructure": "Kritik Altyapı",
-        "RemoteStaff": "Uzaktan Personel",
-        "Contractors": "Yükleniciler"
-      }
-    },
-    "alertSeverity": {
-      "title": "Varsayılan uyarı önem derecesi",
-      "description": "Bu önem derecesinin altındaki uyarılar yalnızca özet akışına iletilir.",
-      "options": {
-        "critical": "Yalnızca kritik",
-        "high": "Yüksek ve kritik",
-        "medium": "Orta ve üzeri"
-      }
+      "none": "Yok",
+      "unavailable": "Seçilen grup (kullanılamıyor)"
     },
     "autoEnrollment": {
       "title": "Otomatik kayıt",
       "enable": "Otomatik kaydı etkinleştir",
-      "requireApproval": "Yönetici onayı gerektir",
-      "sendWelcome": "Hoş geldiniz mesajı gönder"
+      "requireApproval": "Yönetici onayı gerektir"
     },
     "agentUpdates": {
       "title": "Temsilci güncelleme politikası",

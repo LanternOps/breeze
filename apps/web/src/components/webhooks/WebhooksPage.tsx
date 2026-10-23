@@ -410,7 +410,7 @@ function WebhooksPageContent() {
   const authSummary = activeWebhook ? webhookFormAuthType(activeWebhook) : 'hmac';
 
   const authLabel = authSummary === 'bearer' ? t('longTail.webhooks.WebhooksPage.auth.bearerToken') : t('longTail.webhooks.WebhooksPage.auth.hmacSignature');
-  const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Breeze-Signature: sha256=***';
+  const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Breeze-Signature: sha256=***, X-Breeze-Signature-Timestamp';
 
   const testEventOptions = activeWebhook?.events?.length
     ? activeWebhook.events

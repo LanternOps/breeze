@@ -185,6 +185,12 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
   requestDeviceGroupReevaluation: requestDeviceGroupReevaluationMock,
 }));
 
+// #9617 — org default device group applied inside the enrollment transaction.
+const applyOrgDefaultDeviceGroupMock = vi.hoisted(() => vi.fn().mockResolvedValue('added'));
+vi.mock('../../services/enrollmentDefaultGroup', () => ({
+  applyOrgDefaultDeviceGroup: applyOrgDefaultDeviceGroupMock,
+}));
+
 // ---------- imports after mocks ----------
 
 import { db, withSystemDbAccessContext } from '../../db';
@@ -406,6 +412,28 @@ describe('POST /agents/enroll — backup server URL delivery (#2288)', () => {
   it('omits/empty backupServerUrl when env unset', async () => {
     const body = await enrollOk();
     expect(body.backupServerUrl ?? '').toBe('');
+  });
+});
+
+describe('POST /agents/enroll — org default device group (#9617)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    requestDeviceGroupReevaluationMock.mockResolvedValue('job-1');
+    applyOrgDefaultDeviceGroupMock.mockResolvedValue('added');
+    delete process.env.AGENT_ENROLLMENT_SECRET;
+    delete process.env.AGENT_BACKUP_SERVER_URL;
+    process.env.NODE_ENV = 'test';
+  });
+
+  it('applies the default group to the freshly inserted device, inside the transaction', async () => {
+    await enrollOk();
+
+    expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledTimes(1);
+    expect(applyOrgDefaultDeviceGroupMock).toHaveBeenCalledWith(
+      // the transaction handle, never the bare pool
+      expect.objectContaining({ insert: expect.any(Function), delete: expect.any(Function) }),
+      { orgId: 'org-backup-url', deviceId: 'device-backup-url', siteId: 'site-backup-url' },
+    );
   });
 });
 
@@ -1384,6 +1412,8 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
     });
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
     expect(raiseDeviceIdentityCollisionAlert).not.toHaveBeenCalled();
+    // #9617: an in-place re-enrollment must not re-apply the org default group.
+    expect(applyOrgDefaultDeviceGroupMock).not.toHaveBeenCalled();
     // #9511: same row re-enrolled in place -> reenrollment:true.
     expect(publishEventMock).toHaveBeenCalledWith(
       'device.enrolled', 'org-inplace',
@@ -3403,6 +3433,8 @@ describe('POST /agents/enroll — Quick Support ephemeral enrollment', () => {
     expect(resp.status).toBe(201);
     // Ephemeral support devices never enter licensed-device admission.
     expect(admitPartnerDeviceCapacityMock).not.toHaveBeenCalled();
+    // ...and never land in a customer's default device group (#9617).
+    expect(applyOrgDefaultDeviceGroupMock).not.toHaveBeenCalled();
     expect(spy.countWhere).toHaveLength(0);
     expect(spy.deviceInsertValues[0]).toEqual(
       expect.objectContaining({ isEphemeral: true }),

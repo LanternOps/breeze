@@ -7,7 +7,6 @@ import {
   checkBudgetDetailed,
   checkSystemAiRateLimit,
   debitBillingCredits,
-  deductBillingCredits,
   getUsageSummary,
   getAggregateUsageSummary,
   sumInputTokens,
@@ -1050,11 +1049,12 @@ describe('billing internal route prefix (#5591)', () => {
     );
   });
 
-  it('the deduction posts to /billing/api/internal/partners/:id/ai-credits/deduct', async () => {
+  it('the keyed debit posts to /billing/api/internal/partners/:id/ai-credits/deduct', async () => {
     setupDbMocks(null);
     const fetchMock = enableBillingService();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
 
-    await deductBillingCredits('org-1', 40);
+    await debitBillingCredits('org-1', 40, { idempotencyKey: 'ai-compute:run-1:1' });
 
     expect(new URL(fetchMock.mock.calls[0]![0] as string).pathname).toBe(
       '/billing/api/internal/partners/partner-1/ai-credits/deduct',
@@ -1150,9 +1150,9 @@ describe('checkBudgetDetailed', () => {
 //
 // Both billing calls are deliberately FAIL-OPEN: a billing outage must not take
 // AI down for every tenant. The defect was that they were also fail-SILENT —
-// `deductBillingCredits` ignored the HTTP status entirely, so a 500 or a 403
-// from the billing service dropped platform-funded spend on the floor with no
-// console line and no Sentry event, and `checkBillingCredits` returned a bare
+// the (since deleted, #9451) unkeyed deduct ignored the HTTP status entirely,
+// so a 500 or a 403 dropped platform-funded spend on the floor with no console
+// line and no Sentry event, and `checkBillingCredits` returned a bare
 // `null` (= allowed) from four different failure branches. The behaviour stays
 // fail-open; only the silence goes away.
 //
@@ -1161,57 +1161,6 @@ describe('checkBudgetDetailed', () => {
 // make a later assertion pass or fail depending on test ORDER.
 
 describe('billing telemetry', () => {
-  it('deductBillingCredits reports a non-2xx billing response with its status, without throwing', async () => {
-    const fetchMock = enableBillingService();
-    fetchMock.mockResolvedValueOnce(new Response('nope', { status: 502 }));
-    setupDbMocks(null);
-
-    await expect(deductBillingCredits('org-tel-1', 42)).resolves.toBeUndefined();
-
-    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({
-        eventCode: 'ai_billing_credits_deduct_failed',
-        tags: expect.objectContaining({ ai_billing_http_status: '502' }),
-      }),
-    );
-  });
-
-  it('deductBillingCredits stays silent on a 2xx deduction', async () => {
-    const fetchMock = enableBillingService();
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-    setupDbMocks(null);
-
-    await deductBillingCredits('org-tel-2', 7);
-
-    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
-    expect(vi.mocked(captureException)).not.toHaveBeenCalled();
-  });
-
-  it('deductBillingCredits reports a transport failure and still does not throw', async () => {
-    const fetchMock = enableBillingService();
-    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-    setupDbMocks(null);
-
-    await expect(deductBillingCredits('org-tel-3', 42)).resolves.toBeUndefined();
-    expect(vi.mocked(captureException)).toHaveBeenCalled();
-  });
-
-  it('deductBillingCredits reports an org with no partner to bill', async () => {
-    enableBillingService();
-    mockDb.select.mockImplementation(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({ limit: vi.fn().mockResolvedValue([]) })), // org row absent
-      })),
-    }));
-
-    await expect(deductBillingCredits('org-tel-4', 42)).resolves.toBeUndefined();
-    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ eventCode: 'ai_billing_org_partner_missing' }),
-    );
-  });
-
   it('checkBillingCredits reports a non-2xx credit check but still fails OPEN', async () => {
     const fetchMock = enableBillingService();
     fetchMock.mockResolvedValueOnce(new Response('nope', { status: 500 }));
@@ -1243,7 +1192,7 @@ describe('billing telemetry', () => {
     setupDbMocks(null);
 
     await expect(checkBillingCredits('org-tel-7', 'platform')).resolves.toBeNull();
-    await expect(deductBillingCredits('org-tel-7', 42)).resolves.toBeUndefined();
+    await expect(debitBillingCredits('org-tel-7', 42, { idempotencyKey: 'ai-compute:run-7:1' })).resolves.toEqual({ kind: 'not_configured' });
     // A deployment mode, not a failure — reporting it would be pure noise.
     expect(vi.mocked(captureMessage)).not.toHaveBeenCalled();
     expect(vi.mocked(captureException)).not.toHaveBeenCalled();
