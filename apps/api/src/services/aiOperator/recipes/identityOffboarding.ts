@@ -701,6 +701,37 @@ export function buildIdentityOffboardingManualWork(
       detail: str(flag.detail) ?? 'Discovery could not confirm this automatically. Check it by hand.',
     });
   }
+  // Admission found SOME account but a provider lookup failed: that provider
+  // was never looked at, and the person may still have an account there.
+  const admissionProblems = Array.isArray(facts.admissionProblems)
+    ? facts.admissionProblems.filter((t): t is string => typeof t === 'string') : [];
+  admissionProblems.forEach((problem, i) => {
+    add({
+      key: `admission_problem:${i}`, origin: 'discovery', capabilityKey: null,
+      label: `Check by hand: an account lookup for ${label} failed`,
+      detail: `When this task started, Breeze could not finish looking up this person's accounts: ${problem}. `
+        + 'Breeze did not offboard anything at that provider. Find the account in that provider\'s admin console '
+        + 'and offboard it by hand, or link the contact to the right account and start a new task.',
+    });
+  });
+  // A provider that IS connected but holds no frozen account for this person:
+  // usually right, but an address lookup misses an account whose sign-in name
+  // differs from the contact's email. A person confirms it.
+  for (const [provider, connection, present, name] of [
+    ['m365', 'm365.connection', m365.present, 'Microsoft 365'],
+    ['google', 'google.workspace.connection', google.present, 'Google Workspace'],
+  ] as const) {
+    if (present || readiness[connection] !== true) continue;
+    // A frozen account that could not be READ already has its own flag item.
+    if (arr(facts.flags).some((f) => (str(f.code) ?? '').startsWith(`${provider}_`))) continue;
+    add({
+      key: `confirm_no_account:${provider}`, origin: 'discovery', capabilityKey: null,
+      label: `Confirm ${label} has no ${name} account`,
+      detail: `${name} is connected, but Breeze found no account for this person there, so nothing was done in `
+        + `${name}. If they have one under a different sign-in name, offboard it by hand (or link the contact to `
+        + 'it and start a new task).',
+    });
+  }
   const truncated = Array.isArray(facts.truncated) ? facts.truncated.filter((t): t is string => typeof t === 'string') : [];
   for (const what of truncated) {
     add({

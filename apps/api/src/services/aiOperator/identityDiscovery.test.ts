@@ -26,13 +26,17 @@ const h = vi.hoisted(() => ({
   lic: null as any,
   dbRows: [] as Array<Record<string, unknown>[]>,
   wheres: [] as unknown[],
+  /** Org-scoped contexts opened, and how deep each provider call ran inside one. */
+  contexts: [] as unknown[],
+  inCtx: 0,
+  providerCallDepths: [] as Array<[string, number]>,
 }));
 
 vi.mock('../m365ControlPlane/readActionService', () => ({
-  executeM365ReadActionByOrg: (...args: unknown[]) => h.m365Read(...args),
+  executeM365ReadActionByOrg: (...args: unknown[]) => { h.providerCallDepths.push(['m365', h.inCtx]); return h.m365Read(...args); },
 }));
 vi.mock('../aiToolsGoogle', () => ({
-  resolveContextByOrg: (...args: unknown[]) => h.resolveContextByOrg(...args),
+  resolveContextByOrg: (...args: unknown[]) => { h.providerCallDepths.push(['google', h.inCtx]); return h.resolveContextByOrg(...args); },
   canonicalizeUserEmail: (raw: string) => raw.trim().toLowerCase(),
 }));
 vi.mock('../googleClient', () => ({
@@ -53,10 +57,15 @@ vi.mock('../../db', () => {
     db: { select: () => chain() },
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    withDbAccessContext: async (ctx: unknown, fn: () => Promise<unknown>) => {
+      h.contexts.push(ctx);
+      h.inCtx += 1;
+      try { return await fn(); } finally { h.inCtx -= 1; }
+    },
   };
 });
 
-import { DISCOVERY_LIMITS, discoverIdentityFacts } from './identityDiscovery';
+import { DISCOVERY_LIMITS, DiscoveryTransientError, discoverIdentityFacts } from './identityDiscovery';
 
 const ORG = '00000000-0000-4000-8000-0000000000aa';
 const M365_ID = '00000000-0000-4000-8000-0000000000b1';
@@ -143,6 +152,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.dbRows = [];
   h.wheres = [];
+  h.contexts = [];
+  h.inCtx = 0;
+  h.providerCallDepths = [];
   m365Ok();
   googleOk();
 });
@@ -179,15 +191,65 @@ describe('discoverIdentityFacts — the happy path', () => {
   });
 });
 
-describe('total: a failing provider degrades, never throws', () => {
-  it('a REJECTED M365 read yields present:false and m365_read_failed', async () => {
+describe('db context: every provider connection is resolved in an org-scoped context', () => {
+  it('each M365 read and the Google connection lookup run INSIDE a context scoped to exactly this org', async () => {
+    await discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS });
+    // The task worker calls advancers with no context; a contextless lookup of
+    // a forced-RLS connection table reads as "not connected".
+    expect(h.providerCallDepths.length).toBeGreaterThan(1);
+    // (≥ 1, not = 1: the two providers read in parallel, so this shared counter
+    // can see the other provider's context open at the same time.)
+    for (const [provider, depth] of h.providerCallDepths) {
+      expect(depth, `${provider} call outside a db context`).toBeGreaterThanOrEqual(1);
+    }
+    expect(h.providerCallDepths.map(([p]) => p)).toEqual(expect.arrayContaining(['m365', 'google']));
+    for (const ctx of h.contexts) {
+      expect(ctx).toMatchObject({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+    }
+  });
+});
+
+describe('definitive vs transient: a provider ANSWER degrades, a provider OUTAGE retries', () => {
+  it('a REJECTED M365 account read (no answer at all) throws DiscoveryTransientError — never "no account"', async () => {
     h.m365Read.mockRejectedValue(new Error('socket hang up'));
-    const f = await discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS });
-    expect(f.m365.present).toBe(false);
-    expect(f.flags.map((x) => x.code)).toContain('m365_read_failed');
-    expect(f.google.present).toBe(true);
+    await expect(discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS })).rejects.toBeInstanceOf(DiscoveryTransientError);
   });
 
+  for (const code of ['executor_unavailable', 'read_rate_limited', 'graph_throttled', 'graph_transport_failed', 'graph_request_timeout']) {
+    it(`an M365 account read failing with ${code} throws (the wake retries)`, async () => {
+      h.m365Read.mockResolvedValue({ ok: false, code, message: 'x' });
+      await expect(discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS })).rejects.toThrow(code);
+    });
+  }
+
+  it('a Google account read with no HTTP status, or a 5xx, throws; a 403 is a definitive flag', async () => {
+    h.dir.users.get.mockRejectedValue(new Error('ECONNRESET'));
+    await expect(discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS })).rejects.toBeInstanceOf(DiscoveryTransientError);
+    googleOk();
+    h.dir.users.get.mockRejectedValue(Object.assign(new Error('backend'), { code: 503 }));
+    await expect(discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS })).rejects.toBeInstanceOf(DiscoveryTransientError);
+    googleOk();
+    h.dir.users.get.mockRejectedValue(Object.assign(new Error('forbidden'), { code: 403 }));
+    const f = await discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS });
+    expect(f.google.present).toBe(false);
+    expect(f.flags.map((x) => x.code)).toContain('google_read_failed');
+  });
+
+  it('the read budget running out MID group scan keeps the groups already found and records truncation', async () => {
+    const base = h.m365Read.getMockImplementation()!;
+    h.m365Read.mockImplementation(async (org: string, action: { type: string; groupId?: string }) => (
+      action.type === 'm365.group.member.get' && action.groupId === G2
+        ? { ok: false, code: 'read_rate_limited', message: 'budget' }
+        : base(org, action)
+    ));
+    const f = await discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS });
+    expect(f.m365.present).toBe(true);
+    expect(f.m365.groups.map((g) => g.id)).toEqual([G1]);
+    expect(f.truncated).toContain('m365.groups');
+  });
+});
+
+describe('total: a failing provider degrades, never throws', () => {
   it('an {ok:false} M365 service result yields present:false and m365_read_failed', async () => {
     h.m365Read.mockResolvedValue({ ok: false, code: 'connection_not_ready', message: 'not ready' });
     const f = await discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS });
@@ -203,8 +265,8 @@ describe('total: a failing provider degrades, never throws', () => {
     expect(f.flags.map((x) => x.code)).not.toContain('m365_read_failed');
   });
 
-  it('a REJECTED Google read yields present:false and google_read_failed', async () => {
-    h.dir.users.get.mockRejectedValue(new Error('boom'));
+  it('a Google read REFUSED with a 4xx yields present:false and google_read_failed', async () => {
+    h.dir.users.get.mockRejectedValue(Object.assign(new Error('boom'), { code: 400 }));
     const f = await discoverIdentityFacts({ orgId: ORG, accounts: ACCOUNTS });
     expect(f.google.present).toBe(false);
     expect(f.flags.map((x) => x.code)).toContain('google_read_failed');

@@ -11,10 +11,19 @@
  *    recorded in `truncated` — never sliced at the end, which would still pay
  *    the provider round trips the cap exists to avoid. Strings are clipped,
  *    so the capped worst case stays well under the 64 KiB checkpoint bound.
- *  - TOTAL. Every provider call is wrapped. A failure yields `present: false`
- *    (or an empty sub-list) plus a deterministic flag; discovery never throws
- *    a provider error at the coordinator. A missing provider degrades the
- *    recipe, it does not fail the task (spec §4.1).
+ *  - TOTAL, BUT NOT FORGETFUL. A provider's definitive answer (not found,
+ *    a different user, a refusal for permissions) yields `present: false` or
+ *    an empty sub-list plus a deterministic flag: a missing provider degrades
+ *    the recipe, it does not fail the task (spec §4.1). A TRANSIENT failure of
+ *    an account read (throttling, an executor or network outage, a Breeze db
+ *    error) throws `DiscoveryTransientError` instead, so the wake retries —
+ *    `discover` runs once and freezes what it saw, and a 503 must not be
+ *    frozen as "this person has no Microsoft 365 account".
+ *  - IN AN ORG-SCOPED DB CONTEXT. The operator task worker calls advancers
+ *    with no db context, and both connection tables have forced RLS: a
+ *    contextless connection lookup is denied and reads as "not connected".
+ *    Every provider read resolves its connection inside a context scoped to
+ *    exactly this org (the M365 effect probe's pattern).
  *  - READ-ONLY. No write of any kind. The M365 reads go through
  *    `executeM365ReadActionByOrg`, which does its own auditing.
  *  - TENANT-SCOPED. The two Breeze reads (device suggestions, the inheritor's
@@ -31,13 +40,17 @@
  *    refuses `unsupported_group_type`). `roleAssignable` is therefore always
  *    false here; dynamic membership IS detected from `groupTypes`.
  *  - There is no M365 "groups for a user" read, so membership is tested per
- *    group over the first page of `m365.group.list` (capped by the read
- *    action at 50). A truncated enumeration is recorded as `m365.groups`.
+ *    group over `m365.group.list` (pages of 50, a few pages at most). That is
+ *    one read per group against the connection's per-minute read budget, so a
+ *    large tenant exhausts it mid-scan: the groups found so far are KEPT and
+ *    the list is recorded as truncated (`m365.groups`), which becomes a
+ *    "review the rest by hand" item — never silently emptied. A user-centric
+ *    membership read is a follow-up.
  *  - Breeze devices are SUGGESTIONS from `devices.last_user`, an unvalidated
  *    OS username string (D-R1-8). They are never an effect target.
  */
 import { and, eq, ilike } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { devices } from '../../db/schema/devices';
 import { contacts } from '../../db/schema/contacts';
 import { executeM365ReadActionByOrg } from '../m365ControlPlane/readActionService';
@@ -144,6 +157,26 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * An account read failed for a reason that says nothing about the person —
+ * throttling, an outage, a Breeze db error. Thrown so the wake retries rather
+ * than freezing "no account" into the planning snapshot.
+ */
+export class DiscoveryTransientError extends Error {
+  constructor(readonly provider: 'm365' | 'google', readonly code: string, message: string) {
+    super(`identity discovery: transient ${provider} failure (${code}): ${message}`);
+    this.name = 'DiscoveryTransientError';
+  }
+}
+
+/** Resolve a provider connection in a db context scoped to exactly this org. */
+function inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(
+    { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'aiOperator.identityDiscovery' },
+    fn,
+  ));
+}
+
 // ---------------------------------------------------------------------------
 // Microsoft 365
 // ---------------------------------------------------------------------------
@@ -158,10 +191,23 @@ class M365ReadFailed extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
 
+/** Codes that describe the pipe, not the person: retry rather than conclude. */
+const M365_TRANSIENT_CODES: ReadonlySet<string> = new Set([
+  'executor_unavailable', 'read_rate_limited', 'graph_throttled', 'graph_transport_failed', 'graph_request_timeout',
+]);
+
 async function m365Read(orgId: string, action: M365Action): Promise<Exclude<M365Result, { ok: false }>> {
-  const result = await executeM365ReadActionByOrg(orgId, action);
+  const result = await inOrgContext(orgId, () => executeM365ReadActionByOrg(orgId, action));
   if (!result.ok) throw new M365ReadFailed(result.code, result.message);
   return result;
+}
+
+/** The account read's failure, classified: transient → throw; definitive → flag. */
+function rethrowIfTransientM365(err: unknown): void {
+  if (!(err instanceof M365ReadFailed)) {
+    throw new DiscoveryTransientError('m365', 'error', errorMessage(err));
+  }
+  if (M365_TRANSIENT_CODES.has(err.code)) throw new DiscoveryTransientError('m365', err.code, err.message);
 }
 
 function m365FailureFlag(c: Collector, subject: string, err: unknown, what: string): void {
@@ -182,6 +228,7 @@ async function readM365(orgId: string, externalId: string, label: string, c: Col
     if (r.kind !== 'resource') throw new M365ReadFailed('graph_response_invalid', 'user read returned a collection');
     user = r.resource;
   } catch (err) {
+    rethrowIfTransientM365(err);
     m365FailureFlag(c, label, err, 'user');
     return emptyM365();
   }
@@ -234,7 +281,17 @@ async function readM365(orgId: string, externalId: string, label: string, c: Col
       for (const g of list.items) {
         const id = clip(g.id);
         if (!id) continue;
-        const member = await m365Read(orgId, { type: 'm365.group.member.get', groupId: id, userId: externalId });
+        let member: Awaited<ReturnType<typeof m365Read>>;
+        try {
+          member = await m365Read(orgId, { type: 'm365.group.member.get', groupId: id, userId: externalId });
+        } catch (err) {
+          // The read budget ran out mid-scan: keep what was found, say so.
+          if (err instanceof M365ReadFailed && err.code === 'read_rate_limited') {
+            c.truncate('m365.groups');
+            break;
+          }
+          throw err;
+        }
         if (member.kind !== 'collection' || !member.items.some((i) => i.id === externalId)) continue;
         if (facts.groups.length >= DISCOVERY_LIMITS.groups) { c.truncate('m365.groups'); break; }
         const groupTypes = Array.isArray(g.groupTypes) ? g.groupTypes : [];
@@ -278,6 +335,14 @@ async function readM365(orgId: string, externalId: string, label: string, c: Col
 // Google Workspace
 // ---------------------------------------------------------------------------
 
+/** Throttling, a 5xx, or no HTTP response at all (network): retry, never conclude. */
+function isTransientGoogle(err: unknown): boolean {
+  if (normalizeGoogleError(err).code === 'google_rate_limited') return true;
+  const e = err as { code?: unknown; status?: unknown; response?: { status?: unknown } } | null;
+  const status = [e?.response?.status, e?.status, e?.code].find((v): v is number => typeof v === 'number');
+  return status === undefined ? true : status >= 500;
+}
+
 function googleFailureFlag(c: Collector, code: string, subject: string, err: unknown, what: string): void {
   const norm = normalizeGoogleError(err);
   c.flag(code, subject, `The Google Workspace ${what} read failed (${norm.code}): ${norm.message}`);
@@ -286,10 +351,10 @@ function googleFailureFlag(c: Collector, code: string, subject: string, err: unk
 async function readGoogle(orgId: string, externalId: string, label: string, c: Collector): Promise<GoogleIdentityFacts> {
   let ctx: Awaited<ReturnType<typeof resolveContextByOrg>>;
   try {
-    ctx = await resolveContextByOrg(orgId);
+    ctx = await inOrgContext(orgId, () => resolveContextByOrg(orgId));
   } catch (err) {
-    googleFailureFlag(c, 'google_connection_unavailable', label, err, 'connection');
-    return emptyGoogle();
+    // A throw here is Breeze I/O (the connection row, its key), not a fact.
+    throw new DiscoveryTransientError('google', 'connection', errorMessage(err));
   }
   if ('error' in ctx) {
     c.flag('google_connection_unavailable', label, 'No usable Google Workspace connection for this organization.');
@@ -297,10 +362,16 @@ async function readGoogle(orgId: string, externalId: string, label: string, c: C
   }
 
   let dir: ReturnType<typeof getDirectoryClient>;
+  try {
+    dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
+  } catch (err) {
+    // A key that will not build a client is a fact about the connection, not a blip.
+    googleFailureFlag(c, 'google_connection_unavailable', label, err, 'connection');
+    return emptyGoogle();
+  }
   let primaryEmail: string;
   let suspended: boolean | null;
   try {
-    dir = getDirectoryClient(ctx.keyJson, ctx.conn.adminEmail);
     const res = await dir.users.get({ userKey: externalId });
     if (res.data.id !== externalId) {
       c.flag('google_account_mismatch', label, 'Google Workspace returned a different user for the frozen account id.');
@@ -314,6 +385,7 @@ async function readGoogle(orgId: string, externalId: string, label: string, c: C
     primaryEmail = pe;
     suspended = typeof res.data.suspended === 'boolean' ? res.data.suspended : null;
   } catch (err) {
+    if (isTransientGoogle(err)) throw new DiscoveryTransientError('google', normalizeGoogleError(err).code, errorMessage(err));
     googleFailureFlag(c, 'google_read_failed', label, err, 'user');
     return emptyGoogle();
   }

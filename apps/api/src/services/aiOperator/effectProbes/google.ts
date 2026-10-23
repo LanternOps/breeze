@@ -16,6 +16,7 @@
  * `google_signout` is ALWAYS `unknown`: the Directory user resource exposes no
  * session-validity field (`lastLoginTime` is not one).
  */
+import { runOutsideDbContext, withDbAccessContext } from '../../../db';
 import { getDirectoryClient, getGmailClient, getLicensingClient } from '../../googleClient';
 import { canonicalizeUserEmail, resolveContextByOrg, type GoogleToolContext } from '../../aiToolsGoogle';
 import type { PlannedEffect } from '../recipes/types';
@@ -51,8 +52,15 @@ const lc = (s: string | null | undefined): string => (s ?? '').trim().toLowerCas
 
 async function ctxForOrg(orgId: string): Promise<GoogleToolContext> {
   // Same resolver the headless write path uses, so a probe can never read
-  // through a different connection than the write wrote through.
-  const resolved = await resolveContextByOrg(orgId);
+  // through a different connection than the write wrote through. The task
+  // worker calls probes with NO db context, and the connection table has
+  // forced RLS: resolve it in a context scoped to exactly this org (the M365
+  // probe's pattern), or every Google probe reads "not connected" → unknown.
+  // Only the lookup is inside the context; the Google API calls are not.
+  const resolved = await runOutsideDbContext(() => withDbAccessContext(
+    { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'aiOperator.effectProbe.google' },
+    () => resolveContextByOrg(orgId),
+  ));
   if ('error' in resolved) throw new Error(resolved.error);
   return resolved;
 }

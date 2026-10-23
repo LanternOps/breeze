@@ -285,6 +285,13 @@ export const identityOffboardingCheckpointSchema = taskCheckpointBaseSchema.exte
   recipeInput: identityOffboardingInputSchema,
   /** Next manual-work item index the `manual_work` step binds a step row to (D-R1-5). */
   manualWorkCursor: z.number().int().min(0).max(64).default(0),
+  /**
+   * Provider lookups that FAILED at admission while another account was found
+   * (a broken connection, an address resolving to someone else). Frozen so the
+   * gap is never silent: each becomes a manual item, and any of them keeps the
+   * verdict from `passed` — Breeze did not check that provider.
+   */
+  admissionProblems: z.array(z.string().min(1).max(500)).max(10).default([]),
 }).strict();
 export type IdentityOffboardingCheckpoint = z.infer<typeof identityOffboardingCheckpointSchema>;
 

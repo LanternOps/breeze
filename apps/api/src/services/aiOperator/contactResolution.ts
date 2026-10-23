@@ -27,11 +27,12 @@
  * each one.
  */
 import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { contactExternalLinks, contacts } from '../../db/schema/contacts';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { m365Connections } from '../../db/schema/m365';
+import { googleWorkspaceConnections } from '../../db/schema/google';
 import { createContact, matchContactByEmail, normalizeContactEmail } from '../contacts/crud';
 import { INBOUND_CONTACT_LOCK_NAMESPACE } from '../inboundEmail/resolveOrg';
 import { executeM365ReadActionByOrg } from '../m365ControlPlane/readActionService';
@@ -55,6 +56,18 @@ export interface ResolvedProviderAccount {
 }
 
 const MAX_LABEL = 255;
+
+/**
+ * Provider lookups resolve their connection row (forced RLS) in a context
+ * scoped to exactly this org — never the caller's ambient context, which is
+ * absent off the request path and broader than one org on it.
+ */
+function inOrgContext<T>(orgId: string, fn: () => Promise<T>): Promise<T> {
+  return runOutsideDbContext(() => withDbAccessContext(
+    { scope: 'organization', orgId, accessibleOrgIds: [orgId], label: 'aiOperator.contactResolution' },
+    fn,
+  ));
+}
 
 /** Phase 1. Who is being offboarded? Read-only, system scope, org-predicated. */
 export async function identifyTaskPerson(
@@ -126,7 +139,7 @@ export async function resolveProviderAccounts(
   const accounts: ResolvedProviderAccount[] = [];
   const email = person.email ? canonicalizeUserEmail(person.email) : null;
 
-  const { links, m365ConnectionId } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+  const { links, m365ConnectionId, googleConnected } = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
     const linkRows = person.contactId
       ? await db
         .select({ system: contactExternalLinks.system, externalId: contactExternalLinks.externalId })
@@ -143,7 +156,12 @@ export async function resolveProviderAccounts(
       .from(m365Connections)
       .where(and(eq(m365Connections.orgId, orgId), eq(m365Connections.profile, 'customer-graph-actions')))
       .limit(1);
-    return { links: linkRows, m365ConnectionId: conn?.id ?? null };
+    const [google] = await db
+      .select({ id: googleWorkspaceConnections.id })
+      .from(googleWorkspaceConnections)
+      .where(eq(googleWorkspaceConnections.orgId, orgId))
+      .limit(1);
+    return { links: linkRows, m365ConnectionId: conn?.id ?? null, googleConnected: Boolean(google) };
   }));
 
   const linked = (system: 'm365' | 'google') => links.find((l) => l.system === system)?.externalId ?? null;
@@ -153,9 +171,12 @@ export async function resolveProviderAccounts(
   const m365Linked = linked('m365');
   if (m365Linked) {
     accounts.push({ provider: 'm365', externalId: m365Linked, principalLabel: labelFor(m365Linked), connectionId: m365ConnectionId, fromLink: true });
-  } else if (email) {
+  } else if (email && m365ConnectionId) {
+    // No connection row at all means "this org does not use Microsoft 365",
+    // not a failed lookup. A row in ANY state is looked through, so a broken
+    // connection surfaces as a problem instead of a provider silently skipped.
     try {
-      const r = await executeM365ReadActionByOrg(orgId, { type: 'm365.user.get', userIdOrUpn: email });
+      const r = await inOrgContext(orgId, () => executeM365ReadActionByOrg(orgId, { type: 'm365.user.get', userIdOrUpn: email }));
       if (r.ok && r.kind === 'resource' && typeof r.resource.id === 'string') {
         // Accept the account only when its OWN address is the one asked for:
         // a lookup that resolved through an alias or a proxy address may be a
@@ -180,9 +201,11 @@ export async function resolveProviderAccounts(
   let googleConnectionId: string | null = null;
   if (googleLinked || email) {
     try {
-      const ctx = await resolveContextByOrg(orgId);
+      const ctx = await inOrgContext(orgId, () => resolveContextByOrg(orgId));
       if ('error' in ctx) {
-        if (googleLinked) problems.push('google connection unavailable');
+        // Connected (a row exists) but not usable: the person may well have an
+        // account there that this task would otherwise never look at.
+        if (googleLinked || googleConnected) problems.push('google connection unavailable');
       } else {
         googleConnectionId = (ctx.conn as { id?: string }).id ?? null;
         if (googleLinked) {

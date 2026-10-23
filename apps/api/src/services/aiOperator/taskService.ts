@@ -634,6 +634,9 @@ async function prepareContactTargets(
   const checkpoint: IdentityOffboardingCheckpoint = identityOffboardingCheckpointSchema.parse({
     version: TASK_CHECKPOINT_VERSION,
     recipeInput,
+    // An account WAS found, so the task runs — but a provider whose lookup
+    // failed is a gap the technician must see, not a provider quietly skipped.
+    admissionProblems: problems.slice(0, 10).map((p) => p.slice(0, 500)),
   });
   let contactId: string | null = person.kind === 'existing' ? person.contactId : null;
   let selected: Array<{ id: string; hostname: string | null }> = [];

@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   dir: null as any,
   createContact: vi.fn(),
   matchContactByEmail: vi.fn(),
+  contexts: [] as unknown[],
 }));
 
 vi.mock('../../db', () => {
@@ -42,6 +43,7 @@ vi.mock('../../db', () => {
     },
     runOutsideDbContext: (fn: () => unknown) => fn(),
     withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    withDbAccessContext: async (ctx: unknown, fn: () => Promise<unknown>) => { h.contexts.push(ctx); return fn(); },
   };
 });
 vi.mock('../m365ControlPlane/readActionService', () => ({
@@ -253,10 +255,38 @@ describe('resolveProviderAccounts', () => {
     expect(r.accounts.find((a) => a.provider === 'm365')).toMatchObject({ externalId: 'obj-2' });
   });
 
+  it('an org with NO Microsoft 365 connection row is not looked up there, and that is not a problem', async () => {
+    h.selectQueue = [[], [], [{ id: 'g-conn' }]];
+    const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
+    expect(h.m365Read).not.toHaveBeenCalled();
+    expect(r.accounts.map((x) => x.provider)).toEqual(['google']);
+    expect(r.problems).toEqual([]);
+  });
+
+  it('a Google connection that EXISTS but is unusable is a problem even with no link — never a silent skip', async () => {
+    h.resolveContextByOrg.mockResolvedValue({ error: 'connection inactive' });
+    h.selectQueue = [[], [{ id: 'm-conn' }], [{ id: 'g-conn' }]];
+    const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
+    expect(r.accounts.map((x) => x.provider)).toEqual(['m365']);
+    expect(r.problems).toEqual(['google connection unavailable']);
+    // …and no Google connection row at all is not one.
+    h.selectQueue = [[], [{ id: 'm-conn' }], []];
+    expect((await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' })).problems).toEqual([]);
+  });
+
+  it('both provider lookups resolve their connection in a context scoped to exactly this org', async () => {
+    h.contexts = [];
+    h.selectQueue = [[], [{ id: 'm-conn' }], [{ id: 'g-conn' }]];
+    await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
+    expect(h.contexts).toHaveLength(2);
+    for (const c of h.contexts) expect(c).toMatchObject({ scope: 'organization', orgId: ORG, accessibleOrgIds: [ORG] });
+  });
+
   it('a provider error is reported, never thrown; no address and no links means no accounts', async () => {
     h.m365Read.mockResolvedValue({ ok: false, code: 'connection_not_ready', message: 'not ready' });
     h.dir.users.get.mockRejectedValue(new Error('google down'));
-    h.selectQueue = [[]];
+    // links (none), then the M365 connection row, then the Google connection row
+    h.selectQueue = [[], [{ id: 'm-conn' }], [{ id: 'g-conn' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: C1, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts).toEqual([]);
     expect(r.problems.join(' ')).toMatch(/m365.*connection_not_ready/);

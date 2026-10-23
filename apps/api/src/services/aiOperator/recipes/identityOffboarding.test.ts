@@ -489,6 +489,30 @@ describe('buildIdentityOffboardingManualWork (spec §6.5)', () => {
     expect(held.label).toMatch(/Disable .* by hand, after the mail steps/);
   });
 
+  it('every frozen admission problem becomes its own "check by hand" item', () => {
+    const f = { ...FULL_FACTS, admissionProblems: ['m365 lookup failed (executor_unavailable)', 'google connection unavailable'] };
+    const items = buildIdentityOffboardingManualWork(input(), f, ALL_READY, []);
+    const problems = items.filter((i) => i.key.startsWith('admission_problem:'));
+    expect(problems.map((i) => i.key)).toEqual(['admission_problem:0', 'admission_problem:1']);
+    expect(problems[0]!.detail).toContain('m365 lookup failed (executor_unavailable)');
+  });
+
+  it('a CONNECTED provider with no account for the person asks a human to confirm — unless a read flag already covers it', () => {
+    const noM365 = { ...FULL_FACTS, m365: { ...(FULL_FACTS.m365 as object), present: false } };
+    expect(buildIdentityOffboardingManualWork(input(), noM365, ALL_READY, []).map((i) => i.key))
+      .toContain('confirm_no_account:m365');
+    // Not connected → nothing to confirm.
+    expect(buildIdentityOffboardingManualWork(input(), noM365, { ...ALL_READY, 'm365.connection': false }, []).map((i) => i.key))
+      .not.toContain('confirm_no_account:m365');
+    // A frozen account that could not be read already has its flag item.
+    const flagged = { ...noM365, flags: [{ code: 'm365_read_failed', subject: 'dana', detail: 'x' }] };
+    expect(buildIdentityOffboardingManualWork(input(), flagged, ALL_READY, []).map((i) => i.key))
+      .not.toContain('confirm_no_account:m365');
+    // Present → nothing to confirm.
+    expect(buildIdentityOffboardingManualWork(input(), FULL_FACTS, ALL_READY, []).map((i) => i.key))
+      .not.toContain('confirm_no_account:m365');
+  });
+
   it('is stable and deduplicated by key', () => {
     const items = buildIdentityOffboardingManualWork(input({ keepMailbox: true }), FULL_FACTS, {}, []);
     expect(new Set(items.map((i) => i.key)).size).toBe(items.length);

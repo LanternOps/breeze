@@ -324,6 +324,16 @@ describe('admitTask — identity_offboarding (R1a Task 9)', () => {
     expect(values.deadlineAt).toEqual(new Date(NOW.getTime() + 72 * 60 * 60 * 1000));
   });
 
+  it('13b. a provider lookup that FAILED while another account was found is frozen onto the checkpoint, not dropped', async () => {
+    h.resolveProviderAccounts.mockResolvedValue({
+      accounts: ACCOUNTS.filter((x) => x.provider === 'google'),
+      problems: ['m365 lookup failed (executor_unavailable)'],
+    });
+    h.selectQueue = [[helpdesk]];
+    expect(await taskService.admitTask(base)).toMatchObject({ ok: true });
+    expect(h.inserts[0]!.values.checkpoint).toMatchObject({ admissionProblems: ['m365 lookup failed (executor_unavailable)'] });
+  });
+
   it('selected devices become device targets at ordinals 1..n; a device outside the org refuses', async () => {
     const D2 = '00000000-0000-4000-8000-000000000012';
     h.selectQueue = [[helpdesk], [{ id: D2, hostname: 'LT-2' }, { id: DEVICE, hostname: 'LT-1' }]];
