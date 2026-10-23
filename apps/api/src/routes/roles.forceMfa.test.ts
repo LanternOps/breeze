@@ -378,7 +378,8 @@ describe('role routes — force_mfa (#5317)', () => {
       });
 
       expect(res.status).toBe(201);
-      const row = values.mock.calls[0][0] as { description: string | null };
+      expect(values).toHaveBeenCalledTimes(1);
+      const row = values.mock.calls[0]![0] as { description: string | null };
       expect(row.description ?? '').not.toMatch(/Cloned from/);
       expect(row.description ?? '').not.toMatch(/execute scripts/);
       expect(row.description).toBe(stored);
