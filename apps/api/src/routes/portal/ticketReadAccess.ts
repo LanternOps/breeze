@@ -1,4 +1,4 @@
-import { or, sql } from 'drizzle-orm';
+import { and, isNull, or, sql } from 'drizzle-orm';
 import { tickets } from '../../db/schema';
 import { portalTicketOwnership } from './ticketOwnership';
 
@@ -42,4 +42,14 @@ export function portalTicketReadAccess(user: { id: string; contactId: string | n
          AND t2.org_id = ${tickets.orgId}
          AND ${ownsTombstone})`,
   )!;
+}
+
+/**
+ * The portal dashboard's ticket set (#8972): what the ticket list shows — own
+ * tickets and the survivors of merged ones — never a tombstone. Shared by the
+ * portal dashboard and the staff "view as customer" preview so the two stay
+ * equal (orgPortalPreview parity test).
+ */
+export function portalDashboardTicketScope(user: { id: string; contactId: string | null }) {
+  return and(portalTicketReadAccess(user), isNull(tickets.mergedIntoTicketId))!;
 }

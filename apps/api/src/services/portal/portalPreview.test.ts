@@ -34,6 +34,10 @@ vi.mock('../../db/schema', () => {
 vi.mock('../../routes/portal/ticketOwnership', () => ({
   portalTicketOwnership: vi.fn((u: { id: string }) => ({ ownership: u.id })),
 }));
+// #8972: the dashboard's ticket set (own + survivors of merged tickets) — same sentinel shape.
+vi.mock('../../routes/portal/ticketReadAccess', () => ({
+  portalDashboardTicketScope: vi.fn((u: { id: string }) => ({ ownership: u.id })),
+}));
 
 import { PORTAL_SECTION_GATES } from '../../routes/portal/featureFlags';
 import {
