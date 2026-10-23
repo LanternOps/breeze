@@ -240,13 +240,20 @@ func installScriptRunID(commandID string) string {
 	return "install-" + hex.EncodeToString(b[:])
 }
 
-// redactedValues are the var_* parameter values (tenant variables), longest
-// first so a value that contains another is replaced whole.
-func (s *installScript) redactedValues() []string {
+// installScriptRedactions are the var_* parameter values (tenant variables) of
+// every script in this install, longest first so a value that contains
+// another is replaced whole. The union, because either script can print a
+// value the other one was given (both run on the same device and state).
+func installScriptRedactions(scripts ...*installScript) []string {
 	var values []string
-	for key, v := range s.parameters {
-		if v != "" && strings.HasPrefix(strings.ToLower(key), "var_") {
-			values = append(values, v)
+	for _, s := range scripts {
+		if s == nil {
+			continue
+		}
+		for key, v := range s.parameters {
+			if v != "" && strings.HasPrefix(strings.ToLower(key), "var_") {
+				values = append(values, v)
+			}
 		}
 	}
 	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
@@ -262,8 +269,9 @@ func redactInstallScriptText(text string, values []string) string {
 
 // runInstallScript runs s and returns its report for the result map, or a
 // failed CommandResult when it did not succeed. installDir / installFile are
-// the agent-owned parameters.
-func runInstallScript(s *installScript, run InstallScriptRunner, runID, installDir, installFile string, startTime time.Time) (map[string]any, *CommandResult) {
+// the agent-owned parameters; secrets are replaced with [redacted] in
+// everything captured (installScriptRedactions).
+func runInstallScript(s *installScript, run InstallScriptRunner, runID, installDir, installFile string, secrets []string, startTime time.Time) (map[string]any, *CommandResult) {
 	params := make(map[string]string, len(s.parameters)+2)
 	for k, v := range s.parameters {
 		params[k] = v
@@ -287,7 +295,6 @@ func runInstallScript(s *installScript, run InstallScriptRunner, runID, installD
 		}
 	}
 
-	secrets := s.redactedValues()
 	output := res.Stdout
 	if res.Stderr != "" {
 		if output != "" && !strings.HasSuffix(output, "\n") {

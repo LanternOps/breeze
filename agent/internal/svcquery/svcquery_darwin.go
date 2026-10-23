@@ -4,7 +4,9 @@ package svcquery
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,9 +31,15 @@ func GetStatus(name string) (ServiceInfo, error) {
 	defer cancel()
 
 	output, err := exec.CommandContext(ctx, "launchctl", "list").Output()
-	return resolveLaunchdStatus(string(output), err, name, func(p string) bool {
+	return resolveLaunchdStatus(string(output), err, name, func(p string) (bool, error) {
 		_, statErr := os.Stat(p)
-		return statErr == nil
+		if statErr == nil {
+			return true, nil
+		}
+		if errors.Is(statErr, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, statErr
 	})
 }
 

@@ -48,7 +48,7 @@ func TestParseLaunchctlList(t *testing.T) {
 // resolveLaunchdStatus is the whole of darwin GetStatus minus the exec: it is
 // what tells "launchctl could not be asked" apart from "the label is absent".
 func TestResolveLaunchdStatus(t *testing.T) {
-	noPlist := func(string) bool { return false }
+	noPlist := func(string) (bool, error) { return false, nil }
 
 	t.Run("launchctl list failing is an error, not not-found", func(t *testing.T) {
 		_, err := resolveLaunchdStatus("", errors.New("exit status 1"), "ctrld", noPlist)
@@ -69,9 +69,9 @@ func TestResolveLaunchdStatus(t *testing.T) {
 
 	t.Run("absent label with an installed plist is stopped", func(t *testing.T) {
 		var asked []string
-		info, err := resolveLaunchdStatus(sampleLaunchctlList, nil, "ctrld-absent", func(p string) bool {
+		info, err := resolveLaunchdStatus(sampleLaunchctlList, nil, "ctrld-absent", func(p string) (bool, error) {
 			asked = append(asked, p)
-			return p == "/Library/LaunchDaemons/ctrld-absent.plist"
+			return p == "/Library/LaunchDaemons/ctrld-absent.plist", nil
 		})
 		if err != nil || info.Status != StatusStopped {
 			t.Fatalf("got (%+v, %v), want stopped", info, err)
@@ -81,10 +81,19 @@ func TestResolveLaunchdStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("an unreadable plist path is an error, not absence", func(t *testing.T) {
+		_, err := resolveLaunchdStatus(sampleLaunchctlList, nil, "ctrld-absent", func(string) (bool, error) {
+			return false, errors.New("permission denied")
+		})
+		if err == nil || errors.Is(err, ErrServiceNotFound) {
+			t.Fatalf("err = %v, want a non-not-found error", err)
+		}
+	})
+
 	t.Run("listed label wins without a plist check", func(t *testing.T) {
-		info, err := resolveLaunchdStatus(sampleLaunchctlList, nil, "ctrld", func(string) bool {
+		info, err := resolveLaunchdStatus(sampleLaunchctlList, nil, "ctrld", func(string) (bool, error) {
 			t.Fatal("plist checked for a listed label")
-			return false
+			return false, nil
 		})
 		if err != nil || info.Status != StatusRunning {
 			t.Fatalf("got (%+v, %v), want running", info, err)

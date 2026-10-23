@@ -42,8 +42,10 @@ func launchdPlistPaths(name string) []string {
 // resolveLaunchdStatus is darwin GetStatus minus the exec. A failed
 // `launchctl list` is an inspection failure, never "not found" (the service
 // may be running); a label that is neither listed nor installed as a plist is
-// ErrServiceNotFound; an installed but unloaded plist is stopped.
-func resolveLaunchdStatus(listOutput string, listErr error, name string, plistExists func(path string) bool) (ServiceInfo, error) {
+// ErrServiceNotFound; an installed but unloaded plist is stopped. plistExists
+// reports a path's presence; an error (other than not-exist, which it must
+// report as (false, nil)) is an inspection failure, never absence.
+func resolveLaunchdStatus(listOutput string, listErr error, name string, plistExists func(path string) (bool, error)) (ServiceInfo, error) {
 	if listErr != nil {
 		return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: launchctl list: %w", listErr)
 	}
@@ -52,7 +54,11 @@ func resolveLaunchdStatus(listOutput string, listErr error, name string, plistEx
 		return info, nil
 	}
 	for _, p := range launchdPlistPaths(name) {
-		if plistExists(p) {
+		exists, statErr := plistExists(p)
+		if statErr != nil {
+			return ServiceInfo{Name: name, Status: StatusUnknown}, fmt.Errorf("svcquery: stat %s: %w", p, statErr)
+		}
+		if exists {
 			return ServiceInfo{Name: name, Status: StatusStopped}, nil
 		}
 	}

@@ -313,9 +313,10 @@ func InstallSoftwareWithOptions(payload map[string]any, progress ProgressReporte
 
 	progress.report(ProgressStageInstalling)
 	runID := installScriptRunID(opts.CommandID)
+	secrets := installScriptRedactions(preScript, postScript)
 	scriptReports := map[string]any{}
 	if preScript != nil {
-		report, failed := runInstallScript(preScript, opts.RunScript, runID, tempDir, localPath, startTime)
+		report, failed := runInstallScript(preScript, opts.RunScript, runID, tempDir, localPath, secrets, startTime)
 		if failed != nil {
 			return *failed
 		}
@@ -369,7 +370,7 @@ func InstallSoftwareWithOptions(payload map[string]any, progress ProgressReporte
 	}
 
 	if postScript != nil {
-		report, failed := runInstallScript(postScript, opts.RunScript, runID, tempDir, localPath, startTime)
+		report, failed := runInstallScript(postScript, opts.RunScript, runID, tempDir, localPath, secrets, startTime)
 		if failed != nil {
 			return *failed
 		}

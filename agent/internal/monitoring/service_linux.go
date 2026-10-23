@@ -14,15 +14,16 @@ func checkService(name string) CheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	output, err := exec.CommandContext(ctx, "systemctl", "is-active", name).Output()
+	output, err := exec.CommandContext(ctx, "systemctl", "is-active", "--", name).Output()
 	execDetail := ""
 	if err != nil {
 		execDetail = err.Error()
 	}
-	return systemctlCheckResult(name, strings.TrimSpace(string(output)), classifyExec(ctx.Err(), err), execDetail,
-		func() execOutcome {
-			catErr := exec.CommandContext(ctx, "systemctl", "cat", name).Run()
-			return classifyExec(ctx.Err(), catErr)
+	// `-p LoadState` without --value: --value needs systemd >= 230.
+	return systemctlCheckResult(name, strings.TrimSpace(string(output)), classifyExec(ctx.Err(), err), exitCodeOf(err), execDetail,
+		func() (string, execOutcome) {
+			out, showErr := exec.CommandContext(ctx, "systemctl", "show", "-p", "LoadState", "--", name).Output()
+			return string(out), classifyExec(ctx.Err(), showErr)
 		})
 }
 

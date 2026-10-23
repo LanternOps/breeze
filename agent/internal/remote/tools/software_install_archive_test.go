@@ -128,8 +128,83 @@ func TestExtractArchive_DuplicateDoesNotOverwrite(t *testing.T) {
 	if err := extractArchive(zipPath, dest); err == nil {
 		t.Fatal("duplicate entry accepted")
 	}
-	if got, err := os.ReadFile(filepath.Join(dest, "a.txt")); err == nil && string(got) != "first" {
-		t.Fatalf("a.txt = %q: the duplicate overwrote the first entry", got)
+	// The first entry was extracted before the duplicate was seen; it must
+	// still hold its own bytes.
+	if got, err := os.ReadFile(filepath.Join(dest, "a.txt")); err != nil || string(got) != "first" {
+		t.Fatalf("a.txt = (%q, %v): want the first entry, untouched", got, err)
+	}
+}
+
+func TestExtractArchive_RefusesMoreUnsafeNames(t *testing.T) {
+	for name, entries := range map[string][]zipEntry{
+		"superscript COM":            {{name: "COM\u00b9", body: "x"}},
+		"superscript LPT ext":        {{name: "dir/LPT\u00b2.txt", body: "x"}},
+		"CONIN$":                     {{name: "CONIN$", body: "x"}},
+		"trailing dot mid-path":      {{name: "dir./file", body: "x"}},
+		"trailing space mid-path":    {{name: "dir /file", body: "x"}},
+		"file then dir of same name": {{name: "a", body: "x"}, {name: "a/b", body: "y"}},
+		"dir then case-folded file":  {{name: "a/"}, {name: "A", body: "x"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := extractArchive(writeZip(t, entries), t.TempDir()); err == nil {
+				t.Fatal("unsafe archive accepted")
+			}
+		})
+	}
+}
+
+// O_EXCL: an entry never replaces a file already in the extraction dir, and
+// never writes through a link planted there.
+func TestExtractArchive_NeverWritesThroughExistingPaths(t *testing.T) {
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "a.txt"), []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractArchive(writeZip(t, []zipEntry{{name: "a.txt", body: "replaced"}}), dest); err == nil {
+		t.Fatal("an existing file was overwritten without error")
+	}
+	if got, _ := os.ReadFile(filepath.Join(dest, "a.txt")); string(got) != "original" {
+		t.Fatalf("a.txt = %q, want original", got)
+	}
+
+	if runtime.GOOS == "windows" {
+		return // creating symlinks needs a privilege CI runners may lack
+	}
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dest, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractArchive(writeZip(t, []zipEntry{{name: "link.txt", body: "pwned"}}), dest); err == nil {
+		t.Fatal("extraction wrote through a planted symlink")
+	}
+	if got, _ := os.ReadFile(outside); string(got) != "outside" {
+		t.Fatalf("symlink target = %q, want untouched", got)
+	}
+}
+
+// One entry over the cap, and a highly compressible one (a few KiB on disk,
+// past the cap once inflated), both trip the byte count.
+func TestExtractArchive_ByteCapSingleAndCompressibleEntries(t *testing.T) {
+	orig := maxArchiveUncompressedBytes
+	maxArchiveUncompressedBytes = 1 << 20
+	t.Cleanup(func() { maxArchiveUncompressedBytes = orig })
+
+	for name, body := range map[string]string{
+		"single entry one byte over": strings.Repeat("x", 1<<20+1),
+		"2 MiB of zeros":             strings.Repeat("0", 2<<20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			zipPath := writeZip(t, []zipEntry{{name: "big", body: body}})
+			if info, _ := os.Stat(zipPath); name == "2 MiB of zeros" && info.Size() > 64<<10 {
+				t.Fatalf("fixture not compressible enough: %d bytes", info.Size())
+			}
+			if err := extractArchive(zipPath, t.TempDir()); !errors.Is(err, errArchiveTooLarge) {
+				t.Fatalf("err = %v, want errArchiveTooLarge", err)
+			}
+		})
 	}
 }
 

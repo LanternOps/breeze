@@ -508,6 +508,174 @@ func TestInstallScripts_RefusesMalformedScripts(t *testing.T) {
 	}
 }
 
+// The staging dir holds the downloaded package and its extracted contents; it
+// is removed on every failure path too, not only after a clean install.
+func TestInstallScripts_StagingRemovedOnFailurePaths(t *testing.T) {
+	fail := func(phase string) func(InstallScriptRequest) (*InstallScriptResult, error) {
+		return func(req InstallScriptRequest) (*InstallScriptResult, error) {
+			if strings.HasSuffix(req.ID, "-"+phase) {
+				return &InstallScriptResult{ExitCode: 7}, nil
+			}
+			return &InstallScriptResult{}, nil
+		}
+	}
+	tests := []struct {
+		name       string
+		zip        bool
+		installErr error
+		respond    func(InstallScriptRequest) (*InstallScriptResult, error)
+		detection  bool
+	}{
+		{name: "pre-script fails", respond: fail("pre")},
+		{name: "installer fails", installErr: errors.New("installer exited with code 1603")},
+		{name: "post-script fails", respond: fail("post")},
+		{name: "archive rejected", zip: true},
+		{name: "detection never met", detection: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origWindow, origInterval := detectionSettleWindow, detectionSettleInterval
+			detectionSettleWindow, detectionSettleInterval = 10*time.Millisecond, time.Millisecond
+			t.Cleanup(func() { detectionSettleWindow, detectionSettleInterval = origWindow, origInterval })
+
+			var staging string
+			stubInstallPipeline(t,
+				func(_ *http.Client, _ string, dest string) error {
+					staging = filepath.Dir(dest)
+					if tt.zip {
+						return os.WriteFile(dest, buildZip(t, []zipEntry{{name: "../evil", body: "x"}}), 0o600)
+					}
+					return os.WriteFile(dest, fakeInstallerBytes, 0o600)
+				},
+				func(string, string, string, []uint32) (int, string, bool, error) {
+					if tt.installErr != nil {
+						return 1, "boom", false, tt.installErr
+					}
+					return 0, "ok", false, nil
+				},
+			)
+			p := installPayload("https://downloads.example.com/pkg.exe", nil)
+			if tt.zip {
+				p = zipInstallPayload()
+			} else {
+				p["preInstallScript"] = scriptPayload("echo pre", nil)
+			}
+			p["postInstallScript"] = scriptPayload("echo post", nil)
+			if tt.detection {
+				p["detectionRules"] = []any{map[string]any{"type": "service_running", "serviceName": "ctrld"}}
+				stubServiceStatus(t, func(string) (bool, bool) { return false, true })
+			}
+
+			res := InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: (&fakeRunner{respond: tt.respond}).run})
+
+			if res.Status != "failed" {
+				t.Fatalf("status = %q, want failed", res.Status)
+			}
+			if staging == "" {
+				t.Fatal("download never ran")
+			}
+			if _, err := os.Stat(staging); !os.IsNotExist(err) {
+				t.Fatalf("staging dir %s left behind: %v", staging, err)
+			}
+		})
+	}
+}
+
+// The day's one restore point is only spent once the install will mutate:
+// never for an already-installed package or a failed download, and before the
+// pre-script when there is one.
+func TestInstallScripts_CheckpointBoundary(t *testing.T) {
+	t.Run("already installed", func(t *testing.T) {
+		calls := swCheckpointProbe(t, nil)
+		stubServiceStatus(t, func(string) (bool, bool) { return true, true })
+		p := withSoftwareBlock(installPayload("https://downloads.example.com/pkg.exe", nil))
+		p["preInstallScript"] = scriptPayload("echo pre", nil)
+		p["detectionRules"] = []any{map[string]any{"type": "service_running", "serviceName": "ctrld"}}
+		res := InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: (&fakeRunner{}).run})
+		if *calls != 0 {
+			t.Fatalf("checkpoint attempts = %d, want 0", *calls)
+		}
+		requireNoMutation(t, res)
+	})
+
+	t.Run("download fails", func(t *testing.T) {
+		var order []string
+		calls := swCheckpointProbe(t, &order)
+		stubInstallPipeline(t,
+			func(*http.Client, string, string) error { return errors.New("connection reset") },
+			func(string, string, string, []uint32) (int, string, bool, error) { return 0, "", false, nil },
+		)
+		p := withSoftwareBlock(installPayload("https://downloads.example.com/pkg.exe", nil))
+		p["preInstallScript"] = scriptPayload("echo pre", nil)
+		runner := &fakeRunner{order: &order}
+		res := InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: runner.run})
+		if *calls != 0 || len(runner.requests) != 0 {
+			t.Fatalf("checkpoint attempts = %d, scripts run = %d; want 0 and 0", *calls, len(runner.requests))
+		}
+		requireNoMutation(t, res)
+	})
+
+	t.Run("pre-script fails after the checkpoint", func(t *testing.T) {
+		var order []string
+		swCheckpointProbe(t, &order)
+		p := withSoftwareBlock(scriptedInstall(t, &order, nil))
+		runner := &fakeRunner{order: &order, respond: func(InstallScriptRequest) (*InstallScriptResult, error) {
+			return &InstallScriptResult{ExitCode: 1}, nil
+		}}
+		InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: runner.run})
+		if want := []string{"download", "checkpoint", "pre"}; !reflect.DeepEqual(order, want) {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	})
+}
+
+func TestInstallScripts_RedactionEdgeCases(t *testing.T) {
+	const code = "prov-CODE-123456"
+
+	t.Run("runner error with no result", func(t *testing.T) {
+		var order []string
+		p := scriptedInstall(t, &order, nil)
+		p["preInstallScript"] = scriptPayload("echo {{var_code}}", map[string]any{"var_code": code})
+		runner := &fakeRunner{order: &order, respond: func(InstallScriptRequest) (*InstallScriptResult, error) {
+			return nil, errors.New("render failed near " + code)
+		}}
+		res := InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: runner.run})
+		if res.Status != "failed" || !strings.Contains(res.Error, "render failed near [redacted]") || strings.Contains(res.Error+res.Stdout, code) {
+			t.Fatalf("result = %+v, want the runner error redacted", res)
+		}
+	})
+
+	t.Run("upper-case VAR_ key", func(t *testing.T) {
+		var order []string
+		p := scriptedInstall(t, &order, nil)
+		p["postInstallScript"] = scriptPayload("echo hi", map[string]any{"VAR_Code": code})
+		runner := &fakeRunner{order: &order, respond: func(InstallScriptRequest) (*InstallScriptResult, error) {
+			return &InstallScriptResult{Stdout: "got " + code}, nil
+		}}
+		res := InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: runner.run})
+		if res.Status != "completed" || strings.Contains(res.Stdout, code) {
+			t.Fatalf("result = %+v, want the VAR_ value redacted", res)
+		}
+	})
+
+	t.Run("secret at the truncation boundary", func(t *testing.T) {
+		var order []string
+		p := scriptedInstall(t, &order, nil)
+		p["postInstallScript"] = scriptPayload("echo hi", map[string]any{"var_code": code})
+		// The value straddles the output cap: truncating first would leave a
+		// prefix of it that a later replace can no longer match.
+		filler := strings.Repeat("a", maxInstallerOutputBytes-len(code)/2)
+		runner := &fakeRunner{order: &order, respond: func(InstallScriptRequest) (*InstallScriptResult, error) {
+			return &InstallScriptResult{Stdout: filler + code + "tail"}, nil
+		}}
+		out := decodeSuccess(t, InstallSoftwareWithOptions(p, nil, InstallOptions{CommandID: "cmd-1", RunScript: runner.run}))
+		got := out["postInstallScript"].(map[string]any)["output"].(string)
+		if strings.Contains(got, code[:len(code)/2]) {
+			t.Fatalf("a prefix of the var_ value survived truncation: ...%q", got[len(got)-40:])
+		}
+	})
+}
+
 // End to end for an archive: extracted files are under install_dir when the
 // post-install script runs.
 func TestInstallScripts_ZipExtractsForThePostScript(t *testing.T) {
