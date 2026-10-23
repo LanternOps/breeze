@@ -31,7 +31,9 @@ func startContained(running *runningExecution, cmd *exec.Cmd) error {
 // afterStartHook, when non-nil, runs between cmd.Start returning and the pgid
 // being attached. Test-only seam: it holds open the window in which os/exec's
 // context watchdog (started inside cmd.Start) can already fire cmd.Cancel
-// before attachProcessGroup has run (#9815). Always nil in production.
+// before attachProcessGroup has run (#9815). Always nil in production. It is an
+// unsynchronised package var: a test that sets it must not run in parallel with
+// anything that calls Execute.
 var afterStartHook func(cmd *exec.Cmd)
 
 // capturePgid reads the process group id immediately after Start.
@@ -74,8 +76,10 @@ func terminateProcessTree(running *runningExecution, graceSeconds int) error {
 		}
 	}
 	if pgid <= 0 {
-		// No group to signal: the command was not configured to lead its own
-		// process group. The kill below reaches the leader only, so latch the
+		// No group to signal: there is no started command, or it was not
+		// configured to lead its own process group (setProcessGroup always does,
+		// so in production this is defensive). The kill below reaches the
+		// leader at most, so latch the
 		// execution as uncontained; otherwise a later attachProcessGroup would
 		// set contained=true and let this very cancel claim `terminated` while
 		// group members survived.

@@ -95,7 +95,12 @@ func waitForZombie(t *testing.T, pid int) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		out, err := exec.Command("ps", "-o", "stat=", "-p", fmt.Sprint(pid)).Output()
-		if err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
+		if err != nil {
+			// The leader cannot be reaped before the seam releases it, so ps
+			// failing means ps itself is unusable here, not that pid is gone.
+			t.Fatalf("ps -o stat= -p %d: %v", pid, err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(out)), "Z") {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -134,8 +139,21 @@ func TestCancelInTheWindowBeforePgidAttachStillKillsTheWholeTree(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("process never started")
 	}
-	// Whatever the outcome, never leak a heartbeat loop past the test.
-	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	// Cleanups run last-registered first. On an early failure, release the
+	// seam BEFORE the hook-reset cleanup above writes afterStartHook, so the
+	// parked Execute goroutine is not left blocked (or racing that write), and
+	// never leak a surviving heartbeat loop. Only signal the group on failure:
+	// on success it is already gone and its id could in principle be reused.
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		if t.Failed() {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+	})
 	waitForNonEmptyFile(t, beat) // the grandchild is alive inside the window
 
 	type cancelResult struct {
