@@ -1863,7 +1863,7 @@
     "disabledDescription": "Habilite el reenvío de registros arriba para configurar las opciones de conexión.",
     "enable": {
       "title": "Habilitar el reenvío de registros",
-      "description": "Cuando está habilitado, los registros de eventos se reenvían a su almacén de registros en un horario recurrente."
+      "description": "Cuando está habilitado, los registros de eventos se reenvían a su almacén de registros a medida que cada dispositivo los informa."
     },
     "connection": {
       "title": "Conexión",

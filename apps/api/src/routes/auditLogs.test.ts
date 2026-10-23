@@ -317,7 +317,9 @@ describe('audit log routes', () => {
       const details = JSON.parse(body.entries[0].details);
       expect(details.toolInput.apiToken).toBe('[REDACTED]');
       expect(details.durationMs).toBe(12);
-      expect(body.entries[0].changes.after.toolInput.providerConfig.secretKey).toBe('[REDACTED]');
+      // #9672: a non-update action carries no fabricated "after" snapshot.
+      expect(body.entries[0].changes).toEqual({ before: {}, after: {} });
+      expect(body.entries[0].user.department).toBeUndefined();
       expect(body.entries[0].sessionId).toBe('session-1');
     });
 
