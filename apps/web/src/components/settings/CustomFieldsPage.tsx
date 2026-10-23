@@ -61,7 +61,11 @@ export default function CustomFieldsPage() {
   const [formDefaultValue, setFormDefaultValue] = useState<unknown>(null);
   const [formDeviceTypes, setFormDeviceTypes] = useState<string[]>([]);
   const [formOptions, setFormOptions] = useState<CustomFieldOptions>({});
-  const [dropdownChoices, setDropdownChoices] = useState<Array<{ label: string; value: string }>>([]);
+  // `valueTouched`: Value was hand-edited (or loaded from a saved choice), so
+  // it stops following the Label (#9677).
+  const [dropdownChoices, setDropdownChoices] = useState<
+    Array<{ label: string; value: string; valueTouched?: boolean }>
+  >([]);
 
   // Partner-wide ownership (#2135 step 6). A partner-scope tech whose token
   // never resolved partner-wide capability (orgAccess='selected') got a 403
@@ -184,12 +188,16 @@ export default function CustomFieldsPage() {
   // (options.choices = dropdownChoices.filter(c => c.label && c.value) => []).
   const normalizeChoices = (
     raw: unknown
-  ): Array<{ label: string; value: string }> => {
+  ): Array<{ label: string; value: string; valueTouched: boolean }> => {
     if (!Array.isArray(raw)) return [];
     return raw.map((entry) =>
       typeof entry === 'string'
-        ? { label: entry, value: entry }
-        : { label: (entry as { label?: string })?.label ?? '', value: (entry as { value?: string })?.value ?? '' }
+        ? { label: entry, value: entry, valueTouched: true }
+        : {
+            label: (entry as { label?: string })?.label ?? '',
+            value: (entry as { value?: string })?.value ?? '',
+            valueTouched: true
+          }
     );
   };
 
@@ -225,10 +233,13 @@ export default function CustomFieldsPage() {
     updated[index] = {
       label: current?.label ?? '',
       value: current?.value ?? '',
+      valueTouched: current?.valueTouched ?? false,
       [field]: newValue
     };
-    // Auto-generate value from label if value is empty
-    if (field === 'label' && !updated[index].value) {
+    if (field === 'value') {
+      updated[index].valueTouched = true;
+    } else if (!updated[index].valueTouched) {
+      // Keep Value tracking the Label until the user edits Value by hand.
       updated[index].value = generateFieldKey(newValue);
     }
     setDropdownChoices(updated);
@@ -274,7 +285,9 @@ export default function CustomFieldsPage() {
     try {
       const options: CustomFieldOptions = {};
       if (formType === 'dropdown') {
-        options.choices = dropdownChoices.filter((c) => c.label && c.value);
+        options.choices = dropdownChoices
+          .filter((c) => c.label && c.value)
+          .map(({ label, value }) => ({ label, value }));
       }
       if (formType === 'number') {
         if (formOptions.min !== undefined) options.min = formOptions.min;
