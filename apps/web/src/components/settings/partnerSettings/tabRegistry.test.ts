@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import en from '../../../locales/en/settings.json';
 import { ALL_TABS, TAB_BY_KEY, TAB_GROUPS, tabFromHash, visibleTabGroups } from './tabRegistry';
 
 describe('partner settings tab registry', () => {
@@ -40,5 +41,26 @@ describe('partner settings tab registry', () => {
     expect(tabFromHash('caller-verification')).toBe('callerVerification');
     const all = visibleTabGroups({ sendingDomains: true, callerVerification: true }).flatMap(g => g.tabs);
     expect(all).toHaveLength(20);
+  });
+
+  it('blurbs match fields (§4.4)', () => {
+    const page = (en as unknown as { partnerSettingsPage: { groups: Record<string, string>; tabs: Record<string, { label: string; description: string }> } }).partnerSettingsPage;
+    expect(page.tabs.eventLogs.description).not.toMatch(/retention/i);
+    expect(page.tabs.notifications.description).not.toMatch(/webhook/i);
+    expect(page.tabs.eventLogs.description).toBe('Forward device event logs to Elasticsearch');
+    expect(page.tabs.notifications.description).toBe('Sender address, SMTP, Slack and Pushover defaults');
+    for (const g of TAB_GROUPS) {
+      const key = g.label.replace('partnerSettingsPage.groups.', '');
+      expect(page.groups[key], `group ${g.id}`).toBeTruthy();
+    }
+    for (const t of ALL_TABS) {
+      const key = t.key;
+      expect(page.tabs[key]?.label, `${key}.label`).toBeTruthy();
+      expect(page.tabs[key]?.description, `${key}.description`).toBeTruthy();
+      expect(t.label).toBe(`partnerSettingsPage.tabs.${key}.label`);
+      expect(t.description).toBe(`partnerSettingsPage.tabs.${key}.description`);
+    }
+    expect(page.groups.devices).toBe('Devices & agents');
+    expect(page.groups.ai).toBe('AI');
   });
 });
