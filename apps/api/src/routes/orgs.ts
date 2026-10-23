@@ -119,6 +119,7 @@ import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 
 import { notHiddenOrgType, notInHiddenOrgCondition } from '../services/unassignedPool/visibility';
+import { partnerVisibleOrgConditions } from '../services/partnerVisibleOrgs';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -1810,7 +1811,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     // would select the whole table. Fail closed even in dead code.
     conditions = noLiveOrgs
       ? sql`false`
-      : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+      // Shared with the partner settings inheritance counts (#9170).
+      : and(...partnerVisibleOrgConditions(orgIds), searchCondition);
   } else {
     // #4166 — system scope short-circuits every RLS predicate and this branch
     // carries NO status filter, so archive-lifecycle orgs already come back
