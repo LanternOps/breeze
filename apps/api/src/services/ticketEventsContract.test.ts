@@ -368,12 +368,14 @@ describe('ticket-events producer→consumer contract', () => {
   // ── updateTicketFields → ticket.updated ───────────────────────────────────
 
   it('updateTicketFields: emitted ticket.updated event feeds handleTicketEvent → explicit no-op (no insert, no email)', async () => {
-    // Service selects: ticket lookup
-    hoisted.selectQueue.push([{
+    // Service selects: ticket lookup, then its re-read under the ticket lock
+    // (#8972 W0: a priority change can restamp SLA)
+    const row = {
       id: 't-c4', orgId: 'o-1', partnerId: 'p-1', status: 'open',
       subject: 'Old subject', priority: 'normal', description: null,
       categoryId: null, dueDate: null, deviceId: null, tags: []
-    }]);
+    };
+    hoisted.selectQueue.push([row], [row]);
     // Service update: returning
     hoisted.updateReturningQueue.push([{ id: 't-c4', subject: 'New subject', priority: 'high' }]);
     // Service insert: system feed entry returning

@@ -25,9 +25,11 @@
  * calling this helper, and nothing below `tickets` is locked before it.
  *
  * The lock is `FOR UPDATE` (the same SQL `timeEntryService.lockTicketRow` used
- * since #3778) and is held until the caller's transaction ends — the request
- * transaction (`withDbAccessContext`) or the explicit `db.transaction`
- * savepoint the caller opened inside it. RLS still applies: a ticket the
+ * since #3778) and is held until the TOP-LEVEL transaction ends (the request
+ * transaction from `withDbAccessContext`, or a system transaction). Taking it
+ * inside a `db.transaction` savepoint does not shorten that: a released
+ * savepoint keeps its row locks; only a savepoint rolled back frees them.
+ * RLS still applies: a ticket the
  * caller's context cannot see (or cannot lock — FOR UPDATE is checked against
  * the UPDATE policy) reads as missing, and the caller maps `null` to the same
  * not-found error it raised before this helper existed.

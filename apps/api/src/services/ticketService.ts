@@ -2155,6 +2155,18 @@ export async function updateTicketFields(
   const budgetChanged = Object.keys(budgetPatch).length > 0;
   if (changed.length === 0 && !requesterChanged && !budgetChanged) return ticket;
 
+  // #8972 W0: ticket row lock (after the org SHARE above) before the ticket
+  // write and its feed comment, and before every SLA decision below: the
+  // #6691 restamp gate (no first response yet), the human-provenance check and
+  // the #8973 deadline recompute all read `current`, the row re-read under the
+  // lock when this change can touch SLA — a first response, breach or override
+  // that committed while this waited must win, not be overwritten from the
+  // pre-read.
+  await lockTicketOrThrow(ticketId);
+  const slaTouched = !importMode && changed.some((k) =>
+    k === 'categoryId' || k === 'priority' || (SLA_TARGET_FIELDS as readonly string[]).includes(k));
+  const current = slaTouched ? await getTicketOrThrow(ticketId) : ticket;
+
   // #6691 — amends SLA-engine plan D2 (originally "category changes after
   // create do not restamp"). When categoryId or priority ACTUALLY changes
   // while the ticket has no first response and its core status is not
@@ -2171,7 +2183,7 @@ export async function updateTicketFields(
   const restamped: SlaTargetField[] = [];
   const slaRestampPatch: Partial<Record<SlaTargetField, number | null>> = {};
   // Never in import mode: an imported ticket keeps its null targets (§4.3).
-  if (!importMode && (changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(ticket)) {
+  if (!importMode && (changed.includes('categoryId') || changed.includes('priority')) && slaRestampAllowed(current)) {
     const categoryId = changed.includes('categoryId') ? fields.categoryId ?? null : ticket.categoryId;
     const category = changed.includes('categoryId')
       ? newCategory
@@ -2186,7 +2198,7 @@ export async function updateTicketFields(
       workKind: ticket.workKind,
     });
     const explicit = new Set(SLA_TARGET_FIELDS.filter((field) => fields[field] !== undefined));
-    Object.assign(slaRestampPatch, computeSlaRestamp(ticket, targets, explicit));
+    Object.assign(slaRestampPatch, computeSlaRestamp(current, targets, explicit));
     restamped.push(...SLA_TARGET_FIELDS.filter((field) => field in slaRestampPatch));
   }
 
@@ -2208,16 +2220,11 @@ export async function updateTicketFields(
     (patch as Record<string, unknown>)[key] = fields[key] ?? null;
   }
   Object.assign(patch, slaRestampPatch);
-  // #8972 W0: ticket row lock before the ticket write and its feed comment —
-  // and before the SLA recompute below, which judges "frozen" on the row it
-  // reads under this lock: a first response or breach stamped while this
-  // waited must keep its deadline, not be recomputed from the pre-read.
-  await lockTicketOrThrow(ticketId);
   // #8973 W3 (spec §4.3): a #6691 restamp or an explicit SLA override
   // recomputes the unfrozen deadlines from the new target, in this statement.
   // A frozen arm (answered / resolved / already breached) keeps its deadline.
   if ('responseSlaMinutes' in patch || 'resolutionSlaMinutes' in patch) {
-    const clock = slaClockRowOf(await getTicketOrThrow(ticketId));
+    const clock = slaClockRowOf(current);
     Object.assign(patch, computeSlaDeadlines({
       ...clock,
       responseSlaMinutes: 'responseSlaMinutes' in patch ? patch.responseSlaMinutes ?? null : clock.responseSlaMinutes,

@@ -485,9 +485,11 @@ ticketRoutes.post(
       return c.json({ error: 'Ticket not found' }, 404);
     }
     // #8972 W0: ticket row lock before the comment (services/ticketRowLock.ts),
-    // and the not-deleted check again on the locked row.
+    // and the visibility / not-deleted checks again on the locked row: a ticket
+    // moved out of the customer's org or deleted while this waited answers the
+    // same 404 as the read above, not an RLS-rejected insert.
     const locked = await lockTicketForWrite(db, ticket.id);
-    if (locked?.deletedAt) {
+    if (!locked || locked.orgId !== auth.user.orgId || locked.deletedAt) {
       return c.json({ error: 'Ticket not found' }, 404);
     }
 

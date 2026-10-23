@@ -3,7 +3,10 @@
  *
  * Invariant: a writer of a child row locks the ticket row FIRST
  * (`lockTicketForWrite` / `lockTicketsForWrite`, ./ticketRowLock.ts), then
- * locks or writes the child, then re-checks what it read unlocked. See
+ * locks or writes the child. A writer whose answer depends on what it read
+ * unlocked (the ticket's existence, org, deleted state, SLA clock) re-checks
+ * it on the locked row; one handed an already-authorized ticket by its caller
+ * may rely on the insert's own FK / RLS answer instead. See
  * ticketRowLock.ts for why, and for the global lock order.
  *
  * ticketChildWriters.contract.test.ts scans every function in
@@ -86,6 +89,8 @@ export const TICKET_LOCK_WRAPPERS: Record<string, string> = {
     'part edit / delete: the part\'s ticket via lockTicketRow, then the part FOR UPDATE and the re-check',
   'services/invoiceService.ts::lockInvoiceSourceTickets':
     'invoice issue / void: the time / part sources\' tickets via lockTicketsForWrite, after the contracts and before the sources',
+  'routes/tickets/attachments.ts::lockTicketForAttach':
+    'attachment upload / from-artifact: lockTicketForWrite, then the 404 / 409 re-check against the unlocked read',
   'services/contractHourBlockClose.ts::lockHourBlockSourceTickets':
     'hour-block close: every closable period\'s entries\' tickets, one ascending lockTicketsForWrite batch, after the contract row',
   'services/timeEntryService.ts::lockTicketRow':

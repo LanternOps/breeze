@@ -2993,13 +2993,14 @@ describe('category tenant validation', () => {
     dbMocks.selectResult
       // priority is NOT NULL on real rows; the #6691 SLA restamp reads it.
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', categoryId: 'cat-1', priority: 'normal', subject: 'Printer' }]) // ticket only
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]) // #8972 W0: lockTicketForWrite
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', categoryId: 'cat-1', priority: 'normal', subject: 'Printer' }]); // re-read under the lock (a category change can restamp SLA)
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', categoryId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]); // system feed comment insert
 
     const t = await updateTicketFields('t-1', { categoryId: null }, actor);
     expect(t?.categoryId).toBeNull();
-    expect(dbMocks.selectResult).toHaveBeenCalledTimes(2); // ticket + row lock; no category lookup
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(3); // ticket + row lock + locked re-read; no category lookup
   });
 });
 

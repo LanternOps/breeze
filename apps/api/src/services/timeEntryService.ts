@@ -1828,7 +1828,6 @@ function assertCanMutatePart(part: { addedBy: string | null }, actor: TimeEntryA
   }
 }
 
-/** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 /**
  * #8972 W0: a part edit locks the part's TICKET first — read the part
  * unlocked, lock its ticket (lockTicketRow), then lock-and-re-read the part
@@ -1845,6 +1844,7 @@ async function lockPartForWrite(id: string, lost: { message: string; code: 'PART
   return part;
 }
 
+/** `set` must never contain currencyCode: the part's currency is a creation-time snapshot. */
 export async function updateTicketPart(id: string, input: Partial<TicketPartInput>, actor: TimeEntryActor) {
   assertRoutineBillingStatus(input.billingStatus);
   const part = await lockPartForWrite(id, { message: 'Part could not be updated — reload and retry', code: 'PART_UPDATE_LOST' });

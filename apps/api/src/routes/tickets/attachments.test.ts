@@ -37,7 +37,7 @@ const {
 // #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
 // mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
 const { lockTicketForWriteMock } = vi.hoisted(() => ({
-  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'org-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
 }));
 vi.mock('../../services/ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
 
@@ -217,6 +217,22 @@ describe('POST /tickets/:id/attachments (W08 #3902)', () => {
     const res = await upload(oneFile(PNG));
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('TICKET_DELETED');
+  });
+
+  // #8972 W0: re-checked on the locked row; the stored bytes never outlive a refusal.
+  it.each([
+    ['gone while it waited', null, 404, 'TICKET_NOT_FOUND'],
+    ['moved to another org while it waited', { orgId: 'org-2', deletedAt: null }, 404, 'TICKET_NOT_FOUND'],
+    ['deleted while it waited', { orgId: 'org-1', deletedAt: new Date() }, 409, 'TICKET_DELETED'],
+  ] as const)('refuses a ticket %s, inserts nothing and discards the stored bytes', async (_label, lockedRow, status, code) => {
+    lockTicketForWriteMock.mockResolvedValueOnce(
+      lockedRow && { id: TICKET_ID, partnerId: 'p-1', status: 'open', workKind: 'support', ...lockedRow },
+    );
+    const res = await upload(oneFile(PNG));
+    expect(res.status).toBe(status);
+    expect((await res.json()).code).toBe(code);
+    expect(insertedValues).toEqual([]);
+    expect(deleteBytesMock).toHaveBeenCalledTimes(1);
   });
 
   it('400s when the request carries no file part', async () => {

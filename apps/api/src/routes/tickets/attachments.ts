@@ -53,6 +53,22 @@ function fail(
   return c.json({ error: message, code }, status);
 }
 
+/**
+ * #8972 W0: lock the ticket, then re-check it on the locked row with the
+ * answers the unlocked read gave: gone or moved to another org since the read
+ * → 404 (the row would otherwise be stamped with the old org after a mover
+ * rewrote the ticket's children), deleted meanwhile → 409.
+ */
+async function lockTicketForAttach(
+  c: { json: (b: unknown, s: number) => Response },
+  ticket: { id: string; orgId: string },
+): Promise<Response | null> {
+  const locked = await lockTicketForWrite(db, ticket.id);
+  if (!locked || locked.orgId !== ticket.orgId) return fail(c, 404, 'TICKET_NOT_FOUND', 'Ticket not found');
+  if (locked.deletedAt) return fail(c, 409, 'TICKET_DELETED', 'Cannot attach files to a deleted ticket');
+  return null;
+}
+
 
 /** Collect every File value in a parsed multipart body, under any key. */
 function collectFiles(body: Record<string, unknown>): File[] {
@@ -149,9 +165,28 @@ ticketAttachmentRoutes.post(
       throw err;
     }
 
+    // Compensating delete. It must NEVER mask the original fault — the
+    // deleteBinary docstring in s3Storage states the same contract.
+    const discardStored = async () => {
+      try {
+        await deleteBytes({
+          storageBackend: stored.backend,
+          storageKey: stored.storageKey,
+          data: stored.data,
+        });
+      } catch (cleanupErr) {
+        captureException(cleanupErr);
+      }
+    };
+
     // #8972 W0: ticket row lock before the row, taken AFTER the storage write
-    // so the lock is never held across object-store I/O.
-    await lockTicketForWrite(db, ticket.id);
+    // so the lock is never held across the upload (the compensating delete on
+    // a refused or failed insert does run under it).
+    const refused = await lockTicketForAttach(c, ticket);
+    if (refused) {
+      await discardStored();
+      return refused;
+    }
     let row;
     try {
       const inserted = await db
@@ -173,17 +208,7 @@ ticketAttachmentRoutes.post(
         .returning(ATTACHMENT_META_COLUMNS);
       row = inserted[0]!;
     } catch (err) {
-      // Compensating delete. It must NEVER mask the original fault — the
-      // deleteBinary docstring in s3Storage states the same contract.
-      try {
-        await deleteBytes({
-          storageBackend: stored.backend,
-          storageKey: stored.storageKey,
-          data: stored.data,
-        });
-      } catch (cleanupErr) {
-        captureException(cleanupErr);
-      }
+      await discardStored();
       throw err;
     }
 
@@ -267,7 +292,10 @@ ticketAttachmentRoutes.post(
       return fail(c, 404, 'ARTIFACT_NOT_FOUND', 'No such artifact is available to this organization');
     }
 
-    await lockTicketForWrite(db, ticket.id); // #8972 W0: ticket first
+    // #8972 W0: ticket first, re-checked on the locked row (the artifact's org
+    // was matched against the org read above).
+    const refused = await lockTicketForAttach(c, ticket);
+    if (refused) return refused;
     const [row] = await db
       .insert(ticketAttachments)
       .values({

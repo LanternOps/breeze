@@ -373,6 +373,26 @@ describe('ticket-child writers lock the ticket row first (#8972 W0)', () => {
     expect(await responseArm(ticketId)).toEqual({ due: FROZEN_DUE.toISOString(), warn: FROZEN_WARN.toISOString() });
   }, CASE_TIMEOUT);
 
+  runDb('a priority change does not restamp SLA targets once a first response landed while it waited', async () => {
+    // #6691: targets restamp only while the ticket has no first response. The
+    // gate must be judged on the locked row, not the unlocked pre-read.
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id, {
+      status: 'open', responseSlaMinutes: 241, resolutionSlaMinutes: 1441,
+    });
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => updateTicketFields(ticketId, { priority: 'urgent' }, f.actor)),
+      stampFirstResponse(ticketId),
+    );
+    expectNoDeadlock(r);
+    const [row] = await getTestDb().select({
+      priority: tickets.priority, response: tickets.responseSlaMinutes, resolution: tickets.resolutionSlaMinutes,
+    }).from(tickets).where(eq(tickets.id, ticketId));
+    expect(row).toEqual({ priority: 'urgent', response: 241, resolution: 1441 });
+  }, CASE_TIMEOUT);
+
   runDb('an edit still answers 404 for a comment of another ticket, and still edits nothing', async () => {
     const f = await seed();
     const ticketId = await insertTicket(f.org.id, f.partner.id);
