@@ -166,12 +166,17 @@ type Rule = Record<string, unknown>;
  * later ring-side change to the live schema cannot redden a comparison
  * against SQL that can no longer change.
  */
+// zod >=4.6 counts `.max()` in code points; the zod this migration shipped
+// against (and the SQL it emulates) counted UTF-16 code units. `.length`
+// pins that reference behaviour explicitly.
+const utf16Max = (max: number) => (v: string) => v.length <= max;
+
 const W02_APP_RULE_SCHEMA = z.object({
   source: z.enum(['third_party', 'custom']),
-  packageId: z.string().min(1).max(256),
-  displayName: z.string().max(255).optional(),
+  packageId: z.string().min(1).refine(utf16Max(256)),
+  displayName: z.string().refine(utf16Max(255)).optional(),
   action: z.enum(['block', 'pin']),
-  pinnedVersion: z.string().min(1).max(64).optional(),
+  pinnedVersion: z.string().min(1).refine(utf16Max(64)).optional(),
 }).refine((r) => r.action !== 'pin' || !!r.pinnedVersion);
 
 /** W02-era canonical key: third_party/custom share a bucket, id lowercased. */
