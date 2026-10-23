@@ -39,6 +39,7 @@ import { contentDispositionFor } from '../../services/attachmentFilename';
 import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
+import { lockTicketForWrite } from '../../services/ticketRowLock';
 
 export const ticketRoutes = new Hono();
 
@@ -475,6 +476,12 @@ ticketRoutes.post(
       .limit(1);
 
     if (!ticket) {
+      return c.json({ error: 'Ticket not found' }, 404);
+    }
+    // #8972 W0: ticket row lock before the comment (services/ticketRowLock.ts),
+    // and the not-deleted check again on the locked row.
+    const locked = await lockTicketForWrite(db, ticket.id);
+    if (locked?.deletedAt) {
       return c.json({ error: 'Ticket not found' }, 404);
     }
 

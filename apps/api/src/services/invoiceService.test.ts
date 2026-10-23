@@ -17,6 +17,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // path (totals, snapshots, source flips) is proven by the integration tests.
 const results: unknown[][] = [];
 function queueResult(rows: unknown[]) { results.push(rows); }
+// #8972 W0: issueInvoice/voidInvoice start with lockInvoiceSourceTickets: an unlocked invoice
+// read ({orgId}), then the invoice's lines. An invoice with no time/part lines stops there
+// (no ticket to lock), which is every fixture in this file.
+function queueNoSourceTickets(orgId = 'org1') {
+  queueResult([{ orgId }]); // #8972 W0: lock peek — invoice org
+  queueResult([]); // #8972 W0: lock peek — invoice lines (no time/part sources)
+}
 
 // Every `.set({...})` object handed to the chain, in call order. #4542 asserts
 // on the PATCH itself (is `paidAt` present? is it null?), which a
@@ -1037,6 +1044,7 @@ describe('issueInvoice document_locale stamp', () => {
     orgOverrides: Record<string, unknown> = {},
   ) {
     queueResult([inv]); // 0. pre-tx fast-fail read (RLS-scoped, non-authoritative)
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek precedes the invoice row lock
     queueResult([inv]); // 1. invoice row lock
     queueResult([{ id: 'l1', invoiceId: 'inv1', sourceType: 'manual', sourceId: null, lineTotal: '100.00', taxable: false, customerVisible: true }]); // 2. lines lock
     queueResult([{ id: 'org1', name: 'Customer', taxExempt: false, taxRate: null, taxId: null, invoiceTermsDays: null, ...orgOverrides }]); // 3. org
@@ -2978,6 +2986,7 @@ describe('voidInvoice clears paid_at (#4542)', () => {
     // A PAID invoice that is voided would otherwise keep its payment date
     // forever: this update writes `status: 'void'` directly and never runs the
     // recompute whose paid_at branch was just fixed.
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek precedes the invoice FOR UPDATE
     queueResult([{
       id: 'i1', orgId: 'org1', partnerId: 'p1', siteId: null, status: 'paid', invoiceNumber: 'INV-0001',
       currencyCode: 'USD', total: '100.00', amountPaid: '100.00', balance: '0.00', dueDate: null,
@@ -3015,6 +3024,7 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
     // Breeze said void, QuickBooks said paid. It is wrong locally too: the void
     // releases the source rows for re-invoicing while collected money stays
     // recorded against them.
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek first
     queueResult([sentInvoice({ status: 'partially_paid', amountPaid: '40.00', balance: '60.00' })]); // invoice FOR UPDATE
     queueResult([{ amount: '40.00' }]); // invoice_payments
 
@@ -3026,6 +3036,7 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
   });
 
   it('names the amount, the currency and the remedy, so the operator knows the next step', async () => {
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek first
     queueResult([sentInvoice({ status: 'paid', currencyCode: 'EUR', amountPaid: '100.00', balance: '0.00' })]);
     queueResult([{ amount: '60.00' }, { amount: '40.00' }]); // two partial payments
 
@@ -3035,6 +3046,7 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
   });
 
   it('still voids an unpaid invoice — the guard is on applied payments, not on status', async () => {
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek first
     queueResult([sentInvoice()]); // invoice FOR UPDATE
     queueResult([]); // invoice_payments: none
     queueResult([]); // invoice_lines FOR UPDATE
@@ -3048,6 +3060,7 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
 
   // Xero W01 producer gate on the void hook, same contract as the issue hook.
   function queueUnpaidVoid() {
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek first
     queueResult([sentInvoice()]); // invoice FOR UPDATE
     queueResult([]); // invoice_payments: none
     queueResult([]); // invoice_lines FOR UPDATE
@@ -3085,6 +3098,7 @@ describe('voidInvoice refuses an invoice with applied payments (#5180)', () => {
   it('refuses a fully-refunded-looking row too: any non-zero applied total blocks it', async () => {
     // Guards the boundary the reduce() makes easy to get wrong — a single cent
     // applied is still money against the document.
+    queueNoSourceTickets(); // #8972 W0: ticket-lock peek first
     queueResult([sentInvoice({ status: 'partially_paid' })]);
     queueResult([{ amount: '0.01' }]);
 

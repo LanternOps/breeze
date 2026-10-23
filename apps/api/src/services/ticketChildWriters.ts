@@ -72,8 +72,20 @@ export const TICKET_LOCK_PRIMITIVES = ['lockTicketForWrite', 'lockTicketsForWrit
  * wrapper here can never stand in for a lock.
  */
 export const TICKET_LOCK_WRAPPERS: Record<string, string> = {
+  'services/ticketApproval/decisions.ts::lockRequestScope':
+    '#4617 approval decision order: org SHARE, the ticket via lockTicketForWrite (SKIP LOCKED for the sweep), then the request',
+  'services/ticketChecklistService.ts::lockItemTicket':
+    'item-addressed checklist writers: the item\'s ticket via lockTicketForWrite, read unlocked first',
+  'services/ticketLinkService.ts::lockTickets':
+    'link add / remove: both tickets via lockTicketsForWrite (ascending id), after the per-org links lock',
+  'services/ticketService.ts::lockTicketOrThrow':
+    'lockTicketForWrite with getTicketOrThrow\'s 404, for the ticketService writers',
   'services/ticketService.ts::lockCommentForWrite':
     'comment edit / delete: lockTicketForWrite, then the comment FOR UPDATE, then the re-checks',
+  'services/timeEntryService.ts::lockPartForWrite':
+    'part edit / delete: the part\'s ticket via lockTicketRow, then the part FOR UPDATE and the re-check',
+  'services/invoiceService.ts::lockInvoiceSourceTickets':
+    'invoice issue / void: the invoice org SHARE, then its time / part sources\' tickets via lockTicketsForWrite',
   'services/timeEntryService.ts::lockTicketRow':
     'the time-entry 404 mapping around lockTicketForWrite',
   'services/timeEntryService.ts::lockTicketsInOrder':

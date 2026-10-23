@@ -58,6 +58,12 @@ vi.mock('../db', () => {
   db.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
   return { db, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
+// #8972 W0: writers lock the ticket row first; the helper has its own tests, so here it
+// echoes the ticket back (same org as the fixtures) and records the id.
+const lockMock = vi.hoisted(() => vi.fn(async (_tx: unknown, id: string) => ({
+  id, orgId: '22222222-2222-4222-8222-222222222222', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+})));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock, lockTicketsForWrite: vi.fn(async () => new Map()) }));
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: mocks.emit }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: mocks.audit }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: mocks.triage }));
@@ -293,6 +299,7 @@ describe('updateTicketFields in import mode', () => {
     state.selectQueue.push([storedTicket({ status: 'open' })]);
     await updateTicketFields(TICKET, { priority: 'urgent', tags: ['vip'] }, actor, at(LATER));
     expect(mocks.orgSla).not.toHaveBeenCalled();
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), TICKET); // #8972 W0: ticket locked first
     const [update] = state.updates;
     expect(update!.set).toMatchObject({ priority: 'urgent', tags: ['vip'] });
     expect(update!.set).not.toHaveProperty('responseSlaMinutes');

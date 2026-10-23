@@ -7,6 +7,7 @@ import { captureException } from '../sentry';
 import type { Tx } from '../autopay/types';
 import type { TimeEntryActor } from '../timeEntryService';
 import { evaluateApprovalGate } from './gate';
+import { lockTicketForWrite } from '../ticketRowLock';
 import {
   acquirePendingRequest, approvalDecidedEvent, approvalRequestedEvent, billedMinutes, holdEntryOnRequest,
   insertApprovalComment, loadGateContext, loadPlainApprovalSettings, normalizeApprovalEmail, refreshRequestAsk,
@@ -83,11 +84,8 @@ async function lockRequestScope(db: Tx, requestId: string, opts: { skipLocked?: 
       .from(ticketApprovalRequests).where(eq(ticketApprovalRequests.id, requestId)).limit(1);
     if (!peek) throw new ApprovalDecisionError('Approval request not found', 404, 'REQUEST_NOT_FOUND');
     await readOrgStampingDefaults(db, peek.orgId);
-    const ticketLock = db.select({ id: tickets.id, orgId: tickets.orgId }).from(tickets)
-      .where(eq(tickets.id, peek.ticketId)).limit(1);
-    const [ticket] = opts.skipLocked
-      ? await ticketLock.for('update', { skipLocked: true })
-      : await ticketLock.for('update');
+    // #8972 W0: the shared ticket row lock (same FOR UPDATE / SKIP LOCKED).
+    const ticket = await lockTicketForWrite(db, peek.ticketId, { skipLocked: opts.skipLocked });
     if (!ticket) {
       if (opts.skipLocked) return null;
       throw new ApprovalDecisionError('Ticket not found', 404, 'TICKET_NOT_FOUND');
@@ -322,7 +320,7 @@ export async function writeOffHeldEntry(db: Tx, args: { entryId: string; actor: 
       throw new ApprovalDecisionError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
     }
     await readOrgStampingDefaults(db, peek.orgId);
-    await db.select({ id: tickets.id }).from(tickets).where(eq(tickets.id, peek.ticketId)).limit(1).for('update');
+    await lockTicketForWrite(db, peek.ticketId); // #8972 W0: the shared ticket row lock
     const [req] = peek.approvalRequestId
       ? await db.select().from(ticketApprovalRequests).where(eq(ticketApprovalRequests.id, peek.approvalRequestId)).limit(1).for('update')
       : [];
@@ -372,8 +370,12 @@ export async function createStaffApprovalRequest(db: Tx, args: {
   const [peek] = await db.select({ orgId: tickets.orgId }).from(tickets).where(eq(tickets.id, args.ticketId)).limit(1);
   if (!peek) throw new ApprovalDecisionError('Ticket not found', 404, 'TICKET_NOT_FOUND');
   await readOrgStampingDefaults(db, peek.orgId);
-  const [ticket] = await db.select({ orgId: tickets.orgId, budgetCurrencyCode: tickets.budgetCurrencyCode })
-    .from(tickets).where(eq(tickets.id, args.ticketId)).limit(1).for('update');
+  // #8972 W0: the shared ticket row lock, then the budget currency under it.
+  const lockedTicket = await lockTicketForWrite(db, args.ticketId);
+  const [budget] = lockedTicket
+    ? await db.select({ budgetCurrencyCode: tickets.budgetCurrencyCode }).from(tickets).where(eq(tickets.id, args.ticketId)).limit(1)
+    : [];
+  const ticket = lockedTicket && budget ? { orgId: lockedTicket.orgId, budgetCurrencyCode: budget.budgetCurrencyCode } : null;
   if (!ticket) throw new ApprovalDecisionError('Ticket not found', 404, 'TICKET_NOT_FOUND');
   if (ticket.orgId !== peek.orgId) await readOrgStampingDefaults(db, ticket.orgId);
   const partnerId = await partnerOfTicket(db, args.ticketId);

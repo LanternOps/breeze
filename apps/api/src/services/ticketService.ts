@@ -311,6 +311,18 @@ async function getTicketOrThrow(ticketId: string) {
 }
 
 /**
+ * #8972 W0: take the ticket row lock (services/ticketRowLock.ts) after the
+ * writer's unlocked read, answering a ticket that vanished meanwhile with
+ * getTicketOrThrow's 404. Ticket-first writers call it before their first
+ * child-row write; re-locking a row the transaction holds is a no-op.
+ */
+async function lockTicketOrThrow(ticketId: string, exec: Pick<typeof db, 'select'> = db) {
+  const locked = await lockTicketForWrite(exec, ticketId);
+  if (!locked) throw new TicketServiceError('Ticket not found', 404);
+  return locked;
+}
+
+/**
  * Transactional outbox write (#3828 wave-6-3 task 2 —
  * docs/superpowers/plans/ai-mcp/2026-08-28-ai-agents-wave6-3-ticket-shadow.md).
  * Deliberately a PLAIN `db.insert` through the ambient `db` handle — the same
@@ -445,8 +457,9 @@ export async function writeTicketCommentedOutbox(input: {
 export async function addCallerVerificationSystemComment(input: {
   orgId: string; ticketId: string; verificationId: string; event: string;
 }): Promise<void> {
-  const [ticket] = await db.select().from(tickets)
-    .where(and(eq(tickets.id, input.ticketId), eq(tickets.orgId, input.orgId))).limit(1);
+  // #8972 W0: the ticket row lock IS the read (ticket first, then the comment).
+  const locked = await lockTicketForWrite(db, input.ticketId);
+  const ticket = locked && locked.orgId === input.orgId ? locked : null;
   if (!ticket) {
     // Deleted, moved out of the org, or invisible in this RLS context. The
     // decision itself is never lost — audit_logs carries it
@@ -594,6 +607,8 @@ export async function revalidateTicketAssignee(
     email: assignee.email ?? null,
   }, partnerId, ticket.orgId, ticket.deviceId, { bypassCache: true })) return ticket;
 
+  // #8972 W0: ticket first. Movers already hold it (a no-op re-lock).
+  await lockTicketOrThrow(ticketId, connection);
   const [updated] = await connection.update(tickets)
     .set({ assignedTo: null, updatedAt: new Date() })
     .where(and(
@@ -1526,6 +1541,8 @@ export async function changeTicketStatus(
     if (sameStatusDraft) {
       patch.resolutionNote = appliedResolutionNote;
     }
+    // #8972 W0: after the draft (a pre-ticket child), before the ticket write.
+    await lockTicketOrThrow(ticketId);
     const updated = await db
       .update(tickets)
       .set(patch)
@@ -1648,6 +1665,8 @@ export async function changeTicketStatus(
     patch.slaPausedAt = null;
   }
 
+  // #8972 W0: ticket row lock first (after any draft lock), then the CAS.
+  await lockTicketOrThrow(ticketId);
   // Compare-and-swap: include fromStatus in the WHERE so a concurrent update is detected.
   const updated = await db
     .update(tickets)
@@ -2151,6 +2170,8 @@ export async function updateTicketFields(
       sql`${tickets.fieldProvenance} || ${JSON.stringify(provenanceStamp)}::jsonb`;
   }
 
+  // #8972 W0: ticket row lock before the ticket write and its feed comment.
+  await lockTicketOrThrow(ticketId);
   const updated = await db
     .update(tickets)
     .set(patch)
@@ -2269,6 +2290,8 @@ export async function assignTicket(
     patch.statusId = partnerId ? await getSystemStatusId(partnerId, 'open') : null;
   }
 
+  // #8972 W0: ticket row lock first; the CAS below stays the re-check.
+  await lockTicketOrThrow(ticketId);
   // Compare-and-swap: include the previously-read assignedTo in the WHERE.
   const updated = await db
     .update(tickets)
@@ -2574,6 +2597,12 @@ export async function addAiTriageNote(
   if (ticket.orgId !== orgId) {
     throw new TicketServiceError('Ticket not found', 404);
   }
+  // #8972 W0: lock the ticket OUTSIDE the insert's savepoint (a rolled-back
+  // savepoint would release it) and re-check the org on the locked row. A
+  // concurrent retry then waits here and sees the committed note.
+  if ((await lockTicketOrThrow(ticketId)).orgId !== orgId) {
+    throw new TicketServiceError('Ticket not found', 404);
+  }
 
   try {
     // #4209 (W03): the insert is wrapped in its own `db.transaction()` — a
@@ -2692,6 +2721,8 @@ export async function postProposalNote(
     .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.ticketId, ticketId)))
     .limit(1);
   if (!run) throw new TicketServiceError('Proposal run not found for this ticket', 404);
+  // #8972 W0: ticket lock outside the insert's savepoint (see addAiTriageNote).
+  await lockTicketOrThrow(ticketId);
 
   // #4211 review: idempotent per run via ticket_comments_one_proposal_note_per_run_uq
   // (partial unique on proposed_by_run_id WHERE ... AND origin_principal_kind='user')
@@ -3154,6 +3185,10 @@ export async function linkAlertToTicket(
   if (alert.orgId !== ticket.orgId) {
     throw new TicketServiceError('Alert and ticket must belong to the same organization', 400);
   }
+  // #8972 W0: ticket row lock, then the same-org check again on the locked row.
+  if ((await lockTicketOrThrow(ticketId)).orgId !== alert.orgId) {
+    throw new TicketServiceError('Alert and ticket must belong to the same organization', 400);
+  }
 
   // Idempotent insert: if the link already exists, onConflictDoNothing returns an empty array.
   const inserted = await db.insert(ticketAlertLinks).values({
@@ -3192,6 +3227,10 @@ export async function linkAlertToTicket(
 
 export async function unlinkAlertFromTicket(ticketId: string, alertId: string, actor: TicketActor) {
   const ticket = await getTicketOrThrow(ticketId);
+  // #8972 W0: ticket first. Deleting the link first and then writing the feed
+  // comment (whose trigger updates the ticket) deadlocked against a
+  // ticket-first writer of the same link.
+  await lockTicketOrThrow(ticketId);
   const deleted = await db.delete(ticketAlertLinks).where(
     and(eq(ticketAlertLinks.ticketId, ticketId), eq(ticketAlertLinks.alertId, alertId))
   ).returning();

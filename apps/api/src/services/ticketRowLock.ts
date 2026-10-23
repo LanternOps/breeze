@@ -69,14 +69,21 @@ const lockedTicketColumns = () => ({
  * not exist or is not visible to the caller's RLS context; the caller throws
  * its own not-found error so every writer keeps its existing 404 shape.
  * Re-locking a row this transaction already holds is a no-op.
+ *
+ * `skipLocked` (a background sweep that must not queue behind a request)
+ * returns `null` for a row another transaction holds, instead of waiting.
  */
-export async function lockTicketForWrite(tx: LockExecutor, ticketId: string): Promise<LockedTicketRow | null> {
-  const rows = await tx
+export async function lockTicketForWrite(
+  tx: LockExecutor,
+  ticketId: string,
+  opts: { skipLocked?: boolean } = {},
+): Promise<LockedTicketRow | null> {
+  const query = tx
     .select(lockedTicketColumns())
     .from(tickets)
     .where(eq(tickets.id, ticketId))
-    .limit(1)
-    .for('update');
+    .limit(1);
+  const rows = opts.skipLocked ? await query.for('update', { skipLocked: true }) : await query.for('update');
   return (rows[0] as LockedTicketRow | undefined) ?? null;
 }
 

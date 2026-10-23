@@ -16,9 +16,17 @@ import './setup';
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
-import { ticketComments, tickets } from '../../db/schema';
-import { addTicketComment, deleteTicketComment, editTicketComment, type TicketActor } from '../../services/ticketService';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import {
+  alerts, partnerServicePrincipals, ticketAlertLinks, ticketChecklistItems, ticketChecklistTemplateItems,
+  ticketChecklistTemplates, ticketComments, ticketEmailLinks, ticketExternalRefs, tickets,
+} from '../../db/schema';
+import {
+  addTicketComment, deleteTicketComment, editTicketComment, linkAlertToTicket, unlinkAlertFromTicket, type TicketActor,
+} from '../../services/ticketService';
+import { applyChecklistTemplateToTicket } from '../../services/ticketChecklistTemplateService';
+import { claimMessageLink } from '../../services/ticketEmailLinks';
+import { upsertTicketExternalRef } from '../../services/ticketExternalRefs';
+import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -113,9 +121,27 @@ async function raceAgainstTicketHolder<T>(
   return { a: aRes, b: bRes };
 }
 
-function expectNoDeadlock(r: { a: PromiseSettledResult<unknown>; b: PromiseSettledResult<unknown> }) {
-  const codes = [r.a, r.b].map((s) => (s.status === 'rejected' ? describeFailure(s.reason) : 'ok'));
+function expectNoDeadlock(
+  r: { a: PromiseSettledResult<unknown>; b: PromiseSettledResult<unknown> },
+  // A's own domain answer to what B committed first (e.g. 409 "already
+  // linked") is a correct outcome; a deadlock never is.
+  aMayRefuse: (err: unknown) => boolean = () => false,
+) {
+  const codes = [r.a, r.b].map((s, i) => {
+    if (s.status === 'fulfilled') return 'ok';
+    if (i === 0 && aMayRefuse(s.reason)) return 'ok';
+    return describeFailure(s.reason);
+  });
   expect(codes, 'writer A / ticket holder B').toEqual(['ok', 'ok']);
+}
+
+async function seedAlert(orgId: string) {
+  const site = await createSite({ orgId });
+  const device = await createDevice({ orgId, siteId: site.id });
+  const [alert] = await getTestDb().insert(alerts).values({
+    orgId, deviceId: device.id, severity: 'medium', title: 'lock order alert',
+  }).returning({ id: alerts.id });
+  return alert!.id;
 }
 
 describe('ticket-child writers lock the ticket row first (#8972 W0)', () => {
@@ -178,6 +204,116 @@ describe('ticket-child writers lock the ticket row first (#8972 W0)', () => {
     expectNoDeadlock(r);
     const [row] = await getTestDb().select({ firstResponseAt: tickets.firstResponseAt }).from(tickets).where(eq(tickets.id, ticketId));
     expect(row?.firstResponseAt?.toISOString()).toBe(stampedAt.toISOString());
+  }, CASE_TIMEOUT);
+
+  // ── T0.3: the remaining writers that could deadlock ──────────────────────
+
+  runDb('alert unlink does not deadlock against a ticket-first writer of the same link', async () => {
+    // Before: DELETE the link (row lock), then the feed comment, whose FK and
+    // trigger wait on the ticket B holds; B then touches the link A holds.
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id);
+    const alertId = await seedAlert(f.org.id);
+    await getTestDb().insert(ticketAlertLinks).values({ ticketId, orgId: f.org.id, alertId, linkType: 'attached' });
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => unlinkAlertFromTicket(ticketId, alertId, f.actor)),
+      (tx) => tx.execute(sql`UPDATE ticket_alert_links SET link_type = link_type WHERE ticket_id = ${ticketId}::uuid AND alert_id = ${alertId}::uuid`),
+    );
+    expectNoDeadlock(r);
+    expect(await getTestDb().select().from(ticketAlertLinks).where(eq(ticketAlertLinks.ticketId, ticketId))).toHaveLength(0);
+  }, CASE_TIMEOUT);
+
+  runDb('alert link does not deadlock against a ticket-first writer inserting the same link', async () => {
+    // Before: A's speculative INSERT holds the unique key while its FK check
+    // waits on the ticket; B, holding the ticket, inserts the same key.
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id);
+    const alertId = await seedAlert(f.org.id);
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => linkAlertToTicket(ticketId, alertId, f.actor)),
+      (tx) => tx.insert(ticketAlertLinks).values({ ticketId, orgId: f.org.id, alertId, linkType: 'auto' }),
+    );
+    // B linked it first, so A answers its existing 409 "already linked".
+    expectNoDeadlock(r, (err) => (err as { status?: number }).status === 409);
+    expect(await getTestDb().select().from(ticketAlertLinks).where(eq(ticketAlertLinks.ticketId, ticketId))).toHaveLength(1);
+  }, CASE_TIMEOUT);
+
+  runDb('external ref upsert does not deadlock against a ticket-first writer of the same ref', async () => {
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id);
+    const [principal] = await getTestDb().insert(partnerServicePrincipals).values({
+      partnerId: f.partner.id, name: `LockOrder ${crypto.randomUUID()}`, scopes: ['tickets:read', 'tickets:write'],
+      sourceCidrs: [], expiresAt: null, createdBy: f.user.id, updatedBy: f.user.id,
+    }).returning({ id: partnerServicePrincipals.id });
+    const partnerCtx: DbAccessContext = {
+      scope: 'partner', orgId: null, accessibleOrgIds: [f.org.id], accessiblePartnerIds: [f.partner.id],
+      currentPartnerId: f.partner.id, userId: null,
+    };
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(partnerCtx, () => upsertTicketExternalRef({
+        principalId: principal!.id, partnerId: f.partner.id, ticketId, externalId: 'EXT-A',
+      })),
+      (tx) => tx.insert(ticketExternalRefs).values({
+        ticketId, orgId: f.org.id, partnerId: f.partner.id, partnerServicePrincipalId: principal!.id, externalId: 'EXT-B',
+      }),
+    );
+    expectNoDeadlock(r);
+    const rows = await getTestDb().select({ externalId: ticketExternalRefs.externalId }).from(ticketExternalRefs).where(eq(ticketExternalRefs.ticketId, ticketId));
+    expect(rows.map((x) => x.externalId)).toEqual(['EXT-A']);
+  }, CASE_TIMEOUT);
+
+  runDb('email link claim does not deadlock against a ticket-first writer claiming the same message', async () => {
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id);
+    const messageId = `<lock-order-${crypto.randomUUID()}@example.test>`;
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => claimMessageLink({
+        ticketId, orgId: f.org.id, partnerId: f.partner.id, messageId, origin: 'addin_link', visibility: 'internal',
+        linkedBy: f.user.id,
+      })),
+      (tx) => tx.insert(ticketEmailLinks).values({
+        ticketId, orgId: f.org.id, partnerId: f.partner.id, messageId, origin: 'inbound', visibility: 'public',
+      }),
+    );
+    expectNoDeadlock(r);
+    expect(r.a.status === 'fulfilled' && r.a.value).toMatchObject({ created: false });
+  }, CASE_TIMEOUT);
+
+  runDb('checklist template replace does not deadlock against a ticket-first writer of an unticked item', async () => {
+    // Before: DELETE the unticked items (row locks), then INSERT the template
+    // steps, whose FK check waits on the ticket B holds; B then updates the
+    // item A deleted.
+    const f = await seed();
+    const ticketId = await insertTicket(f.org.id, f.partner.id);
+    const [template] = await getTestDb().insert(ticketChecklistTemplates).values({
+      orgId: f.org.id, name: `LockOrder ${crypto.randomUUID()}`, createdBy: f.user.id,
+    }).returning({ id: ticketChecklistTemplates.id });
+    await getTestDb().insert(ticketChecklistTemplateItems).values({ templateId: template!.id, orgId: f.org.id, label: 'from template' });
+    const [item] = await getTestDb().insert(ticketChecklistItems).values({
+      orgId: f.org.id, ticketId, label: 'old step', position: 0, source: 'manual', createdBy: f.user.id,
+    }).returning({ id: ticketChecklistItems.id });
+    const templateActor = {
+      userId: f.user.id, partnerId: f.partner.id, accessibleOrgIds: [f.org.id], scope: 'organization' as const,
+    };
+
+    const r = await raceAgainstTicketHolder(
+      ticketId,
+      () => withDbAccessContext(f.ctx, () => applyChecklistTemplateToTicket(
+        { id: ticketId, orgId: f.org.id }, { templateId: template!.id, mode: 'replace_unticked' }, templateActor,
+      )),
+      (tx) => tx.execute(sql`UPDATE ticket_checklist_items SET label = label WHERE id = ${item!.id}::uuid`),
+    );
+    expectNoDeadlock(r);
+    const labels = await getTestDb().select({ label: ticketChecklistItems.label }).from(ticketChecklistItems).where(eq(ticketChecklistItems.ticketId, ticketId));
+    expect(labels.map((x) => x.label)).toEqual(['from template']);
   }, CASE_TIMEOUT);
 
   runDb('an edit still answers 404 for a comment of another ticket, and still edits nothing', async () => {

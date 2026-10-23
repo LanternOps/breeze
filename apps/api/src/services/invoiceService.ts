@@ -74,6 +74,7 @@ import { resolvePartnerDocumentLocale } from './documentLocale';
 import { retryOnTransientLockError } from '../utils/pgErrors';
 import { mergeBillingContact, type ContactBlob } from './contacts/compat';
 import type { InvoiceActor } from './invoiceTypes';
+import { lockTicketsForWrite } from './ticketRowLock';
 import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, buildStripeCurrencyWarning, stampInvoiceLineDetail, resolveInvoiceLineDetail, invoiceLineText, type InvoiceLineDetail, type InvoiceLineGrouping, type ManualLineInput, type RecordPaymentInput } from '@breeze/shared';
 
 import { documentLabelsFor, type CustomerInvoiceHeaderDto, type CustomerInvoiceLineCore, type DocumentBillToAddress, type DocumentSellerSnapshot } from '@breeze/shared/documents';
@@ -121,6 +122,41 @@ export async function getOwnedInvoiceOr404(id: string, dbc: DbExecutor = db) {
 
 function assertDraft(inv: { status: string }): void {
   if (inv.status !== 'draft') throw new InvoiceServiceError('Invoice is not a draft', 409, 'NOT_A_DRAFT');
+}
+
+/**
+ * #8972 W0 (spec "Ticketing: merge, SLA calendars, routing" §3.5): issuing or
+ * voiding an invoice flips the billing status of time entries and parts,
+ * which are ticket child rows, so it locks their TICKETS first — the invoice
+ * org `FOR SHARE`, then the tickets `FOR UPDATE` in ascending id order
+ * (lockTicketsForWrite), before the invoice row. No ticket-side writer ever
+ * locks an invoice, line, contract or charge, so tickets ahead of the
+ * invoice chain cannot form a cycle.
+ *
+ * The ticket set comes from an UNLOCKED read of the invoice's time / part
+ * lines. A source relinked to another ticket after that read is then flipped
+ * without its new ticket's lock: that is safe, because this transaction never
+ * requests a ticket lock after it has locked a source row (no late lock), so
+ * it can never hold a child row while waiting on a ticket.
+ */
+async function lockInvoiceSourceTickets(invoiceId: string): Promise<void> {
+  const [inv] = await db.select({ orgId: invoices.orgId }).from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
+  if (!inv) return; // the locked read that follows answers 404
+  const lines = await db.select({ sourceType: invoiceLines.sourceType, sourceId: invoiceLines.sourceId })
+    .from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId));
+  const idsOf = (type: string) => [...new Set(lines.filter((l) => l.sourceType === type && l.sourceId).map((l) => l.sourceId!))];
+  const timeIds = idsOf('time_entry');
+  const partIds = idsOf('part');
+  const ticketIds = [
+    ...(timeIds.length
+      ? (await db.select({ ticketId: timeEntries.ticketId }).from(timeEntries).where(inArray(timeEntries.id, timeIds))).map((r) => r.ticketId)
+      : []),
+    ...(partIds.length
+      ? (await db.select({ ticketId: ticketParts.ticketId }).from(ticketParts).where(inArray(ticketParts.id, partIds))).map((r) => r.ticketId)
+      : []),
+  ].filter((id): id is string => !!id);
+  if (ticketIds.length === 0) return; // no ticket child rows on this invoice: nothing to take
+  await lockTicketsForWrite(db, ticketIds, { orgShare: [inv.orgId] });
 }
 
 /**
@@ -1529,6 +1565,7 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
 
   // Everything below runs in ONE system transaction (withSystemDbAccessContext
   // wraps its callback in baseDb.transaction — db/index.ts). Lock order is the
+  // source tickets (#8972 W0, lockInvoiceSourceTickets), then the
   // repo-wide invoice contract (see lockDraftInvoice): invoices row → invoice
   // lines → source rows (contracts before contract_lines, then time_entries,
   // then ticket_parts, then ai_usage_charges (#7608), each deduplicated +
@@ -1541,6 +1578,8 @@ export async function issueInvoice(invoiceId: string, actor: InvoiceActor) {
   // than calling allocateInvoiceCounter() — that helper does its own
   // runOutsideDbContext, which would exit THIS transaction and break atomicity.
   const issueTx = () => runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    // 0. #8972 W0: the source rows' tickets, before anything below.
+    await lockInvoiceSourceTickets(invoiceId);
     // 1. Invoice row lock. Recheck draft state and re-run actor authorization
     //    against the LOCKED row — the system tx bypasses RLS, so the pre-tx
     //    check above is a fast-fail only, not authoritative.
@@ -2403,7 +2442,9 @@ export async function voidInvoice(invoiceId: string, reason: string, opts: { rei
   let voidedOrgId = '';
   let voidedPartnerId = '';
   await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    // 1. Invoice row FIRST, FOR UPDATE — status is re-validated on the LOCKED row.
+    // 0. #8972 W0: the source rows' tickets (lockInvoiceSourceTickets).
+    await lockInvoiceSourceTickets(invoiceId);
+    // 1. Invoice row next, FOR UPDATE — status is re-validated on the LOCKED row.
     const [inv] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1).for('update');
     if (!inv) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
     requireInvoiceAccess(actor, inv);

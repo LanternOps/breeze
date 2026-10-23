@@ -18,6 +18,7 @@ import { captureException } from './sentry';
 import type { InvoiceActor } from './invoiceTypes';
 import { ContractServiceError } from './contractTypes';
 import { hourBlockDayStart, loadPeriodClaims } from './contractHourBlockHolds';
+import { lockTicketsForWrite } from './ticketRowLock';
 import {
   computePeriodMath, selectClosablePeriods, sumEntryHours, type ClosablePeriod, type RolloverPolicy,
 } from './contractHourBlocks';
@@ -97,19 +98,28 @@ async function closeOne(
   contract: ContractRow, line: LineRow, p: ClosablePeriod,
   closeSource: 'billing_run' | 'close_out', getInvoice: () => Promise<OverageInvoice>,
 ): Promise<HourBlockCloseSummary> {
-  // 1. Claim: lock exactly the eligible rows, in issueInvoice's order.
-  const locked = await db.select({
-    id: timeEntries.id,
-    minutes: sql<number>`COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0)`.mapWith(Number),
-    currencyCode: timeEntries.currencyCode,
-  }).from(timeEntries).where(and(
+  const eligible = and(
     eq(timeEntries.orgId, contract.orgId),
     eq(timeEntries.isBillable, true),
     eq(timeEntries.billingStatus, 'not_billed'),
     isNotNull(timeEntries.endedAt),
     gte(timeEntries.endedAt, dayStart(p.periodStart)),
     lt(timeEntries.endedAt, dayStart(p.periodEnd)),
-  )).orderBy(asc(timeEntries.id)).for('update');
+  );
+  // 0. #8972 W0: the eligible entries' TICKETS first (org SHARE, then the
+  //    tickets ascending), read unlocked. An entry that becomes eligible after
+  //    this read is claimed without its ticket's lock — safe, because nothing
+  //    below requests a ticket lock after an entry lock (no late lock).
+  const ticketRows = await db.selectDistinct({ ticketId: timeEntries.ticketId }).from(timeEntries).where(eligible);
+  const ticketIds = ticketRows.map((r) => r.ticketId).filter((id): id is string => !!id);
+  if (ticketIds.length > 0) await lockTicketsForWrite(db, ticketIds, { orgShare: [contract.orgId] });
+
+  // 1. Claim: lock exactly the eligible rows, in issueInvoice's order.
+  const locked = await db.select({
+    id: timeEntries.id,
+    minutes: sql<number>`COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0)`.mapWith(Number),
+    currencyCode: timeEntries.currencyCode,
+  }).from(timeEntries).where(eligible).orderBy(asc(timeEntries.id)).for('update');
 
   // 2. Compute from exactly the locked set.
   const consumed = sumEntryHours(locked.map((r) => r.minutes));

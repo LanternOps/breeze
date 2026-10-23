@@ -136,8 +136,7 @@ function functionName(n: ts.Node, sf: ts.SourceFile): string | null {
   return null;
 }
 
-function scanFile(full: string): ScannedFile {
-  const raw = readFileSync(full, 'utf8');
+function scanFile(full: string, raw = readFileSync(full, 'utf8')): ScannedFile {
   const sf = ts.createSourceFile(full, raw, ts.ScriptTarget.Latest, true);
   const text = blankComments(raw, sf);
   const rel = path.relative(SRC, full).split(path.sep).join('/');
@@ -208,17 +207,30 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
   let files: ScannedFile[] = [];
   let writes: WriteHit[] = [];
   let orphans: string[] = [];
+  /** Every non-test source file's text, read ONCE (the host may be loaded). */
+  const rawByRel = new Map<string, string>();
+  const parsed = new Map<string, ScannedFile>();
+  const scanned = (rel: string): ScannedFile => {
+    let file = parsed.get(rel);
+    if (!file) {
+      file = scanFile(path.join(SRC, rel), rawByRel.get(rel));
+      parsed.set(rel, file);
+    }
+    return file;
+  };
+  const relOfKey = (key: string) => key.split('::')[0]!;
   const lockNames = () => [...TICKET_LOCK_PRIMITIVES, ...Object.keys(TICKET_LOCK_WRAPPERS).map(bareName)];
 
-  // One parse of apps/api/src shared by every assertion.
+  // One read + parse of apps/api/src shared by every assertion.
   beforeAll(() => {
-    files = walk(SRC).filter((f) => {
+    for (const full of walk(SRC)) rawByRel.set(path.relative(SRC, full).split(path.sep).join('/'), readFileSync(full, 'utf8'));
+    const registryFiles = new Set(Object.keys(TICKET_CHILD_WRITERS).map(relOfKey));
+    files = [...rawByRel.entries()].filter(([rel, raw]) =>
       // Cheap pre-filter: only parse files that can hold a write or a registry key.
-      const raw = readFileSync(f, 'utf8');
-      return TICKET_CHILD_TABLES.some((t) => raw.includes(t))
+      TICKET_CHILD_TABLES.some((t) => raw.includes(t))
         || Object.keys(DRIZZLE_TABLE_VARS).some((v) => raw.includes(v))
-        || Object.keys(TICKET_CHILD_WRITERS).some((k) => k.startsWith(path.relative(SRC, f).split(path.sep).join('/') + '::'));
-    }).map(scanFile);
+        || registryFiles.has(rel),
+    ).map(([rel]) => scanned(rel));
     for (const file of files) {
       for (const hit of findWrites(file)) {
         if ('orphan' in hit) orphans.push(hit.orphan);
@@ -253,8 +265,7 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
     const found = new Set(writes.map((w) => w.key));
     const stale: string[] = [];
     for (const [key, entry] of Object.entries(TICKET_CHILD_WRITERS)) {
-      const file = files.find((f) => key.startsWith(`${f.rel}::`));
-      if (!file || !file.functions.has(key)) { stale.push(`${key}: function not found`); continue; }
+      if (!rawByRel.has(relOfKey(key)) || !scanned(relOfKey(key)).functions.has(key)) { stale.push(`${key}: function not found`); continue; }
       // A writer that addresses its tables dynamically (a table-list walk) is
       // invisible to the literal scan; its function must still exist.
       if (!entry.dynamicTables && !found.has(key)) stale.push(`${key}: no ticket-child write found`);
@@ -271,8 +282,7 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
 
   it('every lock-held function exists', () => {
     const missing = Object.keys(TICKET_LOCK_HELD_FUNCTIONS).filter((key) => {
-      const file = files.find((f) => key.startsWith(`${f.rel}::`)) ?? scanFile(path.join(SRC, key.split('::')[0]!));
-      return !file.functions.has(key);
+      return !rawByRel.has(relOfKey(key)) || !scanned(relOfKey(key)).functions.has(key);
     });
     expect(missing).toEqual([]);
   });
@@ -282,8 +292,7 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
     const reaches = (key: string, seen: Set<string>): boolean => {
       if (seen.has(key)) return false;
       seen.add(key);
-      const file = files.find((f) => key.startsWith(`${f.rel}::`)) ?? scanFile(path.join(SRC, key.split('::')[0]!));
-      const infos = file.functions.get(key);
+      const infos = rawByRel.has(relOfKey(key)) ? scanned(relOfKey(key)).functions.get(key) : undefined;
       if (!infos) { problems.push(`${key}: wrapper not found`); return false; }
       return infos.every((info) => callIndex(info.text, TICKET_LOCK_PRIMITIVES) >= 0
         || Object.keys(TICKET_LOCK_WRAPPERS).some((w) => w !== key && callIndex(info.text, [bareName(w)]) >= 0 && reaches(w, new Set(seen))));
@@ -314,7 +323,6 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
       ...Object.entries(TICKET_CHILD_WRITERS).filter(([, e]) => e.lock === 'ticket-first' && e.lockHeldByCaller).map(([k]) => k),
       ...Object.keys(TICKET_LOCK_HELD_FUNCTIONS),
     ]);
-    const allFiles = walk(SRC);
     for (const key of held) {
       const name = bareName(key);
       const homeRel = key.split('::')[0]!;
@@ -325,12 +333,10 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
       const importRe = new RegExp(`import\\s*(?:type\\s*)?\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*['"][^'"]*\\b${moduleBase}(?:\\.js)?['"]`);
       const callRe = new RegExp(`(?<![\\w.$])${name}\\s*\\(`, 'g');
       let calls = 0;
-      for (const full of allFiles) {
-        const raw = readFileSync(full, 'utf8');
+      for (const [rel, raw] of rawByRel) {
         if (!raw.includes(name)) continue;
-        const rel = path.relative(SRC, full).split(path.sep).join('/');
         if (rel !== homeRel && !importRe.test(raw)) continue;
-        const file = files.find((f) => f.rel === path.relative(SRC, full).split(path.sep).join('/')) ?? scanFile(full);
+        const file = scanned(rel);
         callRe.lastIndex = 0;
         let m: RegExpExecArray | null;
         while ((m = callRe.exec(file.text))) {
@@ -350,7 +356,7 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
       if (calls === 0) problems.push(`${key}: lock-held helper but never called`);
     }
     expect(problems.sort()).toEqual([]);
-  });
+  }, 60_000);
 
   it('W0 ships every writer with tombstoneGuard: false (W1 Task 1.2 flips them)', () => {
     expect(Object.entries(TICKET_CHILD_WRITERS).filter(([, e]) => e.tombstoneGuard).map(([k]) => k)).toEqual([]);

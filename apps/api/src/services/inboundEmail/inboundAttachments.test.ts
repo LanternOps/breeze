@@ -12,6 +12,9 @@ vi.mock('../../db', () => ({
     })),
   },
 }));
+// #8972 W0: persistInboundAttachments locks the ticket row first; the helper has its own tests.
+const { lockMock } = vi.hoisted(() => ({ lockMock: vi.fn(async () => null) }));
+vi.mock('../ticketRowLock', () => ({ lockTicketForWrite: lockMock }));
 vi.mock('../../db/schema/ticketAttachments', () => ({ ticketAttachments: { __t: 'ticket_attachments' } }));
 
 import { persistInboundAttachments, inboundAttachmentNote, hasStoredAttachments } from './inboundAttachments';
@@ -49,6 +52,8 @@ describe('persistInboundAttachments', () => {
     const n = await persistInboundAttachments(email, { ticketId: 't-1', orgId: 'o-1', commentId: 'c-1' });
 
     expect(n).toBe(1);
+    // #8972 W0: the ticket row is locked before the insert
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), 't-1');
     expect(inserted).toHaveLength(1);
     expect(inserted[0]).toHaveLength(1);
     const row = inserted[0]![0]!;

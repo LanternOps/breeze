@@ -21,6 +21,7 @@ import {
   putBytes,
 } from '../../services/ticketAttachmentStorage';
 import { getScopedTicketOr404 } from './tickets';
+import { lockTicketForWrite } from '../../services/ticketRowLock';
 import { captureException } from '../../services/sentry';
 import { contentDispositionFor, sanitizeAttachmentFilename } from '../../services/attachmentFilename';
 
@@ -148,6 +149,9 @@ ticketAttachmentRoutes.post(
       throw err;
     }
 
+    // #8972 W0: ticket row lock before the row, taken AFTER the storage write
+    // so the lock is never held across object-store I/O.
+    await lockTicketForWrite(db, ticket.id);
     let row;
     try {
       const inserted = await db
@@ -263,6 +267,7 @@ ticketAttachmentRoutes.post(
       return fail(c, 404, 'ARTIFACT_NOT_FOUND', 'No such artifact is available to this organization');
     }
 
+    await lockTicketForWrite(db, ticket.id); // #8972 W0: ticket first
     const [row] = await db
       .insert(ticketAttachments)
       .values({
@@ -482,6 +487,8 @@ ticketAttachmentRoutes.delete(
       captureException(err);
       return fail(c, 503, 'STORAGE_UNAVAILABLE', 'Attachment storage is unavailable — try again shortly');
     }
+    // #8972 W0: ticket first; after the object delete, so no lock spans storage I/O.
+    await lockTicketForWrite(db, ticket.id);
     await db.delete(ticketAttachments).where(eq(ticketAttachments.id, attachmentId));
 
     await createAuditLogAsync({

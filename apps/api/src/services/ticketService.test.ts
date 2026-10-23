@@ -2397,14 +2397,15 @@ describe('updateTicketFields', () => {
   it('clearing deviceId (null) skips the device lookup and records the change', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ ...BASE_TICKET, deviceId: 'd-1' }])
-      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-1', hostname: 'DESK-OLD', displayName: null }]);
+      .mockResolvedValueOnce([{ id: 'd-1', orgId: 'o-1', hostname: 'DESK-OLD', displayName: null }])
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.updateReturning.mockResolvedValue([{ ...BASE_TICKET, deviceId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
     await updateTicketFields('t-1', { deviceId: null }, actor);
 
-    // Ticket lookup + the old device's name for the feed; no new-device lookup for null
-    expect(dbMocks.selectResult).toHaveBeenCalledTimes(2);
+    // Ticket lookup + the old device's name for the feed + the row lock; no new-device lookup for null
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(3);
     expect(emitMock).toHaveBeenCalledWith(expect.objectContaining({
       type: 'ticket.updated',
       payload: { changed: ['deviceId'] }
@@ -2537,8 +2538,9 @@ describe('updateTicketFields', () => {
 
     await updateTicketFields('t-1', { submittedBy: null, submitterName: 'Walk-in', submitterEmail: null }, actor);
 
-    // No portal-user lookup needed when clearing — only the ticket select.
-    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1);
+    // No portal-user lookup needed when clearing — only the ticket select
+    // (+ the #8972 W0 lockTicketForWrite read, served by the same default).
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(2);
     expect(setMock.mock.calls[0]![0]).toMatchObject({
       submittedBy: null,
       submitterName: 'Walk-in',
@@ -2989,13 +2991,14 @@ describe('category tenant validation', () => {
   it('updateTicketFields allows clearing the category (null) without a lookup', async () => {
     dbMocks.selectResult
       // priority is NOT NULL on real rows; the #6691 SLA restamp reads it.
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', categoryId: 'cat-1', priority: 'normal', subject: 'Printer' }]); // ticket only
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', categoryId: 'cat-1', priority: 'normal', subject: 'Printer' }]) // ticket only
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', categoryId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]); // system feed comment insert
 
     const t = await updateTicketFields('t-1', { categoryId: null }, actor);
     expect(t?.categoryId).toBeNull();
-    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1); // no category lookup
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(2); // ticket + row lock; no category lookup
   });
 });
 
@@ -3070,12 +3073,13 @@ describe('assignee tenant validation', () => {
 
   it('assignTicket skips validation when unassigning (null assignee)', async () => {
     dbMocks.selectResult
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: 'u-2' }]); // ticket only
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', assignedTo: 'u-2' }]) // ticket only
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.updateReturning.mockResolvedValue([{ id: 't-1', assignedTo: null }]);
 
     const t = await assignTicket('t-1', null, actor);
     expect(t?.assignedTo).toBeNull();
-    expect(dbMocks.selectResult).toHaveBeenCalledTimes(1); // no user lookup
+    expect(dbMocks.selectResult).toHaveBeenCalledTimes(2); // ticket + row lock; no user lookup
   });
 
   it('assignTicket fails closed (500, not a blame-the-input 400) when the ticket partner is unresolvable', async () => {
@@ -4875,7 +4879,8 @@ describe('postProposalNote (#4211)', () => {
   it('posts under the technician identity, private, linked to the run', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
-      .mockResolvedValueOnce([{ id: RUN_ID }]);
+      .mockResolvedValueOnce([{ id: RUN_ID }])
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'comment-1' }]);
 
     await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { kind: 'user' as const, userId: USER_ID, name: 'Tech' });
@@ -4894,7 +4899,8 @@ describe('postProposalNote (#4211)', () => {
   it('audits the technician as actor and the run in details', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
-      .mockResolvedValueOnce([{ id: RUN_ID }]);
+      .mockResolvedValueOnce([{ id: RUN_ID }])
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'comment-1' }]);
 
     await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { kind: 'user' as const, userId: USER_ID, name: 'Tech' });
@@ -4921,6 +4927,7 @@ describe('postProposalNote (#4211)', () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }]) // getTicketOrThrow
       .mockResolvedValueOnce([{ id: RUN_ID }]) // run lookup
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1' }]) // #8972 W0: lockTicketForWrite
       .mockResolvedValueOnce([{ id: 'existing-comment' }]); // catch's existing-row lookup
     dbMocks.insertReturning.mockRejectedValueOnce(Object.assign(new Error('duplicate key value'), { code: '23505' }));
 
@@ -4936,7 +4943,8 @@ describe('postProposalNote (#4211)', () => {
   it('rethrows a non-unique-violation insert failure unchanged', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
-      .mockResolvedValueOnce([{ id: RUN_ID }]);
+      .mockResolvedValueOnce([{ id: RUN_ID }])
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.insertReturning.mockRejectedValueOnce(new Error('connection reset'));
 
     await expect(postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { kind: 'user' as const, userId: USER_ID, name: 'Tech' }))
@@ -4991,7 +4999,8 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
   it('resolving with an aiDraftId writes the resolved_with_ai_note claim into the ticket.status_changed outbox payload', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
-      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI note', runId: 'run-9' }]);
+      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI note', runId: 'run-9' }])
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.updateReturning
       .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }])
       .mockResolvedValueOnce([{ id: 'draft-1' }]);
@@ -5008,7 +5017,9 @@ describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () =>
   });
 
   it('resolving without an aiDraftId writes the unchanged status_changed payload', async () => {
-    dbMocks.selectResult.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }]);
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1' }]); // #8972 W0: lockTicketForWrite
     dbMocks.updateReturning.mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
@@ -5045,7 +5056,10 @@ describe('assignee eligibility after ticket scope changes (#5551)', () => {
       .mockResolvedValueOnce([ticket])
       .mockResolvedValueOnce([{ id: 'd-new', orgId: ticket.orgId, hostname: 'NEW' }])
       .mockResolvedValueOnce([{ hostname: 'OLD', displayName: null }])
+      .mockResolvedValueOnce([ticket]) // #8972 W0: lockTicketForWrite (updateTicketFields' ticket write)
       .mockResolvedValueOnce([assignee]);
+    // #8972 W0: the unassignment inside revalidateTicketAssignee locks again
+    if (!eligible) dbMocks.selectResult.mockResolvedValueOnce([ticket]);
     dbMocks.updateReturning.mockResolvedValueOnce([changed]).mockResolvedValueOnce([{ ...changed, assignedTo: null }]);
     assigneeEligibleMock.mockResolvedValue(eligible);
     const result = await updateTicketFields(ticket.id, { deviceId: 'd-new' }, actor);
@@ -5058,7 +5072,8 @@ describe('assignee eligibility after ticket scope changes (#5551)', () => {
   });
 
   it('clears a missing assignee and attributes an AI unassignment without a user foreign key', async () => {
-    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([]);
+    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([])
+      .mockResolvedValueOnce([ticket]); // #8972 W0: lockTicketForWrite
     dbMocks.updateReturning.mockResolvedValueOnce([{ ...ticket, assignedTo: null }]);
     await revalidateTicketAssignee(ticket.id, { kind: 'ai_agent', agentId: 'agent-id' });
     expect(assigneeEligibleMock).not.toHaveBeenCalled();
@@ -5070,7 +5085,8 @@ describe('assignee eligibility after ticket scope changes (#5551)', () => {
   });
 
   it('does not audit an unassignment lost to a concurrent scope or assignee change', async () => {
-    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([assignee]);
+    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([assignee])
+      .mockResolvedValueOnce([ticket]); // #8972 W0: lockTicketForWrite
     assigneeEligibleMock.mockResolvedValue(false);
     dbMocks.updateReturning.mockResolvedValueOnce([]);
     await expect(revalidateTicketAssignee(ticket.id, actor)).rejects.toMatchObject({ code: 'CONCURRENT_MODIFICATION' });
@@ -5088,7 +5104,8 @@ describe('assignee eligibility after ticket scope changes (#5551)', () => {
         { id: 'o-1', partnerId: 'p-1', name: 'Alpha', currencyCode: 'USD' },
         { id: 'o-2', partnerId: 'p-1', name: 'Beta', currencyCode: 'USD' },
       ])
-      .mockResolvedValueOnce([assignee]);
+      .mockResolvedValueOnce([assignee])
+      .mockResolvedValueOnce([moved]); // #8972 W0: lockTicketForWrite (revalidateTicketAssignee on the tx)
     dbMocks.txUpdateReturning.mockResolvedValueOnce([moved]).mockResolvedValueOnce([{ ...moved, assignedTo: null }]);
     assigneeEligibleMock.mockResolvedValue(false);
     const result = await moveTicketOrg(ticket.id, 'o-2', actor);

@@ -34,6 +34,13 @@ const {
   rateLimitAllowed: { current: true },
 }));
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('../../services/ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 vi.mock('../../middleware/auth', async () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
     if (!authRef.current) return c.json({ error: 'Not authenticated' }, 401);
@@ -187,6 +194,8 @@ describe('POST /tickets/:id/attachments (W08 #3902)', () => {
     expect(keys).not.toContain('storageBackend');
     expect(keys).not.toContain('sha256');
     expect(keys).not.toContain('data');
+    // #8972 W0: the ticket row is locked before the attachment insert
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID);
   });
 
   it('403s an organization-scoped caller with no orgId', async () => {
@@ -477,6 +486,8 @@ describe('DELETE /tickets/:id/attachments/:attachmentId (W08 #3902)', () => {
     dbRowMock.mockReturnValue(joinRow({ commentId: null, uploadedByUserId: 'u-1' }, null));
     expect((await del()).status).toBe(204);
     expect(deleteBytesMock).toHaveBeenCalledTimes(1);
+    // #8972 W0: the ticket row is locked before the attachment row delete
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID);
   });
 
   it('403s another user\'s attachment without tickets:manage', async () => {

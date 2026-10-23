@@ -39,6 +39,14 @@ vi.mock('./ticketConfigService', () => ({
   getTicketStatusById: (...a: unknown[]) => configMocks.getTicketStatusById(...a),
 }));
 
+// #8972 W0: writers lock the ticket row first; the lock helper has its own tests, so
+// here it echoes the ticket back (same org as the fixtures) and records the id.
+const { lockMock } = vi.hoisted(() => ({
+  lockMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: '22222222-2222-2222-2222-222222222222', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock, lockTicketsForWrite: vi.fn(async () => new Map()) }));
 const setMock = vi.fn();
 const updateWhereMock = vi.fn();
 const insertValuesMock = vi.fn();
@@ -132,6 +140,7 @@ describe('updateTicketFields — SLA restamp before first response (#6691)', () 
 
     await updateTicketFields(TICKET_ID, { categoryId: CATEGORY_ID }, actor);
 
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID); // #8972 W0: ticket locked first
     expect(setMock).toHaveBeenCalledTimes(1);
     const setArg = setMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(setArg.categoryId).toBe(CATEGORY_ID);

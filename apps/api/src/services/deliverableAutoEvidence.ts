@@ -64,6 +64,7 @@ import {
   type PersistedSiteScopeColumns, type ReportExecutionAuthority,
 } from './siteScope';
 import type { SweepDeliverable } from './serviceDeliverableService';
+import { lockTicketForWrite } from './ticketRowLock';
 
 export const AUTO_EVIDENCE_TICKET_NOTE = 'Report attached, review and resolve';
 
@@ -183,6 +184,8 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
    * i.e. the first refusal). `not_due` / `already_attached` never get here.
    */
   const recordRefusal = async (reason: AutoEvidenceRefusal): Promise<AutoEvidenceOutcome> => {
+    // #8972 W0: the ticket before the occurrence and the note.
+    if (args.ticketId) await lockTicketForWrite(db, args.ticketId);
     await db.update(serviceDeliverableOccurrences)
       .set({ autoEvidenceAttemptedAt: new Date(), autoEvidenceRefusal: reason })
       .where(eq(serviceDeliverableOccurrences.id, args.occurrenceId));
@@ -222,6 +225,8 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
     });
     if (previous) result.previous = previous;
 
+    // #8972 W0: the ticket before the occurrence, the run and the note.
+    if (args.ticketId) await lockTicketForWrite(db, args.ticketId);
     // A recovered deliverable clears its refusal state.
     await db.update(serviceDeliverableOccurrences)
       .set({ autoEvidenceAttemptedAt: new Date(), autoEvidenceRefusal: null })
