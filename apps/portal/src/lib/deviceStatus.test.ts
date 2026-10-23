@@ -18,7 +18,7 @@ describe('deviceStatusMark', () => {
     expect(deviceStatusMark('offline')).toEqual({ tone: 'neutral', label: 'Offline' });
   });
 
-  it.each([null, undefined, '', 'something-new'])(
+  it.each([null, undefined, '', 'something-new', 'constructor', 'toString'])(
     'renders an unrecognised status (%s) as "Not known" instead of echoing it',
     (status) => {
       expect(deviceStatusMark(status)).toEqual({ tone: 'neutral', label: 'Not known' });

@@ -272,6 +272,22 @@ describe('portal routes — scoped DB access context (breeze_app pool)', () => {
     expect(Number(body.pagination.total)).toBe(1);
   });
 
+  it('never lists an ephemeral Quick Support device, even with an open checkout', async () => {
+    const { orgId, deviceId } = await seedOrgWithDevice('portal-asset-ephemeral-host');
+    const portalUser = await seedPortalUser(orgId);
+    const admin = getTestDb() as any;
+    await admin.update(devices).set({ isEphemeral: true }).where(eq(devices.id, deviceId));
+    await admin.insert(assetCheckouts).values({ orgId, deviceId, checkedOutTo: portalUser.id });
+    const app = buildPortalApp();
+    const token = await loginPortal(app, portalUser.email, orgId);
+
+    const res = await app.request('/portal/assets', { headers: { Authorization: `Bearer ${token}` } });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual([]);
+    expect(Number(body.pagination.total)).toBe(0);
+  });
+
   it('reset-password updates the portal user password under the unprivileged pool (system scope)', async () => {
     const { orgId } = await seedOrgWithDevice('portal-reset-host');
     const portalUser = await seedPortalUser(orgId);
