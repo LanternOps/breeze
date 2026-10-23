@@ -559,15 +559,27 @@ describe('SR2-21 pending registration — real Postgres + real Redis', () => {
     // (a different partner + user holding the same address).
     const otherPartner = await createPartner({ name: `OtherCo-${marker}` });
     await createUser({ partnerId: otherPartner.id, email, withMembership: true });
+    const [before] = await getTestDb().select({
+      purchaseSelection: partners.purchaseSelection, plan: partners.plan, maxDevices: partners.maxDevices,
+    }).from(partners).where(eq(partners.id, otherPartner.id));
+    expect(before!.purchaseSelection).toBeNull();
 
     const res = await verify(rawToken);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ verified: false, status: 'sign_in' });
+    expect(await res.json()).toEqual({
+      verified: false,
+      status: 'sign_in',
+      purchaseSelection: { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' },
+    });
 
     // No DUPLICATE tenant: the pending company was never created, and the address
     // still resolves to exactly the one pre-existing account.
     expect(await countPartnersByName(pendingCompany)).toBe(0);
     expect(await countUsersByEmail(email)).toBe(1);
+    const [after] = await getTestDb().select({
+      purchaseSelection: partners.purchaseSelection, plan: partners.plan, maxDevices: partners.maxDevices,
+    }).from(partners).where(eq(partners.id, otherPartner.id));
+    expect(after).toEqual(before);
   });
 });
 

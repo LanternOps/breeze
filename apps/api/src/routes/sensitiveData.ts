@@ -751,6 +751,7 @@ sensitiveDataRoutes.get(
         risk: sensitiveDataFindings.risk,
         status: sensitiveDataFindings.status,
         lastSeenAt: sensitiveDataFindings.lastSeenAt,
+        remediatedAt: sensitiveDataFindings.remediatedAt,
       })
       .from(sensitiveDataFindings);
 
@@ -779,7 +780,7 @@ sensitiveDataRoutes.get(
           sumOpenAgeHours += Math.max(0, (now - row.lastSeenAt.getTime()) / (1000 * 60 * 60));
         }
       }
-      if (row.status === 'remediated' && row.lastSeenAt && now - row.lastSeenAt.getTime() <= 24 * 60 * 60 * 1000) {
+      if (row.status === 'remediated' && row.remediatedAt && now - row.remediatedAt.getTime() <= 24 * 60 * 60 * 1000) {
         remediated24h++;
       }
     }
