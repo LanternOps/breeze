@@ -224,7 +224,7 @@ commandsRoutes.get('/:id/commands', async (c) => {
   const deliverableCommands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const commands = await claimPendingCommandsForDevice(
-        { deviceId: agent.deviceId, installIncarnation: agent.installIncarnation },
+        { deviceId: agent.deviceId, agentId: agent.agentId, installIncarnation: agent.installIncarnation },
         10,
         agent.role,
         // #2774 / #3986 — drain narrowing (tenant offboarding OR device

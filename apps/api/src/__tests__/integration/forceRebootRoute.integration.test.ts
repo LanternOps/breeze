@@ -32,7 +32,7 @@ import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { forceRebootResourceDigest, mintStepUpGrant } from '../../services/mfaStepUpGrant';
 import { MIN_AGENT_VERSION_FORCE_REBOOT } from '../../services/forceReboot';
-import { setupTestEnvironment, type TestEnvironment } from './db-utils';
+import { setupTestEnvironment, type TestEnvironment, deviceAgentId } from './db-utils';
 
 // The REAL enqueue seam, wrapped so one test can run a hook exactly once just
 // before it (the device dropping offline after the route's own check). Every
@@ -138,7 +138,7 @@ describe('#8729 — POST /devices/:id/force-reboot (real grant, real claim path)
         accessiblePartnerIds: [],
         currentPartnerId: env.partner.id,
       },
-      () => claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      async () => claimPendingCommandsForDevice({ deviceId: deviceId, agentId: await deviceAgentId(deviceId), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
   beforeEach(async () => {

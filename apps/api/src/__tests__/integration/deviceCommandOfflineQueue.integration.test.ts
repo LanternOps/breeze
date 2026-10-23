@@ -38,7 +38,7 @@ import { deliveryTtlMs } from '../../services/commandOfflinePolicy';
 import { dispatchDeviceCommand } from '../../services/dispatchDeviceCommand';
 import { createAccessToken } from '../../services/jwt';
 import { clearPermissionCache } from '../../services/permissions';
-import { createOrganization, createPartner, createSite, setupTestEnvironment } from './db-utils';
+import { createOrganization, createPartner, createSite, setupTestEnvironment, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -71,7 +71,7 @@ function asSystem<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 function claim(deviceId: string) {
-  return asSystem(() => claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }));
+  return asSystem(async () => claimPendingCommandsForDevice({ deviceId: deviceId, agentId: await deviceAgentId(deviceId), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }));
 }
 
 type DeviceStatus = (typeof devices.$inferInsert)['status'];

@@ -20,7 +20,7 @@ import { getEndpointMessageDetail, listEndpointMessages, resendTargets } from '.
 import { runEndpointMessageRetentionOnce } from '../../jobs/endpointMessageRetention';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { terminalPayloadErasureSet } from '../../services/sensitiveCommandPayload';
-import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { createDevice, createOrganization, createPartner, createSite, createUser, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 const sys = <T>(fn: () => Promise<T>) => runOutsideDbContext(() => withSystemDbAccessContext(fn));
@@ -332,7 +332,7 @@ describe('endpoint messaging W02 flow (real Postgres)', () => {
       source: 'endpoint_message', title: 'Reboot tonight', body: 'Body still needed for delivery', messageId: randomUUID(), batchId: randomUUID(),
     }, 'pending');
     await sys(() => db.execute(sql`UPDATE device_commands SET submitted_org_id = ${f.orgA}::uuid WHERE id = ${cmdId}::uuid`));
-    const claimed = await sys(() => claimPendingCommandsForDevice({ deviceId: f.devA1, installIncarnation: 1 }));
+    const claimed = await sys(async () => claimPendingCommandsForDevice({ deviceId: f.devA1, agentId: await deviceAgentId(f.devA1), installIncarnation: 1 }));
     const mine = claimed.find((c) => c.id === cmdId);
     expect(mine, 'the pending message must be claimable').toBeDefined();
     expect((mine!.payload as Record<string, unknown>).body).toBe('Body still needed for delivery');

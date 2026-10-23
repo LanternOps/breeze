@@ -615,7 +615,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     const drainCommands = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const claimed = await claimPendingCommandsForDevice(
-          { deviceId: agent.deviceId, installIncarnation: agent.installIncarnation },
+          { deviceId: agent.deviceId, agentId: agent.agentId, installIncarnation: agent.installIncarnation },
           10,
           'agent',
           // Fail closed: the middleware always populates this while draining,
@@ -953,7 +953,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // this line via a TENANT drain: a device-remove drain admits `role==='agent'`
     // only (middleware/agentAuth.ts Layer 1b).
     const watchdogCommands = await claimPendingCommandsForDevice(
-      { deviceId: device.id, installIncarnation: agent.installIncarnation },
+      { deviceId: device.id, agentId: agent.agentId, installIncarnation: agent.installIncarnation },
       10,
       'watchdog',
       agent?.claimTypeAllowlist
@@ -1964,7 +1964,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // this handler and never reaches this line; the invariant is stated here
   // because that branch is what a future refactor is most likely to remove.
   const commands = await claimPendingCommandsForDevice(
-    { deviceId: device.id, installIncarnation: agent.installIncarnation },
+    { deviceId: device.id, agentId: agent.agentId, installIncarnation: agent.installIncarnation },
     10,
     'agent',
     agent?.claimTypeAllowlist,

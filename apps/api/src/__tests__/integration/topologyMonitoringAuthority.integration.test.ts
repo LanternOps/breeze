@@ -19,6 +19,7 @@ import {
 } from '../../services/topology/telemetryArms';
 import { pgFailure, seedTopologyMonitoringFixture as fixture, system } from '../helpers/topologyMonitoring';
 import { orgContext } from './topology-fixtures';
+import { deviceAgentId } from './db-utils';
 
 /**
  * M3 Task 7 (M3-D2/D3/D4/D13) against real Postgres/Redis: policy arming pins
@@ -113,7 +114,7 @@ describe('telemetry arms (M3-D2/D3)', () => {
     expect(narrowed.authorized && narrowed.interfaceIds).toEqual([f.ifaceA]);
 
     // Delivery decrypts just-in-time and only while the arm is intact.
-    const delivered = await system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, installIncarnation: 1 }, 10, 'agent'));
+    const delivered = await system(async () => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId: await deviceAgentId(f.deviceId), installIncarnation: 1 }, 10, 'agent'));
     const polled = delivered.find((row) => row.id === command!.id);
     expect(polled).toBeTruthy();
     expect(JSON.stringify(decryptCommandForDelivery({ id: polled!.id, type: polled!.type, deviceId: f.deviceId, payload: polled!.payload })!.payload)).toContain('s3cret-community');
@@ -128,7 +129,7 @@ describe('telemetry arms (M3-D2/D3)', () => {
     const arm = await f.inOrg(() => armTopologyTelemetry(f.ctx, armRequest(f)));
     await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 1000) });
     await f.inOrg(() => revokeTopologyTelemetryArm(f.ctx, arm.id));
-    const delivered = await system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, installIncarnation: 1 }, 10, 'agent'));
+    const delivered = await system(async () => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId: await deviceAgentId(f.deviceId), installIncarnation: 1 }, 10, 'agent'));
     expect(delivered.filter((row) => row.type === 'topology_interface_poll')).toEqual([]);
     const [command] = await system(() => db.select().from(deviceCommands).where(and(eq(deviceCommands.deviceId, f.deviceId), eq(deviceCommands.type, 'topology_interface_poll'))));
     expect(command!.status).toBe('cancelled');
@@ -164,7 +165,7 @@ describe('telemetry arm live permission boundary (PR #7117 C4, M3-D13)', () => {
     expect(actor).toMatchObject({ status: 'active' });
 
     expect(await system(() => topologyTelemetryArmAuthority(request))).toEqual({ authorized: false, reason: 'permission_changed' });
-    const delivered = await system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, installIncarnation: 1 }, 10, 'agent'));
+    const delivered = await system(async () => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId: await deviceAgentId(f.deviceId), installIncarnation: 1 }, 10, 'agent'));
     expect(delivered.filter((row) => row.type === 'topology_interface_poll')).toEqual([]);
     expect((await pollCommand(f))[0]!.status).toBe('cancelled');
 
@@ -178,12 +179,12 @@ describe('telemetry arm live permission boundary (PR #7117 C4, M3-D13)', () => {
     const arm = await f.inOrg(() => armTopologyTelemetry(f.ctx, armRequest(f)));
     expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 1000) })).toMatchObject({ dispatched: 1 });
     await clearPermissionCache(f.env.user.id); // grants unchanged
-    const delivered = await system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, installIncarnation: 1 }, 10, 'agent'));
+    const delivered = await system(async () => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId: await deviceAgentId(f.deviceId), installIncarnation: 1 }, 10, 'agent'));
     expect(delivered.filter((row) => row.type === 'topology_interface_poll')).toEqual([]);
 
     await system(() => db.update(topologyTelemetryArms).set({ nextPollAt: new Date(0) }).where(eq(topologyTelemetryArms.id, arm.id)));
     expect(await dispatchDueTopologyTelemetryArms({ now: new Date(Date.now() + 2000) })).toMatchObject({ dispatched: 1, blocked: 0 });
-    const redelivered = await system(() => claimPendingCommandsForDevice({ deviceId: f.deviceId, installIncarnation: 1 }, 10, 'agent'));
+    const redelivered = await system(async () => claimPendingCommandsForDevice({ deviceId: f.deviceId, agentId: await deviceAgentId(f.deviceId), installIncarnation: 1 }, 10, 'agent'));
     expect(redelivered.filter((row) => row.type === 'topology_interface_poll')).toHaveLength(1);
   });
 });

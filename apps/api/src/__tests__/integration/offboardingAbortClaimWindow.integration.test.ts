@@ -10,7 +10,7 @@ import {
   abortOrganizationOffboardingAroundStatusChange,
   abortPartnerOffboardingAroundStatusChange,
 } from '../../services/tenantOffboarding';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -155,7 +155,7 @@ async function seedDrainingTenant(
  */
 async function ordinaryClaim(deviceId: string): Promise<string[]> {
   const claimed = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(() => claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent'))
+    withSystemDbAccessContext(async () => claimPendingCommandsForDevice({ deviceId: deviceId, agentId: await deviceAgentId(deviceId), installIncarnation: 1 }, 10, 'agent'))
   );
   return claimed.map((row) => row.type);
 }

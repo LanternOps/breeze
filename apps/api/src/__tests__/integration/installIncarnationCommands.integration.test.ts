@@ -127,12 +127,12 @@ async function commandRow(id: string) {
 /** A claim by the install that currently owns the row (it authenticated after any advance). */
 async function claim(deviceId: string) {
   const [row] = await getTestDb()
-    .select({ installIncarnation: devices.installIncarnation })
+    .select({ installIncarnation: devices.installIncarnation, agentId: devices.agentId })
     .from(devices)
     .where(eq(devices.id, deviceId));
   return withSystemDbAccessContext(() =>
     claimPendingCommandsForDevice(
-      { deviceId, installIncarnation: row!.installIncarnation },
+      { deviceId, agentId: row!.agentId, installIncarnation: row!.installIncarnation },
       10,
       'agent',
       undefined,

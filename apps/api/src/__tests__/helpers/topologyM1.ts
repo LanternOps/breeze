@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db, withDbAccessContext } from '../../db';
 import { createTopologyGraph, createTopologyTenant, orgContext } from '../integration/topology-fixtures';
+import { deviceAgentId } from '../integration/db-utils';
 
 export async function seedTopologyM1Fixture() {
   const scope=await createTopologyGraph();
@@ -158,7 +159,7 @@ export async function seedTopologyCommandFixture(
     async claimThrough(transport: 'http' | 'websocket') {
       const claimed = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
         if (transport === 'http') {
-          return (await claimPendingCommandsForDevice({ deviceId: scope.deviceId, installIncarnation: 1 }, 10, 'agent')).map((row) => row.id);
+          return (await claimPendingCommandsForDevice({ deviceId: scope.deviceId, agentId: await deviceAgentId(scope.deviceId), installIncarnation: 1 }, 10, 'agent')).map((row) => row.id);
         }
         const outcome = await claimPendingCommandForDelivery(commandId);
         return outcome.status === 'claimed' ? [outcome.id] : [];

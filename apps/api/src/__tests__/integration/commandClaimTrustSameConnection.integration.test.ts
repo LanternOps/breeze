@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { auditLogs, deviceCommands, devices, partners } from '../../db/schema';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -114,7 +114,7 @@ describe('claim-time partner trust check reads on the claim transaction connecti
 
     const outcome = await withSystemDbAccessContext(async () => {
       await db.update(partners).set({ trustState: 'restricted' }).where(eq(partners.id, partner.id));
-      const claimed = await claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS });
+      const claimed = await claimPendingCommandsForDevice({ deviceId: device.id, agentId: await deviceAgentId(device.id), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS });
       const rows = await db
         .select({ id: deviceCommands.id, status: deviceCommands.status, result: deviceCommands.result })
         .from(deviceCommands)
@@ -134,8 +134,8 @@ describe('claim-time partner trust check reads on the claim transaction connecti
     await getTestDb().update(partners).set({ trustState: 'restricted' }).where(eq(partners.id, partner.id));
     const cmd = await queue(device.id, org.id);
 
-    const claimed = await withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+    const claimed = await withDbAccessContext(agentContext(org.id, partner.id), async () =>
+      claimPendingCommandsForDevice({ deviceId: device.id, agentId: await deviceAgentId(device.id), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed).toEqual([]);
@@ -158,8 +158,8 @@ describe('claim-time partner trust check reads on the claim transaction connecti
   it('under the agent heartbeat context: a trusted partner\'s commands are delivered', async () => {
     const cmd = await queue(device.id, org.id);
 
-    const claimed = await withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+    const claimed = await withDbAccessContext(agentContext(org.id, partner.id), async () =>
+      claimPendingCommandsForDevice({ deviceId: device.id, agentId: await deviceAgentId(device.id), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([cmd.id]);

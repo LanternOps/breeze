@@ -48,7 +48,7 @@ import type { ScriptParameterDefinition } from '@breeze/shared';
 import { withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import { deviceCommands, devices, scriptExecutions, scripts, tenantVariables } from '../../db/schema';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { encryptTenantVariableValue } from '../../services/tenantVariables';
 import { loadTenantVariableScope } from '../../services/tenantVariableResolution';
 import { dispatchScriptToDevice, type DispatchScriptInput } from '../../services/scriptDispatch';
@@ -240,7 +240,7 @@ describe('script secret delivery (integration)', () => {
     await setSecretEnvVersion(scn.deviceId, 0);
 
     const deliverable = await withSystemDbAccessContext(async () => {
-      const claimed = await claimPendingCommandsForDevice({ deviceId: scn.deviceId, installIncarnation: 1 });
+      const claimed = await claimPendingCommandsForDevice({ deviceId: scn.deviceId, agentId: await deviceAgentId(scn.deviceId), installIncarnation: 1 });
       expect(claimed).toHaveLength(1);
       return prepareClaimedCommandsForDelivery(
         claimed.map((cmd) => ({

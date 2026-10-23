@@ -53,7 +53,7 @@ import { checkRemoteAccess, invalidateRemoteAccessCache } from '../../services/r
 import { verifyDeviceAccess } from '../../services/aiTools';
 import { ParkedDeviceCommandRefusedError } from '../../services/unassignedPool/deliveryEligibility';
 import { isParkedDeliverableCommandType } from '../../services/unassignedPool/deliveryEligibility';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 import { insertDevice, seedHoldingOrg, seedParkedDevice } from './unassignedPoolFixtures';
 
@@ -237,7 +237,7 @@ describe('a parked device receives nothing (real Postgres)', () => {
     });
 
     it('the claim path hands the parked device no non-removal work', async () => {
-      const claimed = await withSystemDbAccessContext(() => claimPendingCommandsForDevice({ deviceId: f.parked, installIncarnation: 1 }, 10, 'agent'));
+      const claimed = await withSystemDbAccessContext(async () => claimPendingCommandsForDevice({ deviceId: f.parked, agentId: await deviceAgentId(f.parked), installIncarnation: 1 }, 10, 'agent'));
       expect(claimed.filter((c) => !isParkedDeliverableCommandType(c.type))).toEqual([]);
     });
 

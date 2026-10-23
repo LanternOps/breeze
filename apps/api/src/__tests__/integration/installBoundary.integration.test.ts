@@ -34,7 +34,7 @@ import {
 import { requestPamCleanup } from '../../services/pamActuationLifecycle';
 import { decideRestoreGate } from '../../services/backupRestoreGate';
 import { resolveRestoreIntegrity, snapshotPredatesDeviceIncarnationSql } from '../../services/backupRestoreIntegrity';
-import { setupTestEnvironment } from './db-utils';
+import { setupTestEnvironment, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 const HEX64 = 'a'.repeat(64);
@@ -561,9 +561,9 @@ describe('install incarnation boundary — every category (#8318 §5, §5.8)', (
       .values({ deviceId: target, type: 'refresh_inventory' })
       .returning({ id: deviceCommands.id, deviceIncarnation: deviceCommands.deviceIncarnation });
     expect(fresh!.deviceIncarnation).toBe(2);
-    const claimed = await withSystemDbAccessContext(() =>
+    const claimed = await withSystemDbAccessContext(async () =>
       // The NEW install claims: it authenticated under incarnation 2.
-      claimPendingCommandsForDevice({ deviceId: target, installIncarnation: 2 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      claimPendingCommandsForDevice({ deviceId: target, agentId: await deviceAgentId(target), installIncarnation: 2 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
     expect(claimed.map((c) => c.id)).toEqual([fresh!.id]);
 

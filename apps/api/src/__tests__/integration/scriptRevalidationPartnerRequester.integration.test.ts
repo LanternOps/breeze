@@ -39,6 +39,7 @@ import {
   createSite,
   createUser,
   grantRolePermissions,
+  deviceAgentId,
 } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -125,8 +126,8 @@ describe('heartbeat claim — script revalidation for a partner-level requester'
   }
 
   async function claimAsAgent() {
-    return withDbAccessContext(agentContext(org.id, partner.id), () =>
-      claimPendingCommandsForDevice({ deviceId: deviceId, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+    return withDbAccessContext(agentContext(org.id, partner.id), async () =>
+      claimPendingCommandsForDevice({ deviceId: deviceId, agentId: await deviceAgentId(deviceId), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
   }
 

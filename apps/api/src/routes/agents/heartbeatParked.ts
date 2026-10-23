@@ -159,7 +159,7 @@ export async function respondParkedHeartbeat(
   const commands = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const claimed = await claimPendingCommandsForDevice(
-        { deviceId: agent.deviceId, installIncarnation: agent.installIncarnation },
+        { deviceId: agent.deviceId, agentId: agent.agentId, installIncarnation: agent.installIncarnation },
         10,
         agent.role,
         // Fail closed: the middleware always narrows a parked device, but an

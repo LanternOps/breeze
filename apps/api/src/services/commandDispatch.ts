@@ -327,14 +327,17 @@ export async function expireRefusedClaimedCommandDelivery(
 }
 
 /**
- * Who is claiming (#8318 §6.4): the device row the caller authenticated as
- * and the `install_incarnation` read with it. An object, not a bare device id,
- * so no claim site can forget the caller half — a stale caller (one that
- * authenticated under `n` after the device moved to `n+1`) must never be
- * handed a row stamped `n+1`.
+ * Who is claiming (#8318 §6.4): the device row the caller authenticated as,
+ * the `agent_id` it authenticated with and the `install_incarnation` read
+ * with it. An object, not a bare device id, so no claim site can forget the
+ * caller half — a stale caller (one that authenticated under `n` after the
+ * device moved to `n+1`) must never be handed a row stamped `n+1`, and one
+ * whose row an in-place F3 re-enroll gave a new `agent_id` (same incarnation)
+ * must never be handed the new install's rows.
  */
 export interface CommandClaimCaller extends CommandCallerIncarnation {
   deviceId: string;
+  agentId: string;
 }
 
 export async function claimPendingCommandsForDevice(
@@ -543,6 +546,13 @@ export async function claimPendingCommandsForDevice(
             // claimInSavepoint): the stamp equals the device's CURRENT
             // incarnation AND the caller's authenticated one.
             commandIncarnationAcceptedForCallerCondition(caller),
+            // #8318 §6.4: and the device still carries the agent_id the
+            // caller authenticated with, read in the same statement. An
+            // in-place F3 re-enroll changes `agent_id` WITHOUT advancing the
+            // incarnation, so the incarnation halves cannot see it; a row of
+            // a device that changed hands after auth stays `pending` for the
+            // install that now owns it (same check as the push flip).
+            sql`EXISTS (SELECT 1 FROM ${devices} WHERE ${devices.id} = ${deviceCommands.deviceId} AND ${devices.agentId} = ${caller.agentId})`,
           ),
         )
         .returning();

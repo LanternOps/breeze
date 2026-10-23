@@ -89,7 +89,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
 });
 
 import { getTestDb } from './setup';
-import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { createOrganization, createPartner, createSite, createUser, deviceAgentId } from './db-utils';
 import { withSystemDbAccessContext } from '../../db';
 import { deviceCommands, devices, organizations, partners } from '../../db/schema';
 import { isDeviceUninstallDraining } from '../../services/deviceUninstallDrain';
@@ -640,8 +640,8 @@ describe('#3986 overlap — a device Removed while its tenant is offboarding', (
     expect(await withSystemDbAccessContext(() => isDeviceUninstallDraining(device.id))).toBe(false);
 
     // Still genuinely deliverable on the tenant drain's narrowed claim.
-    const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', ['self_uninstall']),
+    const claimed = await withSystemDbAccessContext(async () =>
+      claimPendingCommandsForDevice({ deviceId: device.id, agentId: await deviceAgentId(device.id), installIncarnation: 1 }, 10, 'agent', ['self_uninstall']),
     );
     expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
     void tenant;

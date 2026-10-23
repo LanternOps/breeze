@@ -8,7 +8,7 @@ import { AGENT_TOKEN_SUSPEND_REASON } from '../../services/agentTokenSuspension'
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { beginOrganizationOffboarding } from '../../services/tenantOffboarding';
 import { getAgentTenantState, invalidateAgentTenantCache } from '../../services/tenantStatus';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 /**
@@ -123,8 +123,8 @@ describe('#2785 offboarding drain entered from a severed state', () => {
       //    allowlist routes/agents/commands.ts passes when tenantDraining) hands
       //    it over and CAS-flips it to `sent`. This is the end-to-end property;
       //    everything above is intermediate state.
-      const claimed = await withSystemDbAccessContext(() =>
-        claimPendingCommandsForDevice({ deviceId: stranded.id, installIncarnation: 1 }, 10, 'agent', ['self_uninstall'])
+      const claimed = await withSystemDbAccessContext(async () =>
+        claimPendingCommandsForDevice({ deviceId: stranded.id, agentId: await deviceAgentId(stranded.id), installIncarnation: 1 }, 10, 'agent', ['self_uninstall'])
       );
       expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
 
@@ -143,8 +143,8 @@ describe('#2785 offboarding drain entered from a severed state', () => {
     await beginOrganizationOffboarding(org.id, null);
 
     expect((await readSuspension(stranded.id)).suspendedAt).toBeNull();
-    const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice({ deviceId: stranded.id, installIncarnation: 1 }, 10, 'agent', ['self_uninstall'])
+    const claimed = await withSystemDbAccessContext(async () =>
+      claimPendingCommandsForDevice({ deviceId: stranded.id, agentId: await deviceAgentId(stranded.id), installIncarnation: 1 }, 10, 'agent', ['self_uninstall'])
     );
     expect(claimed.map((row) => row.type)).toEqual(['self_uninstall']);
   });

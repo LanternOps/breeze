@@ -32,7 +32,7 @@ import {
 } from '../../services/unassignedPool/deliveryEligibility';
 import { isAgentDeviceStillAuthorized } from '../../routes/agentWs';
 import { processPamActuationEvent } from '../../jobs/pamActuationWorker';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 import { insertDevice, seedHoldingOrg, seedParkedDevice } from './unassignedPoolFixtures';
 
@@ -178,8 +178,8 @@ describe('command delivery to a parked device (real Postgres)', () => {
 
     // Exactly the call routes/agents/heartbeatParked.ts and the command poll
     // make for a parked agent: system context, the removal allowlist.
-    const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice({ deviceId: parked.id, installIncarnation: 1 }, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
+    const claimed = await withSystemDbAccessContext(async () =>
+      claimPendingCommandsForDevice({ deviceId: parked.id, agentId: await deviceAgentId(parked.id), installIncarnation: 1 }, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([uninstall]);
@@ -194,8 +194,8 @@ describe('command delivery to a parked device (real Postgres)', () => {
     const inventory = await pending(parked.id, 'refresh_inventory');
     const uninstall = await pending(parked.id, 'self_uninstall');
 
-    const claimed = await withDbAccessContext(agentContext(pool.orgId, partnerId), () =>
-      claimPendingCommandsForDevice({ deviceId: parked.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+    const claimed = await withDbAccessContext(agentContext(pool.orgId, partnerId), async () =>
+      claimPendingCommandsForDevice({ deviceId: parked.id, agentId: await deviceAgentId(parked.id), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([uninstall]);
@@ -204,8 +204,8 @@ describe('command delivery to a parked device (real Postgres)', () => {
 
   it('a drain allowlist on a device in a customer org still leaves other work pending', async () => {
     const inventory = await pending(control.id, 'refresh_inventory');
-    const claimed = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice({ deviceId: control.id, installIncarnation: 1 }, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
+    const claimed = await withSystemDbAccessContext(async () =>
+      claimPendingCommandsForDevice({ deviceId: control.id, agentId: await deviceAgentId(control.id), installIncarnation: 1 }, 10, 'agent', DRAIN_CLAIM_TYPE_ALLOWLIST, { ...AGENT_CAPS }),
     );
     expect(claimed).toEqual([]);
     expect((await commandRow(inventory)).status).toBe('pending');
@@ -214,8 +214,8 @@ describe('command delivery to a parked device (real Postgres)', () => {
   it('the batch claim leaves a device in a customer org unaffected', async () => {
     const inventory = await pending(control.id, 'refresh_inventory');
 
-    const claimed = await withDbAccessContext(agentContext(customerOrgId, partnerId), () =>
-      claimPendingCommandsForDevice({ deviceId: control.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+    const claimed = await withDbAccessContext(agentContext(customerOrgId, partnerId), async () =>
+      claimPendingCommandsForDevice({ deviceId: control.id, agentId: await deviceAgentId(control.id), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
     );
 
     expect(claimed.map((c) => c.id)).toEqual([inventory]);

@@ -19,7 +19,8 @@
  *    audit, and an identity change that starts while a beat holds the row
  *    waits for it;
  *  - a claim by a caller authenticated under incarnation n never takes a row
- *    stamped n+1, and a result from it is refused on both transports;
+ *    stamped n+1, nor one whose row an in-place re-enroll gave a new agent_id
+ *    after auth, and a result from it is refused on both transports;
  *  - the server push addresses the agent_id read IN the claim, and its flip
  *    re-checks that agent_id (an in-place re-enroll in between: no flip);
  *  - the WS lease re-check reports `identity_changed` (a 4040 reconnect, not
@@ -528,7 +529,7 @@ describe('a caller authenticated under incarnation n after the device moved to n
     expect((await commandRow(newRow)).deviceIncarnation).toBe(2);
 
     const staleClaim = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice({ deviceId: device.deviceId, installIncarnation: 1 }, 10, 'agent'),
+      claimPendingCommandsForDevice({ deviceId: device.deviceId, agentId: device.agentId, installIncarnation: 1 }, 10, 'agent'),
     );
     expect(staleClaim).toEqual([]);
     expect((await commandRow(newRow)).status).toBe('pending');
@@ -536,10 +537,37 @@ describe('a caller authenticated under incarnation n after the device moved to n
 
     // The new install (authenticated as newAgentId under incarnation 2) gets it.
     const freshClaim = await withSystemDbAccessContext(() =>
-      claimPendingCommandsForDevice({ deviceId: device.deviceId, installIncarnation: 2 }, 10, 'agent'),
+      claimPendingCommandsForDevice({ deviceId: device.deviceId, agentId: newAgentId, installIncarnation: 2 }, 10, 'agent'),
     );
     expect(freshClaim.map((c) => c.id)).toEqual([newRow]);
     expect(newAgentId).toMatch(/^reattached-/);
+  });
+
+  // Review of wave 1b-1 (nice-to-have a): the batch claim (beat, drain, REST
+  // poll) re-checks the caller's agent_id in its flip, like the push flip. An
+  // in-place F3 re-enroll changes agent_id WITHOUT advancing the incarnation,
+  // so the incarnation halves alone would hand the new install's rows to the
+  // old one.
+  runDb('a claim by a caller whose row was re-enrolled in place after auth (same incarnation) takes nothing; the row stays pending', async () => {
+    const device = await fixture();
+    const reenrolledAgentId = `reenrolled-${randomUUID()}`;
+    await getTestDb().update(devices).set({ agentId: reenrolledAgentId }).where(eq(devices.id, device.deviceId));
+    const commandId = await insertCommand(device.deviceId); // stamped 1: the incarnation did not move
+    expect((await commandRow(commandId)).deviceIncarnation).toBe(1);
+
+    const staleClaim = await withSystemDbAccessContext(() =>
+      claimPendingCommandsForDevice({ deviceId: device.deviceId, agentId: device.agentId, installIncarnation: 1 }, 10, 'agent'),
+    );
+    expect(staleClaim).toEqual([]);
+    const row = await commandRow(commandId);
+    expect(row.status).toBe('pending');
+    expect(row.executedAt).toBeNull();
+
+    // The re-enrolled install (its agent_id, the same incarnation) takes it.
+    const freshClaim = await withSystemDbAccessContext(() =>
+      claimPendingCommandsForDevice({ deviceId: device.deviceId, agentId: reenrolledAgentId, installIncarnation: 1 }, 10, 'agent'),
+    );
+    expect(freshClaim.map((c) => c.id)).toEqual([commandId]);
   });
 
   runDb('its REST result for a row stamped n+1 is refused; the new install\'s is recorded', async () => {

@@ -931,7 +931,7 @@ describe('agent commands routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined);
     await expect(res.json()).resolves.toEqual({
       commands: [
         {
@@ -971,7 +971,7 @@ describe('agent commands routes', () => {
 
     expect(res.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      { deviceId: 'device-1', installIncarnation: 1 },
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall']
@@ -1850,7 +1850,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     });
 
     expect(res.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });

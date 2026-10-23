@@ -7361,7 +7361,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'watchdog', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', undefined);
     const body = (await resp.json()) as { commands: Array<{ id: string }> };
     expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
     expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-bad', claimedAt);
@@ -7402,7 +7402,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      { deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', undefined,
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined,
       { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
     );
   });
@@ -7438,7 +7438,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
 
     expect(resp.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      { deviceId: 'device-1', installIncarnation: 1 },
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall'],
@@ -7586,7 +7586,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'watchdog', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', [
       'self_uninstall',
     ]);
   });
@@ -7940,7 +7940,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     await drainBeat();
 
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });
@@ -8968,7 +8968,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       await parkedBeat(role);
 
       expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', installIncarnation: 1 }, 10, role, ['self_uninstall']);
+      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, role, ['self_uninstall']);
     });
 
     it(`${role}: runs no ingest, config, upgrade, policy or trust resolution`, async () => {

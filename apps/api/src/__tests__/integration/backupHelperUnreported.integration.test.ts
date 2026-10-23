@@ -64,7 +64,7 @@ import { BACKUP_HELPER_UNREPORTED_DEFERRAL_MESSAGE } from '../../services/backup
 import { prepareClaimedCommandsForDelivery } from '../../services/commandDelivery';
 import { claimPendingCommandsForDevice } from '../../services/commandDispatch';
 import { WRITE_DESTINATION } from './backupWriteFixtures';
-import { createOrganization, createPartner, createSite } from './db-utils';
+import { createOrganization, createPartner, createSite, deviceAgentId } from './db-utils';
 import { getTestDb } from './setup';
 
 const HELPER_REPORTS_BROKERED = {
@@ -285,7 +285,7 @@ describe('backups started before a new device reports its backup helper', () => 
     // The command poll carries no helper report: the stored NULL decides.
     const polled = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () =>
-        prepareClaimedCommandsForDelivery(await claimPendingCommandsForDevice({ deviceId: t.deviceId, installIncarnation: 1 }, 10, 'agent'))),
+        prepareClaimedCommandsForDelivery(await claimPendingCommandsForDevice({ deviceId: t.deviceId, agentId: await deviceAgentId(t.deviceId), installIncarnation: 1 }, 10, 'agent'))),
     );
     expect(polled).toEqual([]);
     const [row] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, commandId));

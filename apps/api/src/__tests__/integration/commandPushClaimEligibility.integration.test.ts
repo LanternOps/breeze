@@ -15,6 +15,7 @@ import {
   createRole,
   createSite,
   createUser,
+  deviceAgentId,
 } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -215,8 +216,8 @@ describe('WebSocket push claim — same claim-time eligibility as the heartbeat 
       const starter = await partnerTech('disabled');
       const cmd = await queue(device.id, org.id, starter.id, 'desktop_stream_stop', stopPayload());
 
-      const claimed = await withDbAccessContext(agentContext(), () =>
-        claimPendingCommandsForDevice({ deviceId: device.id, installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
+      const claimed = await withDbAccessContext(agentContext(), async () =>
+        claimPendingCommandsForDevice({ deviceId: device.id, agentId: await deviceAgentId(device.id), installIncarnation: 1 }, 10, 'agent', undefined, { ...AGENT_CAPS }),
       );
 
       expect(claimed.map((c) => c.id)).toEqual([cmd.id]);
