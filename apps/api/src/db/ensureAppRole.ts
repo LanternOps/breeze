@@ -413,7 +413,7 @@ export async function ensureAppRole(): Promise<boolean> {
           REVOKE TRUNCATE ON TABLE ai_budget_reservations FROM breeze_app;
           REVOKE TRUNCATE ON TABLE ai_budget_reservations FROM PUBLIC;
         END IF;
-        -- ai_credit_debits (#9451, 2027-01-02-140000): the durable debit
+        -- ai_credit_debits (#9451, 2027-01-02-180000): the durable debit
         -- outbox. TRUNCATE would wipe owed debits with no per-row trace; the
         -- blanket GRANT in step 4 does not grant it, but re-revoke it on every
         -- boot like the other append-only tables (#4371).
