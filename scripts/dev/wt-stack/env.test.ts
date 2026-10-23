@@ -205,6 +205,33 @@ describe('pinWebAuthnForStack', () => {
     expect(readStackEnvValue(dir, 'WEBAUTHN_ORIGIN')).toBe('http://localhost:55002');
   });
 
+  // #9777 — compose defaults these to https://${BREEZE_DOMAIN}..., and
+  // BREEZE_DOMAIN is empty on a local stack (=> `https:///portal`).
+  it('pins the public URLs to the caddy base URL', () => {
+    writeEnvStack(dir);
+    pinWebAuthnForStack(dir, 'http://localhost:55001', fakeDeps().deps);
+    expect(readStackEnvValue(dir, 'PUBLIC_PORTAL_URL')).toBe('http://localhost:55001/portal');
+    expect(readStackEnvValue(dir, 'PUBLIC_APP_URL')).toBe('http://localhost:55001');
+    expect(readStackEnvValue(dir, 'PUBLIC_API_URL')).toBe('http://localhost:55001');
+    expect(readStackEnvValue(dir, 'DASHBOARD_URL')).toBe('http://localhost:55001');
+  });
+
+  it('keeps the public URLs across a rewrite and re-pins on a new port', () => {
+    writeEnvStack(dir);
+    pinWebAuthnForStack(dir, 'http://localhost:55001', fakeDeps().deps);
+    writeEnvStack(dir);
+    expect(readStackEnvValue(dir, 'PUBLIC_PORTAL_URL')).toBe('http://localhost:55001/portal');
+    pinWebAuthnForStack(dir, 'http://localhost:55002', fakeDeps().deps);
+    expect(readStackEnvValue(dir, 'PUBLIC_PORTAL_URL')).toBe('http://localhost:55002/portal');
+  });
+
+  it('does not clobber a tunnel stack PUBLIC_PORTAL_URL', () => {
+    writeEnvStack(dir);
+    setStackEnvValues(dir, { TUNNEL_ORIGIN_TEMPLATE: 'https://{host}.tunnel.example', PUBLIC_PORTAL_URL: 'https://portal.tunnel.example/portal' });
+    pinWebAuthnForStack(dir, 'http://localhost:55001', fakeDeps().deps);
+    expect(readStackEnvValue(dir, 'PUBLIC_PORTAL_URL')).toBe('https://portal.tunnel.example/portal');
+  });
+
   it('overrides a root .env WEBAUTHN_RP_ID and origin for the local stack', () => {
     writeFileSync(path.join(dir, '.env'), 'WEBAUTHN_RP_ID=prod.example.com\nWEBAUTHN_ORIGIN=https://prod.example.com\n');
     writeEnvStack(dir);

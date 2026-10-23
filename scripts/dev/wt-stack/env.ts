@@ -119,6 +119,8 @@ const RUNTIME_KEYS = [
   // default (no host), so dropping it on a re-up would leave api unbootable.
   'TUNNEL_ORIGIN_TEMPLATE', 'TUNNEL_FRAME_ANCESTOR', 'TUNNEL_SITE_ADDRESS', 'TUNNEL_HOST_SUFFIX',
   'PUBLIC_PORTAL_URL',
+  // #9777 — public URLs pinned to the stack's caddy base URL (see pinWebAuthnForStack).
+  'PUBLIC_APP_URL', 'PUBLIC_API_URL', 'DASHBOARD_URL',
 ] as const;
 
 /**
@@ -215,7 +217,21 @@ export function pinWebAuthnForStack(
   baseUrl: string,
   deps: { recreateApi: () => void; waitApiHealthy: () => void },
 ): boolean {
-  const wanted = { WEBAUTHN_ORIGIN: baseUrl, WEBAUTHN_RP_ID: new URL(baseUrl).hostname };
+  const wanted: Record<string, string> = {
+    WEBAUTHN_ORIGIN: baseUrl,
+    WEBAUTHN_RP_ID: new URL(baseUrl).hostname,
+    // #9777 — BREEZE_DOMAIN is empty on a local stack, so compose would default
+    // these to `https://` / `https:///portal`. Every customer-facing link the
+    // API mints (quote accept, invoice mail, Stripe returns, portal invites)
+    // derives from them. Same shape as prod: no /api suffix, portal under /portal.
+    PUBLIC_APP_URL: baseUrl,
+    PUBLIC_API_URL: baseUrl,
+    DASHBOARD_URL: baseUrl,
+  };
+  // A Network Proxy tunnel stack (#8155) sets its own PUBLIC_PORTAL_URL; keep it.
+  if (!readStackEnvValue(worktreePath, 'TUNNEL_ORIGIN_TEMPLATE')) {
+    wanted.PUBLIC_PORTAL_URL = `${baseUrl}/portal`;
+  }
   const stale = Object.entries(wanted).some(([k, v]) => readStackEnvValue(worktreePath, k) !== v);
   if (!stale) return false;
   setStackEnvValues(worktreePath, wanted);
