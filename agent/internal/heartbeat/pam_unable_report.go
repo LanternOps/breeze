@@ -80,7 +80,7 @@ func (h *Heartbeat) reportPamUnable(requestID string, unable *pamUnable) {
 				log.Error("pam: panic while reporting an unable elevation", "elevationRequestId", requestID, "panic", r)
 			}
 		}()
-		if err := h.deliverPamUnable(requestID, u, pamUnableReportWindow, pamUnableRetryDelays, time.Sleep, time.Now); err != nil {
+		if err := h.deliverPamUnable(requestID, u, pamUnableReportWindow, pamUnableRetryDelays, h.waitBeforePamUnableRetry, time.Now); err != nil {
 			log.Warn("pam: could not report the elevation as unable; the server will expire it after its pending TTL",
 				"elevationRequestId", requestID, "reason", u.Reason, "error", err.Error())
 			return
@@ -89,11 +89,34 @@ func (h *Heartbeat) reportPamUnable(requestID string, unable *pamUnable) {
 	}()
 }
 
+func (h *Heartbeat) waitBeforePamUnableRetry(delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-h.stopChan:
+	case <-timer.C:
+	}
+}
+
 // deliverPamUnable sends the report, retrying transient failures until window
 // elapses. sleep and now are injected for tests.
 func (h *Heartbeat) deliverPamUnable(requestID string, u pamUnable, window time.Duration, delays []time.Duration, sleep func(time.Duration), now func() time.Time) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-h.stopChan:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	deadline := now().Add(window)
 	for attempt := 0; ; attempt++ {
+		select {
+		case <-h.stopChan:
+			return context.Canceled
+		default:
+		}
 		// An attempt never runs past the window: its timeout is the shorter
 		// of the per-attempt bound and the time left.
 		attemptTimeout := pamUnableReportAttemptTimeout
@@ -103,9 +126,12 @@ func (h *Heartbeat) deliverPamUnable(requestID string, u pamUnable, window time.
 		if attemptTimeout <= 0 {
 			return fmt.Errorf("giving up after %d attempts: report window spent", attempt)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
-		err := h.sendPamElevationUnable(ctx, requestID, u)
-		cancel()
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
+		err := h.sendPamElevationUnable(attemptCtx, requestID, u)
+		attemptCancel()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err == nil {
 			return nil
 		}

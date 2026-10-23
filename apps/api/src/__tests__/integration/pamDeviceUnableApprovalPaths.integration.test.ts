@@ -264,6 +264,36 @@ describe.skipIf(!RUN)('device-unable elevations cannot be approved (#9517)', () 
     expect(after.elevation.approvedBy).toBeNull();
   });
 
+  it('only one of a concurrent device-unable report and web approval wins', async () => {
+    const s = await seedScenario();
+    const { elevationId } = await seedElevation(s, [s.approverA]);
+
+    const [report, approval] = await Promise.all([
+      reportUnable(s, elevationId),
+      respondOnWeb(s, elevationId),
+    ]);
+
+    const [row] = await withSystemDbAccessContext(() =>
+      db.select().from(elevationRequests).where(eq(elevationRequests.id, elevationId)),
+    );
+    expect(row!.deviceUnableAt).not.toBeNull();
+    expect(row!.deviceUnableReason).toBe('session_unavailable');
+    expect(row!.deviceUnableDetail).toBe('session 3 cannot host a SYSTEM helper (not active or connected)');
+    if (row!.status === 'expired') {
+      expect(report).toMatchObject({ kind: 'recorded', priorStatus: 'pending', status: 'expired', closed: true });
+      expect(row!.expiredAt).not.toBeNull();
+      expect(row!.approvedByUserId).toBeNull();
+      expect(approval.status).toBe(409);
+      await expect(approval.json()).resolves.toMatchObject({ error: 'Request is not pending (current status: expired)' });
+    } else {
+      expect(row!.status).toBe('approved');
+      expect(report).toMatchObject({ kind: 'recorded', priorStatus: 'approved', status: 'approved', closed: false });
+      expect(row!.expiredAt).toBeNull();
+      expect(row!.approvedByUserId).toBe(s.webDecider.id);
+      expect(approval.status).toBe(200);
+    }
+  });
+
   it('a phone approval of a request the device reported unable loses the race and expires', async () => {
     const s = await seedScenario();
     const { elevationId, approvalIds } = await seedElevation(s, [s.approverA, s.approverB]);
