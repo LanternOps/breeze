@@ -83,9 +83,9 @@ func extractArchive(zipPath, destDir string) error {
 			return fmt.Errorf("archive entry %q is not a regular file or directory (%s)", f.Name, mode.Type())
 		}
 
-		target := filepath.Join(root, filepath.FromSlash(rel))
-		if within, err := filepath.Rel(root, target); err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("archive entry %q escapes the extraction dir", f.Name)
+		target, err := archiveEntryTarget(root, rel)
+		if err != nil {
+			return err
 		}
 
 		if isDir {
@@ -108,6 +108,29 @@ func extractArchive(zipPath, destDir string) error {
 		remaining -= written
 	}
 	return nil
+}
+
+// archiveEntryTarget joins a validated entry path onto root (an absolute,
+// clean directory) and returns the result only if it is strictly inside root.
+// It is a backstop behind safeArchiveEntryPath. The positive
+// strings.HasPrefix guard on the returned path is deliberate: CodeQL's
+// go/zipslip query accepts it as proof of containment for every file-system
+// call made with the result. A filepath.Rel check that refuses on a ".."
+// prefix does not satisfy that query.
+func archiveEntryTarget(root, rel string) (string, error) {
+	local := filepath.FromSlash(rel)
+	if filepath.IsAbs(local) || filepath.VolumeName(local) != "" {
+		return "", fmt.Errorf("archive entry %q is absolute", rel)
+	}
+	prefix := root
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	target := filepath.Join(root, local)
+	if !strings.HasPrefix(target, prefix) {
+		return "", fmt.Errorf("archive entry %q escapes the extraction dir", rel)
+	}
+	return target, nil
 }
 
 // extractArchiveFile writes one entry with O_EXCL (never replacing an existing

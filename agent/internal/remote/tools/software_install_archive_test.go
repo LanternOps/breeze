@@ -342,3 +342,42 @@ func TestInstallSoftwareZipRequiresPostInstallScript(t *testing.T) {
 		})
 	}
 }
+
+// The containment check is the last line of defence behind
+// safeArchiveEntryPath, which refuses these names first, so they never reach
+// it through extractArchive. Test it on its own.
+func TestArchiveEntryTarget_RefusesEscapes(t *testing.T) {
+	root := t.TempDir()
+	abs := "/etc/passwd"
+	if runtime.GOOS == "windows" {
+		abs = `C:\Windows\evil`
+	}
+	for _, rel := range []string{"..", "../evil", "a/../../evil", abs} {
+		if target, err := archiveEntryTarget(root, rel); err == nil {
+			t.Errorf("archiveEntryTarget(%q) = %q, want refusal", rel, target)
+		}
+	}
+	got, err := archiveEntryTarget(root, "dist/bin/tool")
+	if err != nil {
+		t.Fatalf("nested entry refused: %v", err)
+	}
+	if want := filepath.Join(root, "dist", "bin", "tool"); got != want {
+		t.Fatalf("target = %q, want %q", got, want)
+	}
+}
+
+// A filesystem-root extraction dir already ends in a separator; appending
+// another must not make every entry look like an escape.
+func TestArchiveEntryTarget_RootEndingInSeparator(t *testing.T) {
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	got, err := archiveEntryTarget(root, "a")
+	if err != nil {
+		t.Fatalf("entry under %q refused: %v", root, err)
+	}
+	if want := filepath.Join(root, "a"); got != want {
+		t.Fatalf("target = %q, want %q", got, want)
+	}
+}
