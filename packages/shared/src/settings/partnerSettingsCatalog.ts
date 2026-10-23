@@ -128,7 +128,10 @@ export interface InheritanceFieldDto {
   /** The partner value is in force now (differs from partnerSet only for 'conditional'). */
   inForce: boolean;
   platformDefault: unknown;
-  counts: InheritanceCounts;
+  /** True when the field is sealed at rest: values are presence-only and `counts.overrides` is null. (Not named `secret`: `isSecretJsonPath` treats that key name as a sealed value.) */
+  sealed: boolean;
+  /** `null` when the field has no org-level value to count (partner-only or unclassified), never zeros. */
+  counts: InheritanceCounts | null;
   byConsumer?: { consumerId: string; counts: InheritanceCounts }[];
 }
 

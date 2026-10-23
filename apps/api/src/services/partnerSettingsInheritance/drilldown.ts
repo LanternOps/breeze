@@ -36,7 +36,8 @@ import { classifyChannel, classifyOrg, type ChannelRaw } from './classify';
 
 export const DRILLDOWN_MAX_LIMIT = 50;
 
-const cursorSchema = z.tuple([z.string().max(1024), z.string().uuid()]);
+// PostgreSQL rejects NUL in a text parameter; refuse it here as a bad cursor.
+const cursorSchema = z.tuple([z.string().max(1024).refine((s) => !s.includes('\u0000')), z.string().uuid()]);
 type Cursor = z.infer<typeof cursorSchema>;
 
 /** Opaque base64url of `[lower(name), id]`. */

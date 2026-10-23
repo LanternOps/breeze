@@ -49,7 +49,7 @@ beforeEach(() => {
   state.executeCalls = [];
   state.selectCalls = [];
   state.partnerRows = [{ settings: { security: { requireMfa: true } }, orgCount: 3 }];
-  state.executeRows = [{ c0: 1, c1: 0, c2: 1 }];
+  state.executeRows = [Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`c${i}`, 1]))];
 });
 
 describe('aggregateTab', () => {
@@ -81,28 +81,62 @@ describe('aggregateTab', () => {
     for (const entry of catalogForTab('aiBudgets')) expect(text).not.toContain(entry.id);
   });
 
-  it('maps positional counts back to fields, null overrides for secret fields', async () => {
+  it('maps each positional alias back to its own (field, bucket)', async () => {
     state.partnerRows = [{ settings: {}, orgCount: 4 }];
-    state.executeRows = [Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`c${i}`, 2]))];
+    // Distinct value per alias: a swapped or off-by-one mapping changes the result.
+    state.executeRows = [Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`c${i}`, 100 + i]))];
     const dto = await aggregateTab('notifications', { partnerId: 'p1', accessibleOrgIds: orgIds(4) });
     expect(dto.orgCount).toBe(4);
+    // Recover the alias order from the compiled SQL: `bool_or(...) AS "cN"` in field, bucket order.
+    const { sql: text } = compile(state.executeCalls[0]);
+    const aliases = [...text.matchAll(/AS "(c\d+)"/g)].map((m) => m[1]!);
+    const expected: Record<string, unknown> = {};
+    let i = 0;
+    for (const entry of catalogForTab('notifications')) {
+      const binding = BINDINGS[entry.id]!;
+      if (!binding.orgSource) continue;
+      const counts: Record<string, number | null> = { ownValue: 0, overrides: entry.secret ? null : 0, shadowed: 0 };
+      for (const bucket of ['ownValue', 'overrides', 'shadowed', 'clamped'] as const) {
+        if (!binding.bucketSql(bucket, {})) continue;
+        counts[bucket] = 100 + Number(aliases[i++]!.slice(1));
+      }
+      expected[entry.id] = counts;
+    }
+    for (const [id, counts] of Object.entries(expected)) {
+      expect(dto.fields.find((f) => f.id === id)!.counts, id).toEqual(counts);
+    }
     const token = dto.fields.find((f) => f.id === 'notifications.pushoverAppToken')!;
-    expect(token.counts).toEqual({ ownValue: 2, overrides: null, shadowed: 2 });
+    expect(token.counts!.overrides).toBeNull();
+    expect(token.sealed).toBe(true);
+  });
+
+  it('fields without an org source report counts: null, not zeros', async () => {
+    const dto = await aggregateTab('notifications', { partnerId: 'p1', accessibleOrgIds: orgIds(4) });
     const unclassified = dto.fields.find((f) => f.id === 'notifications.fromAddress')!;
-    expect(unclassified.counts).toEqual({ ownValue: 0, overrides: 0, shadowed: 0 });
+    expect(unclassified.counts).toBeNull();
+    const regional = await aggregateTab('regional', { partnerId: 'p1', accessibleOrgIds: orgIds(4) });
+    for (const field of regional.fields) expect(field.counts, field.id).toBeNull();
+  });
+
+  it('a missing aggregate row or alias is an error, not a zero', async () => {
+    state.executeRows = [];
+    await expect(aggregateTab('security', { partnerId: 'p1', accessibleOrgIds: orgIds(2) })).rejects.toThrow(/aggregate/);
+    state.executeRows = [{ c0: 1 }];
+    await expect(aggregateTab('security', { partnerId: 'p1', accessibleOrgIds: orgIds(2) })).rejects.toThrow(/aggregate/);
   });
 
   it('reports clamped only for cap fields', async () => {
     state.executeRows = [Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`c${i}`, 1]))];
     const dto = await aggregateTab('defaults', { partnerId: 'p1', accessibleOrgIds: orgIds(2) });
     for (const field of dto.fields) {
-      expect('clamped' in field.counts, field.id).toBe(field.qualifier === 'cap');
+      if (field.counts) expect('clamped' in field.counts, field.id).toBe(field.qualifier === 'cap');
     }
   });
 
   it('empty accessible ids still answer, with a predicate that matches nothing', async () => {
     await aggregateTab('security', { partnerId: 'p1', accessibleOrgIds: [] });
-    for (const query of state.executeCalls) expect(compile(query).sql).toContain('false');
+    expect(state.executeCalls.length).toBeGreaterThan(0);
+    for (const query of state.executeCalls) expect(compile(query).sql).toMatch(/WHERE\s+false\s*$/);
   });
 
   it('a null accessibleOrgIds throws instead of meaning "all orgs"', async () => {

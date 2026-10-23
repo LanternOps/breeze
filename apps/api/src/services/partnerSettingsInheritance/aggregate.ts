@@ -29,7 +29,7 @@ import { aiBudgets } from '../../db/schema/ai';
 import { portalBranding } from '../../db/schema/portal';
 import { notificationChannelConfigs, notificationChannels } from '../../db/schema/alerts';
 import { partnerVisibleOrgConditions } from '../partnerVisibleOrgs';
-import { BINDINGS, type Bucket, type OrgSourceKind } from './bindings';
+import { BINDINGS, BUCKETS, type Bucket, type OrgSourceKind } from './bindings';
 
 export interface InheritanceContext {
   partnerId: string;
@@ -79,7 +79,8 @@ export async function readPartnerSettings(
     .where(eq(partners.id, ctx.partnerId))
     .limit(1);
   if (!row) throw new InheritanceNotFound('Partner not found');
-  return { settings: row.settings ?? {}, orgCount: Number(row.orgCount ?? 0) };
+  if (row.orgCount === null || row.orgCount === undefined) throw new Error('partner settings org count is missing');
+  return { settings: row.settings ?? {}, orgCount: Number(row.orgCount) };
 }
 
 /** `FROM` clause per org-source kind: one row per visible org. */
@@ -156,7 +157,7 @@ export async function aggregateTab(tab: CatalogTabKey, ctx: InheritanceContext):
   for (const entry of entries) {
     const binding = BINDINGS[entry.id]!;
     if (!binding.orgSource) continue;
-    for (const bucket of ['ownValue', 'overrides', 'shadowed', 'clamped'] as const) {
+    for (const bucket of BUCKETS) {
       const predicate = binding.bucketSql(bucket, partnerSettings);
       if (!predicate) continue;
       const slots = byKind.get(binding.orgSource.kind) ?? [];
@@ -165,12 +166,20 @@ export async function aggregateTab(tab: CatalogTabKey, ctx: InheritanceContext):
     }
   }
 
-  const counts = new Map(entries.map((entry) => [entry.id, zeroCounts(entry)]));
+  // Only fields with an org source have counts; the rest report `null`, never zeros.
+  const counts = new Map(
+    entries.filter((entry) => BINDINGS[entry.id]!.orgSource).map((entry) => [entry.id, zeroCounts(entry)]),
+  );
   for (const [kind, slots] of byKind) {
     const rows = (await db.execute(aggregateQuery(kind, slots, visible))) as unknown as Record<string, unknown>[];
-    const row = rows[0] ?? {};
+    // An aggregate without GROUP BY always returns exactly one row with every
+    // alias; anything else is a fault, never "zero orgs".
+    if (rows.length !== 1) throw new Error(`partner settings aggregate returned ${rows.length} rows for ${kind}`);
+    const row = rows[0]!;
     for (const slot of slots) {
-      const value = Number(row[slot.alias] ?? 0);
+      const raw = row[slot.alias];
+      if (raw === undefined || raw === null) throw new Error(`partner settings aggregate is missing ${slot.alias}`);
+      const value = Number(raw);
       const fieldCounts = counts.get(slot.fieldId)!;
       if (slot.bucket === 'overrides') fieldCounts.overrides = value;
       else if (slot.bucket === 'clamped') fieldCounts.clamped = value;
@@ -186,7 +195,8 @@ export async function aggregateTab(tab: CatalogTabKey, ctx: InheritanceContext):
       partnerSet: binding.partnerSet(partnerSettings),
       inForce: binding.inForce(partnerSettings),
       platformDefault: entry.platformDefault ?? null,
-      counts: counts.get(entry.id)!,
+      sealed: entry.secret,
+      counts: counts.get(entry.id) ?? null,
     };
     if (entry.qualifier) dto.qualifier = entry.qualifier;
     return dto;

@@ -93,6 +93,21 @@ describe('partner settings inheritance bindings', () => {
     }
   });
 
+  it('a bucket applies only to the kinds it describes', () => {
+    for (const entry of PARTNER_SETTINGS_CATALOG.filter((e) => BINDINGS[e.id]!.orgSource !== null)) {
+      const binding = BINDINGS[entry.id]!;
+      expect(binding.bucketSql('ownValue', PARTNER_ALL_SET), entry.id).not.toBeNull();
+      expect(binding.bucketSql('shadowed', PARTNER_ALL_SET) !== null, entry.id).toBe(entry.kind === 'locks');
+      expect(binding.bucketSql('overrides', PARTNER_ALL_SET) !== null, entry.id).toBe(entry.kind === 'overridable' && !entry.secret);
+    }
+  });
+
+  it('every cap field can say whether an org value is clamped', () => {
+    for (const entry of PARTNER_SETTINGS_CATALOG.filter((e) => e.qualifier === 'cap')) {
+      expect(typeof BINDINGS[entry.id]!.clamped, entry.id).toBe('function');
+    }
+  });
+
   it('entries without an org source compute no bucket', () => {
     for (const entry of PARTNER_SETTINGS_CATALOG.filter((e) => BINDINGS[e.id]!.orgSource === null)) {
       for (const bucket of BUCKETS) expect(BINDINGS[entry.id]!.bucketSql(bucket, PARTNER_ALL_SET), `${entry.id}/${bucket}`).toBeNull();

@@ -62,8 +62,8 @@ export type OrgSource =
 
 export type OrgSourceKind = NonNullable<OrgSource>['kind'];
 
-export type Bucket = 'ownValue' | 'overrides' | 'shadowed' | 'clamped';
-export const BUCKETS: readonly Bucket[] = Object.freeze(['ownValue', 'overrides', 'shadowed', 'clamped']);
+export const BUCKETS = Object.freeze(['ownValue', 'overrides', 'shadowed', 'clamped'] as const);
+export type Bucket = (typeof BUCKETS)[number];
 
 export interface FieldBinding {
   id: string;
@@ -230,13 +230,13 @@ function build(entry: CatalogEntry, spec: BuildSpec): FieldBinding {
         case 'overrides':
           // Equality is not computable on sealed values (random IVs).
           if (entry.secret) return null;
-          // Only an org value the resolver lets win can override.
-          if (entry.kind !== 'overridable') return sql`false`;
+          // Only an org value the resolver lets win can override: not a bucket of a lock.
+          if (entry.kind !== 'overridable') return null;
           if (!spec.partnerSet(partnerSettings)) return sql`false`;
           return and(spec.ownSql, distinctFromSql(spec.valueSql, spec.partnerValue(partnerSettings)));
         case 'shadowed':
-          // Only a partner value that wins over the org's can shadow it.
-          if (entry.kind !== 'locks') return sql`false`;
+          // Only a partner value that wins over the org's can shadow it: not a bucket of an override.
+          if (entry.kind !== 'locks') return null;
           return inForce(partnerSettings) ? spec.ownSql : sql`false`;
         case 'clamped':
           if (entry.qualifier !== 'cap' || !capOf) return null;
@@ -534,8 +534,17 @@ function bindingFor(entry: CatalogEntry): FieldBinding {
   }
 }
 
+function checkedBindingFor(entry: CatalogEntry): FieldBinding {
+  const binding = bindingFor(entry);
+  // A cap field without a clamp test would silently report every org unclamped.
+  if (entry.qualifier === 'cap' && binding.orgSource && !binding.clamped) {
+    throw new Error(`partner settings cap field has no clamp test: ${entry.id}`);
+  }
+  return binding;
+}
+
 export const BINDINGS: Readonly<Record<string, FieldBinding>> = Object.freeze(
-  Object.fromEntries(PARTNER_SETTINGS_CATALOG.map((entry) => [entry.id, bindingFor(entry)])),
+  Object.fromEntries(PARTNER_SETTINGS_CATALOG.map((entry) => [entry.id, checkedBindingFor(entry)])),
 );
 
 /** The table a table-column org source joins (one row per org). */

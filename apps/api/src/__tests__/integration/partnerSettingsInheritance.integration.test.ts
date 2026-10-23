@@ -58,7 +58,7 @@ import { applyPartnerPushoverDefaults, readPartnerPushoverDefaults } from '../..
 import type { PushoverConfig } from '../../services/notificationSenders';
 import { BINDINGS, BUCKETS, presentAt, type Bucket, type PushoverConfigKey } from '../../services/partnerSettingsInheritance/bindings';
 import { classifyOrg, type ChannelRaw } from '../../services/partnerSettingsInheritance/classify';
-import { createOrganization, createRole, grantRolePermissions, setupTestEnvironment, assignUserToPartner, createUser } from './db-utils';
+import { assignUserToOrganization, assignUserToPartner, createOrganization, createRole, createUser, grantRolePermissions, setupTestEnvironment } from './db-utils';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -251,13 +251,9 @@ async function getAllRows(token: string, field: string, bucket: Bucket, limit = 
 
 const FIELDS_WITH_SOURCE = PARTNER_SETTINGS_CATALOG.filter((e) => BINDINGS[e.id]!.orgSource !== null);
 
+/** The buckets that apply to a field (the drill-down answers 400 for the rest). */
 function bucketsFor(id: string): Bucket[] {
-  const entry = CATALOG_BY_ID[id]!;
-  return BUCKETS.filter((bucket) => {
-    if (bucket === 'overrides' && entry.secret) return false;
-    if (bucket === 'clamped' && entry.qualifier !== 'cap') return false;
-    return true;
-  });
+  return BUCKETS.filter((bucket) => BINDINGS[id]!.bucketSql(bucket, PARTNER_A_SETTINGS) !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,9 +416,10 @@ describe('partner settings inheritance under real RLS', () => {
       const dto = await getTab(f.tokenA, tab);
       for (const field of dto.fields) {
         if (BINDINGS[field.id]!.orgSource === null) {
-          expect(field.counts, field.id).toMatchObject({ ownValue: 0, shadowed: 0 });
+          expect(field.counts, field.id).toBeNull();
           continue;
         }
+        const counts = field.counts!;
         const ownRows = await getAllRows(f.tokenA, field.id, 'ownValue');
         const byOrg = new Map(ownRows.map((r) => [r.orgId, r]));
         for (const orgId of f.visibleA) {
@@ -438,15 +435,15 @@ describe('partner settings inheritance under real RLS', () => {
           }
         }
         // Tallies: own rows, own-but-not-in-effect = shadowed, overrides rows, clamped rows.
-        expect(field.counts.ownValue, field.id).toBe(ownRows.length);
-        expect(field.counts.shadowed, field.id).toBe(ownRows.filter((r) => !r.inEffect).length);
-        if (field.counts.overrides !== null) {
+        expect(counts.ownValue, field.id).toBe(ownRows.length);
+        expect(counts.shadowed, field.id).toBe(ownRows.filter((r) => !r.inEffect).length);
+        if (bucketsFor(field.id).includes('overrides')) {
           const overrideRows = await getAllRows(f.tokenA, field.id, 'overrides');
-          expect(field.counts.overrides, field.id).toBe(overrideRows.length);
+          expect(counts.overrides, field.id).toBe(overrideRows.length);
           for (const row of overrideRows) expect(row.inEffect, `${field.id} override ${row.orgId}`).toBe(true);
         }
-        if (field.counts.clamped !== undefined) {
-          expect(field.counts.clamped, field.id).toBe((await getAllRows(f.tokenA, field.id, 'clamped')).length);
+        if (counts.clamped !== undefined) {
+          expect(counts.clamped, field.id).toBe((await getAllRows(f.tokenA, field.id, 'clamped')).length);
         }
       }
     }
@@ -475,20 +472,57 @@ describe('partner settings inheritance under real RLS', () => {
     const f = await seed();
     const dto = await getTab(f.tokenA, 'notifications');
     const sound = dto.fields.find((field) => field.id === 'notifications.pushoverDefaultSound')!;
-    expect(sound.counts.ownValue).toBe(1);
-    expect(sound.counts.overrides).toBe(1);
+    expect(sound.counts!.ownValue).toBe(1);
+    expect(sound.counts!.overrides).toBe(1);
     const rows = await getAllRows(f.tokenA, 'notifications.pushoverDefaultSound', 'ownValue');
     expect(rows.map((r) => r.orgId)).toEqual([f.a1]);
     expect(rows[0]!.channels).toHaveLength(2);
     expect(rows[0]!.channels!.filter((c) => c.ownValue.set)).toHaveLength(1);
   });
 
-  runDb('drill-down pages with a stable cursor under real data', async () => {
+  runDb('drill-down pages with a stable cursor: every page size walks the same rows in the same order', async () => {
     const f = await seed();
+    // Names that tie under lower(): the id breaks the tie.
+    for (const name of ['Delta', 'delta', 'DELTA']) {
+      await createOrganization({ partnerId: f.partnerA, name, settings: { security: { requireMfa: false } } });
+    }
     const whole = await getAllRows(f.tokenA, 'security.requireMfa', 'ownValue', 50);
-    const paged = await getAllRows(f.tokenA, 'aiApprovals.interactiveTimeoutMinutes', 'ownValue', 1);
-    expect(whole.length).toBeGreaterThan(0);
-    expect(new Set(paged.map((r) => r.orgId)).size).toBe(paged.length);
+    expect(whole.length).toBeGreaterThanOrEqual(4);
+    const ids = whole.map((r) => r.orgId);
+    for (const limit of [1, 2]) {
+      expect((await getAllRows(f.tokenA, 'security.requireMfa', 'ownValue', limit)).map((r) => r.orgId), `limit ${limit}`).toEqual(ids);
+    }
+    // The order is (lower(name), id).
+    const sorted = [...whole].sort((a, b) => a.orgName.toLowerCase().localeCompare(b.orgName.toLowerCase(), 'en') || (a.orgId < b.orgId ? -1 : 1));
+    expect(sorted.filter((r) => r.orgName.toLowerCase() === 'delta').map((r) => r.orgId))
+      .toEqual(whole.filter((r) => r.orgName.toLowerCase() === 'delta').map((r) => r.orgId));
+  });
+
+  runDb('real middleware: an org-scope token and a partner role without orgs:read get 403', async () => {
+    const f = await seed();
+    const database = getTestDb();
+    // Org-scope user of partner A's first org.
+    const orgRole = await createRole({ scope: 'organization', orgId: f.a1 });
+    await grantRolePermissions(orgRole.id, [{ resource: '*', action: '*' }]);
+    const orgUser = await createUser({ partnerId: f.partnerA, orgId: f.a1, email: `org-${randomUUID()}@example.com` });
+    await database.update(users).set({ mfaEnabled: true, mfaMethod: 'totp' }).where(eq(users.id, orgUser.id));
+    await assignUserToOrganization(orgUser.id, f.a1, orgRole.id);
+    const orgToken = await createAccessToken({
+      sub: orgUser.id, email: orgUser.email, roleId: orgRole.id, orgId: f.a1, partnerId: f.partnerA,
+      scope: 'organization', mfa: true, aep: 1, mep: 1, sid: randomUUID(),
+    });
+    // Full-access partner user whose role lacks orgs:read.
+    const noReadRole = await createRole({ scope: 'partner', partnerId: f.partnerA });
+    await grantRolePermissions(noReadRole.id, [{ resource: 'devices', action: 'read' }]);
+    const noReadUser = await createUser({ partnerId: f.partnerA, orgId: null, email: `noread-${randomUUID()}@example.com` });
+    await database.update(users).set({ mfaEnabled: true, mfaMethod: 'totp' }).where(eq(users.id, noReadUser.id));
+    await assignUserToPartner(noReadUser.id, f.partnerA, noReadRole.id, 'all');
+    const noReadToken = await partnerToken(noReadUser.id, noReadUser.email, noReadRole.id, f.partnerA);
+
+    for (const token of [orgToken, noReadToken]) {
+      expect((await get(token, '/orgs/partners/me/settings-inheritance?tab=security')).status).toBe(403);
+      expect((await get(token, '/orgs/partners/me/settings-inheritance/orgs?field=security.requireMfa')).status).toBe(403);
+    }
   });
 
   runDb('no secret value in any response', async () => {

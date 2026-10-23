@@ -105,6 +105,16 @@ describe('listFieldOrgs', () => {
     await expect(listFieldOrgs('regional.dateFormat', ctx, { bucket: 'ownValue', cursor: null, limit: 50 })).rejects.toBeInstanceOf(InheritanceBadRequest);
     await expect(listFieldOrgs('notifications.pushoverAppToken', ctx, { bucket: 'overrides', cursor: null, limit: 50 })).rejects.toBeInstanceOf(InheritanceBadRequest);
     await expect(listFieldOrgs('security.requireMfa', ctx, { bucket: 'clamped', cursor: null, limit: 50 })).rejects.toBeInstanceOf(InheritanceBadRequest);
+    // A lock never has overrides; an inherit-with-override field is never shadowed.
+    await expect(listFieldOrgs('security.requireMfa', ctx, { bucket: 'overrides', cursor: null, limit: 50 })).rejects.toBeInstanceOf(InheritanceBadRequest);
+    await expect(listFieldOrgs('defaults.defaultEnrollmentDeviceCount', ctx, { bucket: 'shadowed', cursor: null, limit: 50 })).rejects.toBeInstanceOf(InheritanceBadRequest);
+    expect(state.executeCalls).toHaveLength(0);
+  });
+
+  it('a cursor carrying a NUL character is a bad request, not a database error', async () => {
+    const cursor = encodeCursor(['a\u0000b', id(1)]);
+    await expect(listFieldOrgs('security.requireMfa', ctx, { bucket: 'ownValue', cursor, limit: 50 })).rejects.toBeInstanceOf(InheritanceBadRequest);
+    expect(state.executeCalls).toHaveLength(0);
   });
 
   it('a malformed cursor is a bad request', async () => {

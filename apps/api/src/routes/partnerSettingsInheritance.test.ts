@@ -166,6 +166,26 @@ describe('GET /partners/me/settings-inheritance', () => {
     expect((await get(FULL, '/partners/me/settings-inheritance')).status).toBe(400);
   });
 
+  it('an unreadable partner row → 404', async () => {
+    state.partnerRows = [];
+    expect((await get(FULL, '/partners/me/settings-inheritance?tab=security')).status).toBe(404);
+    expect((await get(FULL, '/partners/me/settings-inheritance/orgs?field=security.requireMfa')).status).toBe(404);
+  });
+
+  it('an unexpected database error is rethrown to the app error handler, never swallowed', async () => {
+    state.respond = () => {
+      throw new Error('boom');
+    };
+    const app = buildApp(FULL);
+    const seen: unknown[] = [];
+    app.onError((err, c) => {
+      seen.push(err);
+      return c.json({ error: 'Internal error' }, 500);
+    });
+    expect((await app.request('/partners/me/settings-inheritance?tab=security')).status).toBe(500);
+    expect((seen[0] as Error).message).toBe('boom');
+  });
+
   it('a null accessibleOrgIds under partner scope is a 500, never "all orgs"', async () => {
     const app = buildApp({ ...FULL, accessibleOrgIds: null });
     app.onError((_err, c) => c.json({ error: 'Internal error' }, 500));
@@ -240,8 +260,10 @@ describe('no secret value in any response', () => {
       currentSecretValue = secretOrgValue(entry.id);
       for (const bucket of ['ownValue', 'shadowed', 'overrides', 'clamped']) {
         const res = await get(FULL, `/partners/me/settings-inheritance/orgs?field=${entry.id}&bucket=${bucket}`);
-        // overrides is never computable for a secret field; clamped never applies.
-        expect(res.status, `${entry.id}/${bucket}`).toBe(bucket === 'ownValue' || bucket === 'shadowed' ? 200 : 400);
+        // overrides is never computable for a secret field; a bucket that does not apply is a 400.
+        const applies = BINDINGS[entry.id]!.bucketSql(bucket as never, partnerSettingsWithCanaries) !== null;
+        expect(applies && bucket === 'overrides', entry.id).toBe(false);
+        expect(res.status, `${entry.id}/${bucket}`).toBe(applies ? 200 : 400);
         bodies.push(await res.text());
       }
     }
