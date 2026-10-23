@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Tüm kuruluşlara uygulanır. Bir alt küme seçmek için \"Tüm kuruluşlar\" seçeneğinin işaretini kaldırın.",
       "polite": "kibar",
       "loading": "Yükleniyor…",
-      "loadMoreOrganizations": "Daha fazla kuruluş yükle"
+      "loadMoreOrganizations": "Daha fazla kuruluş yükle",
+      "appliedToAllOrgs": "Politika artık tüm kuruluşlara uygulanıyor",
+      "removedFromAllOrgs": "Politika artık tüm kuruluşlara uygulanmıyor"
     },
     "featureTabs": {
       "automationTab": {

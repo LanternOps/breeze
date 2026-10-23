@@ -3,7 +3,7 @@ import { X, Plus, Trash2 } from "lucide-react";
 import { fetchWithAuth } from "../../stores/auth";
 import { useFleetOrgOwner } from "@/hooks/useFleetOrgOwner";
 import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
-import { extractApiError } from "@/lib/apiError";
+import { runAction, ActionError } from "@/lib/runAction";
 import { useTranslation } from "react-i18next";
 
 type ExceptionRule = {
@@ -169,18 +169,20 @@ export default function PeripheralPolicyForm({
     }
 
     try {
-      const response = await fetchWithAuth("/peripherals/policies", {
-        method: "POST",
-        body: JSON.stringify(body),
+      await runAction({
+        request: () =>
+          fetchWithAuth("/peripherals/policies", {
+            method: "POST",
+            body: JSON.stringify(body),
+          }),
+        errorFallback: t("peripheralPolicyForm.errors.save"),
+        successMessage: isEdit
+          ? t("peripheralPolicyForm.saved.updated")
+          : t("peripheralPolicyForm.saved.created"),
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(
-          extractApiError(data, t("peripheralPolicyForm.errors.save")),
-        );
-      }
       onClose(true);
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
       setError(
         err instanceof Error
           ? err.message

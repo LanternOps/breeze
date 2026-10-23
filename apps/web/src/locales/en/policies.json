@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Applied to all organizations. Uncheck “All organizations” to pick a subset.",
       "polite": "polite",
       "loading": "Loading…",
-      "loadMoreOrganizations": "Load more organizations"
+      "loadMoreOrganizations": "Load more organizations",
+      "appliedToAllOrgs": "Policy now applies to all organizations",
+      "removedFromAllOrgs": "Policy no longer applies to all organizations"
     },
     "featureTabs": {
       "automationTab": {

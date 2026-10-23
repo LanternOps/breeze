@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PeripheralPolicyForm from './PeripheralPolicyForm';
 import { fetchWithAuth } from '../../stores/auth';
+import { showToast } from '../shared/Toast';
 import { useOrgStore, type Organization } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
@@ -17,7 +18,10 @@ vi.mock('../../lib/authScope', async (importOriginal) => ({
   getJwtClaims: vi.fn(() => ({ scope: 'partner', partnerId: 'p-1', orgId: null })),
 }));
 
+vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const showToastMock = vi.mocked(showToast);
 
 const orgA: Organization = { id: 'org-aaaa', partnerId: 'p-1', name: 'Acme Corp', status: 'active', createdAt: '2026-01-01T00:00:00Z' };
 const orgB: Organization = { id: 'org-bbbb', partnerId: 'p-1', name: 'Beta Inc', status: 'active', createdAt: '2026-01-01T00:00:00Z' };
@@ -217,5 +221,34 @@ describe('PeripheralPolicyForm — accessible labels and local expiry (#9621)', 
     await waitFor(() => expect(fetchWithAuthMock).toHaveBeenCalledTimes(1));
     const exceptions = postedBody().exceptions as Array<{ expiresAt: string }>;
     expect(exceptions[0]!.expiresAt).toBe('2026-03-02T14:00:00.000Z');
+  });
+});
+
+describe('PeripheralPolicyForm — save feedback (runAction)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useOrgStore.setState({ currentOrgId: 'org-aaaa', allOrgs: false, organizations: [orgA], organizationsLoaded: true, error: null });
+  });
+
+  it('toasts success after creating a policy', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(okResponse());
+    const onClose = vi.fn();
+    render(<PeripheralPolicyForm onClose={onClose} />);
+    typeName('Block USB Storage');
+    fireEvent.click(screen.getByRole('button', { name: /Create Policy/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledWith(true));
+    expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Policy created' }));
+  });
+
+  it('toasts the API error and stays open when the save fails', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce({ ok: false, status: 400, statusText: 'Bad', json: vi.fn().mockResolvedValue({ error: 'Nope' }) } as unknown as Response);
+    const onClose = vi.fn();
+    render(<PeripheralPolicyForm onClose={onClose} />);
+    typeName('Block USB Storage');
+    fireEvent.click(screen.getByRole('button', { name: /Create Policy/i }));
+
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

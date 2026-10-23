@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Gilt für alle Organisationen. Deaktivieren Sie „Alle Organisationen“, um eine Teilmenge auszuwählen.",
       "polite": "höflich",
       "loading": "Laden…",
-      "loadMoreOrganizations": "Weitere Organisationen laden"
+      "loadMoreOrganizations": "Weitere Organisationen laden",
+      "appliedToAllOrgs": "Richtlinie gilt jetzt für alle Organisationen",
+      "removedFromAllOrgs": "Richtlinie gilt nicht mehr für alle Organisationen"
     },
     "featureTabs": {
       "automationTab": {

@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Applicata a tutte le organizzazioni. Deseleziona “Tutte le organizzazioni” per scegliere un sottoinsieme.",
       "polite": "polite",
       "loading": "Caricamento…",
-      "loadMoreOrganizations": "Carica altre organizzazioni"
+      "loadMoreOrganizations": "Carica altre organizzazioni",
+      "appliedToAllOrgs": "Il criterio ora si applica a tutte le organizzazioni",
+      "removedFromAllOrgs": "Il criterio non si applica più a tutte le organizzazioni"
     },
     "featureTabs": {
       "automationTab": {

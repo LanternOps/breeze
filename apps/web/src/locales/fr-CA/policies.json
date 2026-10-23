@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Postulé à toutes les organisations. Décochez « Toutes les organisations » pour choisir un sous-ensemble.",
       "polite": "poli",
       "loading": "Chargement...",
-      "loadMoreOrganizations": "Chargez plus d’organisations"
+      "loadMoreOrganizations": "Chargez plus d’organisations",
+      "appliedToAllOrgs": "La politique s’applique maintenant à toutes les organisations",
+      "removedFromAllOrgs": "La politique ne s’applique plus à toutes les organisations"
     },
     "featureTabs": {
       "automationTab": {

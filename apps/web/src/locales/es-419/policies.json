@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Aplicado a todas las organizaciones. Desmarque \"Todas las organizaciones\" para elegir un subconjunto.",
       "polite": "educado",
       "loading": "Cargando…",
-      "loadMoreOrganizations": "Cargar más organizaciones"
+      "loadMoreOrganizations": "Cargar más organizaciones",
+      "appliedToAllOrgs": "La política ahora se aplica a todas las organizaciones",
+      "removedFromAllOrgs": "La política ya no se aplica a todas las organizaciones"
     },
     "featureTabs": {
       "automationTab": {
