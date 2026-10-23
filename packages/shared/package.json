@@ -27,7 +27,8 @@
     "./validators/topologyTelemetry": "./src/validators/topologyTelemetry.ts",
     "./validators/topologyInvestigation": "./src/validators/topologyInvestigation.ts",
     "./validators/topologyMonitoring": "./src/validators/topologyMonitoring.ts",
-    "./validators/topologyPresence": "./src/validators/topologyPresence.ts"
+    "./validators/topologyPresence": "./src/validators/topologyPresence.ts",
+    "./entitlements": "./src/entitlements/index.ts"
   },
   "scripts": {
     "test": "vitest",
