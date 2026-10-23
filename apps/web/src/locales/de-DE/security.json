@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpunkterkennung und -reaktion",
     "huntressIncidents": "Huntress-Vorfälle",
     "sentineloneThreats": "SentinelOne-Bedrohungen",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress.",
+    "iocScansLink": "Suchen Sie die IOC-Scans von Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Weitere EDR",
@@ -2281,6 +2282,58 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
+    }
+  },
+  "detectionRules": {
+    "title": "Erkennungsregeln",
+    "subtitle": "Regelsätze für IOC-Scans und Threat Hunting. Jede Änderung wird auf dem Server geprüft, bevor Geräte sie erhalten.",
+    "listHelp": "Hängen Sie Regelsätze im Sicherheits-Tab einer Konfigurationsrichtlinie an, um sie in IOC-Scans zu verwenden.",
+    "newRuleSet": "Neuer Regelsatz",
+    "back": "Zurück zu den Regelsätzen",
+    "loadFailed": "Die Regelsätze konnten nicht geladen werden.",
+    "empty": "Noch keine Regelsätze.",
+    "rulesLabel": "Regeln: {{total}}",
+    "publishedVersion": "Version {{version}}",
+    "created": "Regelsatz erstellt",
+    "deleted": "Regelsatz gelöscht",
+    "columns": {
+      "name": "Bezeichnung",
+      "owner": "Eigentümer",
+      "rules": "Regeln",
+      "published": "Veröffentlicht"
+    },
+    "owner": {
+      "builtin": "Breeze (integriert)",
+      "allOrgs": "Alle Organisationen",
+      "organization": "Organisation"
+    },
+    "badges": {
+      "builtin": "Integriert",
+      "allOrgs": "Alle Organisationen",
+      "errors": "Fehlerhaft",
+      "unpublished": "Nicht veröffentlicht",
+      "disabled": "Deaktiviert"
+    },
+    "create": {
+      "title": "Neuer Regelsatz",
+      "name": "Bezeichnung",
+      "description": "Beschreibung (optional)",
+      "owner": "Eigentümer",
+      "ownerAllOrgs": "Alle Organisationen (partnerweit)",
+      "ownerOrganization": "Eine Organisation",
+      "organization": "Organisation",
+      "selectOrganization": "Organisation auswählen",
+      "submit": "Regelsatz erstellen"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Zum Aktivieren der automatischen Quarantäne ist die Berechtigung devices:execute erforderlich, da sie Dateien auf jedem Gerät verschiebt, das mit diesem Satz scannt.",
+      "iocBatchAlreadyImported": "Diese IOCs wurden bereits in diesen Satz importiert.",
+      "iocRuleNameTaken": "In diesem Satz gibt es bereits eine Regel mit demselben generierten Namen, aber anderem Inhalt. Benennen Sie sie um oder löschen Sie sie und importieren Sie erneut.",
+      "iocTooManyRules": "Mit diesem Import hätte der Satz mehr als 500 Regeln. Importieren Sie in einen anderen Satz.",
+      "iocInvalid": "Einige IOCs sind ungültig. Korrigieren Sie die markierten Zeilen und versuchen Sie es erneut."
+    },
+    "test": {
+      "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
     }
   }
 }

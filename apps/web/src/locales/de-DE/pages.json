@@ -179,7 +179,8 @@
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
     "billingAutopay": "Automatische Zahlungen",
-    "endpointMessages": "Endpunkt-Nachrichten"
+    "endpointMessages": "Endpunkt-Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

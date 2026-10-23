@@ -116,7 +116,8 @@
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
     "ticketsChanges": "Değişiklikler",
-    "endpointMessages": "Mesajlar"
+    "endpointMessages": "Mesajlar",
+    "securityDetectionRules": "Tespit Kuralları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",

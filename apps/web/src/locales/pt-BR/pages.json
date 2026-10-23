@@ -179,7 +179,8 @@
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
     "billingAutopay": "Pagamentos automáticos",
-    "endpointMessages": "Mensagens para dispositivos"
+    "endpointMessages": "Mensagens para dispositivos",
+    "securityDetectionRules": "Regras de detecção"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

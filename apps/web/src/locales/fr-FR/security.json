@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Détection et réponse sur les terminaux",
     "huntressIncidents": "Incidents Huntress",
     "sentineloneThreats": "SentinelOne Menaces",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Menaces et incidents dans votre flotte, de SentinelOne et Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Menaces et incidents dans votre flotte, de SentinelOne et Huntress.",
+    "iocScansLink": "Vous cherchez les analyses IOC de Breeze ? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Autre EDR",
@@ -2281,6 +2282,58 @@
       "awaitingVendorReport": "En attente du rapport de l'éditeur",
       "awaitingEvaluation": "En attente d'évaluation",
       "vendorOrgMismatch": "L'éditeur signale une autre organisation"
+    }
+  },
+  "detectionRules": {
+    "title": "Règles de détection",
+    "subtitle": "Ensembles de règles pour les analyses IOC et la chasse aux menaces. Chaque modification est vérifiée sur le serveur avant d’être envoyée aux appareils.",
+    "listHelp": "Associez des ensembles de règles dans l’onglet Sécurité d’une stratégie de configuration pour les utiliser dans les analyses IOC.",
+    "newRuleSet": "Nouvel ensemble de règles",
+    "back": "Retour aux ensembles de règles",
+    "loadFailed": "Impossible de charger les ensembles de règles.",
+    "empty": "Aucun ensemble de règles pour le moment.",
+    "rulesLabel": "Règles : {{total}}",
+    "publishedVersion": "version {{version}}",
+    "created": "Ensemble de règles créé",
+    "deleted": "Ensemble de règles supprimé",
+    "columns": {
+      "name": "Nom",
+      "owner": "Propriétaire",
+      "rules": "Règles",
+      "published": "Publié"
+    },
+    "owner": {
+      "builtin": "Breeze (intégré)",
+      "allOrgs": "Toutes les organisations",
+      "organization": "Organisation"
+    },
+    "badges": {
+      "builtin": "Intégré",
+      "allOrgs": "Toutes les organisations",
+      "errors": "Contient des erreurs",
+      "unpublished": "Non publié",
+      "disabled": "Désactivé"
+    },
+    "create": {
+      "title": "Nouvel ensemble de règles",
+      "name": "Nom",
+      "description": "Description (facultative)",
+      "owner": "Propriétaire",
+      "ownerAllOrgs": "Toutes les organisations (au niveau du partenaire)",
+      "ownerOrganization": "Une seule organisation",
+      "organization": "Organisation",
+      "selectOrganization": "Sélectionnez une organisation",
+      "submit": "Créer l’ensemble de règles"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "L’activation de la quarantaine automatique nécessite l’autorisation devices:execute, car elle déplace des fichiers sur chaque appareil qui analyse avec cet ensemble.",
+      "iocBatchAlreadyImported": "Ces IOC ont déjà été importés dans cet ensemble.",
+      "iocRuleNameTaken": "Une règle portant le même nom généré mais un contenu différent existe déjà dans cet ensemble. Renommez-la ou supprimez-la, puis relancez l’importation.",
+      "iocTooManyRules": "Cette importation porterait l’ensemble au-delà de 500 règles. Importez dans un autre ensemble.",
+      "iocInvalid": "Certains IOC ne sont pas valides. Corrigez les lignes signalées et réessayez."
+    },
+    "test": {
+      "requestFailed": "Le test n’a pas abouti. Vérifiez votre connexion et réessayez."
     }
   }
 }

@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",
     "huntressIncidents": "Huntress Incidents",
     "sentineloneThreats": "SentinelOne Threats",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Threats and incidents across your fleet from SentinelOne and Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Threats and incidents across your fleet from SentinelOne and Huntress.",
+    "iocScansLink": "Looking for Breeze IOC scans? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Other EDR",
@@ -2281,6 +2282,58 @@
       "awaitingVendorReport": "Awaiting vendor report",
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
+    }
+  },
+  "detectionRules": {
+    "title": "Detection Rules",
+    "subtitle": "Rule sets for IOC scans and threat hunting. Every change is checked on the server before devices receive it.",
+    "listHelp": "Attach rule sets to a Configuration Policy's Security tab to use them in IOC scans.",
+    "newRuleSet": "New rule set",
+    "back": "Back to rule sets",
+    "loadFailed": "Rule sets could not be loaded.",
+    "empty": "No rule sets yet.",
+    "rulesLabel": "Rules: {{total}}",
+    "publishedVersion": "v{{version}}",
+    "created": "Rule set created",
+    "deleted": "Rule set deleted",
+    "columns": {
+      "name": "Name",
+      "owner": "Owner",
+      "rules": "Rules",
+      "published": "Published"
+    },
+    "owner": {
+      "builtin": "Breeze (built-in)",
+      "allOrgs": "All organizations",
+      "organization": "Organization"
+    },
+    "badges": {
+      "builtin": "Built-in",
+      "allOrgs": "All orgs",
+      "errors": "Has errors",
+      "unpublished": "Not published",
+      "disabled": "Disabled"
+    },
+    "create": {
+      "title": "New rule set",
+      "name": "Name",
+      "description": "Description (optional)",
+      "owner": "Owner",
+      "ownerAllOrgs": "All organizations (partner-wide)",
+      "ownerOrganization": "One organization",
+      "organization": "Organization",
+      "selectOrganization": "Select an organization",
+      "submit": "Create rule set"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Turning on auto-quarantine needs the devices:execute permission, because it moves files on every device that scans with this set.",
+      "iocBatchAlreadyImported": "These IOCs were already imported into this set.",
+      "iocRuleNameTaken": "A rule with the same generated name already exists in this set with different content. Rename or delete it, then import again.",
+      "iocTooManyRules": "This import would take the set past 500 rules. Import into another set.",
+      "iocInvalid": "Some IOCs are not valid. Fix the marked lines and try again."
+    },
+    "test": {
+      "requestFailed": "The test did not finish. Check your connection and try again."
     }
   }
 }

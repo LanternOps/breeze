@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Detecção e resposta de endpoint",
     "huntressIncidents": "Incidentes do Huntress",
     "sentineloneThreats": "Ameaças do SentinelOne",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em sua frota vindos do SentinelOne e do Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em sua frota vindos do SentinelOne e do Huntress.",
+    "iocScansLink": "Procurando as varreduras de IOC do Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Outro EDR",
@@ -2281,6 +2282,58 @@
       "awaitingVendorReport": "Aguardando relatório do fornecedor",
       "awaitingEvaluation": "Aguardando avaliação",
       "vendorOrgMismatch": "O fornecedor informa outra organização"
+    }
+  },
+  "detectionRules": {
+    "title": "Regras de detecção",
+    "subtitle": "Conjuntos de regras para varreduras de IOC e caça a ameaças. Cada alteração é verificada no servidor antes de chegar aos dispositivos.",
+    "listHelp": "Anexe conjuntos de regras na aba Segurança de uma política de configuração para usá-los nas varreduras de IOC.",
+    "newRuleSet": "Novo conjunto de regras",
+    "back": "Voltar aos conjuntos de regras",
+    "loadFailed": "Não foi possível carregar os conjuntos de regras.",
+    "empty": "Ainda não há conjuntos de regras.",
+    "rulesLabel": "Regras: {{total}}",
+    "publishedVersion": "versão {{version}}",
+    "created": "Conjunto de regras criado",
+    "deleted": "Conjunto de regras excluído",
+    "columns": {
+      "name": "Nome",
+      "owner": "Proprietário",
+      "rules": "Regras",
+      "published": "Publicado"
+    },
+    "owner": {
+      "builtin": "Breeze (integrado)",
+      "allOrgs": "Todas as organizações",
+      "organization": "Organização"
+    },
+    "badges": {
+      "builtin": "Integrado",
+      "allOrgs": "Todas as organizações",
+      "errors": "Com erros",
+      "unpublished": "Não publicado",
+      "disabled": "Desativado"
+    },
+    "create": {
+      "title": "Novo conjunto de regras",
+      "name": "Nome",
+      "description": "Descrição (opcional)",
+      "owner": "Proprietário",
+      "ownerAllOrgs": "Todas as organizações (em todo o parceiro)",
+      "ownerOrganization": "Uma organização",
+      "organization": "Organização",
+      "selectOrganization": "Selecione uma organização",
+      "submit": "Criar conjunto de regras"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Ativar a quarentena automática exige a permissão devices:execute, porque ela move arquivos em todo dispositivo que faz varredura com este conjunto.",
+      "iocBatchAlreadyImported": "Esses IOCs já foram importados para este conjunto.",
+      "iocRuleNameTaken": "Já existe neste conjunto uma regra com o mesmo nome gerado e conteúdo diferente. Renomeie ou exclua essa regra e importe novamente.",
+      "iocTooManyRules": "Esta importação deixaria o conjunto com mais de 500 regras. Importe para outro conjunto.",
+      "iocInvalid": "Alguns IOCs não são válidos. Corrija as linhas marcadas e tente novamente."
+    },
+    "test": {
+      "requestFailed": "O teste não terminou. Verifique sua conexão e tente novamente."
     }
   }
 }

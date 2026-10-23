@@ -179,7 +179,8 @@
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
     "billingAutopay": "Otomatik ödemeler",
-    "endpointMessages": "Uç Nokta Mesajları"
+    "endpointMessages": "Uç Nokta Mesajları",
+    "securityDetectionRules": "Tespit Kuralları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

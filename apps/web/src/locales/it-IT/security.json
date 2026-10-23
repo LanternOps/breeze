@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",
     "huntressIncidents": "Incidenti Huntress",
     "sentineloneThreats": "Minacce SentinelOne",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Minacce e incidenti nella tua flotta da SentinelOne e Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Minacce e incidenti nella tua flotta da SentinelOne e Huntress.",
+    "iocScansLink": "Cerchi le scansioni IOC di Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Altri EDR",
@@ -2281,6 +2282,58 @@
       "awaitingVendorReport": "In attesa del report del fornitore",
       "awaitingEvaluation": "In attesa di valutazione",
       "vendorOrgMismatch": "Il fornitore segnala un'altra organizzazione"
+    }
+  },
+  "detectionRules": {
+    "title": "Regole di rilevamento",
+    "subtitle": "Set di regole per le scansioni IOC e il threat hunting. Ogni modifica viene verificata sul server prima che i dispositivi la ricevano.",
+    "listHelp": "Collega i set di regole nella scheda Sicurezza di un criterio di configurazione per usarli nelle scansioni IOC.",
+    "newRuleSet": "Nuovo set di regole",
+    "back": "Torna ai set di regole",
+    "loadFailed": "Impossibile caricare i set di regole.",
+    "empty": "Nessun set di regole.",
+    "rulesLabel": "Regole: {{total}}",
+    "publishedVersion": "versione {{version}}",
+    "created": "Set di regole creato",
+    "deleted": "Set di regole eliminato",
+    "columns": {
+      "name": "Nome",
+      "owner": "Proprietario",
+      "rules": "Regole",
+      "published": "Pubblicato"
+    },
+    "owner": {
+      "builtin": "Breeze (integrato)",
+      "allOrgs": "Tutte le organizzazioni",
+      "organization": "Organizzazione"
+    },
+    "badges": {
+      "builtin": "Integrato",
+      "allOrgs": "Tutte le organizzazioni",
+      "errors": "Con errori",
+      "unpublished": "Non pubblicato",
+      "disabled": "Disattivato"
+    },
+    "create": {
+      "title": "Nuovo set di regole",
+      "name": "Nome",
+      "description": "Descrizione (facoltativa)",
+      "owner": "Proprietario",
+      "ownerAllOrgs": "Tutte le organizzazioni (a livello di partner)",
+      "ownerOrganization": "Una sola organizzazione",
+      "organization": "Organizzazione",
+      "selectOrganization": "Seleziona un'organizzazione",
+      "submit": "Crea set di regole"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Per attivare la quarantena automatica serve l'autorizzazione devices:execute, perché sposta i file su ogni dispositivo che esegue la scansione con questo set.",
+      "iocBatchAlreadyImported": "Questi IOC sono già stati importati in questo set.",
+      "iocRuleNameTaken": "In questo set esiste già una regola con lo stesso nome generato ma con contenuto diverso. Rinominala o eliminala, poi ripeti l'importazione.",
+      "iocTooManyRules": "Con questa importazione il set supererebbe le 500 regole. Importa in un altro set.",
+      "iocInvalid": "Alcuni IOC non sono validi. Correggi le righe segnalate e riprova."
+    },
+    "test": {
+      "requestFailed": "Il test non è stato completato. Controlla la connessione e riprova."
     }
   }
 }

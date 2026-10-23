@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Uç Nokta Tespiti ve Yanıtı",
     "huntressIncidents": "Huntress Olaylar",
     "sentineloneThreats": "SentinelOne Tehditleri",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Filonuz genelinde SentinelOne ve Huntress kaynaklı tehditler ve olaylar."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Filonuz genelinde SentinelOne ve Huntress kaynaklı tehditler ve olaylar.",
+    "iocScansLink": "Breeze IOC taramalarını mı arıyorsunuz? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Diğer EDR",
@@ -2281,6 +2282,58 @@
       "awaitingVendorReport": "Sağlayıcı raporu bekleniyor",
       "awaitingEvaluation": "Değerlendirme bekleniyor",
       "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
+    }
+  },
+  "detectionRules": {
+    "title": "Tespit Kuralları",
+    "subtitle": "IOC taramaları ve tehdit avcılığı için kural kümeleri. Her değişiklik, cihazlara ulaşmadan önce sunucuda denetlenir.",
+    "listHelp": "Kural kümelerini IOC taramalarında kullanmak için bir Yapılandırma İlkesinin Güvenlik sekmesine ekleyin.",
+    "newRuleSet": "Yeni kural kümesi",
+    "back": "Kural kümelerine dön",
+    "loadFailed": "Kural kümeleri yüklenemedi.",
+    "empty": "Henüz kural kümesi yok.",
+    "rulesLabel": "Kurallar: {{total}}",
+    "publishedVersion": "sürüm {{version}}",
+    "created": "Kural kümesi oluşturuldu",
+    "deleted": "Kural kümesi silindi",
+    "columns": {
+      "name": "Ad",
+      "owner": "Sahip",
+      "rules": "Kurallar",
+      "published": "Yayımlandı"
+    },
+    "owner": {
+      "builtin": "Breeze (yerleşik)",
+      "allOrgs": "Tüm kuruluşlar",
+      "organization": "Kuruluş"
+    },
+    "badges": {
+      "builtin": "Yerleşik",
+      "allOrgs": "Tüm kuruluşlar",
+      "errors": "Hatalı",
+      "unpublished": "Yayımlanmadı",
+      "disabled": "Devre dışı"
+    },
+    "create": {
+      "title": "Yeni kural kümesi",
+      "name": "Ad",
+      "description": "Açıklama (isteğe bağlı)",
+      "owner": "Sahip",
+      "ownerAllOrgs": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "ownerOrganization": "Tek bir kuruluş",
+      "organization": "Kuruluş",
+      "selectOrganization": "Bir kuruluş seçin",
+      "submit": "Kural kümesi oluştur"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Otomatik karantinayı açmak devices:execute iznini gerektirir; çünkü bu küme ile tarama yapan her cihazda dosyaları taşır.",
+      "iocBatchAlreadyImported": "Bu IOC'ler bu kümeye zaten içe aktarıldı.",
+      "iocRuleNameTaken": "Bu kümede aynı üretilmiş ada sahip ama içeriği farklı bir kural zaten var. Onu yeniden adlandırın veya silin, sonra yeniden içe aktarın.",
+      "iocTooManyRules": "Bu içe aktarma kümeyi 500 kuralın üzerine çıkarır. Başka bir kümeye aktarın.",
+      "iocInvalid": "Bazı IOC'ler geçerli değil. İşaretli satırları düzeltip yeniden deneyin."
+    },
+    "test": {
+      "requestFailed": "Test tamamlanmadı. Bağlantınızı denetleyip yeniden deneyin."
     }
   }
 }

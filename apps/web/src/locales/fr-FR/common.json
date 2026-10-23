@@ -116,7 +116,8 @@
     "ticketsServiceRequests": "Demandes de service",
     "ticketsProblems": "Problèmes",
     "ticketsChanges": "Changements",
-    "endpointMessages": "Messagerie"
+    "endpointMessages": "Messagerie",
+    "securityDetectionRules": "Règles de détection"
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
