@@ -438,9 +438,48 @@ export function buildIdentityOffboardingPlan(
   facts: DiscoveryFacts,
 ): PlannedEffect[] {
   const degraded = degradedToolsOf(facts);
-  return buildUndegradedPlan(input, facts)
-    .filter((e) => !degraded.has(e.toolName))
+  const undegraded = buildUndegradedPlan(input, facts);
+  const held = heldLockouts(undegraded, degraded);
+  return undegraded
+    .filter((e) => !degraded.has(e.toolName) && !held.has(e.provider))
     .map((e, i) => ({ ...e, ordinal: i }));
+}
+
+/** Effects that change where a person's mail goes or how it is answered. */
+export const MAIL_ROUTING_TOOLS: Readonly<Record<EffectProvider, readonly string[]>> = Object.freeze({
+  google: Object.freeze(['google_set_vacation', 'google_set_forwarding', 'google_add_mail_delegate']),
+  m365: Object.freeze(['m365_set_auto_reply']),
+});
+/** The effect after which the account can no longer sign in. */
+export const LOCKOUT_TOOL: Readonly<Record<EffectProvider, string>> = Object.freeze({
+  google: 'google_suspend_user',
+  m365: 'm365_disable_user',
+});
+
+/**
+ * The ordering contract, applied to degradation (spec §6.3): a provider's
+ * account is never locked out while a mail effect the plan ASKED for is not
+ * going to run. When a requested mail-routing tool is degraded, the lockout is
+ * held back too and becomes a manual item to do after the mail steps — the
+ * alternative, suspending with the mail step left for a person to do later,
+ * is exactly the "disabled with mail unrouted" state the order exists to
+ * prevent. Provider → the degraded mail tools that hold it.
+ */
+function heldLockouts(
+  undegraded: readonly PlannedEffect[],
+  degraded: ReadonlySet<string>,
+): Map<EffectProvider, string[]> {
+  const out = new Map<EffectProvider, string[]>();
+  for (const provider of EFFECT_PROVIDER_ORDER) {
+    const ofProvider = undegraded.filter((e) => e.provider === provider);
+    const lockout = ofProvider.some((e) => e.toolName === LOCKOUT_TOOL[provider] && !degraded.has(e.toolName));
+    if (!lockout) continue;
+    const missingMail = [...new Set(ofProvider
+      .filter((e) => MAIL_ROUTING_TOOLS[provider].includes(e.toolName) && degraded.has(e.toolName))
+      .map((e) => e.toolName))];
+    if (missingMail.length > 0) out.set(provider, missingMail);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +589,23 @@ export function buildIdentityOffboardingManualWork(
     });
   }
 
+  // The lockout held back by a degraded mail step (see `heldLockouts`).
+  for (const [provider, mailTools] of heldLockouts(buildUndegradedPlan(input, facts), degraded)) {
+    const google = provider === 'google';
+    add({
+      key: `lockout_held:${provider}`, origin: 'capability', capabilityKey: CAPABILITY_FOR_TOOL[LOCKOUT_TOOL[provider]] ?? null,
+      label: google
+        ? `Suspend ${label}'s Google Workspace account by hand, after the mail steps`
+        : `Disable ${label}'s Microsoft 365 account by hand, after the mail steps`,
+      detail: `Breeze cannot run ${mailTools.join(', ')} in this organization, so it did not `
+        + `${google ? 'suspend' : 'disable'} the account either: doing that first would leave this person's mail `
+        + 'unanswered. Do the mail steps listed above by hand first, then '
+        + (google
+          ? 'suspend the user in the Google Admin console (Directory → Users → Suspend user).'
+          : 'block sign-in in the Microsoft 365 admin centre (Users → Active users → Block sign-in).'),
+    });
+  }
+
   // 3. Exchange (spec §7.3) — whenever the effect was requested.
   const dest = mailDestination(input, facts);
   if ((fx.forwarding || fx.mailDelegate) && !dest) {
@@ -567,7 +623,8 @@ export function buildIdentityOffboardingManualWork(
         label: `Forward ${label}'s Microsoft 365 mail${dest ? ` to ${dest}` : ''}`,
         detail: 'Breeze cannot do this yet — it needs Exchange Online PowerShell. In the Exchange admin centre '
           + 'open Recipients → Mailboxes, select this person, and set up email forwarding'
-          + `${dest ? ` to ${dest}` : ''}. Do this before the account is disabled.`,
+          + `${dest ? ` to ${dest}` : ''}. Blocking sign-in does not stop the mailbox receiving mail, so this `
+          + 'still works after Breeze has disabled the account; do it promptly.',
       });
     }
     if (fx.mailDelegate) {
@@ -591,45 +648,47 @@ export function buildIdentityOffboardingManualWork(
     }
   }
 
-  // 4. Discovery-derived.
+  // 4. Discovery-derived. ONE item per kind of group work, naming the groups —
+  // never one per group: a person in 150 groups must not produce 150 items
+  // (the manual list is capped; see `capManualWork`).
   if (fx.removeGroups) {
-    for (const group of m365.groups) {
-      if (group.ownership === 'unknown') {
-        // D-R1-7: there is no M365 owners read, so ownership is never known.
-        add({
-          key: `confirm_m365_group_owner:${group.id}`, origin: 'discovery', capabilityKey: null,
-          label: `Confirm "${group.name}" has another owner before ${label} is removed`,
-          detail: 'Breeze cannot read Microsoft 365 group owners. In the Microsoft 365 admin centre open this '
-            + 'group and confirm someone other than this person owns it; add an owner if not.',
-        });
-      }
-      if (group.dynamic || group.roleAssignable) {
-        add({
-          key: `manual_group_removal:${group.id}`, origin: 'discovery', capabilityKey: null,
-          label: `Remove ${label} from "${group.name}" by hand`,
-          detail: group.dynamic
-            ? 'This is a dynamic-membership group: Microsoft computes its members from user attributes. Change '
-              + 'the attribute that matches this person, or the rule, so they drop out.'
-            : 'This group can be assigned Entra roles, and Microsoft does not allow its membership to be changed '
-              + 'through the API Breeze uses. Remove this person in the Entra admin centre.',
-        });
-      }
+    const names = (gs: readonly { name: string }[]): string => clip(gs.map((g) => `"${g.name}"`).join(', '), 1500);
+    const m365Unknown = m365.groups.filter((g) => g.ownership === 'unknown');
+    if (m365Unknown.length > 0) {
+      // D-R1-7: there is no M365 owners read, so ownership is never known.
+      add({
+        key: 'confirm_m365_group_owners', origin: 'discovery', capabilityKey: null,
+        label: `Confirm ${m365Unknown.length} Microsoft 365 group(s) have another owner before ${label} is removed`,
+        detail: 'Breeze cannot read Microsoft 365 group owners. In the Microsoft 365 admin centre open each of '
+          + `these groups and confirm someone other than this person owns it; add an owner if not: ${names(m365Unknown)}.`,
+      });
     }
-    for (const group of google.groups) {
-      if (group.ownership === 'sole') {
-        add({
-          key: `reassign_google_group_owner:${group.id}`, origin: 'discovery', capabilityKey: null,
-          label: `Give "${group.name}" another owner — ${label} is its only owner`,
-          detail: 'In the Google Admin console open this group and add another owner before this person is removed.',
-        });
-      }
-      if (!group.email) {
-        add({
-          key: `manual_group_removal:${group.id}`, origin: 'discovery', capabilityKey: null,
-          label: `Remove ${label} from "${group.name}" by hand`,
-          detail: 'Discovery did not return this Google group\'s address, so Breeze did not plan its removal.',
-        });
-      }
+    const m365Manual = m365.groups.filter((g) => g.dynamic || g.roleAssignable);
+    if (m365Manual.length > 0) {
+      add({
+        key: 'manual_m365_group_removals', origin: 'discovery', capabilityKey: null,
+        label: `Remove ${label} from ${m365Manual.length} Microsoft 365 group(s) by hand`,
+        detail: 'Breeze cannot change these groups\' membership: a dynamic-membership group computes its members '
+          + 'from user attributes (change the attribute or the rule), and a role-assignable group can only be '
+          + `changed in the Entra admin centre. Groups: ${names(m365Manual)}.`,
+      });
+    }
+    const googleSole = google.groups.filter((g) => g.ownership === 'sole');
+    if (googleSole.length > 0) {
+      add({
+        key: 'reassign_google_group_owners', origin: 'discovery', capabilityKey: null,
+        label: `Give ${googleSole.length} Google group(s) another owner — ${label} is the only owner`,
+        detail: 'In the Google Admin console open each of these groups and add another owner before this person '
+          + `is removed: ${names(googleSole)}.`,
+      });
+    }
+    const googleNoEmail = google.groups.filter((g) => !g.email);
+    if (googleNoEmail.length > 0) {
+      add({
+        key: 'manual_google_group_removals', origin: 'discovery', capabilityKey: null,
+        label: `Remove ${label} from ${googleNoEmail.length} Google group(s) by hand`,
+        detail: `Discovery did not return these Google groups' addresses, so Breeze did not plan their removal: ${names(googleNoEmail)}.`,
+      });
     }
   }
   for (const flag of arr(facts.flags)) {
@@ -662,6 +721,30 @@ export function buildIdentityOffboardingManualWork(
   }
 
   return [...items.values()];
+}
+
+/** The most checklist items one task creates (`manualWork.ts` refuses more). */
+export const MANUAL_WORK_MAX_ITEMS = 64;
+
+/**
+ * Fit a manual list into `MANUAL_WORK_MAX_ITEMS` without losing anything
+ * silently: the first `max - 1` items are kept as they are and the rest are
+ * folded into ONE final item that names every one of them. Pure and
+ * order-preserving, so index i means the same item on every wake.
+ */
+export function capManualWork(
+  items: readonly IdentityManualWorkItem[],
+  max: number = MANUAL_WORK_MAX_ITEMS,
+): IdentityManualWorkItem[] {
+  if (items.length <= max) return [...items];
+  const kept = items.slice(0, max - 1);
+  const rest = items.slice(max - 1);
+  return [...kept, {
+    key: 'overflow', origin: 'flag', capabilityKey: null,
+    label: `Review ${rest.length} more item(s) listed in this step's details`,
+    detail: clip(`This offboarding produced more checklist items than fit on one ticket. Do each of these by hand: `
+      + rest.map((i) => i.label).join('; '), MAX_DETAIL_CHARS),
+  }];
 }
 
 // ---------------------------------------------------------------------------

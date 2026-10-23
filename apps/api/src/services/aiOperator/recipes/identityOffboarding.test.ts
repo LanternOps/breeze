@@ -25,9 +25,12 @@ import {
   IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS,
   IDENTITY_OFFBOARDING_WORKFLOW_KEY,
   IDENTITY_OFFBOARDING_WORKFLOW_VERSION,
+  MANUAL_WORK_MAX_ITEMS,
   buildIdentityOffboardingManualWork,
   buildIdentityOffboardingPlan,
+  capManualWork,
   identityOffboardingRecipe,
+  type IdentityManualWorkItem,
 } from './identityOffboarding';
 import { resolveDeterministicNextStep } from './resolveNextStep';
 import { buildTaskOperationKey } from '../operationKey';
@@ -433,7 +436,10 @@ describe('buildIdentityOffboardingManualWork (spec §6.5)', () => {
 
   it('emits an item for every UNKNOWN-ownership M365 group the plan removes (D-R1-7)', () => {
     const items = buildIdentityOffboardingManualWork(input(), FULL_FACTS, ALL_READY, []);
-    expect(items.filter((i) => i.key.startsWith('confirm_m365_group_owner:'))).toHaveLength(2);
+    // ONE item naming every such group — never one per group (the list is capped).
+    const owners = items.filter((i) => i.key.startsWith('confirm_m365_group_owner'));
+    expect(owners.map((i) => i.key)).toEqual(['confirm_m365_group_owners']);
+    expect(owners[0]!.label).toContain('2 Microsoft 365 group(s)');
   });
 
   it('emits an item for a dynamic or role-assignable group instead of planning its removal', () => {
@@ -442,7 +448,7 @@ describe('buildIdentityOffboardingManualWork (spec §6.5)', () => {
       .map((e) => (e.canonicalArguments as { groupId: string }).groupId))
       .not.toContain('mg2');
     expect(buildIdentityOffboardingManualWork(input(), FULL_FACTS, ALL_READY, []).map((i) => i.key))
-      .toContain('manual_group_removal:mg2');
+      .toContain('manual_m365_group_removals');
   });
 
   it('turns a review flag into an item', () => {
@@ -452,6 +458,35 @@ describe('buildIdentityOffboardingManualWork (spec §6.5)', () => {
     const flagged = items.filter((i) => i.origin === 'flag');
     expect(flagged).toHaveLength(1);
     expect(flagged[0]!.detail).toContain('Dana is the only owner.');
+  });
+
+  it('keepMailbox with the licence capability UNSATISFIED never tells a person to remove the licence', () => {
+    // Removing the licence starts the mailbox deletion clock; with keepMailbox
+    // the plan omits it, and the manual list must not put it back as human work.
+    const items = buildIdentityOffboardingManualWork(
+      input({ keepMailbox: true }), FULL_FACTS, { ...ALL_READY, 'm365.graph.license_write': false }, [],
+    ).map((i) => i.key);
+    expect(items).not.toContain('capability:m365.graph.license_write');
+    expect(items).toContain('shared_mailbox_conversion');
+    // Control: without keepMailbox the same readiness DOES produce the item.
+    expect(buildIdentityOffboardingManualWork(
+      input(), FULL_FACTS, { ...ALL_READY, 'm365.graph.license_write': false }, [],
+    ).map((i) => i.key)).toContain('capability:m365.graph.license_write');
+  });
+
+  it('M365 forwarding copy does not claim it must precede the disable the plan already ran', () => {
+    const item = buildIdentityOffboardingManualWork(input({ forwardTo: 'sam@customer.example' }), FULL_FACTS, ALL_READY, [])
+      .find((i) => i.key === 'm365_forwarding_manual')!;
+    expect(item.detail).not.toMatch(/before the account is disabled/);
+    expect(item.detail).toMatch(/does not stop the mailbox receiving mail/);
+  });
+
+  it('a degraded mail step yields a lockout_held item naming the missing tool', () => {
+    const f = { ...FULL_FACTS, degradedTools: ['m365_set_auto_reply'] };
+    expect(buildIdentityOffboardingPlan(input(), f).map((e) => e.toolName)).not.toContain('m365_disable_user');
+    const held = buildIdentityOffboardingManualWork(input(), f, ALL_READY, []).find((i) => i.key === 'lockout_held:m365')!;
+    expect(held.detail).toContain('m365_set_auto_reply');
+    expect(held.label).toMatch(/Disable .* by hand, after the mail steps/);
   });
 
   it('is stable and deduplicated by key', () => {
@@ -514,5 +549,26 @@ describe('registry', () => {
     expect(RECIPES.identity_offboarding).toBe(identityOffboardingRecipe as never);
     expect(getRecipe('identity_offboarding', 1)).toBe(identityOffboardingRecipe as never);
     expect(getRecipe('identity_offboarding', 2)).toBeNull();
+  });
+});
+
+describe('capManualWork', () => {
+  const mk = (n: number): IdentityManualWorkItem[] => Array.from({ length: n }, (_, i) => ({
+    key: `k${i}`, label: `item ${i}`, detail: 'd', origin: 'flag', capabilityKey: null,
+  }));
+
+  it('passes a list at or under the cap through unchanged', () => {
+    expect(capManualWork(mk(MANUAL_WORK_MAX_ITEMS))).toEqual(mk(MANUAL_WORK_MAX_ITEMS));
+  });
+
+  it('folds everything past the cap into ONE final item that names each folded item', () => {
+    const out = capManualWork(mk(100));
+    expect(out).toHaveLength(MANUAL_WORK_MAX_ITEMS);
+    expect(out.slice(0, MANUAL_WORK_MAX_ITEMS - 1)).toEqual(mk(100).slice(0, MANUAL_WORK_MAX_ITEMS - 1));
+    const last = out[MANUAL_WORK_MAX_ITEMS - 1]!;
+    expect(last.key).toBe('overflow');
+    expect(last.label).toContain(`${100 - (MANUAL_WORK_MAX_ITEMS - 1)} more`);
+    expect(last.detail).toContain('item 63');
+    expect(last.detail).toContain('item 99');
   });
 });

@@ -131,6 +131,56 @@ describe('PROPERTY: no prefix leaves an account locked out with mail unrouted', 
   }
 });
 
+/** Every non-empty subset of a list. */
+function subsets<T>(xs: readonly T[]): T[][] {
+  const out: T[][] = [];
+  for (let mask = 1; mask < (1 << xs.length); mask += 1) out.push(xs.filter((_, i) => (mask & (1 << i)) !== 0));
+  return out;
+}
+
+describe('PROPERTY: a DEGRADED mail step holds the lockout back (never "disabled with mail unrouted")', () => {
+  // The property above checks the plan's own order. This one checks what the
+  // plan leaves OUT: a requested mail effect that cannot run (degraded) must
+  // not be silently replaced by a manual item that a person does AFTER the
+  // account is already locked — the lockout is held back with it.
+  const both = cases().filter((c) => c.name.startsWith('both providers'));
+  for (const provider of ['google', 'm365'] as const) {
+    for (const degradedMail of subsets(MAIL_ROUTING[provider])) {
+      for (const c of both) {
+        it(`${provider}: degraded [${degradedMail.join(', ')}] / ${c.name}`, () => {
+          const requested = buildIdentityOffboardingPlan(c.input, c.facts)
+            .filter((e) => e.provider === provider).map((e) => e.toolName);
+          const asked = degradedMail.filter((t) => requested.includes(t));
+          const plan = buildIdentityOffboardingPlan(c.input, { ...c.facts, degradedTools: degradedMail });
+          const tools = plan.filter((e) => e.provider === provider).map((e) => e.toolName);
+          for (const t of degradedMail) expect(tools).not.toContain(t);
+          if (asked.length > 0 && requested.includes(LOCKOUT[provider])) {
+            expect(tools, `${provider}: ${LOCKOUT[provider]} planned although ${asked.join(', ')} cannot run`)
+              .not.toContain(LOCKOUT[provider]);
+            const manual = buildIdentityOffboardingManualWork(
+              c.input, { ...c.facts, degradedTools: degradedMail }, {}, [],
+            ).map((i) => i.key);
+            expect(manual).toContain(`lockout_held:${provider}`);
+          } else if (requested.includes(LOCKOUT[provider])) {
+            // Nothing the plan asked for is missing: the lockout stays.
+            expect(tools).toContain(LOCKOUT[provider]);
+          }
+          // The OTHER provider is untouched by this provider's degradation.
+          const other = provider === 'google' ? 'm365' : 'google';
+          expect(plan.filter((e) => e.provider === other).map((e) => e.toolName))
+            .toEqual(buildIdentityOffboardingPlan(c.input, c.facts).filter((e) => e.provider === other).map((e) => e.toolName));
+        });
+      }
+    }
+  }
+
+  it('the lockout itself being degraded does not invent a lockout_held item', () => {
+    const c = cases().find((x) => x.name === 'both providers / with destination')!;
+    const f = { ...c.facts, degradedTools: ['google_suspend_user', 'google_set_vacation'] };
+    expect(buildIdentityOffboardingManualWork(c.input, f, {}, []).map((i) => i.key)).not.toContain('lockout_held:google');
+  });
+});
+
 describe('PROPERTY: M365 licence removal never precedes shared-mailbox conversion', () => {
   for (const c of cases().filter((x) => (x.input as { keepMailbox: boolean }).keepMailbox)) {
     it(`holds for ${c.name}`, () => {
