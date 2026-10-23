@@ -3197,8 +3197,11 @@ function describeChannelDestination(config: unknown): string | null {
   const parts: string[] = [];
   const hosts = new Set<string>();
   let unparseable = false;
-  for (const [key, value] of Object.entries(c)) {
-    if (!/url$/i.test(key) || typeof value !== 'string' || value.length === 0) continue;
+  // The keys the senders post to come first, then any other *Url key.
+  const urlKeys = ['url', 'webhookUrl', ...Object.keys(c).filter((k) => /url$/i.test(k) && k !== 'url' && k !== 'webhookUrl')];
+  for (const key of urlKeys) {
+    const value = c[key];
+    if (typeof value !== 'string' || value.length === 0) continue;
     try {
       hosts.add(new URL(value).host);
     } catch {
@@ -3219,7 +3222,8 @@ function describeChannelDestination(config: unknown): string | null {
     else phones += 1;
   }
   const emailCount = recipients.length - phones;
-  if (emailCount > 0) parts.push(`${emailCount} recipient(s) at ${[...domains].slice(0, 5).join(', ')}${domains.size > 5 ? ', …' : ''}`);
+  // Every distinct domain, never a truncated list.
+  if (emailCount > 0) parts.push(`${emailCount} recipient(s) at ${[...domains].sort().join(', ')}`);
   if (phones > 0) parts.push(`${phones} phone number(s)`);
 
   if (['routingKey', 'integrationKey'].some((k) => typeof c[k] === 'string' && (c[k] as string).length > 0)) {
@@ -3513,9 +3517,14 @@ function buildApprovalDescription(
         const verb = action === 'create'
           ? `Create ${typeof input.type === 'string' ? `${input.type} ` : ''}notification channel`
           : `Update notification channel ${channelRef}`;
-        parts.push(`${verb}${typeof input.name === 'string' ? ` "${input.name}"` : ''}`);
+        // Destination before the model-chosen name, and the name capped, so
+        // free text can never push the destination out of view.
         const destination = describeChannelDestination(input.config);
+        parts.push(verb);
         if (destination) parts.push(`→ ${destination}`);
+        if (typeof input.name === 'string') {
+          parts.push(`named "${input.name.length > 80 ? `${input.name.slice(0, 80)}…` : input.name}"`);
+        }
       } else if (action === 'delete') {
         parts.push(`Delete notification channel ${channelRef} (linked alert routes go silent; cannot be undone)`);
       } else {

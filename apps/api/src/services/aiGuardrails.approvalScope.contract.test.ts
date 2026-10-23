@@ -558,7 +558,7 @@ describe('W02 approval descriptions name what leaves the tenant (#6756)', () => 
     expect(d).not.toContain('SECRETTOKEN');
     expect(checkGuardrails('manage_notification_channels', {
       action: 'create', type: 'email', name: 'Ops', config: { recipients: ['a@x.test', 'b@x.test'] },
-    }).description).toMatch(/email notification channel "Ops".*2 recipient/);
+    }).description).toMatch(/email notification channel → 2 recipient\(s\) at x\.test named "Ops"/);
   });
   // PR review (#6756): the headline is type-agnostic, so it must show EVERY
   // destination the config carries — a decoy key must not hide the real one.
@@ -577,6 +577,19 @@ describe('W02 approval descriptions name what leaves the tenant (#6756)', () => 
     expect(d).toContain('outside.example');
     expect(d).not.toContain('ops@');
     expect(d).toMatch(/1 phone number/);
+  });
+  it('channel headline never drops a recipient domain', () => {
+    const domains = ['a.example', 'b.example', 'c.example', 'd.example', 'e.example', 'f.example', 'g.example'];
+    const d = channelHeadline({ recipients: domains.map((x) => `ops@${x}`) });
+    for (const x of domains) expect(d).toContain(x);
+  });
+  it('channel headline puts the destination before the model-chosen name, and caps the name', () => {
+    const d = checkGuardrails('manage_notification_channels', {
+      action: 'create', type: 'webhook', name: 'N'.repeat(500), config: { url: 'https://collector.example.net/c' },
+    }).description ?? '';
+    expect(d.indexOf('collector.example.net')).toBeGreaterThan(-1);
+    expect(d.indexOf('collector.example.net')).toBeLessThan(d.indexOf('NNNN'));
+    expect(d).not.toContain('N'.repeat(81));
   });
   it('channel headline says a routing key or token is being set, without echoing it', () => {
     const d = channelHeadline({ routingKey: 'R0UTINGKEY' });
