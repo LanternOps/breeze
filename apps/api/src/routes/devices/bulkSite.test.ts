@@ -454,9 +454,12 @@ describe('POST /devices/bulk/site — whole-batch validation (RF5)', () => {
   });
 
   it('a duplicate that differs only in case is still a duplicate', async () => {
-    const res = await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1), entry(DEV_1.toUpperCase(), SITE_A1)] });
+    // Hex letters on purpose: an all-digit uuid is its own upper-case, which made this test vacuous.
+    const DEV_HEX = 'aabbccdd-eeff-4abc-8def-aabbccddeeff';
+    expect(DEV_HEX.toUpperCase()).not.toBe(DEV_HEX);
+    const res = await post({ siteId: SITE_A2, devices: [entry(DEV_HEX, SITE_A1), entry(DEV_HEX.toUpperCase(), SITE_A1)] });
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ code: 'duplicate_device_ids' });
+    expect(await res.json()).toMatchObject({ code: 'duplicate_device_ids', duplicateIds: [DEV_HEX] });
   });
 
   it.each([
