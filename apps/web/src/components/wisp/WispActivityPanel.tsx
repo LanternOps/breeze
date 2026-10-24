@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '@/lib/utils';
 import { useOrgStore } from '@/stores/orgStore';
 import { fetchWispActivity, safeActivityHref } from './wispActivity';
-import type { ActivityItem } from './wispActivity';
+import type { ActivityItem } from '@breeze/shared';
 
 export default function WispActivityPanel({ threadId, refreshKey = 0 }: { threadId: string; refreshKey?: number }) {
   const { t } = useTranslation('ai');
@@ -52,12 +52,12 @@ export default function WispActivityPanel({ threadId, refreshKey = 0 }: { thread
         <p data-testid="wisp-activity-empty" className="text-xs text-muted-foreground">{t('wisp.activity.empty')}</p>
       )}
       <ul className="space-y-1.5">
-        {items.map((item, i) => {
+        {items.map((item) => {
           const href = safeActivityHref(item.href);
           const orgName = item.orgId ? orgNames.get(item.orgId) : undefined;
           return (
             <li
-              key={`${item.at}-${i}`}
+              key={item.id}
               data-testid="wisp-activity-row"
               data-kind={item.kind}
               className="rounded border px-2 py-1.5 text-xs"

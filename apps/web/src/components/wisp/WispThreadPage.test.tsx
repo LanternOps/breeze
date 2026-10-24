@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   fetchWithAuth: vi.fn(),
+  fetchActivity: vi.fn(),
   enterWispMode: vi.fn(),
   open: vi.fn(),
   updateWisp: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock('../ai/WispConcernsPanel', () => ({
     return <div data-testid="concerns-mock" />;
   },
 }));
+vi.mock('./wispActivity', () => ({ fetchWispActivity: (...a: unknown[]) => h.fetchActivity(...a) }));
 vi.mock('./WispActivityPanel', () => ({
   default: (props: Record<string, unknown>) => {
     h.activityProps.push(props);
@@ -42,7 +44,7 @@ vi.mock('./WispActivityPanel', () => ({
 
 import WispThreadPage from './WispThreadPage';
 
-const payload = (o: { grant?: Record<string, unknown>; currentActivity?: unknown } = {}) => ({
+const payload = (o: { grant?: Record<string, unknown> } = {}) => ({
   data: {
     thread: { id: 't1', grantId: 'g1', summary: 'All quiet.', focusOrgId: null },
     focusOrgName: null,
@@ -51,7 +53,6 @@ const payload = (o: { grant?: Record<string, unknown>; currentActivity?: unknown
       budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
       ...o.grant,
     },
-    ...(o.currentActivity !== undefined ? { currentActivity: o.currentActivity } : {}),
   },
 });
 const res = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body }) as unknown as Response;
@@ -64,6 +65,7 @@ beforeEach(() => {
   h.concernProps = null;
   h.storeWisp = null;
   h.enterWispMode.mockResolvedValue(undefined);
+  h.fetchActivity.mockResolvedValue({ items: [], nextCursor: null, current: null });
   h.fetchWithAuth.mockResolvedValue(res(200, payload()));
 });
 afterEach(() => {
@@ -146,10 +148,18 @@ describe('WispThreadPage (W06 T7)', () => {
     const activityKeys = () => h.activityProps.map((p) => p.refreshKey);
     const before = activityKeys().at(-1);
 
-    h.fetchWithAuth.mockResolvedValue(res(200, payload({ currentActivity: { orgId: 'org-a', orgName: 'Greenwood', startedAt: '2026-10-24T17:59:00.000Z' } })));
+    const live = { orgId: 'org-a', orgName: 'Greenwood', startedAt: '2026-10-24T17:59:00.000Z' };
+    h.fetchActivity.mockResolvedValue({ items: [], nextCursor: null, current: live });
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    await waitFor(() => expect(lastHeader().currentActivity).toEqual({ orgId: 'org-a', orgName: 'Greenwood', startedAt: '2026-10-24T17:59:00.000Z' }));
+    await waitFor(() => expect(lastHeader().currentActivity).toEqual(live));
+    expect(h.fetchActivity).toHaveBeenLastCalledWith('t1', null, 1);
     expect(activityKeys().at(-1)).not.toBe(before);
+
+    // A failed live-line read keeps the last known line and the page.
+    h.fetchActivity.mockRejectedValue(new Error('activity down'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(lastHeader().currentActivity).toEqual(live);
+    expect(screen.getByTestId('header-mock')).toBeTruthy();
 
     const calls = h.fetchWithAuth.mock.calls.length;
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });

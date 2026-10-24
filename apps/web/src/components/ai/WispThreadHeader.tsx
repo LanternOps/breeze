@@ -11,7 +11,7 @@ import { useOrgStore } from '@/stores/orgStore';
 import WispGrantStepUpModal from './WispGrantStepUpModal';
 import WispGrantPauseControl from '../wisp/WispGrantPauseControl';
 import WispSpendMeter from '../wisp/WispSpendMeter';
-import type { CurrentActivity } from '../wisp/wispLiveLine';
+import type { CurrentActivity } from '@breeze/shared';
 
 export type WispThreadHeaderProps = {
   wisp: NonNullable<WispState>;
@@ -28,7 +28,7 @@ export type WispThreadHeaderProps = {
   /** Customer focus is a chat-session setting (spec §6.1); the thread page hides it. */
   showFocus?: boolean;
   /** The running assessment, for the live "Checking …" line (w00 A31); the panel passes none. */
-  currentActivity?: CurrentActivity | null;
+  currentActivity?: CurrentActivity;
 };
 
 const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {

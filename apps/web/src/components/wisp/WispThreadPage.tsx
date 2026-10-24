@@ -8,14 +8,15 @@ import { wispStateFromThread } from '@/lib/wispGrant';
 import WispThreadHeader from '../ai/WispThreadHeader';
 import { WispConcernsPanel } from '../ai/WispConcernsPanel';
 import WispActivityPanel from './WispActivityPanel';
-import { currentActivityFromThread, type CurrentActivity } from './wispLiveLine';
+import { fetchWispActivity } from './wispActivity';
+import type { CurrentActivity } from '@breeze/shared';
 
 type Wisp = NonNullable<WispState>;
 type View =
   | { kind: 'loading' }
   | { kind: 'notFound' }
   | { kind: 'error' }
-  | { kind: 'ready'; wisp: Wisp; current: CurrentActivity | null };
+  | { kind: 'ready'; wisp: Wisp; current: CurrentActivity };
 
 /** The live line and spend meter refresh at this cadence while the tab is visible (w00 A31). */
 const POLL_MS = 30_000;
@@ -58,8 +59,17 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
   const load = useCallback(async (silent: boolean) => {
     const token = ++loadToken.current;
     if (!silent) setView({ kind: 'loading' });
+    // The live line comes from the activity route's `current` (W06a); a failed
+    // read keeps the last known line (undefined) rather than failing the page.
+    const currentRead = fetchWispActivity(threadId, null, 1).then(
+      (page): CurrentActivity | undefined => page.current,
+      (err: unknown) => {
+        console.error('[WispThreadPage] reading the live activity line failed', err);
+        return undefined;
+      },
+    );
     try {
-      const res = await fetchWithAuth(`/wisp/thread/${encodeURIComponent(threadId)}`);
+      const [res, current] = await Promise.all([fetchWithAuth(`/wisp/thread/${encodeURIComponent(threadId)}`), currentRead]);
       if (token !== loadToken.current) return;
       if (res.status === 404) {
         setView({ kind: 'notFound' });
@@ -70,8 +80,8 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
       if (token !== loadToken.current) return;
       const next = wispStateFromThread(body);
       if (!next) throw new Error('wisp thread read: malformed payload');
-      const prev = viewRef.current.kind === 'ready' ? viewRef.current.wisp : null;
-      setView({ kind: 'ready', wisp: mergePolled(prev, next), current: currentActivityFromThread(body) });
+      const prev = viewRef.current.kind === 'ready' ? viewRef.current : null;
+      setView({ kind: 'ready', wisp: mergePolled(prev?.wisp ?? null, next), current: current === undefined ? (prev?.current ?? null) : current });
     } catch (err) {
       console.error('[WispThreadPage] loading the thread failed', err);
       if (token === loadToken.current && !(silent && viewRef.current.kind === 'ready')) setView({ kind: 'error' });

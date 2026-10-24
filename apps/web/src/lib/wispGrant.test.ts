@@ -2,28 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
-import { wispStateFromThread } from '@/lib/wispGrant';
-import { currentActivityFromThread } from './wispLiveLine';
+import { wispStateFromThread } from './wispGrant';
 
-const body = (grant: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({
+const body = (grant: Record<string, unknown> = {}) => ({
   data: {
     thread: { id: 't1', summary: 'All quiet.', focusOrgId: null },
     grant: { id: 'g1', status: 'active', orgId: null, expiresAt: '2027-01-17T00:00:00.000Z', budgetCentsPerDay: 200, floorTickMinutes: 30, ...grant },
-    ...extra,
   },
-});
-
-describe('currentActivityFromThread (w00 A31 live line)', () => {
-  it('reads data.currentActivity', () => {
-    expect(currentActivityFromThread(body({}, { currentActivity: { orgId: 'o1', orgName: 'Greenwood', startedAt: '2026-10-24T00:00:00.000Z' } })))
-      .toEqual({ orgId: 'o1', orgName: 'Greenwood', startedAt: '2026-10-24T00:00:00.000Z' });
-  });
-  it('is null when absent, null, or missing startedAt', () => {
-    expect(currentActivityFromThread(body())).toBeNull();
-    expect(currentActivityFromThread(body({}, { currentActivity: null }))).toBeNull();
-    expect(currentActivityFromThread(body({}, { currentActivity: { orgId: 'o1' } }))).toBeNull();
-    expect(currentActivityFromThread(null)).toBeNull();
-  });
 });
 
 describe('wispStateFromThread W06 fields (A32 spend, A29 pause reason)', () => {

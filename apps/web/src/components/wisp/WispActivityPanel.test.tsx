@@ -11,7 +11,7 @@ vi.mock('@/stores/orgStore', () => ({
 import WispActivityPanel from './WispActivityPanel';
 
 const mk = (title: string, extra: Record<string, unknown> = {}) => ({
-  at: new Date(Date.now() - 3600_000).toISOString(), kind: 'concern', orgId: null, title, detail: null, href: null, costCents: null, ...extra,
+  id: `i-${title}`, at: new Date(Date.now() - 3600_000).toISOString(), kind: 'concern', orgId: null, title, detail: null, href: null, costCents: null, ...extra,
 });
 
 beforeEach(() => {
