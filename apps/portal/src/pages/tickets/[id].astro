@@ -30,7 +30,9 @@ let pendingApproval: {
   id: string;
   approval: Pick<PortalApproval, 'trigger' | 'ticketNumber' | 'ask'>;
 } | null = null;
-if (response.data) {
+// A merged tombstone (#8972) has no approvals of its own to surface.
+const isMerged = !!response.data && 'merged' in response.data && response.data.merged === true;
+if (response.data && !isMerged) {
   const approvals = await portalApi.getApprovals(buildServerApiConfig(Astro.request), { pendingOnly: true });
   if (approvals.statusCode === 200) {
     const match = (approvals.data?.data ?? []).find((a) => a.ticketId === id && a.canDecide);
