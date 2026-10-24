@@ -7,6 +7,7 @@
     "unavailable": "Les détails de la connexion ne sont pas disponibles.",
     "onboardingUnavailable": "L’intégration de lecture Microsoft Graph du client n’est pas activée pour cette organisation.",
     "notAvailableOnInstance": "Pas encore disponible sur cette instance de Breeze.",
+    "notEnabledForOrg": "Pas encore activé pour cette organisation. Demandez à votre administrateur Breeze de l'activer.",
     "callback": {
       "active": "Le consentement Microsoft est terminé. L’état actualisé de la connexion est affiché ci-dessous.",
       "degraded": "Le consentement Microsoft est terminé, mais la connexion nécessite une intervention. Les détails actualisés sont affichés ci-dessous."
@@ -82,7 +83,9 @@
         "intune_devices": "Appareils Intune",
         "ca_policies": "Accès conditionnel",
         "skus": "Licences",
-        "secure_score": "Niveau de sécurité"
+        "secure_score": "Niveau de sécurité",
+        "signin_events": "Événements de connexion",
+        "unknown": "Type de données non reconnu"
       }
     },
     "errors": {
@@ -104,6 +107,7 @@
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
+      "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
     },
     "stepTitle": "Accès en lecture",
@@ -125,6 +129,7 @@
     "unavailable": "Les détails de la connexion ne sont pas disponibles.",
     "onboardingUnavailable": "L’intégration des actions Microsoft Graph du client n’est pas activée pour cette organisation.",
     "notAvailableOnInstance": "Pas encore disponible sur cette instance de Breeze.",
+    "notEnabledForOrg": "Pas encore activé pour cette organisation. Demandez à votre administrateur Breeze de l'activer.",
     "callback": {
       "active": "Le consentement Microsoft est terminé. L’état actualisé de la connexion est affiché ci-dessous.",
       "degraded": "Le consentement Microsoft est terminé, mais la connexion nécessite une intervention. Les détails actualisés sont affichés ci-dessous."
@@ -188,6 +193,7 @@
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
+      "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
     },
     "stepTitle": "Actions d'administration",
@@ -260,6 +266,7 @@
   "m365TenantPanel": {
     "loading": "Chargement des connexions Microsoft 365.",
     "consentUnavailable": "La connexion par consentement n'est pas encore disponible sur cette instance Breeze.",
+    "consentNotEnabledForOrg": "La connexion par consentement n'est pas encore activée pour cette organisation. Demandez à votre administrateur Breeze de l'activer.",
     "selectOrganization": "Sélectionnez une organisation pour connecter son locataire Microsoft 365.",
     "noTenantForOrg": "Aucun locataire Microsoft 365 connecté à {{orgName}}",
     "tenantConnectedToOrg": "{{tenantName}} · connecté à {{orgName}}",
@@ -333,6 +340,9 @@
     "retry": "Réessayer",
     "since": "depuis {{time}}",
     "fix": "Corriger",
+    "remedy": {
+      "reconnect": "Reconnectez-vous depuis l’application cliente (p. ex. ajoutez de nouveau le serveur MCP). Aucune action dans Breeze."
+    },
     "truncated": "Affichage des {{count}} premiers",
     "recentlyResolved": "Résolus récemment ({{count}})",
     "resolution": {
@@ -587,7 +597,7 @@
     "hidePassword": "Masquer le mot de passe",
     "portalLabelToggle": "Afficher le nom du fournisseur dans le portail client",
     "portalLabelHelp": "Désactivé par défaut : les clients voient « Sauvegarde cloud infogérée » au lieu du nom de l'éditeur.",
-    "credentialsHelp": "Créez un utilisateur de console Cove dédié, en lecture seule, avec un mot de passe unique et sans authentification à deux facteurs. Breeze lit uniquement l'état et ne modifie rien dans Cove.",
+    "credentialsHelp": "Créez un utilisateur API Cove (Management → Users → API Users) sous votre client de premier niveau. Saisissez le nom de ce client comme nom du partenaire, le nom de connexion de l'utilisateur API comme nom d'utilisateur et son jeton comme mot de passe. Breeze lit uniquement l'état et ne modifie rien dans Cove.",
     "test": "Tester la connexion",
     "syncNow": "Synchroniser maintenant",
     "reauthRequired": "Identifiants refusés",
@@ -720,7 +730,10 @@
     "allApplications": "Toutes les applications",
     "searchAllApplicationsFirst2": " (et non « Applications que je possède ») une application Breeze existante dans ce locataire Entra. ",
     "tenantIdGuidPlaceholder": "ID de locataire (GUID), p. ex. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " L'enregistrement nécessite une vérification MFA.",
+    "clientSecretPlaceholder": "secret client de l'application",
+    "clientSecretStoredPlaceholder": "•••••••••• (stocké, chiffré)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Santé des dispositifs",

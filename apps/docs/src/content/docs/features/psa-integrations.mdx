@@ -1,14 +1,14 @@
 ---
 title: PSA Integrations
-description: Connect Breeze to your PSA platform to sync tickets, encrypt credentials, and keep alerts and devices tied to external work items.
+description: Connect Breeze to your PSA platform with encrypted credentials, test the connection, and import its companies as organizations. Ticket sync is not available yet.
 ---
 
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-PSA (Professional Services Automation) integrations connect Breeze to the ticketing platform your service desk already runs on. Connections are database-backed with encrypted credential storage and configurable sync settings.
+PSA (Professional Services Automation) integrations connect Breeze to the ticketing platform your service desk already runs on. Connections are database-backed with encrypted credential storage. Today a connection lets you test your credentials and import the PSA's companies as organizations.
 
 <Aside type="caution">
-  Ticket syncing itself is not implemented yet -- there is no automatic or manual sync, and no ticket mappings are created. You can create, test, and configure a connection today, but no ticket data moves between Breeze and your PSA until sync ships.
+  Ticket syncing itself is not implemented yet -- there is no automatic or manual sync, and no ticket mappings are created. You can create and test a connection and import companies today, but no ticket data moves between Breeze and your PSA until sync ships.
 </Aside>
 
 You manage PSA connections from **Integrations → PSA**. The tab is deep-linkable at `/integrations#psa`.
@@ -53,7 +53,7 @@ A partner-wide connection is visible to any partner-scope user — but the ticke
 
 4. Under **Credentials**, fill in the fields your provider requires — any combination of **Username**, **Password**, **API Token**, **Client ID**, and **Client Secret**. Secret fields are masked; use the eye toggle to reveal what you typed. Only the fields relevant to your provider need values.
 
-5. Under **Sync settings**, choose your sync preferences (see [Ticket Sync Settings](#ticket-sync-settings) below) -- these are saved but not yet acted on.
+5. The form shows a **Ticket Sync** note instead of sync controls: ticket sync is not available yet (see [Ticket Sync](#ticket-sync) below).
 
 6. Click **Create connection**. Breeze encrypts the credentials and saves the connection.
 
@@ -90,7 +90,7 @@ The **Test connection** button is available when you edit an existing connection
 - On failure, Breeze shows the error returned by the provider along with a prompt to re-check your credentials and instance URL.
 
 <Aside type="tip">
-  If you just created a connection, reopen it with **Edit** to reach the **Test connection** button. Testing before you rely on sync catches bad credentials, an incorrect instance URL, or a provider that requires IP allowlisting for API access.
+  If you just created a connection, reopen it with **Edit** to reach the **Test connection** button. Testing before you import companies catches bad credentials, an incorrect instance URL, or a provider that requires IP allowlisting for API access.
 </Aside>
 
 ---
@@ -101,7 +101,7 @@ The PSA tab lists every connection with its provider, name, and status. You can 
 
 | Action | What it does |
 |--------|--------------|
-| **Edit** | Open the connection to change its name, credentials, or sync settings, or to test it |
+| **Edit** | Open the connection to change its name or credentials, or to test it |
 | **Pause / Resume** | Toggle the connection between `active` and `paused` |
 | **Delete** | Remove the connection permanently |
 
@@ -147,19 +147,9 @@ The preview calls out anything that affects the result:
 
 ---
 
-## Ticket Sync Settings
+## Ticket Sync
 
-Each connection carries sync settings, configured under **Sync settings** when you create or edit it -- but syncing itself is not implemented yet (see the caution at the top of this page), so these fields have no effect today.
-
-| Setting | Options | Purpose (once sync ships) |
-|---------|---------|---------|
-| **Enable sync** | On / Off | Master switch for automatic syncing on this connection |
-| **Sync interval** | Every 15 minutes, 30 minutes, hourly, every 6 hours, daily | How often Breeze would run an automatic sync |
-| **Sync direction** | Inbound, Outbound, Bidirectional | Which way ticket data would flow between Breeze and the PSA |
-| **Auto-close / sync on close** | On / Off | Keep ticket close state in sync between the two systems |
-| **Include notes** | On / Off | Carry ticket notes across during sync |
-
-The interval, direction, auto-close, and notes controls are only editable while **Enable sync** is on.
+Ticket sync is not available yet. The connection form no longer offers sync settings (enable, interval, direction, auto-close, notes) because nothing would act on them: there is no automatic or manual sync, and no ticket data moves between Breeze and your PSA. Connections created earlier may still carry stored sync settings; they have no effect.
 
 ---
 
@@ -185,5 +175,5 @@ The most recent connection test failed. Open the connection, run **Test connecti
 ## Related
 
 - [Integrations overview](/features/integrations/) — the full Integrations page, including communication, monitoring, accounting, distributor, and network integrations.
-- [Ticketing](/features/ticketing/) — Breeze's native ticketing system that PSA connections sync against.
+- [Ticketing](/features/ticketing/) — Breeze's native ticketing system.
 - [Webhooks](/features/webhooks/) — push real-time event notifications to external systems, including your PSA or messaging tools.

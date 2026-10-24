@@ -58,6 +58,12 @@ const NEVER_PORTAL_VISIBLE = new Set<string>([
   'ar_aging',
   // #7608 W10: per-client AI cost and chargeable amounts are the MSP's own numbers.
   'ai_usage_by_client',
+  // MRR, ARR and renewals are the MSP's own revenue numbers.
+  'mrr_renewals',
+  // Win rate and quoted/won values across the MSP's own proposals.
+  'quote_win_rate',
+  // Per-client revenue, cost and margin are the MSP's own numbers.
+  'client_profitability',
 ]);
 
 /** What the reader is told is happening, in their own language. The MSP-side
@@ -334,16 +340,18 @@ export function ReportRunList({
                             <Download className="h-4 w-4" aria-hidden="true" />
                             PDF
                           </a>
-                          <a
-                            data-testid={`portal-report-run-csv-${run.id}`}
-                            href={portalApi.reportArtifactUrl(run.id, 'csv')}
-                            download
-                            aria-label={`Download ${name} as CSV`}
-                            className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
-                          >
-                            <Download className="h-4 w-4" aria-hidden="true" />
-                            CSV
-                          </a>
+                          {run.csvAvailable && (
+                            <a
+                              data-testid={`portal-report-run-csv-${run.id}`}
+                              href={portalApi.reportArtifactUrl(run.id, 'csv')}
+                              download
+                              aria-label={`Download ${name} as CSV`}
+                              className={cn(BTN_SECONDARY, 'min-h-11 sm:min-h-0 sm:py-1.5')}
+                            >
+                              <Download className="h-4 w-4" aria-hidden="true" />
+                              CSV
+                            </a>
+                          )}
                         </div>
                       )}
                     </td>

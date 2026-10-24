@@ -171,6 +171,10 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   computeWallMs: bigint('compute_wall_ms', { mode: 'number' }),
   computeCents: integer('compute_cents'),
   computeReservedCents: integer('compute_reserved_cents'),
+  // #9451: this attempt's compute settlement claim (every billing source).
+  // Only the settle that sets it writes compute_cents, the rollups and the
+  // credit debit intent; the enqueue_failed reclaim (a new attempt) clears it.
+  computeSettledAt: timestamp('compute_settled_at', { withTimezone: true }),
   workspaceId: uuid('workspace_id'),
   errorCode: varchar('error_code', { length: 64 }),
   correlationId: varchar('correlation_id', { length: 64 }),

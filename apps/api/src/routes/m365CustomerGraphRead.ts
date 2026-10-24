@@ -29,7 +29,8 @@ import {
   type GrantHealth,
 } from '../services/m365ControlPlane/connectionService';
 import { buildM365ConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
-import { isM365CustomerGraphReadOnboardingEnabledForOrg } from '../services/m365ControlPlane/runtimeConfig';
+import type { M365Availability } from '../services/m365ControlPlane/availability';
+import { isM365CustomerGraphReadOnboardingEnabledForOrg, m365CustomerGraphReadOnboardingAvailability } from '../services/m365ControlPlane/runtimeConfig';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -111,6 +112,7 @@ export interface CustomerGraphReadEnvelope {
     requiredGrants: M365ApplicationGrant[];
   };
   onboardingEnabled: boolean;
+  onboardingAvailability: M365Availability;
   connection: CustomerGraphReadConnectionDto | null;
   /** W05: tenant sync is available in this deployment. Gates the Sync now button. */
   syncEnabled: boolean;
@@ -159,6 +161,8 @@ async function envelope(
       requiredGrants: [...(profileManifest.applicationPermissionAssignments ?? [])],
     },
     onboardingEnabled: isM365CustomerGraphReadOnboardingEnabledForOrg(orgId),
+    // Which switch is off (#9319); onboardingEnabled stays for compatibility.
+    onboardingAvailability: m365CustomerGraphReadOnboardingAvailability(orgId),
     connection: connection ? toConnectionDto(connection) : null,
     syncEnabled,
     // Envelope-level, not on the connection DTO (W01 owns that shape). Read on

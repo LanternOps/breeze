@@ -68,7 +68,9 @@ contractCrudRoutes.get('/:id/estimate', scopes, readPerm, zValidator('param', id
   catch (err) { return handleContractError(c, err); }
 });
 contractCrudRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam), async (c) => {
-  try { return c.json({ data: await getContract(c.req.valid('param').id, contractActorFrom(c)) }); }
+  // #9303: the contract page needs the org's other live contracts for its
+  // double-billing notice and activate confirm.
+  try { return c.json({ data: await getContract(c.req.valid('param').id, contractActorFrom(c), { includeRelated: true }) }); }
   catch (err) { return handleContractError(c, err); }
 });
 contractCrudRoutes.patch('/:id', scopes, writePerm, zValidator('param', idParam), zValidator('json', updateContractSchema), async (c) => {

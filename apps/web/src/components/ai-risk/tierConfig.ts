@@ -142,6 +142,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_script_proposal', description: 'Read a script proposal, its scan and its review', category: 'Scripts & Automation' },
       { name: 'list_playbooks', description: 'List self-healing playbooks', category: 'Scripts & Automation' },
       { name: 'get_playbook_history', description: 'Playbook execution history', category: 'Scripts & Automation' },
+      // Tool Catalog W03 (#5218, behind FLOWS_ENABLED): flow reads.
+      { name: 'validate_flow', description: 'Check a flow document without saving it', category: 'Scripts & Automation' },
+      { name: 'get_flow', description: 'Read a flow and re-validate it', category: 'Scripts & Automation' },
+      { name: 'list_flows', description: 'List flows and drafts', category: 'Scripts & Automation' },
       // Configuration Policies
       { name: 'list_configuration_policies', description: 'List config policies', category: 'Configuration Policies' },
       { name: 'get_configuration_policy', description: 'Get config policy details', category: 'Configuration Policies' },
@@ -202,6 +206,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_running_timer', description: 'Get the current running timer', category: 'Ticketing' },
       { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
       { name: 'get_ticket_approval_status', description: 'View a ticket\'s budget and customer-approval status', category: 'Ticketing' },
+      { name: 'list_business_calendars', description: 'List business-hours calendars used for SLA deadlines', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
@@ -226,6 +231,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
     badgeBg: 'bg-blue-500/15',
     badgeText: 'text-blue-700',
     tools: [
+      // Tool Catalog W03 (#5218, behind FLOWS_ENABLED): saves a draft; nothing runs.
+      { name: 'draft_flow', description: 'Save a flow as a reviewable draft', category: 'Scripts & Automation' },
       // Security & Compliance — EDR provider framework (#8167 W03)
       { name: 'edr_endpoint_action (scan)', description: 'EDR scan of a device through its linked vendor', category: 'Security & Compliance' },
       { name: 'sync_edr_data', description: 'Queue an immediate EDR vendor sync', category: 'Security & Compliance' },
@@ -580,6 +587,13 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   security_scan: { scan: 'devices.execute', status: 'devices.execute', quarantine: 'devices.execute', remove: 'devices.execute', restore: 'devices.execute', vulnerabilities: 'devices.read' },
   get_security_posture: 'devices.read',
   get_trust_page_status: 'organizations.read',
+  // Tool Catalog W03 (#5218)
+  draft_flow: 'automations.write',
+  validate_flow: 'automations.read',
+  get_flow: 'automations.read',
+  list_flows: 'automations.read',
+  // #8973 W4: business-hours calendars (read-only)
+  list_business_calendars: 'tickets.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
   system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },

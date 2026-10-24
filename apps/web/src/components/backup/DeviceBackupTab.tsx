@@ -13,6 +13,7 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
+import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
 import { friendlyFetchError } from '../../lib/utils';
 import { useScrollToError } from '../../lib/scrollToError';
 import BackupVerificationTab from './BackupVerificationTab';
@@ -67,6 +68,8 @@ type Snapshot = {
   id: string;
   deviceId: string;
   label: string | null;
+  /** From GET /backup/snapshots; absent on an older API. */
+  integrityStatus?: string | null;
   createdAt: string;
   sizeBytes?: number | null;
   fileCount?: number | null;
@@ -916,6 +919,7 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                   <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.created2')}</th>
                   <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.expires2')}</th>
                   <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.size')}</th>
+                  <th className="pb-2 pr-4 font-medium">{t('deviceBackupTab.integrity')}</th>
                   <th className="pb-2 font-medium">{t('deviceBackupTab.protection2')}</th>
                 </tr>
               </thead>
@@ -936,6 +940,9 @@ export default function DeviceBackupTab({ deviceId, deviceStatus, timezone }: De
                     <td className="py-2 pr-4 text-muted-foreground">{formatTime(snap.expiresAt, effectiveZone)}</td>
                     <td className="py-2 pr-4 text-muted-foreground">
                       {formatBytes(snap.sizeBytes)}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <SnapshotIntegrityBadge status={snap.integrityStatus} />
                     </td>
                     <td className="py-2">
                       <div className="flex flex-wrap items-center gap-1.5">

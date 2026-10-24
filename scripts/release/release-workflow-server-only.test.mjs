@@ -45,7 +45,6 @@ const BINARY_JOBS = [
   'build-viewer-macos',
   'build-helper-macos',
   'resolve-windows-signing-provider',
-  'sign-windows-tauri-azure',
   'sign-windows-tauri-sslcom',
   'sign-windows-tauri',
   'package-windows-updater',
@@ -114,7 +113,7 @@ test('every binary/signing job needs classify-release and is gated on release_ki
 
 test('discovery: no other job produces binaries, holds signing secrets or OIDC, or pushes the binaries image', () => {
   const BINARY_ARTIFACT = /^\s+(?:name|asset_name): (?:breeze-(?:agent|backup|watchdog|user-helper|desktop-helper|viewer|helper|recovery)-|breeze-installer-app\b|viewer-latest-json\b|macos-pkg-attestation\b)/mu;
-  const SIGNING_SECRET = /\bsecrets\.(?:TAURI_SIGNING_|APPLE_|SSLCOM_|AZURE_)/u;
+  const SIGNING_SECRET = /\bsecrets\.(?:TAURI_SIGNING_|APPLE_|SSLCOM_)/u;
   const discovered = new Set();
   for (const [name] of releaseJobs) {
     const text = jobText(name);
@@ -384,7 +383,9 @@ const EVENTS = {
 const VARS = [];
 for (const windows of ['true', 'false']) {
   for (const macos of ['true', 'false']) {
-    for (const provider of ['azure', 'sslcom']) {
+    // SSL.com is the only Windows signing provider (the Azure lane was retired);
+    // an empty variable resolves to it, exactly as the resolver script does.
+    for (const provider of ['', 'sslcom']) {
       VARS.push({ ENABLE_WINDOWS_SIGNING: windows, ENABLE_MACOS_SIGNING: macos, WINDOWS_SIGNING_PROVIDER: provider });
     }
   }
@@ -398,26 +399,25 @@ const isTagRelease = ({ github, inputs }) => github.ref_type === 'tag'
 // a tag release requires lineage success (else the job fails, no output).
 function scenario(event, vars, failures, kind = 'full') {
   const base = EVENTS[event];
+  // .github/scripts/resolve-windows-signing-provider.mjs: empty resolves to sslcom.
+  const resolvedProvider = vars.WINDOWS_SIGNING_PROVIDER === '' ? 'sslcom' : vars.WINDOWS_SIGNING_PROVIDER;
   return {
     ...base,
     vars,
     failures,
     outputs(name) {
-      if (name === 'resolve-windows-signing-provider') return { provider: vars.WINDOWS_SIGNING_PROVIDER };
+      if (name === 'resolve-windows-signing-provider') return { provider: resolvedProvider };
       if (name === 'validate-release-lineage') return { channel: 'mainline' };
       if (name === 'classify-release') return { release_kind: isTagRelease(base) ? kind : 'full', binaries_version: kind === 'server-only' ? '1.2.0' : '' };
       return {};
     },
     behaviour: {
       'classify-release': (results) => (isTagRelease(base) && results['validate-release-lineage'] !== 'success' ? 'failure' : 'success'),
-      // .github/scripts/assert-windows-signing-convergence.mjs: exactly the
-      // selected provider succeeded and the other was skipped.
+      // .github/scripts/assert-windows-signing-convergence.mjs: the selected
+      // provider's signing job succeeded; anything else fails closed.
       'sign-windows-tauri': (results) => {
-        const azure = results['sign-windows-tauri-azure'];
-        const sslcom = results['sign-windows-tauri-sslcom'];
-        const converged = vars.WINDOWS_SIGNING_PROVIDER === 'azure'
-          ? azure === 'success' && sslcom === 'skipped'
-          : sslcom === 'success' && azure === 'skipped';
+        const converged = resolvedProvider === 'sslcom'
+          && results['sign-windows-tauri-sslcom'] === 'success';
         return converged ? 'success' : 'failure';
       },
     },
@@ -452,7 +452,7 @@ test('the job-graph snapshot is the pre-change graph and the current graph only 
 // signs, notarizes, publishes or promotes anything.
 const SIGNING_OR_PUBLISHING = [
   'build-macos-agent', 'build-macos-installer-app', 'build-viewer', 'build-viewer-macos', 'build-helper-macos',
-  'sign-windows-tauri-azure', 'sign-windows-tauri-sslcom', 'package-windows-updater', 'build-binaries-image',
+  'sign-windows-tauri-sslcom', 'package-windows-updater', 'build-binaries-image',
   'create-release', 'promote-signed-release-images',
 ];
 

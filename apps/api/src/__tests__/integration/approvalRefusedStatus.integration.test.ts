@@ -70,7 +70,8 @@ async function seedScenario(): Promise<Scenario> {
   const org = await createOrganization({ partnerId: partner.id });
   const site = await createSite({ orgId: org.id });
   const role = await createRole({ scope: 'organization', orgId: org.id });
-  await grantRolePermissions(role.id, [PERMISSIONS.PAM_APPROVE]);
+  // UAC approvals must satisfy both PAM decision and device execution grants.
+  await grantRolePermissions(role.id, [PERMISSIONS.PAM_APPROVE, PERMISSIONS.DEVICES_EXECUTE]);
   const approver = await createUser({
     partnerId: partner.id,
     orgId: org.id,
@@ -153,7 +154,8 @@ async function approverApp(s: Scenario): Promise<{ app: Hono; token: string }> {
     orgId: s.orgId,
     partnerId: s.partnerId,
     scope: 'organization',
-    mfa: false,
+    // The approvals/mobile path now enforces the same UAC MFA gate as PAM respond.
+    mfa: true,
     aep: 1,
     mep: 1,
     sid: randomUUID(),

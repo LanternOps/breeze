@@ -90,3 +90,49 @@ export function firstAnchorAfter(effectiveFrom: string, cadence: Cadence): strin
   if (months === null) return effectiveFrom;
   return addDaysISO(addMonthsClamped(effectiveFrom, months), -1);
 }
+
+function daysBetween(fromISO: string, toISO: string): number {
+  return Math.round((Date.parse(`${toISO}T00:00:00Z`) - Date.parse(`${fromISO}T00:00:00Z`)) / 86_400_000);
+}
+
+/**
+ * #9309: the schedule a deliverable with NO occurrence yet gets when its
+ * contract's start moves to `newStart` (a draft's start-date edit, or
+ * activation). `effective_from` becomes the new start. A recurring item is
+ * re-anchored exactly as template apply would anchor it (firstAnchorAfter); a
+ * one-time item keeps its offset from its old `effective_from` — "re-based
+ * relative to the start" — so a template item due on the start stays due on
+ * the start, and one due 14 days in stays 14 days in. A negative offset (due
+ * before its own effective_from, so it could never fire) is clamped to the
+ * start. A pure function of the current row, so re-applying it is a no-op.
+ */
+export function rebasedSchedule(
+  d: { cadence: Cadence; anchorDueDate: string; effectiveFrom: string },
+  newStart: string,
+): { effectiveFrom: string; anchorDueDate: string } {
+  if (d.cadence !== 'one_time') return { effectiveFrom: newStart, anchorDueDate: firstAnchorAfter(newStart, d.cadence) };
+  const offset = Math.max(0, daysBetween(d.effectiveFrom, d.anchorDueDate));
+  return { effectiveFrom: newStart, anchorDueDate: addDaysISO(newStart, offset) };
+}
+
+/**
+ * The next due date a deliverable will be planned for, without any occurrence row
+ * (#9308): the first nthDueDate(n) that is >= effectiveFrom, strictly after the
+ * latest materialized nominal due date (`afterDue`), and inside effectiveUntil.
+ * Null when the schedule is exhausted (a one-time already materialized, or past
+ * the window).
+ */
+export function nextPlannedDueDate(input: {
+  anchorDueDate: string; cadence: Cadence; effectiveFrom: string; effectiveUntil: string | null; afterDue: string | null;
+}): string | null {
+  // 600 monthly steps = 50 years; bounds the walk for an ancient anchor.
+  for (let n = 0; n < 600; n++) {
+    const due = nthDueDate(input.anchorDueDate, input.cadence, n);
+    if (due === null) return null;
+    if (input.effectiveUntil !== null && due > input.effectiveUntil) return null;
+    if (due < input.effectiveFrom) continue;
+    if (input.afterDue !== null && due <= input.afterDue) continue;
+    return due;
+  }
+  return null;
+}

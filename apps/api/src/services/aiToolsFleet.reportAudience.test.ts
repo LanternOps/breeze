@@ -82,6 +82,7 @@ import {
 } from './siteScope';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { REPORT_TYPES } from '@breeze/shared';
 
 const mockCheck = checkAutomationTargetsWithinSiteScope as unknown as ReturnType<typeof vi.fn>;
 
@@ -301,17 +302,109 @@ describe('ruling P8b: generate_report hides a type whose read permission the cal
       { resource: 'tickets', action: 'read' },
       { resource: 'time_entries', action: 'read' },
       { resource: 'ai_sessions', action: 'read_all' },
+      // #9828: held so this caller lacks invoices:read ONLY (mrr_renewals needs contracts:read).
+      { resource: 'contracts', action: 'read' },
+      // #9828 W2: held so this caller lacks invoices:read ONLY (quote_win_rate needs quotes:read).
+      { resource: 'quotes', action: 'read' },
     ],
   };
   beforeEach(() => {
     permissionsMock.getUserPermissions.mockResolvedValue(NO_INVOICES);
   });
 
+  // #9828 W1 (Gate B 1): mrr_renewals is AI-reachable through the inherited
+  // gates only — hidden from a caller without contracts:read.
+  it('list: mrr_renewals is excluded for a caller without contracts:read, and not once it is held', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [...NO_INVOICES.permissions.filter((p) => p.resource !== 'contracts'), { resource: 'invoices', action: 'read' }],
+    });
+    selectReturning(null);
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual(['mrr_renewals']);
+    wheres.length = 0;
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [...NO_INVOICES.permissions, { resource: 'invoices', action: 'read' }],
+    });
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual([]);
+  });
+
+  it('create mrr_renewals: a partner caller without contracts:read is refused', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [{ resource: 'reports', action: '*' }, { resource: 'invoices', action: 'read' }],
+    });
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'mrr_renewals', orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.error).toBe('Insufficient permissions');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  // #9828 W2 (Gate B 1): quote_win_rate is AI-reachable through the inherited
+  // gates only — hidden from a partner caller that holds reports:* but not
+  // quotes:read; an org-scope caller never reaches it (msp_staff audience, see
+  // the BUSINESS org-scope refusal below).
+  it('list: quote_win_rate is excluded for a caller without quotes:read, and not once it is held', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [...NO_INVOICES.permissions.filter((p) => p.resource !== 'quotes'), { resource: 'invoices', action: 'read' }],
+    });
+    selectReturning(null);
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual(['quote_win_rate']);
+    wheres.length = 0;
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [...NO_INVOICES.permissions, { resource: 'invoices', action: 'read' }],
+    });
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual([]);
+  });
+
+  it('create quote_win_rate: a partner caller without quotes:read is refused, nothing written', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [{ resource: 'reports', action: '*' }, { resource: 'invoices', action: 'read' }],
+    });
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'quote_win_rate', orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.error).toBe('Insufficient permissions');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  // #9828 W3 (Gate B 1): client_profitability needs invoices:read AND
+  // time_entries:read; AI-reachable through the inherited gates only.
+  it('list: client_profitability is excluded for a caller without time_entries:read, and not once it is held', async () => {
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [...NO_INVOICES.permissions.filter((p) => p.resource !== 'time_entries'), { resource: 'invoices', action: 'read' }],
+    });
+    selectReturning(null);
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    // technician_time_billability needs time_entries:read too; order follows REPORT_TYPES.
+    expect(notInTypes(wheres[0])).toEqual(REPORT_TYPES.filter((t) => t === 'technician_time_billability' || t === 'client_profitability'));
+    wheres.length = 0;
+    permissionsMock.getUserPermissions.mockResolvedValue({
+      permissions: [...NO_INVOICES.permissions, { resource: 'invoices', action: 'read' }],
+    });
+    await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
+    expect(notInTypes(wheres[0])).toEqual([]);
+  });
+
+  it.each([
+    ['time_entries:read', [{ resource: 'reports', action: '*' }, { resource: 'invoices', action: 'read' }]],
+    ['invoices:read', [{ resource: 'reports', action: '*' }, { resource: 'time_entries', action: 'read' }]],
+  ])('create client_profitability: a partner caller without %s is refused', async (_missing, permissions) => {
+    permissionsMock.getUserPermissions.mockResolvedValue({ permissions });
+    const r = JSON.parse(await handlerFor('generate_report')(
+      { action: 'create', name: 'R', reportType: 'client_profitability', orgId: ORG_ID }, partnerAuth(),
+    ));
+    expect(r.error).toBe('Insufficient permissions');
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
   // ai_usage_by_client (#7608) also needs invoices:read, so it is hidden too.
   it('list: excludes the invoices:read types only; nothing excluded for a caller holding invoices:read', async () => {
     selectReturning(null);
     await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
-    expect(notInTypes(wheres[0])).toEqual(['ar_aging', 'ai_usage_by_client']);
+    expect(notInTypes(wheres[0])).toEqual(['ar_aging', 'ai_usage_by_client', 'client_profitability']);
     wheres.length = 0;
     permissionsMock.getUserPermissions.mockResolvedValue({ permissions: [{ resource: '*', action: '*' }] });
     await handlerFor('generate_report')({ action: 'list' }, partnerAuth());
@@ -387,7 +480,7 @@ describe('generate_report never edits or deletes a multi-org series child (W02)'
  * (tickets/time/invoices/AI ledger have no site axis).
  */
 describe('generate_report accepts the business report types behind the route gates (#9222)', () => {
-  const BUSINESS = ['ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client'] as const;
+  const BUSINESS = ['ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client', 'mrr_renewals', 'quote_win_rate', 'client_profitability'] as const;
   const ALL_PERMS = { permissions: [{ resource: '*', action: '*' }] };
   const restricted = () => ({
     ok: true,

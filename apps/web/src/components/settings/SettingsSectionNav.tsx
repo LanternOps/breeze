@@ -1,7 +1,7 @@
 import '@/lib/i18n';
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { type LucideIcon } from 'lucide-react';
+import { ExternalLink, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export type SettingsNavItem = {
@@ -14,6 +14,11 @@ export type SettingsNavItem = {
   icon: LucideIcon;
   /** Section has unsaved changes — shows a dot and announces it to AT. */
   dirty?: boolean;
+  /**
+   * Link-out item: renders a real `<a href>` that navigates normally (Astro
+   * router) instead of activating an in-page section. Never current, never dirty.
+   */
+  href?: string;
 };
 
 export type SettingsNavGroup = {
@@ -93,7 +98,15 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
         <select
           id={selectId}
           value={activeKey}
-          onChange={e => onNavigate(e.target.value)}
+          onChange={e => {
+            const picked = groups.flatMap(g => g.items).find(i => i.key === e.target.value);
+            if (picked?.href) {
+              // Controlled select: leave the value alone and navigate away.
+              window.location.assign(picked.href);
+              return;
+            }
+            onNavigate(e.target.value);
+          }}
           className="h-10 w-full rounded-md border bg-background px-3 text-sm"
         >
           {groups.map(group => (
@@ -102,7 +115,7 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                 <option key={item.key} value={item.key}>
                   {/* Words, not a bullet: an option's text is all a screen
                       reader announces, and a bare "•" reads as nothing. */}
-                  {item.dirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
+                  {item.dirty && !item.href ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
                 </option>
               ))}
             </optgroup>
@@ -126,16 +139,19 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
             <ul className="mt-2 space-y-1">
               {group.items.map(item => {
                 const Icon = item.icon;
-                const isActive = activeKey === item.key;
+                const isLink = !!item.href;
+                const isActive = !isLink && activeKey === item.key;
+                const isDirty = !isLink && !!item.dirty;
                 return (
                   <li key={item.key}>
                     <a
-                      href={`#${item.hash}`}
+                      href={item.href ?? `#${item.hash}`}
                       data-testid={testIdPrefix ? `${testIdPrefix}-tab-${item.key}` : undefined}
                       aria-current={isActive ? 'page' : undefined}
-                      aria-label={item.dirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
+                      aria-label={isDirty ? t('settingsSectionNav.unsavedChanges', { label: item.label }) : item.label}
                       onClick={e => {
                         // Let modified clicks do their native thing (new tab, etc.).
+                        if (isLink) return; // real navigation, no preventDefault
                         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
                         e.preventDefault();
                         onNavigate(item.key);
@@ -158,7 +174,8 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
                           {item.description}
                         </span>
                       </span>
-                      {item.dirty && (
+                      {isLink && <ExternalLink aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                      {isDirty && (
                         <span aria-hidden="true" className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                       )}
                     </a>

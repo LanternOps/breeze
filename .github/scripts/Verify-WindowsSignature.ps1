@@ -3,10 +3,11 @@
 Verifies Authenticode signatures on released Windows artifacts.
 
 .DESCRIPTION
-Shared by every Windows signing provider job in release.yml so the providers
-cannot drift apart. Previously each provider carried its own inline copy of the
-verification, which is how the Azure path ended up with no publisher binding at
-all while the SSL.com path pinned a certificate.
+The single verifier the Windows signing job in release.yml runs before it
+uploads a signed artifact. It was introduced when two providers existed, each
+with its own inline copy of the verification, which is how the (since retired)
+Azure path ended up with no publisher binding at all while the SSL.com path
+pinned a certificate. Keep every check here so a future provider cannot drift.
 
 Every check throws on failure; the caller runs under `shell: pwsh`, where a
 terminating error fails the step.
@@ -23,8 +24,9 @@ failing the release.
 
 .PARAMETER ExpectedThumbprintSha256
 Optional SHA-256 certificate pin, or a comma-separated allowlist of them. Empty
-means "do not pin", which is correct for Azure Artifact Signing, whose leaf
-certificates are short-lived by design and rotate automatically.
+means "do not pin", which is only accepted together with -AllowUnpinnedLeaf
+(kept for a provider whose leaf certificates rotate automatically; the release
+workflow's SSL.com job always pins and never passes the switch).
 
 Each entry must be 64 hex characters; internal separators such as the colons in
 `C9:EA:...` are ignored, and entries are split on commas, semicolons and

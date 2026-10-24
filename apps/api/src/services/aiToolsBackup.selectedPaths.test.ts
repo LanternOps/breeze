@@ -153,7 +153,7 @@ describe('restore_snapshot selectedPaths (#7210)', () => {
 
   it.each([
     'C:/Users/alex/Documents/../../../Windows/System32/config/SAM',
-    'C:/Users/alex',
+    'C:/Users/bob',
     'D:/secrets/keys.txt',
   ])('refuses %s without creating a job', async (selected) => {
     arrangeRestore(['C:\\Users\\alex\\Documents\\invoice.pdf']);

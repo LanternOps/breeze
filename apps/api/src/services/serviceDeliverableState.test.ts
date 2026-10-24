@@ -28,6 +28,13 @@ describe('occurrence state machine (spec §4.2)', () => {
     expect(transition('open', { type: 'evidence_added' }).next).toBeNull();
   });
 
+  it('evidence_added on a missed occurrence completes it only when a resolved ticket started the delivery (#9310)', () => {
+    expect(transition('missed', { type: 'evidence_added', deliveryStarted: true })).toEqual({ next: 'delivered' });
+    expect(transition('missed', { type: 'evidence_added', deliveryStarted: false }).next).toBeNull();
+    expect(transition('missed', { type: 'evidence_added' }).next).toBeNull();
+    expect(transition('open', { type: 'evidence_added', deliveryStarted: true }).next).toBeNull();
+  });
+
   it('ticket reopen undoes a ticket-driven delivery but never an explicit one', () => {
     expect(transition('delivered', { type: 'ticket_reopened', deliveredVia: 'ticket' })).toEqual({ next: 'open' });
     expect(transition('delivered', { type: 'ticket_reopened', deliveredVia: 'explicit' }).next).toBeNull();

@@ -445,6 +445,14 @@
         "message": "Homebrew'u, resmi yükleyicinin sabitlenmiş ve sağlama toplamı doğrulanmış bir kopyasını kullanarak o anda oturum açmış kullanıcı olarak yükler. Etkin veya parolasız bir sudo kimlik bilgisine sahip bir yönetici konsol oturumu gerektirir; aksi takdirde yükleme başarısız olur ve hata geri bildirilir.",
         "confirm": "Homebrew'u yükle"
       },
+      "restartAgent": {
+        "title": "Breeze ajanı yeniden başlatılsın mı?",
+        "message": "{{hostname}} üzerindeki watchdog'dan Breeze ajan hizmetini yeniden başlatmasını iste. Watchdog bunu bir sonraki bağlantısında, genellikle bir dakika içinde alır ve yalnızca ajan çalışmıyorken bağlanır.",
+        "watchdogLastSeen": "Watchdog'un son bildirimi: {{date}}.",
+        "watchdogStale": "Watchdog en son {{date}} tarihinde bildirimde bulundu; isteği almak için çok eski. Tekrar bağlanana kadar istek reddedilir.",
+        "watchdogNeverSeen": "Watchdog henüz bildirimde bulunmadı; bağlanana kadar istek reddedilir.",
+        "confirm": "Ajanı yeniden başlat"
+      },
       "bulkDeleteManual": {
         "title": "{{count}} manuel varlık silinsin mi?",
         "message": "Bu, seçili manuel varlıkları kalıcı olarak siler. Bu işlem geri alınamaz.",
@@ -477,6 +485,10 @@
     "reRunAgentInventoryCollectorsSo": "Envanteri şimdi topla",
     "refresh": "Yenile",
     "reboot": "Yeniden başlat",
+    "forceRebootNow": "Şimdi zorla yeniden başlat",
+    "forceRebootHint": "Hemen yeniden başlatır ve çalışan uygulamaları kapatır. Kaydedilmemiş çalışmalar kaybolur.",
+    "forceRebootAgentUpgradeRequired": "Ajan güncellemesi gerekli: zorla yeniden başlatma için ajan {{version}} veya üstü gerekir",
+    "forceRebootQueued": "{{hostname}} için zorla yeniden başlatma sıraya alındı. Cihazda başka bir şey çalışmadığı anda çalışır.",
     "wake": "Uyan",
     "rebootToSafeMode": "Güvenli Modda Yeniden Başlat",
     "deploySoftware": "Yazılımı Dağıtın",
@@ -492,7 +504,8 @@
     "power": "Güç",
     "shutdown": "Kapatma",
     "deviceSettings": "Cihaz Ayarları",
-    "installHomebrew": "Homebrew'u yükle"
+    "installHomebrew": "Homebrew'u yükle",
+    "restartAgent": "Ajanı yeniden başlat"
   },
   "deviceActivityFeed": {
     "activity": "Etkinlik",
@@ -868,7 +881,12 @@
     "devices": "Cihazlar",
     "devicesCrumbOtherOrg": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz {{workingOrg}} olarak kalır",
     "devicesCrumbOtherOrgUnnamed": "{{deviceOrg}} kuruluşunun Cihazlar sekmesini açar; çalışma kuruluşunuz değişmez",
-    "switchOrgFailed": "Kuruluş değiştirilemedi. Tekrar deneyin."
+    "switchOrgFailed": "Kuruluş değiştirilemedi. Tekrar deneyin.",
+    "restartAgent": {
+      "queued": "{{hostname}} için ajanın yeniden başlatılması istendi. Watchdog bunu bir sonraki bağlantısında çalıştırır.",
+      "alreadyPending": "{{hostname}} için bir ajan yeniden başlatma isteği zaten watchdog'u bekliyor.",
+      "failed": "{{hostname}} için ajanın yeniden başlatılması istenemedi"
+    }
   },
   "deviceDetails": {
     "overview": "Genel Bakış",
@@ -1017,7 +1035,9 @@
       "label": "onay",
       "byRing": "bağlı güncelleme halkası tarafından belirlenir",
       "manualOnly": "yalnızca el ile onaylar (bağlı güncelleme halkası yok)"
-    }
+    },
+    "chainResolutionRule": "Önce seviye belirler: Cihaz, Cihaz Grubunu geçer; ardından Site, Kuruluş ve İş Ortağı gelir. Öncelik (düşük sayı kazanır) yalnızca aynı seviyedeki politikalar arasında karar verir. Üstü çizili özellikler daha yakın bir politika tarafından geçersiz kılınmıştır.",
+    "featureOverriddenBy": "{{policy}} tarafından geçersiz kılındı"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Etkinlikler getirilemedi",
@@ -1342,6 +1362,7 @@
     "drive": "Sür",
     "size": "Boyut",
     "used": "Kullanılmış",
+    "usedPercent": "Kullanım %",
     "health": "Sağlık",
     "noDiskInventoryReported": "Disk envanteri bildirilmedi.",
     "networkAdapters": "Ağ Bağdaştırıcıları",
@@ -1929,6 +1950,7 @@
     "title": "Aktif Ağ Bağlantıları"
   },
   "devicePatchStatusTab": {
+    "released": "Yayın tarihi: {{date}}",
     "compliance": {
       "compliant": "{{percent}}% uyumlu",
       "description": "Bekleyen ve yüklü güncellemeler",
@@ -2052,6 +2074,7 @@
       "excludedCategoryTitle": "{{ring}} güncelleme halkası bu yamanın kategorisini hariç tutuyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedAppRuleTitle": "Bağlantılı Güncelleme Halkasındaki bir uygulama engelleme veya sabitleme kuralı bu yamayı bekletiyor; bu yüzden zamanlanmış yama çalıştırmaları onu atlar.",
       "excludedRingReferenceTitle": "Bekletiliyor: bu cihazın yama ilkesi artık var olmayan veya bu iş ortağı için kullanılamayan bir güncelleme halkasına bağlı. Yamalamaya devam etmek için ilkenin güncelleme halkasını düzeltin.",
+      "excludedDeclinedTitle": "Reddedildi: bu yama açıkça reddedildi, bu nedenle halkanın otomatik onayı onu yüklemez. İzin vermek için yeniden onaylayın.",
       "pending": "Onay bekliyor",
       "needsApprovalRingTitle": "{{ring}} güncelleme halkası bu yamayı otomatik onaylamıyor. Yüklemek için el ile onaylayın.",
       "needsApprovalNoRingTitle": "Bu cihazın yama ilkesine bağlı bir güncelleme halkası yok; bu yüzden bu yama yalnızca el ile onaydan sonra yüklenir.",
@@ -2476,7 +2499,7 @@
     "showFindings": "Bulguları Göster",
     "stats": {
       "accepted": "Kabul edildi",
-      "kev": "Kev",
+      "kev": "Bilinen istismar",
       "mitigated": "Azaltılmış",
       "open": "Aç",
       "patchReady": "Yama Hazır",
@@ -2494,9 +2517,9 @@
     "statusLabel": "Durum Etiketi",
     "table": {
       "actions": "Eylemler",
-      "cve": "Cve",
-      "cvss": "Cvs",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Önem",
       "status": "Durum"
@@ -2679,7 +2702,7 @@
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
     "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
-    "importFromRmm": "Başka bir RMM'den içe aktar",
+    "importFromRmm": "Başka bir RMM'den özel alanları içe aktar",
     "hiddenNonAgentNotice": "{{count}} {{class}} gizlendi — {{fields}} yalnızca aracılı cihazlar için geçerlidir.",
     "hiddenNonAgentClassLabel": {
       "network": "ağ cihazı",
@@ -3013,6 +3036,29 @@
     "submitting": "İşleniyor…",
     "cancel": "İptal",
     "genericError": "Bakım modu başlatılamadı."
+  },
+  "forceRebootDialog": {
+    "title": "Şimdi zorla yeniden başlat",
+    "description": "{{hostname}} cihazını hemen yeniden başlatır ve çalışan uygulamaları beklemek yerine kapatır.",
+    "hostnameLabel": "Cihaz",
+    "osLabel": "İşletim sistemi",
+    "commandLabel": "Komut",
+    "noEffectOnOs": "{{os}} üzerinde yeniden başlatma uygulamaları hiç beklemez; bu nedenle bu, normal bir anında yeniden başlatmayla aynıdır.",
+    "warning": "Bu cihazdaki açık uygulamalarda kaydedilmemiş çalışmalar kaybolur. Yeniden başlatma, cihazda zaten çalışan komutları yine de bekler.",
+    "typeHostname": "Onaylamak için {{hostname}} yazın",
+    "stepUpHeading": "Kimliğinizi doğrulayın",
+    "stepUpPasskeyNote": "Geçiş anahtarınızla onaylayacaksınız.",
+    "stepUpCodeLabel": "Kimlik doğrulayıcı kodu",
+    "noStepUpFactor": "Bir cihazı zorla yeniden başlatmadan önce hesabınıza bir kimlik doğrulayıcı uygulama veya geçiş anahtarı ekleyin.",
+    "mfaRequired": "Önce MFA oturum açmayı tamamlayın, sonra yeniden deneyin.",
+    "stepUpFailed": "Doğrulama tamamlanamadı. Yeni bir kod girip yeniden deneyin.",
+    "deviceOffline": "Bu cihaz çevrimiçi değil. Zorla yeniden başlatma yalnızca şu anda çevrimiçi olan bir cihaza gönderilir.",
+    "agentUpgradeRequired": "Bu cihazın ajanı zorla yeniden başlatma için çok eski. Önce ajanı güncelleyin.",
+    "genericError": "Zorla yeniden başlatma gönderilemedi.",
+    "cancel": "İptal",
+    "confirm": "Şimdi zorla yeniden başlat",
+    "submitStepUp": "Doğrula ve zorla yeniden başlat",
+    "submitting": "Gönderiliyor…"
   },
   "moveDeviceOrgDialog": {
     "title": "Başka bir kuruluşa taşı",
@@ -3439,6 +3485,8 @@
     "health": {
       "empty": {
         "title": "Henüz hiçbir şey izlenmiyor",
+        "titleWithCheck": "SNMP sağlık verisi yok",
+        "descriptionWithCheck": "Bu cihaz için etkin bir ağ denetimi var, bu nedenle erişilebilirlik izlenmeye devam ediyor. Ayrıca sağlık verisi toplamak için SNMP'yi açın.",
         "action": "İzlemeyi ayarla",
         "benefit": {
           "printer": "Toner ve mürekkep seviyelerini, kağıt tepsilerini, sayfa sayaçlarını ve yazıcı hatalarını görmek için SNMP’yi açın.",

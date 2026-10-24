@@ -22,7 +22,8 @@ import { navigateTo, navigateToMicrosoftLogin } from "@/lib/navigation";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import "@/lib/i18n";
 import { M365ConfirmTenantPanel, M365ConsentSteps } from "./M365ConfirmTenantPanel";
-import type { M365ConsentStepSummary } from "./m365ConsentSummary";
+import { parseOnboardingAvailability } from "./m365ConsentSummary";
+import type { M365ConsentStepSummary, M365OnboardingAvailability } from "./m365ConsentSummary";
 
 const STATUSES = [
   "pending-consent",
@@ -130,6 +131,7 @@ type Envelope = {
     requiredGrants: Grant[];
   };
   onboardingEnabled: boolean;
+  onboardingAvailability: M365OnboardingAvailability;
   connection: Connection | null;
 };
 
@@ -274,7 +276,15 @@ function parseConnection(value: unknown): Connection | null | undefined {
 }
 
 function parseEnvelope(value: unknown): Envelope | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["profile", "onboardingEnabled", "connection"])) return null;
+  if (!isRecord(value)) return null;
+  // `onboardingAvailability` is optional on the wire (an API that predates it
+  // omits it); every other key stays strictly required.
+  const { onboardingAvailability: rawAvailability, ...rest } = value;
+  if (!hasExactKeys(rest, ["profile", "onboardingEnabled", "connection"])) return null;
+  const onboardingAvailability = typeof value.onboardingEnabled === "boolean"
+    ? parseOnboardingAvailability(rawAvailability, value.onboardingEnabled)
+    : null;
+  if (onboardingAvailability === null) return null;
   if (!isRecord(value.profile) || !hasExactKeys(value.profile, ["id", "displayName", "manifestVersion", "requiredGrants"])) return null;
   const grants = parseGrants(value.profile.requiredGrants);
   const connection = parseConnection(value.connection);
@@ -294,6 +304,7 @@ function parseEnvelope(value: unknown): Envelope | null {
       requiredGrants: grants,
     },
     onboardingEnabled: value.onboardingEnabled,
+    onboardingAvailability,
     connection,
   };
 }
@@ -596,6 +607,7 @@ export default function M365CustomerGraphActionsCard({
   const summary = useMemo<M365ConsentStepSummary>(() => ({
     loadState,
     onboardingEnabled: data?.onboardingEnabled ?? false,
+    onboardingAvailability: data?.onboardingAvailability ?? "instance_disabled",
     connection: connection
       ? {
           tenantId: connection.tenantId,
@@ -652,18 +664,25 @@ export default function M365CustomerGraphActionsCard({
   const unexpectedAlert = t("m365CustomerGraphActions.grants.unexpectedAlert");
   const canRetestConnection = connection?.status === "active" || connection?.status === "degraded";
   const StatusIcon = connection ? statusIcon(connection.status) : Unplug;
+  // "Retest" wording only makes sense where the Retest button is shown; a
+  // connection still pending consent has to be connected again instead.
+  const errorKey = (code: string) => (code === "executor_unavailable" && connection && !canRetestConnection
+    ? "executor_unavailablePending"
+    : code);
   const errorCopy = useMemo(() => {
     if (!connection?.lastErrorCode) return null;
+    // The callback banner above already says this; don't repeat it.
+    if (callbackResult === connection.lastErrorCode) return null;
     return isStableErrorCode(connection.lastErrorCode)
-      ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${connection.lastErrorCode}`)
+      ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorKey(connection.lastErrorCode)}`)
       : t("m365CustomerGraphActions.errors.unknown");
-  }, [connection, t]);
+  }, [connection, callbackResult, canRetestConnection, t]);
   const callbackCopy = callbackResult === "active"
     ? t("m365CustomerGraphActions.callback.active")
     : callbackResult === "degraded"
       ? t("m365CustomerGraphActions.callback.degraded")
       : callbackResult && callbackResult !== "confirm-tenant"
-        ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${callbackResult}`)
+        ? t(/* i18n-dynamic */ `m365CustomerGraphActions.errors.${errorKey(callbackResult)}`)
         : null;
   const showConfirmTenant = callbackResult === "confirm-tenant" && !!orgId;
   const reloadAfterCancel = useCallback(() => { void load(scope); }, [load, scope]);
@@ -747,7 +766,9 @@ export default function M365CustomerGraphActionsCard({
 
       {instanceUnavailable && (
         <p id={instanceUnavailableId} className="mt-4 text-sm text-muted-foreground">
-          {t("m365CustomerGraphActions.notAvailableOnInstance")}
+          {data?.onboardingAvailability === "org_not_enabled"
+            ? t("m365CustomerGraphActions.notEnabledForOrg")
+            : t("m365CustomerGraphActions.notAvailableOnInstance")}
         </p>
       )}
 

@@ -9,6 +9,7 @@ import { alertInSiteScope, deviceInSiteScope, ticketSiteScopeCondition } from '.
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { ticketSearchCondition } from '../../services/ticketSearch';
 import { checklistCountsForTickets } from '../../services/ticketChecklistService';
+import { withBusinessMinutesRemaining } from '../../services/businessCalendars/remaining';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
@@ -71,22 +72,19 @@ const CLOSED_STATUSES = ['resolved', 'closed'] as const;
 const PRIORITY_ORDER = sql`CASE ${tickets.priority}
   WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END`;
 
-// SQL twins of services/ticketSla.ts rules — change them together.
-// Active elapsed = now - created_at - paused; at-risk at 80% of the tighter target (D7).
+// #8973 W3 (spec §4.3 reader 2): at-risk compares now() with the STORED 80%
+// point of each unfrozen arm (services/ticketSlaDeadlines.ts writes it).
+// SLA_BREACHED is unchanged. A stamped breach on either arm leaves at-risk.
 const SLA_BREACHED = sql`${tickets.slaBreachedAt} IS NOT NULL`;
-const SLA_AT_RISK = sql`(
+export const SLA_AT_RISK = sql`(
   ${tickets.slaBreachedAt} IS NULL
   AND ${tickets.status} IN ('new', 'open')
   AND ${tickets.slaPausedAt} IS NULL
   AND (
-    (${tickets.firstResponseAt} IS NULL AND ${tickets.responseSlaMinutes} IS NOT NULL
-      AND now() >= ${tickets.createdAt}
-        + COALESCE(${tickets.slaPausedMinutes}, 0) * interval '1 minute'
-        + ${tickets.responseSlaMinutes} * interval '1 minute' * 0.8)
-    OR (${tickets.resolutionSlaMinutes} IS NOT NULL
-      AND now() >= ${tickets.createdAt}
-        + COALESCE(${tickets.slaPausedMinutes}, 0) * interval '1 minute'
-        + ${tickets.resolutionSlaMinutes} * interval '1 minute' * 0.8)
+    (${tickets.firstResponseAt} IS NULL AND ${tickets.responseWarnAt} IS NOT NULL
+      AND now() >= ${tickets.responseWarnAt})
+    OR (${tickets.resolutionWarnAt} IS NOT NULL
+      AND now() >= ${tickets.resolutionWarnAt})
   )
 )`;
 
@@ -372,7 +370,7 @@ ticketsRoutes.get(
       : q.sort === 'due' ? [asc(tickets.dueDate), asc(tickets.id)]
       : [desc(SLA_BREACHED), desc(SLA_AT_RISK), PRIORITY_ORDER, asc(tickets.createdAt), asc(tickets.id)]; // triage: breaches surface first
 
-    const data = await db
+    const rows = await db
       .select({
         id: tickets.id,
         internalNumber: tickets.internalNumber,
@@ -396,6 +394,13 @@ ticketsRoutes.get(
         slaPausedAt: tickets.slaPausedAt,
         slaPausedMinutes: tickets.slaPausedMinutes,
         slaBreachReason: tickets.slaBreachReason,
+        // #8973 W3 stored deadlines (spec §4.3 readers 5–6).
+        responseDueAt: tickets.responseDueAt,
+        resolutionDueAt: tickets.resolutionDueAt,
+        responseWarnAt: tickets.responseWarnAt,
+        resolutionWarnAt: tickets.resolutionWarnAt,
+        // #8973 W4: the business-calendar snapshot (null = 24×7).
+        slaCalendarRevisionId: tickets.slaCalendarRevisionId,
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
         deletedAt: tickets.deletedAt,
@@ -413,6 +418,9 @@ ticketsRoutes.get(
       .orderBy(...orderBy)
       .limit(q.limit)
       .offset(offset);
+    // #8973 W4: business minutes remaining, server-side, only for rows on a
+    // calendar (one batch load per page); with none the client counts wall-clock.
+    const data = await withBusinessMinutesRemaining(db, rows);
 
     const countRows = await db
       .select({ count: sql<number>`count(*)` })
@@ -567,7 +575,9 @@ ticketsRoutes.get(
       .leftJoin(alerts, eq(ticketAlertLinks.alertId, alerts.id))
       .where(eq(ticketAlertLinks.ticketId, id));
 
-    return c.json({ data: { ...ticket, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
+    // #8973 W4: non-null only when the ticket carries a calendar revision.
+    const [withRemaining] = await withBusinessMinutesRemaining(db, [ticket]);
+    return c.json({ data: { ...ticket, slaBusinessMinutesRemaining: withRemaining!.slaBusinessMinutesRemaining, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
   }
 );
 

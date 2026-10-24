@@ -250,4 +250,54 @@ describe('device_warranty upsert arbiters survive the partial indexes (#4622)', 
     // The UPDATE arm actually ran — the conflict was resolved, not duplicated.
     expect(rows[0]!.end_date).toBe('2098-01-01');
   });
+
+  runDb('upsertAgentWarranty carries an entitlements ARRAY through both arbiter arms (#5511 W01)', async () => {
+    const { org, site } = await seedTenant();
+    const suffix = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const deviceId = await seedDevice(org.id, site.id, `xor-hp-entitlements-${suffix}`);
+
+    const payload = {
+      source: 'agent_cmsl',
+      manufacturer: 'HP',
+      serialNumber: `SN-HP-${suffix}`,
+      coverageStartDate: '2024-03-01',
+      coverageEndDate: '2027-02-28',
+      coverageType: 'HP 3y Next Business Day Onsite',
+      coverageKind: 'fixed' as const,
+      entitlements: [
+        { serviceLevelDescription: 'HP 3y NBD Onsite', entitlementType: 'Hardware Support', startDate: '2024-03-01', endDate: '2027-02-28' },
+        { serviceLevelDescription: 'HP Pickup and Return', entitlementType: 'Hardware Support', startDate: '2024-03-01', endDate: '2026-02-28' },
+      ],
+    };
+
+    // The INSERT arm, then the ON CONFLICT arm — the one that needs the partial
+    // index predicate repeated, or Postgres raises 42P10.
+    await withSystemDbAccessContext(() => upsertAgentWarranty(deviceId, org.id, payload));
+    await withSystemDbAccessContext(() =>
+      upsertAgentWarranty(deviceId, org.id, {
+        ...payload,
+        entitlements: [...payload.entitlements, { entitlementType: 'Battery', startDate: '2024-03-01', endDate: '2025-03-01' }],
+      }),
+    );
+
+    const rows = (await getTestDb().execute(sql`
+      SELECT data_source,
+             jsonb_array_length(entitlements) AS entitlement_count,
+             entitlements #>> '{0,provider}'  AS first_provider,
+             entitlements #>> '{2,endDate}'   AS third_end_date
+      FROM device_warranty WHERE device_id = ${deviceId}
+    `)) as unknown as Array<{
+      data_source: string | null;
+      entitlement_count: number;
+      first_provider: string | null;
+      third_end_date: string | null;
+    }>;
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.data_source).toBe('agent_cmsl');
+    // The UPDATE arm actually ran: three rows, not the two the INSERT wrote.
+    expect(rows[0]!.entitlement_count).toBe(3);
+    expect(rows[0]!.first_provider).toBe('hp');
+    expect(rows[0]!.third_end_date).toBe('2025-03-01');
+  });
 });

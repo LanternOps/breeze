@@ -57,6 +57,8 @@ vi.mock('../../db/schema', () => ({
     id: 'devices.id',
     orgId: 'devices.orgId',
     siteId: 'devices.siteId',
+    status: 'devices.status',
+    isEphemeral: 'devices.isEphemeral',
     hostname: 'devices.hostname',
     osType: 'devices.osType',
     lastSeenAt: 'devices.lastSeenAt',
@@ -220,6 +222,24 @@ describe('patch compliance site scope', () => {
     const body = await res.json();
     expect(body.data.totalDevices).toBe(2);
     expect(conditionText(getDeviceWhere())).not.toContain('devices.siteId');
+  });
+
+  // #9611: the dashboard card read "80 of 98 devices fully patched" next to a
+  // Total Devices tile of 94 — decommissioned devices were in the compliance
+  // population but not in the device KPIs. Both now share one predicate.
+  it('excludes decommissioned devices from the compliance population', async () => {
+    const getDeviceWhere = mockComplianceQueries([DEVICE_ID]);
+
+    const res = await mountApp().request('/patches/compliance', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer t' },
+    });
+
+    expect(res.status).toBe(200);
+    const where = conditionText(getDeviceWhere());
+    expect(where).toContain('devices.status');
+    expect(where).toContain("!= 'decommissioned'");
+    expect(where).toContain('devices.isEphemeral');
   });
 });
 

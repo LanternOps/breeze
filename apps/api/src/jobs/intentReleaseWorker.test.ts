@@ -13,7 +13,7 @@ const CANONICAL_OP_KEY = 'run_script:execute';
 const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, toolSourcesMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
-  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
+  const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status'), decisionReason: col('decision_reason'), refusalReason: col('refusal_reason') };
   const aiAgentRunsTbl = { id: col('id'), agentId: col('agent_id'), orgId: col('org_id'), alertId: col('alert_id') };
   const aiAgentsTbl = { id: col('id'), orgId: col('org_id'), partnerId: col('partner_id'), recipients: col('recipients') };
 
@@ -58,6 +58,7 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
        *  (e.g. loadIntentDecidedVia's SELECT) without disturbing every
        *  other test that relies on the queue-based happy path above. */
       selectActionIntentsNextError: null as Error | null,
+      selectApprovalRequestsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
     actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
@@ -248,6 +249,11 @@ vi.mock('../db', () => {
             return Promise.resolve(dbState.selectActionIntentsResults.shift() ?? []);
           }
           if (table === schema.approvalRequestsTbl) {
+            if (dbState.selectApprovalRequestsNextError) {
+              const err = dbState.selectApprovalRequestsNextError;
+              dbState.selectApprovalRequestsNextError = null;
+              return Promise.reject(err);
+            }
             return Promise.resolve(dbState.selectApprovalRequestsResults.shift() ?? []);
           }
           if (table === schema.aiAgentRunsTbl) {
@@ -381,6 +387,23 @@ vi.mock('../services/actionIntents/policyDecide', () => {
     PolicyDecisionTransientError,
   };
 });
+// B-W04 (#6158, D-B29): the MCP-origin release seams. The origin rebuild is
+// covered by mcpPrincipalAuth.test.ts; the lifecycle by mcpTier3Lifecycle.test.ts.
+const mcpReleaseMock = vi.hoisted(() => ({
+  finish: vi.fn(async () => undefined),
+  beginMcpReleaseLifecycle: vi.fn(),
+  writeMcpIntentOutcomeAudit: vi.fn(async () => undefined),
+  rebuildMcpOriginAuthContext: vi.fn(),
+  checkMcpOriginReleaseAuthority: vi.fn(() => ({ ok: true })),
+}));
+vi.mock('../services/mcpTier3Lifecycle', () => ({
+  beginMcpReleaseLifecycle: mcpReleaseMock.beginMcpReleaseLifecycle,
+  writeMcpIntentOutcomeAudit: mcpReleaseMock.writeMcpIntentOutcomeAudit,
+}));
+vi.mock('../services/mcpPrincipalAuth', () => ({
+  rebuildMcpOriginAuthContext: mcpReleaseMock.rebuildMcpOriginAuthContext,
+  checkMcpOriginReleaseAuthority: mcpReleaseMock.checkMcpOriginReleaseAuthority,
+}));
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
   buildApproverAuthContextForIntent: actorContextMock.buildApproverAuthContextForIntent,
@@ -444,6 +467,7 @@ const topologyPreconditionsMock = vi.hoisted(() => ({
 }));
 vi.mock('../services/topology/aiToolGate', () => ({
   withTopologyReleasePreconditions: topologyPreconditionsMock.withTopologyReleasePreconditions,
+  isTopologyAiToolName: (name: string) => name.startsWith('topology_'),
 }));
 vi.mock('../middleware/auth', () => ({
   dbAccessContextFromAuth: authMock.dbAccessContextFromAuth,
@@ -495,6 +519,7 @@ vi.mock('../services/toolTimeouts', async (importOriginal) => {
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((...args: unknown[]) => ({ op: 'eq', args })),
   and: vi.fn((...args: unknown[]) => ({ op: 'and', args })),
+  isNull: vi.fn((...args: unknown[]) => ({ op: 'isNull', args })),
   // Reached transitively via services/userNotifications (countUnread).
   sql: Object.assign(() => ({}), { raw: () => ({}) }),
 }));
@@ -652,6 +677,7 @@ function resetDbState() {
   dbState.selectAgentRunsResults.length = 0;
   dbState.selectAgentsResults.length = 0;
   dbState.selectActionIntentsNextError = null;
+  dbState.selectApprovalRequestsNextError = null;
 }
 
 /** Clears GOOGLE_HEADLESS_SECRET_ACTIONS keys in place (see the hoisted
@@ -4228,6 +4254,162 @@ describe('releaseApprovedIntent', () => {
   });
 });
 
+describe('MCP-origin release lifecycle (B-W04 #6158)', () => {
+  const mcpIntent = (o: Partial<ActionIntent> = {}) => baseIntent({
+    source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1', ...o,
+  } as Partial<ActionIntent>);
+  const originAuth = { ...fakeAuth, principal: { kind: 'api_key', apiKeyId: 'key-1' } };
+
+  function primeMcp(intent: ActionIntent) {
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    mcpReleaseMock.rebuildMcpOriginAuthContext.mockResolvedValueOnce({ auth: originAuth, credential: {} });
+    tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+    aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+    toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetDbState();
+    resetGoogleSecretActions();
+    googleHeadlessMock.isHeadlessGoogleTool.mockReturnValue(false);
+    m365HeadlessMock.isHeadlessM365Tool.mockReturnValue(false);
+    effectDigestMock.computeEffectDigestForRelease.mockResolvedValue({ digest: null });
+    mcpReleaseMock.beginMcpReleaseLifecycle.mockImplementation(async (_i: unknown, auth: object) => ({
+      auth: { ...auth, aiOrigin: { kind: 'ai_assistant', sessionId: 'ledger-session-1' } },
+      finish: mcpReleaseMock.finish,
+    }));
+  });
+
+  it('mcp_api release opens the ledger, dispatches under its aiOrigin, then finishes success', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ id: intent.id }), originAuth,
+    );
+    const dispatchedAuth = aiToolsMock.executeTool.mock.calls[0]?.[2] as { aiOrigin?: unknown; token?: unknown };
+    expect(dispatchedAuth.aiOrigin).toEqual({ kind: 'ai_assistant', sessionId: 'ledger-session-1' });
+    expect(dispatchedAuth.token).toEqual({});
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }));
+    expect(actorContextMock.buildAuthContextForIntent).not.toHaveBeenCalled();
+  });
+
+  it('ledger begin failure → failed mcp_ledger_unavailable and the tool is never dispatched', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    mcpReleaseMock.beginMcpReleaseLifecycle.mockResolvedValueOnce(null);
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    const failed = intentServiceMock.transitionIntent.mock.calls.find((c) => c[2] === 'failed');
+    expect(failed?.[3]).toMatchObject({ errorCode: 'mcp_ledger_unavailable' });
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: intent.id }), 'release_refused', 'mcp_ledger_unavailable',
+    );
+  });
+
+  it('a Google secret-aware branch is wrapped too', async () => {
+    const intent = mcpIntent({ actionName: 'google_reset_password' });
+    primeMcp(intent);
+    mockHeadlessGoogleSecret('google_reset_password', {
+      kind: 'success',
+      llmText: 'Reset the password. The temporary credential is available for one-time reveal.',
+      secrets: { temporaryPassword: 'Bz9!oVnL920blvsjqqMy' },
+    });
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).toHaveBeenCalledTimes(1);
+    expect(mcpReleaseMock.finish).toHaveBeenCalledTimes(1);
+    // A secret-bearing result is never recorded on the ledger or audit.
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.not.objectContaining({ ledgerResult: expect.anything() }));
+  });
+
+  it('a thrown dispatch finishes the lifecycle as failure', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    aiToolsMock.executeTool.mockRejectedValueOnce(new Error('boom'));
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+    // Executed failure: the lifecycle already audited it; no second outcome audit.
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).not.toHaveBeenCalled();
+  });
+
+  it('a returned tool error finishes the lifecycle as failure', async () => {
+    const intent = mcpIntent();
+    primeMcp(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ error: 'nope' }));
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failure' }));
+  });
+
+  it('release-refused mcp_api intent writes a failure outcome audit with its errorCode', async () => {
+    const intent = mcpIntent();
+    intentServiceMock.transitionIntent.mockResolvedValue(true);
+    dbState.selectActionIntentsResults.push([intent]);
+    dbState.selectApprovalRequestsResults.push([
+      { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+    ]);
+    aiToolsMock.getToolTier.mockReturnValue(intent.riskTier);
+    mcpReleaseMock.rebuildMcpOriginAuthContext.mockResolvedValueOnce({ error: 'mcp_origin_revoked' });
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: intent.id }), 'release_refused', 'mcp_origin_revoked',
+    );
+  });
+
+  it('chat intents are not wrapped (no ledger, no outcome audit)', async () => {
+    const intent = baseIntent();
+    primeThroughRevalidation(intent);
+    aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+    intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+    await releaseApprovedIntent(intent.id);
+
+    expect(mcpReleaseMock.beginMcpReleaseLifecycle).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.finish).not.toHaveBeenCalled();
+    expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).not.toHaveBeenCalled();
+  });
+
+  it.each(['intent_rejected', 'intent_expired', 'intent_cancelled'] as const)(
+    '%s of an mcp_api intent writes the terminal outcome audit (deduped inside the writer)',
+    async (eventType) => {
+      const status = eventType.replace('intent_', '');
+      const row = { ...FOUR_EYES_INTENT, status, source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1' };
+      for (let delivery = 0; delivery < 2; delivery++) { // at-least-once: redelivered
+        dbState.selectActionIntentsResults.push([row]); // the notifier's one read
+        await processIntentReleaseJob({ intentId: 'intent-1', eventType });
+      }
+      expect(mcpReleaseMock.writeMcpIntentOutcomeAudit).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'intent-1' }), status,
+      );
+    },
+  );
+});
+
 describe('secret-bearing release', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -4552,6 +4734,57 @@ describe('processIntentReleaseJob', () => {
     );
   });
 
+  it('includes the approver\'s deny reason in the requester\'s denial notification (#9658)', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsResults.push([{ decisionReason: 'Wrong maintenance window' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { title: string; message: string };
+    expect(arg.title).toBe('Approval denied');
+    expect(arg.message).toBe(
+      'run_script(deviceId=d-1) was denied and will not run. Reason: Wrong maintenance window',
+    );
+  });
+
+  it('words the denial with the friendly action label, not the raw tool call', async () => {
+    dbState.selectActionIntentsResults.push([
+      {
+        ...FOUR_EYES_INTENT,
+        status: 'rejected',
+        targetSummary: 'manage_services(deviceId=6eae0f70-1111-4222-8333-944455556666, action=restart, serviceName=Spooler)',
+        actionName: 'manage_services',
+        arguments: { deviceId: '6eae0f70-1111-4222-8333-944455556666', action: 'restart', serviceName: 'Spooler' },
+      },
+    ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('Manage services: restart Spooler was denied and will not run.');
+    expect(arg.message).not.toContain('manage_services(');
+  });
+
+  it('keeps the plain denial copy when the approver gave no reason', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsResults.push([{ decisionReason: '  ' }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('run_script(deviceId=d-1) was denied and will not run.');
+  });
+
+  it('still sends the plain denial notification when the reason lookup fails', async () => {
+    dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'rejected' }]);
+    dbState.selectApprovalRequestsNextError = new Error('connection terminated unexpectedly');
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_rejected' });
+
+    const arg = notifyMock.createNotification.mock.calls[0]?.[0] as { message: string };
+    expect(arg.message).toBe('run_script(deviceId=d-1) was denied and will not run.');
+  });
+
   it('notifies the requester on intent_expired without releasing anything', async () => {
     dbState.selectActionIntentsResults.push([{ ...FOUR_EYES_INTENT, status: 'expired' }]);
 
@@ -4587,6 +4820,32 @@ describe('processIntentReleaseJob', () => {
     dbState.selectActionIntentsResults.push([
       { ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised' },
     ]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).not.toHaveBeenCalled();
+  });
+
+  // B-W04 (#6158, D-B28): an MCP-origin intent has no inline channel and a
+  // 24 h window, so its supervised requester is told the outcome.
+  it('notifies the requester of a SUPERVISED mcp_api (MCP-origin) intent', async () => {
+    dbState.selectActionIntentsResults.push([{
+      ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised',
+      source: 'mcp_api', originPrincipalKind: 'api_key', originPrincipalId: 'key-1',
+    }]);
+
+    await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
+
+    expect(notifyMock.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'requester-1', dedupeKey: 'intent-outcome:intent-1:expired' }),
+    );
+  });
+
+  it('stays silent for a SUPERVISED user-session mcp_api intent (agent graduation / AI operator)', async () => {
+    dbState.selectActionIntentsResults.push([{
+      ...FOUR_EYES_INTENT, status: 'expired', approvalScope: 'supervised',
+      source: 'mcp_api', originPrincipalKind: 'user_session', originPrincipalId: null,
+    }]);
 
     await processIntentReleaseJob({ intentId: 'intent-1', eventType: 'intent_expired' });
 

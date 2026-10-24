@@ -10,7 +10,7 @@
 export type HelperPermissionLevel = 'basic' | 'standard' | 'extended';
 
 // Every tool at every level MUST be single-device: it needs a
-// HELPER_TOOL_SCOPING entry in services/aiTools.ts (the executeTool gate
+// HELPER_TOOL_SCOPING entry below (the executeTool gate
 // pins the declared device field to the Helper's own device and DENIES any
 // unscoped tool — security finding A, Phase 0). Org-wide enumeration tools
 // (query_devices, get_fleet_health, …) and tools keyed on non-device
@@ -100,3 +100,61 @@ export function validateHelperToolAccess(
 
   return null;
 }
+
+/**
+ * Helper device-scoping (security finding A, Phase 0).
+ * Maps each tool the Breeze Helper may run to the input field naming its
+ * target device. A tool absent from this map is org-wide and is DENIED under
+ * a Helper context. Every tool in the whitelists above must have an
+ * entry here (pinned by helperToolFilter.test.ts); mutating tools (tier>=2)
+ * are additionally PAM-governed at the preToolUse gate (Phase 1).
+ */
+export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
+  // Read-only (Phase 0 `basic` set).
+  get_device_details: 'deviceId',
+  get_device_hardware_health: 'deviceId',
+  get_device_time_status: 'deviceId',
+  query_device_workloads: 'deviceId',
+  list_time_sync_issues: 'deviceId',
+  analyze_metrics: 'deviceId',
+  analyze_disk_usage: 'deviceId',
+  get_cis_device_report: 'deviceId',
+  get_security_posture: 'deviceId',
+  take_screenshot: 'deviceId',
+  analyze_screen: 'deviceId',
+  search_logs: 'deviceIds',
+  // Device-pinned safe actions (`standard`, Phase 1 governed).
+  get_active_users: 'deviceId',
+  get_user_experience_metrics: 'deviceId',
+  manage_alerts: 'deviceId',
+  manage_services: 'deviceId',
+  disk_cleanup: 'deviceId',
+  file_operations: 'deviceId',
+  // Device-pinned destructive tools (`extended`, Phase 1 governed).
+  computer_control: 'deviceId',
+  execute_command: 'deviceId',
+  security_scan: 'deviceId',
+  s1_isolate_device: 'deviceId',
+  network_discovery: 'deviceId',
+  apply_cis_remediation: 'deviceId',
+};
+
+/**
+ * Force a Helper tool call onto the Helper's own device, or deny it.
+ * Pure. executeTool applies the result; the chat pre-tool-use gate
+ * (aiAgentSdk.ts createSessionPreToolUse) validates the same scoped input
+ * before anyone is asked to approve the call (#9854).
+ */
+export function applyHelperDeviceScope(
+  toolName: string,
+  input: Record<string, unknown>,
+  helperDeviceId: string
+): { input: Record<string, unknown> } | { error: string } {
+  const field = HELPER_TOOL_SCOPING[toolName];
+  if (!field) {
+    return { error: `Tool '${toolName}' is not available in the Helper context` };
+  }
+  const value = field === 'deviceIds' ? [helperDeviceId] : helperDeviceId;
+  return { input: { ...input, [field]: value } };
+}
+

@@ -469,9 +469,24 @@ describe('POST /ai/sessions/:id/ticket-draft', () => {
     const res = await postDraft('s1', partnerAuth);
 
     expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'You are out of AI credits.', code: 'credits_exhausted' });
     expect(routeMocks.checkBudgetDetailedMock).toHaveBeenCalledWith('org1', 'platform');
     expect(routeMocks.reserveAiBudget).not.toHaveBeenCalled();
     expect(draftTicketFromTranscript).not.toHaveBeenCalled();
+  });
+
+  it('the plan gate refuses the ticket draft with 402 + plan_not_eligible', async () => {
+    routeMocks.resolveSessionTurnMock.mockResolvedValue(makeResolvedModel('platform'));
+    routeMocks.checkBudgetDetailedMock.mockResolvedValue({ message: 'AI assistant requires the Community plan.', reason: 'plan_gate', permanent: true });
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: { id: 's1', orgId: 'org1', deviceId: null, model: null, createdAt: new Date(), contextSnapshot: null },
+      messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'fixed' }],
+    } as any);
+
+    const res = await postDraft('s1', partnerAuth);
+
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'AI assistant requires the Community plan.', code: 'plan_not_eligible' });
   });
 
   it('a failed draft that burned tokens still settles its attempts', async () => {

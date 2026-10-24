@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AnalyticsPage from './AnalyticsPage';
@@ -179,11 +179,8 @@ describe('AnalyticsPage load failures', () => {
     // "no SLA configured" empty state.
     expect(screen.getByText('Unable to load: sla')).toBeInTheDocument();
 
+    // The failure is surfaced by the banner; no placeholder SLA card is shown (#9650).
     openSlaTab();
-    // Several cards on this tab render the same empty-state text, so scope the
-    // assertion to the SLA card itself.
-    const slaCard = screen.getByRole('heading', { name: 'SLA Compliance' }).closest('.rounded-lg');
-    expect(slaCard).not.toBeNull();
-    expect(within(slaCard as HTMLElement).getByText('No data available')).toBeInTheDocument();
+    expect(screen.queryByText('SLA Compliance', { selector: 'p' })).not.toBeInTheDocument();
   });
 });

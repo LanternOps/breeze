@@ -62,6 +62,9 @@ function makeFetcher(rows: Deliverable[]) {
   return vi.fn(async (path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (method === 'GET' && path.startsWith('/orgs/org-1/deliverables')) return jsonResp(200, { data: rows });
+    if (method === 'GET' && path.startsWith('/contracts')) {
+      return jsonResp(200, { data: [{ id: 'ct-1', name: 'Acme MSA', status: 'active' }, { id: 'ct-2', name: 'Acme Onboarding', status: 'draft' }, { id: 'ct-x', name: 'Old', status: 'cancelled' }] });
+    }
     if (method === 'DELETE') return jsonResp(204, {});
     if (method === 'PATCH') {
       // The API answers PATCH/POST with the full summary shape (`Deliverable`),
@@ -167,5 +170,95 @@ describe('DeliverableTable', () => {
   it('renders the empty state when there are no deliverables', async () => {
     render(<DeliverableTable fetcher={makeFetcher([])} orgId="org-1" />);
     expect(await screen.findByText(/No deliverables yet/)).toBeInTheDocument();
+  });
+
+  describe('bulk reschedule (#9314)', () => {
+    const d3: Deliverable = { ...base, id: 'd-3', name: 'Third', contractId: null, contractName: null };
+    const occ = (id: string, status: string, dueAt: string) => ({ id, status, dueAt });
+
+    function bulkFetcher(opts: { bulk?: () => Response } = {}) {
+      return vi.fn(async (path: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'POST' && path === '/orgs/org-1/deliverables/occurrences/reschedule') {
+          return opts.bulk ? opts.bulk() : jsonResp(200, { data: { results: [] } });
+        }
+        const m = /^\/orgs\/org-1\/deliverables\/(d-\d)\/occurrences/.exec(path);
+        if (method === 'GET' && m) {
+          const id = m[1];
+          // newest first, like the API; the oldest LIVE one (not the delivered one) must be picked
+          return jsonResp(200, { data: [occ(`${id}-new`, 'scheduled', '2026-12-01'), occ(`${id}-old`, 'open', '2026-10-01'), occ(`${id}-done`, 'delivered', '2026-08-01')] });
+        }
+        if (method === 'GET' && path.startsWith('/orgs/org-1/deliverables')) return jsonResp(200, { data: [base, standalone, d3] });
+        throw new Error(`unexpected ${method} ${path}`);
+      });
+    }
+
+    async function selectThreeAndSubmit(fetcher: ReturnType<typeof bulkFetcher>) {
+      render(<DeliverableTable fetcher={fetcher} orgId="org-1" selectable />);
+      for (const id of ['d-1', 'd-2', 'd-3']) fireEvent.click(await screen.findByTestId(`deliverable-select-${id}`));
+      fireEvent.change(screen.getByTestId('deliverables-bulk-date'), { target: { value: '2026-11-30' } });
+      fireEvent.click(screen.getByTestId('deliverables-bulk-reschedule'));
+    }
+    const bulkCalls = (fetcher: ReturnType<typeof bulkFetcher>) =>
+      fetcher.mock.calls.filter(([p, i]) => i?.method === 'POST' && p === '/orgs/org-1/deliverables/occurrences/reschedule');
+
+    it('selecting three rows calls the bulk endpoint once with each oldest live occurrence', async () => {
+      const results = ['d-1-old', 'd-2-old', 'd-3-old'].map((occurrenceId) => ({ occurrenceId, ok: true }));
+      const fetcher = bulkFetcher({ bulk: () => jsonResp(200, { data: { results } }) });
+      await selectThreeAndSubmit(fetcher);
+      await waitFor(() => expect(bulkCalls(fetcher)).toHaveLength(1));
+      expect(JSON.parse(String(bulkCalls(fetcher)[0][1]?.body))).toEqual({
+        occurrenceIds: ['d-1-old', 'd-2-old', 'd-3-old'], dueAt: '2026-11-30',
+      });
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: '3 occurrences rescheduled' })));
+    });
+
+    it('reports rows the API refused instead of claiming full success', async () => {
+      const results = [
+        { occurrenceId: 'd-1-old', ok: true },
+        { occurrenceId: 'd-2-old', ok: false, status: 409, code: 'INVALID_OCCURRENCE_TRANSITION', error: 'x' },
+        { occurrenceId: 'd-3-old', ok: true },
+      ];
+      const fetcher = bulkFetcher({ bulk: () => jsonResp(200, { data: { results } }) });
+      await selectThreeAndSubmit(fetcher);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: '2 rescheduled, 1 could not be moved' })));
+    });
+
+    it('a failed request is toasted through runAction', async () => {
+      const fetcher = bulkFetcher({ bulk: () => jsonResp(500, { error: 'boom' }) });
+      await selectThreeAndSubmit(fetcher);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(bulkCalls(fetcher)).toHaveLength(1);
+    });
+
+    it('warns and sends nothing when no selected deliverable has a live occurrence', async () => {
+      const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+        const method = init?.method ?? 'GET';
+        if (method === 'GET' && /\/d-1\/occurrences/.test(path)) return jsonResp(200, { data: [{ id: 'x', status: 'delivered', dueAt: '2026-08-01' }] });
+        if (method === 'GET') return jsonResp(200, { data: [base] });
+        throw new Error(`unexpected ${method} ${path}`);
+      });
+      render(<DeliverableTable fetcher={fetcher} orgId="org-1" selectable />);
+      fireEvent.click(await screen.findByTestId('deliverable-select-d-1'));
+      fireEvent.change(screen.getByTestId('deliverables-bulk-date'), { target: { value: '2026-11-30' } });
+      fireEvent.click(screen.getByTestId('deliverables-bulk-reschedule'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' })));
+      expect(fetcher.mock.calls.some(([, i]) => i?.method === 'POST')).toBe(false);
+    });
+
+    it('counts a selected deliverable with nothing live as not moved', async () => {
+      const results = [{ occurrenceId: 'd-1-old', ok: true }, { occurrenceId: 'd-2-old', ok: true }];
+      const base2 = bulkFetcher({ bulk: () => jsonResp(200, { data: { results } }) });
+      const fetcher = vi.fn(async (path: string, init?: RequestInit) =>
+        /\/d-3\/occurrences/.test(path) ? jsonResp(200, { data: [occ('z', 'waived', '2026-08-01')] }) : base2(path, init));
+      await selectThreeAndSubmit(fetcher as unknown as ReturnType<typeof bulkFetcher>);
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning', message: '2 rescheduled, 1 could not be moved' })));
+    });
+
+    it('the action stays disabled until a date is chosen', async () => {
+      render(<DeliverableTable fetcher={bulkFetcher()} orgId="org-1" selectable />);
+      fireEvent.click(await screen.findByTestId('deliverable-select-d-1'));
+      expect(screen.getByTestId('deliverables-bulk-reschedule')).toBeDisabled();
+    });
   });
 });

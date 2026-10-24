@@ -24,6 +24,7 @@
     "reject": "Ablehnen",
     "approveVerify": "Bestätigen & genehmigen",
     "verifying": "Warte auf Verifizierung…",
+    "approving": "Wird genehmigt…",
     "deny": "Ablehnen",
     "verificationFailed": "Verifizierung fehlgeschlagen. Bitte erneut versuchen.",
     "alreadyDecided": "Über diese Anfrage wurde bereits entschieden.",
@@ -551,5 +552,8 @@
     "created": "Neuer Chat mit {{model}} aus einer Zusammenfassung gestartet.",
     "failed": "Der neue Chat konnte nicht gestartet werden. Bitte erneut versuchen.",
     "openFailed": "Der neue Chat wurde erstellt, konnte aber nicht geöffnet werden. Sie finden ihn im Chatverlauf; Ihre Nachricht wurde nicht gesendet."
+  },
+  "buyCredits": {
+    "link": "Credits kaufen"
   }
 }

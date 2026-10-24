@@ -42,7 +42,7 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       </div>
 
       {/* Custom SMTP */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+      <div className="space-y-4 border-t pt-6">
         <label className="flex items-center gap-3">
           <input
             type="checkbox"
@@ -107,8 +107,8 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       </div>
 
       {/* Slack */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">{t('partnerNotifications.slackIntegration')}</p>
+      <div className="space-y-4 border-t pt-6">
+        <h3 className="text-sm font-semibold">{t('partnerNotifications.slackIntegration')}</h3>
         <div className="grid gap-4 sm:grid-cols-2">
           <SavedSecretInput
             value={data.slackWebhookUrl}
@@ -132,10 +132,10 @@ export default function PartnerNotificationsTab({ data, onChange }: Props) {
       </div>
 
       {/* Pushover defaults */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+      <div className="space-y-4 border-t pt-6">
         <div>
-          <p className="text-sm font-medium">{t('partnerNotifications.pushoverDefaults')}</p>
-          <p className="text-xs text-muted-foreground">
+          <h3 className="text-sm font-semibold">{t('partnerNotifications.pushoverDefaults')}</h3>
+          <p className="max-w-prose text-xs text-muted-foreground">
             {t('partnerNotifications.pushoverDescription')}
           </p>
         </div>

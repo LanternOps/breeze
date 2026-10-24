@@ -122,6 +122,16 @@ describe('validateConfig', () => {
     });
   });
 
+  describe('AGENT_ENROLL_RATE_WINDOW_SECONDS upper bound (#9457)', () => {
+    // The window is the /enroll 429 Retry-After; W09 agents cap at 300 s after x1.3 jitter.
+    it('accepts 230 and refuses 231', () => {
+      withEnv({ ...validEnv, AGENT_ENROLL_RATE_WINDOW_SECONDS: '230' }, () => { expect(() => validateConfig()).not.toThrow(); });
+      withEnv({ ...validEnv, AGENT_ENROLL_RATE_WINDOW_SECONDS: '231' }, () => {
+        expect(() => validateConfig()).toThrow(/AGENT_ENROLL_RATE_WINDOW_SECONDS/);
+      });
+    });
+  });
+
   describe.each(['AGENT_ENROLL_RATE_LIMIT', 'AGENT_ENROLL_RATE_WINDOW_SECONDS'])('%s (#7472)', (name) => {
     it('is valid when unset, blank, or a positive integer', () => {
       withEnv(validEnv, () => { expect(() => validateConfig()).not.toThrow(); });
@@ -3473,6 +3483,87 @@ describe('IP_ALLOWLIST_ENFORCEMENT_MODE (#2896)', () => {
   );
 });
 
+// B-W03 (#6157): the stateless MCP era kill switch. Read per request by
+// mcpStatelessEnabled() with the envFlag vocabulary; a typo must fail boot
+// rather than leave an operator believing they enabled (or disabled) it.
+// B-W03 (#6157): CIMD flag + host allowlist.
+describe('OAUTH_CIMD_* boot validation', () => {
+  it('declares both keys', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('OAUTH_CIMD_ENABLED');
+    expect(ENV_SCHEMA_KEYS).toContain('OAUTH_CIMD_ALLOWED_HOSTS');
+  });
+  it('refuses boot on a non-boolean OAUTH_CIMD_ENABLED', () => {
+    withEnv({ ...validEnv, OAUTH_CIMD_ENABLED: 'yes please' }, () => {
+      expect(() => validateConfig()).toThrow(/OAUTH_CIMD_ENABLED/);
+    });
+  });
+  it('accepts example.com,.example.org', () => {
+    withEnv({ ...validEnv, OAUTH_CIMD_ALLOWED_HOSTS: 'example.com,.example.org' }, () => {
+      expect(validateConfig().OAUTH_CIMD_ALLOWED_HOSTS).toBe('example.com,.example.org');
+    });
+  });
+  it.each(['https://example.com', 'example.com/path', '*.example.com', 'example.com,,example.org'])(
+    'boot rejects a malformed OAUTH_CIMD_ALLOWED_HOSTS entry: %s',
+    (value) => {
+      withEnv({ ...validEnv, OAUTH_CIMD_ALLOWED_HOSTS: value }, () => {
+        expect(() => validateConfig()).toThrow(/OAUTH_CIMD_ALLOWED_HOSTS/);
+      });
+    },
+  );
+});
+
+describe('MCP_STATELESS_ENABLED boolean guard', () => {
+  it('is declared in the schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('MCP_STATELESS_ENABLED');
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts %s', (value) => {
+    withEnv({ ...validEnv, MCP_STATELESS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_STATELESS_ENABLED).toBe(value);
+    });
+  });
+  it('refuses boot on a typo', () => {
+    withEnv({ ...validEnv, MCP_STATELESS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_STATELESS_ENABLED/);
+    });
+  });
+});
+
+describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
+  const intKnobs = [
+    'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+    'MCP_INTENT_CREATES_PER_HOUR',
+    'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+    'MCP_APPROVAL_WAIT_MS',
+    'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+  ];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TIER3_INTENTS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TIER3_INTENTS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0'])('accepts MCP_TIER3_INTENTS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_TIER3_INTENTS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15' }, () => {
+      expect(validateConfig()[knob as 'MCP_APPROVAL_WAIT_MS']).toBe('15');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+});
+
 describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {
   it('accepts an explicit false', () => {
     withEnv({ ...validEnv, AGENT_AUTO_PROMOTE: 'false' }, () => {
@@ -3781,6 +3872,28 @@ describe('TOOL_SOURCES_ENABLED boolean guard', () => {
       });
     },
   );
+});
+
+describe('FLOWS_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('FLOWS_ENABLED');
+    expect(buildEnvParseInput({ FLOWS_ENABLED: 'sentinel' }).FLOWS_ENABLED).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off ', ''])(
+    'accepts %j',
+    (value) => {
+      withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it.each(['maybe', 'ture', 'enabled', 'y'])('refuses boot on the near-miss value %s', (value) => {
+    withEnv({ ...validEnv, FLOWS_ENABLED: value }, () => {
+      expect(() => validateConfig()).toThrow(/FLOWS_ENABLED must be a boolean/);
+    });
+  });
 });
 
 describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {

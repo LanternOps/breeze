@@ -293,3 +293,39 @@ describe('ExecutionDetails restore-point badge (#4759)', () => {
     expect(screen.queryByTestId('restore-point-badge')).toBeNull();
   });
 });
+
+describe('ExecutionDetails queued/pending delivery copy (#9563)', () => {
+  const queued: Partial<ScriptExecution> = {
+    status: 'queued',
+    startedAt: null,
+    completedAt: undefined,
+    exitCode: undefined,
+    stdout: undefined
+  };
+
+  it('a queued run on an ONLINE device says it is awaiting pickup, never "device offline"', () => {
+    renderExecution({ ...queued, deviceStatus: 'online' });
+    expect(screen.getByText('Queued — waiting for the device to pick it up')).toBeInTheDocument();
+    expect(screen.getByText(/no active agent session/i)).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+    expect(screen.queryByText(/device is offline/i)).toBeNull();
+  });
+
+  it('a queued run with an unknown device status gets the same neutral copy', () => {
+    renderExecution({ ...queued });
+    expect(screen.getByText('Queued — waiting for the device to pick it up')).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+  });
+
+  it('a queued run on an OFFLINE device keeps a distinct offline message', () => {
+    renderExecution({ ...queued, deviceStatus: 'offline' });
+    expect(screen.getByText('Queued — device offline')).toBeInTheDocument();
+    expect(screen.getByText(/device is offline/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no active agent session/i)).toBeNull();
+  });
+
+  it('a pending run on an offline device says the device is offline', () => {
+    renderExecution({ ...queued, status: 'pending', deviceStatus: 'offline' });
+    expect(screen.getByText(/device is offline/i)).toBeInTheDocument();
+  });
+});

@@ -16,6 +16,8 @@ const { dbMocks, contextMocks, orgMocks, runtimeMocks, budgetMocks, executorMock
   },
   runtimeMocks: {
     enabled: vi.fn(),
+    // Which "off" the gate reports when `enabled` is false (#9319).
+    disabledReason: 'instance_disabled' as 'instance_disabled' | 'org_not_enabled',
     loadConfig: vi.fn(),
   },
   budgetMocks: {
@@ -76,6 +78,8 @@ vi.mock('../aiToolWriteOrg', () => ({
 
 vi.mock('./runtimeConfig', () => ({
   isM365GraphReadToolsEnabledForOrg: runtimeMocks.enabled,
+  m365GraphReadToolsAvailability: (orgId: string) =>
+    (runtimeMocks.enabled(orgId) ? 'enabled' : runtimeMocks.disabledReason),
   loadM365CustomerGraphReadRuntimeConfig: runtimeMocks.loadConfig,
 }));
 
@@ -252,9 +256,39 @@ describe('executeM365ReadAction', () => {
     expect(result).toEqual({
       ok: false,
       code: 'tools_disabled',
-      message: 'Microsoft 365 Graph read tools are not enabled for this organization.',
+      reason: 'instance_disabled',
+      message: 'Microsoft 365 tools are turned off on this Breeze instance. A Breeze platform administrator can enable them.',
     });
     expect(dbMocks.selectSpy).not.toHaveBeenCalled();
+  });
+
+  it('names the per-org allowlist when the org is not enabled (#9319)', async () => {
+    runtimeMocks.enabled.mockReturnValue(false);
+    runtimeMocks.disabledReason = 'org_not_enabled';
+    try {
+      const result = await executeM365ReadAction(auth(), ORG_GET_ACTION);
+      expect(result).toEqual({
+        ok: false,
+        code: 'tools_disabled',
+        reason: 'org_not_enabled',
+        message: 'Microsoft 365 tools are not enabled for this organization yet. Ask your Breeze administrator to enable them.',
+      });
+      const byOrg = await executeM365ReadActionByOrg(ORG_ID, ORG_GET_ACTION);
+      expect(byOrg).toMatchObject({ ok: false, code: 'tools_disabled', reason: 'org_not_enabled' });
+      expect(dbMocks.selectSpy).not.toHaveBeenCalled();
+    } finally {
+      runtimeMocks.disabledReason = 'instance_disabled';
+    }
+  });
+
+  it('flag on + org allowlisted + no connection → connection_not_ready with the Connect next step (#9319)', async () => {
+    dbMocks.selectResults.push([]);
+    const result = await executeM365ReadAction(auth(), ORG_GET_ACTION);
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'connection_not_ready',
+      message: expect.stringContaining('Connect Microsoft 365 in Integrations'),
+    });
   });
 
   it.each([

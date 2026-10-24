@@ -7,6 +7,7 @@
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Der Kunden-Graph-Lesezugriff ist für diese Organisation nicht aktiviert.",
     "notAvailableOnInstance": "Auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "notEnabledForOrg": "Für diese Organisation noch nicht aktiviert. Bitten Sie Ihren Breeze-Administrator, dies zu aktivieren.",
     "callback": {
       "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
       "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
@@ -82,7 +83,9 @@
         "intune_devices": "Intune-Geräte",
         "ca_policies": "Bedingter Zugriff",
         "skus": "Lizenzen",
-        "secure_score": "Sicherheitsbewertung"
+        "secure_score": "Sicherheitsbewertung",
+        "signin_events": "Anmeldeereignisse",
+        "unknown": "Unbekannter Datentyp"
       }
     },
     "errors": {
@@ -104,6 +107,7 @@
       "manifest_stale": "Die erteilten Berechtigungen verwenden ein älteres Manifest. Erteilen Sie die Zustimmung erneut.",
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
+      "executor_unavailablePending": "Die Verbindung konnte nicht abgeschlossen werden. Versuchen Sie es erneut mit „Verbinden“; wenn der Fehler bestehen bleibt, wenden Sie sich an den Support.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
     },
     "stepTitle": "Lesezugriff",
@@ -125,6 +129,7 @@
     "unavailable": "Verbindungsdetails sind nicht verfügbar.",
     "onboardingUnavailable": "Die Kunden-Graph-Aktionen sind für diese Organisation nicht aktiviert.",
     "notAvailableOnInstance": "Auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "notEnabledForOrg": "Für diese Organisation noch nicht aktiviert. Bitten Sie Ihren Breeze-Administrator, dies zu aktivieren.",
     "callback": {
       "active": "Die Microsoft-Zustimmung wurde abgeschlossen. Der aktualisierte Verbindungsstatus wird unten angezeigt.",
       "degraded": "Die Microsoft-Zustimmung wurde abgeschlossen, aber die Verbindung erfordert Aufmerksamkeit. Die aktualisierten Details werden unten angezeigt."
@@ -188,6 +193,7 @@
       "manifest_stale": "Die erteilten Berechtigungen verwenden ein älteres Manifest. Erteilen Sie die Zustimmung erneut.",
       "organization_probe_failed": "Die Prüfung der Microsoft-Organisation ist fehlgeschlagen. Prüfen Sie die Verbindung erneut.",
       "executor_unavailable": "Der Prüfdienst ist nicht verfügbar. Versuchen Sie es später erneut.",
+      "executor_unavailablePending": "Die Verbindung konnte nicht abgeschlossen werden. Versuchen Sie es erneut mit „Verbinden“; wenn der Fehler bestehen bleibt, wenden Sie sich an den Support.",
       "unknown": "Die Verifizierung erfordert Aufmerksamkeit. Prüfen Sie die Verbindung erneut oder starten Sie die Zustimmung neu."
     },
     "stepTitle": "Administratoraktionen",
@@ -260,6 +266,7 @@
   "m365TenantPanel": {
     "loading": "Microsoft 365-Verbindungen werden geladen.",
     "consentUnavailable": "Eine zustimmungsbasierte Verbindung ist auf dieser Breeze-Instanz noch nicht verfügbar.",
+    "consentNotEnabledForOrg": "Die zustimmungsbasierte Verbindung ist für diese Organisation noch nicht aktiviert. Bitten Sie Ihren Breeze-Administrator, sie zu aktivieren.",
     "selectOrganization": "Wählen Sie eine Organisation aus, um ihren Microsoft 365-Mandanten zu verbinden.",
     "noTenantForOrg": "Kein Microsoft 365-Mandant mit {{orgName}} verbunden",
     "tenantConnectedToOrg": "{{tenantName}} · verbunden mit {{orgName}}",
@@ -333,6 +340,9 @@
     "retry": "Erneut versuchen",
     "since": "seit {{time}}",
     "fix": "Beheben",
+    "remedy": {
+      "reconnect": "Verbinden Sie sich erneut über die Client-App (z. B. den MCP-Server neu hinzufügen). In Breeze ist nichts zu tun."
+    },
     "truncated": "Die ersten {{count}} werden angezeigt",
     "recentlyResolved": "Kürzlich behoben ({{count}})",
     "resolution": {
@@ -587,7 +597,7 @@
     "hidePassword": "Passwort verbergen",
     "portalLabelToggle": "Anbieternamen im Kundenportal anzeigen",
     "portalLabelHelp": "Standardmäßig aus: Kunden sehen \"Verwaltetes Cloud-Backup\" statt des Herstellernamens.",
-    "credentialsHelp": "Legen Sie einen eigenen Cove-Konsolenbenutzer mit Nur-Lese-Rolle, einem eigenen Passwort und ohne Zwei-Faktor-Authentifizierung an. Breeze liest nur den Status und ändert nichts in Cove.",
+    "credentialsHelp": "Legen Sie in Cove einen API-Benutzer (Management → Users → API Users) unter Ihrem obersten Kunden an. Geben Sie den Namen dieses Kunden als Partnernamen, den Anmeldenamen des API-Benutzers als Benutzernamen und sein Token als Passwort ein. Breeze liest nur den Status und ändert nichts in Cove.",
     "test": "Verbindung testen",
     "syncNow": "Jetzt synchronisieren",
     "reauthRequired": "Zugangsdaten abgelehnt",
@@ -720,7 +730,10 @@
     "allApplications": "Alle Anwendungen",
     "searchAllApplicationsFirst2": " (nicht „Eigene Anwendungen“) nach einer vorhandenen Breeze-App in diesem Mandanten. ",
     "tenantIdGuidPlaceholder": "Mandanten-ID (GUID), z. B. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Verwenden Sie die Verzeichnis-ID (Mandanten-ID, eine GUID) aus der Übersicht der Entra-App-Registrierung, nicht die Domain contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Verwenden Sie die Verzeichnis-ID (Mandanten-ID, eine GUID) aus der Übersicht der Entra-App-Registrierung, nicht die Domain contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Zum Speichern ist eine MFA-Bestätigung erforderlich.",
+    "clientSecretPlaceholder": "Client-Geheimnis der App",
+    "clientSecretStoredPlaceholder": "•••••••••• (gespeichert, verschlüsselt)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Gerätezustand",

@@ -380,6 +380,43 @@ describe('deliverable sweep on real Postgres (#5573 W02)', () => {
     expect(madeTickets).toHaveLength(occ[0]!.ticketId ? 1 : 0);
   });
 
+  // #9308: a one-time item applied from a template has effective_from == its due date.
+  // The sweep must visit it lead_days early, not first on the due date.
+  runDb('13. one-time with effective_from == due: swept at D-7 it materializes and opens; at D-8 nothing', async () => {
+    const t = await seedTenant();
+    const D = '2026-11-15';
+    const d = await seedDeliverable(t, { cadence: 'one_time', anchorDueDate: D, effectiveFrom: D, leadDays: 7 });
+
+    const early = await runDeliverableSweep(new Date(`${addDaysISO(D, -8)}T05:18:00Z`));
+    expect(early.deliverables).toBe(0);
+    expect(await occurrencesOf(d)).toHaveLength(0);
+
+    const res = await runDeliverableSweep(new Date(`${addDaysISO(D, -7)}T05:18:00Z`));
+    expect(res).toMatchObject({ deliverables: 1, materialized: 1, opened: 1, failed: 0 });
+    const [occ] = await occurrencesOf(d);
+    expect(occ).toMatchObject({ status: 'open', dueAt: D });
+    expect(occ!.ticketId).not.toBeNull();
+  });
+
+  runDb('14. lead_days 0 keeps the old behaviour: first visited on the due date', async () => {
+    const t = await seedTenant();
+    const D = '2026-11-15';
+    const d = await seedDeliverable(t, { cadence: 'one_time', anchorDueDate: D, effectiveFrom: D, leadDays: 0 });
+    expect((await runDeliverableSweep(new Date(`${addDaysISO(D, -1)}T05:18:00Z`))).deliverables).toBe(0);
+    expect((await runDeliverableSweep(new Date(`${D}T05:18:00Z`))).materialized).toBe(1);
+    expect(await occurrencesOf(d)).toHaveLength(1);
+  });
+
+  runDb('15. the widened gate never plans a due date before effective_from', async () => {
+    const t = await seedTenant();
+    // Monthly, anchor 2026-11-10 but service starts 2026-11-15: the 11-10 slot predates the start.
+    const d = await seedDeliverable(t, { cadence: 'monthly', anchorDueDate: '2026-11-10', effectiveFrom: '2026-11-15', leadDays: 7 });
+    const res = await runDeliverableSweep(new Date('2026-11-09T05:18:00Z'));   // effective_from - 6d: inside the gate
+    expect(res.deliverables).toBe(1);
+    expect(res.materialized).toBe(0);
+    expect(await occurrencesOf(d)).toHaveLength(0);
+  });
+
   runDb('the sweep skips an archived tenant inside its purge countdown (automation-eligible predicate)', async () => {
     const t = await seedTenant();
     const d = await seedDeliverable(t);

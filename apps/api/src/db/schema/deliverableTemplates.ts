@@ -58,6 +58,12 @@ export const deliverableTemplateItems = pgTable('deliverable_template_items', {
    * hold it. NULL means the item produces no auto-evidence.
    */
   autoEvidenceReportType: reportTypeEnum('auto_evidence_report_type'),
+  /**
+   * #9315. Copied onto the deliverable's portal_visible by applyTemplateSet.
+   * The service always writes it explicitly (defaultPortalVisibleForCadence
+   * when the caller omits it); the column default only covers raw inserts.
+   */
+  portalVisible: boolean('portal_visible').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

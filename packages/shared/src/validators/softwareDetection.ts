@@ -17,11 +17,14 @@ import { z } from 'zod';
 // comparison clause (issue #2089) was added afterwards — it needs Win32
 // version-info plumbing on the agent side.
 //
-// Registry, MSI-product-code and file_version clauses are Windows-only. On a
-// platform where a clause type can't be evaluated the agent reports the rule set
-// as "unsupported" and falls back to exit-code behavior — it never silently
-// treats unsupported as pass or fail. See
-// agent/internal/remote/tools/software_detection*.go.
+// Registry, MSI-product-code and file_version clauses are Windows-only. The
+// service_running clause (#6958) is portable: the Windows SCM service name
+// (display-name fallback), the macOS launchd label, or the Linux systemd unit.
+// On a platform where a clause type can't be evaluated — or on an agent that
+// predates the clause — the agent reports the rule set as "unsupported" and
+// falls back to exit-code behavior; it never silently treats unsupported as
+// pass or fail. The API strips service_running for agents that predate it.
+// See agent/internal/remote/tools/software_detection*.go.
 
 /** Registry hives a registry detection clause may target. */
 export const REGISTRY_HIVES = ['HKLM', 'HKCU', 'HKCR', 'HKU', 'HKCC'] as const;
@@ -91,17 +94,48 @@ export const fileVersionDetectionRuleSchema = z.object({
     ),
 });
 
+// A service/daemon that must be running. Portable: Windows SCM service name
+// (display-name fallback), macOS launchd label, or Linux systemd unit. No
+// control characters and no leading '-' (it is handed to OS tooling); spaces
+// are allowed because display names like "NextDNS Service" are valid.
+// "Control characters" is C0 + DEL + C1 (U+0080–U+009F, incl. NEL U+0085) plus
+// the Unicode line/paragraph separators U+2028/U+2029. The agent refuses the
+// same set and bounds the name at 256 UTF-8 bytes
+// (agent/internal/remote/tools/software_detection_service.go validServiceName);
+// a name it refuses is an unevaluable clause, so both sides must agree.
+const SERVICE_NAME_REGEX =
+  /^[^\x00-\x1f\x7f-\x9f\u2028\u2029-][^\x00-\x1f\x7f-\x9f\u2028\u2029]*$/;
+const SERVICE_NAME_MAX_BYTES = 256;
+
+export const serviceRunningDetectionRuleSchema = z
+  .object({
+    type: z.literal('service_running'),
+    serviceName: z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(SERVICE_NAME_REGEX, 'No control characters and no leading "-"')
+      .refine((s) => s.trim().length > 0, 'Must not be blank')
+      .refine(
+        (s) => new TextEncoder().encode(s).length <= SERVICE_NAME_MAX_BYTES,
+        `Must be at most ${SERVICE_NAME_MAX_BYTES} bytes (UTF-8)`,
+      ),
+  })
+  .strict();
+
 export const detectionRuleSchema = z.discriminatedUnion('type', [
   registryDetectionRuleSchema,
   fileDetectionRuleSchema,
   msiProductCodeDetectionRuleSchema,
   fileVersionDetectionRuleSchema,
+  serviceRunningDetectionRuleSchema,
 ]);
 
 export type RegistryDetectionRule = z.infer<typeof registryDetectionRuleSchema>;
 export type FileDetectionRule = z.infer<typeof fileDetectionRuleSchema>;
 export type MsiProductCodeDetectionRule = z.infer<typeof msiProductCodeDetectionRuleSchema>;
 export type FileVersionDetectionRule = z.infer<typeof fileVersionDetectionRuleSchema>;
+export type ServiceRunningDetectionRule = z.infer<typeof serviceRunningDetectionRuleSchema>;
 export type DetectionRule = z.infer<typeof detectionRuleSchema>;
 
 // The full rule set stored on a software version. An empty array (or null) means

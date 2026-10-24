@@ -4,7 +4,28 @@ import type { SQL } from 'drizzle-orm';
 import {
   admitPartnerDeviceCapacity,
   previewPartnerDeviceCapacity,
+  effectivePartnerAdmissionLimit,
 } from './partnerDeviceCapacity';
+
+describe('billing growth admission', () => {
+  const now = new Date('2026-10-22T12:00:00Z');
+  const paid = { maxDevices: 110, plan: 'community', billingSubscriptionStatus: 'active',
+    billingAdmissionLimit: 165, billingAdmissionExpiresAt: new Date('2026-10-23T00:00:00Z') };
+  it('admits a temporary spike while retaining a finite ceiling', () => {
+    expect(effectivePartnerAdmissionLimit(paid, now)).toBe(165);
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionLimit: 999999 }, now)).toBe(110);
+  });
+  it.each(['past_due', 'incomplete', 'trialing', 'canceled'])('does not widen admission for %s', status => {
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingSubscriptionStatus: status }, now)).toBe(110);
+  });
+  it('fails closed for expired/missing proof and never makes the paid cap smaller', () => {
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionExpiresAt: now }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionExpiresAt: null }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ ...paid, billingAdmissionLimit: 50 }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ maxDevices: 110 }, now)).toBe(110);
+    expect(effectivePartnerAdmissionLimit({ ...paid, maxDevices: null }, now)).toBeNull();
+  });
+});
 
 function transactionFixture(input: {
   orgPartnerId?: string | null;

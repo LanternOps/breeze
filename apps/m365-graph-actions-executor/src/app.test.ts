@@ -66,6 +66,39 @@ describe('executor HTTP app — execute-action', () => {
     expect(executeAction).not.toHaveBeenCalled();
   });
 
+  it('serves unauthenticated GET /version with the build version and sha, and nothing else', async () => {
+    const verify = vi.fn();
+    const app = createExecutorApp({
+      authenticator: { verify },
+      verifyIdentity: vi.fn(),
+      retest: vi.fn(),
+      executeAction: vi.fn(),
+      buildInfo: { version: '1.2.3', gitSha: 'abc1234' },
+    });
+    const response = await app.request('/version');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: '1.2.3', gitSha: 'abc1234' });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('GET /version defaults to the baked APP_VERSION / GIT_SHA, reporting unknown for unusable values', async () => {
+    const previous = { v: process.env.APP_VERSION, s: process.env.GIT_SHA };
+    process.env.APP_VERSION = '9.9.9';
+    process.env.GIT_SHA = 'not a sha';
+    try {
+      const app = createExecutorApp({
+        authenticator: { verify: vi.fn() },
+        verifyIdentity: vi.fn(),
+        retest: vi.fn(),
+        executeAction: vi.fn(),
+      });
+      expect(await (await app.request('/version')).json()).toEqual({ version: '9.9.9', gitSha: 'unknown' });
+    } finally {
+      if (previous.v === undefined) delete process.env.APP_VERSION; else process.env.APP_VERSION = previous.v;
+      if (previous.s === undefined) delete process.env.GIT_SHA; else process.env.GIT_SHA = previous.s;
+    }
+  });
+
   it('passes the exact UTF-8 bytes and fixed operation to auth before executing', async () => {
     const body = executeActionRequestBody();
     const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });

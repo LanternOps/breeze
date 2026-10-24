@@ -95,6 +95,28 @@ describe('pendingRegistration service', () => {
     expect(typeof stored?.rawToken).toBe('string');
   });
 
+  it('retains selection through server-side storage and consumption without browser storage', async () => {
+    const purchaseSelection = { catalogVersion: 'launch-2026-10' as const, capacity: 500, billingPeriod: 'annual' as const };
+    const { tokenHash } = await createPendingRegistration({ ...baseRecord, purchaseSelection });
+    expect((await peekPendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
+    expect((await consumePendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
+  });
+
+  it('stores the fresh-business default when a caller omits intent and preserves it on consumption', async () => {
+    const { tokenHash } = await createPendingRegistration(baseRecord);
+    const purchaseSelection = { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly' };
+    expect((await peekPendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
+    expect((await consumePendingRegistration(tokenHash))?.purchaseSelection).toEqual(purchaseSelection);
+  });
+
+  it.each([null, {}, { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly', priceId: 'price_untrusted' }])(
+    'rejects invalid service input without parking or superseding a pending signup: %j', async (purchaseSelection) => {
+      await expect(createPendingRegistration({ ...baseRecord, purchaseSelection: purchaseSelection as never })).rejects.toThrow();
+      expect(fakeRedis.eval).not.toHaveBeenCalled();
+      expect(store.size).toBe(0);
+    },
+  );
+
   it('peek is non-consuming and exposes rawToken; a subsequent consume still wins', async () => {
     const { rawToken, tokenHash } = await createPendingRegistration(baseRecord);
     const peeked = await peekPendingRegistration(tokenHash);

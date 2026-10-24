@@ -34,16 +34,18 @@ function ev(id: string, over: Record<string, unknown> = {}): Record<string, unkn
 const action = { type: 'm365.sync.signin_events', since: SINCE, until: UNTIL } as const;
 
 describe('m365.sync.signin_events', () => {
-  it('filters on the half-open window and INTERACTIVE sign-ins only, oldest first', async () => {
+  it('filters on the half-open window only, oldest first', async () => {
     const { client, calls } = stubClient({ [PATH]: page([ev('1')]) });
     const result = await executeGraphSyncAction(action, context(client));
     if (!('items' in result)) throw new Error('expected success');
     const query = calls[0]!.query!;
     expect(query.$filter).toContain(`createdDateTime ge ${SINCE}`);
     expect(query.$filter).toContain(`createdDateTime lt ${UNTIL}`);
-    // Non-interactive, service-principal and managed-identity sign-ins are out
-    // of the first cut — every string the feature emits says "interactive".
-    expect(query.$filter).toContain("signInEventTypes/any(t: t eq 'interactiveUser')");
+    // #9393: `signInEventTypes` is a /beta-only property; v1.0 answers 400 to
+    // any $filter that names it. v1.0 /auditLogs/signIns is already the
+    // interactive collection, so the window is the whole filter.
+    expect(query.$filter).not.toContain('signInEventTypes');
+    expect(query.$filter).toBe(`createdDateTime ge ${SINCE} and createdDateTime lt ${UNTIL}`);
     // Ascending, so a continuation resumes deterministically.
     expect(query.$orderby).toBe('createdDateTime');
     expect(result.sources).toEqual({ signinEvents: 'ok' });
@@ -127,6 +129,14 @@ describe('m365.sync.signin_events', () => {
     const { client } = stubClient({ [PATH]: new GraphClientError('graph_permission_missing') });
     const result = await executeGraphSyncAction(action, context(client));
     expect(result).toEqual({ success: false, code: 'graph_permission_missing' });
+  });
+
+  it('reports a Graph-rejected query as graph_provider_rejected, not graph_response_invalid', async () => {
+    // #9393: a 400 from Graph (a bad $filter, say) is a rejected REQUEST. Folding
+    // it into graph_response_invalid made a bad filter read like malformed JSON.
+    const { client } = stubClient({ [PATH]: new GraphClientError('graph_provider_rejected') });
+    const result = await executeGraphSyncAction(action, context(client));
+    expect(result).toEqual({ success: false, code: 'graph_provider_rejected' });
   });
 
   it('refuses a continuation minted for another action', async () => {

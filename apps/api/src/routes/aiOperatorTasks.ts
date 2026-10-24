@@ -38,11 +38,15 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import {
   createOperatorTaskSchema,
+  deviceTargetedTaskFieldsSchema,
+  operatorTaskDraftSchema,
   operatorTaskListQuerySchema,
+  type CreateOperatorTaskInput,
+  type IdentityOffboardingInput,
   type AiOperatorTaskDto,
   type AiOperatorTaskListItemDto,
 } from '@breeze/shared';
-import { zValidator } from '../lib/validation';
+import { formatZodError, zValidator } from '../lib/validation';
 import { db } from '../db';
 import {
   aiAgentRuns,
@@ -52,12 +56,25 @@ import {
   aiOperatorTaskTargetAccounts,
   aiOperatorTaskTargets,
   aiOperatorTasks,
+  contacts,
   devices,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
-import { admitServiceRecoveryTask } from '../services/aiOperator/taskService';
+import { admitServiceRecoveryTask, admitTask, recipeEnabled } from '../services/aiOperator/taskService';
+import { canMutateOrgWideGovernance } from '../services/siteCeilingAccess';
+import {
+  RECIPE_AGENT_KINDS,
+  computeRecipeReadiness,
+  listWorkflowReadiness,
+  toWorkflowDto,
+} from '../services/aiOperator/recipeReadiness';
+import {
+  IDENTITY_OFFBOARDING_EFFECT_TOOLS,
+  IDENTITY_OFFBOARDING_WORKFLOW_KEY,
+  buildIdentityOffboardingManualWork,
+} from '../services/aiOperator/recipes/identityOffboarding';
 import { RECIPE_KEYS, resolveAdmissionRecipe } from '../services/aiOperator/recipes';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import {
@@ -213,6 +230,18 @@ aiOperatorTasksRoutes.post(
     const auth = c.get('auth');
     const body = c.req.valid('json');
 
+    // `deviceId` and `inputs` are loose on the wire since R1a (a contact-
+    // targeted recipe sends no device and its own inputs). Every other key
+    // gets the shipped shapes back, with the shipped 400 body, and before the
+    // org check — the order the shipped validator middleware ran them in.
+    const isContactTargeted = body.recipeKey === IDENTITY_OFFBOARDING_WORKFLOW_KEY;
+    const deviceFields = isContactTargeted
+      ? null
+      : deviceTargetedTaskFieldsSchema.safeParse({ deviceId: body.deviceId, inputs: body.inputs });
+    if (deviceFields && !deviceFields.success) {
+      return c.json(formatZodError(deviceFields.error), 400);
+    }
+
     // (2) Explicit org from the body. `canAccessOrg` is the same closure the
     // org-scoping predicate is built from, so this cannot drift from what a
     // read would allow. 404 rather than 403: confirming the org exists is
@@ -221,6 +250,15 @@ aiOperatorTasksRoutes.post(
       return c.json({ error: 'Device not found' }, 404);
     }
 
+    // A contact-targeted recipe (R1a) takes its own path; every other key —
+    // service_recovery and an unknown one alike — continues exactly as before.
+    if (isContactTargeted || !deviceFields) {
+      return admitIdentityOffboardingFromRoute(c, body);
+    }
+    const deviceId = deviceFields.data.deviceId;
+    const serviceName = deviceFields.data.inputs.serviceName;
+
+
     // (3) Resolve the target under the caller's own visibility. Note this
     // read runs in the REQUEST's db context (RLS-scoped), unlike admission,
     // which runs as system — so the device must be visible to the caller
@@ -228,7 +266,7 @@ aiOperatorTasksRoutes.post(
     const [device] = await db
       .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId, hostname: devices.hostname })
       .from(devices)
-      .where(and(eq(devices.id, body.deviceId), eq(devices.orgId, body.orgId)))
+      .where(and(eq(devices.id, deviceId), eq(devices.orgId, body.orgId)))
       .limit(1);
     // A site-restricted caller may not delegate against a device outside their
     // sites. Same non-enumerating 404 as the W07 detail route.
@@ -305,15 +343,15 @@ aiOperatorTasksRoutes.post(
       // is the layer that writes the row.
       workflowKey: recipe.key,
       workflowVersion: recipe.version,
-      objective: `Restore the ${body.inputs.serviceName} service on ${device.hostname ?? body.deviceId}`,
+      objective: `Restore the ${serviceName} service on ${device.hostname ?? deviceId}`,
       // Provenance, not authority (spec §5.1: origins are explicit and never
       // silently converted). A delegate from alert detail is origin 'alert';
       // everything else through this route is a manual delegation.
       originKind: body.sourceKind === 'alert' ? 'alert' : 'manual',
       requesterUserId: auth.user?.id ?? null,
       recipeInput: {
-        deviceId: body.deviceId,
-        serviceName: body.inputs.serviceName,
+        deviceId,
+        serviceName,
         // The alert is the recurrence signal the verification criterion needs
         // (W06: with no alertId the best achievable outcome is
         // `investigation_complete`, never `verified_resolved`).
@@ -593,3 +631,278 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
   );
   return c.json({ data: dto });
 });
+
+// ---------------------------------------------------------------------------
+// Recipe Library (W06 R1a): the Library, drafts, and contact-targeted admission
+// ---------------------------------------------------------------------------
+
+/** Effect tools each offboarding toggle can produce — the draft's outline, never a plan. */
+const IDENTITY_TOGGLE_TOOLS: Readonly<Record<keyof IdentityOffboardingInput['effects'], readonly string[]>> = Object.freeze({
+  autoReply: ['google_set_vacation', 'm365_set_auto_reply'],
+  forwarding: ['google_set_forwarding'],
+  mailDelegate: ['google_add_mail_delegate'],
+  removeGroups: ['google_remove_from_group', 'm365_remove_from_group'],
+  removeLicenses: ['google_remove_license', 'm365_remove_license'],
+  wipeMobile: ['google_account_wipe_mobile_device', 'm365_retire_intune_device'],
+  revokeSessions: ['google_signout', 'm365_revoke_sessions'],
+  disableAccount: ['google_suspend_user', 'm365_disable_user'],
+});
+
+type ContactRow = { id: string; name: string | null; email: string | null };
+
+/**
+ * Who the caller means, READ-ONLY, in the caller's own (RLS-scoped) db
+ * context, org-predicated. A substring name match is fine HERE: it only
+ * produces candidates for a human to pick from. Admission itself resolves
+ * exactly or refuses.
+ */
+async function draftPerson(orgId: string, input: IdentityOffboardingInput): Promise<{ resolved: ContactRow | null; candidates: ContactRow[] }> {
+  const cols = { id: contacts.id, name: contacts.name, email: contacts.email };
+  if (input.contactId) {
+    const [row] = await db.select(cols).from(contacts)
+      .where(and(eq(contacts.orgId, orgId), eq(contacts.id, input.contactId))).limit(1);
+    return { resolved: row ?? null, candidates: [] };
+  }
+  const hint = (input.personHint ?? '').trim();
+  const asEmail = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(hint) ? hint.toLowerCase() : null;
+  const rows = asEmail
+    ? await db.select(cols).from(contacts).where(and(eq(contacts.orgId, orgId), sql`lower(${contacts.email}) = ${asEmail}`)).limit(10)
+    : await db.select(cols).from(contacts)
+      .where(and(eq(contacts.orgId, orgId), sql`${contacts.name} ILIKE ${`%${hint.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`}`))
+      .limit(10);
+  // The candidate list is a substring search, but "resolved" uses the SAME
+  // rule admission does (`identifyTaskPerson`): a unique email match, or a
+  // unique exact (trimmed, case-insensitive) full-name match. Anything looser
+  // would preview a person that POST /tasks then refuses as ambiguous.
+  const exact = asEmail ? rows : rows.filter((r) => (r.name ?? '').trim().toLowerCase() === hint.toLowerCase());
+  return { resolved: exact.length === 1 ? exact[0]! : null, candidates: rows };
+}
+
+/**
+ * `POST /tasks` for `identity_offboarding` — same posture as the device path:
+ * `.strict()` body, org access (non-enumerating 404), readiness recomputed,
+ * the SERVER picks the agent, admission is idempotent.
+ *
+ * Extra gates for a contact-targeted recipe:
+ *  - a site-restricted caller is refused: a directory account has no per-site
+ *    slice, so this is org-wide governance (the requester gate would pause
+ *    the task at its first effect anyway — refuse now, not after approval);
+ *  - the named contact and every selected device must be visible to the
+ *    caller in their own db context before system-scoped admission runs.
+ */
+async function admitIdentityOffboardingFromRoute(c: Context, body: CreateOperatorTaskInput) {
+  const auth = c.get('auth');
+  // Offboarding changes a person's directory accounts: on top of
+  // ai_agents:write it needs the organization write permission the contact
+  // routes use. The permissions were resolved by requireAiWrite above.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
+  if (!canMutateOrgWideGovernance(auth)) {
+    return c.json({
+      error: 'Offboarding acts on organization-wide identity accounts; site-restricted users cannot start it.',
+      code: 'SITE_RESTRICTED',
+    }, 403);
+  }
+  if (body.deviceId !== undefined || body.sourceKind !== undefined) {
+    return c.json({
+      error: 'This workflow takes its devices in inputs.deviceIds and accepts no deviceId or source citation.',
+      code: 'INVALID_INPUT',
+    }, 400);
+  }
+  if (!aiOperatorTasksEnabled()) {
+    return c.json({ error: 'AI Operator tasks are not enabled for this deployment', code: 'OPERATOR_TASKS_DISABLED' }, 422);
+  }
+  if (!recipeEnabled(body.recipeKey)) {
+    return c.json({ error: 'The offboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+  }
+  const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+  if (!resolution.ok) {
+    return c.json({ error: resolution.detail, code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+  }
+  const recipe = resolution.recipe;
+  const parsed = recipe.inputSchema.safeParse(body.inputs);
+  if (!parsed.success) {
+    return c.json({
+      error: 'Invalid workflow inputs',
+      code: 'INVALID_INPUT',
+      issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+    }, 400);
+  }
+  const input = parsed.data as IdentityOffboardingInput;
+
+  let label = input.personHint ?? 'a departing person';
+  if (input.contactId) {
+    const [row] = await db.select({ id: contacts.id, name: contacts.name, email: contacts.email }).from(contacts)
+      .where(and(eq(contacts.orgId, body.orgId), eq(contacts.id, input.contactId))).limit(1);
+    // Non-enumerating: the same answer whether it exists elsewhere or nowhere.
+    if (!row) return c.json({ error: 'Contact not found' }, 404);
+    label = row.name ?? row.email ?? label;
+  }
+  if (input.deviceIds.length > 0) {
+    const rows = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
+      .where(and(eq(devices.orgId, body.orgId), inArray(devices.id, input.deviceIds)));
+    const visible = rows.filter((d) => !auth.canAccessSite || auth.canAccessSite(d.siteId));
+    if (visible.length !== new Set(input.deviceIds).size) return c.json({ error: 'Device not found' }, 404);
+  }
+
+  const kind = RECIPE_AGENT_KINDS[recipe.key];
+  const effectiveAgent = kind ? await resolveEffectiveAgent(auth, body.orgId, kind) : null;
+  const agent = effectiveAgent?.effective.enabled ? { id: effectiveAgent.agentId } : null;
+  if (!agent) {
+    return c.json({
+      error: 'No enabled helpdesk AI agent is available for this organization. '
+        + 'Enable one in Settings → AI Agents before starting an offboarding.',
+      code: 'OPERATOR_NO_AGENT',
+    }, 422);
+  }
+
+  const result = await admitTask({
+    orgId: body.orgId,
+    agentId: agent.id,
+    workflowKey: recipe.key,
+    workflowVersion: recipe.version,
+    objective: `Offboard ${label}`.slice(0, 4000),
+    originKind: 'manual',
+    requesterUserId: auth.user?.id ?? null,
+    recipeInput: input,
+    clientIdempotencyKey: body.clientIdempotencyKey,
+  });
+  if (!result.ok) {
+    switch (result.refusal) {
+      case 'contact_not_in_org': return c.json({ error: 'Contact not found' }, 404);
+      case 'device_not_in_org': return c.json({ error: 'Device not found' }, 404);
+      case 'duplicate_live_task':
+        return c.json({
+          error: 'An offboarding task is already running for this person.',
+          code: 'OPERATOR_DUPLICATE_LIVE_TASK',
+          taskId: result.existingTaskId ?? null,
+        }, 409);
+      case 'pending_cap_reached':
+        return c.json({ error: result.detail, code: 'OPERATOR_PENDING_CAP_REACHED' }, 429);
+      case 'unknown_recipe':
+        return c.json({ error: result.detail, code: 'OPERATOR_UNKNOWN_RECIPE', supportedRecipeKeys: [...RECIPE_KEYS] }, 400);
+      default:
+        return c.json({ error: result.detail, code: result.refusal.toUpperCase() }, 422);
+    }
+  }
+  return c.json({ taskId: result.taskId, replayed: result.replayed }, 202);
+}
+
+/**
+ * `GET /api/v1/ai/operator/workflows` — the Library (spec §4.1, §12).
+ *
+ * Readiness is computed from ROWS on every call. Spec §12: "Recompute
+ * readiness on launch and before dispatch. A cached catalog or draft is never
+ * authority." There is deliberately no ETag and no cache header.
+ */
+aiOperatorTasksRoutes.get(
+  '/workflows',
+  scopes,
+  requireAiRead,
+  zValidator('query', z.object({ orgId: z.string().guid() }).strict()),
+  async (c) => {
+    const auth = c.get('auth');
+    const { orgId } = c.req.valid('query');
+    if (!auth.canAccessOrg(orgId)) return c.json({ error: 'Organization not found' }, 404);
+    const readiness = await listWorkflowReadiness(orgId, auth);
+    return c.json({ data: readiness.map(toWorkflowDto) });
+  },
+);
+
+/**
+ * `POST /api/v1/ai/operator/task-drafts` — interpret and validate, execute
+ * nothing (spec §12: "returns typed reviewed proposal, no operational
+ * execution"). It resolves the recipe, parses the inputs, resolves the person
+ * READ-ONLY (it never creates a contact — a draft that created customer
+ * records would not be a draft), recomputes readiness, and returns the effect
+ * tools the plan WOULD use and the human-work items it would generate. It
+ * writes nothing. The plan itself is built at `discover`, from live provider
+ * reads, after a person confirms the identity.
+ */
+aiOperatorTasksRoutes.post(
+  '/task-drafts',
+  scopes,
+  requireAiWrite,
+  // A draft can return contact names and addresses: the same read permission
+  // the contact routes require.
+  requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action),
+  zValidator('json', operatorTaskDraftSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const body = c.req.valid('json');
+    if (!auth.canAccessOrg(body.orgId)) return c.json({ error: 'Organization not found' }, 404);
+    const resolution = resolveAdmissionRecipe(body.recipeKey, body.recipeVersion);
+    if (!resolution.ok && resolution.reason === 'unknown_recipe') {
+      return c.json({ error: resolution.detail, code: 'OPERATOR_UNKNOWN_RECIPE', supportedRecipeKeys: [...RECIPE_KEYS] }, 400);
+    }
+    if (!resolution.ok) return c.json({ error: resolution.detail, code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+    const recipe = resolution.recipe;
+
+    const rawInput = body.deviceId !== undefined ? { ...body.inputs, deviceId: body.deviceId } : body.inputs;
+    const parsed = recipe.inputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      return c.json({
+        error: 'Invalid workflow inputs',
+        code: 'INVALID_INPUT',
+        issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      }, 400);
+    }
+
+    const all = await listWorkflowReadiness(body.orgId, auth);
+    const readiness = all.find((r) => r.recipeKey === recipe.key)
+      ?? computeRecipeReadiness(recipe, { orgId: body.orgId, m365: null, google: null, agent: null, flagEnabled: false });
+    const workflow = toWorkflowDto(readiness);
+    if (recipe.key !== IDENTITY_OFFBOARDING_WORKFLOW_KEY) {
+      return c.json({ data: { recipeKey: recipe.key, recipeVersion: recipe.version, input: parsed.data, workflow } });
+    }
+
+    // Same gates as admission, BEFORE any contact is read: offboarding is
+    // org-wide identity governance, and a disabled recipe drafts nothing.
+    if (!canMutateOrgWideGovernance(auth)) {
+      return c.json({
+        error: 'Offboarding acts on organization-wide identity accounts; site-restricted users cannot start it.',
+        code: 'SITE_RESTRICTED',
+      }, 403);
+    }
+    if (!recipeEnabled(recipe.key)) {
+      return c.json({ error: 'The offboarding workflow is not enabled for this deployment', code: 'OPERATOR_RECIPE_DISABLED' }, 422);
+    }
+    const input = parsed.data as IdentityOffboardingInput;
+    if (!input.contactId && (input.personHint ?? '').trim().length < 2) {
+      return c.json({ error: 'Name the person with at least two characters, or choose a contact.', code: 'INVALID_INPUT' }, 400);
+    }
+    const person = await draftPerson(body.orgId, input);
+    const degraded = new Set(readiness.degradedEffects);
+    const plannedEffectTools = (Object.keys(IDENTITY_TOGGLE_TOOLS) as Array<keyof typeof IDENTITY_TOGGLE_TOOLS>)
+      .filter((toggle) => input.effects[toggle])
+      .flatMap((toggle) => IDENTITY_TOGGLE_TOOLS[toggle])
+      .filter((tool) => !(tool === 'm365_remove_license' && input.keepMailbox))
+      .filter((tool) => IDENTITY_OFFBOARDING_EFFECT_TOOLS.includes(tool as never));
+    const label = person.resolved?.name ?? person.resolved?.email ?? input.personHint ?? 'the departing person';
+    const manualWork = buildIdentityOffboardingManualWork(input, {
+      google: { present: readiness.capabilityReadiness['google.workspace.connection'] === true },
+      m365: { present: readiness.capabilityReadiness['m365.connection'] === true },
+      targets: { contactTargetId: 'draft', contactLabel: label },
+      degradedTools: [...degraded],
+    }, readiness.capabilityReadiness, []).map((i) => ({ key: i.key, label: i.label, detail: i.detail, origin: i.origin }));
+
+    return c.json({
+      data: {
+        recipeKey: recipe.key,
+        recipeVersion: recipe.version,
+        input,
+        workflow,
+        person: {
+          resolved: person.resolved,
+          // Candidates for a human to pick from, never a resolution.
+          candidates: person.resolved ? [] : person.candidates,
+        },
+        plannedEffectTools: plannedEffectTools.filter((t) => !degraded.has(t)),
+        degradedEffectTools: plannedEffectTools.filter((t) => degraded.has(t)),
+        manualWork,
+      },
+    });
+  },
+);

@@ -71,7 +71,7 @@
         "autoIssue": "Otomatik yayın",
         "renewal": "Yenileme",
         "estimatedPerPeriod": "Tah. / dönem",
-        "notes": "Notlar",
+        "notes": "İç notlar",
         "invoiceNote": "Fatura notu"
       },
       "values": {
@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} satır dahil edilen miktarı aştı ve faturalandırılmadı: {{names}}",
         "uncoveredDevices": "Fatura oluşturuldu, ancak {{count}} cihaz bu sözleşmedeki hiçbir satırda faturalandırılmıyor: {{breakdown}}",
         "priceBookGaps": "{{count}} katalog satırı sözleşme anlık görüntüsündeki fiyattan faturalandırıldı — katalogda {{currency}} fiyatı yok: {{lines}}",
-        "draftDeleted": "Taslak silindi"
+        "draftDeleted": "Taslak silindi",
+        "skipped": {
+          "already_billed": "Fatura oluşturulmadı — bu faturalama dönemi zaten faturalandı.",
+          "not_due": "Fatura oluşturulmadı — bu sözleşmenin faturalama zamanı henüz gelmedi.",
+          "renewal_pending": "Fatura oluşturulmadı — bu sözleşme bitiş tarihini geçti ve yenilenmeyi bekliyor.",
+          "expired": "Fatura oluşturulmadı — bu sözleşmenin süresi doldu.",
+          "unknown": "Bu sözleşme için fatura oluşturulmadı."
+        }
       },
       "cancelConfirm": {
         "title": "Bu sözleşme iptal edilsin mi?",
@@ -221,8 +228,8 @@
       },
       "content": {
         "title": "İçerik",
-        "notesOptional": "Notlar (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
-        "termsOptional": "Fatura notu (isteğe bağlı, oluşturulan faturaların Notlar bloğuna eklenir)",
+        "notesOptional": "İç notlar (müşteriye asla gösterilmez)",
+        "termsOptional": "Fatura notu (isteğe bağlı, oluşturulan her faturaya yazdırılır)",
         "termsPlaceholder": "ör. Net 30. 30 gün önceden iptal edilmediği sürece otomatik olarak yenilenir."
       },
       "lines": {
@@ -645,6 +652,38 @@
         "loadMore": "Daha fazla yükle",
         "invoiceRemoved": "Aşım faturası kaldırıldı — saatler faturalanmadı"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Bu kuruluşun {{count}} başka sözleşmesi var",
+      "title_other": "Bu kuruluşun {{count}} başka sözleşmesi var",
+      "overlapWarning": "Başka bir sözleşme aynı sıklıkta ve çakışan tarihlerde faturalandırıyor. İkisini birden etkinleştirirseniz müşteri her ikisi için de ödeme yapar.",
+      "sameCadence": "Aynı sıklık, çakışan tarihler",
+      "perPeriod": "Dönem başına {{amount}}",
+      "estimateUnavailable": "Dönem başına tahmin kullanılamıyor",
+      "deliverables_one": "{{count}} hizmet çıktısı",
+      "deliverables_other": "{{count}} hizmet çıktısı",
+      "signedAgreements_one": "{{count}} imzalı anlaşma",
+      "signedAgreements_other": "{{count}} imzalı anlaşma",
+      "activateConfirm": {
+        "title": "Başka bir sözleşmeyle birlikte etkinleştirilsin mi?",
+        "message": "Bu kuruluşun aynı sıklıkta ve çakışan tarihlerde faturalandıran bir sözleşmesi zaten var. Bunu etkinleştirirseniz müşteri her ikisi için de ödeme yapar.",
+        "confirm": "Yine de etkinleştir"
+      },
+      "adopt": {
+        "action": "Bu sözleşmeye birleştir",
+        "title": "“{{name}}” bu sözleşmeye birleştirilsin mi?",
+        "message": "“{{name}}” bu sözleşmeyle aynı hizmetleri kapsıyorsa kullanın; böylece müşteri iki kez faturalandırılmaz.",
+        "deliverables_one": "{{count}} hizmet çıktısı geçmişiyle birlikte buraya taşınır.",
+        "deliverables_other": "{{count}} hizmet çıktısı geçmişleriyle birlikte buraya taşınır.",
+        "agreements_one": "{{count}} imzalı anlaşma bu sözleşmeye bağlanır.",
+        "agreements_other": "{{count}} imzalı anlaşma bu sözleşmeye bağlanır.",
+        "noLines": "Kalemleri kopyalanmaz. Bu sözleşmenin kalemleri ve fiyatları olduğu gibi kalır.",
+        "deleted": "Ardından “{{name}}” silinir. Bu işlem geri alınamaz.",
+        "confirm": "Birleştir ve taslağı sil",
+        "success": "“{{name}}” bu sözleşmeye birleştirildi",
+        "error": "Taslak bu sözleşmeye birleştirilemedi",
+        "collision": "Bu hizmet çıktısı adları bu sözleşmede zaten var: {{names}}. Bir taraftakileri yeniden adlandırın veya kaldırın, ardından tekrar deneyin."
+      }
     }
   },
   "agreements": {
@@ -693,7 +732,8 @@
       }
     },
     "contractPill": {
-      "under": "{{template}} v{{n}} kapsamında"
+      "under": "{{template}} v{{n}} kapsamında",
+      "fromQuote": "{{number}} numaralı fiyat teklifinden"
     },
     "recordSigned": {
       "title": "İmzalı anlaşmayı kaydet",
@@ -1310,8 +1350,10 @@
         "signerNameLabel": "Onayı veren kişi",
         "signerEmailLabel": "E-posta adresi (isteğe bağlı)",
         "consequenceInvoice": "{{amount}} tutarında bir fatura şimdi oluşturulup numaralandırılacak.",
+        "consequenceInvoiceDraft": "Taslak bir fatura oluşturulacak. Henüz düzenlenmedi ve numaralandırılmadı.",
         "consequenceContracts": "Yinelenen satırlar, sonradan etkinleştireceğiniz taslak sözleşmelere dönüşür.",
         "consequenceEmail": "Fatura {{recipients}} adresine e-postayla gönderilecek.",
+        "consequenceEmailNotConfigured": "Yapılandırılmış bir e-posta hizmeti yok; fatura e-posta ile gönderilmeyecek. Fatura sayfasından paylaşın.",
         "consequenceDraft": "Bu teklif hiç gönderilmedi. Müşterinin onu ilk görüşü fatura olacak.",
         "submit": "Kabul et ve fatura oluştur",
         "success": "Teklif kabul edildi. {{number}} numaralı fatura oluşturuldu.",
@@ -1326,7 +1368,15 @@
         "evidenceAttached": "Kanıt eklendi.",
         "evidenceError": "Kabul kaydedildi, ancak kanıt dosyası eklenemedi. Teklif sayfasından ekleyin.",
         "consequenceEmailNoRecipient": "Bu teklifte kayıtlı alıcı yok; bu nedenle fatura e-postayla gönderilmeyebilir. Gerekirse müşteriye kendiniz gönderin.",
-        "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok."
+        "successNoRecipient": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmemiş olabilir: bu teklifte kayıtlı alıcı yok.",
+        "successNoEmailService": "Teklif kabul edildi. {{number}} numaralı fatura düzenlendi. E-postayla gönderilmedi: yapılandırılmış bir e-posta hizmeti yok. Fatura sayfasından paylaşın.",
+        "overlap": {
+          "title": "Bu kuruluşun aynı sıklıkta bir sözleşmesi zaten var",
+          "body": "Kabul işlemi yeni bir taslak sözleşme oluşturdu. Mevcut sözleşmeyle birlikte bunu da etkinleştirirseniz müşteri her ikisi için de ödeme yapar. Herhangi birini etkinleştirmeden önce ikisini de gözden geçirin.",
+          "newContract": "Bu tekliften oluşturulan yeni taslak",
+          "existingContract": "Mevcut sözleşme",
+          "done": "Tamam"
+        }
       },
       "declineOnBehalf": {
         "button": "Müşteri adına reddet",
@@ -1536,76 +1586,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Tah.",
-        "estimate": "Tahmini miktar — her fatura döneminde gerçek {{set}} sayısı üzerinden faturalandırılır.",
         "setDevices": "cihazlar",
         "setSeats": "kullanıcılar",
-        "setGroup": "“{{name}}” içindeki cihazlar",
-        "atSite": "{{site}} konumundaki {{set}}",
-        "allowanceBill": "{{included}} dahildir; ek birimler beher {{price}} olarak faturalandırılır.",
-        "allowanceFlag": "{{included}} dahildir; ek birimler otomatik faturalandırılmaz, inceleme için raporlanır."
+        "setGroup": "“{{name}}” içindeki cihazlar"
       },
       "additionalItems": "Ek öğeler",
       "contract": {
-        "download": "Anlaşmayı indirin",
-        "previewTitle": "{{name}} anlaşması",
         "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
-      "agreements": {
-        "heading": "Anlaşmalar",
-        "termsTitle": "Şartlar ve Koşullar",
-        "read": "Oku",
-        "hide": "Gizle",
-        "readTime": "~{{minutes}} dk okuma",
-        "sectionsReadTime_one": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "sectionsReadTime_other": "{{count}} bölüm · ~{{minutes}} dk okuma",
-        "pdfDocument": "PDF belgesi",
-        "unavailable": "Kullanılamıyor",
-        "untitled": "Anlaşma"
-      },
-      "draft": "Taslak",
-      "empty": "Bu teklifin henüz içeriği yok.",
-      "imageUnavailable": "Resim kullanılamıyor",
-      "issued": "Verildi",
-      "preparedFor": "için hazırlandı",
-      "taxId": "Vergi Numarası: {{id}}",
-      "imageZoomAria": "Daha büyük resmi görüntüle",
       "preview": {
         "description": "Bu, müşterinizin teklif bağlantısında gördüğü şeydir.",
         "downloadPdf": "PDF'yi indir",
-        "preparing": "Hazırlanıyor…"
-      },
-      "pricing": "Fiyatlandırma",
-      "pricingScrollAria": "Fiyatlandırma — daha fazla sütun için yana doğru kaydırın",
-      "proposal": "Teklif",
-      "proposalImageAlt": "Teklif resmi",
-      "recurrence": {
-        "annual": "Yıllık",
-        "monthly": "Aylık"
-      },
-      "table": {
-        "amount": "Tutar",
-        "description": "Açıklama",
-        "qty": "Adet",
-        "tax": "Vergi",
-        "unitPrice": "Birim fiyatı"
-      },
-      "totals": {
-        "annualRecurring": "Yıllık yinelenen",
-        "depositDue": "Depozito ödenmesi gerekiyor",
-        "depositDueNow": "Depozito ödemesinin şimdi yapılması gerekiyor",
-        "dueOnAcceptance": "Kabul sırasında vadesi gelecek",
-        "firstPeriodSubtotal": "İlk dönem ara toplamı",
-        "firstPeriodTotal": "Birinci dönem toplamı",
-        "monthlyRecurring": "Aylık olarak yinelenen",
-        "recurringNote": "Bu teklifi kabul ettiğinizde tek seferlik ücretler artık faturalandırılır. Yinelenen hatlar kendi programlarına göre faturalandırılır.",
-        "remainingBalance": "Kalan bakiye (şartlara göre vadesi gelecek)",
-        "subtotal": "Ara Toplam",
-        "tax": "Vergi"
-      },
-      "unsupportedBlock": "Bu blok türü henüz bu görüntüleyici tarafından desteklenmiyor.",
-      "validUntil": "Geçerlilik tarihi:"
+        "preparing": "Hazırlanıyor…",
+        "loading": "Müşteri görünümü yükleniyor…",
+        "loadError": "Bu teklifin müşteri görünümü yüklenemedi.",
+        "retry": "Yeniden dene",
+        "signatureInert": "Müşteriniz burada imzalar"
+      }
     },
     "page": {
       "accessDenied": "Alıntıları görüntüleme izniniz yok.",
@@ -2152,36 +2150,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Fatura Alıcısı",
-    "documentType": "Fatura",
-    "due": "Vadesi geldi",
-    "empty": "Bu faturada henüz herhangi bir satır öğesi yok.",
-    "fallbackTitle": "Fatura",
-    "issued": "Verildi",
-    "laborLine": "İşçilik",
     "preview": {
       "description": "Müşterinizin faturasında gördüğü şey budur.",
       "downloadError": "Fatura PDF'si indirilemedi.",
       "downloadPdf": "PDF'yi indir",
-      "preparing": "Hazırlanıyor…"
+      "loadError": "Bu faturanın müşteri görünümü yüklenemedi.",
+      "loading": "Müşteri görünümü yükleniyor…",
+      "preparing": "Hazırlanıyor…",
+      "retry": "Yeniden dene"
     },
-    "table": {
-      "amount": "Tutar",
-      "description": "Açıklama",
-      "qty": "Adet",
-      "tax": "Vergi",
-      "unitPrice": "Birim fiyatı"
-    },
-    "terms": "Şartlar ve Koşullar",
-    "ticketHeader": "Talep No. {{number}}",
-    "ticketWork": "Talep çalışması",
-    "totals": {
-      "amountDue": "Ödenecek tutar",
-      "paid": "Ücretli",
-      "subtotal": "Ara Toplam",
-      "tax": "Vergi",
-      "total": "Toplam"
-    }
+    "ticketHeader": "Talep No. {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Faturalar",
@@ -2468,7 +2446,7 @@
     "documents": "Belgeler",
     "connections": "Bağlantılar",
     "rates": "Ücretler",
-    "payments": "Payments"
+    "payments": "Ödemeler"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2806,6 +2784,10 @@
       "confirm": "Onayla",
       "failed": "Doğrulama başarısız oldu. Tekrar deneyin.",
       "unavailable": "Doğrulama başlatılamadı"
+    },
+    "notEnabled": {
+      "title": "Hesabınız için otomatik ödemeler etkin değil",
+      "hint": "Otomatik ödemeler henüz açılmadı. Breeze yöneticinizden etkinleştirmesini isteyin, ardından müşterilerinizden kayıt talep etmek için geri dönün."
     }
   },
   "reminders": {

@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { isSelfManagedDbContextRoute } from '../../middleware/selfManagedDbContextRoutes';
 import { tickets, ticketComments, ticketStatuses, organizations, portalBranding } from '../../db/schema';
 import {
   listSchema,
@@ -39,6 +40,7 @@ import { contentDispositionFor } from '../../services/attachmentFilename';
 import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
+import { lockTicketForWrite } from '../../services/ticketRowLock';
 
 export const ticketRoutes = new Hono();
 
@@ -61,6 +63,12 @@ const PORTAL_TICKET_SLA_COLUMNS = {
   slaPausedMinutes: tickets.slaPausedMinutes,
   firstResponseAt: tickets.firstResponseAt,
   resolvedAt: tickets.resolvedAt,
+  // #8973 W3: status is derived from the stored deadlines; the DTO never
+  // ships them (status only, D11).
+  responseDueAt: tickets.responseDueAt,
+  resolutionDueAt: tickets.resolutionDueAt,
+  responseWarnAt: tickets.responseWarnAt,
+  resolutionWarnAt: tickets.resolutionWarnAt,
 };
 
 // #2345 — per-org portal ticketing kill switch. `portal_branding.enable_tickets`
@@ -85,21 +93,49 @@ export const portalTicketsEnabledMiddleware: MiddlewareHandler = async (c, next)
     return c.json({ error: 'Authentication required' }, 401);
   }
 
-  const [row] = await db
-    .select({ enableTickets: portalBranding.enableTickets })
-    .from(portalBranding)
-    .where(eq(portalBranding.orgId, auth.user.orgId))
-    .limit(1);
+  const gate = async () => {
+    const [row] = await db
+      .select({ enableTickets: portalBranding.enableTickets })
+      .from(portalBranding)
+      .where(eq(portalBranding.orgId, auth.user.orgId))
+      .limit(1);
 
-  if (row?.enableTickets === false) {
-    // `code` lets the portal pages distinguish this 403 from other 403s on the
-    // same routes (e.g. portalAuthMiddleware's "Account is not active") and only
-    // redirect for THIS one. Keep in sync with apps/portal/src/pages/tickets/*.
-    return c.json({ error: 'Ticketing is not enabled for this portal', code: 'PORTAL_TICKETS_DISABLED' }, 403);
+    if (row?.enableTickets === false) {
+      // `code` lets the portal pages distinguish this 403 from other 403s on the
+      // same routes (e.g. portalAuthMiddleware's "Account is not active") and only
+      // redirect for THIS one. Keep in sync with apps/portal/src/pages/tickets/*.
+      return c.json({ error: 'Ticketing is not enabled for this portal', code: 'PORTAL_TICKETS_DISABLED' }, 403);
+    }
+
+    return next();
+  };
+
+  // The same predicate portalAuthMiddleware used to skip its request transaction.
+  if (!isSelfManagedDbContextRoute(c.req.method, c.req.path)) return gate();
+
+  // #8973 W4 Gate B1 — a self-managed portal ticket route (only POST /tickets,
+  // middleware/selfManagedDbContextRoutes.ts): portal auth held no request
+  // transaction, so open the org context HERE, before the branding read —
+  // contextless, that read sees no row and fails open. currentPartnerId is the
+  // owning partner portal auth already validated: it opens the SELECT-only
+  // partner-wide branch the business-calendar resolver reads a partner default
+  // through. accessiblePartnerIds stays empty, so partner-axis writes stay denied.
+  if (!auth.partnerId) {
+    return c.json({ error: 'Organization is not available' }, 403);
   }
-
-  return next();
+  return withDbAccessContext(portalTicketCreateContext(auth.user.orgId, auth.partnerId), gate);
 };
+
+function portalTicketCreateContext(orgId: string, currentPartnerId: string): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [],
+    userId: null,
+    currentPartnerId,
+  };
+}
 
 // GET /tickets/forms — MUST live under the `/tickets/` prefix: portal auth is
 // applied per-prefix in routes/portal/index.ts (`use('/tickets/*', ...)`), so
@@ -475,6 +511,14 @@ ticketRoutes.post(
       .limit(1);
 
     if (!ticket) {
+      return c.json({ error: 'Ticket not found' }, 404);
+    }
+    // #8972 W0: ticket row lock before the comment (services/ticketRowLock.ts),
+    // and the visibility / not-deleted checks again on the locked row: a ticket
+    // moved out of the customer's org or deleted while this waited answers the
+    // same 404 as the read above, not an RLS-rejected insert.
+    const locked = await lockTicketForWrite(db, ticket.id);
+    if (!locked || locked.orgId !== auth.user.orgId || locked.deletedAt) {
       return c.json({ error: 'Ticket not found' }, 404);
     }
 

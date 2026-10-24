@@ -15,6 +15,7 @@ import {
 import { listContractDocuments, type ContractDocument } from '../../lib/api/contractDocuments';
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
+import HashLink from '@/components/shared/HashLink';
 import { usePageItemName } from '../layout/usePageItemName';
 import { showToast } from '../shared/Toast';
 
@@ -105,6 +106,11 @@ export default function ContractWorkspace({ contractId }: Props) {
   // "First by created_at" (spec §6) = the LAST element: the service orders
   // desc(createdAt).
   const [firstAgreement, setFirstAgreement] = useState<ContractDocument | null>(null);
+  // #9304: "created from quote" provenance. It used to be written into the
+  // contract's Notes, which print on every generated invoice; now it is derived
+  // from the executed agreement the accept flow files against this contract.
+  // Only a quote-sourced document whose quote still exists qualifies.
+  const [sourceQuote, setSourceQuote] = useState<{ id: string; number: string } | null>(null);
   const [recordOpen, setRecordOpen] = useState(false);
   // Bumped after a recording so the pill below re-reads the agreement list.
   const [recordedTick, setRecordedTick] = useState(0);
@@ -121,7 +127,11 @@ export default function ContractWorkspace({ contractId }: Props) {
         if (!res?.ok) return;               // decoration; a failure is silent
         const body = (await res.json().catch(() => null)) as { data?: ContractDocument[] } | null;
         const docs = body?.data ?? [];
-        if (!cancelled && docs.length) setFirstAgreement(docs[docs.length - 1]!);
+        if (cancelled) return;
+        if (docs.length) setFirstAgreement(docs[docs.length - 1]!);
+        // Oldest first, matching the agreement pill above.
+        const fromQuote = [...docs].reverse().find((d) => d.sourceKind === 'quote' && d.quoteId && d.quoteNumber);
+        setSourceQuote(fromQuote ? { id: fromQuote.quoteId!, number: fromQuote.quoteNumber! } : null);
       } catch {
         // no pill; never a page-level error
       }
@@ -186,12 +196,18 @@ export default function ContractWorkspace({ contractId }: Props) {
               className={CONTRACT_STATUS_ROLES[contract.status].className}
             />
             {firstAgreement && (
-              <a href="#signed-agreements" data-testid="contract-under-agreement-pill"
+              <HashLink hash="signed-agreements" data-testid="contract-under-agreement-pill"
                  className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70">
                 {t('agreements.contractPill.under', {
                   template: firstAgreement.templateName,
                   n: firstAgreement.templateVersionNumber,
                 })}
+              </HashLink>
+            )}
+            {sourceQuote && (
+              <a href={`/billing/quotes/${sourceQuote.id}`} data-testid="contract-from-quote-pill"
+                 className="inline-flex shrink-0 items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70">
+                {t('agreements.contractPill.fromQuote', { number: sourceQuote.number })}
               </a>
             )}
           </div>

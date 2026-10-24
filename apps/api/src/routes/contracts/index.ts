@@ -12,6 +12,7 @@ import { contractTemplateRoutes } from './templates';
 import { contractDocumentRoutes } from './documents';
 import { agreementRequestRoutes } from './agreementRequests';
 import { contractReportRoutes } from './reports';
+import { contractAdoptRoutes } from './adopt';
 
 export const contractRoutes = new Hono();
 contractRoutes.use('*', authMiddleware);
@@ -26,4 +27,5 @@ contractRoutes.route('/', contractLineRoutes);       // /:id/lines, /:id/lines/:
 contractRoutes.route('/', contractHourPeriodRoutes); // /:id/hour-periods (#4547 W03) — before the /:id param matchers
 contractRoutes.route('/', contractPeriodRoutes);     // /:id/periods/:periodId/outcome (#3205 W07)
 contractRoutes.route('/', contractDeliverableRoutes); // /:id/deliverables (#5573 W01)
+contractRoutes.route('/', contractAdoptRoutes);      // /:id/adopt-draft (#9346)
 contractRoutes.route('/', contractCrudRoutes);       // /, /:id (param matchers last)

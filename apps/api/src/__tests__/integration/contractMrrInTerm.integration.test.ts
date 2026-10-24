@@ -17,7 +17,8 @@ vi.mock('../../jobs/invoiceWorker', () => ({ enqueueInvoicePdfRender: vi.fn().mo
 import { eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { contractLines, contracts, invoiceLines } from '../../db/schema';
-import { generateDueInvoice, summarizeActiveContractMrrByOrg } from '../../services/contractService';
+import { generateDueInvoice } from '../../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../../services/contractMrr';
 import { seedBlockFixture, seedEntry } from './hourBlockFixtures';
 
 const at = (d: string) => new Date(`${d}T06:00:00Z`);

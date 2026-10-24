@@ -44,6 +44,11 @@ import type { OccurrenceStatus } from '../serviceDeliverableState';
  *     report definition is `portal_self_service`.
  *  4. A delivered occurrence with a required artifact and no publishable
  *     evidence reports `held_by_msp`. Nothing pretends evidence exists.
+ *  5. Signed-agreement evidence (`contract_document`, #9312) never publishes
+ *     yet: the portal has no read path for contract_documents, so naming or
+ *     linking one here would expose an agreement the customer cannot otherwise
+ *     see. It publishes once the portal signed-agreements read model (#9082)
+ *     exists, through that model's own visibility rules.
  */
 
 /** The calendar date `now` falls on in `timezone`, as `YYYY-MM-DD`. */
@@ -99,8 +104,11 @@ interface EvidenceJoinRow {
   createdAt: Date;
 }
 
-/** Rules 2 and 3 of the publication contract, applied to one evidence row. */
+/** Rules 2, 3 and 5 of the publication contract, applied to one evidence row. */
 function publishableEvidence(row: EvidenceJoinRow, enableReports: boolean): PortalEvidenceRef | null {
+  // Rule 5. Refused by name, and every kind other than the two below is
+  // refused too: an unknown kind must never fall through to the report arm.
+  if (row.kind !== 'document' && row.kind !== 'report_run') return null;
   if (row.kind === 'document') {
     if (row.documentPortalVisible !== true || row.documentDeletedAt != null) return null;
     return {

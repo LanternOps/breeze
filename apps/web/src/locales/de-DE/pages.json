@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "Geräte des Benutzers",
     "aiAgentsImpact": "KI-Wirkung",
     "aiAgentsFixMemory": "Fix-Gedächtnis",
+    "flows": "Abläufe",
+    "flowDetail": "Ablauf",
     "aiAgentsRunsDetail": "Lauf-Details",
     "aiAgentsRuns": "Agenten-Läufe",
     "aiForOffice": "KI für Office",
@@ -73,7 +75,7 @@
     "fleet": "Flottenorchestrierung",
     "forgotPassword": "Passwort vergessen",
     "incidentsDetail": "Vorfalldetails",
-    "incidents": "Vorfälle",
+    "incidents": "Sicherheitsvorfälle",
     "dashboard": "Dashboard",
     "integrations": "Integrationen",
     "integrationsPsa": "PSA-Integrationen",
@@ -139,6 +141,7 @@
     "settingsBilling": "Abrechnungseinstellungen",
     "settingsCatalog": "Produktkatalog",
     "settingsConnectedApps": "Verbundene Apps",
+    "settingsDeliverableTemplates": "Leistungsvorlagen",
     "settingsCustomFields": "Benutzerdefinierte Felder",
     "settingsEnrollmentKeys": "Registrierungsschlüssel",
     "settingsFilters": "Gespeicherte Filter",
@@ -175,8 +178,10 @@
     "securityScans": "IOC-Scans",
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Endpunkt-Nachrichten"
+    "billingAutopay": "Automatische Zahlungen",
+    "endpointMessages": "Endpunkt-Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln",
+    "settingsPlan": "Tarif & Funktionen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -259,6 +264,10 @@
       },
       "alertTemplates": {
         "title": "Alarmvorlagen"
+      },
+      "plan": {
+        "title": "Tarif & Funktionen",
+        "description": "Ihr Tarif, welche Funktionen er umfasst und woher jede einzelne stammt."
       }
     },
     "groups": {

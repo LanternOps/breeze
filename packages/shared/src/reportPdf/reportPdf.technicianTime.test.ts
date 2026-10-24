@@ -146,3 +146,36 @@ describe('buildReportPdf: technician_time_billability', () => {
     expect(text).not.toContain('No organization');
   });
 });
+
+// #9561: the 2-decimal-hours labour rule is by design; the report shows each
+// priced entry's rounded hours × rate = amount, computed with the same shared
+// helper the API bills with, and states the rule beside the billable value.
+describe('technician time PDF: labour rule visibility (#9561)', () => {
+  const priced = (minutes: number, rate: string) => ({
+    ...SUMMARY.rows[0]!, entryId: `p${minutes}`, durationMinutes: minutes + 3, billableMinutes: minutes,
+    coverage: 'billable' as const, hourlyRate: rate, currencyCode: 'USD',
+  });
+  const flat = (s: string) => s.replace(/\s+/g, ' ');
+
+  it.each([
+    [1, '135.00', '0.02 h × $135.00 = $2.70'],
+    [25, '135.00', '0.42 h × $135.00 = $56.70'],
+    [61, '100.00', '1.02 h × $100.00 = $102.00'],
+  ])('prints %i billed min at %s/h as "%s"', (minutes, rate, expected) => {
+    const s = { ...SUMMARY, rows: [priced(minutes, rate)] };
+    expect(flat(extractText(buildReportPdf([], { ...opts, summary: s })))).toContain(expected);
+  });
+
+  it('prints the rate alone for a rated non-billable entry, and N/A for an unpriced one', () => {
+    const ratedNonBillable = { ...SUMMARY.rows[1]!, hourlyRate: '77.00', currencyCode: 'USD' };
+    const s = { ...SUMMARY, rows: [ratedNonBillable, { ...priced(25, '135.00'), hourlyRate: null, currencyCode: null }] };
+    const text = extractText(buildReportPdf([], { ...opts, summary: s }));
+    expect(text).not.toMatch(/\d h × /);
+    expect(text).toContain('$77.00');
+  });
+
+  it('states the rule beside the billable value', () => {
+    const text = flat(extractText(buildReportPdf([], { ...opts, summary: SUMMARY })));
+    expect(text).toMatch(/rounded to hours with two decimals/);
+  });
+});

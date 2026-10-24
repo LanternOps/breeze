@@ -103,12 +103,33 @@ describe('one honest summary per state, never an internal code', () => {
       expect(screen.queryByTestId('autopay-portal-stop')).toBeNull();
     });
   it('a card expiring within 30 days asks for an update, and Update card is the primary action (V-34)', async () => {
-    const soon = new Date(); soon.setUTCDate(soon.getUTCDate() + 10);
-    page({ status: 'active', needsAttentionReason: null }, { ...card, cardExpMonth: soon.getUTCMonth() + 1, cardExpYear: soon.getUTCFullYear() });
-    expect(await screen.findByText(/: update it soon/)).toBeInTheDocument();
-    const update = screen.getByTestId('autopay-update-method');
-    expect(update).toHaveTextContent('Update card');
-    expect(update.className).toContain('bg-primary');
+    // The page compares the END of the expiry month with the clock, so "today + 10 days" picked a
+    // month whose end was 31–40 days out whenever the real date was past the 21st, and the warning
+    // never rendered. Anchor the clock (Date only; real timers keep findBy polling) so the card's
+    // month ends 17 days out, deterministically.
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
+    try {
+      page({ status: 'active', needsAttentionReason: null }, { ...card, cardExpMonth: 10, cardExpYear: 2026 });
+      expect(await screen.findByText(/: update it soon/)).toBeInTheDocument();
+      const update = screen.getByTestId('autopay-update-method');
+      expect(update).toHaveTextContent('Update card');
+      expect(update.className).toContain('bg-primary');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('a card whose expiry month ends more than 30 days out is not flagged', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-22T12:00:00Z'));
+    try {
+      page({ status: 'active', needsAttentionReason: null }, { ...card, cardExpMonth: 11, cardExpYear: 2026 });
+      expect(await screen.findByTestId('autopay-saved-method')).toBeInTheDocument();
+      expect(screen.queryByText(/: update it soon/)).toBeNull();
+      expect(screen.getByTestId('autopay-update-method')).toHaveTextContent('Change payment method');
+    } finally {
+      vi.useRealTimers();
+    }
   });
   // V-33: the failing method is named (ACH-Instant lab case: an active bank account the MSP flagged).
   it('needs attention names the failing method even when it is still marked active', async () => {

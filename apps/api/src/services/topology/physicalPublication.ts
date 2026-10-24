@@ -389,7 +389,7 @@ export function planMergedInterfaces(clusters: { canonicalId: string; aliasIds: 
  * relationship and observation references converge before commit. */
 export async function applyMergedInterfaces(tx: Tx, scope: TopologyScope, plan: MergedInterfacePlan, ownerOf: Map<string, string>) {
   if (!plan.reowned.length && !plan.coalesced.size) return;
-  await tx.execute(sql`SET CONSTRAINTS topology_interfaces_parent_fk, topology_observations_interface_fk, topology_relationships_source_interface_fk, topology_relationships_target_interface_fk DEFERRED`);
+  await tx.execute(sql`SET CONSTRAINTS topology_interfaces_parent_fk, topology_observations_interface_fk, topology_relationships_source_interface_fk, topology_relationships_target_interface_fk, circuit_terminations_interface_org_fk DEFERRED`);
   const scoped = sql`org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid`;
   for (const row of plan.reowned) {
     await tx.execute(sql`UPDATE topology_interfaces SET owner_node_id=${row.ownerNodeId}::uuid, epoch=${row.epoch}, retired_at=${row.retiredAt ? row.retiredAt.toISOString() : null}::timestamptz,
@@ -403,6 +403,17 @@ export async function applyMergedInterfaces(tx: Tx, scope: TopologyScope, plan: 
     await tx.execute(sql`UPDATE topology_interfaces SET parent_interface_id=${to}::uuid, updated_at=now() WHERE ${scoped} AND parent_interface_id=${from}::uuid`);
     await tx.execute(sql`UPDATE topology_relationships SET source_interface_id=${to}::uuid, source_node_id=${owner}::uuid WHERE ${scoped} AND source_interface_id=${from}::uuid`);
     await tx.execute(sql`UPDATE topology_relationships SET target_interface_id=${to}::uuid, target_node_id=${owner}::uuid WHERE ${scoped} AND target_interface_id=${from}::uuid`);
+    // §6.4 (W1-C): carry the operator WAN role and the circuit termination to the survivor
+    // before the loser delete, which would otherwise cascade-drop the termination. A survivor
+    // that already has a role or a termination keeps its own. The survivor may be created by
+    // this same publication, so the termination FK is deferred (see SET CONSTRAINTS above).
+    await tx.execute(sql`UPDATE topology_interfaces AS t SET role = f.role, updated_at = now()
+      FROM topology_interfaces AS f
+      WHERE t.org_id = ${scope.orgId}::uuid AND t.site_id = ${scope.siteId}::uuid AND t.id = ${to}::uuid AND t.role IS NULL
+        AND f.org_id = ${scope.orgId}::uuid AND f.site_id = ${scope.siteId}::uuid AND f.id = ${from}::uuid AND f.role IS NOT NULL`);
+    await tx.execute(sql`UPDATE circuit_terminations SET interface_id = ${to}::uuid, updated_at = now()
+      WHERE org_id = ${scope.orgId}::uuid AND interface_id = ${from}::uuid
+        AND NOT EXISTS (SELECT 1 FROM circuit_terminations WHERE org_id = ${scope.orgId}::uuid AND interface_id = ${to}::uuid)`);
     await tx.execute(sql`DELETE FROM topology_interfaces WHERE ${scoped} AND id=${from}::uuid`);
   }
 }

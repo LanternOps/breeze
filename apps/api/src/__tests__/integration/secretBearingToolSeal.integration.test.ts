@@ -131,6 +131,7 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', () => ({
     executorSigningKid: 'test-kid',
   })),
   isM365GraphActionsEnabledForOrg: vi.fn(() => true),
+  m365GraphActionsAvailability: vi.fn(() => 'enabled'),
 }));
 
 // ── Fixture scaffolding (mirrors intentFanout.integration.test.ts) ────────

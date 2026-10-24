@@ -38,6 +38,8 @@ vi.mock('../../services/quoteTypes', () => ({
 // connection row (#3777 review F5). Mocked so the default (no connection) never
 // consumes a row from the branding `dbRows` queue below.
 vi.mock('../../services/stripeConnectService', () => ({ getConnection: vi.fn() }));
+const emailMock = vi.hoisted(() => ({ getEmailService: vi.fn(() => null as unknown) }));
+vi.mock('../../services/email', () => ({ getEmailService: emailMock.getEmailService }));
 
 // Contract-block serialization has its own unit tests (contractTemplateRender.test.ts);
 // here we only assert the route's WIRING — it calls renderContractBlocksForClient
@@ -810,6 +812,16 @@ describe('quote crud + lines routes', () => {
       const body = await res.json();
       expect(body.data.stripeConnected).toBeNull();
       expect(body.data.currencyWarning).toBeNull();
+    });
+  });
+
+  describe('GET /:id — emailConfigured (#9256)', () => {
+    it.each([[true, { sendEmail: vi.fn() }], [false, null]])('returns emailConfigured=%s from the server email transport', async (expected, svcValue) => {
+      (svc.getQuote as any).mockResolvedValue({ quote: { id: QUOTE_ID, orgId: ORG_ID, partnerId: 'p1' }, blocks: [], lines: [] });
+      emailMock.getEmailService.mockReturnValue(svcValue);
+      const res = await app().request(`/${QUOTE_ID}`, { method: 'GET' });
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.emailConfigured).toBe(expected);
     });
   });
 

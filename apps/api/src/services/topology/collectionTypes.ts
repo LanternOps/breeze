@@ -27,7 +27,7 @@ export type AdjacencySourceManifest = {
 };
 /** UniFi topology v1 snapshot manifest: the controller site and its resource outcomes. */
 export type UnifiSourceManifest = {
-  contract: 'unifi_topology_v1'; controllerSiteId: string;
+  contract: 'unifi_topology_v1' | 'unifi_topology_v2'; controllerSiteId: string;
   resources: { kind: string; outcome: CollectionOutcome; rowCount: number; omittedRowCount?: number }[];
 };
 export type AdjacencySourceSection = Extract<PhysicalSourceSection, { kind: 'lldp' | 'cdp' | 'fdb' | 'snmp_interfaces' }>;

@@ -70,7 +70,29 @@ const templateItemFieldTypes = {
    * id could never be carried by a partner-wide item at all.
    */
   autoEvidenceReportType: managedEvidenceReportTypeSchema.nullable().optional(),
+  /**
+   * #9315. Copied onto the deliverable by applyTemplateSet. Deliberately NO
+   * `.default()`: the default depends on the cadence (see
+   * defaultPortalVisibleForCadence), which a field-level Zod default cannot
+   * see, and a default here would also leak into the update schema through
+   * `.partial()`. Absent on create → the server resolves it from the cadence.
+   */
+  portalVisible: z.boolean().optional(),
 };
+
+/**
+ * #9315. Whether a deliverable is customer-visible when nobody chose. One-time
+ * items are usually internal onboarding steps ("Billing configured",
+ * "Agreement signed") that do not belong in the customer portal; recurring
+ * items are the service plan the customer is paying to see. Shared by the
+ * template service, the template editor and the manual deliverable form so
+ * the three cannot drift.
+ */
+export function defaultPortalVisibleForCadence(
+  cadence: 'monthly' | 'quarterly' | 'semiannual' | 'annual' | 'one_time',
+): boolean {
+  return cadence !== 'one_time';
+}
 
 export const createTemplateItemSchema = z.object({
   ...templateItemFieldTypes,

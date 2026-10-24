@@ -2291,3 +2291,39 @@ describe('deferral first-seen fallback for Linux OS patches (#7800)', () => {
     });
   });
 });
+
+// #9369: an explicit decline is a terminal deny — ring auto-approve must not re-approve it.
+describe('decidePatchApproval — explicit decline is terminal (#9369)', () => {
+  const NOW = new Date('2026-09-30T00:00:00.000Z');
+  const unrated = {
+    patchId: 'p-1', category: null, severity: null, releaseDate: null,
+    source: 'linux', packageId: 'docker-ce', version: '1', firstSeenAt: null,
+  };
+  const ring = { ringId: 'ring-1', categoryRules: [], autoApprove: {}, deferralDays: 0 };
+  const auto = () => parseRingAutoApprove({ enabled: true, severities: ['critical'], autoApproveUnrated: true });
+
+  it('control: without a decline, ring auto-approve admits the unrated patch', () => {
+    const d = decidePatchApproval(unrated, ring as never, new Set(), new Map(), auto(), NOW, new Set());
+    expect(d).toEqual({ approved: 'ring_auto_approve' });
+  });
+
+  it('a declined unrated patch is denied despite autoApproveUnrated', () => {
+    const d = decidePatchApproval(unrated, ring as never, new Set(), new Map(), auto(), NOW, new Set(['p-1']));
+    expect(d).toEqual({ denied: 'explicitly_declined' });
+  });
+
+  it('a declined patch is denied even when a category rule would auto-approve it', () => {
+    const rule = { category: 'security', autoApprove: true };
+    const d = decidePatchApproval({ ...unrated, category: 'security' }, ring as never, new Set(), new Map([['security', rule]]), auto(), NOW, new Set(['p-1']));
+    expect(d).toEqual({ denied: 'explicitly_declined' });
+  });
+});
+
+describe('decidePatchApproval — decline beats manual approval when both sets hold the patch (#9369)', () => {
+  it('denies explicitly_declined', () => {
+    const cand = { patchId: 'p-1', category: null, severity: null, releaseDate: null, source: 'linux', packageId: null, version: null, firstSeenAt: null };
+    const ring = { ringId: 'ring-1', categoryRules: [], autoApprove: {}, deferralDays: 0 };
+    const d = decidePatchApproval(cand, ring as never, new Set(['p-1']), new Map(), parseRingAutoApprove({}), new Date(), new Set(['p-1']));
+    expect(d).toEqual({ denied: 'explicitly_declined' });
+  });
+});

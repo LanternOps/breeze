@@ -22,6 +22,12 @@ export const listPatchesSchema = z.object({
   sortDir: z.enum(['asc', 'desc']).optional()
 });
 
+export const listPatchDevicesSchema = z.object({
+  page: z.string().optional(),
+  limit: z.string().optional(),
+  orgId: z.string().guid().optional()
+});
+
 export const patchIdParamSchema = z.object({
   id: z.string().guid()
 });

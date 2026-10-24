@@ -466,11 +466,30 @@
     reverse_proxy web:4321
   }
 
+  # Response-header policy. `>` = defer + replace (the upstream copy is dropped,
+  # so the browser never sees the header twice); `?` = default only, deferred.
   header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-    X-Content-Type-Options "nosniff"
+    >Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    >X-Content-Type-Options "nosniff"
     # `?` = default only: capability-URL responses (verify, public invoice) send no-referrer from the app
     ?Referrer-Policy "strict-origin-when-cross-origin"
+    # SOC 2 header hardening (RoboShadow/ZAP 2026-10-18): static assets served
+    # by the Astro node server (/_astro/*, theme-bootstrap.js) never run the web
+    # middleware, so this is the only place that puts the policy on them.
+    ?Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+  }
+
+  # Cross-Origin-Resource-Policy (ZAP "Insufficient Site Isolation Against
+  # Spectre"). Deliberately NOT on API routes: the public trust badge
+  # (/api/v1/trust/public/.../badge.svg) is embedded as an <img> on customers'
+  # own sites, and partner-branding/avatar images may be too. Everything else
+  # (app HTML, portal, static assets, billing UI) is only ever embedded by
+  # 2breeze.app origins, so same-site is safe.
+  @corp {
+    not path /api/* /s/* /i/* /activate/* /health /health/* /ready /metrics/* /oauth/* /.well-known/*
+  }
+  header @corp {
+    ?Cross-Origin-Resource-Policy "same-site"
   }
 }
 

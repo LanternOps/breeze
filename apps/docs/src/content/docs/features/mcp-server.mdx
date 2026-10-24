@@ -40,6 +40,70 @@ Breeze speaks both remote MCP transports on the **same path**, `/api/v1/mcp/sse`
 
 Successful object results from `tools/call` include `structuredContent` matching the redacted JSON in the `text` block. Pure error objects, non-object results (arrays, scalars, and plain text), and summarized results omit `structuredContent`. The `_chat.outputCompacted` marker identifies a shortened list; natively shaped results retain `structuredContent`.
 
+### Protocol 2026-07-28 (stateless)
+
+When the operator sets `MCP_STATELESS_ENABLED=true` (default off), `POST /api/v1/mcp/sse` also speaks protocol `2026-07-28` statelessly. There is no `initialize` and no session: every request is self-describing. Legacy clients (2024-11-05 through 2025-11-25, via `initialize` and `Mcp-Session-Id`) are unchanged.
+
+A stateless request carries, on every call:
+
+- `params._meta["io.modelcontextprotocol/protocolVersion"] = "2026-07-28"`
+- `params._meta["io.modelcontextprotocol/clientCapabilities"]`, an object
+- Headers `MCP-Protocol-Version: 2026-07-28` and `Mcp-Method: <method>`
+- For `tools/call`, `prompts/get` and `resources/read`, an `Mcp-Name` header equal to the tool name, prompt name or resource URI. A non-ASCII value may be sent as `=?base64?<b64>?=`.
+
+Headers must agree with the body. An `Mcp-Session-Id` is ignored if sent and never returned.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "server/discover",
+  "params": {
+    "_meta": {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientCapabilities": {}
+    }
+  }
+}
+```
+
+`server/discover` (stateless only) replaces `initialize`. It returns `supportedVersions`, capabilities, `instructions` and `serverInfo`.
+
+| Era | Methods |
+|---|---|
+| Stateless | `server/discover`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`, `prompts/get` |
+| Legacy only | `initialize`, `notifications/initialized` |
+
+`ping`, `logging/setLevel`, `resources/subscribe` and `subscriptions/listen` are not implemented in either era. In the stateless era they, and the legacy-only methods, return HTTP 404 with JSON-RPC `-32601` (the legacy era answers `-32601` with HTTP 200). `resources/templates/list` exists in both eras and lists `breeze://devices/{id}` when the devices tool area is granted.
+
+Every stateless success result carries `resultType: "complete"` and `_meta["io.modelcontextprotocol/serverInfo"]`. List, discover and read results also carry cache hints, always with `cacheScope: "private"`:
+
+| Method | `ttlMs` |
+|---|---|
+| `server/discover`, `prompts/list` | 300000 |
+| `tools/list`, `resources/list`, `resources/templates/list` | 60000 |
+| `resources/read` | 0 |
+
+The hints are for the client's cache. Breeze keeps no server-side result cache.
+
+| Condition | HTTP | JSON-RPC code |
+|---|---|---|
+| A routing header is missing or disagrees with the body | 400 | `-32020` |
+| Unknown `_meta` protocol version (`data.supported` and `data.requested` are returned) | 400 | `-32022` |
+| `clientCapabilities` missing or not an object | 400 | `-32602` |
+| Stateless envelope while the flag is off, a legacy version inside a stateless envelope, or `initialize` carrying a stateless `_meta` | 400 | `-32600` |
+| Unknown or legacy-only method in the stateless era | 404 | `-32601` |
+
+A client that supports both eras should try a stateless request first and fall back to `initialize` on the `-32600` response.
+
+Authorization is identical to the legacy path: scope tiers, tool areas, approval, MFA, RBAC, rate limits and the IP allowlist all apply, with the same errors.
+
+**Origin.** If a stateless request carries an `Origin` header that the app's CORS policy rejects, the server answers HTTP 403. For legacy-era requests a rejected `Origin` is only logged and counted for now; enforcement is a planned follow-up. CORS allows the request headers `MCP-Protocol-Version`, `Mcp-Session-Id`, `Mcp-Method` and `Mcp-Name`, and exposes `Mcp-Session-Id` and `WWW-Authenticate`.
+
+<Aside type="caution" title="HTTP+SSE is deprecated">
+  The legacy HTTP+SSE transport (`GET /api/v1/mcp/sse` stream and `POST /api/v1/mcp/message`) is deprecated. Its responses carry `Deprecation: @1742947200` and `Sunset: Sun, 31 Jan 2027 23:59:59 GMT`. The sunset date is provisional and may move later, never earlier. Each new stream is recorded in the audit log as `mcp.transport.http_sse.open`. Move clients to Streamable HTTP (`POST /sse`), which is not deprecated.
+</Aside>
+
 Batch requests are not supported for any negotiated protocol version. Send one JSON-RPC request per POST. `DELETE /api/v1/mcp/sse` currently returns 204 as a no-op; it does not end a session.
 
 `tools/list` returns a single page by default. Pagination is experimental and enabled only when the operator sets `MCP_TOOLS_LIST_PAGE_SIZE` to a positive value. Every connected client must follow `nextCursor` until it is absent. Cursors are offsets, so a catalog change mid-enumeration can skip tools; tenant-tool discovery failures can also change the list between pages.
@@ -91,7 +155,7 @@ API keys follow the format `brz_<random>`. The server stores only a SHA-256 hash
 
 ### OAuth 2.1
 
-For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. The user pastes the tenant's `/mcp/sse` URL into the client, signs in to Breeze, grants the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization. No API key is created or copied.
+For AI clients that implement OAuth 2.1 with Dynamic Client Registration (DCR) or Client ID Metadata Documents (CIMD) and PKCE — including **Claude.ai** and **ChatGPT** — Breeze can authorize MCP connections through a real OAuth handshake instead of pasted API keys. The user pastes the tenant's `/mcp/sse` URL into the client, signs in to Breeze, grants the AI client a scoped session, and the assistant receives a refreshable access token bound to that user and organization. No API key is created or copied.
 
 OAuth is enabled with the `MCP_OAUTH_ENABLED=true` server setting. Once enabled, Breeze acts as a standards-compliant authorization server and advertises the following endpoints (all discoverable automatically by the client — there is nothing to configure by hand):
 
@@ -117,6 +181,51 @@ When OAuth is enabled, the MCP endpoints accept an `Authorization: Bearer <acces
 </Aside>
 
 API key authentication via the `X-API-Key` header continues to work for every client, and remains the only option for self-hosted MCP clients (Claude Desktop, Cursor) that don't implement OAuth.
+
+### Client ID Metadata Documents (CIMD)
+
+A client has two ways to identify itself. A client that supports **Client ID Metadata Documents** can use an https URL it hosts as its `client_id`, and Breeze fetches the JSON metadata document from that URL. Clients that do not support CIMD keep using Dynamic Client Registration; `registration_endpoint` is still advertised, so both work side by side. Clients should prefer CIMD when the server advertises `client_id_metadata_document_supported: true`.
+
+CIMD is off by default. Set `OAUTH_CIMD_ENABLED=true` to turn it on, and optionally `OAUTH_CIMD_ALLOWED_HOSTS` to restrict which hosts may publish documents (comma-separated hostnames, or `.suffix` entries meaning any subdomain, such as `client.example.com,.example.org`). With the allowlist unset, any public https host is accepted. See [Environment variables](#environment-variables).
+
+| `client_id` rule | Requirement |
+|---|---|
+| Scheme | `https` only |
+| Host | A hostname, never an IP literal |
+| Path | A real path, not `/` |
+| Forbidden | Userinfo, query string, fragment, dot segments |
+
+| Document field | Requirement |
+|---|---|
+| `client_id` | Equal to the URL the document was fetched from |
+| `client_name` | Required, 1–128 characters |
+| `token_endpoint_auth_method` | Absent or `none` (public clients only) |
+| `redirect_uris` | Same policy as DCR: https, or http only for `127.0.0.1`, `[::1]` or `localhost` |
+| `grant_types` | Subset of `authorization_code`, `refresh_token` |
+| `response_types` | Subset of `code` |
+| `scope` | Subset of `openid offline_access mcp:read mcp:write mcp:execute` |
+| Rejected fields | `jwks`, `jwks_uri`, `request_uris`, `sector_identifier_uri`, `software_statement`, `software_id` |
+
+Fetching is hardened: requests are DNS-pinned and SSRF-guarded (private, loopback and metadata address ranges are refused), redirects are not followed, the body is capped at 5 KiB, and each fetch has a hard 5 second deadline. Breeze never fetches any other URL a document names.
+
+| Budget | Limit |
+|---|---|
+| Document fetches per host | 10 per minute |
+| Document fetches for client ids Breeze has not admitted yet, all hosts | 120 per minute |
+| Refetches for already-admitted clients, all hosts | 1200 per minute (separate, so a flood of new ids cannot starve connected clients) |
+| New CIMD clients | 200 per hour |
+
+Fetch budgets are charged only when a document is not in the cache. They fail closed: in production a missing Redis, and anywhere a Redis error, refuses the fetch.
+
+Documents are cached in-process for between 5 minutes and 24 hours. The lifetime comes from `Cache-Control: max-age`, or failing that `Expires`, clamped to that range; shorter values, including `no-store` and `no-cache`, are raised to 5 minutes on purpose to bound fetch traffic. The cache never bypasses policy: every use of a CIMD client, cache hits included, re-checks the flag, the host allowlist, the document and whether the client is disabled. Disabling a client takes effect on its next use; a change to `OAUTH_CIMD_ENABLED` or `OAUTH_CIMD_ALLOWED_HOSTS` takes effect when the API restarts. Access tokens already issued stay valid until they expire (at most 30 minutes) unless the client is disabled, which revokes them.
+
+Each admitted CIMD client gets an `oauth_clients` row whose id is the URL, so grants, tokens, organization blocks and approvals work as they do for DCR clients. Disabling a client (global client-family revocation, which revokes its grants and tokens and sets `disabled_at`) refuses it from then on. Disabled, organization-blocked and approval-referenced clients are never removed by the stale-client cleanup. There is no operator UI for disabling a client yet.
+
+On the consent screen a metadata-document client shows `App details published by <host>` and the callback destination. It is still labelled **Unverified integration**: the host proves who publishes the metadata, not who the app is. If the callback is a loopback address, the screen also warns: "This app will receive access on this computer. Continue only if you started this connection yourself."
+
+### Issuer identification (`iss`)
+
+Authorization server metadata always includes `authorization_response_iss_parameter_supported: true` (RFC 9207). Every redirect back to the client, success or error, carries an `iss` parameter, and clients should check that it equals the issuer. (An error that cannot be redirected, such as an unregistered `redirect_uri`, is shown by the server instead.) `client_id_metadata_document_supported: true` is included only when `OAUTH_CIMD_ENABLED=true`.
 
 ### Partner service principal keys (partner-wide automation)
 
@@ -281,7 +390,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | `system_cleanup` | 1/2/3 | List the OS-native maintenance cleaners a device offers — Windows Disk Cleanup handlers and DISM component cleanup, macOS local snapshots and Homebrew, Linux package caches and journal — with an "up to" reclaim estimate (Tier 2: `list` asks the device live, so it needs `ai:write` and `devices:execute`). Run the selected actions (Tier 3); `run` returns a `cleanupRunId` immediately and `status` (Tier 1) reads the run's progress and result. |
 
 <Aside type="caution">
-  **By default, Tier 3 actions cannot be executed over MCP.** This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
+  **By default, Tier 3 actions cannot be executed over MCP.** (With `MCP_TIER3_INTENTS_ENABLED=true` they are filed for human approval instead; see [Approvals over MCP](#approvals-over-mcp).) This transport has no interactive approval surface, so `tools/call` answers a Tier 3 action with a structured `MCP_APPROVAL_REQUIRED` error *before* it checks scopes, RBAC, rate limits or the production allowlist — holding `ai:execute` does not change the outcome. `disk_cleanup` and `system_cleanup` stay listed because their read-only actions still work; `tools/list` appends a note to each one's description:
 
   `(Actions "run" require interactive approval and are not available over MCP — use the Breeze web app AI assistant for those.)`
 
@@ -418,6 +527,92 @@ Prompts don't bypass permissions or approvals: every tool a prompt drives is sti
 
 ---
 
+## Approvals over MCP
+
+By default a Tier 3 `tools/call` is refused with `MCP_APPROVAL_REQUIRED` (see [Available tools](#available-tools)). Set `MCP_TIER3_INTENTS_ENABLED=true` and the same call instead **files an approval request** for a person to decide in the Breeze mobile or web app. With the flag off (the default), nothing here changes: Tier 3 calls are refused exactly as before.
+
+### What a Tier 3 call does
+
+The call returns a normal result (not an error) whose `structuredContent` says the action is waiting:
+
+```json
+{
+  "status": "pending_approval",
+  "actionId": "5b0c1c7e-2f4a-4c1e-9a55-0d3f8e6b7a21",
+  "toolName": "manage_services",
+  "approvalScope": "four_eyes",
+  "expiresAt": "2026-10-23T14:05:00.000Z",
+  "approvalUrl": "https://app.example.com/approvals#intent-5b0c1c7e-2f4a-4c1e-9a55-0d3f8e6b7a21",
+  "next": "Call get_action_status with this actionId; do not re-issue the call."
+}
+```
+
+- **Nothing runs until a person approves** in the Breeze mobile or web app. Requests expire after 24 hours.
+- **The release runs under the live credential that asked.** If you revoke the API key or OAuth grant, remove `ai:execute` from it, or narrow its tool areas before the approved action is released, the action fails instead of running.
+- **Repeating an identical call** while the request is live returns the same `actionId` rather than filing a second request.
+
+### Checking and cancelling a request
+
+Two tools are listed for API keys and OAuth grants (not service principals; `cancel_action` also needs `ai:write`). They stay available with the flag off so requests queued earlier can still be read or cancelled.
+
+| Tool | Input | Description |
+|---|---|---|
+| `get_action_status` | `actionId` | Current status of a request. Poll this instead of re-issuing the original call. |
+| `cancel_action` | `actionId` | Cancels a request that is waiting for approval or approved but not yet running. Returns `cancelled`, or `not_cancellable` with the current status. |
+
+`get_action_status` reports one of `pending_approval`, `in_progress` (approved, running or about to run), `completed`, `failed`, `rejected`, `expired` or `cancelled`. Only `completed` means the action happened.
+
+- A `failed` result with `outcomeUncertain: true` means the action may have had effects before it failed; verify the target before retrying.
+- A result that carries a secret (for example a temporary password) is not returned over MCP. The status shows `resultWithheld: "secret_bearing"` and the value is revealed only in the Breeze web app.
+- Only the credential that filed a request can read or cancel it. Any other key, grant or user gets `not_found`.
+
+### What is still refused
+
+These stay `MCP_APPROVAL_REQUIRED` even with the flag on: Tier 4 actions, `collect_evidence`, tenant (BYO MCP) tools, onboarding bootstrap tools, actions that need a multi-factor-authenticated session, and calls from service principals. With the flag on, the refusal JSON gains a `reason` field saying why the call could not be filed; with it off the JSON is unchanged. Principals named in `MCP_UNATTENDED_TIER3_PRINCIPALS` still skip approval as described above.
+
+### OAuth in production
+
+Filing a request needs exactly what a direct Tier 3 call needs: `ai:execute`, plus `ai:execute_admin` when `MCP_REQUIRE_EXECUTE_ADMIN` is on (the production default), plus the tool in `MCP_EXECUTE_TOOL_ALLOWLIST` in production. OAuth clients never receive `ai:execute_admin`, so in production an OAuth client (for example a hosted assistant) cannot file Tier 3 requests. Use an API key.
+
+### Reporting a request as suspicious
+
+When an approver reports a request that came from MCP as suspicious in the Breeze app, the request is rejected. If the reporter owns the MCP credential that filed it, that API key or OAuth grant is revoked. Otherwise nothing is revoked, and the credential's owner and the request's approvers are notified.
+
+### URL elicitation (2026-07-28 clients)
+
+A client on the stateless `2026-07-28` protocol that declares URL-mode elicitation (`clientCapabilities.elicitation.url`) gets a richer first answer than `pending_approval`. The result is `resultType: "input_required"` with one `elicitation/create` request in **URL mode** that points at the Breeze approval page, plus a signed `requestState`:
+
+```json
+{
+  "resultType": "input_required",
+  "inputRequests": {
+    "breeze_approval": {
+      "method": "elicitation/create",
+      "params": { "mode": "url", "message": "…", "url": "https://app.example.com/approvals#intent-5b0c1c7e-…" }
+    }
+  },
+  "requestState": "<signed>"
+}
+```
+
+Breeze never sends form-mode elicitation, and a client that declares only `elicitation: {}` (form) or is on an earlier protocol gets the plain `pending_approval` result. The URL carries only the request id; opening it needs a Breeze login.
+
+The client retries the same `tools/call` (same tool and arguments) with `requestState` and `inputResponses.breeze_approval.action`:
+
+- `accept` waits up to `MCP_APPROVAL_WAIT_MS` for the decision. A finished request returns its outcome (the real result when `completed`, an error result when rejected, failed, expired or cancelled). A request still waiting returns `pending_approval`; poll `get_action_status` from there.
+- `decline` cancels the request (needs `ai:write`).
+- `cancel` (dismissed) leaves the request pending and returns its status.
+
+The `requestState` is bound to the credential, tool, arguments and a 10-minute lifetime; any mismatch returns `-32602` with `data.reason` (`invalid_request_state` or `request_state_expired`, the latter with `data.actionId` for the same credential). A retry never files a new request.
+
+### Limits and rollout
+
+Three limits apply, set in [Environment variables](#environment-variables): live requests per credential (20), new requests per credential per hour (60), and new requests per requesting user per hour across all their credentials (60).
+
+The flag is off by default in the release that ships it. Enable it per deployment once your approvers use the Breeze mobile or web app.
+
+---
+
 ## Scope-based access control
 
 The tools visible and callable through MCP are determined by the scopes on your API key. Breeze uses a four-scope model for AI operations:
@@ -438,7 +633,7 @@ When a client calls `tools/list`, the server filters the full tool catalogue:
 1. **Tier 1** tools (read-only) are always included if the key has `ai:read`.
 2. **Tier 2** tools are included if the key has `ai:write` (or `ai:execute`, which implies write).
 3. **Tier 3+** tools are included only when *some* action of them is below Tier 3 and the key has `ai:execute`; a wholly Tier 3 tool is never listed — except for a principal named in `MCP_UNATTENDED_TIER3_PRINCIPALS` that also passes the `ai:execute` / `ai:execute_admin` / production-allowlist gates for that tool.
-4. A Tier 3 **action** is refused over MCP regardless of scope — see the caution above — unless the caller is a principal named in `MCP_UNATTENDED_TIER3_PRINCIPALS`. For every other principal, `MCP_REQUIRE_EXECUTE_ADMIN` and `MCP_EXECUTE_TOOL_ALLOWLIST` only affect which *tools* a key may see and reach, never whether a Tier 3 action executes; for a named principal they gate its Tier 3 calls as well.
+4. Unless [`MCP_TIER3_INTENTS_ENABLED`](#approvals-over-mcp) is on, a Tier 3 **action** is refused over MCP regardless of scope — see the caution above — unless the caller is a principal named in `MCP_UNATTENDED_TIER3_PRINCIPALS`. For every other principal, `MCP_REQUIRE_EXECUTE_ADMIN` and `MCP_EXECUTE_TOOL_ALLOWLIST` only affect which *tools* a key may see and reach, never whether a Tier 3 action executes; for a named principal they gate its Tier 3 calls as well.
 
 When a client calls `tools/call`, the server re-checks scopes before execution. Attempting to call a tool your key lacks permission for returns a JSON-RPC error:
 
@@ -660,9 +855,13 @@ Every JSON-RPC request is recorded in the Breeze audit log with:
 
 - The API key ID as the actor
 - The JSON-RPC method (e.g., `mcp.tools.call`)
-- Whether a session was active
+- Whether a verified legacy session was active (`details.hasSession`; always `false` for stateless requests)
 - Success or failure result
 - Error message (if any)
+- A server-minted per-request UUID as the resource id. Request and tool-call audit rows use it; the client never supplies it.
+- `details.correlation`: the era (legacy or stateless), protocol version, transport, principal, OAuth token `jti`, the verified legacy session id (if any), and the client's `clientInfo`. `clientInfo` is self-reported and flagged `clientInfoTrust: "self_reported"`, so do not treat it as an identity.
+
+Each new legacy HTTP+SSE stream is also recorded as the audit event `mcp.transport.http_sse.open`.
 
 You can query MCP audit events using the `query_audit_log` tool or the Audit Log page in the dashboard.
 
@@ -680,6 +879,12 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 |---|---|---|
 | `MCP_EXECUTE_TOOL_ALLOWLIST` | (empty) | Comma-separated list of Tier 3+ tool names allowed in production. Set to `*` to allow all. |
 | `MCP_REQUIRE_EXECUTE_ADMIN` | `true` | In production, Tier 3+ tools require the `ai:execute_admin` scope. Set to `false` to fall back to `ai:execute`. (No effect outside production.) |
+| `MCP_TIER3_INTENTS_ENABLED` | `false` | When `true`, a Tier 3 `tools/call` files an approval request (`pending_approval`) instead of being refused with `MCP_APPROVAL_REQUIRED`. See [Approvals over MCP](#approvals-over-mcp). |
+| `MCP_INTENT_MAX_LIVE_PER_PRINCIPAL` | `20` | Maximum live (not yet finished) approval requests per MCP credential. |
+| `MCP_INTENT_CREATES_PER_HOUR` | `60` | Maximum new approval requests per MCP credential per hour. |
+| `MCP_INTENT_CREATES_PER_USER_PER_HOUR` | `60` | Maximum new approval requests per requesting user per hour, across all their credentials. |
+| `MCP_APPROVAL_WAIT_MS` | `20000` | How long an `accept` retry of a URL-elicitation approval waits for the decision before returning `pending_approval`. |
+| `MCP_APPROVAL_WAITS_PER_PRINCIPAL` | `2` | Concurrent `accept` waits per MCP credential; further ones return the current status without waiting. |
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Maximum concurrent SSE sessions per API key. |
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | Maximum SSE connections per API key per minute. |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Maximum JSON-RPC messages per API key per minute. |
@@ -687,6 +892,8 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_TOOLS_LIST_PAGE_SIZE` | `0` (unset) | Experimental pagination: 0/unset returns a single page. Set to e.g. `50` only when every connected client follows `nextCursor`. Cursors are offsets; a catalog change mid-enumeration can skip tools. |
 | `MCP_SESSION_TTL_SECONDS` | `660` | Idle lifetime, in seconds, of a minted streamable-HTTP session principal in Redis (11 minutes). |
 | `MCP_INSUFFICIENT_SCOPE_HTTP_403` | `false` | When `true`, an OAuth bearer's `tools/call` refused only for a missing tier scope (`ai:write` or `ai:execute`) returns HTTP 403 with an `insufficient_scope` `WWW-Authenticate` challenge instead of HTTP 200. Never applies to API-key callers, domain, approval, MFA or RBAC denials, or the legacy HTTP+SSE transport. See [Authentication challenges](#authentication-challenges). |
+| `MCP_STATELESS_ENABLED` | `false` | When `true`, `POST /api/v1/mcp/sse` also speaks the stateless `2026-07-28` protocol alongside the legacy `initialize` + `Mcp-Session-Id` era. Off by default; a stateless request is then refused with HTTP 400 (`-32600`) and dual-era clients fall back to `initialize`. The API refuses to boot on a non-boolean value. See [Protocol 2026-07-28 (stateless)](#protocol-2026-07-28-stateless). |
+| `MCP_HEADER_MISMATCH_ALERT_THRESHOLD` | `50` | Stateless requests whose `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is missing or disagrees with the request body are refused with `-32020`. Per API process and per 60-second window: when this many true header/body mismatches occur within one window, one Sentry warning is raised for that window. Read at startup. |
 
 ### OAuth 2.1
 
@@ -703,6 +910,8 @@ These apply only when OAuth is enabled. When `MCP_OAUTH_ENABLED=true` in product
 | `OAUTH_DCR_ENABLED` | `false` | Allow Dynamic Client Registration at `POST /oauth/reg`. Off by default. When `true` in production you must also set **one** of the two posture flags below, or the API refuses to boot. |
 | `OAUTH_DCR_REQUIRE_IAT` | `false` | Gate DCR behind an initial access token issued out-of-band. Closes the public-spam vector, but is **incompatible with public MCP clients** (Claude.ai / ChatGPT) — they register anonymously and cannot supply an IAT. Use `OAUTH_DCR_ALLOW_ANONYMOUS` instead for a public server. |
 | `OAUTH_DCR_ALLOW_ANONYMOUS` | `false` | Deliberately permit anonymous DCR. **This is the required posture for connecting Claude.ai / ChatGPT** (see above). Spam risk is bounded by the controls on `/oauth/reg`: per-IP rate limit, forced public clients, mandatory PKCE S256, `software_id` rejection, and a daily stale-client GC. |
+| `OAUTH_CIMD_ENABLED` | `false` | Accept Client ID Metadata Documents (CIMD): a client may use an https URL as its `client_id`. Off by default. The API refuses to boot on a non-boolean value. See [Client ID Metadata Documents](#client-id-metadata-documents-cimd). |
+| `OAUTH_CIMD_ALLOWED_HOSTS` | (empty) | Optional comma-separated hostnames, or `.suffix` entries meaning any subdomain of the suffix (for example `client.example.com,.example.org`). Unset means any public https host. The API refuses to boot on a malformed entry (scheme, path, port, wildcard or empty item). |
 | `OAUTH_CONSENT_URL_BASE` | (empty) | Optional origin for the consent UI redirect (e.g. `http://localhost:4321` for split API/web dev). Defaults to a relative path, which works when the API and web app share an origin behind a reverse proxy. |
 
 ---

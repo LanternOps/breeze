@@ -248,7 +248,12 @@ export default function M365TenantSection({
           data-testid="m365-consent-unavailable"
           className="rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
         >
-          {t("m365TenantPanel.consentUnavailable")}
+          {/* Either product's org-level switch being off means the instance
+              itself has consent turned on, so "not available on this instance"
+              would be wrong (#9319). */}
+          {read?.onboardingAvailability === "org_not_enabled" || actions?.onboardingAvailability === "org_not_enabled"
+            ? t("m365TenantPanel.consentNotEnabledForOrg")
+            : t("m365TenantPanel.consentUnavailable")}
         </p>
       )}
       {layout === "no-org" && (

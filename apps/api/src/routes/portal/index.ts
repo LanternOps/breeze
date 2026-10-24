@@ -10,8 +10,11 @@ import { quoteRoutes as portalQuoteRoutes } from './quotes';
 import {
   portalAssetCheckoutEnabledMiddleware,
   portalDevicesEnabledMiddleware,
-  createPortalFeatureGateStrict,
-  createPortalFeatureGateAny
+  createPortalFeatureGateAny,
+  portalSectionGate,
+  PORTAL_SECTION_GATES,
+  type PortalSectionGateRow,
+  type PortalSectionKey
 } from './featureFlags';
 import { portalDashboardRoutes } from './dashboard';
 import { portalSecurityRoutes } from './security';
@@ -35,7 +38,7 @@ export const portalRoutes = new Hono();
 
 const isTicketsUsagePath = (c: Context) => c.req.path.endsWith('/tickets/usage');
 const isDocumentContentPath = (c: Context) => /\/documents\/[^/]+\/content$/.test(c.req.path);
-const documentsLibraryGate = createPortalFeatureGateStrict('enableDocuments');
+const documentsLibraryGate = portalSectionGate('documents');
 // Spec §8: a portal-visible document published as delivery evidence is
 // downloadable under enable_service even when the library page is off.
 const documentBytesGate = createPortalFeatureGateAny('enableDocuments', 'enableService');
@@ -57,42 +60,19 @@ portalRoutes.use('/profile/*', portalAuthMiddleware);
 portalRoutes.use('/invoices/*', portalAuthMiddleware);
 portalRoutes.use('/quotes/*', portalAuthMiddleware);
 
-// W03 strict visibility gates (Task 3.3) — fail closed on a missing
-// portal_branding row or an explicit false. Auth first, then the gate, on
-// each dedicated prefix.
-portalRoutes.use('/dashboard/*', portalAuthMiddleware);
-portalRoutes.use('/dashboard/*', createPortalFeatureGateStrict('enableDashboard'));
-portalRoutes.use('/security/*', portalAuthMiddleware);
-portalRoutes.use('/security/*', createPortalFeatureGateStrict('enableSecurity'));
-portalRoutes.use('/backups/*', portalAuthMiddleware);
-portalRoutes.use('/backups/*', createPortalFeatureGateStrict('enableBackups'));
-portalRoutes.use('/reports/*', portalAuthMiddleware);
-portalRoutes.use('/reports/*', createPortalFeatureGateStrict('enableReports'));
-// A second, narrower gate. Hono stacks middleware by matched prefix, so a
-// request to /reports/lifecycle/* needs both enableReports and
-// enableLifecycle; every other /reports/* path is untouched.
-portalRoutes.use('/reports/lifecycle/*', createPortalFeatureGateStrict('enableLifecycle'));
-// Service deliverables W04 — both new surfaces fail closed the same way.
-portalRoutes.use('/service/*', portalAuthMiddleware);
-portalRoutes.use('/service/*', createPortalFeatureGateStrict('enableService'));
-// Portal Advanced Visibility W01 (#7731): hardware health, fail-closed.
-portalRoutes.use('/hardware-health/*', portalAuthMiddleware);
-portalRoutes.use('/hardware-health/*', createPortalFeatureGateStrict('enableHardwareHealth'));
-// Portal Advanced Visibility W02 (#7732): hardware inventory, fail-closed.
-portalRoutes.use('/hardware-inventory/*', portalAuthMiddleware);
-portalRoutes.use('/hardware-inventory/*', createPortalFeatureGateStrict('enableHardwareInventory'));
-// Portal Advanced Visibility W03 (#7733): performance metrics, fail-closed.
-portalRoutes.use('/performance/*', portalAuthMiddleware);
-portalRoutes.use('/performance/*', createPortalFeatureGateStrict('enablePerformanceMetrics'));
-// W04 (#7734): independent of enableDevices.
-portalRoutes.use('/software/*', portalAuthMiddleware);
-portalRoutes.use('/software/*', createPortalFeatureGateStrict('enableSoftwareInventory'));
-// W05 (#7735): patch detail, sensitive (outside "Enable all"), fail-closed.
-portalRoutes.use('/patches/*', portalAuthMiddleware);
-portalRoutes.use('/patches/*', createPortalFeatureGateStrict('enablePatchDetail'));
-// W06 (#7736): vulnerability detail, sensitive (outside "Enable all"), fail-closed.
-portalRoutes.use('/vulnerabilities/*', portalAuthMiddleware);
-portalRoutes.use('/vulnerabilities/*', createPortalFeatureGateStrict('enableVulnerabilityDetail'));
+// Strict visibility gates (W03 Task 3.3 and every later section): fail closed
+// on a missing portal_branding row or an explicit false. Auth first, then the
+// gate, on each dedicated prefix. Every row comes from the shared
+// PORTAL_SECTION_GATES table (#9350) — the staff "Customer view" preview reads
+// the same table, so the portal and the preview cannot disagree. Hono stacks
+// middleware by matched prefix, so /reports/lifecycle/* runs both the reports
+// and the narrower lifecycle gate. Rows with customMount are mounted below.
+for (const row of PORTAL_SECTION_GATES as readonly PortalSectionGateRow[]) {
+  if (row.customMount) continue;
+  const path = row.exact ? row.pathPrefix : `${row.pathPrefix}/*`;
+  if (!row.inheritsAuth) portalRoutes.use(path, portalAuthMiddleware);
+  portalRoutes.use(path, portalSectionGate(row.key as PortalSectionKey));
+}
 // Network Visibility has its own fail-closed availability response:
 // disabled or missing settings return dataStatus: 'not_enabled'.
 portalRoutes.use('/network/*', portalAuthMiddleware);
@@ -112,16 +92,7 @@ portalRoutes.use('/trust-page/*', portalAuthMiddleware);
 // skip straight to `next()` for every other `/tickets/*` request, letting the
 // generic middleware below handle those.
 portalRoutes.use('/tickets/usage', portalAuthMiddleware);
-portalRoutes.use('/tickets/usage', createPortalFeatureGateStrict('enableSupportUsage'));
-
-// Block hours W04: the "Support hours" card lives inside the Support usage
-// section, so its endpoint requires BOTH fail-closed flags — auth first, then
-// enableSupportUsage, then its own enableHourBlock. A separate prefix on
-// purpose: nesting under `/tickets/*` would inherit the enable_tickets gate
-// that Support usage deliberately opts out of (see the exact-path wrappers above).
-portalRoutes.use('/support-usage/*', portalAuthMiddleware);
-portalRoutes.use('/support-usage/*', createPortalFeatureGateStrict('enableSupportUsage'));
-portalRoutes.use('/support-usage/*', createPortalFeatureGateStrict('enableHourBlock'));
+portalRoutes.use('/tickets/usage', portalSectionGate('ticketUsage'));
 
 portalRoutes.use('/tickets/*', async (c, next) => {
   if (isTicketsUsagePath(c)) {

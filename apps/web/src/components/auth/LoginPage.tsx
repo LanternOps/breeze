@@ -13,6 +13,7 @@ import {
 } from '../../stores/auth';
 import type { MfaChallenge, MfaMethod } from '../../stores/auth';
 import { navigateTo } from '../../lib/navigation';
+import { postLoginDestination } from '../../lib/purchaseHandoff';
 import { getSafeNext } from '../../lib/authNext';
 import { getLoginContext } from '../../lib/loginContext';
 import { discoverOrgSso, type SsoDiscoveryProvider } from '../../lib/ssoDiscovery';
@@ -296,7 +297,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
       // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      await navigateTo(postLoginDestination(result.requiresSetup, safeNext));
       return;
     }
 
@@ -322,7 +323,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
       // Setup wizard wins over `next` — user can't do anything useful before setup completes.
-      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      await navigateTo(postLoginDestination(result.requiresSetup, safeNext));
       return;
     }
 
@@ -347,7 +348,7 @@ export default function LoginPage({ next, partnerSlug }: LoginPageProps = {}) {
       setMfaChallenge(undefined);
       login(result.user, result.tokens);
       fetchAndApplyPreferences();
-      await navigateTo(result.requiresSetup ? '/setup' : safeNext);
+      await navigateTo(postLoginDestination(result.requiresSetup, safeNext));
       return;
     }
 

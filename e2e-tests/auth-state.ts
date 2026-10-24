@@ -44,6 +44,108 @@ export function adminCredentials(): { email: string; password: string } {
   return { email, password };
 }
 
+type RefreshRequest = { method(): string; url(): string; failure?(): { errorText: string } | null };
+type RefreshPage = {
+  on(event: string, handler: (arg: any) => void): unknown;
+  waitForTimeout(ms: number): Promise<void>;
+};
+
+export type RefreshTracker = {
+  /** Number of POST /auth/refresh requests started so far. */
+  readonly starts: number;
+  /** Number of those that have finished (successfully or not). */
+  readonly completed: number;
+  readonly inflight: number;
+  readonly failures: string[];
+};
+
+/** Attach listeners that follow every POST /auth/refresh the page makes. */
+export function trackRefreshes(page: RefreshPage): RefreshTracker {
+  const isRefresh = (r: RefreshRequest) =>
+    r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/refresh');
+  const inflight = new Set<unknown>();
+  const failures: string[] = [];
+  let starts = 0;
+  let completed = 0;
+  page.on('request', (r: RefreshRequest) => {
+    if (!isRefresh(r)) return;
+    starts++;
+    inflight.add(r);
+  });
+  page.on('requestfinished', (r: RefreshRequest) => {
+    if (isRefresh(r) && inflight.delete(r)) completed++;
+  });
+  page.on('requestfailed', (r: RefreshRequest) => {
+    if (!isRefresh(r)) return;
+    if (inflight.delete(r)) completed++;
+    failures.push(`request failed: ${r.failure?.()?.errorText ?? 'unknown'}`);
+  });
+  page.on('response', (res: { request(): RefreshRequest; status(): number }) => {
+    if (!isRefresh(res.request())) return;
+    const status = res.status();
+    if (status < 200 || status >= 300) failures.push(`HTTP ${status}`);
+  });
+  return {
+    get starts() { return starts; },
+    get completed() { return completed; },
+    get inflight() { return inflight.size; },
+    failures,
+  };
+}
+
+/**
+ * Snapshot a freshly logged-in context's storage state only once the
+ * dashboard's mount heartbeat (`AdminSessionManager`, a POST /auth/refresh that
+ * fires a few seconds after landing on '/', later on a loaded runner) has
+ * COMPLETED. Snapshotting before it captures the pre-rotation refresh jti;
+ * closing the context then aborts the client while the server commits the
+ * rotation, and every context built from the snapshot gets `refresh_raced`
+ * (#9252). A "nothing in flight" check cannot see a refresh that has not
+ * started yet, so this requires at least one completed refresh. After the
+ * first, the manager does not refresh again for minutes. Throws rather than
+ * returning a possibly stale snapshot.
+ */
+export async function snapshotAfterMountRefresh<S>(
+  ctx: { storageState(): Promise<S> },
+  page: RefreshPage,
+  tracker: RefreshTracker,
+  opts: { deadlineMs?: number; pollMs?: number; maxAttempts?: number } = {}
+): Promise<S> {
+  const { deadlineMs = 30_000, pollMs = 100, maxAttempts = 3 } = opts;
+  const deadline = Date.now() + deadlineMs;
+  const settled = () => tracker.starts >= 1 && tracker.inflight === 0;
+  const waitSettled = async (what: string) => {
+    while (!settled()) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          `[auth-state] ${what}: saw ${tracker.starts} POST /auth/refresh start(s), ${tracker.inflight} still in flight, ` +
+            `${Math.round(deadlineMs / 1000)}s after landing on '/'. The dashboard's mount heartbeat never completed, ` +
+            'so refusing to save a storage state whose refresh cookie may be pre-rotation (stale-cookie race, #9252).'
+        );
+      }
+      await page.waitForTimeout(pollMs);
+    }
+  };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await waitSettled(`snapshot attempt ${attempt}`);
+    const before = tracker.starts;
+    const snap = await ctx.storageState();
+    if (tracker.failures.length > 0) {
+      throw new Error(
+        `[auth-state] login's POST /auth/refresh failed (${tracker.failures.join(', ')}); ` +
+          'refusing to save a storage state whose refresh cookie may be stale (refresh_raced / rotation race).'
+      );
+    }
+    // A refresh that started (even if it also finished) while storageState()
+    // ran, or is running now, may have rotated the cookie after we read it.
+    if (tracker.starts === before && tracker.inflight === 0) return snap;
+  }
+  throw new Error(
+    `[auth-state] a POST /auth/refresh kept starting during ${maxAttempts} storageState snapshots; ` +
+      'refusing to save a storage state whose refresh cookie may be stale.'
+  );
+}
+
 /**
  * Log in through the real form in a throwaway context and persist the result.
  *
@@ -66,24 +168,8 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     // app's own 428 re-POST would be just as easy to miss between iterations.
     type LoginResponse = { status: number; text: string };
     const loginResponses: Promise<LoginResponse>[] = [];
-    const inflightRefreshes = new Set<unknown>();
-    const isRefresh = (r: { method(): string; url(): string }) =>
-      r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/refresh');
-    let refreshStarts = 0;
-    page.on('request', (r) => { if (isRefresh(r)) { refreshStarts++; inflightRefreshes.add(r); } });
-    const refreshFailures: string[] = [];
-    page.on('requestfinished', (r) => { if (isRefresh(r)) inflightRefreshes.delete(r); });
-    page.on('requestfailed', (r) => {
-      if (!isRefresh(r)) return;
-      inflightRefreshes.delete(r);
-      refreshFailures.push(`request failed: ${r.failure()?.errorText ?? 'unknown'}`);
-    });
+    const tracker = trackRefreshes(page);
     page.on('response', (res) => {
-      if (isRefresh(res.request())) {
-        const status = res.status();
-        if (status < 200 || status >= 300) refreshFailures.push(`HTTP ${status}`);
-        return;
-      }
       if (res.request().method() !== 'POST') return;
       if (!new URL(res.url()).pathname.endsWith('/auth/login')) return;
       loginResponses.push(
@@ -166,55 +252,7 @@ export async function loginAndSaveState(browser: Browser, baseURL: string, state
     }
 
     await page.waitForURL('/', { timeout: 30_000 });
-    // The '/' page bootstraps with its own POST /auth/refresh (MPA), which
-    // rotates the login's refresh token. Snapshotting or closing the context
-    // while that call is in flight leaves the saved cookie already-rotated
-    // with the new one lost (aborted response): every later replay gets
-    // 401 refresh_raced and, past the 15 s grace, trips family revocation.
-    // Wait until no refresh is in flight (seen on two consecutive polls, since
-    // the bootstrap request can start just after the URL settles), then
-    // snapshot. Throws instead of saving a possibly stale cookie.
-    const refreshDeadline = Date.now() + 15_000;
-    let idlePolls = 0;
-    while (idlePolls < 2) {
-      if (Date.now() > refreshDeadline) {
-        throw new Error(
-          `[auth-state] POST /auth/refresh still in flight ${inflightRefreshes.size} request(s) 15s after login; ` +
-            'refusing to save a storage state whose refresh cookie may already be rotated (stale-cookie race).'
-        );
-      }
-      idlePolls = inflightRefreshes.size === 0 ? idlePolls + 1 : 0;
-      await page.waitForTimeout(150);
-    }
-    // Snapshot in a loop: accept only if no refresh started or was in flight
-    // while storageState() ran (a refresh can start AND finish inside it, which
-    // an in-flight check alone would miss), and none failed. Else drain, retry.
-    let state: Awaited<ReturnType<typeof ctx.storageState>> | undefined;
-    for (let attempt = 1; attempt <= 3 && !state; attempt++) {
-      const drainDeadline = Date.now() + 15_000;
-      while (inflightRefreshes.size > 0 && Date.now() < drainDeadline) await page.waitForTimeout(100);
-      if (inflightRefreshes.size > 0) {
-        throw new Error(
-          `[auth-state] POST /auth/refresh still in flight ${inflightRefreshes.size} request(s) after 15s draining on snapshot attempt ${attempt}; ` +
-            'refusing to save a storage state whose refresh cookie may be stale.'
-        );
-      }
-      const before = refreshStarts;
-      const snap = await ctx.storageState();
-      if (refreshFailures.length > 0) {
-        throw new Error(
-          `[auth-state] login's POST /auth/refresh failed (${refreshFailures.join(', ')}); ` +
-            'refusing to save a storage state whose refresh cookie may be stale (refresh_raced / rotation race).'
-        );
-      }
-      if (refreshStarts === before && inflightRefreshes.size === 0) state = snap;
-    }
-    if (!state) {
-      throw new Error(
-        '[auth-state] a POST /auth/refresh kept starting during 3 storageState snapshots; ' +
-          'refusing to save a storage state whose refresh cookie may be stale.'
-      );
-    }
+    const state = await snapshotAfterMountRefresh(ctx, page, tracker);
     writeFileSync(statePath, JSON.stringify(state, null, 2));
   } finally {
     await ctx.close();

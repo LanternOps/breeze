@@ -2629,7 +2629,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageLabel')}</span>
                 {cover.coverImageId ? (
                   <div className="flex items-center gap-3">
-                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} />
+                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} crop={detail.presentation?.pageSize ?? 'a4'} />
                     <button
                       type="button"
                       onClick={() => saveCover({ ...cover, coverImageId: null })}

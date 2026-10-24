@@ -2,7 +2,7 @@
  * #3205 W07 (#4656) — reading the billing evidence written at generation.
  *
  * Both entry points re-assert org access against the PARENT document and throw
- * 404 (never 403) on a mismatch, matching getInvoice/getCustomerInvoice. Both
+ * 404 (never 403) on a mismatch, matching getInvoice/getPortalInvoiceRowOr404. Both
  * also assert SAME-PARENT ownership in the SQL predicate rather than after the
  * fetch, so a valid line id from a different invoice in the same org is a 404
  * and never a read of someone else's evidence through a mismatched path.

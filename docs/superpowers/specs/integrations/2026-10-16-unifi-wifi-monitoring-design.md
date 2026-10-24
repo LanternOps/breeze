@@ -1,7 +1,7 @@
 ---
 title: UniFi Wi-Fi monitoring (AP radios and device statistics)
 issue: LanternOps/breeze discussion #7690
-status: draft (spec requested in discussion #7690; implementation not approved yet)
+status: W1 approved and merged (#9293); W2 entry-gate amendment awaiting maintainer review
 related:
   - LanternOps/breeze#3208
   - LanternOps/breeze#7271
@@ -9,7 +9,7 @@ related:
 
 # UniFi Wi-Fi monitoring: AP radios and device statistics
 
-Status: draft, for maintainer review. This is the spec requested in discussion #7690. It is a design/contract change only; implementation starts only after approval.
+Status: original design approved and merged in PR #8875; W1 contract/API merged in PR #9293. This amendment records the maintainer's 2026-10-20 W2 requirements and the 2026-10-20 local-controller evidence. The W2 Agent implementation is a separate PR, after this amendment is reviewed.
 
 ## 1. Problem and goal
 
@@ -43,14 +43,14 @@ The review in discussion #7690 approved moving to a spec and requires this spec 
 
 The same review points to the spec-first shape used by PR #7642.
 
-### 2.2 Confirmed in current Breeze code (`upstream/main` at `3de1f8194` when this spec was reviewed)
+### 2.2 Confirmed in Breeze code (original pre-W1 review snapshot at `3de1f8194`)
 
 - The agent uses only `/proxy/network/integration/v1` and GETs for collection.
 - Device/client list pagination is now complete and bounded; the older comment claiming only the first client page is read is stale.
 - Device details rotate with `MaxDetailsPerPoll = 32` and a 45-second detail-phase timeout.
 - `statistics` is a known UniFi resource kind, but the agent currently emits it as `not_attempted/not_collected`.
 - `unifiTopologyV1Schema` is strict `version: 1`; its resource digests are canonicalized as `unifi_topology_v1` and recomputed by the API before acceptance.
-- The API currently advertises `acceptedUnifiTopologyVersions: [1]` plus a producer epoch/source identity.
+- In that pre-W1 snapshot the API advertised `acceptedUnifiTopologyVersions: [1]` plus a producer epoch/source identity. **Updated after W1:** `unifiAuthority.ts` now advertises `[1,2]` only for `interfaceHealth`-enabled scopes, `[1]` otherwise (§4.3).
 - The normalized topology pipeline retains `unifi_statistics`, but the physical topology projector intentionally derives no graph topology from it.
 - Current UniFi topology authority accepts an exact controller-site mapping only inside the collector device's organization; a mapping to another organization is rejected as `controller_site_other_org`. Legacy UniFi telemetry can still route mapped rows across orgs.
 - `unifi_device_telemetry` already stores current device uptime, CPU, memory and client count, and already has `poe_ports` plus legacy tx/rx byte columns.
@@ -60,9 +60,19 @@ The same review points to the spec-first shape used by PR #7642.
 - A current `partial` topology source snapshot retains absence/lifecycle bookkeeping, but `current_baseline.section.rows` is the current snapshot's row subset. It is not a per-device latest-value cache suitable by itself for a rotating Wi-Fi UI.
 - There is already a pattern for side materialization from an accepted UniFi topology resource: accepted `device_details` can feed `ingestUnifiInterfaceTelemetry` without changing the structural topology receipt.
 
+**Post-W1 status (PR #9293, confirmed in current code):** v2 schema, digests/normalization, gated advertisement, batched `unifiWifiMaterializer.ts`, and new nullable columns in `unifi_device_telemetry` are merged. The Agent still emits only `topologyV1`; W2 supplies its v2 builder/collection. The current route's request-wide `topologyV2Present` and legacy reconcile's request-wide four-metric fence (§8.3) must be reconciled before W2 can ship. No second schema migration or new telemetry table belongs to W2.
+
 ### 2.3 Confirmed by real supported-version evidence
 
-`@bgatestmg` supplied sanitized, GET-only fixtures from Network **10.6.106** on UniFi OS **5.1.132** in discussion #7690 ([radio/statistics fixtures](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621), [client/switch boundary observations](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961724)). These fixtures close the evidence gap identified in the maintainer review for response shape. Their transport, however, is the Site Manager cloud connector (`api.ui.com/v1/connector/...`), not the local controller `/proxy/network/integration/v1` path the agent calls. A capture from a local controller is therefore an acceptance item for W1.
+`@bgatestmg` supplied sanitized, GET-only fixtures from Network **10.6.106** on UniFi OS **5.1.132** in discussion #7690 ([radio/statistics fixtures](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621), [client/switch boundary observations](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961724)). The initial transport was the **Site Manager cloud connector** (`api.ui.com/v1/connector/...`), not the local Agent path. **The W2 entry-gate capture was subsequently supplied** by the same contributor on **2026-10-20**: [local controller GET-only evidence](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-19078413), from `https://<controller>/proxy/network/integration/v1/...` (redacted placeholder), Network **10.6.106** / UniFi OS **5.1.33**. Both evidence sources are cited separately; the local capture does not supersede missing/offline/positive-rate cases proved only by the earlier cloud fixtures.
+
+**Local capture observations (source evidence, not assumptions):**
+
+- `GET /v1/sites/{siteId}/devices`: 29 devices, 11 AP candidates; `features` and `interfaces` are **arrays of names** on the list (`["accessPoint"]`, `["radios"]`), with `state: "ONLINE"` in that controller sample.
+- `GET /v1/sites/{siteId}/devices/{deviceId}`: `features` is an **object** (`{"accessPoint":{}}`) and `interfaces` is an object with `radios[]` entries, on an E7 at 2.4, 5 and 6 GHz using `802.11be`; no radio ID. The list decoder and detail decoder must **not** assume the same shape.
+- `GET /v1/sites/{siteId}/devices/{deviceId}/statistics/latest`: measured `txRetriesPct` values `0.0`, `0.0`, `10.0`; uptime/CPU/memory/load averages present. `uplink` is `{}`: both `rxRateBps` and `txRateBps` are **omitted**, not zero.
+- `GET /v1/sites/{siteId}/clients`: 382 clients (112 `WIRELESS`, 270 `WIRED`), both types have `uplinkDeviceId`. No radio/band/RSSI key; the collection does **not** authorize per-radio client counts. Sample rows omit `ipAddress`, which must remain optional.
+- Identifiers, names, addresses, MAC/IP values and heartbeat timestamps are redacted. This confirms response shapes for the local path and satisfies the evidence requirement in §14.6; it does not constitute a live Agent-to-API integration test.
 
 Observed on real APs:
 
@@ -83,9 +93,9 @@ The same evidence shows switch `statistics/latest.interfaces` as `{}` with no pe
 
 The [Network 10.6.106 OpenAPI contract](https://developer.ui.com/network/v10.6.106/openapi.json) defines adopted-device `features` (`switching`, `accessPoint`, `gateway`) and `interfaces` (`ports`, `radios`) sets. Device details expose optional `interfaces.radios`. The collector may therefore identify AP candidates from the device list without probing switch statistics. This is documentation evidence, separate from the real fixtures above.
 
-### 2.5 Design decisions proposed by this spec
+### 2.5 Design decisions and review boundary
 
-The following are design choices for maintainer approval, not pre-existing requirements:
+The following design choices were approved through the spec PR #8875 and the W1 implementation PR #9293. W2's device/family legacy writer-fence mechanics (§8.3), local fixture handling (§5.1), and their tests are clarifications submitted for **maintainer review in this amendment**, not already-approved implementation code:
 
 - ship the expanded wire contract as **UniFi topology v2**, leaving v1 byte-for-byte/digest compatible;
 - use the topology companion as the validated transport/evidence path, but make existing `unifi_device_telemetry` the **single operator-facing current-state materialization** for these metrics;
@@ -150,15 +160,15 @@ The agent payload gains an optional `topologyV2` companion. It sends **at most o
 The agent chooses the highest version it implements that the API advertises:
 
 - old API + old agent: v1 (unchanged);
-- new API + old agent: API advertises `[1, 2]`; the old agent sees `1` and continues emitting v1;
+- new API + old agent: API advertises `[1, 2]` for collector scopes whose org topology flag `interfaceHealth` is enabled, and `[1]` otherwise; the old agent sees `1` and continues emitting v1;
 - old API + new agent: old API advertises `[1]`; the new agent emits exact v1;
-- new API + new agent: v2.
+- new API + new agent: v2 **only when** the API advertises `[1,2]` for that collector scope; otherwise exact v1.
 
-No agent may infer v2 support from server version. The advertisement is authoritative.
+No agent may infer v2 support from server version. The advertisement is authoritative. The API gates v2 advertisement on the org topology flag `interfaceHealth` (see section 8.2), so disabling the flag is the rollback path: new agents fall back to v1 under the same producer epoch.
 
 ### 4.4 Deployment order
 
-1. **API/shared/web first:** parse/ingest v1 and v2, advertise `[1, 2]`, materialize/display v2 data, keep all v1 tests green.
+1. **API/shared first (W1):** parse/ingest v1 and v2, advertise `[1, 2]` for scopes with `interfaceHealth` enabled, materialize v2 data and keep all v1 tests green. The operator-facing read model and UI are **W3**, not W1.
 2. **Agent second:** add v2 negotiation/collection and release only after the API that accepts v2 is deployed.
 3. Keep v1 ingest/advertisement support during the compatibility window; removal is a separate future decision, not part of this feature.
 
@@ -179,7 +189,7 @@ type UnifiDeviceV2Capabilities = {
 };
 ```
 
-The agent sorts/deduplicates these finite documented enum sets before canonicalization (at most 3 feature values and 2 interface values). An absent controller key normalizes to `null`, not an empty set. The API derives `wifiCapable` as `true` from a positive documented signal (`interfaces` contains `radios` or `features` contains `accessPoint`), `false` only when the capability sets are present and contain no AP/radio signal, and `null` when the necessary capability evidence is unavailable. Model-name inference is never used.
+The local capture shows `features` and `interfaces` as **arrays on the device-list endpoint** and `features` as an object on the **detail endpoint**; these are distinct input DTOs, not interchangeable forms. The Agent normalizes documented list capability strings only, sorts/deduplicates them before canonicalization (at most 3 feature values and 2 interface values). The API v2 schema remains strict. Unknown controller strings are filtered by the Agent before digesting; filter/drop events use bounded reason codes (no raw unknown controller text or secrets in logs). An absent capability key normalizes to `null`, not an empty set. A present list that yields no known values solely because **unknown values were dropped** must not be treated as definitive proof of no capability: normalize that set to `null`; an explicitly empty controller set remains `[]`. This preserves the current `wifiCapable` tri-state: `true` only from an accepted `radios`/`accessPoint` signal, `false` only when both capability sets are explicitly known and contain no AP/radio evidence, otherwise `null`. Model-name inference is forbidden. Tests must cover unknown-only, known-plus-unknown, missing, and explicitly empty sets. This filter-before-canonicalization rule is the W2 implementation response to the maintainer's 2026-10-20 strict-enum concern.
 
 These fields are part of v2 because the API needs the same typed evidence the agent uses to identify APs and to materialize an authoritative wireless-client count of zero.
 
@@ -339,7 +349,7 @@ This choice resolves two current realities:
 
 Follow the existing `ingestUnifiInterfaceTelemetry` pattern: after v2 resources are digest-validated, scope-resolved and accepted by the topology adapter, a separate savepoint materializes their current-state fields. A materialization failure is observable but must not change the structural topology receipt or legacy telemetry acceptance.
 
-The Wi-Fi materializer consumes only resources that received an accepted topology receipt. It may combine the accepted `device_list` + complete `client_list` to derive wireless counts, and independently upsert accepted detail/statistics rows. Writes are one batched upsert per poll, not one per AP, because the materializer runs inside the agent synchronous request transaction. The proposed gate is `topologyFeatureFlags.interfaceHealth`, the flag the interface telemetry path is tested with; W1 confirms the exact check. This report-level merge avoids making resource processing order part of the data contract.
+The Wi-Fi materializer consumes only resources that received an accepted topology receipt. It may combine the accepted `device_list` + complete `client_list` to derive wireless counts, and independently upsert accepted detail/statistics rows. Writes are one batched upsert per poll, not one per AP, because the materializer runs inside the agent synchronous request transaction. The existing gate is `topologyFeatureFlags.interfaceHealth`, confirmed in code at `apps/api/src/services/topology/unifiInterfaceMetrics.ts` (materialization pattern) and `apps/api/src/services/topology/unifiAuthority.ts` (v2 advertisement). **This wave reuses the already-shipped flag**; no new Wi-Fi configuration flag is introduced or requested. This report-level merge avoids making resource processing order part of the data contract.
 
 Materialization is scoped by the already-resolved collector/controller-site mapping **after the existing UniFi topology authority accepts that scope**. It never trusts an org/site from the upload. This spec does not relax the current `controller_site_other_org` fence: cross-org mappings remain legacy-only for these new fields. If the current-state row does not exist yet (topology ingest is synchronous and precedes the legacy queue), the materializer may insert the minimum `(collector, org, site, unifiDeviceId)` row with an empty `raw` placeholder; the legacy reconcile path later fills its legacy-owned identity/raw fields.
 
@@ -352,16 +362,19 @@ Keep the current columns for their current meanings:
 - `tx_bytes` and `rx_bytes` retain byte-counter semantics and are **not** used for rates;
 - `poe_ports` is not populated or redefined by this feature; PoE collection remains owned by #7271.
 
-Writer ownership is explicit because topology ingest happens synchronously before the legacy telemetry job is enqueued:
+Writer ownership must be **device- and metric-family-scoped**, not request-wide. W1 currently sets the server-derived `topologyV2Present` for the whole request (`routes/agents/unifiTelemetry.ts`) and `reconcileTelemetry` skips legacy writes for four metrics on **every device** (`unifiTelemetryService.ts`). This incorrectly suppresses legacy telemetry on mapped cross-org/unknown controller sites, switches/gateways, rejected resources and flag-disabled scopes. It must be corrected **before an Agent sends v2**.
 
-- when a request carries `topologyV2`, the v2 materializer is the sole writer for `uptime_seconds`, `cpu_pct`, `mem_pct`, `num_clients` and every new Wi-Fi field below;
-- the route stamps an internal/server-owned v2-presence marker (or equivalent) onto the queued legacy payload; on that payload the legacy reconcile worker **must not** clear or overwrite the v2-owned columns, even when the v2 companion/resource was rejected — a rejected v2 attempt leaves the previous value and timestamp to become stale naturally;
-- when no `topologyV2` companion is present (old/v1 agent), legacy reconcile keeps its current behavior for its existing fields;
-- legacy identity/raw, `tx_bytes`/`rx_bytes`, stale lifecycle and current PoE ownership are unchanged by this spec.
+**Required W2 compatibility contract (maintainer request to fence only materializer-owned rows; precise family semantics here are an implementation design derived from §8.4):**
 
-This fence prevents the current legacy `undefined -> SQL NULL` behavior from erasing a v2 statistics value immediately after the topology transaction commits. The v2-presence marker is derived by the server from the companion field, never trusted from an arbitrary client flag.
+- `uptime_seconds`, `cpu_pct`, `mem_pct` form the **statistics** family, and `num_clients` the **wireless-client** family. The route/worker must derive protection from the trusted server-side accepted materialization scope and per-family ownership/observation data, never from an upload-supplied boolean or from v2 **presence alone**. The legacy worker may still update the legacy identity, `raw`, PoE, byte counters and lifecycle fields of all its eligible devices.
+- For **same-org/site AP rows** with accepted v2 statistics or client materialization, only the corresponding family is protected from legacy `undefined -> NULL` or conflicting updates. **Preserve previously materialized family values and their `*_observed_at` when that AP is omitted** from the current rotation, a client list is incomplete, or the attempted statistics request fails (§8.4). This means the implementation must take account of server-side persisted family ownership across polls, not only the rows newly upserted in this poll. Never turn a missed measurement into a zero.
+- Devices and families **without** accepted v2 ownership (including cross-org or unmapped sites rejected by topology authority, non-AP switches/gateways, and scopes whose `interfaceHealth` is disabled) retain legacy behaviour. A per-request `topologyV2Present` boolean is not an acceptable gate, even if the v2 companion is received. If the gate is turned off and the Agent falls back to v1, normal v1 legacy semantics resume.
+- A **rejected/malformed/ambiguous v2 report or failed materializer does not claim new v2 ownership**. The legacy payload is still enqueued and processed. Previously persisted v2 family values, where there is **independently verified** v2 ownership for that same collector/org/site/device, are not silently erased by an unsuccessful v2 attempt; all other device/family metrics keep their legacy behaviour. No request-wide fallback mask is allowed.
+- A topology receipt `accepted` does not by itself prove that a Wi-Fi **row** was materialized; resource acceptance, resolved scope, feature gate, actual successful upsert and existing family observation state must be differentiated. Implementation chooses the minimal server-owned marker/DB lookup needed; do not expand the topology wire contract to carry this internal ownership state.
 
-Add bounded current-state fields to `unifi_device_telemetry` (column names are normative unless implementation finds an existing equivalent before coding):
+**Regression gates:** same-org AP measured statistics (including `0`) survive legacy queue processing; rotated/failed/omitted APs retain values and observation timestamps; switch/gateway `num_clients` and cross-org/unmapped devices keep legacy updates; `interfaceHealth`-off v2 uploads do not freeze metrics; rejected/ambiguous v2 does not suppress unrelated legacy rows; and `[1,2]`→`[1]` fallback still works under the same producer epoch. This fixes the identified W1 implementation conflict without changing topology authority, tenancy or the UI.
+
+W1 (#9293) has **already added** the following bounded current-state fields to `unifi_device_telemetry` (the column list is historical/contractual, not a second W2 migration request):
 
 - `controller_state` text — current typed UniFi device state from v2 `device_list`;
 - `wifi_capable` nullable boolean — derived only from section 5.1 capability evidence;
@@ -503,7 +516,8 @@ Coverage/reason codes remain bounded lowercase topology reasons; implementation 
 
 ### 14.2 Agent
 
-- decodes, bounds, sorts and publishes documented AP candidate signals without model-name heuristics;
+- decodes, bounds, sorts and publishes documented AP candidate signals without model-name heuristics; the **list-array** and **detail-object** capability shapes from the local fixture are separately tested;
+- filters undocumented `features`/`interfaces` before v2 canonicalization, retaining known values; an unknown-only input does not become definitive no-AP evidence, while an explicitly empty set remains empty;
 - device/client pagination behavior remains unchanged;
 - only AP candidates receive statistics requests;
 - budget examples in section 6 are exact in tests (15/30/60/>60 seconds), and the persisted token bucket enforces the sustained cap across fast polls/restarts;
@@ -511,7 +525,7 @@ Coverage/reason codes remain bounded lowercase topology reasons; implementation 
 - detail cap remains 32/poll;
 - statistics work remains inside the bounded enrichment deadline;
 - one stats 404/500/transport/decode error does not discard sibling successes;
-- missing controller keys become nil/null; measured retry zero survives;
+- missing controller keys become nil/null; measured retry zero survives; the local E7 sample (2.4/5/6 GHz with 0.0/0.0/10.0 retries, empty `uplink`, no rate keys) and previous cloud samples (omitted channel, offline positive rate) are covered as distinct cases;
 - WIRELESS-only client counting ignores a WIRED row with the same `uplinkDeviceId`;
 - partial client list does not produce an authoritative count;
 - v1 is emitted to `[1]`; v2 is emitted to `[1,2]`; no companion is emitted without topology authority/epoch as today.
@@ -526,14 +540,17 @@ Coverage/reason codes remain bounded lowercase topology reasons; implementation 
 - present row + null clears old field; omitted row in a partial resource preserves value/timestamp;
 - rate values never touch `tx_bytes`/`rx_bytes`;
 - complete client list + accepted v2 device capability rows writes exact wireless counts including zero; partial client list leaves previous count untouched;
-- a v2 request queued for legacy reconciliation cannot null/overwrite v2-owned uptime/CPU/memory/client-count/Wi-Fi columns; a v1/old-agent request retains existing legacy behavior;
+- a v2 request queued for legacy reconciliation protects **only authorized APs and metric families with server-confirmed current/prior materialization** (§8.3). Test accepted current rows, omitted/rotated/failed rows with previous v2 observations, and absent family observations separately; no measured zero is lost;
+- `num_clients` on switches/gateways, cross-org and unmapped controller-site rows, and any scope with `interfaceHealth` off continue legacy writes despite a v2 field being present; an accepted topology **receipt without a successful materializer upsert** must not falsely fence a device;
+- malformed/digest-invalid/ambiguous v2, materializer failure, and retried legacy queues never trigger a **request-wide** four-metric freeze; previously stored authorized v2 family values are preserved on unsuccessful v2 attempts and unrelated legacy rows continue;
+- a v1/old-agent request retains existing legacy behavior;
 - old agent + new API and new agent + old API compatibility paths are covered;
 - a new agent that previously emitted v2 can fall back to v1 under the same valid producer authority/epoch after v2 advertisement is removed, without schema/digest ambiguity.
 
 ### 14.4 Database/export policy
 
-- migration adds only the approved columns to `unifi_device_telemetry`; no new table;
-- because `unifi_device_telemetry` is already in `CORE_TENANT_EXPORT_POLICY`, **every new column is classified in the same implementation PR**; scalar/timestamp/boolean fields are added to `included`, while `wifi_radio_overview` and `wifi_radio_statistics` are `jsonb` and therefore must be `excludedOpen` under the tenancy/export contract;
+- W1 migration has already added the approved columns to `unifi_device_telemetry`; W2 verifies compatibility and does **not** create another telemetry table or repeat the migration;
+- W1 registered the new scalar/timestamp/boolean fields in `CORE_TENANT_EXPORT_POLICY.included` and the two radio `jsonb` columns (`wifi_radio_overview`, `wifi_radio_statistics`) in `excludedOpen`; W2 must not regress those classifications;
 - the existing table already has its org-cascade, org-merge and RLS registrations, so this feature does not add a new tenancy shape or duplicate those registrations;
 - capability/radio arrays are bounded/validated before persistence;
 - tenant/site isolation integration tests cover the new materialization fields, including a cross-org mapping proving that v2 materialization is rejected while existing legacy telemetry routing remains unchanged.
@@ -547,14 +564,26 @@ Coverage/reason codes remain bounded lowercase topology reasons; implementation 
 - no new customer-portal surface appears;
 - loading/empty/error states remain complete, and translations cover all 8 web locales, as enforced by `localeParity`.
 
+### 14.6 Local-controller evidence (W2 entry gate)
+
+The first fixtures in section 2.3 came from the Site Manager cloud connector, while the Agent uses `/proxy/network/integration/v1`. Per [Todd's W1 approval on PR #9293](https://github.com/LanternOps/breeze/pull/9293#pullrequestreview-5582022300) (2026-10-20), a local-controller capture is **required before opening W2**, rather than a W1 acceptance item.
+
+**Evidence gate fulfilled (2026-10-20):** [@bgatestmg's sanitized local-controller GET capture](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-19078413) explicitly uses the local `/proxy/network/integration/v1` endpoint with Network **10.6.106** and UniFi OS **5.1.33**, and covers:
+
+- device list **and detail** with radios (including the different capability-field shapes);
+- AP `statistics/latest` with measured `0.0` and omitted rate keys;
+- complete client list, including both `WIRELESS` and `WIRED` rows with `uplinkDeviceId`.
+
+The contributor states the capture has identifiers, names, MAC/IP addresses and heartbeat timestamps removed. The W2 implementation PR must **link this exact comment**, record the shape differences from earlier cloud fixtures, and include sanitized fixture-driven Go/TypeScript tests. The entry **evidence** gate is met; passing the decoder/digest/integration tests is a **separate implementation acceptance gate**. No additional capture request is required unless the W2 tests reveal a new mismatch.
+
 ## 15. Implementation sequence after spec approval
 
-This spec is the implementation plan; do not create a separate design document before coding unless the maintainer requests one.
+This spec is the implementation plan; do not create a separate design document before coding unless the maintainer requests one. Each numbered step is one implementation wave, named W1 to W4 in this document; the other sections use these names.
 
-1. **Contract + API compatibility:** shared v2 schemas/types/canonicalization/fixture, API dual-version parser/advertisement, topology v2 adapter support, DB migration and current-state materializer; keep v1 green.
-2. **Agent collection:** candidate decoding, radio detail parsing, bounded statistics rotation/cursor, v2 builder/negotiation and fixture parity.
-3. **Read model/UI:** extend `/unifi/telemetry`, Deep telemetry types/rendering and freshness labels.
-4. **Integration/rollout verification:** mixed-version paths, tenancy, request-count tests, failure isolation, docs/changelog as required by the implementation PR.
+1. **W1, contract + API compatibility:** shared v2 schemas/types/canonicalization/fixture, API dual-version parser/advertisement, topology v2 adapter support, DB migration and current-state materializer; keep v1 green. The local-controller capture in section 14.6 is a W2 entry gate, not W1 acceptance.
+2. **W2, agent collection:** use the existing verified §14.6 local capture as the entry evidence; first fix the §8.3 server-side writer fence to make v2 safe for legacy/cross-org/non-AP data, then implement candidate decoding, radio detail parsing, bounded statistics rotation/cursor, v2 builder/negotiation and Go↔TypeScript digest parity. The API correction may be a small prerequisite PR or a reviewable, separately tested section of the W2 implementation; **it must land before any Agent v2 emission**. No read-model/UI implementation in W2.
+3. **W3, read model/UI:** extend `/unifi/telemetry`, Deep telemetry types/rendering and freshness labels.
+4. **W4, integration/rollout verification:** mixed-version paths, tenancy, request-count tests, failure isolation, docs/changelog as required by the implementation PR.
 
 Deployment follows section 4.4: API support before an agent release that can emit v2.
 
@@ -573,4 +602,4 @@ Those require separate evidence/spec ownership rather than being smuggled into t
 
 ## 17. Fixture acknowledgement
 
-The supported-version controller evidence that unblocked this spec was contributed by **@bgatestmg**: [AP radio/statistics fixtures](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621), [client/switch boundary observations](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961724), and the separate [PoE fixture on #7271](https://github.com/LanternOps/breeze/issues/7271#issuecomment-6205243573). The spec commit should include the contributor as `Co-authored-by` using the verified GitHub-provided no-reply identity rather than an invented/private email.
+The supported-version controller evidence was contributed by **@bgatestmg**: [AP radio/statistics cloud fixtures](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961621), [client/switch boundary observations](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-18961724), [2026-10-20 local-controller capture qualifying the W2 gate](https://github.com/LanternOps/breeze/discussions/7690#discussioncomment-19078413), and the separate [PoE fixture on #7271](https://github.com/LanternOps/breeze/issues/7271#issuecomment-6205243573). Attribution is by public GitHub handle and direct evidence links; do not invent a personal email address or expose unsanitized controller data.

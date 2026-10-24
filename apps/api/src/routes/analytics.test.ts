@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -27,6 +27,7 @@ vi.mock('drizzle-orm', () => {
     eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
     gte: (left: unknown, right: unknown) => ({ type: 'gte', left, right }),
     lte: (left: unknown, right: unknown) => ({ type: 'lte', left, right }),
+    lt: (left: unknown, right: unknown) => ({ type: 'lt', left, right }),
     ne: (left: unknown, right: unknown) => ({ type: 'ne', left, right }),
     inArray: (left: unknown, right: unknown[]) => ({ type: 'inArray', left, right }),
     isNull: (column: unknown) => ({ type: 'isNull', column }),
@@ -35,6 +36,11 @@ vi.mock('drizzle-orm', () => {
     sql
   };
 });
+
+const isDeviceInMaintenanceMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/maintenanceService', () => ({
+  isDeviceInMaintenance: isDeviceInMaintenanceMock
+}));
 
 vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
@@ -224,7 +230,12 @@ vi.mock('../db/schema', () => ({
     enrolledAt: 'devices.enrolledAt',
     lastSeenAt: 'devices.lastSeenAt',
     osType: 'devices.osType',
-    osVersion: 'devices.osVersion'
+    osVersion: 'devices.osVersion',
+    isEphemeral: 'devices.isEphemeral'
+  },
+  deviceGroupMemberships: {
+    deviceId: 'deviceGroupMemberships.deviceId',
+    groupId: 'deviceGroupMemberships.groupId'
   },
   slaDefinitions: {
     id: 'slaDefinitions.id',
@@ -469,6 +480,48 @@ describe('analytics routes', () => {
         { timestamp: '2026-06-18T00:00:00.000Z', value: 15 },
       ]);
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not bind the date_trunc unit as a parameter and groups by the same expression', async () => {
+      const chain = createChain([]);
+      vi.mocked(db.select).mockImplementationOnce(() => chain as any);
+
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['cpu_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-18T01:00:00Z',
+          aggregation: 'avg',
+          interval: 'minute'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const selected = vi.mocked(db.select).mock.calls.at(-1)![0] as unknown as { bucket: { values: unknown[] } };
+      // A bound "minute" param in SELECT and GROUP BY are distinct $n for Postgres -> 500.
+      expect(selected.bucket.values).not.toContain('minute');
+      expect(JSON.stringify(selected.bucket.values[0])).toContain("'minute'");
+      expect(chain.groupBy).toHaveBeenCalledWith(selected.bucket);
+      expect(chain.orderBy).toHaveBeenCalledWith(selected.bucket);
+    });
+
+    it('rejects an interval outside the date_trunc allowlist with 400', async () => {
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['cpu_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-18T01:00:00Z',
+          aggregation: 'avg',
+          interval: "minute'); DROP TABLE devices;--"
+        })
+      });
+      expect(res.status).toBe(400);
     });
 
     it('should validate required fields', async () => {
@@ -1122,29 +1175,431 @@ describe('analytics routes', () => {
       expect(listBody.pagination.total).toBe(1);
     });
 
-    it('should return compliance history for an SLA', async () => {
-      mockSelectOnce([
-        {
-          id: 'sla-1',
-          orgId: ORG_ID,
-          name: 'Response Time',
-          uptimeTarget: 97
-        }
-      ]);
-      mockSelectOnce([]);
-      mockSelectOnce([{ count: 2 }]);
-      mockSelectOnce([{ count: 4 }]);
+    describe('GET /analytics/sla/:id/compliance (definition-aware, #9371)', () => {
+      const SITE_A = '44444444-4444-4444-4444-444444444441';
+      const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
+      const online = (id: string, seen = hoursAgo(1)) => ({ id, status: 'online', lastSeenAt: seen });
+      const offline = (id: string) => ({ id, status: 'offline', lastSeenAt: hoursAgo(1) });
+      const getCompliance = () =>
+        app.request('/analytics/sla/sla-1/compliance', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
 
-      const res = await app.request('/analytics/sla/sla-1/compliance', {
+      beforeEach(() => {
+        isDeviceInMaintenanceMock.mockReset();
+        isDeviceInMaintenanceMock.mockResolvedValue({ active: false });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('returns uptimeTarget, meetsTarget and an honest empty history', async () => {
+        mockSelectOnce([{ id: 'sla-1', orgId: ORG_ID, name: 'Uptime', uptimeTarget: 40, measurementWindow: 'monthly' }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+
+        const res = await getCompliance();
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.slaId).toBe('sla-1');
+        expect(body.history).toEqual([]);
+        expect(body.liveUptime).toBe(50);
+        expect(body.uptimeTarget).toBe(40);
+        expect(body.meetsTarget).toBe(true);
+      });
+
+      it('scopes a site-targeted definition to its sites and flags a missed target', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'Site SLA', uptimeTarget: 99,
+          measurementWindow: 'monthly', targetType: 'site', targetIds: [SITE_A]
+        }]);
+        const deviceChain = createChain([online('d1'), offline('d2')]);
+        vi.mocked(db.select).mockImplementationOnce(() => deviceChain as any);
+
+        const res = await getCompliance();
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.liveUptime).toBe(50);
+        expect(body.meetsTarget).toBe(false);
+        const where = JSON.stringify(deviceChain.where.mock.calls[0][0]);
+        expect(where).toContain('devices.siteId');
+        expect(where).toContain(SITE_A);
+      });
+
+      it('excludeWeekends widens the window by the weekend days it skips', async () => {
+        // Wed 2026-10-21. Weekly window = 7 days; skipping weekends reaches back to Mon 10-12.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-10-21T12:00:00Z'));
+        const eightDaysAgo = new Date('2026-10-13T12:00:00Z'); // inside only the weekday-adjusted window
+        const sla = { id: 'sla-1', orgId: ORG_ID, name: 'W', uptimeTarget: 90, measurementWindow: 'weekly' };
+
+        mockSelectOnce([{ ...sla, excludeWeekends: false }]);
+        mockSelectOnce([online('d1', eightDaysAgo)]);
+        expect((await (await getCompliance()).json()).liveUptime).toBe(0);
+
+        mockSelectOnce([{ ...sla, excludeWeekends: true }]);
+        mockSelectOnce([online('d1', eightDaysAgo)]);
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBe(100);
+        expect(body.exclusions.weekends).toBe(true);
+      });
+
+      it('excludeMaintenanceWindows drops devices currently in a window from the denominator', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'M', uptimeTarget: 90,
+          measurementWindow: 'monthly', excludeMaintenanceWindows: true
+        }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+        isDeviceInMaintenanceMock.mockImplementation(async (id: string) => ({ active: id === 'd2' }));
+
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBe(100);
+        expect(body.exclusions.maintenanceWindows).toBe('applied');
+        expect(body.exclusions.excludedDevices).toBe(1);
+      });
+
+      it('reports maintenance exclusion as unavailable when the lookup throws', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'M', uptimeTarget: 90,
+          measurementWindow: 'monthly', excludeMaintenanceWindows: true
+        }]);
+        mockSelectOnce([online('d1'), offline('d2')]);
+        isDeviceInMaintenanceMock.mockRejectedValue(new Error('boom'));
+
+        const res = await getCompliance();
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.liveUptime).toBe(50);
+        expect(body.exclusions.maintenanceWindows).toBe('unavailable');
+        expect(body.exclusions.excludedDevices).toBe(0);
+      });
+
+      it('denies a group-targeted definition to a site-narrowed caller', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_A] };
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'G', uptimeTarget: 90,
+          measurementWindow: 'monthly', targetType: 'group', targetIds: ['g-1']
+        }]);
+        const res = await getCompliance();
+        expect(res.status).toBe(403);
+        currentPermissions = undefined;
+      });
+
+      it('a scoped definition with no targets measures nothing', async () => {
+        mockSelectOnce([{
+          id: 'sla-1', orgId: ORG_ID, name: 'E', uptimeTarget: 90,
+          measurementWindow: 'monthly', targetType: 'site', targetIds: []
+        }]);
+        mockSelectOnce([]);
+        const body = await (await getCompliance()).json();
+        expect(body.liveUptime).toBeNull();
+        expect(body.meetsTarget).toBeNull();
+      });
+    });
+  });
+
+  // #9648: a partner caller with a client selected in the switcher sends
+  // `?orgId=`. Every fleet aggregate on the Analytics page must narrow to it
+  // (never widen past the token's reach), matching /alerts/summary and
+  // /policies/compliance/stats.
+  describe('selected org scope (#9648)', () => {
+    const ORG_A = '44444444-4444-4444-4444-444444444441';
+    const ORG_B = '44444444-4444-4444-4444-444444444442';
+    const ORG_FOREIGN = '44444444-4444-4444-4444-444444444449';
+    const whereOf = (callIndex: number) =>
+      JSON.stringify(
+        (vi.mocked(db.select).mock.results[callIndex]!.value as any).where.mock.calls[0]?.[0]
+      );
+    const selectedOrg = (orgId: string, column: string) =>
+      JSON.stringify({ type: 'eq', left: column, right: orgId });
+
+    beforeEach(() => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'partner',
+          orgId: null,
+          partnerId: '55555555-5555-5555-5555-555555555555',
+          user: { id: USER_ID, email: 'test@example.com' },
+          accessibleOrgIds: [ORG_A, ORG_B],
+          canAccessOrg: (orgId: string) => orgId === ORG_A || orgId === ORG_B,
+          orgCondition: vi.fn((column: unknown) => ({ type: 'inArray', left: column, right: [ORG_A, ORG_B] }))
+        });
+        c.set('permissions', currentPermissions);
+        return next();
+      });
+    });
+
+    const tokenReach = (column: string) =>
+      JSON.stringify({ type: 'inArray', left: column, right: [ORG_A, ORG_B] });
+
+    it('narrows the executive summary to the selected org without dropping the token reach', async () => {
+      mockSelectOnce([{ status: 'online', count: 1 }]);
+      mockSelectOnce([]);
+
+      const res = await app.request(`/analytics/executive-summary?orgId=${ORG_A}`, {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
       expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.slaId).toBe('sla-1');
-      expect(body.history).toEqual([]);
-      expect(body.liveUptime).toBe(50);
+      expect(db.select).toHaveBeenCalledTimes(2);
+      for (const index of [0, 1]) {
+        expect(whereOf(index)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
+        // The selection is ANDed onto the token condition, never substituted
+        // for it — that is what keeps it from ever widening.
+        expect(whereOf(index)).toContain(tokenReach('devices.orgId'));
+      }
+    });
+
+    it('lets a system caller narrow to any org', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          orgId: null,
+          partnerId: null,
+          user: { id: USER_ID, email: 'test@example.com' },
+          accessibleOrgIds: null,
+          canAccessOrg: () => true,
+          orgCondition: vi.fn(() => undefined)
+        });
+        c.set('permissions', undefined);
+        return next();
+      });
+      mockSelectOnce([{ osType: 'windows', osVersion: '11', count: 1 }]);
+
+      const res = await app.request(`/analytics/os-distribution?orgId=${ORG_FOREIGN}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(whereOf(0)).toContain(selectedOrg(ORG_FOREIGN, 'devices.orgId'));
+    });
+
+    describe('site-restricted partner caller with a selected org', () => {
+      const ORG_A_DEVICES = [
+        { id: DEVICE_IN_SCOPE, siteId: SITE_ALLOWED },
+        { id: DEVICE_OUT_OF_SCOPE, siteId: SITE_DENIED }
+      ];
+
+      it('resolves the site allowlist in the selected org and denies an out-of-site device', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_A_DEVICES); // site device resolution
+
+        const res = await app.request(
+          `/analytics/capacity?metricType=disk&orgId=${ORG_A}&deviceId=${DEVICE_OUT_OF_SCOPE}`,
+          { method: 'GET', headers: { Authorization: 'Bearer token' } }
+        );
+
+        expect(res.status).toBe(403);
+        expect(whereOf(0)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
+      });
+
+      it('constrains the fleet rollups to the in-site devices', async () => {
+        currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
+        mockSelectOnce(ORG_A_DEVICES); // site device resolution
+        mockSelectOnce([]); // no stored predictions
+        mockSelectOnce([{ timestamp: new Date('2026-06-18T00:00:00.000Z'), value: 20 }]); // rollups
+
+        const res = await app.request(`/analytics/capacity?metricType=disk&orgId=${ORG_A}`, {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token' }
+        });
+
+        expect(res.status).toBe(200);
+        expect(whereOf(2)).toContain(
+          JSON.stringify({ type: 'inArray', left: 'metricRollups.deviceId', right: [DEVICE_IN_SCOPE] })
+        );
+        expect(whereOf(2)).toContain(selectedOrg(ORG_A, 'metricRollups.orgId'));
+      });
+    });
+
+    it('narrows the OS distribution to the selected org', async () => {
+      mockSelectOnce([{ osType: 'windows', osVersion: '11', count: 1 }]);
+
+      const res = await app.request(`/analytics/os-distribution?orgId=${ORG_A}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(whereOf(0)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
+    });
+
+    it('narrows capacity predictions, thresholds and rollups to the selected org', async () => {
+      mockSelectOnce([
+        {
+          metricName: 'disk_used_percent',
+          currentValue: 50,
+          predictedValue: 55,
+          predictionDate: new Date('2026-02-01T00:00:00.000Z'),
+          growthRate: 1
+        }
+      ]);
+      mockSelectOnce([{ warningThreshold: 80, criticalThreshold: 90 }]);
+
+      const stored = await app.request(`/analytics/capacity?metricType=disk&orgId=${ORG_A}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(stored.status).toBe(200);
+      expect(whereOf(0)).toContain(selectedOrg(ORG_A, 'capacityPredictions.orgId'));
+      expect(whereOf(1)).toContain(selectedOrg(ORG_A, 'capacityThresholds.orgId'));
+
+      vi.mocked(db.select).mockClear();
+      mockSelectOnce([]); // no stored predictions
+      mockSelectOnce([{ timestamp: new Date('2026-06-18T00:00:00.000Z'), value: 20 }]); // rollups
+
+      const live = await app.request(`/analytics/capacity?metricType=disk&orgId=${ORG_A}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(live.status).toBe(200);
+      expect(whereOf(1)).toContain(selectedOrg(ORG_A, 'metricRollups.orgId'));
+      expect(whereOf(1)).toContain(tokenReach('metricRollups.orgId'));
+
+      vi.mocked(db.select).mockClear();
+      mockSelectOnce([]); // no stored predictions
+      mockSelectOnce([]); // no rollups
+      mockSelectOnce([]); // raw device_metrics fallback
+
+      const raw = await app.request(`/analytics/capacity?metricType=disk&orgId=${ORG_A}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+      expect(raw.status).toBe(200);
+      expect(whereOf(2)).toContain(selectedOrg(ORG_A, 'devices.orgId'));
+    });
+
+    it('keeps the whole accessible book when no org is selected', async () => {
+      mockSelectOnce([{ osType: 'windows', osVersion: '11', count: 1 }]);
+
+      const res = await app.request('/analytics/os-distribution', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      expect(whereOf(0)).toContain(JSON.stringify({ type: 'inArray', left: 'devices.orgId', right: [ORG_A, ORG_B] }));
+      expect(whereOf(0)).not.toContain('"type":"eq","left":"devices.orgId"');
+    });
+
+    it.each([
+      ['/analytics/executive-summary'],
+      ['/analytics/os-distribution'],
+      ['/analytics/capacity?metricType=disk']
+    ])('denies an org outside the caller\'s reach on %s without querying', async (path) => {
+      const sep = path.includes('?') ? '&' : '?';
+      const res = await app.request(`${path}${sep}orgId=${ORG_FOREIGN}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Access to this organization denied' });
+      expect(db.select).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed orgId with 400', async () => {
+      const res = await app.request('/analytics/os-distribution?orgId=not-a-uuid', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
+    });
+  });
+
+  // #9649: the page's "Custom range" sends startDate/endDate and no range.
+  describe('GET /analytics/capacity custom range (#9649)', () => {
+    const whereOf = (callIndex: number) =>
+      (vi.mocked(db.select).mock.results[callIndex]!.value as any).where.mock.calls[0]?.[0];
+
+    it('bounds the rollup query by startDate/endDate (end date inclusive)', async () => {
+      mockSelectOnce([]); // no stored predictions
+      mockSelectOnce([{ timestamp: new Date('2026-01-10T00:00:00.000Z'), value: 20 }]);
+
+      const res = await app.request(
+        '/analytics/capacity?metricType=disk&startDate=2026-01-01&endDate=2026-01-31',
+        { method: 'GET', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(200);
+      const conditions = whereOf(1).conditions as unknown[];
+      expect(conditions).toContainEqual({
+        type: 'gte',
+        left: 'metricRollups.bucketStart',
+        right: new Date('2026-01-01T00:00:00.000Z')
+      });
+      expect(conditions).toContainEqual({
+        type: 'lt',
+        left: 'metricRollups.bucketStart',
+        right: new Date('2026-02-01T00:00:00.000Z')
+      });
+    });
+
+    it('bounds the raw device-metrics fallback the same way', async () => {
+      mockSelectOnce([]); // no stored predictions
+      mockSelectOnce([]); // no rollups
+      mockSelectOnce([]); // raw fallback
+
+      const res = await app.request(
+        '/analytics/capacity?metricType=disk&startDate=2026-01-01&endDate=2026-01-31',
+        { method: 'GET', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(200);
+      const conditions = whereOf(2).conditions as unknown[];
+      expect(conditions).toContainEqual({
+        type: 'gte',
+        left: 'deviceMetrics.timestamp',
+        right: new Date('2026-01-01T00:00:00.000Z')
+      });
+      expect(conditions).toContainEqual({
+        type: 'lt',
+        left: 'deviceMetrics.timestamp',
+        right: new Date('2026-02-01T00:00:00.000Z')
+      });
+    });
+
+    it('does not bound stored (forward-looking) predictions by the history window', async () => {
+      mockSelectOnce([
+        {
+          metricName: 'disk_used_percent',
+          currentValue: 50,
+          predictedValue: 55,
+          predictionDate: new Date('2026-12-01T00:00:00.000Z'),
+          growthRate: 1
+        }
+      ]);
+      mockSelectOnce([]); // thresholds
+
+      const res = await app.request(
+        '/analytics/capacity?metricType=disk&startDate=2026-01-01&endDate=2026-01-31',
+        { method: 'GET', headers: { Authorization: 'Bearer token' } }
+      );
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).predictions).toHaveLength(1);
+      expect(JSON.stringify(whereOf(0))).not.toContain('capacityPredictions.predictionDate');
+    });
+
+    it.each([
+      ['an end before the start', 'startDate=2026-02-01&endDate=2026-01-01'],
+      ['only a start date', 'startDate=2026-01-01'],
+      ['an unparseable date', 'startDate=yesterday&endDate=2026-01-31'],
+      ['a span over a year', 'startDate=2024-01-01&endDate=2026-01-31']
+    ])('rejects %s with 400 instead of silently using 30 days', async (_label, qs) => {
+      const res = await app.request(`/analytics/capacity?metricType=disk&${qs}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.select).not.toHaveBeenCalled();
     });
   });
 
@@ -1476,9 +1931,7 @@ describe('analytics routes', () => {
       it('GET /analytics/sla/:id/compliance still serves an in-scope definition', async () => {
         currentPermissions = { allowedSiteIds: [SITE_ALLOWED] };
         mockSelectOnce([SITE_IN]); // the definition
-        mockSelectOnce([]); // compliance history
-        mockSelectOnce([{ count: 2 }]);
-        mockSelectOnce([{ count: 4 }]);
+        mockSelectOnce([]); // target devices
 
         const res = await app.request('/analytics/sla/sla-in/compliance', {
           method: 'GET',

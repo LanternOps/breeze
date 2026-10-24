@@ -131,6 +131,9 @@ interface Props {
   // the instant a mutation lands, so the list reflects the change without waiting
   // for (or paying for) a full list refetch. `onChanged` still reconciles after.
   onTicketPatched?: (id: string, patch: Partial<TicketDetail>) => void;
+  // Fired after a successful soft-delete, so a host holding this ticket in its
+  // pane (TicketsPage's post-resolve hold, #9564) lets go of it.
+  onDeleted?: (id: string) => void;
   expanded?: boolean;            // full-page mode
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
@@ -166,7 +169,7 @@ type TicketAiDraft = {
   runId: string | null;
 };
 
-export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
@@ -748,6 +751,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setDeleteOpen(false);
+      onDeleted?.(ticketId);
       onChanged?.();
       if (expanded) void navigateTo('/tickets');
     } catch (err) {
@@ -755,7 +759,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setDeleting(false);
     }
-  }, [deleting, ticketId, onChanged, expanded, t]);
+  }, [deleting, ticketId, onChanged, onDeleted, expanded, t]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -960,13 +964,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       }
       return; // keep the form open and the typed note intact on failure
     }
-    afterMutation({ status: 'resolved', resolutionNote: note });
+    // The patch must carry the resolved status's own name/colour: the host's
+    // "now under Closed" banner reads `statusName`, and omitting it left the
+    // previous status name ("Open — now under Closed"). A plain core resolve
+    // has no custom name (null falls back to the translated core label).
+    const resolvedRow = pendingStatusId ? config?.statuses.find((s) => s.id === pendingStatusId) : undefined;
+    afterMutation({
+      status: 'resolved',
+      resolutionNote: note,
+      statusName: resolvedRow?.name ?? null,
+      statusColor: resolvedRow?.color ?? null,
+    });
     if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
+  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;

@@ -2,14 +2,14 @@ import { InvoicePaymentPanel } from './autopay/InvoicePaymentPanel';
 import { runAction } from '@/lib/runAction';
 import { invoiceAutopayInput } from '@/lib/api';
 import { withBase } from '@/lib/basePath';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, AlertCircle, Download } from 'lucide-react';
-import { type BrandingConfig, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
-import { longDate } from '@/lib/format';
-import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
+import { type BrandingConfig, type CustomerDocumentBranding, type InvoiceDetail, type InvoiceStatus, buildPortalApiUrl, portalApi } from '@/lib/api';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
-import { DocumentPaper, DocumentHeader, DocumentTerms, DocumentTermsCollapsible, type DocSeller } from './documentShell';
-import { InvoiceLineTable, InvoiceTotals } from './invoicePaper';
+import { InvoiceDocumentView } from '@breeze/document-ui';
+import { portalHostComponents } from './documentHostComponents';
+import { invoiceModelFor } from '@/lib/invoiceDocument';
+import { useDocumentAccent } from '@/lib/useDocumentAccent';
 import { INVOICE_GRID, RAIL } from './autopay/InvoicePaymentPanel';
 import { BTN_PRIMARY, BTN_SECONDARY, Notice } from './ui';
 import { cn } from '@/lib/utils';
@@ -18,7 +18,9 @@ import { cn } from '@/lib/utils';
 const PAYABLE_STATUSES: ReadonlySet<InvoiceStatus> = new Set(['sent', 'partially_paid', 'overdue']);
 
 interface InvoiceDetailViewProps {
-  detail: InvoiceDetail | null;
+  detail?: InvoiceDetail | null;
+  /** Test seam mirroring PublicInvoiceView's `initial`; takes precedence over `detail`. */
+  initial?: InvoiceDetail | null;
   error?: string | null;
   /** HTTP status of the failed load: 404 reads as \"not found\"; anything else is an outage. */
   statusCode?: number;
@@ -36,7 +38,8 @@ interface DocBranding {
  *  rounded to cents; non-taxable lines / a non-positive rate return null (shown
  *  as '—'). The header Tax stays invoice.taxTotal (authoritative). */
 
-export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailViewProps) {
+export function InvoiceDetailView({ detail: detailProp = null, initial, error, statusCode }: InvoiceDetailViewProps) {
+  const detail = initial ?? detailProp;
   // Partner branding for the document shell. Invoices used to render unbranded
   // while proposals rendered branded, because only the quote payloads carried
   // `branding`; GET /portal/invoices/:id now returns the same shape, so the
@@ -61,6 +64,21 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
           primaryColor: fetchedBranding.primaryColor ?? null,
         }
       : null;
+  // Document branding: the payload's (current API), else the portal branding fetch (an API that
+  // predates the field), else defaults. Theme and page size are the invoice's frozen presentation (D14).
+  const fallbackBranding: CustomerDocumentBranding | null = fetchedBranding
+    ? {
+        partnerName: fetchedBranding.name ?? null,
+        logoUrl: fetchedBranding.logoUrl ?? null,
+        primaryColor: fetchedBranding.primaryColor ?? null,
+        theme: 'classic',
+        pageSize: 'letter',
+      }
+    : null;
+  const model = useMemo(() => (detail ? invoiceModelFor(detail, fallbackBranding) : null),
+    [detail, fetchedBranding]);
+  const paperRef = useRef<HTMLDivElement>(null);
+  useDocumentAccent(paperRef, branding?.primaryColor);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
@@ -132,13 +150,12 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
     );
   }
 
-  const { invoice, lines } = detail;
+  const { invoice } = detail;
   const currency = invoice.currencyCode;
   const canPay = PAYABLE_STATUSES.has(invoice.status) && Number(invoice.balance) > 0
     && detail.onlinePaymentAvailable !== false; // #7509
   // Deposit-aware charge amount — matches what the server's pay route charges (Task 8),
   // so the button label and the deposit strip never diverge from the actual charge.
-  const hasDeposit = invoice.depositDue != null;
   const chargeNow = computeChargeNow({
     depositDue: invoice.depositDue ?? null,
     amountPaid: invoice.amountPaid,
@@ -147,16 +164,6 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
   // #7824: the server reservation. Once the customer releases a payment waiting on
   // their bank, the panel clears it locally and the Pay button is the way to pay.
   const collectionInProgress = detail.collectionInProgress ?? null;
-  // Per-line Tax column only when this invoice carries tax (mirrors the Tax row).
-  const taxRate = invoice.taxRate ? Number(invoice.taxRate) : 0;
-  const showTax = Number(invoice.taxTotal) > 0;
-  const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
-
-  const seller = (invoice.sellerSnapshot ?? null) as DocSeller | null;
-  const headerDates = [
-    { label: 'Issued', value: longDate(invoice.issueDate) || '—' },
-    { label: 'Due', value: longDate(invoice.dueDate) || '—' },
-  ];
 
   const payInvoice = async (saveForAutopay: boolean) => {
     if (paying) return; setPaying(true); setPayError(null);
@@ -260,32 +267,9 @@ export function InvoiceDetailView({ detail, error, statusCode }: InvoiceDetailVi
         />
       </div>
       <div className="min-w-0 lg:col-start-1 lg:row-start-1">
-      <DocumentPaper testId="invoice-document" primaryColor={branding?.primaryColor}>
-        <DocumentHeader
-          logoUrl={branding?.logoUrl}
-          partnerName={branding?.partnerName}
-          seller={seller}
-          eyebrow="Invoice"
-          title={invoice.invoiceNumber ?? 'Invoice'}
-          statusLabel={STATUS_LABELS[invoice.status]}
-          statusTone={statusTone(invoice.status)}
-          dates={headerDates}
-          preparedForLabel="Bill to"
-          preparedForName={invoice.billToName ?? undefined}
-        />
-
-        <InvoiceLineTable lines={lines} currency={currency} taxRate={taxRate} showTax={showTax} showLineTicket lineGrouping={invoice.lineGrouping ?? 'entry'} />
-
-        <InvoiceTotals currency={currency} subtotal={invoice.subtotal} taxTotal={invoice.taxTotal} taxPct={taxPct}
-          total={invoice.total} amountPaid={invoice.amountPaid} balance={invoice.balance} paid={invoice.status === 'paid'}
-          deposit={hasDeposit ? { due: invoice.depositDue!, isDeposit: chargeNow.isDeposit } : null}
-          testIds={{ balance: 'invoice-balance-due', deposit: 'invoice-deposit-strip' }} />
-
-        {invoice.notes && <DocumentTerms label="Notes">{invoice.notes}</DocumentTerms>}
-        {invoice.termsAndConditions && (
-          <DocumentTermsCollapsible text={invoice.termsAndConditions} testId="invoice-terms-conditions" />
-        )}
-      </DocumentPaper>
+      <div ref={paperRef} data-testid="invoice-document">
+        {model && <InvoiceDocumentView model={model} components={portalHostComponents} />}
+      </div>
       </div>
       </div>
     </div>

@@ -6,6 +6,9 @@ import { apiGet, type ApiRequestConfig, type TrustCard } from './api';
 import { publicServerApiConfig } from './server';
 import { withBase } from './basePath';
 import { publicOriginFor } from './publicOrigin';
+import { pickTrustCopy } from '../components/trust/trustCopy';
+import { pageCopy } from '../components/trust/copy/pageCopy';
+import { cardMeta } from '../components/trust/trustPageFormat';
 
 export interface TrustEmbedCard extends TrustCard {
   /** Exact https origins allowed to frame this card; [] = embedding disabled (the page answers 404). */
@@ -33,6 +36,24 @@ export async function getTrustEmbedCard(partnerSlug: string, orgSlug: string | n
     console.warn('[trust-embed] dropped allowlist entries that are not normalized https origins', { path, dropped: raw.length - frameAncestors.length });
   }
   return { ...card, frameAncestors };
+}
+
+/**
+ * The embed card's locale-resolved strings (#9257): `lang`, <title> and copy follow the page's frozen locale
+ * (card.locale) from the same pageCopy the full page uses; an unknown locale gets English.
+ */
+export function embedCardView(card: TrustEmbedCard) {
+  const meta = cardMeta(card);
+  const t = pickTrustCopy(pageCopy, card.locale);
+  return {
+    lang: meta.lang,
+    title: meta.title,
+    badge: t.embedBadge,
+    summary: t.embedSummary(card.controlsShown, card.catalogTotal, card.controlsMet),
+    lastVerified: t.embedLastVerified,
+    paused: t.embedPaused,
+    viewFull: t.embedViewFull,
+  };
 }
 
 /** Base-relative path of the full trust page an embed links to. */

@@ -206,3 +206,29 @@ describe('ExecutionHistory pending/duration rendering', () => {
     expect(within(row).getByText('1m 0s')).toBeInTheDocument();
   });
 });
+
+// #9563 — the row chip on /scripts/:id/executions used to read "Queued —
+// device offline" for every queued run; it now follows the device's status.
+describe('ExecutionHistory queued label follows the device status (#9563)', () => {
+  const queuedRow = (deviceStatus?: string) => [{
+    id: 'q1',
+    scriptId: 's1',
+    scriptName: 'Disk Cleanup',
+    deviceId: 'd1',
+    deviceHostname: 'alpha-01',
+    status: 'queued',
+    startedAt: null,
+    deviceStatus,
+  }] as unknown as ScriptExecution[];
+
+  it('an online device reads awaiting pickup, not offline', () => {
+    render(<ExecutionHistory executions={queuedRow('online')} />);
+    expect(within(bodyRows()[0]!).getByText('Queued — awaiting pickup')).toBeInTheDocument();
+    expect(screen.queryByText(/device offline/i)).toBeNull();
+  });
+
+  it('an offline device reads device offline', () => {
+    render(<ExecutionHistory executions={queuedRow('offline')} />);
+    expect(within(bodyRows()[0]!).getByText('Queued — device offline')).toBeInTheDocument();
+  });
+});

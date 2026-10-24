@@ -164,9 +164,12 @@ type Scenario = {
   legacy: "none" | "connected" | "error";
   read?: unknown;
   actions?: unknown;
+  // Sent as `onboardingAvailability` when set (#9319); absent = older API.
+  availability?: "instance_disabled" | "org_not_enabled";
 };
 
-function mockScenario({ consent, legacy, read = null, actions = null }: Scenario) {
+function mockScenario({ consent, legacy, read = null, actions = null, availability }: Scenario) {
+  const availabilityField = availability ? { onboardingAvailability: availability } : {};
   fetchWithAuthMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = url.split("?")[0];
     if (path === "/m365/connection") {
@@ -185,9 +188,9 @@ function mockScenario({ consent, legacy, read = null, actions = null }: Scenario
           : { connected: false },
       );
     }
-    if (path === "/m365/connections") return makeResponse(readEnvelope(consent, read));
+    if (path === "/m365/connections") return makeResponse({ ...readEnvelope(consent, read), ...availabilityField });
     if (path === "/m365/customer-graph-actions/connections") {
-      return makeResponse(actionsEnvelope(consent, actions));
+      return makeResponse({ ...actionsEnvelope(consent, actions), ...availabilityField });
     }
     if (path === "/m365/customer-graph-actions/connections/consent") {
       return makeResponse({
@@ -240,6 +243,23 @@ describe("M365TenantSection — availability ordering", () => {
       expect(screen.queryByTestId("m365-legacy-disclosure")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Save & verify/i })).toBeVisible();
       expect(screen.queryByTestId("m365-legacy-badge")).not.toBeInTheDocument();
+    });
+
+    it("says the org is not enabled (not the instance) when the server reports org_not_enabled (#9319)", async () => {
+      mockScenario({ consent: false, legacy: "none", availability: "org_not_enabled" });
+      await renderSettled();
+      expect(screen.getByTestId("m365-consent-unavailable")).toHaveTextContent(
+        "Consent-based connection isn't enabled for this organization yet. Ask your Breeze administrator to enable it.",
+      );
+      expect(screen.queryByText(/isn't available on this Breeze instance/)).not.toBeInTheDocument();
+    });
+
+    it("keeps the instance copy when the server reports instance_disabled (#9319)", async () => {
+      mockScenario({ consent: false, legacy: "none", availability: "instance_disabled" });
+      await renderSettled();
+      expect(screen.getByTestId("m365-consent-unavailable")).toHaveTextContent(
+        "Consent-based connection isn't available on this Breeze instance yet.",
+      );
     });
 
     it("keeps a connected legacy card first and expanded with a Legacy badge but no precedence note", async () => {

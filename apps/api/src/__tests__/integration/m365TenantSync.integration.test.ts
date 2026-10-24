@@ -76,6 +76,7 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
     executorSigningKid: syncExecutorConfig.signingKid,
     onboardingOrgIds: '*',
   })),
+  m365CustomerGraphReadOnboardingAvailability: vi.fn(() => 'enabled'),
 }));
 
 const TENANT_ID = '44444444-4444-4444-8444-444444444444';

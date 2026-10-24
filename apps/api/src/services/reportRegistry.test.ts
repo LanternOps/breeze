@@ -56,7 +56,7 @@ describe('REPORT_GENERATORS', () => {
     }
   });
 
-  it('only the three #3198 business types support partner scope', () => {
+  it(`only the ${BUSINESS_REPORT_TYPES.length} BUSINESS_REPORT_TYPES support partner scope`, () => {
     const partnerCapable = Object.values(REPORT_GENERATORS)
       .filter((d) => d.supportedScopes.includes('partner'))
       .map((d) => d.type)
@@ -113,8 +113,8 @@ describe('REPORT_GENERATORS', () => {
 
   // Ruling F1 (#3198 W02 final review): margin, utilization, AR and SLA
   // attainment are internal to the MSP (spec §2). The audience set is exactly
-  // the three business types; every other type stays visible to org callers.
-  it("audience 'msp_staff' is exactly the three business types; MSP_STAFF_REPORT_TYPES derives from it", () => {
+  // the BUSINESS_REPORT_TYPES; every other type stays visible to org callers.
+  it(`audience 'msp_staff' is exactly the ${BUSINESS_REPORT_TYPES.length} BUSINESS_REPORT_TYPES; MSP_STAFF_REPORT_TYPES derives from it`, () => {
     const mspStaff = Object.values(REPORT_GENERATORS)
       .filter((d) => d.audience === 'msp_staff').map((d) => d.type).sort();
     expect(mspStaff).toEqual([...BUSINESS_REPORT_TYPES].sort());

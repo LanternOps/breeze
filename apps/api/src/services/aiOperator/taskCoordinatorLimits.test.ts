@@ -7,7 +7,7 @@
  * run is created, and must reach the handoff with the limit named.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { taskCheckpointSchema, TASK_CHECKPOINT_VERSION } from '@breeze/shared';
+import { serviceRecoveryCheckpointSchema as taskCheckpointSchema, TASK_CHECKPOINT_VERSION } from '@breeze/shared';
 
 const dbState = vi.hoisted(() => ({
   casRows: [{ id: 'task-1' }] as Array<{ id: string }>,

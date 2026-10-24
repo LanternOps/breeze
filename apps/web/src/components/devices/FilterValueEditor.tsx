@@ -417,17 +417,16 @@ export function summarizeCondition(field: FilterFieldDefinition, c: FilterCondit
   const op = operatorLabel(c.operator);
   if (NO_VALUE_OPERATORS.includes(c.operator)) return `${field.label} ${op}`;
   let v: string;
+  const lookupTable = !lookups ? undefined
+    : field.key === 'orgId' ? lookups.orgs
+    : field.key === 'siteId' ? lookups.sites
+    : field.key === 'groupId' ? lookups.groups : undefined;
   if (Array.isArray(c.value)) {
     // Resolve names for org/site/group chips.
     let display = c.value as string[];
-    if (lookups) {
-      const table = field.key === 'orgId' ? lookups.orgs
-        : field.key === 'siteId' ? lookups.sites
-        : field.key === 'groupId' ? lookups.groups : undefined;
-      if (table) {
-        const byId = new Map(table.map(o => [o.id, o.name]));
-        display = display.map(id => byId.get(id) ?? id.slice(0, 8));
-      }
+    if (lookupTable) {
+      const byId = new Map(lookupTable.map(o => [o.id, o.name]));
+      display = display.map(id => byId.get(id) ?? id.slice(0, 8));
     }
     display = display.map(val => CHIP_VALUE_DISPLAY_OVERRIDES[val] ?? val);
     v = display.length <= 2 ? display.join(', ') : `${display.length} values`;
@@ -436,7 +435,10 @@ export function summarizeCondition(field: FilterFieldDefinition, c: FilterCondit
     v = `${rd.amount} ${rd.unit}`;
   } else {
     const raw = String(c.value ?? '');
-    v = CHIP_VALUE_DISPLAY_OVERRIDES[raw] ?? raw;
+    // Scalar equals/notEquals on org/site/group carry a bare id — resolve it
+    // to a name too (#9262); unknown ids keep the raw value.
+    const named = lookupTable?.find(o => o.id === raw)?.name;
+    v = named ?? CHIP_VALUE_DISPLAY_OVERRIDES[raw] ?? raw;
   }
   return `${field.label} ${op} ${v}`;
 }

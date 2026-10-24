@@ -28,6 +28,7 @@ type AccessEvent = {
   id: string;
   keyId: string;
   userEmail: string;
+  userName?: string | null;
   action: string;
   createdAt: string;
 };
@@ -68,11 +69,25 @@ export default function RecoveryKeysPanel({
     currentRecoveryKey: "",
   });
   const [rotating, setRotating] = useState(false);
+  const [rotateVolume, setRotateVolume] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const keyTypeLabels: Record<KeyMeta["keyType"], string> = {
     bitlocker_recovery_password: t("securityRecoveryKeysPanel.bitlocker"),
     filevault_personal_recovery_key: t("securityRecoveryKeysPanel.filevault"),
   };
+  // Windows volumes that hold an active escrowed key: the rotate target choices.
+  const escrowedVolumes = Array.from(
+    new Set(
+      (data?.keys ?? [])
+        .filter((k) => k.status === "active" && k.volumeMount)
+        .map((k) => k.volumeMount as string),
+    ),
+  );
+  const volumeChoice = escrowedVolumes.includes(rotateVolume)
+    ? rotateVolume
+    : (escrowedVolumes[0] ?? "");
+  const accessActionLabel = (action: string) =>
+    action === "revealed" ? t("securityRecoveryKeysPanel.accessRevealed") : action;
   const fetchKeys = useCallback(async () => {
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -148,7 +163,7 @@ export default function RecoveryKeysPanel({
               password: rotateForm.password || undefined,
               currentRecoveryKey: rotateForm.currentRecoveryKey || undefined,
             }
-          : {};
+          : { volumeMount: volumeChoice || undefined };
       await runAction({
         request: () =>
           fetchWithAuth(
@@ -219,7 +234,7 @@ export default function RecoveryKeysPanel({
   const canRotate = os === "windows" || os === "macos";
   const canCollect = os === "windows";
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid="recovery-keys-panel">
       <div className="flex items-center justify-between">
         <h4 className="flex items-center gap-2 text-sm font-semibold">
           <KeyRound className="h-4 w-4" />
@@ -230,6 +245,7 @@ export default function RecoveryKeysPanel({
             <button
               type="button"
               onClick={collectNow}
+              data-testid="recovery-collect"
               className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted/40"
             >
               <RefreshCw className="h-3 w-3" />
@@ -240,7 +256,9 @@ export default function RecoveryKeysPanel({
             <button
               type="button"
               onClick={() => setRotateOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted/40"
+              disabled={os === "windows" && escrowedVolumes.length === 0}
+              data-testid="recovery-rotate-open"
+              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted/40 disabled:opacity-50"
             >
               <RotateCcw className="h-3 w-3" />
               {t("securityRecoveryKeysPanel.rotateKey")}
@@ -250,7 +268,10 @@ export default function RecoveryKeysPanel({
       </div>
 
       {(data?.keys.length ?? 0) === 0 ? (
-        <p className="text-sm text-muted-foreground">
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="recovery-keys-empty"
+        >
           {t("securityRecoveryKeysPanel.noRecoveryKeysEscrowed")}
           {os === "macos" &&
             t("securityRecoveryKeysPanel.filevaultKeysCanOnlyBeCapturedBy")}
@@ -262,6 +283,7 @@ export default function RecoveryKeysPanel({
           {data!.keys.map((k) => (
             <div
               key={k.id}
+              data-testid={`recovery-key-${k.id}`}
               className={cn(
                 "rounded-md border p-3",
                 k.status === "superseded" && "opacity-70",
@@ -297,6 +319,7 @@ export default function RecoveryKeysPanel({
                   {revealed[k.id] ? (
                     <button
                       type="button"
+                      data-testid={`recovery-key-copy-${k.id}`}
                       onClick={() =>
                         navigator.clipboard.writeText(revealed[k.id])
                       }
@@ -308,6 +331,7 @@ export default function RecoveryKeysPanel({
                   ) : (
                     <button
                       type="button"
+                      data-testid={`recovery-key-reveal-${k.id}`}
                       disabled={busyKeyId === k.id}
                       onClick={() => revealKey(k.id)}
                       className="inline-flex items-center gap-1 rounded-md border px-2 py-1 hover:bg-muted/40 disabled:opacity-50"
@@ -324,7 +348,10 @@ export default function RecoveryKeysPanel({
               </div>
               {revealed[k.id] && (
                 <div className="mt-2 rounded bg-muted/40 p-2">
-                  <code className="break-all font-mono text-sm">
+                  <code
+                    className="break-all font-mono text-sm"
+                    data-testid={`recovery-key-value-${k.id}`}
+                  >
                     {revealed[k.id]}
                   </code>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -344,10 +371,14 @@ export default function RecoveryKeysPanel({
           <h5 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">
             {t("securityRecoveryKeysPanel.recentAccess")}
           </h5>
-          <ul className="space-y-1 text-xs text-muted-foreground">
+          <ul
+            className="space-y-1 text-xs text-muted-foreground"
+            data-testid="recovery-access-list"
+          >
             {data!.accessHistory.map((event) => (
-              <li key={event.id}>
-                {event.userEmail} {event.action} ·{" "}
+              <li key={event.id} data-testid={`recovery-access-${event.id}`}>
+                {event.userName || event.userEmail}{" "}
+                {accessActionLabel(event.action)} ·{" "}
                 {fmt(event.createdAt, timezone)}
               </li>
             ))}
@@ -358,6 +389,7 @@ export default function RecoveryKeysPanel({
       {rotateOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          data-testid="recovery-rotate-dialog"
           onClick={() => !rotating && setRotateOpen(false)}
         >
           <div
@@ -415,16 +447,38 @@ export default function RecoveryKeysPanel({
                 </div>
               </>
             ) : (
-              <p className="mt-2 text-sm text-muted-foreground">
-                {t(
-                  "securityRecoveryKeysPanel.aNewBitLockerRecoveryPasswordWillBe",
+              <>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {t(
+                    "securityRecoveryKeysPanel.aNewBitLockerRecoveryPasswordWillBe",
+                  )}
+                </p>
+                {escrowedVolumes.length > 0 && (
+                  <label className="mt-3 block text-sm">
+                    <span className="mb-1 block text-xs text-muted-foreground">
+                      {t("securityRecoveryKeysPanel.rotateVolume")}
+                    </span>
+                    <select
+                      value={volumeChoice}
+                      onChange={(e) => setRotateVolume(e.target.value)}
+                      data-testid="recovery-rotate-volume"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                    >
+                      {escrowedVolumes.map((v) => (
+                        <option key={v} value={v}>
+                          {v}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 )}
-              </p>
+              </>
             )}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 disabled={rotating}
+                data-testid="recovery-rotate-cancel"
                 onClick={() => setRotateOpen(false)}
                 className="rounded-md border px-3 py-1.5 text-sm"
               >
@@ -432,8 +486,10 @@ export default function RecoveryKeysPanel({
               </button>
               <button
                 type="button"
+                data-testid="recovery-rotate-confirm"
                 disabled={
                   rotating ||
+                  (os === "windows" && !volumeChoice) ||
                   (os === "macos" &&
                     !(
                       (rotateForm.username && rotateForm.password) ||

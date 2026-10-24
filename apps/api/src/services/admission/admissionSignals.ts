@@ -4,9 +4,10 @@
  * - lagMs: lower median of the `maxLagMs` of the newest LAG_WINDOW_SAMPLES
  *   distinct event-loop monitor samples. A single GC-sized spike in the `all`
  *   role does not move it; a sustained stall does.
+ * - lagFresh: whether this tick consumed a new monitor sample (see the field).
  * - peakLagMs: the worst of the in-flight stall and the samples consumed this
  *   tick — drives the controller's emergency path.
- * - dbWaitMs: max(grant-wait p95 over W04's gate window, oldest waiter). The
+ * - dbWaitMs: max(grant-wait p95 over W04's gate window, 1.5 ticks wide; oldest waiter). The
  *   second term makes a stuck queue visible before any permit is granted.
  * - msSinceLastDbTimeout: time since the pool-acquire-timeout + prologue-expiry
  *   counter last increased; null until it has moved during this process's
@@ -35,6 +36,13 @@ export const LAG_WINDOW_SAMPLES = 3;
 
 export interface AdmissionSignals {
   lagMs: number | null;
+  /**
+   * True when this tick consumed at least one new monitor sample. The monitor
+   * and the controller both run on unaligned 1 s timers, so some ticks read no
+   * new sample and repeat the previous median. The controller does not count
+   * those repeats as fresh evidence toward a rise (#9353).
+   */
+  lagFresh: boolean;
   peakLagMs: number | null;
   dbWaitMs: number;
   oldestDbWaitMs: number;
@@ -77,6 +85,7 @@ export function createSignalSampler(deps: SignalSamplerDeps = {}): SignalSampler
     sample(): AdmissionSignals {
       const latest = readLatest();
       let newestThisTick = 0;
+      let consumed = 0;
       if (!latest.monitored) {
         recent.length = 0;
         cursorMs = 0;
@@ -90,6 +99,7 @@ export function createSignalSampler(deps: SignalSamplerDeps = {}): SignalSampler
           if (recent.length > LAG_WINDOW_SAMPLES) recent.shift();
           cursorMs = sample.atMs;
           if (sample.maxLagMs > newestThisTick) newestThisTick = sample.maxLagMs;
+          consumed += 1;
         }
       }
       const sorted = [...recent].sort((a, b) => a - b);
@@ -105,6 +115,7 @@ export function createSignalSampler(deps: SignalSamplerDeps = {}): SignalSampler
       lastDbTimeoutsTotal = pool.dbTimeoutsTotal;
       return {
         lagMs,
+        lagFresh: consumed > 0,
         peakLagMs,
         dbWaitMs: Math.max(pool.grantWaitP95Ms, pool.oldestWaitMs),
         oldestDbWaitMs: pool.oldestWaitMs,

@@ -167,8 +167,8 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
     });
 
     const first = await runContractBillingSweep(SWEEP_AT);
-    expect(first, assertionMessage('runContractBillingSweep', 'EUR', 'sweep result', '{billed:1,failed:0}', JSON.stringify(first)))
-      .toEqual({ billed: 1, failed: 0 });
+    expect(first, assertionMessage('runContractBillingSweep', 'EUR', 'sweep result', '{billed:1,failed:0,deferred:0}', JSON.stringify(first)))
+      .toEqual({ billed: 1, failed: 0, deferred: 0 });
 
     const periods = await readPeriods(contractId);
     expect(periods, assertionMessage('sweep claims one period', 'EUR', 'contract_billing_periods', 1, periods.length)).toHaveLength(1);
@@ -212,11 +212,11 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
     });
 
     const first = await runContractBillingSweep(SWEEP_AT);
-    expect(first).toEqual({ billed: 1, failed: 0 });
+    expect(first).toEqual({ billed: 1, failed: 0, deferred: 0 });
 
     const second = await runContractBillingSweep(SWEEP_AGAIN_AT);
-    expect(second, assertionMessage('second sweep at the same period', 'EUR', 'sweep result', '{billed:0,failed:0}', JSON.stringify(second)))
-      .toEqual({ billed: 0, failed: 0 });
+    expect(second, assertionMessage('second sweep at the same period', 'EUR', 'sweep result', '{billed:0,failed:0,deferred:0}', JSON.stringify(second)))
+      .toEqual({ billed: 0, failed: 0, deferred: 0 });
 
     const periods = await readPeriods(contractId);
     expect(periods, assertionMessage('second sweep', 'EUR', 'contract_billing_periods', 1, periods.length)).toHaveLength(1);
@@ -233,8 +233,8 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
     });
 
     const res = await runContractBillingSweep(SWEEP_AT);
-    expect(res, assertionMessage('runContractBillingSweep', 'JPY', 'sweep result', '{billed:1,failed:0}', JSON.stringify(res)))
-      .toEqual({ billed: 1, failed: 0 });
+    expect(res, assertionMessage('runContractBillingSweep', 'JPY', 'sweep result', '{billed:1,failed:0,deferred:0}', JSON.stringify(res)))
+      .toEqual({ billed: 1, failed: 0, deferred: 0 });
 
     const { invoiceId, lines } = await readGeneratedLines(contractId);
     const row = await readInvoice(invoiceId!);
@@ -307,8 +307,8 @@ describe.runIf(RUN)(gateLabel('G3', 'recurring contract billing run'), () => {
       db.execute(sql`UPDATE contracts SET currency_code = 'USD' WHERE id = ${contract.id}`));
 
     const res = await runContractBillingSweep(SWEEP_AT);
-    expect(res, assertionMessage('stale-stamp sweep', 'USD-on-EUR-org', 'sweep result', '{billed:1,failed:0}', JSON.stringify(res)))
-      .toEqual({ billed: 1, failed: 0 });
+    expect(res, assertionMessage('stale-stamp sweep', 'USD-on-EUR-org', 'sweep result', '{billed:1,failed:0,deferred:0}', JSON.stringify(res)))
+      .toEqual({ billed: 1, failed: 0, deferred: 0 });
 
     const { invoiceId } = await readGeneratedLines(contract.id);
     const row = await readInvoice(invoiceId!);

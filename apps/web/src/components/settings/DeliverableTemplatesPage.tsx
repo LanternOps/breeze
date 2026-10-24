@@ -2,7 +2,11 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, LayoutTemplate } from 'lucide-react';
-import { MANAGED_EVIDENCE_REPORT_TYPES, type ManagedEvidenceReportType } from '@breeze/shared';
+import {
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
+  type ManagedEvidenceReportType,
+} from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
@@ -51,6 +55,11 @@ interface ItemFormState {
   instructions: string;
   /** #5808 W03 — a pointer to a checklist template. '' means none. */
   checklistTemplateId: string;
+  /** #9315 — copied onto the deliverable on apply. */
+  portalVisible: boolean;
+  /** #9315 — until the toggle is touched it follows the cadence default.
+   *  Editing an existing item starts touched: the stored value is a choice. */
+  portalTouched: boolean;
 }
 
 function blankItemForm(): ItemFormState {
@@ -64,6 +73,8 @@ function blankItemForm(): ItemFormState {
     autoEvidenceReportType: null,
     instructions: '',
     checklistTemplateId: '',
+    portalVisible: defaultPortalVisibleForCadence('monthly'),
+    portalTouched: false,
   };
 }
 
@@ -78,6 +89,8 @@ function itemFormFrom(item: TemplateItem): ItemFormState {
     autoEvidenceReportType: item.autoEvidenceReportType,
     instructions: item.instructions ?? '',
     checklistTemplateId: item.checklistTemplateId ?? '',
+    portalVisible: item.portalVisible,
+    portalTouched: true,
   };
 }
 
@@ -342,6 +355,7 @@ export default function DeliverableTemplatesPage() {
         checklistTemplateId: itemForm.checklistTemplateId || null,
         sortOrder,
         autoEvidenceReportType: itemForm.autoEvidenceReportType,
+        portalVisible: itemForm.portalVisible,
       };
       const saved = itemEditor.item
         ? await runClientAction(
@@ -507,7 +521,14 @@ export default function DeliverableTemplatesPage() {
                           data-testid="deliverable-template-item-cadence"
                           className={inputClass}
                           value={itemForm.cadence}
-                          onChange={(e) => setItemForm((f) => ({ ...f, cadence: e.target.value as DeliverableCadence }))}
+                          onChange={(e) => {
+                            const cadence = e.target.value as DeliverableCadence;
+                            setItemForm((f) => ({
+                              ...f,
+                              cadence,
+                              ...(f.portalTouched ? {} : { portalVisible: defaultPortalVisibleForCadence(cadence) }),
+                            }));
+                          }}
                         >
                           {CADENCES.map((c) => (
                             <option key={c} value={c}>{t(/* i18n-dynamic */ `cadence.${c}`)}</option>
@@ -522,6 +543,7 @@ export default function DeliverableTemplatesPage() {
                           min={0}
                           max={365}
                           className={inputClass}
+                          data-testid="deliverable-template-item-lead-days"
                           value={itemForm.leadDays}
                           onChange={(e) => setItemForm((f) => ({ ...f, leadDays: e.target.value }))}
                         />
@@ -534,6 +556,7 @@ export default function DeliverableTemplatesPage() {
                           min={0}
                           max={365}
                           className={inputClass}
+                          data-testid="deliverable-template-item-grace-days"
                           value={itemForm.graceDays}
                           onChange={(e) => setItemForm((f) => ({ ...f, graceDays: e.target.value }))}
                         />
@@ -543,6 +566,7 @@ export default function DeliverableTemplatesPage() {
                         <select
                           id={`${uid}-item-mode-${set.id}`}
                           className={inputClass}
+                          data-testid="deliverable-template-item-completion-mode"
                           value={itemForm.completionMode}
                           onChange={(e) => setItemForm((f) => ({ ...f, completionMode: e.target.value as DeliverableCompletionMode }))}
                         >
@@ -555,9 +579,19 @@ export default function DeliverableTemplatesPage() {
                         <input
                           type="checkbox"
                           checked={itemForm.artifactRequired}
+                          data-testid="deliverable-template-item-artifact-required"
                           onChange={(e) => setItemForm((f) => ({ ...f, artifactRequired: e.target.checked }))}
                         />
                         {t('templates.form.artifactRequired')}
+                      </label>
+                      <label className="mt-5 flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={itemForm.portalVisible}
+                          onChange={(e) => setItemForm((f) => ({ ...f, portalVisible: e.target.checked, portalTouched: true }))}
+                          data-testid="deliverable-template-item-portal-visible"
+                        />
+                        {t('form.portalVisible')}
                       </label>
                       <div>
                         <label htmlFor={`${uid}-item-auto-evidence-${set.id}`} className={labelClass}>

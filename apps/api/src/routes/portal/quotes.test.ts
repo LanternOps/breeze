@@ -111,9 +111,9 @@ describe('portal quotes GET /quotes/:id', () => {
     }]); // quote SELECT
     dbResults.push([]); // quoteBlocks
     dbResults.push([]); // quoteLines
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT' }]); // partners
     dbResults.push([]); // portalBranding
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
   };
 
   it('exposes the sent successor as supersededByQuoteId so the portal can link the replacement', async () => {
@@ -163,9 +163,10 @@ describe('portal quotes GET /quotes/:id', () => {
       { id: 'b2', quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'heading', content: { text: 'Intro', level: 2 }, sortOrder: 1 },
     ]); // quoteBlocks SELECT — one legacy dirty row, one unrelated block type
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT (no match → silent no-op)
     dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
     dbResults.push([]); // portalBranding SELECT
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -192,9 +193,10 @@ describe('portal quotes GET /quotes/:id', () => {
     }]); // quote SELECT
     dbResults.push([]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
     dbResults.push([{ logoUrl: 'https://cdn.example.test/logo.png', primaryColor: '#123456', supportEmail: 'help@lantern.test', supportPhone: '+1 555 0100' }]); // portalBranding SELECT
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -223,9 +225,10 @@ describe('portal quotes GET /quotes/:id', () => {
     }]); // quote SELECT
     dbResults.push([]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT', documentTheme: 'condensed', documentPageSize: 'letter' }]); // partners SELECT (system ctx)
     dbResults.push([]); // portalBranding SELECT
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -242,9 +245,10 @@ describe('portal quotes GET /quotes/:id', () => {
     }]); // quote SELECT
     dbResults.push([]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([]); // partners SELECT (system ctx) → none
     dbResults.push([]); // portalBranding SELECT → none
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -260,9 +264,10 @@ describe('portal quotes GET /quotes/:id', () => {
     }]); // quote SELECT
     dbResults.push([]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT', settings: { branding: { logoUrl: 'data:image/png;base64,iVBORw0KGgo=', primaryColor: '#00bfa6', secondaryColor: '#0b1b2d' } } }]); // partners SELECT (system ctx)
     dbResults.push([]); // portalBranding SELECT → none
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -282,7 +287,6 @@ describe('portal quotes GET /quotes/:id', () => {
       { id: BLOCK_ID, quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'contract', content: { templateId: TEMPLATE_ID, templateVersionId: VERSION_ID, variableValues: { governing_state: 'Texas' } }, sortOrder: 0 },
     ]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
     dbResults.push([]); // portalBranding SELECT
     dbResults.push([{
@@ -295,6 +299,8 @@ describe('portal quotes GET /quotes/:id', () => {
       id: TEMPLATE_ID, orgId: null, partnerId: PARTNER_ID, name: 'MSA', description: null, status: 'active',
       createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
     }]); // contractTemplates SELECT
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);
@@ -326,7 +332,6 @@ describe('portal quotes GET /quotes/:id', () => {
       { id: BLOCK_ID, quoteId: QUOTE_ID, orgId: ORG_ID, blockType: 'contract', content: { templateId: TEMPLATE_ID, templateVersionId: VERSION_ID, variableValues: {} }, sortOrder: 0 },
     ]); // quoteBlocks SELECT
     dbResults.push([]); // quoteLines SELECT
-    dbResults.push([]); // markQuoteViewed's own quotes SELECT
     dbResults.push([{ name: 'Lantern IT' }]); // partners SELECT (system ctx)
     dbResults.push([]); // portalBranding SELECT
     dbResults.push([{
@@ -338,6 +343,8 @@ describe('portal quotes GET /quotes/:id', () => {
       id: TEMPLATE_ID, orgId: null, partnerId: PARTNER_ID, name: 'Uploaded MSA', description: null, status: 'active',
       createdBy: 'user-1', createdAt: new Date('2026-07-01T00:00:00Z'), updatedAt: new Date('2026-07-01T00:00:00Z'),
     }]); // contractTemplates SELECT
+
+    dbResults.push([]); // markQuoteViewed's own quotes SELECT — after assembly (#9418)
 
     const res = await app().request(`/quotes/${QUOTE_ID}`, { method: 'GET' });
     expect(res.status).toBe(200);

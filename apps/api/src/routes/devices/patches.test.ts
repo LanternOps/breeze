@@ -64,7 +64,9 @@ vi.mock('../../db/schema', () => ({
   patchApprovals: {
     partnerId: 'patchApprovals.partnerId',
     patchId: 'patchApprovals.patchId',
-    status: 'patchApprovals.status'
+    status: 'patchApprovals.status',
+    ringId: 'patchApprovals.ringId',
+    updatedAt: 'patchApprovals.updatedAt'
   },
   deviceCommands: {
     id: 'deviceCommands.id',
@@ -297,7 +299,7 @@ describe('device patch routes', () => {
         }
       ]) as any)
       .mockReturnValueOnce(selectWhereResult([
-        { patchId: '11111111-1111-4111-8111-111111111111' }
+        { patchId: '11111111-1111-4111-8111-111111111111', status: 'approved', ringId: null, updatedAt: null }
       ]) as any);
 
     const res = await app.request(`/devices/${DEVICE_ID}/patches`, {
@@ -459,7 +461,7 @@ describe('device patch routes', () => {
         category: 'security', source: 'microsoft', releaseDate: '2026-02-01', requiresReboot: false
       }]) as any)
       .mockReturnValueOnce(selectWhereOrderLimitResult([]) as any)
-      .mockReturnValueOnce(selectWhereResult([{ patchId: PID }]) as any);
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PID, status: 'approved', ringId: null, updatedAt: null }]) as any);
     vi.mocked(loadDevicePatchApprovalView).mockResolvedValueOnce({
       evaluation: { available: true, ring: null },
       byPatchId: new Map([[PID, { state: 'approved', reason: 'manual', holdUntil: null }]])
@@ -845,7 +847,7 @@ describe('device patch routes', () => {
         { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl@3.0.2-0ubuntu1.20', packageId: 'apt:openssl', title: 'OpenSSL' }
       ]) as any)
       .mockReturnValueOnce(selectWhereResult([
-        { patchId: PATCH_ID }
+        { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }
       ]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: {
@@ -905,7 +907,7 @@ describe('device patch routes', () => {
     });
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: observationFrom } as any)
-      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any);
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: { id: 'cmd-install-kb', status: 'sent' }
     } as any);
@@ -960,7 +962,7 @@ describe('device patch routes', () => {
     });
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: observationFrom } as any)
-      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any);
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: { id: 'cmd-install-driver', status: 'sent' }
     } as any);
@@ -1008,7 +1010,7 @@ describe('device patch routes', () => {
     });
     vi.mocked(db.select)
       .mockReturnValueOnce({ from: observationFrom } as any)
-      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID }]) as any);
+      .mockReturnValueOnce(selectWhereResult([{ patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: null }]) as any);
     vi.mocked(queueCommandForExecution).mockResolvedValue({
       command: { id: 'cmd-install-winget', status: 'sent' }
     } as any);
@@ -1056,6 +1058,41 @@ describe('device patch routes', () => {
     expect(body.error).toBe('Only approved patches can be installed');
     expect(body.unapprovedPatchIds).toEqual([PATCH_ID]);
     expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  // #9485: the install gate is ring-agnostic; a ring-level decline newer than a
+  // blanket approval must still deny (latest-wins, same as the evaluator).
+  const installWithApprovalRows = async (approvalRows: unknown[]) => {
+    vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue({ id: DEVICE_ID, orgId: '11111111-1111-1111-1111-111111111111' } as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResult([
+        { id: PATCH_ID, source: 'linux', externalId: 'apt:openssl', title: 'OpenSSL' }
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResult(approvalRows) as any);
+    vi.mocked(queueCommandForExecution).mockResolvedValue({ command: { id: 'cmd-1', status: 'sent' } } as any);
+    return app.request(`/devices/${DEVICE_ID}/patches/install`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchIds: [PATCH_ID] })
+    });
+  };
+
+  it('blocks install when a newer ring-level decline sits beside a blanket approval (#9485)', async () => {
+    const res = await installWithApprovalRows([
+      { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-10-01T00:00:00Z') },
+      { patchId: PATCH_ID, status: 'rejected', ringId: 'ffffffff-ffff-ffff-ffff-ffffffffffff', updatedAt: new Date('2026-10-02T00:00:00Z') },
+    ]);
+    expect(res.status).toBe(409);
+    expect((await res.json()).unapprovedPatchIds).toEqual([PATCH_ID]);
+    expect(queueCommandForExecution).not.toHaveBeenCalled();
+  });
+
+  it('allows install for a blanket approval alone (#9485 control)', async () => {
+    const res = await installWithApprovalRows([
+      { patchId: PATCH_ID, status: 'approved', ringId: null, updatedAt: new Date('2026-10-01T00:00:00Z') },
+    ]);
+    expect(res.status).toBe(200);
+    expect(queueCommandForExecution).toHaveBeenCalled();
   });
 
   it('returns 409 and does not queue when resolvePartnerIdForOrg returns null (orphaned org fail-safe)', async () => {

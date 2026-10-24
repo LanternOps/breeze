@@ -228,6 +228,14 @@ export const devicePatches = pgTable('device_patches', {
   // COALESCE(patches.severity/.category, this row's reported_* value) — see
   // services/patchSeverityOverlay.ts.
   reportedSeverity: patchSeverityEnum('reported_severity'),
+  // Where reported_severity came from, as the agent reported it (#9387):
+  // 'vendor' (the vendor's own rating, e.g. Windows Update's MSRC severity) or
+  // 'derived' (inferred agent-side from the update's classification/title
+  // because the vendor published none). NULL when the agent sent no
+  // provenance (older agents, non-Windows providers) or the severity is
+  // unknown. Always written together with reported_severity so the pair can
+  // never disagree. Constrained by device_patches_reported_severity_source_chk.
+  reportedSeveritySource: varchar('reported_severity_source', { length: 16 }),
   reportedCategory: text('reported_category'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()

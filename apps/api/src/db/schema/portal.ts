@@ -1,9 +1,10 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index, numeric, char, foreignKey } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { xid8 } from './columnTypes';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { businessCalendarRevisions } from './businessCalendars';
 
 export const ticketStatusEnum = pgEnum('ticket_status', ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
@@ -94,6 +95,10 @@ export const portalBranding = pgTable('portal_branding', {
   // Sensitive (points at vulnerabilities): NOT in PORTAL_VISIBILITY_FLAG_KEYS or
   // "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
   enableVulnerabilityDetail: boolean('enable_vulnerability_detail').notNull().default(false),
+  // Customer Portal Environment Visibility W1 (#8775): physical placement
+  // (rack and room). Sensitive (reveals physical layout): NOT in
+  // PORTAL_VISIBILITY_FLAG_KEYS or "Enable all"; listed in PORTAL_SENSITIVE_FLAG_KEYS.
+  enablePhysicalPlacement: boolean('enable_physical_placement').notNull().default(false),
   // EDR provider framework W02 (#8166): strict fail-closed flag for the
   // vendor-neutral "Managed endpoint protection" leg of the security view.
   // Inside "Enable all" (not sensitive: no vendor/product names are exposed).
@@ -211,6 +216,20 @@ export const tickets = pgTable('tickets', {
   slaBreachReason: text('sla_breach_reason'),
   slaPausedAt: timestamp('sla_paused_at'),
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
+  // #8973 W3 stored deadlines (2027-01-02-190100, backfilled by 190200).
+  // Written only by services/ticketSlaDeadlines.ts at the write points in spec
+  // §4.3; every SLA reader compares against these instead of re-deriving
+  // created_at + target + paused. Business minutes equal sla_paused_minutes
+  // until a calendar applies (W4). A NULL target leaves its due/warn NULL.
+  slaPausedBusinessMinutes: integer('sla_paused_business_minutes').notNull().default(0),
+  responseDueAt: timestamp('response_due_at'),
+  resolutionDueAt: timestamp('resolution_due_at'),
+  responseWarnAt: timestamp('response_warn_at'),
+  resolutionWarnAt: timestamp('resolution_warn_at'),
+  // #8973 W4 (2027-01-03-160100): the business-calendar revision the stored
+  // deadlines are computed on, snapshotted at create (spec §4.3); NULL = 24×7.
+  // FK tickets_sla_calendar_revision_id_fk ON DELETE SET NULL (declared below).
+  slaCalendarRevisionId: uuid('sla_calendar_revision_id'),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   // #7900 (2026-12-26-170000): constant default, so existing rows read as
@@ -258,7 +277,24 @@ export const tickets = pgTable('tickets', {
   // table. Partial index idx_tickets_migration_window (2026-12-25-120100) is
   // not modeled here, like the other partial indexes in this file.
   migrationWindowId: uuid('migration_window_id'),
-});
+}, (table) => ({
+  // #8973 W3 SLA breach sweep (2027-01-02-190300, CONCURRENTLY). Predicates
+  // must stay identical to the sweep in jobs/ticketSlaWorker.ts.
+  slaResponseDueIdx: index('tickets_sla_response_due_idx').on(table.responseDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND first_response_at IS NULL AND response_due_at IS NOT NULL`),
+  slaResolutionDueIdx: index('tickets_sla_resolution_due_idx').on(table.resolutionDueAt).where(sql`status IN ('new','open') AND work_kind = 'support' AND sla_paused_at IS NULL AND resolved_at IS NULL AND resolution_due_at IS NOT NULL`),
+  // Gate B12 heal pass (empty in steady state).
+  // Rebuilt by 2027-01-03-160100 (W4): calendar tickets are owned by the
+  // calendar-aware writers, never by the wall-clock heal.
+  slaDeadlinesMissingIdx: index('tickets_sla_deadlines_missing_idx').on(table.createdAt).where(sql`sla_calendar_revision_id IS NULL AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL) OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL) OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))`),
+  // #8973 W4 (2027-01-03-160100, CONCURRENTLY): recompute, apply-revision,
+  // delete-in-use and the FK's SET NULL find tickets by revision.
+  slaCalendarRevisionIdx: index('tickets_sla_calendar_revision_idx').on(table.slaCalendarRevisionId).where(sql`sla_calendar_revision_id IS NOT NULL`),
+  slaCalendarRevisionFk: foreignKey({
+    name: 'tickets_sla_calendar_revision_id_fk',
+    columns: [table.slaCalendarRevisionId],
+    foreignColumns: [businessCalendarRevisions.id],
+  }).onDelete('set null'),
+}));
 
 export const ticketComments = pgTable('ticket_comments', {
   id: uuid('id').primaryKey().defaultRandom(),

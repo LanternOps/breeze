@@ -128,3 +128,49 @@ describe('/security/yara pre-DB gates', () => {
     expect(insertMock).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /yara/rule-sets/:id/rules cap vs. set lock (#9176)', () => {
+  const body = { name: 'r1', source: 'rule r1 { condition: true }' };
+
+  it('locks the set row BEFORE counting rules, and refuses at the cap without inserting', async () => {
+    const order: string[] = [];
+    mockVisibleSet({ id: SET, orgId: ORG, partnerId: null, isBuiltin: false, autoQuarantine: false, enabled: true, currentVersion: 1 });
+    // 2nd select: the FOR UPDATE lock.
+    selectMock.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          for: (mode: string) => {
+            order.push(`lock:${mode}`);
+            return Promise.resolve([{ id: SET }]);
+          },
+        }),
+      }),
+    });
+    // 3rd select: the count.
+    selectMock.mockReturnValueOnce({
+      from: () => ({
+        where: () => {
+          order.push('count');
+          return Promise.resolve([{ value: 500 }]);
+        },
+      }),
+    });
+
+    const res = await post(app({}), `/yara/rule-sets/${SET}/rules`, body);
+    expect(res.status).toBe(400);
+    expect(order).toEqual(['lock:update', 'count']);
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(publishMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /yara/rule-sets/:id/rules set vanished before lock (#9176)', () => {
+  it('404s without counting or inserting when the lock finds no row', async () => {
+    mockVisibleSet({ id: SET, orgId: ORG, partnerId: null, isBuiltin: false, autoQuarantine: false, enabled: true, currentVersion: 1 });
+    selectMock.mockReturnValueOnce({ from: () => ({ where: () => ({ for: () => Promise.resolve([]) }) }) });
+    const res = await post(app({}), `/yara/rule-sets/${SET}/rules`, { name: 'r1', source: 'rule r1 { condition: true }' });
+    expect(res.status).toBe(404);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+});

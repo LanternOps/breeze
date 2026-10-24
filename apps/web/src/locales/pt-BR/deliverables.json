@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Entregas do serviço",
+    "pausedDraft": "Pausado até o contrato ser ativado. Um rascunho não abre chamados; na ativação, as entregas que ainda não começaram passam para a data de início do contrato (ou para hoje, se ela já passou).",
     "empty": "Nenhuma entrega ainda. Adicione os relatórios e revisões recorrentes devidos a este cliente."
   },
   "table": {
@@ -91,6 +92,7 @@
     "evidence": "Evidências",
     "noEvidence": "Nenhuma evidência anexada",
     "late": "Atrasada",
+    "awaitingEvidenceHint": "Ticket resolvido — anexe evidência para concluir",
     "rescheduledFrom": "Reagendada de {{date}}",
     "deliveryNote": "Observação da entrega",
     "waivedReason": "Motivo da dispensa",
@@ -107,11 +109,17 @@
     "linkDocumentLoading": "Carregando documentos…",
     "linkDocumentPlaceholder": "Escolha um documento…",
     "linkDocumentEmpty": "Ainda não há documentos na biblioteca desta organização.",
+    "linkAgreement": "Vincular acordo assinado",
+    "linkAgreementSelect": "Escolha um acordo assinado para vincular como evidência",
+    "linkAgreementLoading": "Carregando acordos assinados…",
+    "linkAgreementPlaceholder": "Escolha um acordo assinado…",
+    "linkAgreementEmpty": "Ainda não há acordos assinados para esta organização.",
     "link": "Vincular"
   },
   "evidence": {
     "reportRun": "Execução de relatório",
     "document": "Documento",
+    "signedAgreement": "Acordo assinado",
     "reportRunId": "ID da execução de relatório"
   },
   "upcoming": {
@@ -132,7 +140,9 @@
     "unsupportedType": "Só é possível anexar arquivos PDF, JPEG, PNG e WebP.",
     "storageUnavailable": "O armazenamento de documentos está indisponível no momento. Tente novamente em instantes.",
     "linkFailed": "Não foi possível vincular o documento.",
-    "libraryLoadFailed": "Não foi possível carregar a biblioteca de documentos."
+    "libraryLoadFailed": "Não foi possível carregar a biblioteca de documentos.",
+    "agreementsLoadFailed": "Não foi possível carregar os acordos assinados.",
+    "agreementsForbidden": "Você não tem permissão para ver os acordos assinados."
   },
   "confirm": {
     "deactivate": "Desativar {{name}}? As ocorrências abertas serão encerradas e nenhuma nova será agendada.",
@@ -242,5 +252,33 @@
       "itemDeleted": "Entrega removida",
       "applied": "Conjunto de modelos aplicado"
     }
+  },
+  "move": {
+    "action": "Mover para contrato…",
+    "toTitle": "Mover entregáveis para um contrato",
+    "selected": "Selecionados: {{count}}",
+    "selectRow": "Selecionar {{name}}",
+    "target": "Contrato de destino",
+    "confirm": "Mover",
+    "moved": "Entregáveis movidos",
+    "hereAction": "Mover entregáveis para cá de…",
+    "hereTitle": "Mover entregáveis para cá",
+    "hereHelp": "Escolha entregáveis dos outros contratos desta organização para movê-los para este.",
+    "hereEmpty": "Não há outros entregáveis nesta organização.",
+    "collision": "Nada foi movido. Estes nomes já existem no contrato de destino: {{names}}"
+  },
+  "bulk": {
+    "select": "Selecionar {{name}}",
+    "selectAll": "Selecionar todas as entregas",
+    "count_one": "{{count}} selecionada",
+    "count_other": "{{count}} selecionadas",
+    "reschedule": "Reagendar selecionadas",
+    "clear": "Limpar",
+    "newDate": "Nova data de vencimento",
+    "done_one": "{{count}} ocorrência reagendada",
+    "done_other": "{{count}} ocorrências reagendadas",
+    "partial": "{{moved}} reagendadas, {{refused}} não puderam ser movidas",
+    "none": "Nenhuma das entregas selecionadas tem uma ocorrência aberta para reagendar.",
+    "failed": "Não foi possível reagendar as ocorrências selecionadas."
   }
 }

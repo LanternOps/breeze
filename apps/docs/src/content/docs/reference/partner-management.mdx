@@ -94,7 +94,9 @@ Partner self-registration allows MSPs and IT companies to create their own Breez
 
 7. **JWT tokens issued** -- Access and refresh tokens are created with `scope: partner` and the new partner ID. The refresh token is set as an HTTP-only cookie.
 
-8. **Redirect to dashboard** -- The frontend stores the tokens and redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
+8. **Forced MFA enrollment** -- New partners are created with **Require MFA** on (`security.requireMfa: true`), so right after email confirmation the new admin is sent to the MFA setup page and must enroll an authenticator (TOTP) before anything else in the dashboard is available. This is settings-driven and applies even when `MFA_FORCE_FOR_PARTNER_ADMIN` is off; that variable only controls the separate role-level force. See [Users & Roles](/reference/users-and-roles/).
+
+9. **Redirect to dashboard** -- Once MFA is enrolled, the frontend redirects the authenticated user. If this is the first-ever user in the system, the setup wizard may appear.
 </Steps>
 
 <Aside type="note">
@@ -247,7 +249,7 @@ curl -X POST https://breeze.example.com/api/v1/orgs/partners \
 | `plan` | `enum` | `free`, `starter`, `community`, `pro`, `enterprise`, or `unlimited`. Default: `free` |
 | `maxOrganizations` | `integer` | Optional cap on organization count |
 | `maxDevices` | `integer` | Optional cap on total devices across all organizations. Once it is reached, enrollment, provisioning and restoring a removed device are refused with `403 DEVICE_LIMIT_REACHED`, and assigning a holding-area device with `409 PARTNER_DEVICE_LIMIT_REACHED`. Removed, Quick Support and holding-area devices do not count |
-| `settings` | `jsonb` | Partner-level settings (timezone, business hours, contact info) |
+| `settings` | `jsonb` | Partner-level settings (timezone, contact info) |
 | `serviceManagementMode` | `enum` | `native`, `external`, or `off`. Default: `native`. See [Service Management mode](#service-management-mode) |
 | `serviceManagementPsaConnectionId` | `uuid` | The partner-wide PSA connection bound to `external` mode. Required when the mode is `external`, and must be null otherwise |
 | `ssoConfig` | `jsonb` | SSO configuration |
@@ -268,7 +270,6 @@ curl -X PATCH https://breeze.example.com/api/v1/orgs/partners/me \
     "name": "Acme IT Services",
     "settings": {
       "timezone": "America/Chicago",
-      "businessHours": { "preset": "business" },
       "contact": {
         "name": "Jane Doe",
         "email": "jane@acme-it.com"

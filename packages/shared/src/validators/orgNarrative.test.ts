@@ -54,6 +54,30 @@ describe('narrativeSubmissionSchema', () => {
     expect(JSON.stringify(result.error?.issues)).toContain('fleet');
   });
 
+  // No array `.max()` bounds the count (zod >= 4.6 would skip the refine after
+  // it fired); the duplicate check is what rejects a ninth section, and it has
+  // to name the repeated key, including when another section is also invalid.
+  it('rejects more sections than there are keys and names the repeated key', () => {
+    const nine = submission({
+      sections: [...NARRATIVE_SECTION_KEYS.map((key) => ({ key, bullets: ['b'] })), { key: 'fleet', bullets: ['again'] }],
+    } as Partial<NarrativeSubmission>);
+    const result = narrativeSubmissionSchema.safeParse(nine);
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.message)).toContain('narrative repeats section(s): fleet');
+  });
+
+  it('still names a repeated key when another section fails its own validation', () => {
+    const nine = submission({
+      sections: [
+        ...NARRATIVE_SECTION_KEYS.map((key) => ({ key, bullets: key === 'backups' ? [] : ['b'] })),
+        { key: 'fleet', bullets: ['again'] },
+      ],
+    } as Partial<NarrativeSubmission>);
+    const messages = narrativeSubmissionSchema.safeParse(nine).error?.issues.map((issue) => issue.message) ?? [];
+    expect(messages).toContain('narrative repeats section(s): fleet');
+    expect(messages.length).toBeGreaterThan(1);
+  });
+
   it('rejects an unknown section key', () => {
     const unknown = submission({
       sections: NARRATIVE_SECTION_KEYS.map((key) => ({ key: key === 'fleet' ? 'budget' : key, bullets: ['b'] })),

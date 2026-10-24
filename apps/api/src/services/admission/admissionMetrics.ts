@@ -30,6 +30,11 @@ const decisions = counter(
   ['class', 'route', 'outcome', 'reason'],
 );
 const transitions = counter('breeze_admission_transitions_total', 'Admission level changes', ['from', 'to', 'trigger']);
+const riseSuppressed = counter(
+  'breeze_admission_rise_suppressed_total',
+  'Rise streaks that ended before BREEZE_ADMISSION_RISE_TICKS consecutive ticks: a level rise the consecutive-tick gate held back (#9353). `to` is the level it would have entered',
+  ['to', 'trigger'],
+);
 const offlineDeferred = counter(
   'breeze_admission_offline_deferred_total',
   'Agent WS closes/errors whose immediate offline write was left to the offline detector because admission was at level 1+',
@@ -58,6 +63,10 @@ export function recordAdmissionDecision(cls: string, route: string, outcome: 'sh
 
 export function recordAdmissionTransition(from: number, to: number, trigger: string): void {
   transitions.labels(String(from), String(to), trigger).inc();
+}
+
+export function recordAdmissionRiseSuppressed(to: number, trigger: string): void {
+  riseSuppressed.labels(String(to), trigger).inc();
 }
 
 export function recordAdmissionTickFailure(): void {

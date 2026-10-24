@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { periodSchema } from '@breeze/shared';
+import { CURRENCY_CODES, isZeroDecimal, periodSchema } from '@breeze/shared';
 
 /**
  * Per-report-type config schemas (#3198 spec §6). Moved here from
@@ -300,3 +300,86 @@ export const aiUsageByClientConfigSchema = legacyReportConfigSchema.extend({
   groupBy: z.enum(['organization', 'model']).optional(),
 });
 export type AiUsageByClientConfig = z.infer<typeof aiUsageByClientConfigSchema>;
+
+/**
+ * #9828 W1 (Gate B 8). `mrr_renewals` is measured at run time: contracts keep
+ * no status history, so neither an `asOf` date nor a `period` can be honoured.
+ * Both are refused (400 naming the key) rather than stored and silently
+ * ignored. Same body as `refusedBusinessSelector`, with the run-time message.
+ */
+function refusedAsOfRunTime(key: string) {
+  return z.unknown().superRefine((value, ctx) => {
+    if (selectsSomething(value)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `${key} is not supported for mrr_renewals; it is measured at run time because contracts keep no status history`,
+      });
+    }
+  }).optional();
+}
+
+/**
+ * #9828 W1 — MRR & renewals.
+ *
+ * - `groupBy` (default `organization`) and `renewalHorizonDays` (default 90)
+ *   are applied in the generator: no `.default()` anywhere
+ *   (parseStoredReportConfig filters defaults top-level only).
+ * - No org/site/device selector keys (ruling T3e).
+ */
+export const mrrRenewalsConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  asOf: refusedAsOfRunTime('asOf'),
+  period: refusedAsOfRunTime('period'),
+  groupBy: z.enum(['organization', 'contract']).optional(),
+  renewalHorizonDays: z.union([z.literal(30), z.literal(60), z.literal(90), z.literal(180)]).optional(),
+});
+export type MrrRenewalsConfig = z.infer<typeof mrrRenewalsConfigSchema>;
+
+/**
+ * #9828 W2 — quote win rate.
+ *
+ * - `period` is the standard business-report period (owner timezone, `[start,
+ *   end)`), applied to each lineage's FIRST send date; absent = the last full
+ *   calendar month, applied by `resolveReportPeriod`.
+ * - `groupBy` has NO `.default()`: the default depends on the owner scope
+ *   (`organization` at partner scope, `author` at org scope) and is applied
+ *   in the generator, exactly like ticket SLA's and AI usage's.
+ * - No org/site/device selector keys (ruling T3e).
+ */
+export const quoteWinRateConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  period: periodSchema.optional(),
+  groupBy: z.enum(['organization', 'author', 'currency']).optional(),
+});
+export type QuoteWinRateConfig = z.infer<typeof quoteWinRateConfigSchema>;
+
+/**
+ * #9828 W3 — Client profitability.
+ *
+ * - `period` (absent = last full month) and `groupBy` (default `organization`
+ *   at partner scope, `source` at org scope) are applied in the generator: no
+ *   `.default()` anywhere (parseStoredReportConfig filters defaults top-level
+ *   only).
+ * - `laborCostPerHour` (OD2-B, Gate B 11): the report's own uniform internal
+ *   labor rate — a report-definition option like `weeklyCapacityHours`, not a
+ *   partner setting (settings.md Rule 2). Absent = hours only, no estimate. A
+ *   positive decimal string with at most 2 dp (whole units for a zero-decimal
+ *   currency), in a supported currency; never inferred from report data.
+ * - No org/site/device selector keys (ruling T3e).
+ */
+export const clientProfitabilityConfigSchema = legacyReportConfigSchema.extend({
+  ...BUSINESS_SELECTOR_REFUSALS,
+  period: periodSchema.optional(),
+  groupBy: z.enum(['organization', 'source']).optional(),
+  laborCostPerHour: z.strictObject({
+    amount: z.string()
+      .regex(/^\d{1,7}(\.\d{1,2})?$/, 'laborCostPerHour.amount must be a decimal with at most 2 decimal places')
+      .refine((v) => Number(v) > 0, 'laborCostPerHour.amount must be greater than zero'),
+    currencyCode: z.enum(CURRENCY_CODES),
+  }).superRefine((rate, ctx) => {
+    if (isZeroDecimal(rate.currencyCode) && !/^\d+(\.0{1,2})?$/.test(rate.amount)) {
+      ctx.addIssue({ code: 'custom', path: ['amount'], message: `laborCostPerHour.amount must be a whole number for ${rate.currencyCode}` });
+    }
+  }).optional(),
+});
+export type ClientProfitabilityConfig = z.infer<typeof clientProfitabilityConfigSchema>;

@@ -6,18 +6,16 @@ import { formatPercent } from '@/lib/i18n/format';
 type SLAComplianceCardProps = {
   uptime: number;
   target?: number;
-  incidents?: number;
-  periodLabel?: string;
+  /** Name of the SLA definition this card reports on. */
+  definitionName?: string;
 };
 
 export default function SLAComplianceCard({
   uptime,
   target = 99.9,
-  incidents = 0,
-  periodLabel
+  definitionName
 }: SLAComplianceCardProps) {
   const { t } = useTranslation('reports');
-  const displayPeriodLabel = periodLabel ?? t('analytics.slaComplianceCard.defaultPeriodLabel');
   const status = uptime >= target ? 'compliant' : uptime >= target - 0.2 ? 'at-risk' : 'breach';
   const statusMeta = {
     compliant: {
@@ -43,7 +41,7 @@ export default function SLAComplianceCard({
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm font-semibold">{t('analytics.slaComplianceCard.title')}</p>
-          <p className="text-xs text-muted-foreground">{displayPeriodLabel}</p>
+          {definitionName && <p className="text-xs text-muted-foreground">{definitionName}</p>}
         </div>
         <div className={cn('flex items-center gap-1 text-xs font-medium', statusMeta.className)}>
           <Icon className="h-4 w-4" />
@@ -58,8 +56,7 @@ export default function SLAComplianceCard({
           {t('analytics.slaComplianceCard.targetUptime', { target })}
         </div>
       </div>
-      <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
-        <span>{t('analytics.slaComplianceCard.incidents', { count: incidents })}</span>
+      <div className="mt-4 flex items-center justify-end text-xs text-muted-foreground">
         <span>
           {t('analytics.slaComplianceCard.downtime', {
             value: formatPercent(Math.max(0, 100 - uptime) / 100, { minimumFractionDigits: 2, maximumFractionDigits: 2 })

@@ -11,6 +11,8 @@ export type HealthCardProps = {
   assetType: DiscoveredAssetType;
   collection: Collection | null;
   snmpEnabled: boolean;
+  /** A network (ping/port) check is feeding the Reachability card. */
+  hasNetworkCheck?: boolean;
   timezone: string;
   /** Opens W04's settings modal at its Monitoring section. */
   onSetUpMonitoring: () => void;

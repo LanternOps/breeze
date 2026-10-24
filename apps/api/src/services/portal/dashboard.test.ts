@@ -4,7 +4,7 @@ const tiles = vi.hoisted(() => ({
   securityScoreTile: vi.fn(),
   devicesProtectedTile: vi.fn(),
   patchesAppliedTile: vi.fn(),
-  backupTile: vi.fn(),
+  dashboardBackupTile: vi.fn(),
   supportTile: vi.fn(),
   actionItemsTile: vi.fn(),
   serviceTile: vi.fn(),
@@ -39,7 +39,7 @@ vi.mock('./securityReadModel', () => ({
 vi.mock('./patchReadModel', () => ({
   patchesAppliedTile: tiles.patchesAppliedTile,
 }));
-vi.mock('./backupReadModel', () => ({ backupTile: tiles.backupTile }));
+vi.mock('./backupReadModel', () => ({ dashboardBackupTile: tiles.dashboardBackupTile }));
 vi.mock('./ticketReadModel', () => ({ supportTile: tiles.supportTile }));
 vi.mock('./actionItemsReadModel', () => ({
   actionItemsTile: tiles.actionItemsTile,
@@ -101,7 +101,7 @@ describe('portal dashboard read model', () => {
       status: 'ok', applied: 14, devicesWithOutstandingCritical: 1,
       month: '2026-09', timezone: 'America/Denver', asOf: now.toISOString(),
     });
-    tiles.backupTile.mockResolvedValue({
+    tiles.dashboardBackupTile.mockResolvedValue({
       status: 'not_configured', completedAt: null, verificationType: null,
       configured: 0, total: 10, asOf: now.toISOString(),
     });
@@ -160,7 +160,7 @@ describe('portal dashboard read model', () => {
       timezone: 'America/Denver',
       now,
     });
-    expect(tiles.backupTile).toHaveBeenCalledWith('org-1', now);
+    expect(tiles.dashboardBackupTile).toHaveBeenCalledWith('org-1', now);
     expect(tiles.supportTile).toHaveBeenCalledWith('org-1', {
       timezone: 'America/Denver',
       now,
@@ -180,7 +180,7 @@ describe('dashboardForOrg service tile (W04)', () => {
     dbState.rows.push([{ count: 0 }], [{ count: 0 }]);
     for (const tile of [
       tiles.securityScoreTile, tiles.devicesProtectedTile, tiles.patchesAppliedTile,
-      tiles.backupTile, tiles.supportTile, tiles.actionItemsTile,
+      tiles.dashboardBackupTile, tiles.supportTile, tiles.actionItemsTile,
     ]) tile.mockResolvedValue({ status: 'no_data' });
     tiles.serviceTile.mockResolvedValue(serviceResult);
     return dashboardForOrg('org-1', { timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z') }, ticketOwnership);
@@ -202,5 +202,37 @@ describe('dashboardForOrg service tile (W04)', () => {
   it('omits the key entirely when the flag is off', async () => {
     const dto = await run(null);
     expect('service' in dto).toBe(false);
+  });
+});
+
+describe('dashboardForOrg backup tile gate (#9351)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.rows = [];
+    dbState.wheres = [];
+  });
+
+  async function run(backupResult: unknown) {
+    dbState.rows.push([{ count: 0 }], [{ count: 0 }]);
+    for (const tile of [
+      tiles.securityScoreTile, tiles.devicesProtectedTile, tiles.patchesAppliedTile,
+      tiles.supportTile, tiles.actionItemsTile,
+    ]) tile.mockResolvedValue({ status: 'no_data' });
+    tiles.dashboardBackupTile.mockResolvedValue(backupResult);
+    tiles.serviceTile.mockResolvedValue(null);
+    return dashboardForOrg('org-1', { timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z') }, ticketOwnership);
+  }
+
+  it('omits the key entirely when Backups is off (tile resolves null)', async () => {
+    const dto = await run(null);
+    expect('backup' in dto).toBe(false);
+  });
+
+  it('carries the tile unchanged when Backups is on', async () => {
+    const tile = { status: 'not_configured', completedAt: null, verificationType: null, configured: 0, total: 3, asOf: '2026-10-15T12:00:00.000Z' };
+    const dto = await run(tile);
+    expect(dto.backup).toEqual(tile);
+    // ETag hashes JSON.stringify (order-sensitive): backup keeps its slot.
+    expect(Object.keys(dto).indexOf('backup')).toBe(Object.keys(dto).indexOf('patchesApplied') + 1);
   });
 });

@@ -149,6 +149,23 @@ describe('agent rollback RBAC', () => {
   });
 });
 
+describe('agent recovery RBAC (#9234)', () => {
+  const holdersOf = (perm: string) => SYSTEM_ROLES.filter((role) => role.permissions.includes(perm)).map((r) => r.name);
+
+  it('seeds devices:recover_agent', () => {
+    expect(DEFAULT_PERMISSIONS).toContainEqual(expect.objectContaining({ resource: 'devices', action: 'recover_agent' }));
+  });
+
+  it('grants it to exactly the built-in roles that hold devices:execute', () => {
+    // Restarting the agent through the watchdog is already reachable with
+    // devices:execute (the trigger_agent_restart AI tool), so the dedicated
+    // grant gives no built-in role new authority — it only lets an MSP
+    // separate the two.
+    expect(holdersOf('devices:recover_agent').sort()).toEqual(holdersOf('devices:execute').sort());
+    expect(holdersOf('devices:recover_agent').length).toBeGreaterThan(0);
+  });
+});
+
 describe('billing-role device isolation', () => {
   it.each(['Partner Billing', 'Partner Billing Viewer'])('%s does not grant devices:read', (roleName) => {
     const role = SYSTEM_ROLES.find((candidate) => candidate.name === roleName);

@@ -7,6 +7,7 @@
     "unavailable": "Bağlantı ayrıntıları mevcut değil.",
     "onboardingUnavailable": "Müşteri Grafiği Okumaya katılım bu kuruluş için etkinleştirilmedi.",
     "notAvailableOnInstance": "Bu Breeze örneğinde henüz kullanılamıyor.",
+    "notEnabledForOrg": "Bu kuruluş için henüz etkinleştirilmedi. Breeze yöneticinizden etkinleştirmesini isteyin.",
     "callback": {
       "active": "Microsoft izni tamamlandı. Yenilenen bağlantı durumu aşağıda gösterilmiştir.",
       "degraded": "Microsoft onayı tamamlandı, ancak bağlantıyla ilgilenilmesi gerekiyor. Yenilenen ayrıntılar aşağıda gösterilmektedir."
@@ -82,7 +83,9 @@
         "intune_devices": "Intune cihazları",
         "ca_policies": "Koşullu Erişim",
         "skus": "Lisanslar",
-        "secure_score": "Güvenlik Puanı"
+        "secure_score": "Güvenlik Puanı",
+        "signin_events": "Oturum açma olayları",
+        "unknown": "Tanınmayan veri türü"
       }
     },
     "errors": {
@@ -104,6 +107,7 @@
       "manifest_stale": "Verilen izinler daha eski bir bildirimi kullanıyor. Tekrar onay verin.",
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
+      "executor_unavailablePending": "Bağlantı tamamlanamadı. Bağlan'ı yeniden deneyin; sorun devam ederse destekle iletişime geçin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
     },
     "stepTitle": "Okuma erişimi",
@@ -125,6 +129,7 @@
     "unavailable": "Bağlantı ayrıntıları mevcut değil.",
     "onboardingUnavailable": "Müşteri Grafiği Eylemleri katılımı bu kuruluş için etkinleştirilmedi.",
     "notAvailableOnInstance": "Bu Breeze örneğinde henüz kullanılamıyor.",
+    "notEnabledForOrg": "Bu kuruluş için henüz etkinleştirilmedi. Breeze yöneticinizden etkinleştirmesini isteyin.",
     "callback": {
       "active": "Microsoft izni tamamlandı. Yenilenen bağlantı durumu aşağıda gösterilmiştir.",
       "degraded": "Microsoft onayı tamamlandı, ancak bağlantıyla ilgilenilmesi gerekiyor. Yenilenen ayrıntılar aşağıda gösterilmektedir."
@@ -188,6 +193,7 @@
       "manifest_stale": "Verilen izinler daha eski bir bildirimi kullanıyor. Tekrar onay verin.",
       "organization_probe_failed": "Microsoft organizasyon kontrolü başarısız oldu. Bağlantıyı yeniden test edin.",
       "executor_unavailable": "Doğrulama hizmeti kullanılamıyor. Daha sonra tekrar test edin.",
+      "executor_unavailablePending": "Bağlantı tamamlanamadı. Bağlan'ı yeniden deneyin; sorun devam ederse destekle iletişime geçin.",
       "unknown": "Doğrulamaya dikkat edilmesi gerekiyor. Bağlantıyı yeniden test edin veya onayı yeniden başlatın."
     },
     "stepTitle": "Yönetici eylemleri",
@@ -260,6 +266,7 @@
   "m365TenantPanel": {
     "loading": "Microsoft 365 bağlantıları yükleniyor.",
     "consentUnavailable": "Onaya dayalı bağlantı bu Breeze örneğinde henüz kullanılamıyor.",
+    "consentNotEnabledForOrg": "Onaya dayalı bağlantı bu kuruluş için henüz etkinleştirilmedi. Breeze yöneticinizden etkinleştirmesini isteyin.",
     "selectOrganization": "Microsoft 365 kiracısını bağlamak için bir kuruluş seçin.",
     "noTenantForOrg": "{{orgName}} ile bağlı Microsoft 365 kiracısı yok",
     "tenantConnectedToOrg": "{{tenantName}} · {{orgName}} ile bağlı",
@@ -333,6 +340,9 @@
     "retry": "Yeniden dene",
     "since": "{{time}} beri",
     "fix": "Düzelt",
+    "remedy": {
+      "reconnect": "İstemci uygulamasından yeniden bağlanın (ör. MCP sunucusunu yeniden ekleyin). Breeze'de yapılacak bir işlem yok."
+    },
     "truncated": "İlk {{count}} gösteriliyor",
     "recentlyResolved": "Yakın zamanda çözülenler ({{count}})",
     "resolution": {
@@ -587,7 +597,7 @@
     "hidePassword": "Parolayı gizle",
     "portalLabelToggle": "Sağlayıcı adını müşteri portalında göster",
     "portalLabelHelp": "Varsayılan olarak kapalıdır: müşteriler üretici adı yerine \"Yönetilen bulut yedeklemesi\" ifadesini görür.",
-    "credentialsHelp": "Salt okunur role sahip, benzersiz parolalı ve iki adımlı doğrulaması olmayan ayrı bir Cove konsol kullanıcısı oluşturun. Breeze yalnızca durumu okur, Cove üzerinde hiçbir değişiklik yapmaz.",
+    "credentialsHelp": "Cove'da en üst düzey müşterinizin altında bir API kullanıcısı oluşturun (Management → Users → API Users). Bu müşterinin adını iş ortağı adı, API kullanıcısının oturum açma adını kullanıcı adı ve belirtecini parola olarak girin. Breeze yalnızca durumu okur; Cove'da hiçbir şeyi değiştirmez.",
     "test": "Bağlantıyı sına",
     "syncNow": "Şimdi eşitle",
     "reauthRequired": "Kimlik bilgileri reddedildi",
@@ -720,7 +730,10 @@
     "allApplications": "Tüm uygulamalar",
     "searchAllApplicationsFirst2": " (Sahip olunan uygulamalar değil) bölümünde bu tenant’ta mevcut bir Breeze uygulaması arayın. ",
     "tenantIdGuidPlaceholder": "Tenant Kimliği (GUID), ör. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın."
+    "tenantIdGuidHint": "contoso.onmicrosoft.com alan adını değil, Entra uygulama kaydının Genel Bakış sayfasındaki Dizin (tenant) Kimliğini (bir GUID) kullanın.",
+    "savingRequiresMfa": " Kaydetmek için MFA doğrulaması gerekir.",
+    "clientSecretPlaceholder": "uygulama istemci sırrı",
+    "clientSecretStoredPlaceholder": "•••••••••• (saklandı, şifrelendi)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Cihaz sağlığı",

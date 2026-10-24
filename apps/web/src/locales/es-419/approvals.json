@@ -98,10 +98,11 @@
     "loading": "Cargando aprobaciones recientes…",
     "error": "No se pudieron cargar las aprobaciones recientes.",
     "retry": "Reintentar",
+    "decisionReasonLabel": "Motivo del aprobador",
     "empty": "No ha finalizado nada recientemente.",
     "status": {
       "failed": "Falló",
-      "rejected": "Rechazada",
+      "rejected": "Denegada",
       "expired": "Expirada",
       "cancelled": "Cancelada",
       "completed": "Completada",
@@ -160,5 +161,19 @@
     "orderNote": "Los efectos se ejecutan en este orden. El inicio de sesión se deshabilita al final, así que detenerse antes nunca deja el correo sin enrutar.",
     "empty": "Este plan no contiene efectos.",
     "invalid": "No se pudo mostrar este plan completo. No lo apruebes."
+  },
+  "intentStatus": {
+    "title": "Estado de la aprobación",
+    "waitingForApprovers": "Esperando a los aprobadores",
+    "notFound": "No se encontró esa aprobación.",
+    "status": {
+      "pending_approval": "Aprobación pendiente",
+      "in_progress": "En curso",
+      "completed": "Completada",
+      "failed": "Fallida",
+      "rejected": "Rechazada",
+      "expired": "Vencida",
+      "cancelled": "Cancelada"
+    }
   }
 }

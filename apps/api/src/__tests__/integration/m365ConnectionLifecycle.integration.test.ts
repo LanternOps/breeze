@@ -50,6 +50,7 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
     onboardingOrgIds: '*',
   })),
   isM365CustomerGraphReadOnboardingEnabledForOrg: () => true,
+  m365CustomerGraphReadOnboardingAvailability: () => 'enabled',
 }));
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);

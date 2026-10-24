@@ -324,7 +324,7 @@ const EXPECTED_NAMES = [
   'ticketAttachmentReaper', 'aiArtifactSweeper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'callerVerificationPublisher',
   'callerVerificationReconciliation',
-  'ticketSlaWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
+  'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.

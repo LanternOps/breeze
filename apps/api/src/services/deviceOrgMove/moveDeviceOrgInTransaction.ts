@@ -53,6 +53,7 @@ import {
 import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee } from '../ticketService';
 import { removedTicketLinksFromRows, type RemovedTicketLink } from '../ticketLinkMoveNotes';
 import { lockOrgTicketLinks } from '../ticketLinkLock';
+import { reresolveMovedTicketCalendars } from '../businessCalendars/reresolve';
 
 export type DeviceOrgMoveTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -958,6 +959,11 @@ export async function moveDeviceOrgInTransaction(
       for (const ticket of movedTickets) {
         await revalidateTicketAssignee(ticket.id, { kind: 'user', userId: input.actor.userId }, tx);
       }
+      // #8973 W4 (spec §4.3 "Move-org"): after the restamp above, so each
+      // ticket re-resolves its business calendar for the org it now belongs
+      // to and recomputes its unfrozen deadlines; a source-org calendar is
+      // never left referenced. Same transaction, rows already locked.
+      await reresolveMovedTicketCalendars(tx, [...movedTickets].map((t) => t.id));
     } else {
       // The devices UPDATE above already fired breeze_cascade_device_org_id(),
       // which re-stamps every breeze_device_child_orgid_tables() row with the

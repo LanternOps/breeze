@@ -69,6 +69,14 @@ describe("ConnectionHealthPanel", () => {
     expect(fetchMock).toHaveBeenCalledWith("/connection-health/incidents?status=recent");
   });
 
+  it("shows reconnect guidance instead of a Fix link when the incident has a reconnect remedy (#9594)", async () => {
+    mockBoth([incident({ condition: "grant_revoked_reuse", fixHref: "/settings/connected-apps", remedy: { kind: "reconnect" } })]);
+    render(<ConnectionHealthPanel />);
+    const rows = await screen.findAllByTestId("connection-health-open-row");
+    expect(rows[0].textContent).toMatch(/Reconnect from the client app/);
+    expect(rows[0].querySelector("a")).toBeNull();
+  });
+
   it("a same-page fix link fires hashchange under the Astro router so the Integrations tab switches", async () => {
     window.history.replaceState({}, "", "/integrations");
     mockBoth([incident({ fixHref: "/integrations#huntress" })]);

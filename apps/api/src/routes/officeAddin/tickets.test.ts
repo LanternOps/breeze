@@ -913,7 +913,12 @@ describe('POST /tickets/draft', () => {
     const res = await postDraft(draftBody);
 
     expect(res.status).toBe(402);
-    expect(await res.json()).toEqual({ error: 'AI budget unavailable' });
+    // #9450: only the credit gate is coded; caps and ai_disabled keep the plain body.
+    expect(await res.json()).toEqual(
+      reason === 'credits_exhausted'
+        ? { error: 'AI budget unavailable', code: 'credits_exhausted' }
+        : { error: 'AI budget unavailable' },
+    );
     expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'platform');
     expect(hoisted.getOrgPolicy).not.toHaveBeenCalled();
     expect(hoisted.applyDlp).not.toHaveBeenCalled();

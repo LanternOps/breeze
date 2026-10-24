@@ -5,6 +5,8 @@
 // then localises its own strings. Nothing here touches amounts: grouping is
 // presentation over the stored one-line-per-time-entry rows.
 
+import { laborHours } from './laborMath';
+
 export const INVOICE_LINE_GROUPINGS = ['entry', 'day'] as const;
 export type InvoiceLineGrouping = (typeof INVOICE_LINE_GROUPINGS)[number];
 
@@ -93,7 +95,7 @@ export function stampInvoiceLineDetail(
  *  line (no workedMinutes) or when the two agree at 2dp. */
 export function lineWorkedVsBilled(l: { quantity: string; workedMinutes?: number | null }): { worked: string; billed: string } | null {
   if (l.workedMinutes == null) return null;
-  const worked = (l.workedMinutes / 60).toFixed(2);
+  const worked = laborHours(l.workedMinutes);
   const billed = Number(l.quantity).toFixed(2);
   return worked === billed ? null : { worked, billed };
 }

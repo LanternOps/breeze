@@ -30,8 +30,18 @@ async function seedAutoRenew(opts: { nextBillingAt: string; endDate: string; not
 
 describe('runContractRenewalSweep', () => {
   it.runIf(!!process.env.DATABASE_URL)('extends the term when the next bill would expire, logs a renewed notice, idempotent', async () => {
-    // Next bill lands exactly at endDate ⇒ would expire ⇒ must renew first.
+    // Pointer at endDate: the state generateDueInvoice leaves an auto-renewing
+    // advance contract in after its final invoice (#9243; it is no longer
+    // expired there). The full billing → renewal sequence is driven for real in
+    // __tests__/integration/contractAutoRenewLifecycle.integration.test.ts.
     const { contractId } = await seedAutoRenew({ nextBillingAt: '2027-07-01', endDate: '2027-07-01' });
+
+    // The day before end_date: not yet. The term renews ON end_date, the date
+    // the advance notice promised.
+    await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep(new Date('2027-06-30T05:00:00Z'))));
+    const [before] = await withSystemDbAccessContext(() =>
+      db.select({ endDate: contracts.endDate }).from(contracts).where(eq(contracts.id, contractId)));
+    expect(before!.endDate).toBe('2027-07-01');
 
     await runOutsideDbContext(() => withSystemDbAccessContext(() => runContractRenewalSweep(new Date('2027-07-01T05:00:00Z'))));
 
