@@ -1,5 +1,10 @@
 package desktop
 
+import (
+	"fmt"
+	"strings"
+)
+
 // "Release stuck keys" (issue #9595) also clears modifier keys the OS still
 // has down although no held record names them. The platform handlers'
 // ResetModifierState use these; untagged so the arithmetic runs in the Linux
@@ -40,4 +45,26 @@ var macModifierKeycodes = []int{0x38, 0x3C, 0x3B, 0x3E, 0x3A, 0x3D, 0x37, 0x36}
 // modifier held, Caps Lock left as it is.
 func macModifierResetFlags(current int) int {
 	return current & cgEventFlagMaskAlphaShift
+}
+
+// releaseStuckModifiers posts every release through send and reports the ones
+// it refused. A refusal does not stop the rest: each key is its own stuck
+// modifier. The error names the scan codes so the log says which key stayed
+// down, and the caller counts it the way releaseHeld counts its failures.
+func releaseStuckModifiers(releases []winKeyInput, send func(winKeyInput) bool) error {
+	var refused []string
+	for _, k := range releases {
+		if !send(k) {
+			// Both sides of Ctrl and Alt share a scan code; the E0 prefix is the right side.
+			if k.Flags&winKeyeventfExtendedKey != 0 {
+				refused = append(refused, fmt.Sprintf("E0 0x%X", k.Scan))
+			} else {
+				refused = append(refused, fmt.Sprintf("0x%X", k.Scan))
+			}
+		}
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("modifier reset: SendInput refused %d of %d releases (scan %s)", len(refused), len(releases), strings.Join(refused, ", "))
 }

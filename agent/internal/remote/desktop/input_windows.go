@@ -398,12 +398,7 @@ func (h *WindowsInputHandler) ResetModifierState() error {
 		r, _, _ := getAsyncKeyState.Call(uintptr(vk))
 		return r&0x8000 != 0
 	})
-	for _, k := range releases {
-		if !sendKeybdInput(k) {
-			slog.Debug("SendInput failed", "flags", k.Flags)
-		}
-	}
-	return nil
+	return releaseStuckModifiers(releases, sendKeybdInput)
 }
 
 // vkToScanCode uses MapVirtualKeyW to derive the hardware scan code for a VK.

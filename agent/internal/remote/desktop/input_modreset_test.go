@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +44,32 @@ func TestMacModifierResetFlagsKeepsOnlyCapsLock(t *testing.T) {
 	}
 	if got := macModifierResetFlags(all); got != 0 {
 		t.Fatalf("flags = %#x, want 0", got)
+	}
+}
+
+// A modifier release that SendInput refuses is the stuck key the operator
+// asked to clear: it must surface as an error, not a debug line.
+func TestReleaseStuckModifiersReportsEveryRefusedRelease(t *testing.T) {
+	releases := winStuckModifiers(func(uint16) bool { return true })
+	var sent []winKeyInput
+	err := releaseStuckModifiers(releases, func(k winKeyInput) bool {
+		sent = append(sent, k)
+		left := k.Flags&winKeyeventfExtendedKey == 0
+		return !(left && (k.Scan == 0x1D || k.Scan == 0x38)) // left Ctrl and left Alt refused
+	})
+	if err == nil {
+		t.Fatal("err = nil, want a failure naming the refused releases")
+	}
+	if len(sent) != len(releases) {
+		t.Fatalf("sent %d of %d: a refusal must not stop the remaining releases", len(sent), len(releases))
+	}
+	if got := err.Error(); !strings.Contains(got, "2 of 8") || !strings.Contains(got, "0x1D") || !strings.Contains(got, "0x38") {
+		t.Fatalf("err = %q, want the count and the refused scan codes", got)
+	}
+	if err := releaseStuckModifiers(releases, func(winKeyInput) bool { return true }); err != nil {
+		t.Fatalf("all accepted, err = %v", err)
+	}
+	if err := releaseStuckModifiers(nil, func(winKeyInput) bool { return false }); err != nil {
+		t.Fatalf("nothing to release, err = %v", err)
 	}
 }

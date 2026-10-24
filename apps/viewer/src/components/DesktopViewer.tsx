@@ -1924,14 +1924,31 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (viewOnlyRef.current || !inputCapabilitiesRef.current.snapshot().releaseHeldOnRequest
       || !control || control.readyState !== 'open') {
       releaseAllKeys();
+      // releaseAllKeys strands its key_ups when the input channel is down;
+      // say so rather than reporting a release that has not happened.
+      setInputNotice(getInputSender()
+        ? 'Released the keys and mouse buttons this viewer was holding on the remote.'
+        : 'Releases queued: they are sent when the input channel reconnects.');
+      return;
+    }
+    // Send first, forget second: a send that throws (the channel closing
+    // between the readyState check and here) must not leave this viewer
+    // believing nothing is held while the remote still holds keys.
+    try {
+      control.send(JSON.stringify({ type: 'release_held_input' }));
+    } catch (err) {
+      console.warn('Release stuck keys request failed:', err);
+      releaseAllKeys();
+      setInputNotice('Could not reach the remote; released the keys this viewer was holding.');
       return;
     }
     pressedKeysRef.current.clear();
     heldKeyNameByCodeRef.current.clear();
     heldCodeByKeyRef.current.clear();
     pressedButtonsRef.current.clear();
-    control.send(JSON.stringify({ type: 'release_held_input' }));
-  }, [releaseAllKeys]);
+    // Fire-and-forget: the agent sends no ack, so this reports the request.
+    setInputNotice('Asked the remote to release every held key, mouse button and modifier.');
+  }, [releaseAllKeys, getInputSender]);
 
   // A new session's channel may open with releases still stranded from the
   // last one; send them as soon as it can carry them rather than waiting for
@@ -2336,7 +2353,6 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // Ctrl+Alt+Shift and fire shortcuts there.
       if (shortcut === 'release-keys') {
         handleReleaseStuckKeys();
-        setInputNotice('Released all keys and mouse buttons on the remote.');
         return;
       }
       releaseAllKeys();

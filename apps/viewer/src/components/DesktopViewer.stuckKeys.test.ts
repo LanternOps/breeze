@@ -25,11 +25,26 @@ describe('stuck modifiers (#9595)', () => {
     expect(gate).toBeGreaterThan(-1);
     expect(fallback).toBeGreaterThan(gate);
     expect(ask).toBeGreaterThan(fallback);
-    // With the agent releasing, the viewer forgets its own held keys instead of
-    // sending key_ups that could land after the release as stray key-ups.
-    const forget = release.slice(fallback, release.indexOf('control.send(', fallback));
-    expect(forget).toMatch(/pressedKeysRef\.current\.clear\(\)/);
-    expect(forget).not.toMatch(/send\(/);
+    // The viewer sends no key_ups of its own on this path: they could land
+    // after the agent's release on `control` as stray key-ups.
+    expect(release).not.toMatch(/\bsend\(ev\)/);
+  });
+
+  it('forgets its held keys only after the request was sent, and reports what happened', () => {
+    const release = body('handleReleaseStuckKeys');
+    const ask = release.indexOf("JSON.stringify({ type: 'release_held_input' })");
+    const forget = release.indexOf('pressedKeysRef.current.clear()');
+    // A send that throws (channel closing between the readyState check and
+    // the send) must not leave the viewer believing nothing is held.
+    expect(release.slice(0, ask)).toMatch(/try \{/);
+    expect(forget).toBeGreaterThan(ask);
+    const catchBlock = release.slice(release.indexOf('catch', ask), forget);
+    expect(catchBlock).toMatch(/releaseAllKeys\(\)/);
+    expect(catchBlock).toMatch(/setInputNotice\(/);
+    // Every branch tells the operator what was done, and none claims a release
+    // the agent has not acknowledged: the request is fire-and-forget.
+    expect(release.match(/setInputNotice\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(release).not.toMatch(/setInputNotice\('Released all keys/);
   });
 
   it('wires the toolbar item and the keyboard shortcut to it', () => {
@@ -37,6 +52,8 @@ describe('stuck modifiers (#9595)', () => {
     const down = body('handleKeyDown');
     const branch = down.slice(down.indexOf("shortcut === 'release-keys'"));
     expect(branch.slice(0, 200)).toMatch(/handleReleaseStuckKeys\(\)/);
+    // The notice lives in the handler, so the toolbar item reports too.
+    expect(branch.slice(0, 200)).not.toMatch(/setInputNotice\(/);
     // The release-keys shortcut must not send its own prefix key_ups first.
     expect(down.indexOf("shortcut === 'release-keys'")).toBeLessThan(down.indexOf('releaseAllKeys();', down.indexOf('const shortcut = viewerShortcut')));
   });
