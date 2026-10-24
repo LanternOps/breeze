@@ -19,6 +19,10 @@ const h = vi.hoisted(() => ({
   charges: [] as number[],
   locks: 0,
   writes: [] as Array<[string, ...unknown[]]>,
+  /** #8313 W1: the object store backend, byte charges, and what each comment write received. */
+  backend: 's3' as 's3' | 'db',
+  byteCharges: [] as number[],
+  commentInputs: [] as Array<{ content: string; imported: { sourceId: string; attachments?: unknown[] } }>,
   /** Names each read the writer makes, from its table and the columns it selects. */
   kindOf(q: { table: string; fields: string[]; lock?: string }): string {
     if (q.table === 'ticket_external_refs') return 'ref';
@@ -79,6 +83,26 @@ vi.mock('./windowLock', () => ({
 
 vi.mock('./throughput', () => ({
   chargeWindowThroughput: vi.fn(async (_window: unknown, cost: number) => { if (cost > 0) h.charges.push(cost); }),
+  chargeWindowBytes: vi.fn(async (_window: unknown, bytes: number) => { h.byteCharges.push(bytes); }),
+}));
+
+// #8313 W1: the object store and the two attachment statements. The rules
+// and the store step are the real ones.
+vi.mock('../ticketAttachmentStorage', () => ({
+  selectBackend: vi.fn(() => h.backend),
+  objectKeyFor: (id: string) => `ticket-attachments/${id}`,
+  putBytes: vi.fn(async (id: string) => ({ backend: 's3', storageKey: `ticket-attachments/${id}`, data: null })),
+}));
+vi.mock('./importAttachments', async (orig) => ({
+  ...(await orig<typeof import('./importAttachments')>()),
+  reserveImportAttachments: vi.fn(async (input: { files: Array<{ sourceId: string }> }) => {
+    h.writes.push(['reserveImportAttachments', input.files.map((f) => f.sourceId)]);
+    return input.files.map((f) => ({ id: `id-${f.sourceId}`, sourceId: f.sourceId }));
+  }),
+  deleteSkippedReservations: vi.fn(async (_ticketId: string, _principalId: string, ids: string[]) => {
+    if (ids.length > 0) h.writes.push(['deleteSkippedReservations', ids]);
+    return ids.length;
+  }),
 }));
 
 vi.mock('../ticketExternalRefs', () => ({
@@ -91,12 +115,13 @@ vi.mock('../ticketService', () => ({
   assignTicket: vi.fn(async (...args: unknown[]) => { h.writes.push(['assignTicket', ...args]); }),
   updateTicketFields: vi.fn(async (...args: unknown[]) => { h.writes.push(['updateTicketFields', ...args]); }),
   changeTicketStatus: vi.fn(async (id: string, input: { status: string }) => { h.writes.push(['changeTicketStatus', id, input.status]); }),
-  addTicketComment: vi.fn(async (id: string, input: { imported: { sourceId: string } }) => {
+  addTicketComment: vi.fn(async (id: string, input: { content: string; imported: { sourceId: string } }) => {
     h.writes.push(['addTicketComment', id, input.imported.sourceId]);
+    h.commentInputs.push(input);
   }),
 }));
 
-import { importTicket, IMPORT_COMMENT_CHUNK_BYTES, type ImportTicketOptions } from './importWriter';
+import { ImportAttachmentFetchError, importTicket, IMPORT_COMMENT_CHUNK_BYTES, type ImportTicketOptions } from './importWriter';
 import type { ImportedTicket } from './importedTicket';
 
 const PRINCIPAL = '44444444-4444-4444-8444-444444444444';
@@ -155,6 +180,9 @@ beforeEach(() => {
   h.charges.length = 0;
   h.writes.length = 0;
   h.locks = 0;
+  h.backend = 's3';
+  h.byteCharges.length = 0;
+  h.commentInputs.length = 0;
   // Under the lock the ticket is still an import, not deleted.
   h.fallback.set('lockedTicket', [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: null }]);
 });
@@ -350,6 +378,7 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
       outcome: 'skipped',
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR },
       commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false,
+      attachmentsWritten: 0, attachmentsSkipped: [], attachmentBytes: 0,
       requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [],
     });
     expect(h.log).toEqual(['ref', 'storedTicket']);
@@ -402,5 +431,100 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     // header transaction then reads the header alone.
     expect(h.log.filter((k) => k === 'lockedTicket')).toHaveLength(2);
     expect(h.log.filter((k) => k === 'storedTicket')).toHaveLength(2);
+  });
+});
+
+describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2026-10-19 §4.3)', () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 1)]);
+  const withFiles = ticket({
+    comments: [
+      { ...comment('a1', 1), attachments: [
+        { sourceId: 'f1', filename: 'photo.png', declaredBytes: PNG.length, inline: false },
+        { sourceId: 'f2', filename: 'invoice.pdf.exe', declaredBytes: 100, inline: false },
+      ] },
+      { ...comment('a2', 2), attachments: [{ sourceId: 'f3', filename: 'empty.txt', declaredBytes: 0, inline: false }] },
+      comment('a3', 3),
+    ],
+  });
+
+  beforeEach(() => {
+    h.fallback.set('statusRow', [{ status: 'new' }]);
+  });
+
+  it('refuses a ticket with files and no object storage (409) before anything is written or charged', async () => {
+    h.backend = 'db';
+    await expect(run(withFiles, { fetchAttachment: vi.fn() }))
+      .rejects.toMatchObject({ code: 'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED', status: 409 });
+    expect(h.locks).toBe(0);
+    expect(h.charges).toEqual([]);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('refuses files without fetchAttachment (400) before anything is written', async () => {
+    await expect(run(withFiles)).rejects.toMatchObject({ code: 'MIGRATION_IMPORT_INVALID', status: 400 });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('a ticket without files needs neither object storage nor fetchAttachment', async () => {
+    h.backend = 'db';
+    await expect(run(ticket({ comments: [comment('a1', 1)] }))).resolves.toMatchObject({ outcome: 'created', attachmentsWritten: 0 });
+  });
+
+  it('reserves what may be fetched in its own transaction (one unit a file), stores it, then the comment claims it; skips ride in a note', async () => {
+    const fetchAttachment = vi.fn(async () => PNG);
+    const result = await run(withFiles, { fetchAttachment });
+
+    // Header (create + ref), the reservation of f1 alone, the chunk (3 comments + the status).
+    expect(h.charges).toEqual([2, 1, 4]);
+    expect(h.locks).toBe(3);
+    expect(h.byteCharges).toEqual([PNG.length]);
+    expect(fetchAttachment).toHaveBeenCalledWith('f1', 10 * 1024 * 1024);
+    expect(h.writes.map((w) => w[0])).toEqual([
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments',
+      'addTicketComment', 'addTicketComment', 'addTicketComment', 'changeTicketStatus',
+    ]);
+    expect(h.writes[2]).toEqual(['reserveImportAttachments', ['f1']]);
+    expect(h.commentInputs.map((c) => [c.imported.sourceId, c.content, c.imported.attachments])).toEqual([
+      ['a1', 'x\n\n[Attachments not imported: invoice.pdf.exe (blocked file type)]', [expect.objectContaining({ id: 'id-f1', contentType: 'image/png', byteSize: PNG.length })]],
+      ['a2', 'x\n\n[Attachments not imported: empty.txt (empty file)]', undefined],
+      ['a3', 'x', undefined],
+    ]);
+    expect(result).toMatchObject({
+      outcome: 'created',
+      commentsWritten: 3,
+      attachmentsWritten: 1,
+      attachmentBytes: PNG.length,
+      attachmentsSkipped: [{ sourceId: 'f2', reason: 'blocked_type' }, { sourceId: 'f3', reason: 'empty' }],
+    });
+  });
+
+  it('a file the source no longer has is skipped after its reservation, which the chunk transaction deletes first', async () => {
+    const fetchAttachment = vi.fn(async () => { throw new ImportAttachmentFetchError('not_found'); });
+    const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f9', filename: 'lost.pdf', inline: false }] }] }), { fetchAttachment });
+    expect(h.writes.map((w) => w[0])).toEqual([
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'deleteSkippedReservations', 'addTicketComment', 'changeTicketStatus',
+    ]);
+    expect(h.writes[3]).toEqual(['deleteSkippedReservations', ['id-f9']]);
+    expect(h.commentInputs[0]!.content).toBe('x\n\n[Attachments not imported: lost.pdf (not found in the source)]');
+    expect(result).toMatchObject({ attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f9', reason: 'not_found' }] });
+  });
+
+  it('a transient failure fails the ticket after the reservation: no comment, and the reservation stays', async () => {
+    const fetchAttachment = vi.fn(async () => { throw new Error('timeout'); });
+    await expect(run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f8', filename: 'a.png', inline: false }] }] }), { fetchAttachment }))
+      .rejects.toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE', status: 503 });
+    expect(h.writes.map((w) => w[0])).toEqual(['createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments']);
+  });
+
+  it('a reservation that finds the ticket merged in Breeze returns merged_in_breeze and stores nothing', async () => {
+    const SURVIVOR = '88888888-8888-4888-8888-888888888888';
+    h.fallback.set('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
+    h.fallback.set('storedTicket', [storedRow()]);
+    answer('lockedTicket', [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: SURVIVOR }]);
+    const fetchAttachment = vi.fn(async () => PNG);
+    const result = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f7', filename: 'a.png', inline: false }] }] }), { fetchAttachment });
+    expect(result).toMatchObject({ outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR }, attachmentsWritten: 0 });
+    expect(fetchAttachment).not.toHaveBeenCalled();
+    expect(h.writes).toEqual([]);
   });
 });
