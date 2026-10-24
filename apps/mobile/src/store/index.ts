@@ -9,6 +9,7 @@ import ticketsReducer from './ticketsSlice';
 import timeReducer from './timeSlice';
 import timeSuggestionsReducer from './timeSuggestionsSlice';
 import notificationPrefsReducer from './notificationPrefsSlice';
+import wispPrefsReducer from './wispPrefsSlice';
 import lifecycleReducer from './lifecycleSlice';
 import { withLogoutReset } from './resettable';
 import { loadServerClock } from '../services/serverClock';
@@ -22,6 +23,7 @@ const appReducer = combineReducers({
   time: timeReducer,
   timeSuggestions: timeSuggestionsReducer,
   notificationPrefs: notificationPrefsReducer,
+  wispPrefs: wispPrefsReducer,
   lifecycle: lifecycleReducer,
 });
 
@@ -107,6 +109,16 @@ export {
   selectTicketPushPrefsError,
   selectTicketPushPrefsErrorKind,
 } from './notificationPrefsSlice';
+
+export {
+  loadWispNudgePrefs,
+  saveWispNudgePrefs,
+  clearWispPrefsError,
+  selectWispNudgePrefs,
+  selectWispNudgePrefsSaving,
+  selectWispNudgePrefsError,
+  selectWispNudgePrefsErrorKind,
+} from './wispPrefsSlice';
 
 export {
   runningTimerAdopted,
