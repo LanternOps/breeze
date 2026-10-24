@@ -522,6 +522,29 @@ export async function moveDeviceOrgInTransaction(
          WHERE device_id = ${deviceId}::uuid AND status IN ('opening', 'open')`,
   );
 
+  // #6263 W05 — IOC sweep scans detach from their sweep. The flip below
+  // fires breeze_cascade_device_org_id(), which restamps
+  // security_scans.org_id to the target org, while the
+  // security_scan_sweeps row stays in the SOURCE org (an execution record
+  // of the source org's request). sweep_id is a plain FK, not a composite
+  // (sweep_id, org_id), precisely so this restamp cannot 23503; the cost
+  // is that the pointer must be severed here or a target-org scan would
+  // name a source-org sweep. A still-queued scan was never dispatched and
+  // is cancelled (the target org never asked for it); a running one keeps
+  // its status so a delivered command's result still ingests in the new
+  // org. Every sweep reader (claim, pump, fetch, progress) also requires
+  // sweep.org_id = scan.org_id, the backstop for any writer that reaches
+  // devices.org_id without this statement. Placed before the flip, in the
+  // manual_assets position: after it, the restamped rows would already
+  // name the target org.
+  await tx.execute(
+    sql`UPDATE security_scans SET
+          status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+          completed_at = CASE WHEN status = 'queued' THEN now() ELSE completed_at END,
+          sweep_id = NULL
+        WHERE device_id = ${deviceId}::uuid AND sweep_id IS NOT NULL`,
+  );
+
   // Flip the device row first so any concurrent agent heartbeat
   // after this point resolves the new org_id.
   const [row] = await tx

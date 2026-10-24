@@ -924,6 +924,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'security_policies',
   'security_posture_org_snapshots',
   'security_posture_snapshots',
+  'security_scan_sweeps',
   'security_scans',
   'security_status',
   'security_threats',
