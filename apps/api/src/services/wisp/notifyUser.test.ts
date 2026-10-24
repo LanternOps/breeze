@@ -48,10 +48,8 @@ vi.mock('../expoPush', async (orig) => ({
   dispatchPushToTokens: h.dispatchPushToTokens,
 }));
 vi.mock('./concerns', () => ({ recipientState: h.recipientState, recordNudge: h.recordNudge }));
-vi.mock('./nudgePreferences', () => ({
-  loadNudgePrefs: h.loadNudgePrefs,
-  loadUrgentCapableSeverities: h.loadUrgentCapableSeverities,
-}));
+vi.mock('./nudgePreferences', () => ({ loadNudgePrefs: h.loadNudgePrefs }));
+vi.mock('./partnerNudgeSettings', () => ({ loadUrgentCapableSeverities: h.loadUrgentCapableSeverities }));
 vi.mock('../notificationThrottle', () => ({ checkNotificationThrottle: h.checkNotificationThrottle }));
 vi.mock('../ticketPush', () => ({ userPushTargetsQuery: h.userPushTargetsQuery }));
 

@@ -28,13 +28,13 @@ import { updateWispNudgePreferencesSchema, updateWispNudgeSettingsSchema } from 
 import { zValidator } from '../lib/validation';
 import type { AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
-import { canManagePartnerWidePolicies } from '../services/partnerWideAccess';
 import {
-  loadNudgePrefs,
-  loadUrgentCapableSeverities,
-  upsertNudgePrefs,
-  upsertUrgentCapableSeverities,
-} from '../services/wisp/nudgePreferences';
+  canManagePartnerWidePolicies,
+  PARTNER_WIDE_WRITE_DENIED_MESSAGE,
+  PartnerWideWriteDeniedError,
+} from '../services/partnerWideAccess';
+import { loadNudgePrefs, upsertNudgePrefs } from '../services/wisp/nudgePreferences';
+import { loadUrgentCapableSeverities, upsertUrgentCapableSeverities } from '../services/wisp/partnerNudgeSettings';
 
 const authOf = (c: Context): AuthContext => c.get('auth') as AuthContext;
 
@@ -74,11 +74,17 @@ wispNudgeSettingsRoutes.get('/', async (c) => {
 
 wispNudgeSettingsRoutes.put('/', zValidator('json', updateWispNudgeSettingsSchema), async (c) => {
   const auth = authOf(c);
-  if (!canManagePartnerWidePolicies(auth)) {
-    return c.json({ error: 'Only a partner administrator can change this', code: 'partner_admin_required' }, 403);
-  }
+  const denied = () => c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'partner_admin_required' }, 403);
+  // Partner-wide state (epic #2135): gated here and again in the service.
+  if (!canManagePartnerWidePolicies(auth)) return denied();
   const partnerId = partnerIdOf(auth);
-  const urgentCapableSeverities = await upsertUrgentCapableSeverities(partnerId, c.req.valid('json').urgentCapableSeverities, auth.user.id);
+  let urgentCapableSeverities;
+  try {
+    urgentCapableSeverities = await upsertUrgentCapableSeverities(auth, c.req.valid('json').urgentCapableSeverities);
+  } catch (err) {
+    if (err instanceof PartnerWideWriteDeniedError) return denied();
+    throw err;
+  }
   writeRouteAudit(c, {
     orgId: null,
     partnerId,

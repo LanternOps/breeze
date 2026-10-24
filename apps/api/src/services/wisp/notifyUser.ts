@@ -39,7 +39,8 @@ import { userPushTargetsQuery } from '../ticketPush';
 import { recipientState, recordNudge } from './concerns';
 import { deliverInApp } from './deliver';
 import { webDeepLink } from './nudgeLinks';
-import { loadNudgePrefs, loadUrgentCapableSeverities } from './nudgePreferences';
+import { loadNudgePrefs } from './nudgePreferences';
+import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
 
 export type NudgePayload = {
   userId: string;

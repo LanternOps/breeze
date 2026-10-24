@@ -1,5 +1,7 @@
 /**
- * Wisp W06 — nudge preference reads/upserts (w00 "Nudges (W06)", A28, A29).
+ * Wisp W06 — per-user nudge preference reads/upserts (w00 "Nudges (W06)",
+ * A28, A29). The partner's urgent-capable severities (partner-wide state,
+ * gated on canManagePartnerWidePolicies) live in ./partnerNudgeSettings.ts.
  *
  * `loadNudgePrefs` / `upsertNudgePrefs` / the urgent-capable pair run in
  * WHATEVER context the caller holds: the routes call them under the caller's
@@ -13,18 +15,12 @@
  */
 import { eq, inArray, sql } from 'drizzle-orm';
 import {
-  CONCERN_SEVERITIES,
   resolveWispNudgePrefs,
-  type ConcernSeverity,
   type UpdateWispNudgePreferences,
   type WispNudgePreferences,
 } from '@breeze/shared';
 import { db } from '../../db';
-import {
-  wispNudgePreferences,
-  wispPartnerNudgeSettings,
-  type WispNudgePreferencesRow,
-} from '../../db/schema/wispNudgePreferences';
+import { wispNudgePreferences, type WispNudgePreferencesRow } from '../../db/schema/wispNudgePreferences';
 import { inSystemContext } from './grantAuthority';
 
 type PrefFields = Pick<WispNudgePreferencesRow,
@@ -59,29 +55,6 @@ export async function upsertNudgePrefs(userId: string, partnerId: string, patch:
     .onConflictDoUpdate({ target: wispNudgePreferences.userId, set: { ...set, updatedAt: sql`now()` } })
     .returning(prefColumns);
   return toPrefs(row);
-}
-
-const SEVERITY_SET: ReadonlySet<string> = new Set(CONCERN_SEVERITIES);
-const cleanSeverities = (raw: readonly string[] | null | undefined): ConcernSeverity[] =>
-  [...new Set((raw ?? []).filter((s): s is ConcernSeverity => SEVERITY_SET.has(s)))];
-
-/** Missing row = none (spec §7.4 "default: none"). */
-export async function loadUrgentCapableSeverities(partnerId: string): Promise<ConcernSeverity[]> {
-  const [row] = await db.select({ urgentCapableSeverities: wispPartnerNudgeSettings.urgentCapableSeverities })
-    .from(wispPartnerNudgeSettings).where(eq(wispPartnerNudgeSettings.partnerId, partnerId)).limit(1);
-  return cleanSeverities(row?.urgentCapableSeverities);
-}
-
-export async function upsertUrgentCapableSeverities(partnerId: string, severities: ConcernSeverity[], byUserId: string): Promise<ConcernSeverity[]> {
-  const clean = cleanSeverities(severities);
-  const [row] = await db.insert(wispPartnerNudgeSettings)
-    .values({ partnerId, urgentCapableSeverities: clean, updatedByUserId: byUserId })
-    .onConflictDoUpdate({
-      target: wispPartnerNudgeSettings.partnerId,
-      set: { urgentCapableSeverities: clean, updatedByUserId: byUserId, updatedAt: sql`now()` },
-    })
-    .returning({ urgentCapableSeverities: wispPartnerNudgeSettings.urgentCapableSeverities });
-  return cleanSeverities(row?.urgentCapableSeverities);
 }
 
 async function stamp(userId: string, partnerId: string, field: 'lastDigestAt' | 'lastBriefAt', at: Date): Promise<void> {

@@ -43,12 +43,15 @@ vi.mock('../db', () => ({ db: {}, runAfterDbContextCommit: (_l: string, work: ()
 vi.mock('../services/wisp/nudgePreferences', () => ({
   loadNudgePrefs: h.loadNudgePrefs,
   upsertNudgePrefs: h.upsertNudgePrefs,
+}));
+vi.mock('../services/wisp/partnerNudgeSettings', () => ({
   loadUrgentCapableSeverities: h.loadUrgentCapableSeverities,
   upsertUrgentCapableSeverities: h.upsertUrgentCapableSeverities,
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 
 import { wispRoutes } from './wisp';
+import { PARTNER_WIDE_WRITE_DENIED_MESSAGE, PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -164,11 +167,18 @@ describe('GET /wisp/nudge-settings', () => {
 });
 
 describe('PUT /wisp/nudge-settings', () => {
-  it('is 403 partner_admin_required for a non-admin', async () => {
+  it('is 403 with PARTNER_WIDE_WRITE_DENIED_MESSAGE for a partner user without full org access; nothing written', async () => {
     const res = await put(buildApp(), '/wisp/nudge-settings', { urgentCapableSeverities: ['high'] });
     expect(res.status).toBe(403);
-    expect((await res.json()).code).toBe('partner_admin_required');
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'partner_admin_required' });
     expect(h.upsertUrgentCapableSeverities).not.toHaveBeenCalled();
+  });
+
+  it('a service-level refusal (PartnerWideWriteDeniedError) is the same 403', async () => {
+    h.upsertUrgentCapableSeverities.mockRejectedValue(new PartnerWideWriteDeniedError());
+    const res = await put(buildApp(asPartnerAdmin), '/wisp/nudge-settings', { urgentCapableSeverities: ['high'] });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE, code: 'partner_admin_required' });
   });
 
   it('stores ["high"] for a partner admin and audits', async () => {
@@ -176,7 +186,7 @@ describe('PUT /wisp/nudge-settings', () => {
     const res = await put(buildApp(asPartnerAdmin), '/wisp/nudge-settings', { urgentCapableSeverities: ['high'] });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ data: { settings: { urgentCapableSeverities: ['high'] } } });
-    expect(h.upsertUrgentCapableSeverities).toHaveBeenCalledWith(PARTNER, ['high'], USER);
+    expect(h.upsertUrgentCapableSeverities).toHaveBeenCalledWith(expect.objectContaining({ partnerId: PARTNER, user: expect.objectContaining({ id: USER }) }), ['high']);
     expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'wisp.nudge_settings.update', resourceType: 'partner', resourceId: PARTNER,
     }));

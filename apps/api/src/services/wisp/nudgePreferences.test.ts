@@ -39,15 +39,13 @@ const h = vi.hoisted(() => {
 vi.mock('../../db', () => ({ db: h.db }));
 vi.mock('./grantAuthority', () => ({ inSystemContext: h.inSystemContext }));
 
-import { wispNudgePreferences, wispPartnerNudgeSettings } from '../../db/schema/wispNudgePreferences';
+import { wispNudgePreferences } from '../../db/schema/wispNudgePreferences';
 import {
   loadNudgeBookkeeping,
   loadNudgePrefs,
-  loadUrgentCapableSeverities,
   markBriefSent,
   markDigestSent,
   upsertNudgePrefs,
-  upsertUrgentCapableSeverities,
 } from './nudgePreferences';
 
 const USER = '33333333-3333-4333-8333-333333333333';
@@ -97,23 +95,6 @@ describe('upsertNudgePrefs', () => {
     const out = await upsertNudgePrefs(USER, PARTNER, { briefTimeLocal: null });
     expect(out.briefTimeLocal).toBeNull();
     expect(h.inserts[0]!.conflict!.set).toHaveProperty('briefTimeLocal', null);
-  });
-});
-
-describe('partner urgent-capable severities', () => {
-  it('a missing row is none; stored garbage is dropped', async () => {
-    await expect(loadUrgentCapableSeverities(PARTNER)).resolves.toEqual([]);
-    h.results.push([{ urgentCapableSeverities: ['high', 'critical', 'medium'] }]);
-    await expect(loadUrgentCapableSeverities(PARTNER)).resolves.toEqual(['high', 'medium']);
-  });
-
-  it('upserts on partner_id, de-duplicated, recording who changed it', async () => {
-    h.results.push([{ urgentCapableSeverities: ['high'] }]);
-    await expect(upsertUrgentCapableSeverities(PARTNER, ['high', 'high'], USER)).resolves.toEqual(['high']);
-    const [ins] = h.inserts;
-    expect(ins!.table).toBe(wispPartnerNudgeSettings);
-    expect(ins!.values).toMatchObject({ partnerId: PARTNER, urgentCapableSeverities: ['high'], updatedByUserId: USER });
-    expect(ins!.conflict!.target).toBe(wispPartnerNudgeSettings.partnerId);
   });
 });
 
