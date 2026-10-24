@@ -114,6 +114,13 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/flows/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
   });
 
+  it('classifies the Wisp thread page (W06 #9918) as partner-settings — its subject is the grant, not the switcher', () => {
+    expect(getRouteScope('/ai/wisp/thread/9f1c0f4e-0000-4000-8000-000000000000')).toBe('partner-settings');
+    expect(getRouteScope('/ai/wisp/thread')).toBeNull();
+    // Not catalog: the page opts out of ambient orgId per request instead.
+    expect(isGlobalScopeRoute('/ai/wisp/thread/abc')).toBe(false);
+  });
+
   it('returns null for routes outside the registry', () => {
     expect(getRouteScope('/definitely-not-a-page')).toBeNull();
   });

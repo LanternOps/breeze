@@ -64,6 +64,11 @@ describe('WispConcernsPanel', () => {
     await waitFor(() => expect(screen.getByTestId('wisp-concern-select-a').getAttribute('aria-expanded')).toBe('true'));
   });
 
+  it('crossOrg lists the whole grant (no switcher narrowing); the sidebar default stays ambient', async () => {
+    render(<WispConcernsPanel grantId="g1" threadId="t1" crossOrg />);
+    await waitFor(() => expect(api.listWispConcerns).toHaveBeenCalledWith('g1', ['open', 'snoozed'], { crossOrg: true }));
+  });
+
   it('a deep link to a concern that was resolved meanwhile widens to all statuses and shows it (W06 review focus 3)', async () => {
     window.location.hash = '#concern=gone';
     api.listWispConcerns.mockImplementation(async (_g: string, statuses: string[]) =>

@@ -19,7 +19,7 @@ describe('fetchWispActivity', () => {
   it('requests the first page without a cursor', async () => {
     mockFetch.mockResolvedValue(res(true, { data: { items: [item()], nextCursor: 'n1' } }));
     const out = await fetchWispActivity('t/1', null);
-    expect(mockFetch).toHaveBeenCalledWith('/wisp/thread/t%2F1/activity?limit=50');
+    expect(mockFetch).toHaveBeenCalledWith('/wisp/thread/t%2F1/activity?limit=50', { skipOrgIdInjection: true });
     expect(out.nextCursor).toBe('n1');
     expect(out.items).toHaveLength(1);
   });
@@ -27,7 +27,7 @@ describe('fetchWispActivity', () => {
   it('appends an encoded cursor', async () => {
     mockFetch.mockResolvedValue(res(true, { data: { items: [], nextCursor: 5 } }));
     const out = await fetchWispActivity('t1', 'a b');
-    expect(mockFetch).toHaveBeenCalledWith('/wisp/thread/t1/activity?limit=50&cursor=a%20b');
+    expect(mockFetch).toHaveBeenCalledWith('/wisp/thread/t1/activity?limit=50&cursor=a%20b', { skipOrgIdInjection: true });
     expect(out.nextCursor).toBeNull();
   });
 
@@ -68,7 +68,7 @@ describe('fetchWispActivity', () => {
   it('W06a shape: reads data.current (the live line) and honours a smaller limit', async () => {
     mockFetch.mockResolvedValue(res(true, { data: { items: [], nextCursor: null, current: CURRENT } }));
     const out = await fetchWispActivity('t1', null, 1);
-    expect(mockFetch).toHaveBeenCalledWith('/wisp/thread/t1/activity?limit=1');
+    expect(mockFetch).toHaveBeenCalledWith('/wisp/thread/t1/activity?limit=1', { skipOrgIdInjection: true });
     expect(out.current).toEqual(CURRENT);
   });
 

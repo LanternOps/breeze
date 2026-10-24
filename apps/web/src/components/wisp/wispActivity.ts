@@ -41,9 +41,11 @@ export async function fetchWispActivity(
   cursor: string | null,
   limit: number = PAGE_LIMIT,
 ): Promise<{ items: ActivityItem[]; nextCursor: string | null; current: CurrentActivity }> {
+  // Id-addressed and grant-scoped: the org switcher's ambient orgId has no meaning here.
   const res = await fetchWithAuth(
     `/wisp/thread/${encodeURIComponent(threadId)}/activity?limit=${limit}` +
       (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+    { skipOrgIdInjection: true },
   );
   if (!res.ok) throw new Error(`Wisp activity request failed (${res.status})`);
   const body = (await res.json()) as { data?: { items?: unknown; nextCursor?: unknown; current?: unknown } };

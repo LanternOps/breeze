@@ -6,9 +6,20 @@ import { fetchWithAuth } from '../stores/auth';
 import { runAction } from './runAction';
 import { i18n } from './i18n';
 
-export async function listWispConcerns(grantId: string, status?: ConcernStatus[]): Promise<Concern[]> {
+/**
+ * `crossOrg`: list the whole grant. Without it the org switcher's ambient
+ * `?orgId=` narrows the list (the chat sidebar's behaviour); the thread page
+ * passes it because its subject is the grant, and a nudge's concern may sit in
+ * an org other than the one the switcher shows.
+ */
+export async function listWispConcerns(
+  grantId: string,
+  status?: ConcernStatus[],
+  opts?: { crossOrg?: boolean },
+): Promise<Concern[]> {
   const query = `grantId=${encodeURIComponent(grantId)}${status && status.length ? `&status=${status.join(',')}` : ''}`;
-  const res = await fetchWithAuth(`/wisp/concerns?${query}`);
+  const url = `/wisp/concerns?${query}`;
+  const res = opts?.crossOrg ? await fetchWithAuth(url, { skipOrgIdInjection: true }) : await fetchWithAuth(url);
   if (!res.ok) throw new Error(`wisp concerns list failed: ${res.status}`);
   const body = (await res.json()) as { concerns?: unknown } | null;
   // A malformed body is a contract break, not "no concerns": surface it.

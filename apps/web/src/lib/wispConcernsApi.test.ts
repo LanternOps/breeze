@@ -22,6 +22,10 @@ describe('listWispConcerns', () => {
     expect(fetchWithAuth).toHaveBeenCalledWith('/wisp/concerns?grantId=g1&status=open,snoozed');
     expect(out).toEqual([{ id: 'c1' }]);
   });
+  it('crossOrg skips the switcher orgId injection (the thread page lists the whole grant)', async () => {
+    await listWispConcerns('g1', ['open'], { crossOrg: true });
+    expect(fetchWithAuth).toHaveBeenCalledWith('/wisp/concerns?grantId=g1&status=open', { skipOrgIdInjection: true });
+  });
   it('omits status when none given', async () => {
     await listWispConcerns('g1');
     expect(fetchWithAuth).toHaveBeenCalledWith('/wisp/concerns?grantId=g1');

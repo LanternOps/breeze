@@ -76,7 +76,7 @@ describe('WispThreadPage (W06 T7)', () => {
   it('loads the thread by id and composes header, concerns and activity for its grant', async () => {
     render(<WispThreadPage threadId="t1" />);
     await screen.findByTestId('header-mock');
-    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/t1');
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/t1', { skipOrgIdInjection: true }); // id-addressed: the switcher's org must not narrow it
     expect(lastHeader()).toMatchObject({
       orgName: 'Greenwood',
       wideningAvailable: false, // the payload's own value (false here)
@@ -84,7 +84,7 @@ describe('WispThreadPage (W06 T7)', () => {
       currentActivity: null,
       wisp: expect.objectContaining({ grantId: 'g1', threadId: 't1', scopeOrgId: 'org-a', status: 'active', summary: 'All quiet.', spentTodayCents: 42 }),
     });
-    expect(h.concernProps).toMatchObject({ grantId: 'g1', threadId: 't1' });
+    expect(h.concernProps).toMatchObject({ grantId: 'g1', threadId: 't1', crossOrg: true });
     expect(h.activityProps[0]).toMatchObject({ threadId: 't1' });
     expect(screen.getByTestId('wisp-thread-summary').textContent).toBe('All quiet.');
   });

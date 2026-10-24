@@ -40,7 +40,16 @@ function tomorrowNineLocal(): Date {
   return d;
 }
 
-export function WispConcernsPanel({ grantId, threadId }: { grantId: string; threadId: string }) {
+export function WispConcernsPanel({
+  grantId,
+  threadId,
+  crossOrg = false,
+}: {
+  grantId: string;
+  threadId: string;
+  /** List the whole grant, ignoring the org switcher (the thread page); the sidebar keeps the ambient narrowing. */
+  crossOrg?: boolean;
+}) {
   const { t } = useTranslation('ai');
   const [concerns, setConcerns] = useState<Concern[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -59,7 +68,8 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   const load = useCallback(async () => {
     const token = ++loadToken.current;
     try {
-      const next = await listWispConcerns(grantId, showAll ? ALL : LIVE);
+      const statuses = showAll ? ALL : LIVE;
+      const next = crossOrg ? await listWispConcerns(grantId, statuses, { crossOrg: true }) : await listWispConcerns(grantId, statuses);
       if (token !== loadToken.current) return;
       setConcerns(next);
       setLoadFailed(false);
@@ -69,7 +79,7 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
     } finally {
       if (token === loadToken.current) setLoaded(true);
     }
-  }, [grantId, showAll]);
+  }, [grantId, showAll, crossOrg]);
 
   useEffect(() => {
     void load();

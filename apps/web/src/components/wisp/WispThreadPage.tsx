@@ -73,7 +73,11 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
       },
     );
     try {
-      const [res, current] = await Promise.all([fetchWithAuth(`/wisp/thread/${encodeURIComponent(threadId)}`), currentRead]);
+      // Id-addressed: the switcher's org must not narrow it (routeScope: partner-settings).
+      const [res, current] = await Promise.all([
+        fetchWithAuth(`/wisp/thread/${encodeURIComponent(threadId)}`, { skipOrgIdInjection: true }),
+        currentRead,
+      ]);
       if (token !== loadToken.current) return;
       if (res.status === 404) {
         setView({ kind: 'notFound' });
@@ -213,7 +217,7 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
       </section>
 
       <section className="overflow-hidden rounded-lg border bg-card">
-        <WispConcernsPanel key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} />
+        <WispConcernsPanel key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} crossOrg />
       </section>
 
       <section className="overflow-hidden rounded-lg border bg-card">
