@@ -1424,3 +1424,4 @@ export * from './trustCenterEmbed';
 export * from './launchPurchaseSelection';
 export * from './wispConcerns';
 export * from './wispNudgePreferences';
+export * from './wispSpecialists';

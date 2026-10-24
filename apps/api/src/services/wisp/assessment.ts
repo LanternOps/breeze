@@ -27,6 +27,7 @@
  * it announces and enqueues after its own transaction commits (#1105; the same
  * seam as metricAnomalySubscriber.ts).
  */
+import { createHash } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
@@ -178,7 +179,19 @@ function skipAssessment(
  * this from inside a DB transaction you still hold open: admission enqueues.
  */
 export async function enqueueAssessment(
-  input: { grantId: string; orgId: string; reason: AssessmentReason } & DeterministicDigestHint,
+  input: {
+    grantId: string;
+    orgId: string;
+    reason: AssessmentReason;
+    /**
+     * The queue job's identity (`<jobId>@<job.timestamp>`). When set the
+     * dedupe key is derived from it, so a BullMQ retry of the SAME job
+     * occurrence lands on the same `(org_id, dedupe_key)` and admission
+     * returns `duplicate` instead of a second assessment (W05 carry-over,
+     * fixed in W07). Unset → a time-based key (direct callers).
+     */
+    occurrenceKey?: string;
+  } & DeterministicDigestHint,
 ): Promise<{ runId: string } | { skipped: string }> {
   if (!wispEnabled()) return skipAssessment('wisp_disabled', 'skipped_admission');
   const { grantId, orgId, reason } = input;
@@ -226,7 +239,9 @@ export async function enqueueAssessment(
     triggerKind: 'schedule',
     deviceId: null,
     profile: 'assessment',
-    dedupeKey: `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
+    dedupeKey: input.occurrenceKey
+      ? `wisp-assess-${grantId}-${orgId}-o${createHash('sha256').update(input.occurrenceKey).digest('hex').slice(0, 24)}`
+      : `wisp-assess-${grantId}-${orgId}-${Date.now()}`,
     triggerRef: { wisp: triggerRef },
     grant: { grantId, grantRevisionId: ceiling.revisionId },
   }));

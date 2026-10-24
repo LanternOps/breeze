@@ -340,9 +340,10 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
  * nothing (enqueueAssessment → skip 'grant_inactive'); every skip is logged
  * at info, never thrown.
  */
-export async function processAssessJob(data: WispAssessJobData): Promise<void> {
+export async function processAssessJob(data: WispAssessJobData, occurrenceKey?: string): Promise<void> {
   if (!wispEnabled()) return;
-  const result = await enqueueAssessment(data);
+  // The job occurrence makes the assessment's dedupe key retry-stable.
+  const result = await enqueueAssessment(occurrenceKey ? { ...data, occurrenceKey } : data);
   if ('skipped' in result) {
     console.info('[wisp-wake] assessment skipped', { grantId: data.grantId, orgId: data.orgId, reason: data.reason.kind, skipped: result.skipped });
   }
@@ -364,7 +365,7 @@ function createWispWakeWorker(): Worker<WakeJobData> {
         case TICK_JOB:
           return processWakeTick();
         case ASSESS_JOB:
-          return processAssessJob(job.data as WispAssessJobData);
+          return processAssessJob(job.data as WispAssessJobData, `${job.id ?? ''}@${job.timestamp}`);
         default:
           throw new Error(`[wisp-wake] unknown job name: ${job.name}`);
       }

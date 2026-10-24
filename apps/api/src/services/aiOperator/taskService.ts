@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
-import { aiAgents } from '../../db/schema/aiAgents';
+import { aiAgentRuns, aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import {
   identityOffboardingCheckpointSchema,
@@ -74,6 +74,7 @@ import { resolveTaskDeadlineMs } from './taskDeadline';
 import { checkTaskActiveTargets, checkTaskPendingCapacity } from './taskLimits';
 import { countPendingTasks, lockOrgTaskAdmission } from './taskLimitsLoader';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
+import { assertDepthOneRequester, lineageFor } from '../aiAgents/grantDepthGuard';
 
 export type AdmitTaskRefusal =
   | 'tasks_disabled'
@@ -149,8 +150,12 @@ export interface AdmitServiceRecoveryTaskInput {
    * producer; `routes/aiOperatorTasks.ts` does not expose it. The requester
    * gate then checks the live ceiling (with the effect permission) before
    * each effect, and the coordinator's runs inherit the pin.
+   *
+   * W07 (w00 A11): `requestedByRunId` names Wisp's assessment run when the
+   * task is a specialist child; admission enforces the depth-one guard on it
+   * (the same predicate as run admission) and stamps the lineage.
    */
-  grant?: { grantId: string; grantRevisionId: string };
+  grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null };
 }
 
 /**
@@ -308,6 +313,22 @@ export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult>
   if (input.grant && !input.requesterUserId) {
     return { ok: false, refusal: 'invalid_input', detail: 'a grant-bearing task needs its requester (the grantor)' };
   }
+  // Wisp W07 (w00 A11): the depth-one guard, as in run admission. A throw —
+  // the coordinator checks depth first, so reaching it is a caller bug.
+  if (input.grant?.requestedByRunId) {
+    const grant = input.grant;
+    const [requester] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({
+        grantId: aiAgentRuns.grantId,
+        orgId: aiAgentRuns.orgId,
+        depth: aiAgentRuns.depth,
+        profile: aiAgentRuns.profile,
+      })
+      .from(aiAgentRuns)
+      .where(eq(aiAgentRuns.id, grant.requestedByRunId!))
+      .limit(1)));
+    assertDepthOneRequester(requester, grant.grantId, input.orgId, 'admitTask');
+  }
 
   const now = input.now ?? new Date();
   let targets: AdmissionTargets;
@@ -451,6 +472,8 @@ export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult>
         // Wisp W02: both or none (`ai_operator_tasks_grant_link_chk`).
         grantId: input.grant?.grantId ?? null,
         grantRevisionId: input.grant?.grantRevisionId ?? null,
+        // Wisp W07: specialist lineage (`ai_operator_tasks_depth_chk`).
+        ...lineageFor(input.grant),
         objective: input.objective.slice(0, 4000),
         deviceId: row.deviceId,
         targetLabel: row.targetLabel,

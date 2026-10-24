@@ -52,6 +52,7 @@ import {
   RUN_TERMINAL_OUTBOX_TRANSITION_SEQ,
   enqueueTaskOutbox,
 } from '../aiOperator/taskOutbox';
+import { assertDepthOneRequester, lineageFor } from './grantDepthGuard';
 import { AgentRunOwnershipError, assertRunOwnership } from './agentAuthContext';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
 import {
@@ -409,29 +410,16 @@ export interface CreateAgentRunInput {
    * row, so the run loop and release re-check the SAME pin.
    *
    * `requestedByRunId` is the depth guard's input (w00 A11): when set, it must
-   * name a run under the same grant and org — Wisp's own run. W07's
-   * `requestSpecialist.requestedByRunId` forwards it.
+   * name Wisp's own assessment run (depth 0, profile `assessment`) under the
+   * same grant and org; the inserted row is then a depth-1 specialist child
+   * carrying the lineage. W07's `requestSpecialist.requestedByRunId` forwards it.
    */
   grant?: { grantId: string; grantRevisionId: string; requestedByRunId?: string | null };
 }
 
-/**
- * Wisp W02 (w00 A11): a grant-bearing admission whose requester is not Wisp's
- * own run under the same grant and org. A THROW, not a skip — W07's
- * coordinator checks depth before admission, so reaching this is a caller bug.
- *
- * NOTE: W02 checks "same grant, same org" only. Nothing records which run
- * requested which yet, so a specialist under grant G could still request
- * another specialist under G; W07 adds the lineage columns (`depth`,
- * `requested_by_run_id`) and the true depth-one predicate.
- */
-export class GrantDepthExceededError extends Error {
-  readonly code = 'grant_depth_exceeded' as const;
-  constructor(message: string) {
-    super(message);
-    this.name = 'GrantDepthExceededError';
-  }
-}
+// Wisp W02/W07 (w00 A11): the depth-one guard lives in a leaf module shared
+// with Operator task admission; re-exported here, where W02 published it.
+export { GrantDepthExceededError } from './grantDepthGuard';
 
 export type AgentRunSkipReason =
   | 'kill_switch_off' | 'no_effective_agent' | 'agent_disabled' | 'mode_off'
@@ -1335,15 +1323,18 @@ export async function createAndEnqueueAgentRun(
     const { grantId, grantRevisionId, requestedByRunId } = input.grant;
     if (requestedByRunId) {
       const [requester] = await inSystemDbContext(() => db
-        .select({ grantId: aiAgentRuns.grantId, orgId: aiAgentRuns.orgId })
+        .select({
+          grantId: aiAgentRuns.grantId,
+          orgId: aiAgentRuns.orgId,
+          depth: aiAgentRuns.depth,
+          profile: aiAgentRuns.profile,
+        })
         .from(aiAgentRuns)
         .where(eq(aiAgentRuns.id, requestedByRunId))
         .limit(1));
-      if (!requester || requester.grantId !== grantId || requester.orgId !== orgId) {
-        throw new GrantDepthExceededError(
-          'createAndEnqueueAgentRun: grant-bearing work may only be requested by Wisp\'s own run under the same grant and org (depth 1)',
-        );
-      }
+      // W07: the true depth-one predicate (lineage columns), shared with
+      // Operator task admission.
+      assertDepthOneRequester(requester, grantId, orgId, 'createAndEnqueueAgentRun');
     }
     try {
       grantCeiling = await resolveGrantCeiling(grantId, grantRevisionId);
@@ -1359,6 +1350,13 @@ export async function createAndEnqueueAgentRun(
       throw err;
     }
   }
+
+  // Wisp W07 (w00 A11): a grant-bearing run requested by Wisp's assessment
+  // (the guard above proved it) is a specialist child — depth 1, pointing at
+  // its requester and the revision it was requested under. A grant-bearing
+  // run with no requester (the assessment itself) and every grant-less run
+  // are depth 0 with no lineage.
+  const lineage = lineageFor(grantCeiling ? input.grant : null);
 
   // 2. Effective policy. Throws 404 when the org itself is missing — that is a
   //    caller bug, not a skip, and is deliberately allowed to propagate.
@@ -1957,6 +1955,8 @@ export async function createAndEnqueueAgentRun(
         // Wisp W02: both or none (`ai_agent_runs_grant_link_chk`).
         grantId: grantCeiling ? input.grant!.grantId : null,
         grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
+        // Wisp W07: specialist lineage (`ai_agent_runs_depth_chk`).
+        ...lineage,
         // Stamped by runLoop.ts with the model the run actually used, once
         // resolveModel has bound the offering (spec §6.2). Admission knows only
         // the offering, not a model string (W08: the policy model string is gone).
@@ -2060,6 +2060,7 @@ export async function createAndEnqueueAgentRun(
         // the run loop and release enforce whatever the row carries.
         grantId: grantCeiling ? input.grant!.grantId : null,
         grantRevisionId: grantCeiling ? input.grant!.grantRevisionId : null,
+        ...lineage,
       })
       .where(and(
         eq(aiAgentRuns.orgId, orgId),

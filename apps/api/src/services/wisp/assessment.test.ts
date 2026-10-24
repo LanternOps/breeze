@@ -287,6 +287,23 @@ describe('enqueueAssessment', () => {
     expect(Number(m?.[2])).toBeGreaterThanOrEqual(before);
   });
 
+  it('a job occurrence key makes the dedupe key deterministic, so a retried job cannot admit a second assessment', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' }, occurrenceKey: 'wake:job-1@1700000000000' });
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' }, occurrenceKey: 'wake:job-1@1700000000000' });
+    const k1 = (h.createAndEnqueueAgentRun.mock.calls[0]![0] as Record<string, unknown>).dedupeKey as string;
+    const k2 = (h.createAndEnqueueAgentRun.mock.calls[1]![0] as Record<string, unknown>).dedupeKey as string;
+    expect(k1).toBe(k2);
+    expect(k1).toMatch(new RegExp(`^wisp-assess-${GRANT}-${ORG}-o[0-9a-f]{24}$`));
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' }, occurrenceKey: 'wake:job-1@1700000009999' });
+    expect((h.createAndEnqueueAgentRun.mock.calls[2]![0] as Record<string, unknown>).dedupeKey).not.toBe(k1);
+  });
+
   it('calls createAndEnqueueAgentRun with no ambient DB context (#1105) even when the caller holds one', async () => {
     h.results.push([grantRow()]);
     h.results.push([{ at: null }]);

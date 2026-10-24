@@ -553,6 +553,12 @@ describe('processAssessJob', () => {
     expect(h.enqueueAssessment).toHaveBeenCalledWith(data);
   });
 
+  it('threads the job occurrence key into enqueueAssessment (retry-stable dedupe)', async () => {
+    const data = { grantId: G1, orgId: O1, reason: { kind: 'tick' as const } };
+    await processAssessJob(data, 'wisp-assess:g:o@1700000000000');
+    expect(h.enqueueAssessment).toHaveBeenCalledWith({ ...data, occurrenceKey: 'wisp-assess:g:o@1700000000000' });
+  });
+
   it('does nothing when the flag is off', async () => {
     h.enabled = false;
     await processAssessJob({ grantId: G1, orgId: O1, reason: { kind: 'tick' } });
@@ -584,8 +590,10 @@ describe('worker lifecycle', () => {
     const processor = h.workers[0]!.processor;
     await expect(processor({ name: 'tick', data: {} })).resolves.toMatchObject({ grantsTicked: 0 });
     h.enabled = true;
-    await processor({ name: 'assess', data: { grantId: G1, orgId: O1, reason: { kind: 'tick' } } });
-    expect(h.enqueueAssessment).toHaveBeenCalledWith({ grantId: G1, orgId: O1, reason: { kind: 'tick' } });
+    await processor({ name: 'assess', id: 'assess-job', timestamp: 1700000000000, data: { grantId: G1, orgId: O1, reason: { kind: 'tick' } } });
+    expect(h.enqueueAssessment).toHaveBeenCalledWith({
+      grantId: G1, orgId: O1, reason: { kind: 'tick' }, occurrenceKey: 'assess-job@1700000000000',
+    });
     await expect(processor({ name: 'mystery', data: {} })).rejects.toThrow(/unknown/);
     await shutdownWispWakeScheduler();
   });
