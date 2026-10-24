@@ -3189,3 +3189,199 @@ describe('TicketWorkbench — ticket type (#7900)', () => {
     expect(linksCardProps.last).toMatchObject({ canWrite: false });
   });
 });
+
+// ─── Merge (#8972 W2) ────────────────────────────────────────────────────────
+
+// The dialog has its own suite (MergeTicketDialog.test.tsx); here a stub lets
+// the workbench's open/onMerged wiring be driven directly. vi.mock is hoisted.
+const mergeDialogProps = vi.hoisted(() => ({ last: null as null | { open: boolean; source: { id: string } } }));
+vi.mock('./MergeTicketDialog', () => ({
+  default: (p: { open: boolean; source: { id: string }; onClose: () => void; onMerged: (s: { id: string; internalNumber: string | null }) => void }) => {
+    mergeDialogProps.last = p;
+    if (!p.open) return null;
+    return (
+      <div data-testid="ticket-merge-dialog">
+        <button type="button" data-testid="stub-merge-done" onClick={() => p.onMerged({ id: 'tk-surv', internalNumber: 'T-2026-0002' })} />
+        <button type="button" data-testid="stub-merge-close" onClick={p.onClose} />
+      </div>
+    );
+  },
+}));
+
+describe('TicketWorkbench — merge header action (#8972)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mergeDialogProps.last = null;
+  });
+
+  it('shows "Merge into…" for tickets:write and opens the dialog on the source', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+
+    const open = screen.getByTestId('ticket-merge-open');
+    expect(open).toHaveTextContent('Merge into…');
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+    fireEvent.click(open);
+    expect(screen.getByTestId('ticket-merge-dialog')).toBeInTheDocument();
+    expect(mergeDialogProps.last?.source.id).toBe('tk-1');
+    fireEvent.click(screen.getByTestId('stub-merge-close'));
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+  });
+
+  it('hides "Merge into…" without tickets:write', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'read' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-merge-open')).toBeNull();
+  });
+
+  it('hands the survivor to onMerged when the host supplies it (split pane)', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    const onMerged = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onMerged={onMerged} />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-merge-open'));
+    fireEvent.click(screen.getByTestId('stub-merge-done'));
+    expect(onMerged).toHaveBeenCalledWith('tk-surv', 'T-2026-0002');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ticket-merge-dialog')).toBeNull();
+  });
+
+  it('navigates to the survivor without an onMerged host (full-page view)', async () => {
+    authState.permissions = [{ resource: 'tickets', action: 'write' }];
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" expanded />);
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.click(screen.getByTestId('ticket-merge-open'));
+    fireEvent.click(screen.getByTestId('stub-merge-done'));
+    expect(navigateTo).toHaveBeenCalledWith('/tickets/tk-surv');
+  });
+});
+
+describe('TicketWorkbench — merged tombstone (#8972)', () => {
+  const TOMBSTONE = makeTicket({
+    id: 'tk-1',
+    internalNumber: 'T-2026-0009',
+    status: 'closed',
+    resolutionNote: 'Merged into T-2026-0002',
+    mergedIntoTicketId: 'tk-surv',
+    mergedAt: '2026-10-20T12:00:00.000Z',
+    assignedTo: 'u-1',
+    assigneeName: 'Alex',
+    comments: [{
+      id: 'c-1', userId: 'u-1', portalUserId: null, authorName: 'Alex', authorType: 'user', commentType: 'comment',
+      content: 'Old reply', isPublic: true, oldValue: null, newValue: null, createdAt: '2026-10-01T00:00:00.000Z',
+    }],
+  });
+  const SURVIVOR = makeTicket({ id: 'tk-surv', internalNumber: 'T-2026-0002' });
+
+  /** Tombstone + survivor detail, plus a triage suggestion and an AI draft —
+   *  each of which would render write controls on a live ticket. */
+  function mockTombstoneApi(opts: { survivorStatus?: number } = {}) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      const get = !init?.method || init.method === 'GET';
+      if (get && url === '/tickets/tk-1') return makeJsonResponse({ data: TOMBSTONE });
+      if (get && url === '/tickets/tk-surv') {
+        return opts.survivorStatus
+          ? makeJsonResponse({ error: 'Ticket not found' }, false, opts.survivorStatus)
+          : makeJsonResponse({ data: SURVIVOR });
+      }
+      if (get && url === '/tickets/tk-1/triage-suggestion') {
+        return makeJsonResponse({ enabled: true, suggestion: { modelVersion: 'v0', confidence: 0.8, priority: 'high', categoryId: null, categoryName: null, reasons: [] } });
+      }
+      if (get && url === '/tickets/tk-1/ai-drafts') {
+        return makeJsonResponse({ data: [{ id: 'd-1', kind: 'reply', content: 'Draft', createdAt: '2026-10-01T00:00:00.000Z', runId: null }] });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    linksCardProps.last = null;
+    authState.permissions = [{ resource: 'tickets', action: 'write' }, { resource: 'tickets', action: 'manage' }];
+  });
+
+  it('shows the banner with the survivor number (read from its detail) and a link', async () => {
+    mockTombstoneApi();
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const banner = await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(banner).toHaveTextContent('This ticket was merged into T-2026-0002'));
+    expect(screen.getByTestId('ticket-merged-banner-link')).toHaveAttribute('href', '/tickets/tk-surv');
+    expect(screen.getByTestId('ticket-merged-banner-link')).toHaveTextContent('Open T-2026-0002');
+  });
+
+  it('shows the deleted-survivor variant with no link when the survivor read 404s', async () => {
+    mockTombstoneApi({ survivorStatus: 404 });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    const banner = await screen.findByTestId('ticket-merged-banner');
+    await waitFor(() => expect(banner).toHaveTextContent('into a ticket that was deleted or that you cannot see'));
+    expect(screen.queryByTestId('ticket-merged-banner-link')).toBeNull();
+  });
+
+  it('disables or hides every write control', async () => {
+    mockTombstoneApi();
+    render(<TicketWorkbench ticketId="tk-1" assignees={[{ id: 'u-1', name: 'Alex', email: 'a@example.com' }]} categories={[{ id: 'cat-1', name: 'Hardware' }]} />);
+    await screen.findByTestId('ticket-merged-banner');
+    // Give the triage/draft fetches time to land so a missed gate would have rendered them.
+    await waitFor(() => expect(screen.getByTestId('ticket-merged-banner')).toHaveTextContent('T-2026-0002'));
+
+    const inert = [
+      'ticket-workbench-subject-edit', 'ticket-workbench-status', 'ticket-workbench-type', 'ticket-workbench-priority',
+      'ticket-workbench-category', 'ticket-workbench-assignee', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice',
+      'ticket-workbench-move-org', 'ticket-delete-button', 'ticket-merge-open', 'ticket-workbench-description-edit-btn',
+      'ticket-workbench-requester-edit', 'ticket-workbench-due', 'ticket-workbench-tag-input', 'ticket-workbench-device-edit',
+      'ticket-workbench-device-unlink', 'ticket-triage-apply', 'ticket-triage-reject', 'ticket-ai-draft-reply-send',
+      'ticket-ai-draft-reply-discard', 'ticket-composer', 'ticket-composer-input', 'ticket-composer-send',
+      'ticket-comment-edit-c-1', 'ticket-comment-delete-c-1',
+    ];
+    for (const id of inert) {
+      const el = screen.queryByTestId(id);
+      if (el) expect(el, id).toBeDisabled();
+    }
+    // The selects that stay visible for reading are disabled, not removed.
+    expect(screen.getByTestId('ticket-workbench-status')).toBeDisabled();
+    expect(screen.getByTestId('ticket-workbench-priority')).toBeDisabled();
+    // No AI suggestion/draft affordances on a tombstone.
+    expect(screen.queryByTestId('ticket-triage-suggestion')).toBeNull();
+    expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+    // The composer's place shows the read-only note instead.
+    expect(screen.getByTestId('ticket-merged-readonly')).toHaveTextContent('Merged tickets are read-only.');
+    expect(linksCardProps.last).toMatchObject({ canWrite: false });
+    // Reading is fine: the feed still renders the tombstone's history.
+    expect(screen.getByTestId('ticket-comment-c-1')).toHaveTextContent('Old reply');
+  });
+
+  it('a live ticket has no merged banner', async () => {
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ticket-merged-banner')).toBeNull();
+    expect(screen.getByTestId('ticket-composer')).toBeInTheDocument();
+  });
+});
+
+describe('TicketWorkbench — survivor timeline (#8972)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('resolves each distinct source ticket once and marks moved comments "from <number>"', async () => {
+    const comment = (id: string, mergedFromTicketId: string | null) => ({
+      id, userId: 'u-1', portalUserId: null, authorName: 'Alex', authorType: 'user', commentType: 'comment' as const,
+      content: `Body ${id}`, isPublic: true, oldValue: null, newValue: null, createdAt: '2026-10-01T00:00:00.000Z', mergedFromTicketId,
+    });
+    mockTicketApi({
+      'tk-1': makeTicket({ comments: [comment('c-1', 'tk-src'), comment('c-2', 'tk-src'), comment('c-3', null)] }),
+      'tk-src': makeTicket({ id: 'tk-src', internalNumber: 'T-2026-0007', mergedIntoTicketId: 'tk-1' }),
+    });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await waitFor(() => expect(screen.getByTestId('ticket-comment-merged-from-c-1')).toHaveTextContent('from T-2026-0007'));
+    expect(screen.getByTestId('ticket-comment-merged-from-c-2')).toHaveTextContent('from T-2026-0007');
+    expect(screen.queryByTestId('ticket-comment-merged-from-c-3')).toBeNull();
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === '/tickets/tk-src')).toHaveLength(1);
+  });
+});
