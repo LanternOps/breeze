@@ -701,6 +701,27 @@ function mergeRuleSetErrors(existing: unknown, reported: ScanRuleSetError[]): Sc
   return merged.length > 0 ? merged : null;
 }
 
+/** id (lower-case) -> version, from `security_scans.dispatched_rule_sets`. */
+function dispatchedRuleSetVersions(raw: unknown): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!Array.isArray(raw)) return out;
+  for (const entry of raw) {
+    if (!isObject(entry)) continue;
+    const id = asString(entry.id);
+    const version = entry.version;
+    if (id && typeof version === 'number' && Number.isInteger(version) && version > 0) out.set(id.toLowerCase(), version);
+  }
+  return out;
+}
+
+function withDispatchedRuleSetVersion(details: unknown, versions: Map<string, number>): unknown {
+  if (!isObject(details)) return details;
+  const { ruleSetVersion: _agentSupplied, ...rest } = details as Record<string, unknown>;
+  const ruleSetId = asString(rest.ruleSetId)?.toLowerCase();
+  const version = ruleSetId ? versions.get(ruleSetId) : undefined;
+  return version !== undefined ? { ...rest, ruleSetVersion: version } : rest;
+}
+
 export async function handleSecurityCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>
@@ -726,7 +747,12 @@ export async function handleSecurityCommandResult(
   if (command.type === securityCommandTypes.scan) {
     const payload = isObject(command.payload) ? command.payload : {};
     const scanType = asString(resultJson?.scanType) ?? asString(payload.scanType) ?? 'quick';
-    const scanRecordId = asString(resultJson?.scanRecordId) ?? asString(payload.scanRecordId);
+    // #6263 W05-9: the scan this COMMAND was dispatched for — bound by
+    // security_scans.command_id (stamped at dispatch), then by the command's
+    // own payload. The agent-reported id is only a fallback for a command with
+    // neither (dispatched before W05 and its payload erased), and the lookup
+    // stays scoped to this device's scans either way.
+    const scanRecordId = asString(payload.scanRecordId) ?? asString(resultJson?.scanRecordId);
     const threatsValue = Array.isArray(resultJson?.threats) ? resultJson.threats : [];
     const threatsFoundRaw = resultJson?.threatsFound;
     const threatsFound = typeof threatsFoundRaw === 'number'
@@ -751,14 +777,27 @@ export async function handleSecurityCommandResult(
     const agentEngine = parseScanEngine(resultJson?.engine);
     const agentRuleSetErrors = parseRuleSetErrors(resultJson?.ruleSetErrors);
 
-    let existingScan: { id: string; engine: string | null; ruleSetErrors: unknown } | undefined;
-    if (isUuid(scanRecordId)) {
-      [existingScan] = await db
-        .select({ id: securityScans.id, engine: securityScans.engine, ruleSetErrors: securityScans.ruleSetErrors })
-        .from(securityScans)
-        .where(and(eq(securityScans.id, scanRecordId), eq(securityScans.deviceId, command.deviceId)))
-        .limit(1);
-    }
+    let existingScan:
+      | { id: string; engine: string | null; ruleSetErrors: unknown; dispatchedRuleSets: unknown }
+      | undefined;
+    [existingScan] = await db
+      .select({
+        id: securityScans.id,
+        engine: securityScans.engine,
+        ruleSetErrors: securityScans.ruleSetErrors,
+        dispatchedRuleSets: securityScans.dispatchedRuleSets,
+      })
+      .from(securityScans)
+      .where(
+        and(
+          eq(securityScans.deviceId, command.deviceId),
+          isUuid(scanRecordId)
+            ? or(eq(securityScans.commandId, command.id), eq(securityScans.id, scanRecordId))
+            : eq(securityScans.commandId, command.id),
+        ),
+      )
+      .orderBy(sql`(${securityScans.commandId} = ${command.id}) DESC NULLS LAST`)
+      .limit(1);
 
     // Dispatched as YARA but the agent did not confirm an engine (a malformed
     // value, or a build without the W02 result keys): never leave it looking
@@ -819,6 +858,11 @@ export async function handleSecurityCommandResult(
       // DECISION W02-d: every security_scan threat (YARA and legacy-signature
       // hits alike) is Breeze's own detection, not the device's AV product.
       const provider = 'breeze' as const;
+      // #6263 W05-9: the version a threat matched is the one the scan was
+      // DISPATCHED with — the agent verifies the bundle's id/version/sha and
+      // the fetch route serves only that version. Server-authoritative: any
+      // agent-supplied ruleSetVersion is dropped.
+      const dispatchedVersions = dispatchedRuleSetVersions(existingScan?.dispatchedRuleSets);
       const inserts: Array<typeof securityThreats.$inferInsert> = [];
 
       for (const threat of threatsValue) {
@@ -844,7 +888,7 @@ export async function handleSecurityCommandResult(
           // chokepoint). AV records routinely embed the offending command line
           // or script fragment, so redact every string in the blob. quarantinedTo
           // is a local path and belongs in the details blob too.
-          details: redactSecretsDeep(threat)
+          details: withDispatchedRuleSetVersion(redactSecretsDeep(threat), dispatchedVersions)
         });
       }
 
