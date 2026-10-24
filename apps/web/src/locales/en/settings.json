@@ -7193,5 +7193,59 @@
       "saved": "Fallback assignee saved",
       "loadFailed": "Could not load the fallback assignee."
     }
+  },
+  "wispMemory": {
+    "title": "Wisp memory",
+    "description": "Review what Wisp has remembered for you, a client, or your whole team, and confirm or retract it.",
+    "tabs": {
+      "mine": "My memory",
+      "org": "Client",
+      "partner": "All clients",
+      "users": "Technicians"
+    },
+    "empty": "No memory blocks here yet.",
+    "loading": "Loading memory…",
+    "loadFailed": "Failed to load memory.",
+    "retry": "Try again",
+    "columns": {
+      "subject": "Subject",
+      "type": "Type",
+      "status": "Status",
+      "confidence": "Confidence",
+      "updated": "Updated",
+      "actions": "Actions"
+    },
+    "statusValue": {
+      "unconfirmed": "Unconfirmed",
+      "confirmed": "Confirmed",
+      "retracted": "Retracted"
+    },
+    "type": {
+      "preference": "Preference",
+      "standing_instruction": "Standing instruction",
+      "fact": "Fact",
+      "decision": "Decision",
+      "concern_outcome": "Concern outcome",
+      "work_summary": "Work summary"
+    },
+    "confidenceValue": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "confirm": "Confirm",
+    "retract": "Retract",
+    "confirmed": "Memory confirmed.",
+    "retracted": "Memory retracted.",
+    "confirmFailed": "Failed to confirm memory.",
+    "retractFailed": "Failed to retract memory.",
+    "fromConversation": "From conversation",
+    "pickOrg": "Select a client",
+    "pickUser": "Select a technician",
+    "pickPrompt": "Choose one above to see its memory.",
+    "showContent": "Show content",
+    "hideContent": "Hide content",
+    "conversationUnavailable": "This conversation is no longer available.",
+    "usersLoadFailed": "Couldn't load technicians."
   }
 }

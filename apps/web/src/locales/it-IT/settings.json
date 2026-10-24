@@ -7193,5 +7193,59 @@
       "saved": "Assegnatario di riserva salvato",
       "loadFailed": "Impossibile caricare l'assegnatario di riserva."
     }
+  },
+  "wispMemory": {
+    "title": "Memoria di Wisp",
+    "description": "Controlla ciò che Wisp ha memorizzato per te, per un cliente o per tutto il team, e confermalo o ritiralo.",
+    "tabs": {
+      "mine": "La mia memoria",
+      "org": "Cliente",
+      "partner": "Tutti i clienti",
+      "users": "Tecnici"
+    },
+    "empty": "Nessun blocco di memoria per ora.",
+    "loading": "Caricamento della memoria…",
+    "loadFailed": "Impossibile caricare la memoria.",
+    "retry": "Riprova",
+    "columns": {
+      "subject": "Oggetto",
+      "type": "Tipo",
+      "status": "Stato",
+      "confidence": "Affidabilità",
+      "updated": "Aggiornato",
+      "actions": "Azioni"
+    },
+    "statusValue": {
+      "unconfirmed": "Non confermato",
+      "confirmed": "Confermato",
+      "retracted": "Ritirato"
+    },
+    "type": {
+      "preference": "Preferenza",
+      "standing_instruction": "Istruzione permanente",
+      "fact": "Fatto",
+      "decision": "Decisione",
+      "concern_outcome": "Esito di una segnalazione",
+      "work_summary": "Riepilogo del lavoro"
+    },
+    "confidenceValue": {
+      "low": "Bassa",
+      "medium": "Media",
+      "high": "Alta"
+    },
+    "confirm": "Conferma",
+    "retract": "Ritira",
+    "confirmed": "Memoria confermata.",
+    "retracted": "Memoria ritirata.",
+    "confirmFailed": "Impossibile confermare la memoria.",
+    "retractFailed": "Impossibile ritirare la memoria.",
+    "fromConversation": "Dalla conversazione",
+    "pickOrg": "Seleziona un cliente",
+    "pickUser": "Seleziona un tecnico",
+    "pickPrompt": "Scegli un’opzione sopra per vedere la sua memoria.",
+    "showContent": "Mostra contenuto",
+    "hideContent": "Nascondi contenuto",
+    "conversationUnavailable": "Questa conversazione non è più disponibile.",
+    "usersLoadFailed": "Impossibile caricare i tecnici."
   }
 }

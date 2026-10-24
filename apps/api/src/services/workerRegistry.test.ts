@@ -48,7 +48,7 @@ const EXPECTED_WORKER_NAMES = [
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker', 'trustPageSnapshotWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
-  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention',
@@ -99,7 +99,10 @@ const EXPECTED_WORKER_NAMES = [
   'aiInvocationRetention', 'llmEgressRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
   'aiChargebackWorker',
-  'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
+  'alertVerdictScheduler', 'aiAgentSweepScheduler',
+  // Wisp W05b Task 9 (#9917) — wake tick + debounced assess jobs.
+  'wispWakeScheduler',
+  'accountingSyncWorker', 'accountingReconcileWorker',
   'aiAgentImpactRollup',
   'aiAgentGraduation',
   'scriptReviewWorker',

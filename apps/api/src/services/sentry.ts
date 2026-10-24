@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
@@ -219,6 +220,10 @@ const ALLOWED_TAG_NAMES = new Set([
   // per-job counter — unbounded by construction, exactly the high-cardinality
   // tag the captureMessage doc comment warns against.
   'worker',
+  // oauth/log.ts: a closed set of ERROR_IDS constants. Its doc says Sentry
+  // groups OAuth warnings by this tag; until it was listed here every one of
+  // them collapsed into a single "Error: [redacted]" issue (BREEZE-4D).
+  'errorId',
   // Set by fix/sentry-worker-job-failures (#3912), which deliberately does not
   // touch this file. Inert until that lands — an allowlist entry only ever
   // preserves a tag something else sets, so listing it early cannot leak
@@ -706,6 +711,83 @@ export function sentryBreezeRoleTag(): 'all' | 'api' | 'worker' {
   return 'all';
 }
 
+/**
+ * Group key for the outbound event throttle. Built from the SCRUBBED event:
+ * exception values are all '[redacted]', so the throw site (type plus the
+ * full stack, transaction and route) and the bounded discriminator tags are what tell two
+ * failures apart. Exported for test.
+ */
+export function eventThrottleSignature(event: Record<string, any>): string {
+  const fingerprint = Array.isArray(event.fingerprint) ? event.fingerprint.filter((p: unknown) => p !== '{{ default }}') : [];
+  if (fingerprint.length) return `fp:${fingerprint.join('|')}`;
+  const tags = event.tags ?? {};
+  const parts: string[] = [
+    String(event.level ?? 'error'), String(tags.event_code ?? ''), String(tags.worker ?? ''), String(tags.errorId ?? ''),
+    String(event.transaction ?? ''), String(tags.route_template ?? ''),
+  ];
+  for (const value of Array.isArray(event.exception?.values) ? event.exception.values : []) {
+    // ALL frames, not just the innermost: a PostgresError / DrizzleQueryError has the
+    // same innermost frames for every DB failure in the process, so the callers are
+    // what separate unrelated errors. Still stable for a true storm (same stack).
+    const frames: Record<string, unknown>[] = Array.isArray(value?.stacktrace?.frames) ? value.stacktrace.frames : [];
+    parts.push(
+      String(value?.type ?? ''),
+      normalizeThrottleMessage(value?.value),
+      ...frames.map(f => `${f.function ?? '?'}:${f.lineno ?? ''}:${f.colno ?? ''}`),
+    );
+  }
+  // Hash so the key stays small however long the stack or transaction name is.
+  return createHash('sha1').update(parts.join('\u0000')).digest('hex');
+}
+
+/** Collapse ids so a storm with varying values still shares one key. */
+function normalizeThrottleMessage(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/"[^"]*"|'[^']*'/g, '?')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '?')
+    .replace(/\d+/g, '?');
+}
+
+/**
+ * Process-wide safety net under every error event, after scrubbing. Call sites
+ * are expected to bound themselves (see sentryThrottle.ts), but one that does
+ * not — a worker capturing a permanent failure on a 2 s tick — burned the
+ * monthly error quota in days (BREEZE-4B/4C, ~85k events in 60 h, with the SDK
+ * backing off another ~90k/day client side). The SDK's Dedupe integration only
+ * drops an event identical to the one immediately before it, so two loops that
+ * interleave defeat it.
+ *
+ * Token bucket per signature: `burst` events immediately, then one per
+ * `refillMs`. Per-process, like throttledReporter; the server log keeps the
+ * unthrottled signal. Exported for test.
+ */
+export function createEventThrottle(options: { burst: number; refillMs: number; maxKeys?: number }) {
+  const maxKeys = options.maxKeys ?? 1000;
+  const buckets = new Map<string, { tokens: number; updatedAt: number }>();
+  return <T extends Record<string, any>>(event: T): T | null => {
+    const key = eventThrottleSignature(event);
+    const now = Date.now();
+    let bucket = buckets.get(key);
+    if (bucket) {
+      const refill = Math.floor((now - bucket.updatedAt) / options.refillMs);
+      if (refill > 0) bucket = { tokens: Math.min(options.burst, bucket.tokens + refill), updatedAt: bucket.updatedAt + refill * options.refillMs };
+      buckets.delete(key);
+    } else {
+      bucket = { tokens: options.burst, updatedAt: now };
+      if (buckets.size >= maxKeys) buckets.delete(buckets.keys().next().value!);
+    }
+    // Re-insert so Map order tracks recency for eviction.
+    buckets.set(key, bucket);
+    if (bucket.tokens <= 0) return null;
+    bucket.tokens -= 1;
+    return event;
+  };
+}
+
+const EVENT_THROTTLE_BURST = 10;
+const EVENT_THROTTLE_REFILL_MS = 5 * 60_000;
+
 function parseSampleRate(raw: string | undefined): number {
   if (!raw) return 0;
   const parsed = Number(raw);
@@ -724,6 +806,7 @@ export function initSentry(): void {
   }
 
   const tracesSampleRate = parseSampleRate(process.env.SENTRY_TRACES_SAMPLE_RATE);
+  const throttleEvent = createEventThrottle({ burst: EVENT_THROTTLE_BURST, refillMs: EVENT_THROTTLE_REFILL_MS });
 
   Sentry.init({
     dsn,
@@ -735,7 +818,7 @@ export function initSentry(): void {
     release: API_VERSION,
     tracesSampleRate,
     profilesSampleRate: parseSampleRate(process.env.SENTRY_PROFILES_SAMPLE_RATE),
-    beforeSend: (event) => scrubEvent(event),
+    beforeSend: (event) => throttleEvent(scrubEvent(event)),
     beforeSendTransaction: (event) => scrubTransactionEvent(event)
   });
 

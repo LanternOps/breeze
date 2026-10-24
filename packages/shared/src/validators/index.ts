@@ -1422,3 +1422,4 @@ export * from './trustCenterContent';
 export * from './trustCenterTemplate';
 export * from './trustCenterEmbed';
 export * from './launchPurchaseSelection';
+export * from './wispConcerns';

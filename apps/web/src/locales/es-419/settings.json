@@ -7193,5 +7193,59 @@
       "saved": "Asignado de respaldo guardado",
       "loadFailed": "No se pudo cargar el asignado de respaldo."
     }
+  },
+  "wispMemory": {
+    "title": "Memoria de Wisp",
+    "description": "Revisa lo que Wisp recordó para ti, un cliente o todo tu equipo, y confírmalo o retíralo.",
+    "tabs": {
+      "mine": "Mi memoria",
+      "org": "Cliente",
+      "partner": "Todos los clientes",
+      "users": "Técnicos"
+    },
+    "empty": "Aún no hay bloques de memoria aquí.",
+    "loading": "Cargando memoria…",
+    "loadFailed": "No se pudo cargar la memoria.",
+    "retry": "Reintentar",
+    "columns": {
+      "subject": "Asunto",
+      "type": "Tipo",
+      "status": "Estado",
+      "confidence": "Confianza",
+      "updated": "Actualizado",
+      "actions": "Acciones"
+    },
+    "statusValue": {
+      "unconfirmed": "Sin confirmar",
+      "confirmed": "Confirmado",
+      "retracted": "Retirado"
+    },
+    "type": {
+      "preference": "Preferencia",
+      "standing_instruction": "Instrucción permanente",
+      "fact": "Dato",
+      "decision": "Decisión",
+      "concern_outcome": "Resultado de una inquietud",
+      "work_summary": "Resumen de trabajo"
+    },
+    "confidenceValue": {
+      "low": "Baja",
+      "medium": "Media",
+      "high": "Alta"
+    },
+    "confirm": "Confirmar",
+    "retract": "Retirar",
+    "confirmed": "Memoria confirmada.",
+    "retracted": "Memoria retirada.",
+    "confirmFailed": "No se pudo confirmar la memoria.",
+    "retractFailed": "No se pudo retirar la memoria.",
+    "fromConversation": "Desde la conversación",
+    "pickOrg": "Selecciona un cliente",
+    "pickUser": "Selecciona un técnico",
+    "pickPrompt": "Elige una opción arriba para ver su memoria.",
+    "showContent": "Mostrar contenido",
+    "hideContent": "Ocultar contenido",
+    "conversationUnavailable": "Esta conversación ya no está disponible.",
+    "usersLoadFailed": "No se pudieron cargar los técnicos."
   }
 }

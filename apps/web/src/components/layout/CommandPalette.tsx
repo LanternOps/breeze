@@ -421,6 +421,9 @@ export default function CommandPalette() {
         getScope: () => getJwtClaims().scope,
         toolSourcesEnabled,
         aiForOfficeEnabled: false,
+        // Like aiForOffice: the palette mounts everywhere and must not fetch
+        // /orgs/partners/me, so Wisp-gated settings stay out of palette search.
+        wispEnabled: false,
         serviceManagementMode,
       },
       (key, fallback) => t(/* i18n-dynamic */ key, { defaultValue: fallback }) as string

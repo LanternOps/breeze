@@ -46,6 +46,7 @@ const h = vi.hoisted(() => {
     computeLiveHumanTerm: vi.fn(),
     createAuditLogAsync: vi.fn(),
     loadWispEntitlement: vi.fn(),
+    getEntitlements: vi.fn(),
     hasSatisfiedMfa: vi.fn(),
   };
 });
@@ -63,6 +64,11 @@ vi.mock('../mfaStepUpGrant', async (orig) => ({
 vi.mock('../authEpochs', () => ({ getUserEpochs: h.getUserEpochs }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: h.createAuditLogAsync }));
 vi.mock('./wispEntitlementLimits', () => ({ loadWispEntitlement: h.loadWispEntitlement }));
+// W05 plan budget default (spec §16): createGrant reads the partner's plan.
+vi.mock('../entitlements', async (orig) => ({
+  ...(await orig<typeof import('../entitlements')>()),
+  getEntitlements: h.getEntitlements,
+}));
 vi.mock('../../middleware/auth', () => ({ hasSatisfiedMfa: h.hasSatisfiedMfa }));
 vi.mock('./grantAuthority', async (orig) => ({
   ...(await orig<typeof import('./grantAuthority')>()),
@@ -133,6 +139,7 @@ beforeEach(() => {
   h.consumeStepUpGrant.mockResolvedValue(true);
   h.computeLiveHumanTerm.mockResolvedValue(LIVE);
   h.loadWispEntitlement.mockResolvedValue({ enabled: true, limits: null });
+  h.getEntitlements.mockResolvedValue({ plan: 'pro', entitlements: { wisp: { state: 'enabled', limits: null } } });
 });
 
 describe('createGrant', () => {
@@ -221,6 +228,27 @@ describe('createGrant', () => {
     expect(JSON.stringify(revisionValues)).not.toContain('step-1');
     expect(setsApplied()).toContainEqual({ currentRevisionId: 'r1' });
     expect(h.createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ action: 'wisp.grant.created', resourceType: 'wisp_grant', resourceId: 'g1' }));
+  });
+
+  it.each([
+    ['pro', 200],
+    ['enterprise', 500],
+    ['unlimited', 1000],
+  ])('stores the plan budget default (spec §16): %s → budgetCentsPerDay %i', async (plan, cents) => {
+    h.getEntitlements.mockResolvedValue({ plan, entitlements: { wisp: { state: 'enabled', limits: null } } });
+    h.results.push([grantRow({ currentRevisionId: null, budgetCentsPerDay: cents })], [{ id: 'r1' }], [grantRow({ budgetCentsPerDay: cents })]);
+    const grant = await createGrant({ auth: auth(), scope, stepUpGrantId: 'step-1' });
+    expect(h.getEntitlements).toHaveBeenCalledWith(PARTNER);
+    expect(valuesInserted()[0]).toMatchObject({ budgetCentsPerDay: cents });
+    expect(grant.budgetCentsPerDay).toBe(cents);
+  });
+
+  it('an unresolvable plan read is entitlement_check_failed before the step-up is consumed', async () => {
+    h.getEntitlements.mockRejectedValue(new EntitlementResolutionError(PARTNER, new Error('db down')));
+    const err = await createGrant({ auth: auth(), scope, stepUpGrantId: 's' }).catch((e) => e);
+    expect(err).toMatchObject({ name: 'WispGrantError', code: 'entitlement_check_failed' });
+    expect(h.consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(callsOf('insert')).toEqual([]);
   });
 
   it('maps the one-live-per-scope unique violation to already_active', async () => {

@@ -419,6 +419,7 @@
     "loadFailed": "Falha ao carregar chamado.",
     "backToQueue": "Voltar à fila",
     "ticketSubject": "Assunto do chamado",
+    "subjectEditButton": "Editar assunto",
     "openFullPage": "Abrir página completa",
     "priorityLabel": "Prioridade",
     "categoryLabel": "Categoria",

@@ -237,8 +237,21 @@ export async function revalidateApprovedIntentForRelease(
   intent: ActionIntent,
   winningApproval: { boundArgumentDigest: string | null } | null,
 ): Promise<IntentReleaseRevalidation> {
-  const revalidation = await revalidateApprovedIntentCore(intent, winningApproval);
+  let revalidation = await revalidateApprovedIntentCore(intent, winningApproval);
   if (!revalidation.ok) return revalidation;
+  // Wisp W04a: a chat-originated intent (`ai_origin_session_id`) from a Wisp
+  // session is held to the session's delegation ceiling at release too — the
+  // approval wait can outlive the grant, and the durable worker has no live
+  // chat gate. Ordinary sessions pass unchanged after one by-id session read;
+  // intents with no chat origin never load the Wisp module. On success the
+  // release runs under the ceiling-narrowed auth. Before the caller-verification
+  // consume, so a refusal never spends that single-use grant.
+  if (intent.aiOriginSessionId) {
+    const { checkWispCeilingForRelease } = await import('../wisp/releaseCeiling');
+    const wisp = await checkWispCeilingForRelease(intent, revalidation.auth);
+    if (!wisp.ok) return wisp;
+    revalidation = { ...revalidation, auth: wisp.auth };
+  }
   // Caller verification (#6354 W05) runs LAST: only an intent that passed
   // every other release check may spend the caller's single-use grant.
   return consumeCallerVerificationForRelease(intent, revalidation);

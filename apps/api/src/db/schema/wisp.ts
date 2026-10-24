@@ -87,6 +87,8 @@ export const wispGrants = pgTable('wisp_grants', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull().default(sql`(now() + interval '90 days')`),
   budgetCentsPerDay: integer('budget_cents_per_day').notNull().default(200),
   floorTickMinutes: integer('floor_tick_minutes').notNull().default(30),
+  /** W05 (2027-01-04-110300): the floor-tick cursor the wake scheduler advances (W05b). */
+  lastFloorTickAt: timestamp('last_floor_tick_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({

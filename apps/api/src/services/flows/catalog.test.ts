@@ -8,6 +8,7 @@ vi.mock('../toolSources/resolver', async (importOriginal) => {
 import { resolveTenantToolsForOwner, type TenantToolDescriptor } from '../toolSources/resolver';
 import { FLOW_EXCLUDED_CORE_TOOLS, isRegisteredCoreTool, listFlowEligibleCoreTools, loadFlowCatalog } from './catalog';
 import { m365ToolTiers } from '../aiToolsM365';
+import { listAgentReachableTools } from '../aiAgents/agentToolCatalog';
 
 const OWNER = { orgId: '11111111-1111-4111-8111-111111111111', partnerId: '22222222-2222-4222-8222-222222222222' };
 
@@ -40,6 +41,36 @@ describe('loadFlowCatalog', () => {
     expect(cat.has(m365)).toBe(false);
     for (const name of FLOW_EXCLUDED_CORE_TOOLS) expect(cat.has(name)).toBe(false);
     expect(listFlowEligibleCoreTools()).not.toContain('manage_ai_agents');
+  });
+
+  it('excludes the Wisp memory tools: agent-reachable, but a flow step never carries a Wisp grant', async () => {
+    const reachable = listAgentReachableTools();
+    const eligible = listFlowEligibleCoreTools();
+    for (const name of ['remember', 'recall']) {
+      expect(isRegisteredCoreTool(name), name).toBe(true);
+      expect(reachable, name).toContain(name);
+      expect(eligible, name).not.toContain(name);
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+    }
+    // confirm_memory / retract_memory are human-only, so already unreachable
+    // (and therefore never flow-eligible) without an explicit exclusion.
+    for (const name of ['confirm_memory', 'retract_memory']) {
+      expect(isRegisteredCoreTool(name), name).toBe(true);
+      expect(reachable, name).not.toContain(name);
+      expect(eligible, name).not.toContain(name);
+    }
+    const cat = await loadFlowCatalog(OWNER);
+    expect(cat.has('remember')).toBe(false);
+    expect(cat.has('recall')).toBe(false);
+  });
+
+  it('excludes the Wisp W05a concern chat tools for the same reason (grant-required, never in a flow)', () => {
+    // Registered by W05a (#9911); listed here so the exclusion is in place
+    // whichever of the two PRs lands first.
+    for (const name of ['list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern', 'create_watch']) {
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+      expect(listFlowEligibleCoreTools(), name).not.toContain(name);
+    }
   });
 
   it('includes a reachable core tool with its deviceArgs', async () => {

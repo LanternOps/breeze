@@ -15,6 +15,9 @@
 export const HUMAN_ONLY_TOOLS: ReadonlyMap<string, string> = new Map<string, string>([
   // Empty at W01 (spec 2026-09-23 W01-D4) until the AI Operator plan approval.
   ['operator_plan', 'Plan-approval carrier minted only by the AI Operator coordinator under the task requester; releasing it executes nothing but marks the approved plan, so it must never be declared to chat, Helper or agents (Recipe Library spec 6.4).'],
+  // Wisp W03 (spec §8.3, §14 — Todd's sign-off for these two entries).
+  ['confirm_memory', 'A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents.'],
+  ['retract_memory', 'A person confirms or retracts memory; Wisp never does (spec §8.3). Reached through the memory page routes, never declared to chat, Helper or agents.'],
 ]);
 
 /**
@@ -52,6 +55,11 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // click (the §11 four-eyes bypass). The COORDINATOR raises it, under the
   // task's human requester.
   'operator_plan',
+  // Wisp W03 (spec §8.3): a person confirms or retracts memory; Wisp never does.
+  // Also in HUMAN_ONLY_TOOLS; listed here so the ai_agent principal is denied
+  // above any allowlist and assertWithinCeiling refuses them for every grant.
+  'confirm_memory',
+  'retract_memory',
   // Diagnostic read grants are bound to a human session or an MCP credential
   // (services/diagnosticAccess/grants.ts beneficiaryOf); an operator agent can
   // never request, hold, use or revoke one.

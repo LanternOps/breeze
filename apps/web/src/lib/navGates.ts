@@ -19,6 +19,8 @@ export interface NavGate {
   partnerScopeOnly?: boolean;
   /** Shown only when the partner has AI for Office enabled. */
   requiresAiForOffice?: boolean;
+  /** Shown only when the server has Wisp enabled (`wispEnabled` on /orgs/partners/me). */
+  requiresWisp?: boolean;
   /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
   requiresToolSources?: boolean;
   /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
@@ -51,6 +53,8 @@ export interface NavGateContext {
   /** Only consulted for `requiresPreAssignment` entries; unknown ⇒ hidden. */
   preAssignmentEnabled?: boolean;
   aiForOfficeEnabled: boolean;
+  /** Only consulted for `requiresWisp` entries; unknown ⇒ hidden. */
+  wispEnabled?: boolean;
   serviceManagementMode: string | null | undefined;
   /** From the auth store; only consulted for `requiresPartnerWideAdmin` entries. */
   canManagePartnerWide?: boolean;
@@ -60,6 +64,7 @@ export function isNavGateVisible(gate: NavGate, ctx: NavGateContext): boolean {
   if (gate.requiresAutopay && ctx.autopayEnabled !== true) return false;
   if (gate.requiresModule === 'service_management' && ctx.serviceManagementMode !== 'native') return false;
   if (gate.requiresAiForOffice && !ctx.aiForOfficeEnabled) return false;
+  if (gate.requiresWisp && ctx.wispEnabled !== true) return false;
   if (gate.requiresToolSources && !ctx.toolSourcesEnabled) return false;
   if (gate.requiresFlows && ctx.flowsEnabled !== true) return false;
   if (gate.requiresPreAssignment && ctx.preAssignmentEnabled !== true) return false;
