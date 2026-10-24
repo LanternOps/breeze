@@ -12,7 +12,11 @@ const h = vi.hoisted(() => ({
   warnMock: vi.fn(),
   integrations: [] as Array<Record<string, unknown>>,
   lockedRows: [] as Array<{ id: string }>,
+  markedRows: [] as Array<{ id: string }>,
+  marks: [] as Array<{ set: unknown; where: unknown }>,
+  lockWhere: [] as unknown[],
   deletes: [] as string[],
+  captureMock: vi.fn(),
 }));
 
 vi.mock('bullmq', () => ({
@@ -30,7 +34,7 @@ vi.mock('bullmq', () => ({
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('./workerObservability', () => ({ attachWorkerObservability: h.attachMock }));
-vi.mock('../services/sentry', () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
+vi.mock('../services/sentry', () => ({ captureException: h.captureMock, captureMessage: vi.fn() }));
 vi.mock('../services/retentionMetrics', () => ({ recordRetentionRun: h.recordRetentionRunMock }));
 vi.mock('./retentionBatch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./retentionBatch')>();
@@ -47,8 +51,8 @@ vi.mock('../db', () => {
   const selectChain = () => {
     const chain: any = {
       from: vi.fn(() => chain),
-      where: vi.fn(() => chain),
-      for: vi.fn(() => Promise.resolve(h.lockedRows)),
+      where: vi.fn((w: unknown) => { chain.lastWhere = w; return chain; }),
+      for: vi.fn(() => { h.lockWhere.push(chain.lastWhere); return Promise.resolve(h.lockedRows); }),
       then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
         Promise.resolve(h.integrations).then(resolve, reject),
     };
@@ -58,6 +62,13 @@ vi.mock('../db', () => {
     db: {
       execute: vi.fn(),
       select: vi.fn(() => selectChain()),
+      update: vi.fn(() => ({
+        set: vi.fn((set: unknown) => ({
+          where: vi.fn((where: unknown) => ({
+            returning: vi.fn(async () => { h.marks.push({ set, where }); return h.markedRows; }),
+          })),
+        })),
+      })),
       delete: vi.fn((table: Record<string, string>) => ({
         where: vi.fn(async () => {
           h.deletes.push(table.integrationId ? 'dns_policies' : 'dns_filter_integrations');
@@ -73,6 +84,7 @@ vi.mock('../db', () => {
 import { jobSchedule } from './scheduleRegistry';
 import {
   __testOnly,
+  createDnsSecurityRetentionWorker,
   DNS_INTEGRATION_DELETING_STATUS,
   enqueueDnsIntegrationDelete,
   initializeDnsSecurityRetention,
@@ -97,6 +109,9 @@ describe('dns security retention sweep (#10020)', () => {
     vi.clearAllMocks();
     h.integrations = [];
     h.lockedRows = [];
+    h.markedRows = [];
+    h.marks = [];
+    h.lockWhere = [];
     h.deletes = [];
     h.pruneMock.mockResolvedValue({ deleted: 0, batches: 1, hasMore: false });
     h.getJobsMock.mockResolvedValue([]);
@@ -198,6 +213,58 @@ describe('dns security retention sweep (#10020)', () => {
     expect(h.recordRetentionRunMock).toHaveBeenCalledWith('dns_security_retention', { rowsDeleted: result.deleted, incomplete: true });
   });
 
+  it('keeps pruning the other integrations when one fails, then fails the run', async () => {
+    h.integrations = [
+      { id: INT_A, orgId: ORG, config: {}, isActive: true, lastSyncStatus: null },
+      { id: INT_B, orgId: ORG, config: {}, isActive: true, lastSyncStatus: null },
+    ];
+    h.pruneMock.mockImplementation(async (opts: { where: SQL }) => {
+      if (render(opts.where).params.includes(INT_A)) throw new Error('lock timeout');
+      return { deleted: 1, batches: 1, hasMore: false };
+    });
+    await expect(runDnsSecurityRetention({})).rejects.toThrow(/1 of 2 integrations.*aaaaaaaa/);
+    expect(pruneCalls().filter((c) => render(c.where).params.includes(INT_B))).toHaveLength(2);
+    expect(h.recordRetentionRunMock).toHaveBeenCalledWith('dns_security_retention', expect.objectContaining({ incomplete: true }));
+  });
+
+  it('re-enqueues stranded deletes before pruning, so a failing prune cannot delay them', async () => {
+    h.integrations = [
+      { id: INT_A, orgId: ORG, config: {}, isActive: true, lastSyncStatus: null },
+      { id: INT_DEL, orgId: ORG, config: {}, isActive: false, lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS },
+    ];
+    h.pruneMock.mockRejectedValue(new Error('boom'));
+    await expect(runDnsSecurityRetention({})).rejects.toThrow();
+    expect(h.addMock).toHaveBeenCalledWith(__testOnly.DELETE_JOB_NAME, { integrationId: INT_DEL }, expect.any(Object));
+  });
+
+  it('routes jobs by name: delete-integration runs the delete, anything else the sweep', async () => {
+    const worker = createDnsSecurityRetentionWorker() as unknown as {
+      processor: (job: { name: string; data?: unknown }) => Promise<unknown>;
+    };
+    h.markedRows = [{ id: INT_DEL }];
+    h.lockedRows = [{ id: INT_DEL }];
+    const deleted = await worker.processor({ name: __testOnly.DELETE_JOB_NAME, data: { integrationId: INT_DEL } });
+    expect(deleted).toMatchObject({ status: 'deleted' });
+    expect(pruneCalls().every((c) => render(c.where).sql === 'integration_id = $1')).toBe(true);
+
+    h.pruneMock.mockClear();
+    h.integrations = [{ id: INT_A, orgId: ORG, config: {}, isActive: true, lastSyncStatus: null }];
+    const swept = await worker.processor({ name: __testOnly.SWEEP_JOB_NAME, data: undefined });
+    expect(swept).toMatchObject({ integrations: 1 });
+    expect(pruneCalls().some((c) => render(c.where).sql.includes('"timestamp" <'))).toBe(true);
+  });
+
+  it('reports a failed delete to Sentry only on its final attempt', async () => {
+    // initialize wires the listeners onto the worker it creates; drive them via the real init.
+    await initializeDnsSecurityRetention();
+    const created = (h.attachMock.mock.calls.at(-1)![0]) as { on: ReturnType<typeof vi.fn> };
+    const failed = created.on.mock.calls.find((c) => c[0] === 'failed')![1] as (job: unknown, err: Error) => void;
+    failed({ id: '1', name: __testOnly.DELETE_JOB_NAME, data: { integrationId: INT_DEL }, opts: { attempts: 5 }, attemptsMade: 2 }, new Error('deadlock'));
+    expect(h.captureMock).not.toHaveBeenCalled();
+    failed({ id: '1', name: __testOnly.DELETE_JOB_NAME, data: { integrationId: INT_DEL }, opts: { attempts: 5 }, attemptsMade: 5 }, new Error('deadlock'));
+    expect(h.captureMock).toHaveBeenCalledTimes(1);
+  });
+
   it('registers a daily cron slot from the schedule registry', async () => {
     await initializeDnsSecurityRetention();
     expect(h.attachMock).toHaveBeenCalledWith(expect.anything(), 'dnsSecurityRetention');
@@ -210,6 +277,9 @@ describe('dns integration background delete (#10019)', () => {
     vi.clearAllMocks();
     h.integrations = [];
     h.lockedRows = [];
+    h.markedRows = [];
+    h.marks = [];
+    h.lockWhere = [];
     h.deletes = [];
     h.pruneMock.mockResolvedValue({ deleted: 0, batches: 1, hasMore: false });
     h.getJobsMock.mockResolvedValue([]);
@@ -242,6 +312,7 @@ describe('dns integration background delete (#10019)', () => {
 
   it('drains aggregations then events in batches, then deletes policies and the integration row', async () => {
     h.integrations = [{ id: INT_DEL, isActive: false, lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS }];
+    h.markedRows = [{ id: INT_DEL }];
     h.lockedRows = [{ id: INT_DEL }];
     h.pruneMock.mockResolvedValue({ deleted: 3, batches: 1, hasMore: false });
 
@@ -260,6 +331,7 @@ describe('dns integration background delete (#10019)', () => {
 
   it('enqueues a continuation instead of deleting the row when a table still has rows past the batch cap', async () => {
     h.integrations = [{ id: INT_DEL, isActive: false, lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS }];
+    h.markedRows = [{ id: INT_DEL }];
     h.pruneMock.mockResolvedValueOnce({ deleted: 100, batches: 2, hasMore: true });
 
     const result = await runDnsIntegrationDelete({ integrationId: INT_DEL, batchSize: 50, maxBatches: 2 });
@@ -274,8 +346,41 @@ describe('dns integration background delete (#10019)', () => {
     );
   });
 
+  it('re-asserts the deleting marker on an inactive row before draining (a racing sync may have overwritten it)', async () => {
+    h.markedRows = [{ id: INT_DEL }];
+    h.lockedRows = [{ id: INT_DEL }];
+    await runDnsIntegrationDelete({ integrationId: INT_DEL });
+    expect(h.marks).toHaveLength(1);
+    expect(h.marks[0]!.set).toEqual({ lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS });
+    const markWhere = render(h.marks[0]!.where as SQL);
+    expect(markWhere.params).toEqual(expect.arrayContaining([INT_DEL, false]));
+  });
+
+  it('final delete locks the row only while it is still inactive', async () => {
+    h.markedRows = [{ id: INT_DEL }];
+    h.lockedRows = [{ id: INT_DEL }];
+    await runDnsIntegrationDelete({ integrationId: INT_DEL });
+    expect(h.lockWhere).toHaveLength(1);
+    const lock = render(h.lockWhere[0] as SQL);
+    const idx = lock.params.indexOf('dfi.is_active');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(lock.params[idx + 1]).toBe(false);
+  });
+
+  it('enqueues a continuation when events (not aggregations) hit the cap, and deletes nothing', async () => {
+    h.markedRows = [{ id: INT_DEL }];
+    h.pruneMock
+      .mockResolvedValueOnce({ deleted: 10, batches: 1, hasMore: false })
+      .mockResolvedValueOnce({ deleted: 100, batches: 2, hasMore: true });
+    const result = await runDnsIntegrationDelete({ integrationId: INT_DEL });
+    expect(result).toMatchObject({ status: 'continuing', aggregationsDeleted: 10, eventsDeleted: 100 });
+    expect(h.addMock).toHaveBeenCalledTimes(1);
+    expect(h.deletes).toEqual([]);
+  });
+
   it('leaves the row alone if it was reactivated between the drain and the final delete', async () => {
     h.integrations = [{ id: INT_DEL, isActive: false, lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS }];
+    h.markedRows = [{ id: INT_DEL }];
     h.lockedRows = [];
     const result = await runDnsIntegrationDelete({ integrationId: INT_DEL });
     expect(result.status).toBe('skipped_active');

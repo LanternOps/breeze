@@ -92,6 +92,10 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+vi.mock('../services/sentry', () => ({
+  captureException: vi.fn()
+}));
+
 vi.mock('../services/secretCrypto', () => ({
   encryptSecret: vi.fn((value: string | undefined) => `enc:${value ?? ''}`)
 }));
@@ -112,6 +116,7 @@ import { authMiddleware } from '../middleware/auth';
 import { enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
 import { scheduleDnsEventSync } from '../jobs/dnsSyncJob';
 import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import { dnsSecurityRoutes } from './dnsSecurity';
 
 describe('dns security routes', () => {
@@ -967,6 +972,19 @@ describe('dns security routes', () => {
         expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
           action: 'dns.integration.delete', resourceId: INTEGRATION_ID
         }));
+      });
+
+      it('still answers 202 when the after-commit enqueue fails, and reports it to Sentry', async () => {
+        mockIntegrationLookup(activeRow);
+        mockUpdate();
+        const boom = new Error('redis down');
+        vi.mocked(enqueueDnsIntegrationDelete).mockRejectedValueOnce(boom);
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const res = await app.request(`/dns-security/integrations/${INTEGRATION_ID}`, { method: 'DELETE' });
+
+        expect(res.status).toBe(202);
+        await vi.waitFor(() => expect(captureException).toHaveBeenCalledWith(boom));
       });
 
       it('re-queues an integration that is already being deleted, without touching the row again', async () => {

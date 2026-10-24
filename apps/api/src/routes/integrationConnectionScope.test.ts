@@ -44,7 +44,8 @@ vi.mock('../jobs/dnsSyncJob', () => ({
   scheduleDnsEventSync: mocks.scheduleSync, schedulePolicySync: mocks.schedulePolicy,
 }));
 vi.mock('../jobs/dnsSecurityRetention', () => ({
-  DNS_INTEGRATION_DELETING_STATUS: 'deleting', enqueueDnsIntegrationDelete: mocks.scheduleSync,
+  // A plain function, not vi.fn: resetAllMocks would strip a mock's resolved value.
+  DNS_INTEGRATION_DELETING_STATUS: 'deleting', enqueueDnsIntegrationDelete: async () => undefined,
 }));
 
 import { psaRoutes } from './psa';

@@ -209,7 +209,7 @@ export async function runDnsSecurityRetention(
 
   let deleted = 0;
   let hasMore = false;
-  const stranded: string[] = [];
+  const failures: Array<{ integrationId: string; error: unknown }> = [];
 
   const track = (table: string, result: BatchedPruneResult, detail?: string) => {
     deleted += result.deleted;
@@ -217,11 +217,14 @@ export async function runDnsSecurityRetention(
     warnOnRetentionBacklog(LOG_PREFIX, table, result, detail);
   };
 
+  // Recover lost deletes FIRST, so a prune that throws below cannot push them
+  // back another night.
+  const requeuedDeletes = await requeueStrandedDeletes(
+    integrations.filter(isDeleting).map((integration) => integration.id),
+  );
+
   for (const integration of integrations) {
-    if (isDeleting(integration)) {
-      stranded.push(integration.id);
-      continue;
-    }
+    if (isDeleting(integration)) continue;
     // Inactive (but not deleting) integrations still age out: the rows are
     // retained history, and the window applies to them the same way.
     const days = resolveRetentionDays(integration.config?.retentionDays, defaultDays, MAX_RETENTION_DAYS);
@@ -231,23 +234,30 @@ export async function runDnsSecurityRetention(
     const cutoffDate = cutoffIso.slice(0, 10);
     const detail = `integration=${integration.id} retentionDays=${days}`;
 
-    // org_id first so each batch is a range scan on (org_id, timestamp) /
-    // (org_id, date, integration_id) instead of every row of the integration.
-    track(EVENTS_TABLE, await pruneInCtidBatches({
-      table: EVENTS_TABLE,
-      where: sql`org_id = ${integration.orgId} AND "timestamp" < ${cutoffIso}::timestamp AND integration_id = ${integration.id}`,
-      batchSize,
-      maxBatches,
-      label: 'dnsSecurityRetention.events',
-    }), detail);
+    // One integration's failure (a lock timeout, say) must not stop the rest.
+    // Collected and rethrown after the loop so the run still fails visibly.
+    try {
+      // org_id first so each batch is a range scan on (org_id, timestamp) /
+      // (org_id, date, integration_id) instead of every row of the integration.
+      track(EVENTS_TABLE, await pruneInCtidBatches({
+        table: EVENTS_TABLE,
+        where: sql`org_id = ${integration.orgId} AND "timestamp" < ${cutoffIso}::timestamp AND integration_id = ${integration.id}`,
+        batchSize,
+        maxBatches,
+        label: 'dnsSecurityRetention.events',
+      }), detail);
 
-    track(AGGREGATIONS_TABLE, await pruneInCtidBatches({
-      table: AGGREGATIONS_TABLE,
-      where: sql`org_id = ${integration.orgId} AND "date" < ${cutoffDate}::date AND integration_id = ${integration.id}`,
-      batchSize,
-      maxBatches,
-      label: 'dnsSecurityRetention.aggregations',
-    }), detail);
+      track(AGGREGATIONS_TABLE, await pruneInCtidBatches({
+        table: AGGREGATIONS_TABLE,
+        where: sql`org_id = ${integration.orgId} AND "date" < ${cutoffDate}::date AND integration_id = ${integration.id}`,
+        batchSize,
+        maxBatches,
+        label: 'dnsSecurityRetention.aggregations',
+      }), detail);
+    } catch (error) {
+      console.error(`${LOG_PREFIX} Retention failed for integration ${integration.id}:`, error);
+      failures.push({ integrationId: integration.id, error });
+    }
   }
 
   // Aggregation rows written before integration_id existed (0031) belong to no
@@ -261,14 +271,20 @@ export async function runDnsSecurityRetention(
     label: 'dnsSecurityRetention.aggregations.legacy',
   }), 'integration=none');
 
-  const requeuedDeletes = await requeueStrandedDeletes(stranded);
-
   const durationMs = Date.now() - startedAt;
   console.log(
     `${LOG_PREFIX} Deleted ${deleted} DNS event/aggregation rows across ${integrations.length} integrations ` +
     `(default retention ${defaultDays} days, requeued deletes ${requeuedDeletes}) in ${durationMs}ms`,
   );
-  recordRetentionRun('dns_security_retention', { rowsDeleted: deleted, incomplete: hasMore });
+  recordRetentionRun('dns_security_retention', { rowsDeleted: deleted, incomplete: hasMore || failures.length > 0 });
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map((f) => f.error),
+      `${LOG_PREFIX} Retention failed for ${failures.length} of ${integrations.length} integrations ` +
+      `(${failures.map((f) => f.integrationId).join(', ')}); the others were pruned`,
+    );
+  }
 
   return { deleted, hasMore, integrations: integrations.length, requeuedDeletes, durationMs };
 }
@@ -283,14 +299,27 @@ export async function runDnsIntegrationDelete(
   const maxBatches = Math.max(1, job.maxBatches ?? MAX_BATCHES);
   const result: DnsIntegrationDeleteResult = { status: 'gone', aggregationsDeleted: 0, eventsDeleted: 0 };
 
-  const [row] = await inFreshSystemContext('dnsIntegrationDelete.read', () =>
+  // Re-assert the marker on every run. A sync slice that was already in flight
+  // when the route deactivated the row still finishes with its own
+  // `last_sync_status` write ('success'/'error'), which would hide the row from
+  // the UI's "Deleting…" state, the 409 guards, and the nightly re-enqueue of a
+  // lost delete. `is_active` is the authority here (the sync never sets it);
+  // the status is display and recovery metadata.
+  const marked = await inFreshSystemContext('dnsIntegrationDelete.mark', () =>
     db
-      .select({ id: dnsFilterIntegrations.id, isActive: dnsFilterIntegrations.isActive })
-      .from(dnsFilterIntegrations)
-      .where(eq(dnsFilterIntegrations.id, integrationId)),
+      .update(dnsFilterIntegrations)
+      .set({ lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS })
+      .where(and(eq(dnsFilterIntegrations.id, integrationId), eq(dnsFilterIntegrations.isActive, false)))
+      .returning({ id: dnsFilterIntegrations.id }),
   );
-  if (!row) return result;
-  if (row.isActive) {
+  if (marked.length === 0) {
+    const [row] = await inFreshSystemContext('dnsIntegrationDelete.read', () =>
+      db
+        .select({ id: dnsFilterIntegrations.id })
+        .from(dnsFilterIntegrations)
+        .where(eq(dnsFilterIntegrations.id, integrationId)),
+    );
+    if (!row) return result;
     // Only the DELETE route enqueues this job, and only after deactivating the
     // row. An active row here means it was re-enabled: never delete it.
     console.warn(`${LOG_PREFIX} Skipping delete of integration ${integrationId}: it is active`);
@@ -380,8 +409,19 @@ export async function initializeDnsSecurityRetention(): Promise<void> {
       captureException(error);
     });
     retentionWorker.on('failed', (job, error) => {
-      console.error(`${LOG_PREFIX} Job ${job?.id} (${job?.name}) failed:`, error);
-      captureException(error);
+      const attempts = job?.opts?.attempts ?? 1;
+      const attemptsMade = job?.attemptsMade ?? attempts;
+      const integrationId = (job?.data as Partial<DnsIntegrationDeleteJobData> | undefined)?.integrationId;
+      console.error(
+        `${LOG_PREFIX} Job ${job?.id} (${job?.name}${integrationId ? ` integration=${integrationId}` : ''}) ` +
+        `failed, attempt ${attemptsMade}/${attempts}:`,
+        error,
+      );
+      // A delete retries (DELETE_JOB_OPTIONS); report only the attempt that
+      // gives up, not every transient deadlock. A delete that exhausts its
+      // attempts is re-enqueued by the next nightly sweep (the row keeps its
+      // marker), so this is a delay, not a loss.
+      if (attemptsMade >= attempts) captureException(error);
     });
 
     // Daily cron slot from the registry — NOT `every: 24h` (epoch-anchored).

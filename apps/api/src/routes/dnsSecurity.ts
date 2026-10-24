@@ -22,6 +22,7 @@ import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnec
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
 import { DNS_INTEGRATION_DELETING_STATUS, enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
 import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import { encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { checkSsrfSafe, type SsrfMode } from '../services/ssrfGuard';
@@ -476,8 +477,8 @@ dnsSecurityRoutes.delete(
     // skips inactive rows) and mark it; the rows go in batches in
     // jobs/dnsSecurityRetention.ts, which then removes the integration itself.
     // A repeat DELETE on a row already being deleted just re-queues the job
-    // (which is idempotent) — the way to recover a lost enqueue without
-    // waiting for the nightly sweep to notice it.
+    // (which is idempotent). The UI disables the button on a deleting row, so
+    // that is an API-only recovery; the nightly sweep re-queues it otherwise.
     const alreadyDeleting = !integration.isActive
       && integration.lastSyncStatus === DNS_INTEGRATION_DELETING_STATUS;
     if (!alreadyDeleting) {
@@ -489,10 +490,17 @@ dnsSecurityRoutes.delete(
 
     // Enqueue only once the deactivation has COMMITTED, so the job never reads
     // the row as still active. Fire-and-forget: if Redis is unavailable the
-    // failure is logged and the nightly retention sweep re-enqueues every row
-    // still marked deleting.
+    // failure goes to Sentry and the nightly retention sweep re-enqueues every
+    // row still marked deleting.
     runAfterDbContextCommit('dnsSecurity.integrationDelete', () =>
-      enqueueDnsIntegrationDelete(integration.id)
+      enqueueDnsIntegrationDelete(integration.id).catch((error) => {
+        console.error(
+          `[dns-security] Background delete of integration ${integration.id} was not queued; ` +
+          'the nightly retention sweep will retry it:',
+          error
+        );
+        captureException(error);
+      })
     );
 
     if (!alreadyDeleting) {
