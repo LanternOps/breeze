@@ -58,8 +58,9 @@ test.describe('Partner settings save model', () => {
     await open('defaults');
     const ttl = page.getByTestId('partner-enrollment-ttl');
     const original = await ttl.inputValue();
-    const next = original === '72' ? '48' : '72';
-    await ttl.fill(next);
+    const values = await ttl.locator('option').evaluateAll(os => os.map(o => (o as HTMLOptionElement).value));
+    const next = values.find(v => v !== original)!;
+    await ttl.selectOption(next);
     await expect(status()).toHaveAttribute('data-state', 'dirty');
     await expect(status()).toContainText('Defaults');
     const [patch] = await headerSave(isWrite(PARTNERS_ME, 'PATCH'));
@@ -68,7 +69,7 @@ test.describe('Partner settings save model', () => {
     await expect(save()).toBeDisabled();
 
     // Put it back.
-    await ttl.fill(original);
+    await ttl.selectOption(original);
     if (await save().isEnabled()) await headerSave(isWrite(PARTNERS_ME, 'PATCH'));
   });
 
@@ -100,7 +101,7 @@ test.describe('Partner settings save model', () => {
 
   test('list row', async () => {
     await open('known-guests');
-    const mac = Array.from({ length: 6 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(':').toUpperCase();
+    const mac = Array.from({ length: 6 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(':');
     await page.getByTestId('known-guests-mac').fill(mac);
     await page.getByTestId('known-guests-label').fill('E2E visitor');
     await page.getByTestId('known-guests-add').click();
