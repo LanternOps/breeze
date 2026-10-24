@@ -70,19 +70,37 @@ type NotedSkipReason = Exclude<ImportAttachmentSkipReason, 'present_elsewhere'>;
 export type ImportAttachmentSkip = { sourceId: string; reason: ImportAttachmentSkipReason };
 
 /**
- * The executable denylist (decision 1, §4.4), by final extension: Windows,
- * script and installer types, Java archives, shortcuts, registry and setup
- * files, shell scripts, macOS bundles and installers, and macro-enabled
- * Office documents. A file whose final extension is one of these is skipped
- * as `blocked_type` before it is reserved. Archives are not opened: an
- * executable inside a ZIP is imported as a ZIP (the residual risk of §4.1).
- * importAttachments.test.ts pins every entry.
+ * The executable denylist (decision 1, §4.4), by final extension. A file
+ * whose final extension is one of these is skipped as `blocked_type` before
+ * it is reserved. importAttachments.test.ts pins every entry.
+ *
+ * The first four rows are the spec's: Windows, script and installer types,
+ * Java archives, shortcuts, registry and setup files, shell scripts, macOS
+ * bundles and installers, and macro-enabled OOXML documents. The last three
+ * go beyond it (W1 review): Excel macro and add-in carriers (`xlsb` holds
+ * VBA, `xla`/`xlm` Excel 4 macros, `xll` is a DLL); other types Windows
+ * executes or hands to a handler that runs code (`chm`, `msc`, `url`,
+ * ClickOnce `application`/`appref-ms`, script components `ws`/`wsc`/`vb`,
+ * `gadget`, `website`, `settingcontent-ms`, `diagcab`, and the search and
+ * library shortcuts `library-ms`/`search-ms`/`searchconnector-ms`); and disk
+ * images, which carry files past mark-of-the-web (`iso`, `img`, `vhd`,
+ * `vhdx`). `mht`/`mhtml` are not on it: archived pages a browser renders,
+ * not an execution or MOTW-bypass carrier on their own.
+ *
+ * Residual risk: legacy OLE Office files (`doc`, `xls`, `ppt`) can carry VBA
+ * too, but they are most of a mail history and the VBA cannot be detected
+ * without parsing OLE; they are imported, download-only. Archives are not
+ * opened either: an executable inside a ZIP is imported as a ZIP (§4.1).
  */
 export const EXECUTABLE_EXTENSIONS: readonly string[] = Object.freeze([
   'exe', 'dll', 'com', 'scr', 'pif', 'cpl', 'msi', 'msp', 'msix', 'appx',
   'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'hta',
   'jar', 'lnk', 'reg', 'scf', 'inf', 'sh', 'app', 'dmg', 'pkg',
   'docm', 'dotm', 'xlsm', 'xltm', 'xlam', 'pptm', 'potm', 'ppam', 'ppsm', 'sldm',
+  'xlsb', 'xla', 'xlm', 'xll',
+  'chm', 'msc', 'url', 'application', 'appref-ms', 'ws', 'wsc', 'vb', 'gadget', 'website',
+  'settingcontent-ms', 'diagcab', 'library-ms', 'search-ms', 'searchconnector-ms',
+  'iso', 'img', 'vhd', 'vhdx',
 ]);
 
 /**

@@ -38,13 +38,26 @@ const WEBP = Buffer.concat([ascii('RIFF'), Buffer.from([0x24, 0, 0, 0]), ascii('
 const PDF = ascii('%PDF-1.7\n%âãÏÓ\n1 0 obj');
 
 describe('the executable denylist (decision 1, §4.4)', () => {
-  it('pins every extension the spec lists', () => {
+  it('pins every extension: the spec\'s, then the W1 review\'s additions', () => {
     expect([...EXECUTABLE_EXTENSIONS]).toEqual([
       'exe', 'dll', 'com', 'scr', 'pif', 'cpl', 'msi', 'msp', 'msix', 'appx',
       'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'hta',
       'jar', 'lnk', 'reg', 'scf', 'inf', 'sh', 'app', 'dmg', 'pkg',
       'docm', 'dotm', 'xlsm', 'xltm', 'xlam', 'pptm', 'potm', 'ppam', 'ppsm', 'sldm',
+      'xlsb', 'xla', 'xlm', 'xll',
+      'chm', 'msc', 'url', 'application', 'appref-ms', 'ws', 'wsc', 'vb', 'gadget', 'website',
+      'settingcontent-ms', 'diagcab', 'library-ms', 'search-ms', 'searchconnector-ms',
+      'iso', 'img', 'vhd', 'vhdx',
     ]);
+  });
+
+  it('keeps legacy OLE Office files, archived pages and ordinary documents (the residual risk is named, not blocked)', () => {
+    for (const name of ['minutes.doc', 'budget.xls', 'deck.ppt', 'page.mht', 'page.mhtml', 'report.docx', 'sheet.xlsx', 'logs.zip', 'mail.eml']) {
+      expect(isBlockedFilename(name), name).toBe(false);
+    }
+    // A hyphenated extension is one extension.
+    expect(finalExtension('Control Panel.settingcontent-ms')).toBe('settingcontent-ms');
+    expect(isBlockedFilename('Install.APPREF-MS')).toBe(true);
   });
 
   it.each(EXECUTABLE_EXTENSIONS.map((ext) => [ext]))('blocks a .%s file, in any case', (ext) => {

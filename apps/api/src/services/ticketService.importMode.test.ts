@@ -480,6 +480,16 @@ describe('addTicketComment in import mode — the attachment claim', () => {
       .rejects.toMatchObject({ status: 409, code: 'ATTACHMENT_NOT_CLAIMABLE' });
   });
 
+  it.each(['image/svg+xml', 'text/html', 'image/gif', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', ''])(
+    'refuses to store an imported file as %j (only the allowlist or application/octet-stream), before anything is written',
+    async (contentType) => {
+      await expect(addTicketComment(TICKET, { content: 'x', isPublic: false, imported: { ...imported, attachments: [claim(1), { ...claim(2), contentType }] } }, actor, at(LATER)))
+        .rejects.toMatchObject({ status: 400, code: 'IMPORT_ATTACHMENT_TYPE_INVALID' });
+      expect(state.inserts).toEqual([]);
+      expect(state.executes).toEqual([]);
+    },
+  );
+
   it('an import claims its reservations only: attachmentIds are refused before anything is written', async () => {
     await expect(addTicketComment(TICKET, { content: 'x', isPublic: false, attachmentIds: [claim(1).id], imported }, actor, at(LATER)))
       .rejects.toMatchObject({ status: 400, code: 'INVALID_INPUT' });

@@ -28,7 +28,7 @@ import { isEligibleTicketRecipient } from './ticketPush';
 import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary, TicketType } from '@breeze/shared';
 import { defaultTicketTypeForSource } from './ticketType';
-import { fromMinorUnits, toMinorUnits } from '@breeze/shared';
+import { fromMinorUnits, TICKET_ATTACHMENT_LIMITS, toMinorUnits } from '@breeze/shared';
 import { markRequestAuditWritten } from './auditRequestTracking';
 import { scrubAlertText } from '../utils/endpointDisplay';
 import { LIVE_TICKET_WRITE, isImportWrite, type ImportTicketWriteMode, type TicketWriteMode } from './ticketWriteMode';
@@ -99,7 +99,10 @@ export type TicketServiceErrorCode =
   // #8313 import mode (spec §4.2, §4.4): a historic time in the future or
   // before the ticket was created, or a write outside the window's orgs.
   | 'IMPORT_TIME_INVALID'
-  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED';
+  | 'MIGRATION_WINDOW_ORG_NOT_ALLOWED'
+  // #8313 W1: an imported file claimed with a stored type outside the
+  // allowlist and application/octet-stream (spec 2026-10-19 §4.4).
+  | 'IMPORT_ATTACHMENT_TYPE_INVALID';
 
 export class TicketServiceError extends Error {
   constructor(
@@ -2657,6 +2660,12 @@ export interface ImportedCommentAuthorship {
   attachments?: ImportedAttachmentClaim[];
 }
 
+/**
+ * The stored types an import claim accepts (#8313 W1, spec 2026-10-19 §4.4):
+ * the sniffed allowlist, or application/octet-stream for everything else.
+ */
+const IMPORTED_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([...TICKET_ATTACHMENT_LIMITS.allowedMimes, 'application/octet-stream']);
+
 /** A reserved import file and its real metadata (sniffed type, size, sha256 hex). */
 export interface ImportedAttachmentClaim {
   id: string;
@@ -2704,6 +2713,17 @@ export async function addTicketComment(
     throw new TicketServiceError('An imported comment claims its imported attachments only', 400, 'INVALID_INPUT');
   }
   const importedAttachments = importMode ? imported?.attachments ?? [] : [];
+  // §4.4: an imported file is stored as one of the sniffed allowlisted types
+  // or application/octet-stream, nothing else (the routes serve the stored
+  // type; anything rendering inline must have passed the sniff).
+  const badType = importedAttachments.find((a) => !IMPORTED_ATTACHMENT_TYPES.has(a.contentType));
+  if (badType) {
+    throw new TicketServiceError(
+      `An imported attachment cannot be stored as ${JSON.stringify(badType.contentType)}`,
+      400,
+      'IMPORT_ATTACHMENT_TYPE_INVALID'
+    );
+  }
 
   // W08 #3902: this used to be four separate writes on the global `db`. The
   // attachment claim must roll back with the comment, so the comment insert,
