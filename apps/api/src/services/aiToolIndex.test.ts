@@ -173,7 +173,14 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   });
 });
 
-const INDEX_BUDGET_BYTES = 6.5 * 1024;
+// #8883 W5: +128 B (6656 -> 6784) for the three ticket routing tools on the
+// Tickets line (+112 B: list_ticket_routing_rules, test_ticket_routing_rule,
+// manage_ticket_routing_rules (create/update/reorder/delete)); measured 6714
+// default / 6763 flag-on. Every SDK tool must carry a searchHint, so a new
+// tool cannot stay out of the index, and paying 112 B by rewriting other
+// domains' notes would change unrelated guidance. Flagged for prompt-size
+// review in the PR.
+const INDEX_BUDGET_BYTES = 6.625 * 1024;
 
 /** Action tokens are rendered inside parentheses after a tool name; ignore those in the unknown-name check. */
 function isActionToken(text: string, token: string): boolean {

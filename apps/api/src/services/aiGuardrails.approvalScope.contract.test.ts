@@ -156,7 +156,10 @@ describe('tier-3 approval scope classification', () => {
     }
     expect(enumerated.sort()).toEqual([
       // edr_endpoint_action (#8167 W03): whole-tool four_eyes backstop; isolate/unisolate/scan classified.
-      'edr_endpoint_action', 'manage_ai_agents', 'manage_services', 'manage_startup_items', 's1_threat_action', 'security_scan',
+      'edr_endpoint_action', 'manage_ai_agents', 'manage_services', 'manage_startup_items',
+      // #8883 W5: whole-tool supervised backstop; create/update/reorder/delete classified.
+      'manage_ticket_routing_rules',
+      's1_threat_action', 'security_scan',
       'send_endpoint_message',
     ]);
   });

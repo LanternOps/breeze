@@ -250,7 +250,7 @@ async function notifyStaff(request: TrustPageAccessRequestRow, ctx: { orgName: s
 async function createRequestTicket(request: TrustPageAccessRequestRow, orgName: string): Promise<string | null> {
   try {
     const ticket = await sys(() => createTicket({
-      orgId: request.orgId, source: 'api', priority: 'normal',
+      orgId: request.orgId, source: 'api',
       subject: `Trust Center document request from ${request.requesterCompany}`.slice(0, 255),
       description: [
         `${request.requesterName} (${request.requesterEmail}, ${request.requesterCompany}) confirmed a request for ${orgName}'s gated trust page documents.`,

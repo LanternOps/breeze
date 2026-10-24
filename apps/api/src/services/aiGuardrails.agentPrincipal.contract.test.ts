@@ -312,6 +312,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_script_templates',
   'list_scripts',
   'list_sites', // A-W06 Tier-1 read
+  'list_ticket_routing_rules', // #8883 W5 Tier-1 read
   'list_time_entries', // A-W06 Tier-1 read
   'list_time_sync_issues',
   'lookup_distributor_product',
@@ -374,6 +375,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'search_logs',
   // W01 (#6755)
   'search_script_library',
+  'test_ticket_routing_rule', // #8883 W5 Tier-1 read (dry run)
   'validate_flow', // Tool Catalog W03 (#5218) Tier-1 read
 ];
 

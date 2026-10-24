@@ -388,6 +388,15 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   },
 
   // ── Maintenance ─────────────────────────────────────────────────────────
+  'services/ticketService.ts::writeRoutingNote': {
+    tables: ['ticket_comments'],
+    lock: 'maintenance',
+    tombstoneGuard: false,
+    reason:
+      '#8883 W5 routing note, called only by createTicket right after its own ticket insert: no other transaction can '
+      + 'see the uncommitted ticket row, so there is nothing to lock or wait on and no cycle can form; a brand-new '
+      + 'ticket cannot be a merge tombstone.',
+  },
   'jobs/ticketAttachmentReaper.ts::reapPendingAttachments': {
     tables: ['ticket_attachments'],
     lock: 'maintenance',

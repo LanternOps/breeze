@@ -106,6 +106,7 @@ import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
 import { registerFlowTools } from './aiToolsFlows';
 import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
+import { registerTicketRoutingTools } from './aiToolsTicketRouting';
 import { registerWispMemoryTools } from './wisp/memoryTools';
 import { registerWispConcernTools } from './wisp/concernTools';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
@@ -394,6 +395,7 @@ registerTrustPageTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
 registerBusinessCalendarTools(aiTools);
+registerTicketRoutingTools(aiTools);
 // Wisp W03 memory tools: inert until W04/W05 attach auth.wispGrant.
 registerWispMemoryTools(aiTools);
 // Wisp W05a concern/watch tools: same posture — inert without auth.wispGrant.

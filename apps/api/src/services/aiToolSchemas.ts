@@ -86,6 +86,31 @@ export const deliveryToolShape = {
   severity: z.enum(['critical','high','medium','low','info']).optional(), kind: monitorKindSchema.optional(),
   siteId: uuid.optional(), monitorId: uuid.optional(), data: z.record(z.string(), z.unknown()).optional(),
 };
+const routingSource = z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+const routingPriority = z.enum(['low', 'normal', 'high', 'urgent']);
+/** manage_ticket_routing_rules (#8883 W5): flat, nullable-where-clearable shape; the handler validates per action. */
+export const ticketRoutingManageShape = {
+  action: z.enum(['create', 'update', 'reorder', 'delete']),
+  ruleId: uuid.optional().describe('Rule UUID (update, delete)'),
+  ids: z.array(uuid).min(1).max(500).optional().describe('Rule UUIDs of ONE owner in the new evaluation order (reorder)'),
+  ownerScope: z.enum(['organization', 'partner']).optional().describe('create only: organization rule, or partner-wide rule'),
+  orgId: uuid.optional().describe('create only: owning organization (ownerScope organization)'),
+  orgIds: z.array(uuid).min(1).max(500).nullable().optional().describe('Partner-wide rule only: limit to these organization UUIDs; null = all organizations'),
+  name: z.string().max(100).optional().describe('Rule name (max 100)'),
+  enabled: z.boolean().optional().describe('Whether the rule is evaluated'),
+  position: z.number().int().optional().describe('Evaluation order (lower first)'),
+  matchSources: z.array(routingSource).nullable().optional().describe('Match any of these ticket sources; null = any'),
+  matchPriorities: z.array(routingPriority).nullable().optional().describe('Match any of these priorities; null = any'),
+  matchCategoryId: uuid.nullable().optional().describe('Match this category (UUID); null = any'),
+  matchSubjectKeywords: z.array(z.string().max(100)).max(20).nullable().optional().describe('Match subjects containing any keyword (2-100 chars each); null = any'),
+  matchRequesterDomains: z.array(z.string().max(253)).max(50).nullable().optional().describe('Match requester domains: example.com or *.example.com; null = any'),
+  setAssigneeUserId: uuid.nullable().optional().describe('Action: assign to this user (UUID)'),
+  setPriority: routingPriority.nullable().optional().describe('Action: set this priority'),
+  setCategoryId: uuid.nullable().optional().describe('Action: set this category (UUID)'),
+  setStatusId: uuid.nullable().optional().describe('Action: start in this status (UUID; New/Open/Pending/On hold core)'),
+  addTags: z.array(z.string().max(50)).max(20).nullable().optional().describe('Action: add these tags (max 20)'),
+};
+
 export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
   if (v.action === 'resolve' && (!v.severity || !v.orgId)) ctx.addIssue({ code: 'custom', message: 'orgId and severity are required for resolve' });
   if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
@@ -1818,6 +1843,18 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     includeArchived: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
+  // #8883 W5: ticket routing rules. The handler re-validates writes against
+  // the shared create/update/reorder schemas; these are the model-facing shape.
+  list_ticket_routing_rules: z.object({ orgId: uuid.optional(), limit: z.number().int().min(0).max(200).optional() }),
+  test_ticket_routing_rule: z.object({
+    orgId: uuid,
+    source: z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']),
+    subject: z.string().min(1).max(255),
+    requesterEmail: z.string().max(320).nullable(),
+    categoryId: uuid.optional(),
+    priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+  }),
+  manage_ticket_routing_rules: z.object(ticketRoutingManageShape),
 
   export_dataset: z.object({
     dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),

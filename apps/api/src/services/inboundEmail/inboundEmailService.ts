@@ -501,7 +501,7 @@ export async function processInboundEmail(
       await dependencies.afterTicketMatchLock?.(closedOriginal.id);
       // No requester and NO acknowledgement: a reply to a closed ticket spawns a
       // linked ticket, it is not a fresh submission (spec §5).
-      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId);
+      const t = await createFromEmail(n, partnerId, closedOriginal.orgId, closedOriginal.emailThreadKey, closedOriginal.internalNumber, null, false, policy.defaultAssigneeUserId, closedOriginal.id);
       await logCreated(n, partnerId, t);
       return;
     }
@@ -847,7 +847,10 @@ async function createFromEmail(
   priorNumber: string | null,
   requester: EmailTicketRequester,
   autoresponse: boolean,
-  defaultAssigneeUserId: string | null
+  defaultAssigneeUserId: string | null,
+  // #8883 W5 (Gate B14): the closed ticket this one continues; passed only on
+  // the closed-continuation path, so createTicket skips routing for it.
+  continuationOfTicketId: string | null = null
 ) {
   // GUARD (spec §6 layer 2): the resolved org MUST belong to the resolved partner before create.
   const orgOk = await db
@@ -868,7 +871,8 @@ async function createFromEmail(
       submitterEmail: n.from,
       submitterName: n.fromName,
       submittedBy: requester?.kind === 'portal' ? requester.portalUserId : undefined,
-      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined
+      requesterContactId: requester?.kind === 'contact' ? requester.contactId : undefined,
+      ...(continuationOfTicketId ? { continuationOfTicketId } : {})
     },
     SYSTEM_ACTOR
   );

@@ -139,6 +139,7 @@ export * from './ticketLinks';
 export * from './ticketResponseTemplates';
 export * from './ticketForms';
 export * from './ticketFormOrgLinks';
+export * from './ticketRoutingRules';
 export * from './ticketMailbox';
 export * from './ticketOutbox';
 export * from './ticketDrafts';

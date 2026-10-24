@@ -63,6 +63,7 @@ const API_SRC = resolve(__dirname, '..');
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- business calendars (#8973 W4) ------------------------------------------
+  'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   // Wisp W02 (#9908): worker/system path only — it only ever TIGHTENS a grant
   // (pause/expire) or lifts a pause it set itself; the caller-facing
