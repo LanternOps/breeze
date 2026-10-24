@@ -1,12 +1,16 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
+import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTopologyProgressPhase, TopologyAiSelection, AiContinuationRequired, AiModelChoice, AiTurnModel } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
-import { RECOVERABLE_MODEL_CODES, noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { noSessionOrgId, useAiModelPickerStore } from './aiModelPickerStore';
+import { classifySendRefusal } from './aiSendRefusal';
+import { isChatSessionType } from './aiSessionOpen';
+import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import {
+  attachAnchorMissing,
   processStreamEvent,
   mapMessagesFromApi,
   type AiMessage,
@@ -93,6 +97,16 @@ interface AiState {
   turnModel: AiTurnModel | null;
   /** W05: offering ids suggested after a model refusal. */
   refusalAlternatives: string[];
+  /**
+   * #9427: attached to a running turn whose reply so far could not be replayed
+   * (`attach_state.partial`); the full reply appears when it finishes.
+   */
+  joinedMidResponse: boolean;
+  /**
+   * #9427: the side-panel composer's text, held here (not persisted) so a
+   * refused send can put its text back and a move can carry a draft.
+   */
+  composerDraft: string;
 
   // Actions
   toggle: () => void;
@@ -130,6 +144,14 @@ interface AiState {
   unflagSession: () => Promise<void>;
   loadM365Connections: () => Promise<void>;
   setSelectedM365Connection: (connectionId: string | null) => void;
+  setComposerDraft: (text: string) => void;
+  /**
+   * #9427: attach to the bound session's current turn (GET …/stream) and apply
+   * it until the turn ends, re-attaching per shouldReattach. Takes a new stream
+   * token, so the next send, rebind, release or attach supersedes it. Never
+   * rejects. Exported on the state for tests; the store calls it itself.
+   */
+  attachCurrent: (opts?: { afterClosedOr409?: boolean }) => Promise<void>;
 }
 
 /**
@@ -177,6 +199,7 @@ const CLEARED_SESSION = {
   thinking: false,
   turnModel: null as AiTurnModel | null,
   refusalAlternatives: [] as string[],
+  joinedMidResponse: false,
 } as const;
 
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
@@ -231,8 +254,26 @@ let activeStreamToken = 0;
 let sessionOwnerToken = 0;
 const claimSessionOwnership = (): (() => boolean) => {
   const token = ++sessionOwnerToken;
+  // A bind change ends the live attach now, not at its next frame (#9427).
+  abortCurrentAttach();
   return () => sessionOwnerToken === token;
 };
+
+/**
+ * #9427: the send stream's reader, held so releaseSession can cancel a parked
+ * `read()` synchronously — the stream token alone is only noticed after the
+ * next chunk arrives.
+ */
+let currentSendReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+/** #9427: the live attach loop's controller (one per attachCurrent call). */
+let currentAttachController: AbortController | null = null;
+
+function abortCurrentAttach(): void {
+  const controller = currentAttachController;
+  currentAttachController = null;
+  controller?.abort();
+}
 
 /**
  * Topology M4 (#6000): the only events a topology investigation turn may
@@ -266,6 +307,228 @@ function topologyFieldsOf(session: Record<string, unknown> | undefined) {
     topologyPhase: null,
     topologyRunId: null,
   };
+}
+
+type AiSet = (partial: Partial<AiState> | ((s: AiState) => Partial<AiState>)) => void;
+type AiGet = () => AiState;
+
+/** Per-attempt bookkeeping of one attach (one GET …/stream). */
+interface AttachAttempt {
+  /** False once a newer send/rebind/release/attach took the store over. */
+  owns: () => boolean;
+  /** Aborts this attempt's reader (stale writer, or a missing anchor). */
+  abort: () => void;
+  topology: boolean;
+  currentAssistantId: string | null;
+}
+
+/**
+ * #9427: the one place attach-delivered events reach the store (the seam
+ * #9429's notifications will hook). Guarded by the attach token and the session
+ * owner: a superseded attach stops its reader and writes nothing.
+ */
+function applyAttachEvent(set: AiSet, get: AiGet, event: AiStreamEvent, attempt: AttachAttempt): boolean {
+  if (!attempt.owns()) {
+    attempt.abort();
+    return false;
+  }
+  attempt.currentAssistantId = processStreamEvent(event, set, get, attempt.currentAssistantId);
+  // Same rule as a topology send: the events that normally withdraw an approval
+  // card never reach a topology turn, so the run announcement or the turn's end does.
+  if (attempt.topology && (event.type === 'done' || event.type === 'topology_diagnostic_run')) set({ pendingApproval: null });
+  return true;
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+type AttachLoopReady = 'ready' | 'not_found' | 'stopped';
+
+/**
+ * #9427 (spec §3.5): attach the bound session's current turn and keep it
+ * applied until the turn ends. One attach covers one turn; a running attach
+ * that ends without `done` re-attaches per W1's shouldReattach/attachBackoffMs
+ * (Gate B #6). When the loop stops without `done`: one messages re-read (only
+ * if the loop saw or retried anything), `isStreaming:false`,
+ * `joinedMidResponse:false`, `error` untouched. `not_found` unbinds like
+ * loadSession's 404 path.
+ *
+ * `ready` settles once a snapshot is applied (or the loop ends first);
+ * `finished` when the loop ends. Neither rejects.
+ */
+function startAttach(
+  set: AiSet,
+  get: AiGet,
+  opts: { afterClosedOr409?: boolean } = {},
+): { ready: Promise<AttachLoopReady>; finished: Promise<void> } {
+  const sessionId = get().sessionId;
+  if (!sessionId) {
+    const stopped = Promise.resolve<AttachLoopReady>('stopped');
+    return { ready: stopped, finished: stopped.then(() => undefined) };
+  }
+
+  const streamToken = ++activeStreamToken;
+  // Observed, not claimed: an attach is a reader and must not cancel an
+  // in-flight create/load/switch/close. Any later one invalidates this attach.
+  const ownerToken = sessionOwnerToken;
+  abortCurrentAttach();
+  const controller = new AbortController();
+  currentAttachController = controller;
+  const untrack = trackAttach(controller);
+
+  const owns = () =>
+    !controller.signal.aborted
+    && activeStreamToken === streamToken
+    && sessionOwnerToken === ownerToken
+    && get().sessionId === sessionId;
+  const topology = get().topologySiteId !== null;
+  const filter = topology ? (e: AiStreamEvent) => TOPOLOGY_TURN_EVENTS.has(e.type) : undefined;
+
+  let settleReady!: (r: AttachLoopReady) => void;
+  const ready = new Promise<AttachLoopReady>((resolve) => { settleReady = resolve; });
+
+  /** One owner-guarded messages re-read (reconciliation). */
+  const rehydrate = async (): Promise<void> => {
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
+      if (!owns()) return;
+      if (!res.ok) {
+        console.warn('[AI] Attach re-hydrate failed: HTTP', res.status);
+        return;
+      }
+      const data = await res.json();
+      if (!owns()) return;
+      set({ messages: mapMessagesFromApi(data.messages || []) });
+    } catch (err) {
+      console.warn('[AI] Attach re-hydrate failed:', err);
+    }
+  };
+
+  const run = async (): Promise<void> => {
+    const cycle = { attempt: 0, afterClosedOr409: !!opts.afterClosedOr409 };
+    let anchorRetried = false;
+    // Whether a stop re-reads messages: something may have changed since the
+    // hydrate (a refused send, a running snapshot, a re-attach).
+    let reconcileOnStop = cycle.afterClosedOr409;
+    for (;;) {
+      if (!owns()) return;
+      const attemptController = new AbortController();
+      const abortAttempt = () => attemptController.abort();
+      controller.signal.addEventListener('abort', abortAttempt, { once: true });
+      const attempt: AttachAttempt = { owns, abort: abortAttempt, topology, currentAssistantId: null };
+      const seen: { snapshot: AiAttachState | null; messagesBefore: AiMessage[] | null; anchorMissing: boolean; rehydrateOnDone: boolean } = {
+        snapshot: null, messagesBefore: null, anchorMissing: false, rehydrateOnDone: false,
+      };
+
+      const { finished } = attachAiSession(sessionId, {
+        signal: attemptController.signal,
+        filter,
+        onEvent: (event) => {
+          if (event.type !== 'attach_state') {
+            applyAttachEvent(set, get, event, attempt);
+            return;
+          }
+          if (owns() && !anchorRetried && attachAnchorMissing(event, get().messages)) {
+            // Hydrated before this turn's user row was written: re-read, then
+            // attach once more (Advisor findings 2 and 4).
+            seen.anchorMissing = true;
+            abortAttempt();
+            return;
+          }
+          const messagesBefore = get().messages;
+          if (!applyAttachEvent(set, get, event, attempt)) return;
+          seen.messagesBefore = messagesBefore;
+          seen.snapshot = event;
+          // The reply on screen is not the full persisted turn: re-read on done.
+          seen.rehydrateOnDone = event.turn === 'running'
+            && (event.partial || event.turnUserMessageId === null || attachAnchorMissing(event, messagesBefore));
+          settleReady('ready');
+        },
+      });
+      let outcome: AttachOutcome;
+      try {
+        outcome = await finished;
+      } finally {
+        controller.signal.removeEventListener('abort', abortAttempt);
+      }
+      if (!owns()) return;
+
+      if (seen.anchorMissing) {
+        anchorRetried = true;
+        await rehydrate();
+        continue;
+      }
+      const applied = seen.snapshot;
+      if (applied?.turn === 'running') reconcileOnStop = true;
+
+      if (outcome.kind === 'done') {
+        if (seen.rehydrateOnDone) await rehydrate();
+        return;
+      }
+      if (outcome.kind === 'idle') {
+        // Gate B #15: a turn ran on this instance (possibly finishing between
+        // the hydrate and this attach) — re-read once.
+        if (applied?.turnId != null || reconcileOnStop) await rehydrate();
+        return;
+      }
+      if (outcome.kind === 'not_found') {
+        settleReady('not_found');
+        set({
+          sessionId: null, sessionOrgId: null, messages: [], isLoading: false,
+          isStreaming: false, joinedMidResponse: false, pendingApproval: null, pendingPlan: null, activePlan: null,
+        });
+        return;
+      }
+      if (shouldReattach(outcome, cycle)) {
+        // The next snapshot replays the turn from scratch: un-apply this one.
+        if (applied?.turn === 'running' && seen.messagesBefore) set({ messages: seen.messagesBefore });
+        if (outcome.kind === 'closed') cycle.afterClosedOr409 = true;
+        reconcileOnStop = true;
+        await sleep(attachBackoffMs(cycle.attempt), controller.signal);
+        cycle.attempt += 1;
+        continue;
+      }
+      if (outcome.kind === 'error') console.warn('[AI] Attach failed:', outcome.message);
+      if (reconcileOnStop) await rehydrate();
+      if (owns()) set({ isStreaming: false, joinedMidResponse: false });
+      return;
+    }
+  };
+
+  const finished = run()
+    .catch((err) => { console.error('[AI] Attach loop failed:', err); })
+    .finally(() => {
+      untrack();
+      if (currentAttachController === controller) currentAttachController = null;
+      settleReady('stopped');
+    });
+  return { ready, finished };
+}
+
+/**
+ * #9427 W2: a send refused because another turn is running (Gate B #7). Drop
+ * the refused bubble, put its text back in the composer, no error banner, and
+ * attach to the running turn. #9428's retry will call this with neither
+ * option: it keeps its original bubble and has no fresh text to restore.
+ */
+function attachAfterTurnInProgress(
+  set: AiSet,
+  get: AiGet,
+  refused: { dropMessageId?: string; restoreDraft?: string },
+): void {
+  set((s) => ({
+    messages: refused.dropMessageId ? s.messages.filter((m) => m.id !== refused.dropMessageId) : s.messages,
+    isStreaming: false,
+    ...(refused.restoreDraft !== undefined ? { composerDraft: refused.restoreDraft } : {}),
+  }));
+  void get().attachCurrent({ afterClosedOr409: true });
 }
 
 export const useAiStore = create<AiState>()(
@@ -304,6 +567,8 @@ export const useAiStore = create<AiState>()(
   thinking: false,
   turnModel: null,
   refusalAlternatives: [],
+  joinedMidResponse: false,
+  composerDraft: '',
 
   toggle: () => {
     const opening = !get().isOpen;
@@ -322,7 +587,7 @@ export const useAiStore = create<AiState>()(
   setPageContext: (ctx) =>
     set((s) =>
       pageContextOrgMismatch(ctx, s.sessionOrgId)
-        ? (resetModelPicker(), { pageContext: ctx, ...CLEARED_SESSION })
+        ? (resetModelPicker(), abortCurrentAttach(), { pageContext: ctx, ...CLEARED_SESSION })
         : { pageContext: ctx },
     ),
 
@@ -468,6 +733,12 @@ export const useAiStore = create<AiState>()(
       }
       const data = await res.json();
       if (!ownsSession()) return;
+      // #9427: only chat sessions are reachable here; any other type (e.g. a
+      // persisted script_builder id) is handled exactly like the 404 above.
+      if (!isChatSessionType(data.session?.type)) {
+        set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
+        return;
+      }
       if (data.session?.status !== 'active') {
         set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
         return;
@@ -500,6 +771,8 @@ export const useAiStore = create<AiState>()(
         ...topologyFieldsOf(data.session),
       });
       adoptSessionModelPicker(sessionId);
+      // #9427: a successful, still-owned hydrate — join the turn if one runs.
+      void get().attachCurrent();
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -567,8 +840,11 @@ export const useAiStore = create<AiState>()(
     const topologyTurn = get().topologySiteId !== null;
 
     const streamToken = ++activeStreamToken;
+    // This send supersedes any attach (#9427): stop its reader now.
+    abortCurrentAttach();
     /** False once this stream has been superseded — by a rebind, or a newer send. */
     const ownsStream = () => activeStreamToken === streamToken && get().sessionId === currentSessionId;
+    let heldReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       const { pageContext } = get();
@@ -583,23 +859,31 @@ export const useAiStore = create<AiState>()(
         const code = data && typeof data === 'object' && typeof (data as { code?: unknown }).code === 'string'
           ? (data as { code: string }).code : null;
 
-        if (res.status === 409 && code === 'continuation_required') {
+        const refusal = classifySendRefusal(res.status, code);
+
+        if (refusal === 'attach') {
+          // #9427 (Gate B #7): another turn is running on this conversation
+          // (turn_in_progress, or an uncoded 409 from an older API). Join it;
+          // the refused text goes back in the composer, no error banner. The
+          // pick is kept for the next send (it was never committed).
+          attachAfterTurnInProgress(set, get, { dropMessageId: userMsgId, restoreDraft: trimmedContent });
+          return;
+        }
+
+        if (refusal === 'continuation') {
           // W05: the switch cannot resume. The message is parked for the
           // continuation prompt, not lost or errored.
           useAiModelPickerStore.getState().requireContinuation(data as AiContinuationRequired, trimmedContent, currentSessionId);
           set((s) => ({ messages: s.messages.filter((m) => m.id !== userMsgId), isStreaming: false }));
           return;
         }
-        if (res.status === 409 && code && (RECOVERABLE_MODEL_CODES.has(code) || code === 'topology_model_changed')) {
+
+        if (refusal === 'choose_model') {
           // The chosen / stored model is no longer usable: refresh the menu so
-          // the tech can pick another (spec §9.1 "choose another").
+          // the tech can pick another (spec §9.1 "choose another"). The turn
+          // was rejected before it ran: drop the optimistic bubble so the
+          // transcript matches the server's.
           void useAiModelPickerStore.getState().load({ sessionId: currentSessionId });
-        }
-
-        // A coded 409 that is not the continuation prompt rejected this turn
-        // before it ran: drop the optimistic bubble so the transcript matches
-        // the server's (turn_in_progress keeps the pick for the retry).
-        if (res.status === 409 && code && (code === 'turn_in_progress' || code === 'topology_model_changed' || RECOVERABLE_MODEL_CODES.has(code))) {
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Failed to send message'),
@@ -609,10 +893,10 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        // The credit / plan gate refused the turn before it ran (#9450): drop
-        // the optimistic bubble like the coded 409s and keep the code so the
-        // chat can offer a way forward (Buy credits) instead of bare text.
-        if (res.status === 402 && code) {
+        if (refusal === 'credits') {
+          // The credit / plan gate refused the turn before it ran (#9450): drop
+          // the optimistic bubble like the coded 409s and keep the code so the
+          // chat can offer a way forward (Buy credits) instead of bare text.
           set((s) => ({
             messages: s.messages.filter((m) => m.id !== userMsgId),
             error: extractApiError(data, 'Failed to send message'),
@@ -622,20 +906,16 @@ export const useAiStore = create<AiState>()(
           return;
         }
 
-        if (res.status === 409 && !code) {
-          set((s) => ({
-            messages: s.messages.filter((m) => m.id !== userMsgId),
-            error: extractApiError(data, 'Another response is still in progress for this conversation.')
-          }));
-          return;
-        }
-
+        // refusal === 'error': the generic failure path (#9428 slots its
+        // classifyHttpFailure in here).
         set({ errorCode: code });
         throw new Error(extractApiError(data, 'Failed to send message'));
       }
 
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
+      heldReader = reader;
+      currentSendReader = reader;
 
       const decoder = new TextDecoder();
       let buffer = '';
@@ -688,6 +968,7 @@ export const useAiStore = create<AiState>()(
         isStreaming: false
       });
     } finally {
+      if (heldReader && currentSendReader === heldReader) currentSendReader = null;
       if (activeStreamToken === streamToken && get().isStreaming) {
         set({ isStreaming: false });
       }
@@ -866,6 +1147,9 @@ export const useAiStore = create<AiState>()(
       if (!res.ok) throw new Error('Failed to load session');
       const data = await res.json();
       if (!ownsSession()) return;
+      // #9427: only chat sessions are reachable; any other type takes the same
+      // path as a non-OK response (the current session stays bound).
+      if (!isChatSessionType(data.session?.type)) throw new Error('Failed to load session');
 
       const messages = mapMessagesFromApi(data.messages || []);
 
@@ -887,6 +1171,8 @@ export const useAiStore = create<AiState>()(
         ...topologyFieldsOf(data.session),
       });
       adoptSessionModelPicker(sessionId);
+      // #9427: a successful, still-owned hydrate — join the turn if one runs.
+      void get().attachCurrent();
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -949,6 +1235,10 @@ export const useAiStore = create<AiState>()(
 
   setSelectedM365Connection: (connectionId: string | null) =>
     set({ selectedM365ConnectionId: connectionId }),
+
+  setComposerDraft: (text: string) => set({ composerDraft: text }),
+
+  attachCurrent: (opts) => startAttach(set, get, opts).finished,
     }),
     {
       name: 'breeze-ai-chat',
