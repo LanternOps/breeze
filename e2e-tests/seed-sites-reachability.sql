@@ -12,19 +12,20 @@
 -- removes target sites a crashed previous run left behind.
 -- Run with -v ON_ERROR_STOP=1. Ids are emitted on stdout as KEY=<uuid>.
 --
--- Three separate transactions (one per DO block, each electing system scope):
+-- Three separate transactions (one per DO block, each electing system scope
+-- inside the block, since set_config(..., true) is transaction-local):
 -- the partner-export triggers require org/partner locks in ascending UUID order
 -- and refuse to upgrade a shared lock, so org B, org A and the user must not be
 -- written in one transaction.
 
 -- 1. Organization B first (takes the exclusive partner lock before anything else).
-SELECT set_config('breeze.scope', 'system', true);
 DO $$
 DECLARE
   v_partner  uuid;
   v_currency text;
   v_org_b    uuid := 'e2e60000-0000-4000-8000-000000000020';
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
   SELECT u.partner_id, o.currency_code INTO v_partner, v_currency
     FROM users u JOIN organizations o ON o.partner_id = u.partner_id AND o.name = 'Default Organization'
    WHERE u.email = 'admin@breeze.local' LIMIT 1;
@@ -37,13 +38,13 @@ BEGIN
 END $$;
 
 -- 2. Organization B's site and device.
-SELECT set_config('breeze.scope', 'system', true);
 DO $$
 DECLARE
   v_org_b  uuid := 'e2e60000-0000-4000-8000-000000000020';
   v_site_b uuid := 'e2e60000-0000-4000-8000-000000000022';
   v_dev_b  uuid := 'e2e60000-0000-4000-8000-000000000021';
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
   INSERT INTO sites (id, org_id, name, timezone)
   VALUES (v_site_b, v_org_b, 'E2E W06 Site B', 'UTC')
   ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name;
@@ -55,7 +56,6 @@ BEGIN
 END $$;
 
 -- 3. Default organization: movable device, leftover-site cleanup, org-scoped user.
-SELECT set_config('breeze.scope', 'system', true);
 DO $$
 DECLARE
   v_partner uuid;
@@ -66,6 +66,7 @@ DECLARE
   v_user    uuid := 'e2e60000-0000-4000-8000-000000000010';
   v_dev_a   uuid := 'e2e60000-0000-4000-8000-000000000001';
 BEGIN
+  PERFORM set_config('breeze.scope', 'system', true);
   SELECT password_hash, partner_id INTO v_hash, v_partner FROM users WHERE email = 'admin@breeze.local';
   IF v_hash IS NULL THEN
     RAISE EXCEPTION 'seed: admin@breeze.local not found or has no password — is the stack seeded?';

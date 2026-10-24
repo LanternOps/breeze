@@ -30,6 +30,24 @@ type Row = { testId: string; href: RegExp; required: boolean };
 const ALERT_CRIT = /\/alerts#status=active&severity=critical,high$/;
 const ALERT_WARN = /\/alerts#status=active&severity=medium$/;
 const DEV_ONLINE = /\/devices#deviceClass=agent&filtersV2=.+/;
+const DEV_OFFLINE = DEV_ONLINE;
+
+/** Status values inside a `filtersV2=<base64url JSON>` devices href. */
+function statusValues(href: string): string[] {
+  const raw = /filtersV2=([^&]+)/.exec(href)?.[1];
+  if (!raw) return [];
+  const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as {
+    conditions?: Array<{ field: string; value: unknown }>;
+  };
+  return (parsed.conditions ?? []).filter((c) => c.field === 'status').map((c) => String(c.value));
+}
+
+const EXPECTED_STATUS: Record<string, string> = {
+  'dashboard-online-card': 'online',
+  'dashboard-fleet-legend-online-link': 'online',
+  'dashboard-fleet-legend-offline-link': 'offline',
+  'dashboard-fleet-view-offline-link': 'offline',
+};
 const DEV_ALL = /\/devices#deviceClass=agent$/;
 
 // The R2 drift guard: every dashboard link the registry promises, with the
@@ -41,12 +59,12 @@ const INVENTORY: Row[] = [
   { testId: 'dashboard-critical-card', href: ALERT_CRIT, required: true },
   { testId: 'dashboard-warnings-card', href: ALERT_WARN, required: true },
   { testId: 'dashboard-patch-card', href: /\/patches#compliance$/, required: true },
-  { testId: 'dashboard-alerts-critical-count-link', href: ALERT_CRIT, required: false },
-  { testId: 'dashboard-alerts-warning-count-link', href: ALERT_WARN, required: false },
-  { testId: 'dashboard-fleet-legend-online-link', href: DEV_ONLINE, required: false },
-  { testId: 'dashboard-fleet-legend-offline-link', href: /\/devices#deviceClass=agent&filtersV2=.+/, required: false },
+  { testId: 'dashboard-alerts-critical-count-link', href: ALERT_CRIT, required: true },
+  { testId: 'dashboard-alerts-warning-count-link', href: ALERT_WARN, required: true },
+  { testId: 'dashboard-fleet-legend-online-link', href: DEV_ONLINE, required: true },
+  { testId: 'dashboard-fleet-legend-offline-link', href: DEV_OFFLINE, required: false },
   { testId: 'dashboard-fleet-legend-other-link', href: /\/devices#deviceClass=agent&filtersV2=.+/, required: false },
-  { testId: 'dashboard-fleet-view-offline-link', href: /\/devices#deviceClass=agent&filtersV2=.+/, required: false },
+  { testId: 'dashboard-fleet-view-offline-link', href: DEV_OFFLINE, required: false },
   { testId: 'dashboard-fleet-title-link', href: DEV_ALL, required: false },
   { testId: 'dashboard-patch-compliant-link', href: /\/patches#compliance&status=compliant$/, required: true },
   { testId: 'dashboard-patch-noncompliant-link', href: /\/patches#compliance&status=needs-patches$/, required: true },
@@ -86,6 +104,8 @@ test.describe('Dashboard click-through', () => {
         continue;
       }
       expect(href, `${row.testId} href`).toMatch(row.href);
+      const want = EXPECTED_STATUS[row.testId];
+      if (want) expect(statusValues(href), `${row.testId} status filter`).toEqual([want]);
     }
 
     // The alerts feed and the KPI tiles read one bySeverity source.
@@ -113,6 +133,7 @@ test.describe('Dashboard click-through', () => {
 
     expect(hash(authedPage)).toContain('deviceClass=agent');
     expect(hash(authedPage)).toContain('filtersV2=');
+    expect(statusValues(hash(authedPage)), 'status filter in the landed hash').toEqual(['online']);
     // The class segment only renders when the org also has non-agent devices
     // (all-agent fleets hide it), so assert its state only when it is shown.
     if ((await devices.agentSegment().count()) > 0) {
@@ -124,6 +145,13 @@ test.describe('Dashboard click-through', () => {
     const { shown, total } = await devices.countParts();
     expect(shown, 'devices list shown count vs Online tile').toBe(tileCount);
     expect(total).toBeGreaterThanOrEqual(shown);
+    // With only online agents seeded, shown == total and the parity cannot tell a
+    // dropped status filter from a kept one; flag it (seed-sites-reachability.sql
+    // adds an offline agent that makes it discriminating).
+    if (total === shown) {
+      test.info().annotations.push({ type: 'weak-parity', description: 'no offline agent in the fleet; seed-sites-reachability.sql adds one' });
+    }
+
   });
 
   test('Critical tile → alerts list: active critical + high', async ({ authedPage }) => {
