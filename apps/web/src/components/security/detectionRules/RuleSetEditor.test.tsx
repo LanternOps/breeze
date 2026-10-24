@@ -261,3 +261,40 @@ describe('RuleSetEditor publish outcome (W04-3, Review Focus #1)', () => {
     expect(successToasts().map(([t]) => t.message)).toEqual(['Saved']);
   });
 });
+
+describe('RuleSetEditor Sweep now (#6263 W05 PR C)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    current = setDetail();
+    routeFetch();
+  });
+
+  it('is disabled for a set that was never published, with the reason in the title', async () => {
+    current = setDetail({ publishedVersion: 0 });
+    renderEditor();
+    await settle();
+    const button = screen.getByTestId('rule-set-sweep-now') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toMatch(/publish this rule set/i);
+  });
+
+  it('is disabled for a disabled set, with the reason in the title', async () => {
+    current = setDetail({ enabled: false });
+    renderEditor();
+    await settle();
+    const button = screen.getByTestId('rule-set-sweep-now') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toMatch(/enable this rule set/i);
+  });
+
+  it('opens the sweep dialog for a published, enabled set (built-in sets too)', async () => {
+    current = setDetail({ isBuiltin: true, orgId: null });
+    renderEditor();
+    await settle();
+    const button = screen.getByTestId('rule-set-sweep-now') as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(screen.getByTestId('sweep-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('sweep-dialog-detect-only')).toBeInTheDocument();
+  });
+});
