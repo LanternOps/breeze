@@ -178,4 +178,58 @@ describe('commandAudit', () => {
       expect(JSON.stringify(out)).not.toContain('synthetic-ciphertext');
     }
   });
+
+  // #6958 (n): an install script is SYSTEM/root code; its body does not belong
+  // in an append-only audit row any more than a `script` command's does.
+  it('reduces software_install script content to contentMetadata and sanitizes its parameters', () => {
+    const body = 'C:\\ControlD\\ctrld.exe start --cd-org {{var_controld_code}}';
+    const payload = {
+      deploymentId: 'dep-1',
+      retryCount: 0,
+      downloadUrl: 'https://dl.example/ctrld.zip',
+      fileType: 'zip',
+      softwareName: 'Control D',
+      postInstallScript: {
+        language: 'powershell',
+        content: body,
+        parameters: { var_controld_code: '<provisioning-code>', api_password: 'hunter2' },
+        timeoutSeconds: 600,
+      },
+    };
+
+    const details = commandAuditDetails('cmd-sw', 'software_install', payload);
+    const history = sanitizeCommandForHistory({ type: 'software_install', payload, result: null });
+
+    for (const out of [details.payload, history.payload]) {
+      const record = out as Record<string, any>;
+      expect(record.deploymentId).toBe('dep-1');
+      expect(record.fileType).toBe('zip');
+      expect(record.postInstallScript).toMatchObject({
+        language: 'powershell',
+        timeoutSeconds: 600,
+        // The explicit branch, not the generic key-name sanitizer: sizeBytes
+        // is only produced by contentMetadata (as for `script` commands).
+        content: { redacted: true, length: body.length, sizeBytes: Buffer.byteLength(body, 'utf8') },
+        parameters: { var_controld_code: '<provisioning-code>', api_password: '[REDACTED]' },
+      });
+      expect(record.postInstallScript.content.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(record).not.toHaveProperty('preInstallScript');
+      expect(JSON.stringify(out)).not.toContain('ctrld.exe start');
+      expect(JSON.stringify(out)).not.toContain('hunter2');
+    }
+  });
+
+  it('fails closed on a malformed (non-object) script value: metadata only, never the body', () => {
+    const payload = { deploymentId: 'dep-1', preInstallScript: 'rm -rf / --no-preserve-root', postInstallScript: ['x'] };
+    const out = commandAuditDetails('cmd-bad', 'software_install', payload).payload as Record<string, any>;
+    expect(out.preInstallScript).toMatchObject({ content: { redacted: true } });
+    expect(out.postInstallScript).toMatchObject({ content: { redacted: true } });
+    expect(JSON.stringify(out)).not.toContain('no-preserve-root');
+  });
+
+  it('leaves a software_install payload without scripts as the generic sanitizer produced it', () => {
+    const payload = { deploymentId: 'dep-1', downloadUrl: 'https://dl.example/a.msi', silentInstallArgs: '/qn' };
+    expect(commandAuditDetails('cmd-a', 'software_install', payload).payload)
+      .toEqual(commandAuditDetails('cmd-a', 'some_other_type', payload).payload);
+  });
 });

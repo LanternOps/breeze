@@ -41,7 +41,7 @@ describe('deriveSoftwareFileTypeFromUrl', () => {
     // Guessing 'exe' here is exactly the bug this module exists to fix.
     expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/download.php?product=foo')).toBeNull();
     expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/latest')).toBeNull();
-    expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/pkg.zip')).toBeNull();
+    expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/pkg.rar')).toBeNull();
     expect(deriveSoftwareFileTypeFromUrl('https://vendor.example/')).toBeNull();
   });
 
@@ -70,10 +70,25 @@ describe('deriveSoftwareFileTypeFromUrl', () => {
   });
 });
 
+describe('zip archives (#6958)', () => {
+  it('is a supported file type, inferred from a .zip URL', () => {
+    expect(SOFTWARE_FILE_TYPES).toContain('zip');
+    expect(isSoftwareFileType('zip')).toBe(true);
+    expect(
+      deriveSoftwareFileTypeFromUrl('https://github.com/vendor/tool/releases/download/v1.0.0/tool_windows_amd64.zip'),
+    ).toBe('zip');
+    expect(deriveSoftwareFileTypeFromUrl('https://cdn.example/Client.ZIP?sig=1')).toBe('zip');
+  });
+
+  it('has no silent-args default (the agent only extracts; a post-install script installs)', () => {
+    expect(defaultSilentArgsForFileType('zip')).toBeNull();
+  });
+});
+
 describe('isSoftwareFileType', () => {
   it('accepts supported types and rejects everything else', () => {
     expect(isSoftwareFileType('msi')).toBe(true);
-    expect(isSoftwareFileType('zip')).toBe(false);
+    expect(isSoftwareFileType('rar')).toBe(false);
     expect(isSoftwareFileType('MSI')).toBe(false); // callers lowercase first
     expect(isSoftwareFileType(null)).toBe(false);
   });

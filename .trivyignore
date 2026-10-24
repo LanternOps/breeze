@@ -95,14 +95,11 @@ CVE-2026-85393
 # Added 2026-10-03 (Trivy DB refresh).
 CVE-2026-93687
 
-# zod 3.25.76 — CVE-2023-54404 is the Trivy-DB id for GHSA-mrhx-c7xc-m3w5,
-# which the npm audit gate already excepts (scripts/security/npm-audit-exceptions.json;
-# tracking #9915 / #9968). Memory exhaustion when validating an attacker-supplied
-# oversized array; no fixed release in the 3.x major (first patched is 4.6.6). Only the
-# zod 3.25.76 copy is affected and it enters solely via breeze-mobile → expo →
-# @expo/cli (pinned exactly there). Build/dev tooling, not shipped in any server image.
-# Remove together with that exception, when @expo/cli drops or upgrades the pin.
-#
-# Added 2026-10-24 (Trivy DB refresh).
+# zod 3.25.76 — reaches pnpm-lock.yaml only through breeze-mobile → expo →
+# @expo/cli (Expo build tooling, dev/EAS hosts). Not in the Android/iOS Hermes
+# bundles and not in any production Docker deps stage; every workspace package
+# is on zod ^4.6.7. No fixed 3.x release exists (fix is 4.6.6). Same reviewed
+# exception as scripts/security/npm-audit-exceptions.json; tracking #9968.
+# Remove when @expo/cli depends on zod >= 4.6.6 (re-check after expo-sdk bumps).
 CVE-2023-54404
 GHSA-mrhx-c7xc-m3w5

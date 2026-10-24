@@ -708,6 +708,10 @@ const envObjectSchema = z
     MCP_APPROVAL_WAIT_MS: z.string().optional(),
     MCP_APPROVAL_WAITS_PER_PRINCIPAL: z.string().optional(),
 
+    // MCP Apps pilot (B-W05 #6159). Boolean kill switch, read per call by
+    // services/mcpAppsConfig.ts mcpAppsEnabled(). Validated here for format only.
+    MCP_APPS_ENABLED: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
@@ -2155,6 +2159,17 @@ const envSchema = envObjectSchema
         message:
           'MCP_TIER3_INTENTS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
           'Defaults to false (Tier-3 over MCP keeps the MCP_APPROVAL_REQUIRED refusal).',
+      });
+    }
+    // MCP_APPS_ENABLED (B-W05 #6159): boolean typo guard.
+    const mcpAppsRaw = (data.MCP_APPS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpAppsRaw && !boolValues.has(mcpAppsRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_APPS_ENABLED'],
+        message:
+          'MCP_APPS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (no MCP Apps view is advertised or served).',
       });
     }
     for (const knob of [
