@@ -3671,12 +3671,13 @@ describe('software version install spec (#6958)', () => {
     headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const createVersion = (body: Record<string, unknown>, row: unknown = orgRow) => {
+  const createVersion = async (body: Record<string, unknown>, row: unknown = orgRow) => {
     selectOnce([row]);
     const captured = captureInsert();
-    return app.request(`/software/catalog/${CAT_ID}/versions`, json({ version: '1.0.0', ...body })).then((res) => ({ res, captured }));
+    const res = await app.request(`/software/catalog/${CAT_ID}/versions`, json({ version: '1.0.0', ...body }));
+    return { res, captured };
   };
-  const uploadVersion = (fields: Record<string, string>, fileName: string, row: unknown = orgRow) => {
+  const uploadVersion = async (fields: Record<string, string>, fileName: string, row: unknown = orgRow) => {
     vi.mocked(isS3Configured).mockReturnValueOnce(true);
     selectOnce([row]);
     const captured = captureInsert();
@@ -3684,9 +3685,10 @@ describe('software version install spec (#6958)', () => {
     fd.append('version', '1.0.0');
     for (const [k, v] of Object.entries(fields)) fd.append(k, v);
     fd.append('file', new File(['payload-bytes'], fileName, { type: 'application/octet-stream' }));
-    return app
-      .request(`/software/catalog/${CAT_ID}/versions/upload`, { method: 'POST', headers: { Authorization: 'Bearer token' }, body: fd })
-      .then((res) => ({ res, captured }));
+    const res = await app.request(`/software/catalog/${CAT_ID}/versions/upload`, {
+      method: 'POST', headers: { Authorization: 'Bearer token' }, body: fd,
+    });
+    return { res, captured };
   };
 
   beforeEach(() => {
@@ -3842,16 +3844,15 @@ describe('software version install spec (#6958)', () => {
       id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: 'k', fileType: 'exe',
       supportedOs: ['windows'], installScriptsEnabled: true, preInstallScript: null, postInstallScript: 'x',
     };
-    const patch = (body: unknown, version: unknown = scriptVersion) => {
+    const patch = async (body: unknown, version: unknown = scriptVersion) => {
       selectOnce([orgRow]);
       selectOnce([version]);
       const setSpy = vi.fn((v: Record<string, unknown>) => ({
         where: () => ({ returning: async () => [{ ...(version as object), ...v }] }),
       }));
       vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
-      return app
-        .request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, { ...json(body), method: 'PATCH' })
-        .then((res) => ({ res, setSpy }));
+      const res = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, { ...json(body), method: 'PATCH' });
+      return { res, setSpy };
     };
 
     it('(c) two OSes on a script-enabled version → 400 scripts_require_single_os', async () => {
@@ -3917,6 +3918,26 @@ describe('software version install spec (#6958)', () => {
       expect(db.delete).not.toHaveBeenCalled();
     });
 
+    it('(d) version PATCH and promote on a builtinPackageKey row → 403 (its pinned version is Breeze-managed)', async () => {
+      setPartnerAdmin();
+      selectOnce([builtinRow]);
+      const patchRes = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, {
+        ...json({ downloadUrl: 'https://attacker.example/ctrld.zip' }),
+        method: 'PATCH',
+      });
+      expect(patchRes.status).toBe(403);
+
+      setPartnerAdmin();
+      selectOnce([builtinRow]);
+      const promoteRes = await app.request(`/software/catalog/${CAT_ID}/versions/${VER_ID}/promote`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' },
+      });
+      expect(promoteRes.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it('(d) system scope may still PATCH a builtinPackageKey row', async () => {
       setPartnerAdmin({ scope: 'system', partnerId: null, partnerOrgAccess: undefined });
       selectOnce([builtinRow]);
@@ -3933,13 +3954,13 @@ describe('software version install spec (#6958)', () => {
       const res = await app.request('/software/catalog', json({ name: 'Fake', builtinPackageKey: 'controld_windows' }));
       expect(res.status).toBe(201);
       expect(valuesSpy).toHaveBeenCalledTimes(1);
-      expect(valuesSpy.mock.calls[0]![0]).not.toHaveProperty('builtinPackageKey');
+      expect((valuesSpy.mock.calls[0] as unknown[])[0]).not.toHaveProperty('builtinPackageKey');
     });
 
     it('GET /catalog returns builtinPackageKey and the latest version\'s installScriptsEnabled', async () => {
       const res = await app.request('/software/catalog', { headers: { Authorization: 'Bearer token' } });
       expect(res.status).toBe(200);
-      const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+      const projection = (vi.mocked(db.select).mock.calls[0] as unknown[])[0] as Record<string, unknown>;
       expect(projection).toHaveProperty('builtinPackageKey');
       expect(projection).toHaveProperty('installScriptsEnabled');
     });

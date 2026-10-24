@@ -1543,6 +1543,11 @@ softwareRoutes.patch(
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
+    // #6958: a built-in package's versions are Breeze-pinned (URL, checksum,
+    // scripts); neither editing nor re-promoting one is the caller's call.
+    if (isImmutableBuiltin(catalogItem, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
 
     const [existingVersion] = await db.select().from(softwareVersions)
       .where(and(
@@ -1554,7 +1559,7 @@ softwareRoutes.patch(
     // #6958: scripts stay immutable here (the schema has no script keys). A
     // script-enabled version is bound to its one OS, which picks the script's
     // interpreter, so its supportedOs may be re-sent but not changed.
-    let supportedOs = payload.supportedOs;
+    let supportedOs: string[] | null | undefined = payload.supportedOs;
     if (supportedOs !== undefined) {
       const normalizedOs = normalizeSupportedOs(supportedOs);
       if (!normalizedOs.ok) return c.json({ error: normalizedOs.error }, 400);
@@ -1640,6 +1645,11 @@ softwareRoutes.post(
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
+    // #6958: a built-in package's versions are Breeze-pinned (URL, checksum,
+    // scripts); neither editing nor re-promoting one is the caller's call.
+    if (isImmutableBuiltin(catalogItem, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
 
     const [existingVersion] = await db.select().from(softwareVersions)
       .where(and(

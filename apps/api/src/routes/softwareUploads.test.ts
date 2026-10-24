@@ -1170,13 +1170,14 @@ describe('chunked upload install spec (#6958)', () => {
     await rm(uploadSessionTempPath(UPLOAD_ID), { force: true });
   });
 
-  const createSession = (body: Record<string, unknown>, row: unknown = catalogRow) => {
+  const createSession = async (body: Record<string, unknown>, row: unknown = catalogRow) => {
     selectQueue([row], [makeUsage()]);
     const insertCapture = captureChain([{ id: UPLOAD_ID, chunkSize: baseBody.chunkSize }]);
     vi.mocked(db.insert).mockReturnValueOnce(insertCapture.chain);
-    return app
-      .request(createUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...baseBody, ...body }) })
-      .then((res) => ({ res, inserted: insertCapture.calls.values?.[0]?.[0] }));
+    const res = await app.request(createUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...baseBody, ...body }),
+    });
+    return { res, inserted: insertCapture.calls.values?.[0]?.[0] };
   };
 
   describe('session create', () => {
