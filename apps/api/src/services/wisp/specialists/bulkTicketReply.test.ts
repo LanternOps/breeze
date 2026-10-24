@@ -442,6 +442,19 @@ describe('executeBulkTicketReply — two-phase idempotency marker (no double sen
     expect(r.report.sent).toEqual([uid(1)]);
   });
 
+  it('sending, failed, sending (the retry itself crashed mid-send) is uncertain again — counted, not set membership', async () => {
+    h.rows.tickets = [ticketRow(uid(1))];
+    h.rows.audit_logs = [
+      { resourceId: uid(1), action: 'ticket.reply.sending' },
+      { resourceId: uid(1), action: 'ticket.reply.failed' },
+      { resourceId: uid(1), action: 'ticket.reply.sending' },
+    ];
+    const r = await run([uid(1)]);
+    if (!r.ok) throw new Error('refused');
+    expect(r.report.skipped).toEqual([{ ticketId: uid(1), reason: 'uncertain' }]);
+    expect(ticketCalls()).toEqual([]);
+  });
+
   it('a reply that throws records `failed` so a redelivery may retry it', async () => {
     h.rows.tickets = [ticketRow(uid(1))];
     h.replyFailures.set(uid(1), new Error('db down'));

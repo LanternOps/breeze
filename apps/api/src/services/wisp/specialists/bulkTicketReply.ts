@@ -101,23 +101,30 @@ function defaultHoldNote(concernId: string | null): string {
     : 'Set to pending by a Wisp bulk reply. A public update follows.';
 }
 
-/** sent → already sent; sending without sent/failed → uncertain (may have reached the customer). */
+/**
+ * sent → already sent. Otherwise COUNTED, not set membership: every attempt
+ * writes one `sending`, and a cleanly rolled-back attempt one `failed`. More
+ * `sending` than `failed` means some attempt's outcome is unknown (it may
+ * have reached the customer) → uncertain, never re-sent.
+ */
 function classifyMarkers(rows: Array<{ resourceId: string | null; action: string }>): {
   alreadySentIds: Set<string>;
   uncertainIds: Set<string>;
 } {
-  const byTicket = new Map<string, Set<string>>();
+  const byTicket = new Map<string, { sending: number; sent: number; failed: number }>();
   for (const r of rows) {
     if (!r.resourceId) continue;
-    const set = byTicket.get(r.resourceId) ?? new Set<string>();
-    set.add(r.action);
-    byTicket.set(r.resourceId, set);
+    const c = byTicket.get(r.resourceId) ?? { sending: 0, sent: 0, failed: 0 };
+    if (r.action === BULK_TICKET_REPLY_AUDIT_ACTION) c.sent += 1;
+    else if (r.action === BULK_TICKET_REPLY_SENDING_ACTION) c.sending += 1;
+    else if (r.action === BULK_TICKET_REPLY_FAILED_ACTION) c.failed += 1;
+    byTicket.set(r.resourceId, c);
   }
   const alreadySentIds = new Set<string>();
   const uncertainIds = new Set<string>();
-  for (const [id, actions] of byTicket) {
-    if (actions.has(BULK_TICKET_REPLY_AUDIT_ACTION)) alreadySentIds.add(id);
-    else if (actions.has(BULK_TICKET_REPLY_SENDING_ACTION) && !actions.has(BULK_TICKET_REPLY_FAILED_ACTION)) uncertainIds.add(id);
+  for (const [id, c] of byTicket) {
+    if (c.sent > 0) alreadySentIds.add(id);
+    else if (c.sending > c.failed) uncertainIds.add(id);
   }
   return { alreadySentIds, uncertainIds };
 }
