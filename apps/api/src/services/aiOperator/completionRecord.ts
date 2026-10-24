@@ -36,6 +36,7 @@ import { users } from '../../db/schema/users';
 import { planEffectOperationKey } from './planApproval';
 import { readTaskSpentCents } from './taskLimitsLoader';
 import { OPERATOR_TASK_ACTOR, type HumanWorkDbHandle } from './humanWorkService';
+import { assertTicketNotMerged } from '../ticketMerge/errors';
 import { lockTicketForWrite } from '../ticketRowLock';
 
 export const COMPLETION_RECORD_MAX_CHARS = 12_000;
@@ -355,6 +356,11 @@ export async function postCompletionRecord(
   // under the ticket lock rather than assumed.
   const ticket = await lockTicketForWrite(dbh, input.ticketId);
   if (!ticket || ticket.orgId !== input.orgId) throw new CompletionRecordNoTicketError(input.taskId);
+  // A merged tombstone is read-only (#8972 W1). The ticket id was read before
+  // this lock; a merge that committed in between re-pointed the task's target
+  // to the survivor, so refusing (before the stamp) lets the coordinator's
+  // retry rebuild the record against the survivor.
+  assertTicketNotMerged(ticket);
   const stamped = await dbh
     .update(aiOperatorTaskSteps)
     .set({

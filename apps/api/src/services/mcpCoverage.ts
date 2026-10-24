@@ -725,6 +725,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/bulk.ts': { gap: '#6776' },
   'tickets/checklist.ts': { tools: ['manage_ticket_checklist', 'manage_tickets'] },
   'tickets/links.ts': { tools: ['manage_tickets'] },
+  'tickets/merge.ts': { tools: ['manage_tickets'] },
   'tickets/emailWebhook.ts': { exempt: 'inbound_integration', note: 'Inbound ticket email delivery callback.' },
   'tickets/export.ts': { gap: '#6808' },
   'tickets/forms.ts': { gap: '#6776' },
@@ -807,4 +808,5 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
   'webhooks/xero.ts': { exempt: 'inbound_integration' },
+  'wisp.ts': { exempt: 'human_only_ai_governance', note: 'Wisp delegation grants (Wisp design §4.2): a human lends their own authority on a fresh step-up proof -- the AI must never mint, widen, resume or reconfigure its own grant.' },
 };

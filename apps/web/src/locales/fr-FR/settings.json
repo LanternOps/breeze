@@ -1475,7 +1475,8 @@
       "approval_ask": "Demande d’approbation",
       "approval_snapshot": "Chiffres de l’approbation",
       "approval_expires": "Date limite d’approbation",
-      "approval_status": "Statut de l’approbation"
+      "approval_status": "Statut de l’approbation",
+      "merged_into_number": "Numéro du ticket de destination"
     },
     "billingPayments": "Facturation et paiements",
     "supportPortal": "Assistance et portail",
@@ -1490,7 +1491,8 @@
       "payment_failed": "Le paiement n’a pas pu être effectué",
       "ticket_approval_requested_approver": "Demande d’approbation de travaux (approbateur)",
       "ticket_approval_requested_notify": "Demande d’approbation de travaux (pour information)",
-      "ticket_approval_decided": "Décision d’approbation de travaux"
+      "ticket_approval_decided": "Décision d’approbation de travaux",
+      "ticket_merged": "Ticket fusionné"
     }
   },
   "inboundEmail": {

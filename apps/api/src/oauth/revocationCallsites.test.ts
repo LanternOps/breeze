@@ -32,7 +32,15 @@ describe('OAuth revocation marker call-site contract', () => {
 
       const source = readFileSync(absolute, 'utf8');
       const importsRawMarker = /import[\s\S]*?\b(?:revokeGrant|revokeJti)\b[\s\S]*?from\s+['"][^'"]*revocationCache['"]/.test(source);
-      const callsRawMarker = /\b(?:revokeGrant|revokeJti)\s*\(/.test(source);
+      // Wisp W02: `revokeGrant` is also the Wisp delegation-grant service's
+      // contract name (services/wisp/grants.ts, w00). A file that defines it
+      // there, or imports it from there, and does NOT touch revocationCache is
+      // calling the Wisp service, not the OAuth marker.
+      const wispRevokeGrant = !importsRawMarker
+        && !/\brevokeJti\s*\(/.test(source)
+        && (file === 'services/wisp/grants.ts'
+          || /import[\s\S]*?\brevokeGrant\b[\s\S]*?from\s+['"][^'"]*wisp\/grants['"]/.test(source));
+      const callsRawMarker = !wispRevokeGrant && /\b(?:revokeGrant|revokeJti)\s*\(/.test(source);
       return importsRawMarker || callsRawMarker ? [file] : [];
     });
 

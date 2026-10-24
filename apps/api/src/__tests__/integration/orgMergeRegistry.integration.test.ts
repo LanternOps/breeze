@@ -201,6 +201,14 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
+  // Wisp W02 (#9908, 2027-01-04-100100): ownership columns incl. org_id are
+  // immutable; wisp_grants is leave-for-erasure, never repointed.
+  'wisp_grants.wisp_grants_update_guard': 'RAISEs 42501 iff an ownership column (incl. org_id) changed',
+  // Grant-pinned runs/tasks: RAISE when a grant-bearing row's org_id leaves the
+  // grant's partner/scope. Both tables stay with the loser (ai_agent_runs is
+  // leave-for-erasure, ai_operator_tasks custom-left), so a merge never repoints them.
+  'ai_agent_runs.ai_agent_runs_grant_tenant_guard': 'RAISEs 23503 when a grant-pinned run\'s org_id is outside the grant\'s tenant scope',
+  'ai_operator_tasks.ai_operator_tasks_grant_tenant_guard': 'RAISEs 23503 when a grant-pinned task\'s org_id is outside the grant\'s tenant scope',
   // Unconditional append-only guards: RAISE on any UPDATE (the retention job's
   // `breeze.allow_audit_retention` GUC is the only bypass, and it is DELETE-path
   // machinery, not something a merge may set).
@@ -279,6 +287,12 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
   // proposals in the loser and leaves terminal ones alone": org_id stays with
   // the loser for both fenced and terminal rows).
   script_proposals: 'fence (status/decision_note only) + no-op move — orgMergeCustomExecutors.ts',
+
+  // fenceAiOperatorTasks sets state/lease/outcome_detail and detaches the
+  // target device in the resolve phase; moveAiOperatorTasks is a documented
+  // no-op (rows stay with the loser). Neither writes org_id, so the Wisp W02
+  // ai_operator_tasks_grant_tenant_guard (UPDATE OF grant_id, org_id) never fires.
+  ai_operator_tasks: 'fence (state/lease/target detach only) + no-op move — orgMergeCustomExecutors.ts',
 };
 
 /**
