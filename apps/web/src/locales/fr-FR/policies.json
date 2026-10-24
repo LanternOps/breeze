@@ -1255,7 +1255,7 @@
       "uploadFile": "Fichier d’envoi",
       "source2": "Source",
       "downloadUrl": "downloadUrl",
-      "noFileSelectedMsiExeDmgDeb": "Aucun fichier sélectionné (.msi, .exe, .dmg, .deb, .pkg)",
+      "noFileSelectedMsiExeDmgDeb": "Aucun fichier sélectionné (.msi, .exe, .dmg, .deb, .pkg, .zip)",
       "supportedOs": "supportedOs",
       "pkgInstall": "pkg-install",
       "silentInstallArgs2": "silentInstallArgs",
@@ -1311,7 +1311,19 @@
       "thisOrganizationOnly": "Cette organisation uniquement",
       "partnerWideUrlOnly": "Les paquets partenaire utilisent une URL de téléchargement — le téléversement de fichiers n'est pas encore disponible pour eux.",
       "selectedFileRemoved": "Le fichier sélectionné a été retiré — les paquets partenaire utilisent une URL de téléchargement.",
-      "scopeLockedAfterCreate": "Le paquet a déjà été créé avec cette portée — la propriété ne peut pas changer après la création."
+      "scopeLockedAfterCreate": "Le paquet a déjà été créé avec cette portée — la propriété ne peut pas changer après la création.",
+      "installScripts": "Scripts d’installation",
+      "installScriptsHelp": "Obligatoires pour les packages zip, facultatifs sinon. Les scripts s’exécutent en tant que SYSTEM sous Windows ou root sous macOS et Linux, expirent au bout de 10 minutes, nécessitent l’autorisation devices.execute et exactement un système d’exploitation cible.",
+      "availableTokens": "Jetons disponibles :",
+      "preInstallScript": "Script de pré-installation",
+      "postInstallScript": "Script de post-installation",
+      "preInstallScriptPlaceholder": "S’exécute avant l’installateur (PowerShell sous Windows, bash sous macOS et Linux)",
+      "postInstallScriptPlaceholder": "S’exécute après l’installateur ou après l’extraction du zip",
+      "silentArgsNotUsedForType": "Les arguments d’installation silencieuse ne sont pas utilisés pour les installateurs pkg, dmg, deb ou zip.",
+      "issueZipRequiresPostInstallScript": "Les packages zip nécessitent un script de post-installation : l’agent se contente d’extraire l’archive.",
+      "issueScriptsRequireSingleOs": "Les scripts d’installation nécessitent exactement un système d’exploitation cible.",
+      "issueScriptTooLarge": "Chaque script d’installation doit faire 64 KiB ou moins.",
+      "issueArgsUnsupportedForFileType": "Les arguments d’installation silencieuse ne sont pas pris en charge pour ce type d’installateur."
     },
     "builtinPackageDetail": {
       "managedBuiltIn": "Intégré géré",
@@ -1397,7 +1409,15 @@
       "coverageRowsNote": "Affichage de {{shown}} sur {{total}}",
       "violationCount": "{{count}} violation",
       "violationCount_one": "{{count}} violation",
-      "violationCount_other": "{{count}} violations"
+      "violationCount_other": "{{count}} violations",
+      "violationTypes": {
+        "unauthorized": "Non autorisé",
+        "missing": "Manquant",
+        "outdated": "Obsolète",
+        "not_running": "Non démarré",
+        "service_unverified": "Service non vérifié",
+        "serviceTitle": "Service : {{name}}"
+      }
     },
     "deploymentList": {
       "running": "En cours",
@@ -1615,7 +1635,11 @@
       "msiProductCode": "msi_product_code",
       "fileVersion": "file_version",
       "serviceRunning": "Service en cours d’exécution",
-      "readOnlyHint": "Créée via l’API. Non modifiable ici ; elle est conservée telle quelle à l’enregistrement."
+      "readOnlyHint": "Créée via l’API. Non modifiable ici ; elle est conservée telle quelle à l’enregistrement.",
+      "serviceName": "Nom du service",
+      "serviceNamePlaceholder": "p. ex. ctrld",
+      "serviceNameHint": "Nom de service Windows, étiquette launchd macOS ou unité systemd Linux. Vérifié avant et après l’installation.",
+      "serviceNameInvalid": "Saisissez un nom de service sans caractères de contrôle ni « - » initial (256 octets maximum)."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossible de récupérer les appareils",
@@ -1732,7 +1756,10 @@
       "catalogTab": "Catalogue",
       "summaryCompleted7d": "Terminés (7 j)",
       "summaryFailed7d": "Échoués (7 j)",
-      "categoryFilterLabel": "Catégorie"
+      "categoryFilterLabel": "Catégorie",
+      "requiredVariables": "Variables requises",
+      "uninstallCommand": "Commande de désinstallation",
+      "managedByBreezeHint": "Géré par Breeze. Ce package ne peut être ni modifié ni supprimé, et aucune nouvelle version ne peut lui être ajoutée ici."
     },
     "softwareInventory": {
       "allowed": "Autorisé",
@@ -1874,7 +1901,10 @@
       "uploadsRequireS3Storage": "Le téléversement de fichiers nécessite la configuration d'un stockage objet S3 sur le serveur.",
       "editingVersion": "Modification de la version",
       "failedToUpdateVersion": "Échec de la mise à jour de la version",
-      "replaceFileAddNewVersion": "Pour remplacer le fichier d'installation, ajoutez plutôt une nouvelle version."
+      "replaceFileAddNewVersion": "Pour remplacer le fichier d'installation, ajoutez plutôt une nouvelle version.",
+      "inactiveStoredScripts": "Les scripts d’installation enregistrés ne sont pas actifs ; recréez la version pour les activer.",
+      "addZipFromAddPackage": "Ajoutez les packages zip depuis Ajouter le package.",
+      "builtinVersionsReadOnly": "Géré par Breeze. Les versions des packages intégrés ne peuvent être ni ajoutées ni modifiées ici."
     },
     "variableInput": {
       "insertADeployTimeVariable": "Insérer une variable de temps de déploiement",
@@ -1908,6 +1938,30 @@
       "queuedNone": "Rien n'a été mis en file d'attente : les appareils de l'aperçu n'ont plus besoin d'assainissement ou en ont déjà un en attente.",
       "queuedPartial": "Assainissement mis en file d'attente pour {{queued}} appareil(s) sur {{requested}} de l'aperçu ; les autres n'en ont plus besoin ou en ont déjà un en attente.",
       "previewFailedWithReason": "Impossible de charger l'aperçu de l'assainissement : {{reason}}"
+    },
+    "builtinPackagesPanel": {
+      "title": "Packages intégrés",
+      "description": "Clients de filtrage DNS épinglés et vérifiés par Breeze. Ajoutez-en un à votre catalogue, définissez sa variable pour chaque organisation, puis déployez-le comme n’importe quel autre package.",
+      "colPackage": "Package",
+      "colPlatform": "Plateforme",
+      "colPinnedVersion": "Version épinglée",
+      "colRequiredVariables": "Variables requises",
+      "colUninstallCommand": "Commande de désinstallation",
+      "colStatus": "Statut",
+      "addToCatalog": "Ajouter au catalogue",
+      "adding": "Ajout en cours…",
+      "inCatalog": "Dans le catalogue",
+      "archived": "Archivé",
+      "restoreToCatalog": "Restaurer",
+      "addedToCatalog": "{{name}} a été ajouté au catalogue",
+      "couldNotAddToCatalog": "Impossible d’ajouter {{name}} au catalogue",
+      "couldNotLoadBuiltinPackages": "Impossible de charger les packages intégrés",
+      "loadingBuiltinPackages": "Chargement des packages intégrés…",
+      "setVariablesPerOrganization": "À définir par organisation dans Paramètres → Variables",
+      "copyUninstallCommand": "Copier la commande de désinstallation",
+      "uninstallCommandCopied": "Commande de désinstallation copiée",
+      "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un.",
+      "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement."
     }
   }
 }

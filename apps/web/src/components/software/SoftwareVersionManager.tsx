@@ -48,7 +48,21 @@ type VersionEntry = {
   supportedOs: string[];
   detectionRules: DetectionRule[];
   successExitCodes: number[];
+  // #6958: stored scripts are dispatched only when installScriptsEnabled.
+  preInstallScript: string | null;
+  postInstallScript: string | null;
+  installScriptsEnabled: boolean;
 };
+
+/** A version holding scripts that were stored but never enabled (pre-#6958, or a writer without devices.execute). */
+function hasInactiveStoredScripts(entry: VersionEntry): boolean {
+  const present = (v: string | null) => typeof v === "string" && v.trim() !== "";
+  return (present(entry.preInstallScript) || present(entry.postInstallScript)) && !entry.installScriptsEnabled;
+}
+
+// The add-version form has no script fields, and the API rejects a zip
+// without a post-install script, so zip is offered only from Add Package.
+const VERSION_FORM_FILE_TYPES = SOFTWARE_FILE_TYPES.filter((t) => t !== "zip");
 function formatDate(dateString: string, timezone?: string): string {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
@@ -105,6 +119,11 @@ function normalizeVersion(
           .map((n) => Number(n))
           .filter((n) => Number.isFinite(n))
       : [],
+    preInstallScript:
+      typeof raw.preInstallScript === "string" ? raw.preInstallScript : null,
+    postInstallScript:
+      typeof raw.postInstallScript === "string" ? raw.postInstallScript : null,
+    installScriptsEnabled: raw.installScriptsEnabled === true,
   };
 }
 /**
@@ -155,11 +174,15 @@ interface SoftwareVersionManagerProps {
   /** When rendered inside the package detail modal, drop the page heading and
    *  the full-page comparison cards — the modal supplies its own chrome. */
   embedded?: boolean;
+  /** #6958: a Breeze-pinned built-in (builtinPackageKey set). Versions are
+   *  managed by Breeze: no add, edit or promote here (the API answers 403). */
+  builtinReadOnly?: boolean;
 }
 export default function SoftwareVersionManager({
   timezone,
   catalogId: propCatalogId,
   embedded = false,
+  builtinReadOnly = false,
 }: SoftwareVersionManagerProps) {
   useTranslation("policies");
   const [versions, setVersions] = useState<VersionEntry[]>([]);
@@ -740,6 +763,16 @@ export default function SoftwareVersionManager({
             buttons): repurposing the shared form mid-upload would let the
             completing upload's resetForm() wipe whatever the user started
             typing. */}
+        {builtinReadOnly ? (
+          <p
+            className="text-sm text-muted-foreground"
+            data-testid="builtin-versions-readonly"
+          >
+            {i18n.t(
+              "policies:software.softwareVersionManager.builtinVersionsReadOnly",
+            )}
+          </p>
+        ) : (
         <button
           type="button"
           disabled={saving}
@@ -754,6 +787,7 @@ export default function SoftwareVersionManager({
             <ChevronDown className="h-4 w-4" />
           )}
         </button>
+        )}
       </div>
 
       {error && (
@@ -881,12 +915,21 @@ export default function SoftwareVersionManager({
                           "policies:software.softwareVersionManager.autoDetectFromUrl",
                         )}
                   </option>
-                  {SOFTWARE_FILE_TYPES.map((t) => (
+                  {/* Editing an existing zip version keeps its type selectable. */}
+                  {(formState.fileType === "zip"
+                    ? SOFTWARE_FILE_TYPES
+                    : VERSION_FORM_FILE_TYPES
+                  ).map((t) => (
                     <option key={t} value={t}>
                       {t.toUpperCase()}
                     </option>
                   ))}
                 </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {i18n.t(
+                    "policies:software.softwareVersionManager.addZipFromAddPackage",
+                  )}
+                </p>
                 {formState.downloadUrl.trim() !== "" &&
                   !formState.fileType &&
                   !inferredFileType && (
@@ -1258,6 +1301,16 @@ export default function SoftwareVersionManager({
                         {i18n.t("policies:software.softwareVersionManager.v")}
                         {entry.version}
                       </button>
+                      {hasInactiveStoredScripts(entry) && (
+                        <p
+                          className="mt-1 text-xs text-amber-600 dark:text-amber-500"
+                          data-testid={`inactive-scripts-${entry.id}`}
+                        >
+                          {i18n.t(
+                            "policies:software.softwareVersionManager.inactiveStoredScripts",
+                          )}
+                        </p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {formatDate(entry.releaseDate, timezone)}
@@ -1271,6 +1324,15 @@ export default function SoftwareVersionManager({
                       {entry.fileType ? entry.fileType.toUpperCase() : "—"}
                     </td>
                     <td className="px-4 py-3">
+                      {builtinReadOnly ? (
+                        entry.id === latestId && (
+                          <span className="text-xs font-medium text-muted-foreground">
+                            {i18n.t(
+                              "policies:software.softwareVersionManager.latest2",
+                            )}
+                          </span>
+                        )
+                      ) : (
                       <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                         <input
                           type="checkbox"
@@ -1289,8 +1351,10 @@ export default function SoftwareVersionManager({
                               "policies:software.softwareVersionManager.setAsLatest",
                             )}
                       </label>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
+                      {!builtinReadOnly && (
                       <button
                         type="button"
                         data-testid={`version-edit-${entry.id}`}
@@ -1300,6 +1364,7 @@ export default function SoftwareVersionManager({
                       >
                         {i18n.t("common:actions.edit")}
                       </button>
+                      )}
                     </td>
                   </tr>
                 ))

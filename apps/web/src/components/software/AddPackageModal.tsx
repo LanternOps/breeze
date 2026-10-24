@@ -12,6 +12,8 @@ import {
   SOFTWARE_FILE_TYPES,
   deriveSoftwareFileTypeFromUrl,
   parseSuccessExitCodesText,
+  validateSoftwareVersionInstallSpec,
+  type InstallSpecIssue,
   type DetectionRule,
   type SoftwareFileType,
 } from "@breeze/shared";
@@ -68,6 +70,31 @@ const CATEGORIES = [
   "security",
 ] as const;
 const OS_OPTIONS = ["Windows", "macOS", "Linux"] as const;
+
+// Literal template tokens, rendered outside translation strings (i18next would
+// treat `{{...}}` as interpolation).
+const INSTALL_SCRIPT_TOKENS = [
+  "{{org.*}}",
+  "{{site.*}}",
+  "{{device.hostname}}",
+  "{{device.customField.<key>}}",
+  "{{var.<key>}}",
+  "{{install.dir}}",
+  "{{install.file}}",
+] as const;
+
+function installSpecIssueMessage(code: InstallSpecIssue): string {
+  switch (code) {
+    case "zip_requires_post_install_script":
+      return i18n.t("policies:software.addPackageModal.issueZipRequiresPostInstallScript");
+    case "scripts_require_single_os":
+      return i18n.t("policies:software.addPackageModal.issueScriptsRequireSingleOs");
+    case "script_too_large":
+      return i18n.t("policies:software.addPackageModal.issueScriptTooLarge");
+    case "args_unsupported_for_file_type":
+      return i18n.t("policies:software.addPackageModal.issueArgsUnsupportedForFileType");
+  }
+}
 /**
  * Server-acknowledged bytes → a percentage safe to render as a CSS width.
  *
@@ -98,6 +125,8 @@ const blankForm = {
   supportedOs: [] as string[],
   silentInstallArgs: "",
   silentUninstallArgs: "",
+  preInstallScript: "",
+  postInstallScript: "",
   detectionRules: [] as DetectionRule[],
   // Raw free text (issue #7038); parsed with parseSuccessExitCodesText at
   // submit time. Codes here ADD to the agent's built-in success codes (0
@@ -316,6 +345,26 @@ export default function AddPackageModal({
           "policies:software.addPackageModal.tooManySuccessExitCodes",
         );
   const isManager = form.source === "manager";
+  // The type the server will end up with: the file source derives it from the
+  // uploaded filename; the URL source honors the selector, else the URL.
+  const effectiveFileType: SoftwareFileType | null =
+    form.source === "file"
+      ? deriveSoftwareFileTypeFromUrl(form.fileName)
+      : form.fileType || inferredFileType;
+  const argsHidden =
+    effectiveFileType === "zip" ||
+    effectiveFileType === "pkg" ||
+    effectiveFileType === "dmg" ||
+    effectiveFileType === "deb";
+  const installSpecIssues: InstallSpecIssue[] = isManager
+    ? []
+    : validateSoftwareVersionInstallSpec({
+        fileType: effectiveFileType,
+        supportedOs: form.supportedOs,
+        silentInstallArgs: argsHidden ? null : form.silentInstallArgs,
+        preInstallScript: form.preInstallScript,
+        postInstallScript: form.postInstallScript,
+      });
   const hasSource =
     form.source === "url"
       ? form.downloadUrl.trim() !== ""
@@ -330,6 +379,7 @@ export default function AddPackageModal({
     hasSource &&
     tokenErrors.length === 0 &&
     successExitCodesResult.ok &&
+    installSpecIssues.length === 0 &&
     !saving;
   /** Prefill identity from the first pick, but never overwrite what the user
    *  typed. */
@@ -353,7 +403,10 @@ export default function AddPackageModal({
       version: form.version.trim(),
       architecture: form.architecture,
       releaseNotes: form.notes || undefined,
-      silentInstallArgs: form.silentInstallArgs || undefined,
+      silentInstallArgs:
+        argsHidden || !form.silentInstallArgs ? undefined : form.silentInstallArgs,
+      preInstallScript: form.preInstallScript.trim() ? form.preInstallScript : undefined,
+      postInstallScript: form.postInstallScript.trim() ? form.postInstallScript : undefined,
       silentUninstallArgs: form.silentUninstallArgs || undefined,
       supportedOs: form.supportedOs.length > 0 ? form.supportedOs : undefined,
       detectionRules:
@@ -987,7 +1040,7 @@ export default function AddPackageModal({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".msi,.exe,.dmg,.deb,.pkg"
+                    accept=".msi,.exe,.dmg,.deb,.pkg,.zip"
                     onChange={handleFile}
                     className="hidden"
                   />
@@ -1047,7 +1100,13 @@ export default function AddPackageModal({
             </div>
             )}
 
-            {!isManager && (
+            {!isManager && argsHidden && (
+              <p className="text-xs text-muted-foreground">
+                {i18n.t("policies:software.addPackageModal.silentArgsNotUsedForType")}
+              </p>
+            )}
+
+            {!isManager && !argsHidden && (
             <div>
               <label className={labelCls} htmlFor="pkg-install">
                 {i18n.t("policies:software.addPackageModal.silentInstallArgs")}
@@ -1065,6 +1124,61 @@ export default function AddPackageModal({
                 />
               </div>
             </div>
+            )}
+
+            {!isManager && (
+              <div data-testid="install-scripts">
+                <span className={labelCls}>
+                  {i18n.t("policies:software.addPackageModal.installScripts")}
+                </span>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {i18n.t("policies:software.addPackageModal.installScriptsHelp")}
+                </p>
+                <p className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                  {i18n.t("policies:software.addPackageModal.availableTokens")}
+                  {INSTALL_SCRIPT_TOKENS.map((t) => (
+                    <code key={t} className="rounded bg-muted px-1 font-mono">
+                      {t}
+                    </code>
+                  ))}
+                </p>
+                <label className={cn(labelCls, "mt-3 block")} htmlFor="pkg-pre-install-script">
+                  {i18n.t("policies:software.addPackageModal.preInstallScript")}
+                </label>
+                <textarea
+                  id="pkg-pre-install-script"
+                  data-testid="pre-install-script"
+                  value={form.preInstallScript}
+                  onChange={(e) => update("preInstallScript", e.target.value)}
+                  placeholder={i18n.t("policies:software.addPackageModal.preInstallScriptPlaceholder")}
+                  rows={4}
+                  spellCheck={false}
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
+                />
+                <label className={cn(labelCls, "mt-3 block")} htmlFor="pkg-post-install-script">
+                  {i18n.t("policies:software.addPackageModal.postInstallScript")}
+                </label>
+                <textarea
+                  id="pkg-post-install-script"
+                  data-testid="post-install-script"
+                  value={form.postInstallScript}
+                  onChange={(e) => update("postInstallScript", e.target.value)}
+                  placeholder={i18n.t("policies:software.addPackageModal.postInstallScriptPlaceholder")}
+                  rows={4}
+                  spellCheck={false}
+                  className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
+                />
+                {installSpecIssues.map((code) => (
+                  <p
+                    key={code}
+                    role="alert"
+                    data-testid={`install-spec-issue-${code}`}
+                    className="mt-2 text-xs text-destructive"
+                  >
+                    {installSpecIssueMessage(code)}
+                  </p>
+                ))}
+              </div>
             )}
           </section>
 
