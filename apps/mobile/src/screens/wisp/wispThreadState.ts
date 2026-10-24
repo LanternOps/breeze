@@ -68,13 +68,80 @@ export function approvalOpenTarget(c: Pick<WispConcern, 'status' | 'approvalInte
  * user's still-pending row; null means decided elsewhere (or not this user's
  * to decide), and the caller must not focus anything (Review Focus 4).
  */
+type PendingApprovalRow = { id: string; status: string; intentId?: string | null; expiresAt?: string };
+
 export function approvalRequestIdForIntent(
-  pending: ReadonlyArray<{ id: string; status: string; intentId?: string | null }>,
+  pending: ReadonlyArray<PendingApprovalRow>,
   intentId: string,
+  now: Date = new Date(),
 ): string | null {
   if (!intentId) return null;
-  const row = pending.find((a) => a.intentId === intentId && a.status === 'pending');
+  const row = pending.find(
+    (a) =>
+      a.intentId === intentId &&
+      a.status === 'pending' &&
+      // The approvals slice expires rows lazily; a row past `expiresAt` is a
+      // dead card, and focusing it would flash the takeover (Review Focus 4).
+      !(a.expiresAt && Date.parse(a.expiresAt) <= now.getTime()),
+  );
   return row ? row.id : null;
+}
+
+export type ApprovalFocusResult =
+  | { kind: 'focus'; approvalId: string }
+  | { kind: 'decided' }
+  | { kind: 'refresh_failed'; error: unknown };
+
+/**
+ * Store first; when the row is not there, refresh pending ONCE and look again.
+ * "Decided" is only claimed after a refresh that succeeded — a failed refresh
+ * (offline, 5xx) is its own outcome so the screen never tells the technician
+ * an approval was decided when it simply could not check.
+ */
+export async function resolveApprovalFocus(input: {
+  getPending: () => ReadonlyArray<PendingApprovalRow>;
+  refresh: () => Promise<unknown>;
+  intentId: string;
+  now?: () => Date;
+}): Promise<ApprovalFocusResult> {
+  const now = input.now ?? (() => new Date());
+  const found = approvalRequestIdForIntent(input.getPending(), input.intentId, now());
+  if (found) return { kind: 'focus', approvalId: found };
+  try {
+    await input.refresh();
+  } catch (error) {
+    return { kind: 'refresh_failed', error };
+  }
+  const after = approvalRequestIdForIntent(input.getPending(), input.intentId, now());
+  return after ? { kind: 'focus', approvalId: after } : { kind: 'decided' };
+}
+
+/**
+ * Whether a nudge carrying an approval card should open it on arrival, and the
+ * once-per-(thread, intent) key. A pushed concern that is no longer open never
+ * opens its card; a pushed concern missing from the list still tries — the
+ * pending-row lookup is the authority on whether the card is live.
+ */
+export function shouldAutoOpenApproval(
+  params: WispThreadParams,
+  concerns: ReadonlyArray<WispConcern>,
+  lastKey: string | null,
+): { open: boolean; key: string | null } {
+  if (!params.approvalIntentId) return { open: false, key: null };
+  const key = `${params.threadId}:${params.approvalIntentId}`;
+  if (lastKey === key) return { open: false, key };
+  const pushed = params.concernId ? concerns.find((c) => c.id === params.concernId) : undefined;
+  if (pushed && approvalOpenTarget(pushed) === null) return { open: false, key };
+  return { open: true, key };
+}
+
+/** HTTP status off an `ApiError` (`statusCode`) or a fetch-style error (`status`). */
+export function errorStatus(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const e = err as { statusCode?: unknown; status?: unknown };
+  if (typeof e.statusCode === 'number') return e.statusCode;
+  if (typeof e.status === 'number') return e.status;
+  return undefined;
 }
 
 export function initialExpandedConcern(params: WispThreadParams, concerns: WispConcern[]): string | null {

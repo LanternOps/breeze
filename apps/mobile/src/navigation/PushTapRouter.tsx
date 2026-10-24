@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sentry from '@sentry/react-native';
 
+import { safeReportInternalError } from '../lib/errorReporting';
+
 import { store, useAppDispatch } from '../store';
 import { fetchTickets } from '../store/ticketsSlice';
 import {
@@ -23,7 +25,17 @@ import {
 type Routable = NonNullable<PushRoute>;
 
 function routeOf(notification: { request: { content: { data?: unknown } } }): Routable | null {
-  return resolvePushRoute(notification.request.content.data as Record<string, unknown> | undefined);
+  const data = notification.request.content.data as Record<string, unknown> | undefined;
+  const route = resolvePushRoute(data);
+  // A wisp_nudge the parser refused is API contract drift (missing grantId /
+  // threadId): the tap would silently open nothing, so make it visible.
+  if (!route && data?.type === 'wisp_nudge') {
+    safeReportInternalError(
+      new Error(`unroutable wisp_nudge push (keys: ${Object.keys(data).sort().join(',')})`),
+      'wisp-push-parse',
+    );
+  }
+  return route;
 }
 
 /**

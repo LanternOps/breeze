@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { WispConcern, WispConcernSeverity } from '../../services/wisp';
 import {
@@ -6,6 +6,9 @@ import {
   approvalOpenTarget,
   approvalRequestIdForIntent,
   concernSections,
+  errorStatus,
+  resolveApprovalFocus,
+  shouldAutoOpenApproval,
   initialExpandedConcern,
   wispSessionReducer,
   type WispSessionEvent,
@@ -205,7 +208,18 @@ describe('approvalRequestIdForIntent (Review Focus 4)', () => {
   // A concern names its approval card by ACTION INTENT id; the mobile takeover
   // is keyed by APPROVAL REQUEST id (one row per approver). Focusing the intent
   // id directly would 404 and never open the card.
-  const row = (id: string, intentId: string | null | undefined, status = 'pending') => ({ id, intentId, status });
+  const row = (id: string, intentId: string | null | undefined, status = 'pending', expiresAt = '2999-01-01T00:00:00Z') => ({
+    id,
+    intentId,
+    status,
+    expiresAt,
+  });
+
+  it('skips a pending row whose expiresAt already passed (the slice expires lazily)', () => {
+    const at = new Date('2026-10-19T12:00:00Z');
+    expect(approvalRequestIdForIntent([row('a1', 'i1', 'pending', '2026-10-19T11:59:59Z')], 'i1', at)).toBeNull();
+    expect(approvalRequestIdForIntent([row('a1', 'i1', 'pending', '2026-10-19T12:05:00Z')], 'i1', at)).toBe('a1');
+  });
 
   it("maps the intent to this user's pending approval row", () => {
     expect(approvalRequestIdForIntent([row('a1', 'i0'), row('a2', 'i1')], 'i1')).toBe('a2');
@@ -222,5 +236,79 @@ describe('approvalRequestIdForIntent (Review Focus 4)', () => {
 
   it('never matches an empty intent id', () => {
     expect(approvalRequestIdForIntent([row('a1', '')], '')).toBeNull();
+  });
+});
+
+describe('resolveApprovalFocus (Review Focus 4)', () => {
+  const pendingRow = { id: 'a1', intentId: 'i1', status: 'pending', expiresAt: '2999-01-01T00:00:00Z' };
+
+  it('focuses straight from the store without refreshing', async () => {
+    const refresh = vi.fn();
+    await expect(resolveApprovalFocus({ getPending: () => [pendingRow], refresh, intentId: 'i1' })).resolves.toEqual({
+      kind: 'focus',
+      approvalId: 'a1',
+    });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('refreshes once when the row is not yet in the store, then focuses', async () => {
+    let pending: (typeof pendingRow)[] = [];
+    const refresh = vi.fn(async () => {
+      pending = [pendingRow];
+    });
+    await expect(resolveApprovalFocus({ getPending: () => pending, refresh, intentId: 'i1' })).resolves.toEqual({
+      kind: 'focus',
+      approvalId: 'a1',
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports decided only after a SUCCESSFUL refresh found nothing', async () => {
+    await expect(
+      resolveApprovalFocus({ getPending: () => [], refresh: async () => undefined, intentId: 'i1' }),
+    ).resolves.toEqual({ kind: 'decided' });
+  });
+
+  it('a failed refresh is not "already decided"', async () => {
+    const err = new Error('offline');
+    await expect(
+      resolveApprovalFocus({ getPending: () => [], refresh: async () => Promise.reject(err), intentId: 'i1' }),
+    ).resolves.toEqual({ kind: 'refresh_failed', error: err });
+  });
+});
+
+describe('shouldAutoOpenApproval (Review Focus 3/4)', () => {
+  const base = { threadId: 't1', grantId: 'g1', concernId: 'c1', approvalIntentId: 'i1' };
+
+  it('opens for an open pushed concern, once per thread+intent', () => {
+    const list = [c('c1', 'high', { approvalIntentId: 'i1' })];
+    expect(shouldAutoOpenApproval(base, list, null)).toEqual({ open: true, key: 't1:i1' });
+    expect(shouldAutoOpenApproval(base, list, 't1:i1')).toEqual({ open: false, key: 't1:i1' });
+  });
+
+  it('never opens for a pushed concern that is resolved, dismissed or snoozed', () => {
+    for (const status of ['resolved', 'dismissed', 'snoozed'] as const) {
+      const list = [c('c1', 'high', { status, approvalIntentId: 'i1' })];
+      expect(shouldAutoOpenApproval(base, list, null).open).toBe(false);
+    }
+  });
+
+  it('still tries when the pushed concern is not in the list (the pending-row lookup decides)', () => {
+    expect(shouldAutoOpenApproval(base, [], null).open).toBe(true);
+    expect(shouldAutoOpenApproval({ ...base, concernId: null }, [], null).open).toBe(true);
+  });
+
+  it('does nothing without an approval intent', () => {
+    expect(shouldAutoOpenApproval({ ...base, approvalIntentId: null }, [], null)).toEqual({ open: false, key: null });
+  });
+});
+
+describe('errorStatus', () => {
+  it('reads statusCode (ApiError) first, then status, else undefined', () => {
+    expect(errorStatus(Object.assign(new Error('x'), { statusCode: 404 }))).toBe(404);
+    expect(errorStatus({ status: 409 })).toBe(409);
+    expect(errorStatus({ statusCode: '404' })).toBeUndefined();
+    expect(errorStatus(null)).toBeUndefined();
+    expect(errorStatus('boom')).toBeUndefined();
   });
 });

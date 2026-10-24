@@ -33,9 +33,21 @@ describe('getWispNudgePrefs', () => {
     });
   });
 
-  it('defaults everything for an empty or missing body', async () => {
-    coreRequest.mockResolvedValue({});
+  it('defaults everything for an empty settings object', async () => {
+    coreRequest.mockResolvedValue({ data: { settings: {} } });
     await expect(getWispNudgePrefs()).resolves.toEqual(DEFAULTS);
+  });
+
+  it('throws on a body without data.settings rather than passing defaults off as saved values', async () => {
+    coreRequest.mockResolvedValue({});
+    await expect(getWispNudgePrefs()).rejects.toThrow(/malformed/);
+    coreRequest.mockResolvedValue({ settings: { proactivity: 'quiet' } });
+    await expect(getWispNudgePrefs()).rejects.toThrow(/malformed/);
+  });
+
+  it('a save whose echo lacks data.settings throws (the slice rolls back) instead of reverting to defaults', async () => {
+    coreRequest.mockResolvedValue({ success: true });
+    await expect(updateWispNudgePrefs({ proactivity: 'quiet' })).rejects.toThrow(/malformed/);
   });
 
   it('keeps an explicit null briefTimeLocal (Off) but defaults a malformed one', async () => {

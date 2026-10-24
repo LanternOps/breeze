@@ -80,10 +80,15 @@ describe('listWispConcerns', () => {
     expect(out[0].id).toBe('c1');
   });
 
-  it('returns [] for a non-array body', async () => {
+  it('throws on a non-array body so the screen shows its load error instead of an empty, healthy list', async () => {
     coreRequest.mockResolvedValue({ concerns: 'nope' });
-    await expect(listWispConcerns('g1')).resolves.toEqual([]);
+    await expect(listWispConcerns('g1')).rejects.toThrow(/malformed/);
     coreRequest.mockResolvedValue(undefined);
+    await expect(listWispConcerns('g1')).rejects.toThrow(/malformed/);
+  });
+
+  it('an empty array is a healthy empty list', async () => {
+    coreRequest.mockResolvedValue({ concerns: [] });
     await expect(listWispConcerns('g1')).resolves.toEqual([]);
   });
 });

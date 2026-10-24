@@ -91,10 +91,24 @@ interface SettingsBody {
   data?: { settings?: unknown };
 }
 
+/**
+ * A body without an object at `data.settings` is contract drift, not "nothing
+ * saved yet" (the route answers defaults itself for a user with no row).
+ * Throwing keeps defaults from being shown — or adopted after a save — as if
+ * they were the user's stored values. Per-KEY gaps are still defaulted.
+ */
+function settingsOf(res: SettingsBody | undefined): unknown {
+  const settings = res?.data?.settings;
+  if (typeof settings !== 'object' || settings === null) {
+    throw new Error('wisp nudge preferences payload malformed');
+  }
+  return settings;
+}
+
 /** `coreRequest`, not `request`: the route is on the core `/api/v1` surface. */
 export async function getWispNudgePrefs(): Promise<WispNudgePreferences> {
   const res = await coreRequest<SettingsBody>('/wisp/nudge-preferences');
-  return normalize(res?.data?.settings);
+  return normalize(settingsOf(res));
 }
 
 /** Send only the keys that changed; the server schema is `.strict()`. */
@@ -109,5 +123,5 @@ export async function updateWispNudgePrefs(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
-  return normalize(res?.data?.settings);
+  return normalize(settingsOf(res));
 }

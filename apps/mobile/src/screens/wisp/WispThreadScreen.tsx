@@ -55,11 +55,12 @@ import {
   type PauseAction,
 } from './wispThreadCopy';
 import {
-  approvalOpenTarget,
-  approvalRequestIdForIntent,
   concernSections,
+  errorStatus,
   initialExpandedConcern,
   INITIAL_WISP_SESSION,
+  resolveApprovalFocus,
+  shouldAutoOpenApproval,
   wispSessionReducer,
 } from './wispThreadState';
 
@@ -70,11 +71,7 @@ type Phase = 'loading' | 'ready' | 'notFound' | 'error';
 /** w00 A31: the live "Wisp is checking …" line refreshes this often while the screen is focused. */
 const LIVE_LINE_POLL_MS = 30_000;
 
-const statusOf = (err: unknown): number | undefined => {
-  const s = (err as { statusCode?: unknown; status?: unknown } | null)?.statusCode
-    ?? (err as { status?: unknown } | null)?.status;
-  return typeof s === 'number' ? s : undefined;
-};
+const statusOf = errorStatus;
 
 /**
  * Wisp W06 (spec §7.4, w00 "Nudges (W06)"). Where a `wisp_nudge` push lands:
@@ -112,6 +109,8 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
   const [pausing, setPausing] = useState(false);
 
   const sessionIdRef = useRef<string | null>(null);
+  /** Bumped on every thread switch: async work started for an older thread drops its result. */
+  const generation = useRef(0);
   const streamRef = useRef<SseStreamHandle | null>(null);
   const mounted = useRef(true);
   /** The pushed approval card is opened at most once per (thread, intent). */
@@ -129,35 +128,43 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
   // A different thread (a second nudge tapped while this one is open) starts
   // a fresh conversation: the old session belongs to the old grant.
   useEffect(() => {
+    generation.current += 1;
     streamRef.current?.abort();
     streamRef.current = null;
     sessionIdRef.current = null;
     dispatchSession({ type: 'reset' });
+    // Never render (or reply under) the previous thread's grant while the new
+    // one loads or if its load fails.
+    setThread(null);
+    setConcerns([]);
+    setCurrent(null);
   }, [params.threadId, params.grantId]);
 
   const loadConcerns = useCallback(async () => {
+    const gen = generation.current;
     try {
       const list = await listWispConcerns(params.grantId);
-      if (!mounted.current) return list;
+      if (!mounted.current || gen !== generation.current) return list;
       setConcerns(list);
       setConcernsError(null);
       return list;
     } catch (err) {
-      if (mounted.current) setConcernsError('Could not load concerns. Pull to retry.');
+      if (mounted.current && gen === generation.current) setConcernsError('Could not load concerns. Pull to retry.');
       safeReport(err, 'wisp-thread-concerns');
       return null;
     }
   }, [params.grantId]);
 
   const load = useCallback(async () => {
+    const gen = generation.current;
     try {
       const [t, list] = await Promise.all([getWispThread(params.threadId), loadConcerns()]);
-      if (!mounted.current) return;
+      if (!mounted.current || gen !== generation.current) return;
       setThread(t);
       setPhase('ready');
       setHighlightId(list ? initialExpandedConcern(params, list) : null);
     } catch (err) {
-      if (!mounted.current) return;
+      if (!mounted.current || gen !== generation.current) return;
       // Resolve the phase before reporting: a throwing reporter must not
       // strand the screen on the spinner (FindingDetailScreen's rule).
       if (statusOf(err) === 404) {
@@ -217,11 +224,14 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
         const status = statusOf(err);
         if (mounted.current) showToast({ kind: 'error', text: pauseFailureCopy(action, status) });
         if (status !== 403 && status !== 404 && status !== 409) safeReport(err, 'wisp-grant-pause');
+        // 404/409: the grant changed elsewhere — reload so the header control
+        // reflects the server instead of offering the same refused action.
+        if ((status === 404 || status === 409) && mounted.current) void load();
       } finally {
         if (mounted.current) setPausing(false);
       }
     },
-    [thread, pausing, showToast],
+    [thread, pausing, showToast, load],
   );
 
   const pauseControl = thread ? pauseControlState(thread.grant) : null;
@@ -251,41 +261,47 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
    * (Review Focus 4): no takeover flash, a toast instead.
    */
   const openApproval = useCallback(
-    async (intentId: string) => {
-      let approvalId = approvalRequestIdForIntent(store.getState().approvals.pending, intentId);
-      if (!approvalId) {
-        await dispatch(refreshPending())
-          .unwrap()
-          .catch(() => undefined);
-        approvalId = approvalRequestIdForIntent(store.getState().approvals.pending, intentId);
+    async (intentId: string): Promise<boolean> => {
+      const result = await resolveApprovalFocus({
+        getPending: () => store.getState().approvals.pending,
+        refresh: () => dispatch(refreshPending()).unwrap(),
+        intentId,
+      });
+      if (!mounted.current) return false;
+      if (result.kind === 'refresh_failed') {
+        // Could not check — never claim "decided" for a failed refresh.
+        showToast({ kind: 'error', text: "Couldn't check approvals. Try again." });
+        safeReport(result.error, 'wisp-approval-refresh');
+        return false;
       }
-      if (!mounted.current) return;
-      if (!approvalId) {
+      if (result.kind === 'decided') {
         showToast({ kind: 'error', text: 'That approval was already decided.' });
-        return;
+        return true;
       }
       setSheetId(null);
-      dispatch(setFocus(approvalId));
-      dispatch(fetchOne(approvalId))
+      dispatch(setFocus(result.approvalId));
+      dispatch(fetchOne(result.approvalId))
         .unwrap()
         .catch(() => {
           // The rejected reducer surfaces the approvals error banner.
         });
+      return true;
     },
     [dispatch, showToast],
   );
 
   // A nudge that points at an approval card opens it once, after the concerns
-  // load — so a card whose concern is already resolved is never opened.
+  // load — so a card whose concern is already resolved is never opened. A
+  // refresh that failed clears the key so the next focus/pull can retry.
   useEffect(() => {
-    if (phase !== 'ready' || !params.approvalIntentId) return;
-    const key = `${params.threadId}:${params.approvalIntentId}`;
-    if (autoOpenedKey.current === key) return;
-    autoOpenedKey.current = key;
-    const pushed = params.concernId ? concerns.find((c) => c.id === params.concernId) : undefined;
-    if (pushed && approvalOpenTarget(pushed) === null) return;
-    void openApproval(params.approvalIntentId);
-  }, [phase, params.threadId, params.approvalIntentId, params.concernId, concerns, openApproval]);
+    if (phase !== 'ready') return;
+    const decision = shouldAutoOpenApproval(params, concerns, autoOpenedKey.current);
+    if (!decision.open || !params.approvalIntentId) return;
+    autoOpenedKey.current = decision.key;
+    void openApproval(params.approvalIntentId).then((settled) => {
+      if (!settled && autoOpenedKey.current === decision.key) autoOpenedKey.current = null;
+    });
+  }, [phase, params, concerns, openApproval]);
 
   const runConcernAction = useCallback(
     async (action: () => Promise<void>, success: string) => {
@@ -332,6 +348,7 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
   const onSend = useCallback(
     async (text: string) => {
       if (!thread || !replyEnabled(thread.grant.status, session.status)) return;
+      const gen = generation.current;
       let sessionId = sessionIdRef.current;
       if (!sessionId) {
         dispatchSession({ type: 'creating' });
@@ -351,7 +368,8 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
           safeReport(err, 'wisp-session-create');
           return;
         }
-        if (!mounted.current) return;
+        // A thread switch during the create: this session belongs to the old grant.
+        if (!mounted.current || gen !== generation.current) return;
         sessionIdRef.current = sessionId;
         dispatchSession({ type: 'created', sessionId });
       }
@@ -407,6 +425,8 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
               break;
             case 'error':
               dispatchSession({ type: 'failed', error: ev.message });
+              // A server-sent stream error never reaches onError; report it here.
+              safeReport(new Error(`wisp stream error event: ${ev.message}`), 'wisp-thread-stream-event');
               break;
             default:
               break;

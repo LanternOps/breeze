@@ -17,6 +17,8 @@ vi.mock('../services/wispNudgePrefs', () => ({
   updateWispNudgePrefs: client.updateWispNudgePrefs,
   WISP_NUDGE_PREFERENCE_DEFAULTS: DEFAULTS,
 }));
+const reporting = vi.hoisted(() => ({ safeReportInternalError: vi.fn() }));
+vi.mock('../lib/errorReporting', () => reporting);
 
 import { configureStore } from '@reduxjs/toolkit';
 
@@ -55,13 +57,24 @@ describe('wispPrefsSlice', () => {
     // A reload in flight keeps the section on screen (no flicker on reopen).
     const reloading = reducer(ready, loadWispNudgePrefs.pending('r2', undefined));
     expect(selectWispNudgePrefsAvailable({ wispPrefs: reloading })).toBe(true);
-    const failed = reducer(reloading, loadWispNudgePrefs.rejected(null, 'r2', undefined, 'Not found'));
+    const failed = reducer(reloading, loadWispNudgePrefs.rejected(null, 'r2', undefined, { message: 'Not found', status: 404 }));
     expect(selectWispNudgePrefsAvailable({ wispPrefs: failed })).toBe(false);
+  });
+
+  it('a transient load failure (5xx / offline) keeps a section that was already showing', () => {
+    const ready = reducer(initial, loadWispNudgePrefs.fulfilled(quiet, 'r', undefined));
+    const flaky = reducer(ready, loadWispNudgePrefs.rejected(null, 'r2', undefined, { message: 'Bad gateway', status: 502 }));
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: flaky })).toBe(true);
+    const offline = reducer(ready, loadWispNudgePrefs.rejected(null, 'r3', undefined, { message: 'Network request failed' }));
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: offline })).toBe(true);
+    // 403 = not entitled / no ai_sessions:use — Wisp is not for this user.
+    const forbidden = reducer(ready, loadWispNudgePrefs.rejected(null, 'r4', undefined, { message: 'Forbidden', status: 403 }));
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: forbidden })).toBe(false);
   });
 
   it('load.rejected records the error without clobbering prefs', () => {
     const ready = reducer(initial, loadWispNudgePrefs.fulfilled(quiet, 'r', undefined));
-    const next = reducer(ready, loadWispNudgePrefs.rejected(null, 'r2', undefined, 'Network down'));
+    const next = reducer(ready, loadWispNudgePrefs.rejected(null, 'r2', undefined, { message: 'Network down' }));
     expect(next.status).toBe('error');
     expect(next.error).toBe('Network down');
     expect(next.errorKind).toBe('load');
@@ -150,5 +163,24 @@ describe('wispPrefsSlice save serialisation', () => {
     await store.dispatch(saveWispNudgePrefs({ quietOverride: 'urgent_only' }));
     expect(client.updateWispNudgePrefs).toHaveBeenCalledTimes(2);
     expect(store.getState().wispPrefs.prefs.quietOverride).toBe('urgent_only');
+  });
+});
+
+describe('wispPrefsSlice load failure reporting', () => {
+  const makeStore = () => configureStore({ reducer: { wispPrefs: reducer } });
+  beforeEach(() => reporting.safeReportInternalError.mockClear());
+
+  it('reports a 5xx / network load failure (Settings clears it silently)', async () => {
+    client.getWispNudgePrefs.mockRejectedValueOnce(Object.assign(new Error('Bad gateway'), { statusCode: 502 }));
+    await makeStore().dispatch(loadWispNudgePrefs());
+    expect(reporting.safeReportInternalError).toHaveBeenCalledWith(expect.any(Error), 'wisp-prefs-load');
+  });
+
+  it('does not report the expected 404 (Wisp off) or 403 (not entitled)', async () => {
+    for (const statusCode of [404, 403]) {
+      client.getWispNudgePrefs.mockRejectedValueOnce(Object.assign(new Error('nope'), { statusCode }));
+      await makeStore().dispatch(loadWispNudgePrefs());
+    }
+    expect(reporting.safeReportInternalError).not.toHaveBeenCalled();
   });
 });

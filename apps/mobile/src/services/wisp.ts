@@ -181,7 +181,9 @@ export async function listWispConcerns(grantId: string): Promise<WispConcern[]> 
       encodeURIComponent(grantId) +
       '&status=open,snoozed,resolved,dismissed'
   );
-  if (!Array.isArray(res?.concerns)) return [];
+  // Not an array = contract drift: throw so the screen shows its load error
+  // instead of an empty, healthy-looking list.
+  if (!Array.isArray(res?.concerns)) throw new Error('wisp concerns payload malformed');
   return res.concerns
     .map(normalizeConcern)
     .filter((c): c is WispConcern => c !== null);
