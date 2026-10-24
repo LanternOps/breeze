@@ -1120,7 +1120,6 @@
     "title": "Partnereinstellungen",
     "description": "Konfigurieren Sie die Standardeinstellungen für {{name}}.",
     "yourMsp": "Ihr MSP",
-    "selfSaving": "Dieser Abschnitt speichert seine eigenen Änderungen.",
     "saveSettings": "Einstellungen speichern",
     "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
     "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
@@ -1149,6 +1148,27 @@
       "topologyAiDescription": "Breeze AI die Karte zusammenfassen und ungewöhnliche Änderungen in der Topologie eines Standorts markieren lassen.",
       "saved": "Module aktualisiert",
       "saveFailed": "Module konnten nicht aktualisiert werden"
+    },
+    "status": {
+      "clean": "Alle Änderungen gespeichert · {{time}}",
+      "cleanNoTime": "Alle Änderungen gespeichert",
+      "dirty": "Ungespeicherte Änderungen in <tabs></tabs>.",
+      "invalid_one": "Korrigieren Sie {{count}} Feld in {{tab}}, um zu speichern.",
+      "invalid_other": "Korrigieren Sie {{count}} Felder in {{tab}}, um zu speichern.",
+      "saving": "Wird gespeichert…",
+      "partial": "<tabs></tabs> konnte nicht gespeichert werden. Die übrigen Änderungen wurden gespeichert.",
+      "failed": "<tabs></tabs> konnte nicht gespeichert werden.",
+      "autosaved": "Gespeichert · {{time}}",
+      "autosaveFailed": "Speichern fehlgeschlagen – bitte erneut versuchen",
+      "readOnly": "Zum Speichern ist voller Partnerzugriff erforderlich"
+    },
+    "validation": {
+      "retentionDays": "Geben Sie eine ganze Zahl an Tagen von 1 bis 3650 ein."
+    },
+    "unsavedConfirm": "Sie haben ungespeicherte Änderungen. Diese Seite verlassen und die Änderungen verwerfen?",
+    "knownGuests": {
+      "added": "Bekanntes Gastgerät hinzugefügt",
+      "removed": "Bekanntes Gastgerät entfernt"
     }
   },
   "partnerSendingDomains": {

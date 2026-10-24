@@ -40,8 +40,6 @@ export type TabDef = {
   /** `link` tabs navigate to `href` instead of rendering a panel in the page. */
   kind: 'panel' | 'link';
   href?: string;
-  /** Tab persists its own changes; the global Save button does not apply. */
-  selfSaving?: boolean;
   /** Values set here are enforced across all organizations (inheritance banner). */
   enforced?: boolean;
 };
@@ -61,7 +59,7 @@ export const TAB_GROUPS: readonly TabGroup[] = [
     tabs: [
       { key: 'company', hash: 'company', ...copy('company'), icon: Building2, kind: 'panel' },
       { key: 'regional', hash: 'regional', ...copy('regional'), icon: Globe, kind: 'panel' },
-      { key: 'modules', hash: 'modules', ...copy('modules'), icon: Blocks, kind: 'panel', selfSaving: true },
+      { key: 'modules', hash: 'modules', ...copy('modules'), icon: Blocks, kind: 'panel' },
     ],
   },
   {
@@ -71,7 +69,7 @@ export const TAB_GROUPS: readonly TabGroup[] = [
       { key: 'defaults', hash: 'defaults', ...copy('defaults'), icon: SlidersHorizontal, kind: 'panel', enforced: true },
       { key: 'eventLogs', hash: 'event-logs', ...copy('eventLogs'), icon: ScrollText, kind: 'panel', enforced: true },
       { key: 'remoteAccess', hash: 'remote-access', ...copy('remoteAccess'), icon: MonitorSmartphone, kind: 'panel', enforced: true },
-      { key: 'knownGuests', hash: 'known-guests', ...copy('knownGuests'), icon: Wifi, kind: 'panel', selfSaving: true },
+      { key: 'knownGuests', hash: 'known-guests', ...copy('knownGuests'), icon: Wifi, kind: 'panel' },
     ],
   },
   {
@@ -79,8 +77,8 @@ export const TAB_GROUPS: readonly TabGroup[] = [
     label: 'partnerSettingsPage.groups.security',
     tabs: [
       { key: 'security', hash: 'security', ...copy('security'), icon: Shield, kind: 'panel', enforced: true },
-      // Caller verification (#6354) keeps its in-card Save until W2.
-      { key: 'callerVerification', hash: 'caller-verification', ...copy('callerVerification'), icon: PhoneCall, kind: 'panel', selfSaving: true },
+      // Caller verification (#6354): partner baseline, saved by the header Save.
+      { key: 'callerVerification', hash: 'caller-verification', ...copy('callerVerification'), icon: PhoneCall, kind: 'panel' },
     ],
   },
   {
@@ -88,20 +86,20 @@ export const TAB_GROUPS: readonly TabGroup[] = [
     label: 'partnerSettingsPage.groups.communications',
     tabs: [
       { key: 'notifications', hash: 'notifications', ...copy('notifications'), icon: Bell, kind: 'panel', enforced: true },
-      { key: 'emailTemplates', hash: 'email-templates', ...copy('emailTemplates'), icon: Mail, kind: 'panel', selfSaving: true },
-      { key: 'sendingDomains', hash: 'sending-domains', ...copy('sendingDomains'), icon: AtSign, kind: 'panel', selfSaving: true },
+      { key: 'emailTemplates', hash: 'email-templates', ...copy('emailTemplates'), icon: Mail, kind: 'panel' },
+      { key: 'sendingDomains', hash: 'sending-domains', ...copy('sendingDomains'), icon: AtSign, kind: 'panel' },
       // Ticketing configuration lives on its own page (M0, #6233). The rail
       // shows a link; `#ticketing` still resolves to a static link-out panel
       // and never redirects (browsers that cached the old 301 would loop, #7985).
-      { key: 'ticketing', hash: 'ticketing', ...copy('ticketing'), icon: Ticket, kind: 'link', href: '/settings/ticketing', selfSaving: true },
+      { key: 'ticketing', hash: 'ticketing', ...copy('ticketing'), icon: Ticket, kind: 'link', href: '/settings/ticketing' },
     ],
   },
   {
     id: 'ai',
     label: 'partnerSettingsPage.groups.ai',
     tabs: [
-      { key: 'aiProvider', hash: 'ai-provider', ...copy('aiProvider'), icon: KeyRound, kind: 'panel', selfSaving: true },
-      { key: 'aiFeatures', hash: 'ai-features', ...copy('aiFeatures'), icon: Activity, kind: 'panel', selfSaving: true },
+      { key: 'aiProvider', hash: 'ai-provider', ...copy('aiProvider'), icon: KeyRound, kind: 'panel' },
+      { key: 'aiFeatures', hash: 'ai-features', ...copy('aiFeatures'), icon: Activity, kind: 'panel' },
       { key: 'aiBudgets', hash: 'ai-budgets', ...copy('aiBudgets'), icon: Wallet, kind: 'panel', enforced: true },
       // NOT enforced: inherit-with-override (org wins when set), unlike the
       // aiBudgets tab's partner-locks model — see aiApprovalSettings.ts.
@@ -113,9 +111,9 @@ export const TAB_GROUPS: readonly TabGroup[] = [
     label: 'partnerSettingsPage.groups.branding',
     tabs: [
       { key: 'branding', hash: 'branding', ...copy('branding'), icon: Palette, kind: 'panel', enforced: true },
-      { key: 'loginBranding', hash: 'login-branding', ...copy('loginBranding'), icon: LogIn, kind: 'panel', selfSaving: true },
+      { key: 'loginBranding', hash: 'login-branding', ...copy('loginBranding'), icon: LogIn, kind: 'panel' },
       // Trust Center W2 (#8770 W02g): partner-wide default for customer trust pages (own load/save, MFA).
-      { key: 'trustCenter', hash: 'trust-center', ...copy('trustCenter'), icon: ShieldCheck, kind: 'panel', selfSaving: true },
+      { key: 'trustCenter', hash: 'trust-center', ...copy('trustCenter'), icon: ShieldCheck, kind: 'panel' },
     ],
   },
 ];

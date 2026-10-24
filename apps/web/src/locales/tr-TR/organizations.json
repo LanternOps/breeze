@@ -392,7 +392,10 @@
           "saved": "Güven Merkezi varsayılanları kaydedildi",
           "saveFailed": "Güven Merkezi varsayılanları kaydedilemedi",
           "mfaRequired": "Bu varsayılanları değiştirmek için çok faktörlü kimlik doğrulama gerekir. Profil güvenlik ayarlarınızda MFA’yı etkinleştirip tekrar deneyin.",
-          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin."
+          "revisionMismatch": "Bu varsayılanları başka biri değiştirdi. Değişiklikleri görmek için yeniden yükleyin.",
+          "conflictNotice": "Siz düzenlerken başka biri bu varsayılanları kaydetti. Onun sürümünden devam etmek için yeniden yükleyin veya düzenlemeye devam edin: yeniden yükleyene kadar tekrar kaydetmek başarısız olmaya devam eder.",
+          "reloadTheirs": "Onun sürümünü yükle",
+          "keepEditing": "Düzenlemeye devam et"
         },
         "title": "Devralınan ayarlar"
       },

@@ -8,6 +8,7 @@ import { navigateTo } from '@/lib/navigation';
 import ConnectionsCard from './ConnectionsCard';
 import ModelsCard from './ModelsCard';
 import FeatureDefaultsCard from './FeatureDefaultsCard';
+import FormCard from '../partnerSettings/FormCard';
 
 /** Snapshot loader shared by the cards; refetch after every mutation (the server computes eligibility). */
 export function useAiModelsSnapshot() {
@@ -69,7 +70,8 @@ export default function PartnerAiModelsTab() {
       <p className="max-w-prose text-sm text-muted-foreground">{t('aiModels.subtitle')}</p>
       <ConnectionsCard snapshot={snapshot} onChanged={reload} />
       <ModelsCard snapshot={snapshot} onChanged={reload} />
-      <FeatureDefaultsCard snapshot={snapshot} onSaved={reload} />
+      {/* The tab's form card: the partner settings header Save sends its draft. */}
+      <FormCard className=""><FeatureDefaultsCard snapshot={snapshot} onSaved={reload} /></FormCard>
       <p className="text-xs text-muted-foreground">{t('aiModels.workspaceNote')}</p>
     </div>
   );
