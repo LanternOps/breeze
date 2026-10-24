@@ -604,7 +604,7 @@ function throwIfPartnerUnresolvable(partnerId: string | null): asserts partnerId
  * explicit partner comparison preserves the cross-tenant boundary before the
  * active/read/org/current-site eligibility check below.
  */
-async function assertAssigneeEligible(
+export async function assertAssigneeEligible(
   assigneeId: string,
   partnerId: string | null,
   orgId: string,
