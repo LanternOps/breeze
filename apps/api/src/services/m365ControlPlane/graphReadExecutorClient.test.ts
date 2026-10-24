@@ -430,6 +430,16 @@ describe('Graph-read executor client — sync-action', () => {
       .resolves.toEqual({ success: false, code: 'continuation_invalid' });
   });
 
+  it('returns graph_provider_rejected rather than treating it as an invalid body (#9393)', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ success: false, code: 'graph_provider_rejected' }),
+      { headers: { 'content-type': 'application/json' } },
+    ));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction(syncInput()))
+      .resolves.toEqual({ success: false, code: 'graph_provider_rejected' });
+  });
+
   it('still THROWS executor_unavailable for a 504, a wrong content type, and a bad body', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('{"error":"sync_timeout"}', { status: 504, headers: { 'content-type': 'application/json' } }))

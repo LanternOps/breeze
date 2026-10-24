@@ -1325,6 +1325,14 @@ describe('listConfigPolicies feature links', () => {
     return chain;
   }
 
+  // db.select({configPolicyId}).from(assignments).where() — awaited off .where()
+  function assignmentsChain(rows: unknown[]) {
+    const chain: any = {};
+    chain.from = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve(rows));
+    return chain;
+  }
+
   // db.select({partnerId}).from(organizations).where().limit(1) — the extra
   // statement the orgId-filter branch issues BEFORE the count query.
   function orgPartnerChain(rows: unknown[]) {
@@ -1442,7 +1450,8 @@ describe('listConfigPolicies feature links', () => {
           { id: 'link-pw', configPolicyId: 'policy-partnerwide', featureType: 'patch' },
           { id: 'link-org', configPolicyId: 'policy-org', featureType: 'security' },
         ]) as any,
-      );
+      )
+      .mockReturnValueOnce(assignmentsChain([]) as any);
 
     const result = await listConfigPolicies(
       orgAuth(),
@@ -1458,8 +1467,56 @@ describe('listConfigPolicies feature links', () => {
       id: 'policy-org',
       featureLinks: [{ id: 'link-org', featureType: 'security' }],
     });
-    // partnerId lookup + count + page + links — still ONE links statement.
-    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
+    // partnerId lookup + count + page + links + partner-wide assignments —
+    // still ONE links statement and ONE assignment statement per page.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(5);
+  });
+
+  // #9565: the list's "Partner-wide" badge claimed every partner-owned policy
+  // applied to all organizations, even with zero assignments. The flag comes
+  // from a real partner-level assignment, read in ONE statement per page and
+  // only when the page holds a partner-owned row.
+  it('flags only partner-owned policies that have a partner-level assignment', async () => {
+    const rows = [
+      { id: 'policy-assigned', name: 'Assigned to all orgs', orgId: null, partnerId: 'partner-1' },
+      { id: 'policy-unassigned', name: 'Not assigned yet', orgId: null, partnerId: 'partner-1' },
+      { id: 'policy-org', name: 'OliveTech only', orgId: ORG_ID },
+    ];
+    const assignments = assignmentsChain([{ configPolicyId: 'policy-assigned' }]);
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(3) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(linksChain([]) as any)
+      .mockReturnValueOnce(assignments as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    expect(result.data.map((r) => [r.id, r.hasPartnerWideAssignment])).toEqual([
+      ['policy-assigned', true],
+      ['policy-unassigned', false],
+      ['policy-org', false],
+    ]);
+    const where = new PgDialect().sqlToQuery(assignments.where.mock.calls[0][0]);
+    expect(where.sql).toContain('"config_policy_assignments"."config_policy_id" in');
+    expect(where.sql).toContain('"config_policy_assignments"."level" =');
+    expect(where.params).toEqual(expect.arrayContaining(['policy-assigned', 'policy-unassigned', 'partner']));
+    // Org-owned rows can never be partner-wide, so they are not queried.
+    expect(where.params).not.toContain('policy-org');
+  });
+
+  it('skips the assignment read when the page has no partner-owned policy', async () => {
+    const rows = [{ id: 'policy-a', name: 'A', orgId: ORG_ID }];
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce(countChain(1) as any)
+      .mockReturnValueOnce(pageChain(rows) as any)
+      .mockReturnValueOnce(linksChain([]) as any);
+
+    const result = await listConfigPolicies(orgAuth(), {}, { page: 1, limit: 25 });
+
+    expect(result.data[0]).toMatchObject({ id: 'policy-a', hasPartnerWideAssignment: false });
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(3);
   });
 
   it('skips the feature-link query entirely when the page is empty', async () => {

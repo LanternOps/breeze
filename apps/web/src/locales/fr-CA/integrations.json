@@ -83,7 +83,9 @@
         "intune_devices": "Appareils Intune",
         "ca_policies": "Accès conditionnel",
         "skus": "Licences",
-        "secure_score": "Niveau de sécurité"
+        "secure_score": "Niveau de sécurité",
+        "signin_events": "Événements de connexion",
+        "unknown": "Type de données non reconnu"
       }
     },
     "errors": {
@@ -338,6 +340,9 @@
     "retry": "Réessayer",
     "since": "depuis {{time}}",
     "fix": "Corriger",
+    "remedy": {
+      "reconnect": "Reconnectez-vous depuis l’application cliente (p. ex. ajoutez de nouveau le serveur MCP). Aucune action dans Breeze."
+    },
     "truncated": "Affichage des {{count}} premiers",
     "recentlyResolved": "Résolus récemment ({{count}})",
     "resolution": {
@@ -592,7 +597,7 @@
     "hidePassword": "Masquer le mot de passe",
     "portalLabelToggle": "Afficher le nom du fournisseur dans le portail client",
     "portalLabelHelp": "Désactivé par défaut : les clients voient \"Sauvegarde infonuagique gérée\" au lieu du nom de l'éditeur.",
-    "credentialsHelp": "Créez un utilisateur dédié de la console Cove avec un rôle en lecture seule, un mot de passe unique et sans authentification à deux facteurs. Breeze lit seulement l'état et ne modifie rien dans Cove.",
+    "credentialsHelp": "Créez un utilisateur API Cove (Management → Users → API Users) sous votre client de premier niveau. Entrez le nom de ce client comme nom du partenaire, le nom de connexion de l'utilisateur API comme nom d'utilisateur et son jeton comme mot de passe. Breeze lit seulement l'état et ne modifie rien dans Cove.",
     "test": "Tester la connexion",
     "syncNow": "Synchroniser maintenant",
     "reauthRequired": "Identifiants refusés",
@@ -725,7 +730,10 @@
     "allApplications": "Toutes les applications",
     "searchAllApplicationsFirst2": " (et non « Applications que je possède ») une application Breeze existante dans ce locataire Entra. ",
     "tenantIdGuidPlaceholder": "ID de locataire (GUID), p. ex. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " L'enregistrement nécessite une vérification MFA.",
+    "clientSecretPlaceholder": "secret client de l'application",
+    "clientSecretStoredPlaceholder": "•••••••••• (stocké, chiffré)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Santé des appareils",

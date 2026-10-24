@@ -70,17 +70,16 @@ Webhooks follow the standard multi-tenant access model:
 
 ## Event Types
 
-Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more event type strings in the `events` array when creating or updating a webhook.
+Webhooks subscribe to events emitted by the Breeze event bus. Pass one or more event type strings in the `events` array when creating or updating a webhook. Use `*` to receive every event. The API rejects an event type that Breeze never publishes with a `400`, so a typo cannot save a webhook that silently never fires. The legacy name `alert.created` is accepted and stored as `alert.triggered`.
 
 ### Device Events
 
 | Event | Description |
 |-------|-------------|
-| `device.enrolled` | A new agent has completed enrollment |
+| `device.enrolled` | An agent has completed enrollment (first enrollment or re-enrollment; payload `reenrollment` distinguishes them) |
 | `device.online` | A device has come online (heartbeat received) |
 | `device.offline` | A device has stopped sending heartbeats |
 | `device.updated` | Device metadata or configuration has changed |
-| `device.decommissioned` | A device has been decommissioned |
 
 ### Alert Events
 
@@ -136,6 +135,7 @@ Ticket events are published from the ticketing transactional outbox with **id-on
 | `ticket.status_changed` | `from`, `to`, `statusId` | The core status changed (`statusId` is the partner's custom status row, when one was used) |
 | `ticket.updated` | `changed` (field names) | Fields were edited — subject, description, priority, category, due date, device, tags, requester |
 | `ticket.assigned` | `assigneeId` (`null` when unassigned), `actorPrincipalId` | The assignee changed. `actorPrincipalId` is the service principal that made the change (`null` for people and the system), so a mirroring integration can skip its own assignments |
+| `ticket.merged` | `sourceTicketId`, `targetTicketId`, `sourceInternalNumber`, `targetInternalNumber` | A ticket was merged into another. Sent once, on the surviving ticket (`ticketId` = `targetTicketId`). The source stays as a read-only record: a Partner API read of it returns `mergedIntoTicketId` and `mergedAt`. The source also gets a `ticket.status_changed` to `closed` when it was not already closed, and the survivor a `ticket.updated` with `changed: ["merge"]`. Comments moved by the merge are not re-sent as `ticket.commented` |
 | `ticket.sla_breached` | `assigneeId` | A response or resolution SLA target was missed |
 
 ### Migration Window Events
@@ -300,6 +300,25 @@ After all retries are exhausted, the delivery job is moved to a dead letter queu
 
 ---
 
+## Bearer Token Authentication
+
+If your endpoint expects a static token rather than a signature, authenticate with a bearer token instead of a signing secret. In the dashboard, choose **Bearer token** under **Authentication**. Through the API, send the token as an `Authorization` custom header and omit `secret`:
+
+```json
+{
+  "name": "Ticketing intake",
+  "url": "https://intake.example.com/breeze",
+  "events": ["ticket.created"],
+  "headers": [
+    { "key": "Authorization", "value": "Bearer your_token" }
+  ]
+}
+```
+
+The token is stored encrypted with the other custom headers and is never returned: GET responses show the header with a redacted value and report `"authType": "bearer"` (`"hmac"` for a signing secret, `"none"` for neither). A webhook needs either a `secret` or an `Authorization: Bearer <token>` header; other `Authorization` schemes (such as `Basic`) can be added as custom headers alongside a signing secret. To switch an existing webhook from HMAC to bearer, send `"secret": null` together with the `Authorization` header in the same `PATCH`. To keep a stored token while you edit other headers, send its value back as `********`.
+
+---
+
 ## Signature Verification
 
 When a webhook has a signing secret, every delivery includes an HMAC-SHA256 signature in the `X-Breeze-Signature` header. Use this to verify that the payload was sent by Breeze and has not been tampered with.
@@ -370,6 +389,8 @@ The `X-Breeze-Signature-Timestamp` header contains the same timestamp value used
 ## Delivery History
 
 Every webhook maintains a paginated delivery history. Each delivery record captures the event type, payload, response details, and retry state. The list returns status and timing only; the event payload and the receiver's response body are not included. Reading the history requires `webhooks:read`.
+
+From v0.124.0, delivered and failed records are kept for **90 days** by default and then removed by a nightly job; records that are still pending or retrying are never removed. Self-hosters can change the window with the webhook delivery retention variables in [Environment Variables](/deploy/environment/). A webhook whose retries are exhausted with no later success also opens a connection-health incident on **Integrations** -- see [Connection Health Checks](/features/notifications/#connection-health-checks).
 
 ### Listing Deliveries
 

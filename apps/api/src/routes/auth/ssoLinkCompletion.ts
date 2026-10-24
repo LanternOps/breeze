@@ -511,8 +511,13 @@ export async function finalizeSsoPendingLink(
     }
 
     const rejected = (reason: string, extra?: Record<string, unknown>): SsoLinkFinalizeResult => {
+      // The record snapshots the provider's axis (org_id XOR partner_id).
+      // This runs from the unauthenticated /link/confirm, so with no request
+      // auth or ambient scope these two fields are the row's only tenancy
+      // (#9377): orgId: null here put every early rejection in no trail.
       writeRouteAudit(c, {
-        orgId: null,
+        orgId: record.providerOrgId,
+        partnerId: record.providerPartnerId,
         action: 'sso.link.ceremony_rejected',
         resourceType: 'sso_provider',
         resourceId: record.providerId,
@@ -633,6 +638,7 @@ export async function finalizeSsoPendingLink(
           : 'browser_transition_unavailable';
       writeRouteAudit(c, {
       orgId: provider.orgId,
+      partnerId: provider.partnerId,
       action: 'sso.link.ceremony_rejected',
       resourceType: 'sso_provider',
       resourceId: provider.id,
@@ -662,6 +668,7 @@ export async function finalizeSsoPendingLink(
   if (provider.partnerId) {
     auditLogin(c, {
       orgId: null,
+      partnerId: provider.partnerId,
       userId: user.id,
       email: user.email,
       name: user.name,
@@ -674,6 +681,7 @@ export async function finalizeSsoPendingLink(
 
   writeRouteAudit(c, {
     orgId: provider.orgId,
+    partnerId: provider.partnerId,
     action: 'sso.identity.linked',
     resourceType: 'sso_provider',
     resourceId: provider.id,

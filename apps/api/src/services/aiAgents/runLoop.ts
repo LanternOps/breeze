@@ -81,9 +81,20 @@ import {
   isNeverAgentTool,
   checkGuardrails,
   isReadOnlyResolution,
+  requiredPermissionsForTool,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import {
+  assertToolCallWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from '../wisp/grantAuthority';
+
+/** Wisp W02 — how long one run frame reuses a resolved delegation ceiling. */
+const GRANT_CEILING_MEMO_MS = 15_000;
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { prepareSdkChild, sdkModelOptions, type SdkChildDispatch } from '../aiModels/connectionFactory';
@@ -344,6 +355,10 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         taskId: aiAgentRuns.taskId,
         taskStepKey: aiAgentRuns.taskStepKey,
         taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
+        // Wisp W02 — the pinned delegation grant; the pre-tool hook checks the
+        // ceiling on every call when set.
+        grantId: aiAgentRuns.grantId,
+        grantRevisionId: aiAgentRuns.grantRevisionId,
         // Execution plane W04 — the frozen inputs and the compute reservation.
         stagedInputs: aiAgentRuns.stagedInputs,
         computeReservedCents: aiAgentRuns.computeReservedCents,
@@ -797,7 +812,7 @@ export function createAgentRunPreToolUse(args: {
   // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
   // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
   // Tier-3 proposal reserves under.
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId'>>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId' | 'grantId' | 'grantRevisionId'>>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -876,6 +891,64 @@ export function createAgentRunPreToolUse(args: {
    * Null on a non-task run.
    */
   let taskFence: TaskFence | null = null;
+
+  /**
+   * Wisp W02 — the live delegation ceiling of the run's PINNED grant revision,
+   * memoised for GRANT_CEILING_MEMO_MS inside this run frame so a burst of
+   * tool calls costs one evaluation. Only a successful resolve is memoised: an
+   * inactive grant is re-read on every call. Tightening therefore reaches a
+   * live run within the memo window; release re-checks independently.
+   */
+  let grantCeilingMemo: { ceiling: GrantCeiling; at: number } | null = null;
+  async function resolvePinnedCeiling(opts: { fresh?: boolean } = {}): Promise<
+    { ok: true; ceiling: GrantCeiling } | { ok: false; reason: string; error: string }
+  > {
+    if (!run.grantId || !run.grantRevisionId) {
+      const reason = 'delegation ceiling could not be verified';
+      return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
+    }
+    if (!opts.fresh && grantCeilingMemo && Date.now() - grantCeilingMemo.at < GRANT_CEILING_MEMO_MS) {
+      return { ok: true, ceiling: grantCeilingMemo.ceiling };
+    }
+    try {
+      const ceiling = await resolveGrantCeiling(run.grantId, run.grantRevisionId);
+      grantCeilingMemo = { ceiling, at: Date.now() };
+      return { ok: true, ceiling };
+    } catch (error) {
+      grantCeilingMemo = null;
+      // Same deny shape as the task fence: there is no run-level stop flag, so
+      // the model is told to stop and release makes any further effect impossible.
+      const reason = error instanceof GrantInactiveError
+        ? 'delegation grant is no longer active'
+        : 'delegation ceiling could not be verified';
+      if (!(error instanceof GrantInactiveError) || error.kind === 'corrupt') {
+        console.error('[aiAgentRunLoop] delegation ceiling read failed; denying', { runId: run.id, grantId: run.grantId, error });
+        captureException(error, undefined, { grantId: run.grantId ?? '', runId: run.id, stage: 'run_loop' });
+      }
+      return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
+    }
+  }
+
+  /**
+   * Every ceiling term for this tool call; the first violation's reason, or
+   * null. A tool with no resolvable human permission (no TOOL_PERMISSIONS
+   * mapping, unknown action) cannot be shown to sit inside the grantor's
+   * authority, so it FAILS CLOSED as a permission violation. Outcome tools
+   * never reach here (their branch returns earlier).
+   */
+  function delegationCeilingDenial(ceiling: GrantCeiling, toolName: string, input: Record<string, unknown>): string | null {
+    try {
+      assertToolCallWithinCeiling(
+        ceiling,
+        { toolName, orgId: run.orgId, siteId: guardrailPolicy.deviceSiteId ?? null },
+        requiredPermissionsForTool(toolName, input),
+      );
+      return null;
+    } catch (error) {
+      if (error instanceof CeilingViolationError) return `outside the delegation ceiling (${error.code})`;
+      throw error;
+    }
+  }
 
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
    *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
@@ -1053,6 +1126,21 @@ export function createAgentRunPreToolUse(args: {
       taskFence = fence;
     }
 
+    // Wisp W02 (Wisp design §4.3) — a run admitted under a delegation grant.
+    // The grant must still be usable on EVERY call, outcome tools included:
+    // nothing is recorded under a paused, revoked or expired grant. The
+    // per-term ceiling check runs below, just ahead of the guardrail, so it
+    // covers Tier-1 reads (which bypass agent allowlists).
+    let grantCeiling: GrantCeiling | null = null;
+    if (run.grantId) {
+      const pinned = await resolvePinnedCeiling();
+      if (!pinned.ok) {
+        outcome.deniedActions.push({ tool: toolName, reason: pinned.reason });
+        return { allowed: false, error: pinned.error };
+      }
+      grantCeiling = pinned.ceiling;
+    }
+
     // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
     // `checkAgentGuardrails` below, because that guardrail has no allowlist
     // entry for an outcome tool — it isn't in `aiTools`/`TOOL_TIERS` at all —
@@ -1122,6 +1210,14 @@ export function createAgentRunPreToolUse(args: {
       const reason = `${toolName} is not available to remediation_research runs`;
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
+    }
+
+    if (grantCeiling) {
+      const ceilingDenial = delegationCeilingDenial(grantCeiling, toolName, input);
+      if (ceilingDenial) {
+        outcome.deniedActions.push({ tool: toolName, reason: ceilingDenial });
+        return { allowed: false, error: ceilingDenial };
+      }
     }
 
     const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
@@ -1194,6 +1290,17 @@ export function createAgentRunPreToolUse(args: {
     }
 
     if (check.disposition === 'act') {
+      // Wisp W02: an act-mode effect runs straight from this hook and never
+      // reaches release, so it re-resolves the ceiling FRESH (no memo): a
+      // grant revoked a second ago must not execute an effect.
+      if (run.grantId) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        const denial = fresh.ok ? delegationCeilingDenial(fresh.ceiling, toolName, input) : fresh.reason;
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: fresh.ok ? denial : fresh.error };
+        }
+      }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
       // only be non-null. The null branch below is defense in depth, never
@@ -3181,6 +3288,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
       result,
     );
   } catch (error) {
+    // #9451 — settle the sandbox's MEASURED compute before any terminal
+    // transition below: that transition releases an outstanding reservation
+    // by settling it at the worst case, and a run attempt settles only once,
+    // so finalizing after it would bill the reservation instead of what the
+    // sandbox used. Idempotent: the `finally` call is then a no-op, because
+    // this nulls `ctx.workspace`.
+    await finalizeWorkspaceForRun(ctx, loopOutcome ?? orphanWorkspaceOutcome);
     if (error instanceof AgentRunBlockedError) {
       await terminalizeBlockedRun(ctx, error);
       return;

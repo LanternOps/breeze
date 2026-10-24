@@ -86,7 +86,7 @@ import { invoicePushMessages } from './accountingInvoicePushMessages';
 import {
   invoiceLineText, lineWorkedVsBilled, resolveInvoiceLineDetail, type InvoiceLineDetail,
 } from '@breeze/shared';
-import { tApi } from '../../i18n';
+import { documentLabelsFor } from '@breeze/shared/documents';
 
 export { AccountingInvoicePushError, type AccountingInvoicePushErrorCode } from './accountingInvoicePushErrors';
 
@@ -620,7 +620,7 @@ function accountingLineNote(
  * (no trimming, no '—' placeholder) so default pushes are byte-identical.
  */
 function accountingLineTitle(line: InvoiceLineRow, detail: InvoiceLineDetail): string {
-  if (invoiceLineText(line, detail).title === null) return tApi('en', 'pdf:invoice.laborLine');
+  if (invoiceLineText(line, detail).title === null) return documentLabelsFor('en').laborLine;
   return line.name ?? line.description ?? '';
 }
 

@@ -56,7 +56,7 @@ const defaultColors = [
 const axisTick = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
 
 /** ISO timestamps render as short localized dates; anything else passes through. */
-const formatAxisLabel = (value: unknown): string => {
+export const formatAxisLabel = (value: unknown): string => {
   const raw = String(value ?? '');
   if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw;
   const parsed = new Date(raw);
@@ -109,7 +109,7 @@ export default function ChartWidget({
             {t('analytics.chartWidget.noData')}
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minHeight={height}>
             {type === 'line' ? (
               <LineChart data={data}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />

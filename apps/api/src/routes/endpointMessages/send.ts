@@ -150,8 +150,9 @@ async function handleSend(ctx: EndpointMessageSendContext, input: EndpointMessag
   // Sender identity, once per org, from the org itself (never the request).
   const brandingByOrg = new Map<string, { partnerId: string; branding: MessageBranding } | null>();
   for (const g of groups) brandingByOrg.set(g.orgId, await resolveMessageBranding(g.orgId));
-  // Sender identity per org: the partner fallback, overridden by the Helper branding already
-  // resolved for this send (no extra query). Cleared or absent branding keeps the fallback.
+  // Sender identity per org: always the partner name (#9396: org-level Helper branding never
+  // reaches the sender slot). Only the accent follows the Helper branding already resolved for
+  // this send (no extra query); cleared or absent branding keeps the partner colour.
   const identityByOrg = new Map<string, MessageBranding | null>();
   for (const g of groups) {
     const brand = brandingByOrg.get(g.orgId);

@@ -31,8 +31,8 @@ CVE-2025-47273
 # CVE-2026-97689 (unbounded chunk-size line buffering in read_chunked) —
 # fixed upstream in urllib3 2.8.0, pip's vendored copy (pip/_vendor/urllib3)
 # is 2.7.0. Same shape as the entries above: reported from pip's vendor SBOM,
-# not from requirements.lock (urllib3 is not in it). Verified 2026-10-02: the
-# newest pip on PyPI (26.2.1) and the newest `python:3.13-slim-bookworm`
+# not from requirements.lock (urllib3 is not in it). Re-verified 2026-10-21: the
+# newest pip on PyPI (26.2.2) and the newest `python:3.13-slim-bookworm`
 # digest both still vendor urllib3 2.7.0, so there is nothing to bump to.
 # pip only runs at image build time against hash-pinned wheels; analysis runs
 # install nothing and the sandbox is created with `networkPolicy: 'deny-all'`,

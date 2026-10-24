@@ -85,19 +85,20 @@ function deferred() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Waits until some backend is blocked on a lock while running `queryPrefix`. */
-async function waitForBlocked(queryPrefix: string, timeoutMs = 10_000): Promise<void> {
+/** Observe the real blocked statement without depending on its projected columns. */
+async function waitForBlocked(queryMatch: string | RegExp, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const [row] = await getTestDb().execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE datname = current_database() AND wait_event_type = 'Lock'
-         AND query ILIKE ${`${queryPrefix}%`}`) as unknown as Array<{ n: number }>;
-    if (Number(row?.n ?? 0) > 0) return;
+    const rows = await getTestDb().execute<{ query: string }>(sql`
+      SELECT query FROM pg_stat_activity
+       WHERE datname = current_database() AND wait_event_type = 'Lock'`) as unknown as Array<{ query: string }>;
+    if (rows.some(({ query }) => typeof queryMatch === 'string'
+      ? query.toLowerCase().startsWith(queryMatch.toLowerCase())
+      : queryMatch.test(query))) return;
     await sleep(25);
   }
   const waiting = await getTestDb().execute(sql`SELECT wait_event_type, wait_event, state, left(query, 120) AS q FROM pg_stat_activity WHERE datname = current_database() AND state <> 'idle'`);
-  throw new Error(`no statement starting with ${queryPrefix} became blocked on a lock: ${JSON.stringify(waiting)}`);
+  throw new Error(`no statement matching ${queryMatch} became blocked on a lock: ${JSON.stringify(waiting)}`);
 }
 
 async function assignedLedgerRows(deviceIds: string[]) {
@@ -179,14 +180,20 @@ describe('billing and licensed capacity leave parked devices out', () => {
       stepUp: null,
       audit: request,
     });
-    await waitForBlocked('select "max_devices" from "partners"');
-    release.resolve();
-    await enrollment;
+    const settled = Promise.allSettled([enrollment, assignment]);
+    try {
+      await waitForBlocked(/^select\b[\s\S]*\bfrom\s+"partners"\s+where\b[\s\S]*\bfor\s+update\b/i);
+      release.resolve();
+      await enrollment;
 
-    expect(await assignment).toMatchObject({ ok: false, code: 'PARTNER_DEVICE_LIMIT_REACHED' });
-    const [row] = await getTestDb().select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, parked.id));
-    expect(row!.orgId).toBe(pool.orgId);
-    expect(await assignedLedgerRows([parked.id])).toHaveLength(0);
+      expect(await assignment).toMatchObject({ ok: false, code: 'PARTNER_DEVICE_LIMIT_REACHED' });
+      const [row] = await getTestDb().select({ orgId: devices.orgId }).from(devices).where(eq(devices.id, parked.id));
+      expect(row!.orgId).toBe(pool.orgId);
+      expect(await assignedLedgerRows([parked.id])).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await settled;
+    }
   });
 });
 

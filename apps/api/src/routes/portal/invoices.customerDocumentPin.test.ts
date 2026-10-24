@@ -57,6 +57,7 @@ import { stripAdditive } from '../../__tests__/helpers/stripAdditive';
 // The ONLY keys the assembler refactor may add to this response (#9402 W1b).
 const PORTAL_ADDITIVE = [
   'invoice.displayStatus', 'lines[].id', 'documentLocale',
+  'invoice.billToAddress', 'invoice.billToTaxId', 'invoice.terms', // W3a: values the emailed PDF already carries
   'branding.contactEmail', 'branding.theme', 'branding.pageSize',
 ] as const;
 

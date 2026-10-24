@@ -105,6 +105,7 @@ import { registerExportTools } from './aiToolsExport';
 import { registerArtifactTools } from './aiToolsArtifacts';
 import { registerTrustPageTools } from './aiToolsTrustPage';
 import { registerFlowTools } from './aiToolsFlows';
+import { registerBusinessCalendarTools } from './aiToolsBusinessCalendars';
 // M365 helpdesk tools are session-aware (handler signature includes a sessionId)
 // so they are NOT registered in the `aiTools` execution registry — they run via
 // makeSessionAwareHandler in the SDK server. Their tiers still must be visible to
@@ -112,6 +113,7 @@ import { registerFlowTools } from './aiToolsFlows';
 import { m365ToolSearchHints, m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolSearchHints, googleToolTiers } from './aiToolsGoogle';
 import { authorizeTopologyAiToolCall, isTopologyAiToolName, topologyAiAliasScope, type TopologyToolBinding } from './topology/aiToolGate';
+import { applyHelperDeviceScope } from './helperToolFilter';
 // ============================================
 // Shared Types
 // ============================================
@@ -389,6 +391,7 @@ registerArtifactTools(aiTools);
 registerTrustPageTools(aiTools);
 // Tool Catalog W03 (#5218): flow authoring tools, behind FLOWS_ENABLED.
 registerFlowTools(aiTools);
+registerBusinessCalendarTools(aiTools);
 
 // A-W05 (D12): the compactor's truncation guidance follows the tool's real
 // paging shape. Covers extension-contributed tools too — they live in the
@@ -535,60 +538,9 @@ export function requiresLiveSession(
   return !executableHeadless && getToolTier(toolName, registry) !== undefined;
 }
 
-/**
- * Helper device-scoping (security finding A, Phase 0).
- * Maps each tool the Breeze Helper may run to the input field naming its
- * target device. A tool absent from this map is org-wide and is DENIED under
- * a Helper context. Every tool in helperToolFilter's whitelists must have an
- * entry here (pinned by helperToolFilter.test.ts); mutating tools (tier>=2)
- * are additionally PAM-governed at the preToolUse gate (Phase 1).
- */
-export const HELPER_TOOL_SCOPING: Record<string, 'deviceId' | 'deviceIds'> = {
-  // Read-only (Phase 0 `basic` set).
-  get_device_details: 'deviceId',
-  get_device_hardware_health: 'deviceId',
-  get_device_time_status: 'deviceId',
-  query_device_workloads: 'deviceId',
-  list_time_sync_issues: 'deviceId',
-  analyze_metrics: 'deviceId',
-  analyze_disk_usage: 'deviceId',
-  get_cis_device_report: 'deviceId',
-  get_security_posture: 'deviceId',
-  take_screenshot: 'deviceId',
-  analyze_screen: 'deviceId',
-  search_logs: 'deviceIds',
-  // Device-pinned safe actions (`standard`, Phase 1 governed).
-  get_active_users: 'deviceId',
-  get_user_experience_metrics: 'deviceId',
-  manage_alerts: 'deviceId',
-  manage_services: 'deviceId',
-  disk_cleanup: 'deviceId',
-  file_operations: 'deviceId',
-  // Device-pinned destructive tools (`extended`, Phase 1 governed).
-  computer_control: 'deviceId',
-  execute_command: 'deviceId',
-  security_scan: 'deviceId',
-  s1_isolate_device: 'deviceId',
-  network_discovery: 'deviceId',
-  apply_cis_remediation: 'deviceId',
-};
-
-/**
- * Force a Helper tool call onto the Helper's own device, or deny it.
- * Pure — the caller (executeTool) applies the result.
- */
-export function applyHelperDeviceScope(
-  toolName: string,
-  input: Record<string, unknown>,
-  helperDeviceId: string
-): { input: Record<string, unknown> } | { error: string } {
-  const field = HELPER_TOOL_SCOPING[toolName];
-  if (!field) {
-    return { error: `Tool '${toolName}' is not available in the Helper context` };
-  }
-  const value = field === 'deviceIds' ? [helperDeviceId] : helperDeviceId;
-  return { input: { ...input, [field]: value } };
-}
+// HELPER_TOOL_SCOPING + applyHelperDeviceScope live in helperToolFilter.ts
+// (#9854: the chat pre-tool-use gate needs them without loading this module).
+export { HELPER_TOOL_SCOPING, applyHelperDeviceScope } from './helperToolFilter';
 
 /**
  * Everything `executeTool` accepts beyond the three arguments every caller

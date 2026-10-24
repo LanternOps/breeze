@@ -122,7 +122,8 @@
     "testDialog": {
       "title": "Probar en un dispositivo",
       "selectDevice": "Dispositivo",
-      "run": "Ejecutar prueba"
+      "run": "Ejecutar prueba",
+      "saveToTest": "Guarde para probar sus cambios"
     },
     "deliveryPreview": {
       "selectOrg": "Selecciona una organización para ver la entrega.",

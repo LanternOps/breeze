@@ -445,6 +445,14 @@
         "message": "Installs Homebrew as the currently signed-in user using a pinned, checksum-verified copy of the official installer. Requires an admin console session with an active or passwordless sudo credential; otherwise the install fails and the error is reported back.",
         "confirm": "Install Homebrew"
       },
+      "restartAgent": {
+        "title": "Restart the Breeze agent?",
+        "message": "Ask the watchdog on {{hostname}} to restart the Breeze agent service. The watchdog picks this up on its next check-in, usually within a minute, and only checks in while the agent is down.",
+        "watchdogLastSeen": "Watchdog last reported {{date}}.",
+        "watchdogStale": "The watchdog last reported {{date}}, too long ago to take the request; it will be refused until the watchdog checks in again.",
+        "watchdogNeverSeen": "The watchdog has not reported, so the request will be refused until it checks in.",
+        "confirm": "Restart agent"
+      },
       "bulkDeleteManual": {
         "title": "Delete {{count}} manual assets?",
         "message": "This permanently deletes the selected manual assets. This cannot be undone.",
@@ -477,6 +485,10 @@
     "reRunAgentInventoryCollectorsSo": "Collect fresh inventory now",
     "refresh": "Refresh",
     "reboot": "Reboot",
+    "forceRebootNow": "Force reboot now",
+    "forceRebootHint": "Reboot immediately and close running apps. Unsaved work is lost.",
+    "forceRebootAgentUpgradeRequired": "Agent upgrade required: force reboot needs agent {{version}} or later",
+    "forceRebootQueued": "Force reboot queued for {{hostname}}. It runs as soon as nothing else is running on the device.",
     "wake": "Wake",
     "rebootToSafeMode": "Reboot to Safe Mode",
     "deploySoftware": "Deploy Software",
@@ -492,7 +504,8 @@
     "power": "Power",
     "shutdown": "Shutdown",
     "deviceSettings": "Device Settings",
-    "installHomebrew": "Install Homebrew"
+    "installHomebrew": "Install Homebrew",
+    "restartAgent": "Restart agent"
   },
   "deviceActivityFeed": {
     "activity": "Activity",
@@ -868,7 +881,12 @@
     "devices": "Devices",
     "devicesCrumbOtherOrg": "Opens {{deviceOrg}}'s Devices tab; your working org stays {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Opens {{deviceOrg}}'s Devices tab; your working organization does not change",
-    "switchOrgFailed": "Couldn't switch organization. Try again."
+    "switchOrgFailed": "Couldn't switch organization. Try again.",
+    "restartAgent": {
+      "queued": "Agent restart requested for {{hostname}}. The watchdog runs it on its next check-in.",
+      "alreadyPending": "An agent restart for {{hostname}} is already waiting for the watchdog.",
+      "failed": "Failed to request an agent restart for {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Overview",
@@ -1017,7 +1035,9 @@
       "label": "approval",
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
-    }
+    },
+    "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
+    "featureOverriddenBy": "Overridden by {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",
@@ -1342,6 +1362,7 @@
     "drive": "Drive",
     "size": "Size",
     "used": "Used",
+    "usedPercent": "Used %",
     "health": "Health",
     "noDiskInventoryReported": "No disk inventory reported.",
     "networkAdapters": "Network Adapters",
@@ -1929,6 +1950,7 @@
     "title": "Active Network Connections"
   },
   "devicePatchStatusTab": {
+    "released": "Released {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compliant",
       "description": "Pending vs installed updates",
@@ -2052,6 +2074,7 @@
       "excludedCategoryTitle": "Update ring {{ring}} excludes this patch's category, so scheduled patch runs skip it.",
       "excludedAppRuleTitle": "An app block or pin rule on the linked Update Ring holds this patch, so scheduled patch runs skip it.",
       "excludedRingReferenceTitle": "Held back: this device's patch policy links an update ring that no longer exists or is not available to this partner. Fix the policy's update ring to resume patching.",
+      "excludedDeclinedTitle": "Declined: this patch was explicitly declined, so ring auto-approval will not install it. Approve it again to allow it.",
       "pending": "Pending Approval",
       "needsApprovalRingTitle": "Update ring {{ring}} does not auto-approve this patch. Approve it manually to install it.",
       "needsApprovalNoRingTitle": "No update ring is linked to this device's patch policy, so this patch installs only after a manual approval.",
@@ -2476,7 +2499,7 @@
     "showFindings": "Show Findings",
     "stats": {
       "accepted": "Accepted",
-      "kev": "Kev",
+      "kev": "Known exploited",
       "mitigated": "Mitigated",
       "open": "Open",
       "patchReady": "Patch Ready",
@@ -2494,9 +2517,9 @@
     "statusLabel": "Status Label",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
-      "cvss": "Cvss",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Severity",
       "status": "Status"
@@ -2551,7 +2574,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
-    "importFromRmm": "Import from another RMM",
+    "importFromRmm": "Import custom fields from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",
@@ -3014,6 +3037,29 @@
     "cancel": "Cancel",
     "genericError": "Failed to start maintenance mode."
   },
+  "forceRebootDialog": {
+    "title": "Force reboot now",
+    "description": "Reboots {{hostname}} immediately and closes any running apps, instead of waiting for them.",
+    "hostnameLabel": "Device",
+    "osLabel": "Operating system",
+    "commandLabel": "Command",
+    "noEffectOnOs": "On {{os}} a reboot never waits for apps, so this is the same as a normal immediate reboot.",
+    "warning": "Unsaved work in open apps on this device will be lost. The reboot still waits for any command already running on the device.",
+    "typeHostname": "Type {{hostname}} to confirm",
+    "stepUpHeading": "Confirm your identity",
+    "stepUpPasskeyNote": "You will confirm with your passkey.",
+    "stepUpCodeLabel": "Authenticator code",
+    "noStepUpFactor": "Add an authenticator app or a passkey to your account before you force reboot a device.",
+    "mfaRequired": "Finish the MFA sign-in first, then try again.",
+    "stepUpFailed": "Verification didn't go through. Enter a new code and try again.",
+    "deviceOffline": "This device is not online. A force reboot is only sent to a device that is online now.",
+    "agentUpgradeRequired": "This device's agent is too old for a force reboot. Update the agent first.",
+    "genericError": "The force reboot could not be sent.",
+    "cancel": "Cancel",
+    "confirm": "Force reboot now",
+    "submitStepUp": "Verify and force reboot",
+    "submitting": "Sending…"
+  },
   "moveDeviceOrgDialog": {
     "title": "Move to another organization",
     "description": "Moves {{hostname}} out of {{orgName}}. Its history, tickets and policies move with it, and the agent reconnects under the new organization.",
@@ -3439,6 +3485,8 @@
     "health": {
       "empty": {
         "title": "Nothing is being monitored yet",
+        "titleWithCheck": "No SNMP health data",
+        "descriptionWithCheck": "A network check is active for this device, so reachability is still tracked. Turn on SNMP to also collect health data.",
         "action": "Set up monitoring",
         "benefit": {
           "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",

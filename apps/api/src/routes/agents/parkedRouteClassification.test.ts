@@ -49,6 +49,8 @@ const EXPECTED: Record<string, Classification> = {
   'PUT /:id/monitoring-results': 'deny',
   'POST /:id/commands/:commandId/pam-observations': 'deny',
   'POST /:id/pam/reconciliation-bindings': 'deny',
+  // #9517: a parked device runs no PAM flow, so it has nothing to report.
+  'POST /:id/pam/elevation-unable': 'deny',
   'PUT /:id/security/status': 'deny',
   'PUT /:id/management/posture': 'deny',
   'PUT /:id/security/recovery-keys': 'deny',

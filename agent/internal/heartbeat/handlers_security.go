@@ -27,7 +27,8 @@ func init() {
 
 func handleSecurityCollectStatus(h *Heartbeat, _ Command) tools.CommandResult {
 	start := time.Now()
-	status, err := security.CollectStatus(h.config)
+	// Explicit request: bypass the slow-probe cache the 5-minute tick uses (#9267).
+	status, err := security.CollectStatusFresh(h.config)
 	if err != nil {
 		return tools.NewSuccessResult(map[string]any{
 			"status":  status,

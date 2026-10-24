@@ -41,6 +41,10 @@ export interface CustomerInvoiceLineOd9 {
 
 export type CustomerInvoiceLineDto = CustomerInvoiceLineCore & CustomerInvoiceLineOd9;
 
+/** The bill-to postal address, the same shape as the seller's. The emailed PDF
+ *  has always printed it, so it is not new to the customer (W3a). */
+export type DocumentBillToAddress = NonNullable<DocumentSellerSnapshot['address']>;
+
 export interface CustomerInvoiceHeaderDto {
   id: string;
   invoiceNumber: string | null;
@@ -58,6 +62,11 @@ export interface CustomerInvoiceHeaderDto {
   balance: string;
   depositDue: string | null;
   billToName: string | null;
+  /** W3a: printed under the bill-to name by the PDF today. */
+  billToAddress: DocumentBillToAddress | null;
+  billToTaxId: string | null;
+  /** W3a: the short document terms / footer line the PDF prints (invoices.terms). */
+  terms: string | null;
   notes: string | null;
   sellerSnapshot: DocumentSellerSnapshot | null;
   termsAndConditions: string | null;

@@ -9,6 +9,10 @@ export default defineConfig({
       // any component test whose module graph reaches `@/lib/*` or `@breeze/shared`
       // (e.g. the ticket-intake renderer). Mirrors apps/web/vitest.config.ts.
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // Subpath exports must precede the bare entry (prefix-match order).
+      '@breeze/shared/documents': fileURLToPath(
+        new URL('../../packages/shared/src/documents/index.ts', import.meta.url)
+      ),
       '@breeze/shared': fileURLToPath(
         new URL('../../packages/shared/src/index.ts', import.meta.url)
       )

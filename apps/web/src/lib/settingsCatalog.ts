@@ -1,4 +1,5 @@
 import {
+  BadgeCheck,
   Bell,
   Bot,
   Braces,
@@ -80,6 +81,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     icon: CreditCard, group: 'billing', partnerScopeOnly: true,
     requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'billing', name: 'Billing', labelKey: 'nav.billing', descriptionKey: card('billing', 'description'), href: '/settings/billing', icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
+  { id: 'plan', name: 'Plan & features', labelKey: 'nav.planAndFeatures', descriptionKey: card('plan', 'description'), href: '/settings/plan', icon: BadgeCheck, group: 'billing', partnerScopeOnly: true },
   { id: 'ticketing', name: 'Ticketing', labelKey: 'nav.ticketing', descriptionKey: card('ticketing', 'description'), href: '/settings/ticketing', icon: Ticket, group: 'billing', partnerScopeOnly: true },
   { id: 'ticket-checklist-templates', name: 'Ticket checklist templates', labelKey: card('ticketChecklistTemplates', 'title'), descriptionKey: card('ticketChecklistTemplates', 'description'), href: '/settings/ticketing#templates', icon: ClipboardList, group: 'billing', partnerScopeOnly: true },
   { id: 'catalog', name: 'Product Catalog', labelKey: 'nav.productCatalog', descriptionKey: card('catalog', 'description'), href: '/settings/catalog', icon: Tags, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },

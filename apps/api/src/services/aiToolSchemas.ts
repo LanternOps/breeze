@@ -1318,6 +1318,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     path: safePath,
     content: z.string().max(1_000_000).optional(),
     newPath: safePath.optional(),
+    // #9853: delete only — bypass the agent trash. The handler refuses it on
+    // any other action and on agents below the cleanupGuard version gate.
+    permanent: z.boolean().optional(),
   }),
 
   analyze_disk_usage: z.object({
@@ -1688,6 +1691,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   list_flows: z.object({
     orgId: uuid.optional(),
     status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  // #8973 W4: read-only business-hours calendars (spec §5.7).
+  list_business_calendars: z.object({
+    orgId: uuid.optional(),
+    includeArchived: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 

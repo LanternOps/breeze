@@ -65,7 +65,7 @@ const EXPECTED_WORKER_NAMES = [
   'migrationWindowSweep',
   // Partner API tickets wave 3 — daily reaper for X-Idempotency-Key claims.
   'partnerApiIdempotencyRetention',
-  'quickSupportReaper', 'softwareUploadSessionCleanup',
+  'quickSupportReaper', 'wispGrantReconciler', 'softwareUploadSessionCleanup',
   'softwareRemediationRequestCleanup', 'auditRetention', 'pamEvidenceRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'parkedDeviceExpiry', 'parkedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
@@ -94,7 +94,7 @@ const EXPECTED_WORKER_NAMES = [
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
-  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
+  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
@@ -142,6 +142,15 @@ describe('workerRegistry: losslessness', () => {
     expect(has('all')).toBe(true);
     expect(has('worker')).toBe(false);
   });
+
+  it('registers the Wisp grant reconciler (W02) as global placement', async () => {
+    const entry = WORKER_REGISTRY.find((w) => w.name === 'wispGrantReconciler');
+    expect(entry, 'wispGrantReconciler is not in the worker registry').toBeDefined();
+    expect(entry!.placement).toBe('global');
+    const loaded = await entry!.load();
+    expect(typeof loaded.init).toBe('function');
+    expect(typeof loaded.shutdown).toBe('function');
+  }, 60_000);
 
   it('registers the m365 sync retention worker as global placement', async () => {
     const entry = WORKER_REGISTRY.find((w) => w.name === 'm365SyncRetention');

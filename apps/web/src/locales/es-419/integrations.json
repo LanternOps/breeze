@@ -83,7 +83,9 @@
         "intune_devices": "Dispositivos de Intune",
         "ca_policies": "Acceso condicional",
         "skus": "Licencias",
-        "secure_score": "Puntuación de seguridad"
+        "secure_score": "Puntuación de seguridad",
+        "signin_events": "Eventos de inicio de sesión",
+        "unknown": "Tipo de datos no reconocido"
       }
     },
     "errors": {
@@ -338,6 +340,9 @@
     "retry": "Reintentar",
     "since": "desde {{time}}",
     "fix": "Corregir",
+    "remedy": {
+      "reconnect": "Vuelva a conectarse desde la aplicación cliente (p. ej., agregue de nuevo el servidor MCP). No requiere acción en Breeze."
+    },
     "truncated": "Se muestran los primeros {{count}}",
     "recentlyResolved": "Resueltas recientemente ({{count}})",
     "resolution": {
@@ -592,7 +597,7 @@
     "hidePassword": "Ocultar contraseña",
     "portalLabelToggle": "Mostrar el nombre del proveedor en el portal del cliente",
     "portalLabelHelp": "Desactivado de forma predeterminada: los clientes ven \"Copia de seguridad gestionada en la nube\" en lugar del nombre del fabricante.",
-    "credentialsHelp": "Cree un usuario dedicado de la consola de Cove con rol de solo lectura, una contraseña única y sin autenticación de dos factores. Breeze solo lee el estado; nunca modifica nada en Cove.",
+    "credentialsHelp": "Cree un usuario de API de Cove (Management → Users → API Users) bajo su cliente de nivel superior. Ingrese el nombre de ese cliente como nombre de partner, el nombre de inicio de sesión del usuario de API como usuario y su token como contraseña. Breeze solo lee el estado; nunca modifica nada en Cove.",
     "test": "Probar conexión",
     "syncNow": "Sincronizar ahora",
     "reauthRequired": "Credenciales rechazadas",
@@ -725,7 +730,10 @@
     "allApplications": "Todas las aplicaciones",
     "searchAllApplicationsFirst2": " (no en Aplicaciones propias) si ya existe una aplicación de Breeze en este tenant. ",
     "tenantIdGuidPlaceholder": "ID de tenant (GUID), p. ej. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Para guardar se requiere verificación MFA.",
+    "clientSecretPlaceholder": "secreto de cliente de la app",
+    "clientSecretStoredPlaceholder": "•••••••••• (almacenado, cifrado)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Estado del dispositivo",

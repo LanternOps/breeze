@@ -199,7 +199,10 @@ describe('quotesPublic GET /:token', () => {
       'sellerSnapshot',
       'coverPage',
       'termsAndConditions',
+      // #9418: the customer document's one additive header key (the pill).
+      'displayStatus',
     ]);
+    expect(header.displayStatus).toBe('viewed');
     expect(JSON.stringify(header)).not.toContain('internal-');
     expect(JSON.stringify(header)).not.toContain('do-not-serialize');
     // Sibling `presentation` field (Task 12) — no partner theme row preset, so

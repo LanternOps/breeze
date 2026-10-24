@@ -11,7 +11,7 @@
 //
 // renderTableIntoPdf (drawing, Task 9) draws a measured TableModel with:
 //  - header repetition on every page the table spills onto (mirrors
-//    renderLineTable's drawTableHeader/ensureRowSpace pattern in quotePdf.ts),
+//    drawDocumentLineTable's repeating column header in documentPdfTable.ts),
 //  - a per-row "does the WHOLE row fit on a fresh page" degrade check BEFORE
 //    drawing (never mid-row) — rows never split, so a row taller than a full
 //    usable page degrades to a stacked "label: value" paragraph via

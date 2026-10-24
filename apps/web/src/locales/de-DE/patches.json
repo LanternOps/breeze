@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Patch-Freigabe bestätigen",
-      "selectedOrganization": "der ausgewählten Organisation",
-      "messageOne": "Patch auf {{count}} Gerät in {{org}} freigeben?",
-      "messageMany": "Patch auf {{count}} Geräten in {{org}} freigeben?"
+      "selectedRing": "(unbenannt)",
+      "messageRingOne": "Patch auf {{count}} Gerät in allen Organisationen im Ring {{ring}} freigeben?",
+      "messageRingMany": "Patch auf {{count}} Geräten in allen Organisationen im Ring {{ring}} freigeben?",
+      "messagePartnerWide": "Patch für alle Organisationen Ihres Partners freigeben?"
     },
     "checkingAccess": "Zugriff wird geprüft..."
   },
@@ -95,6 +96,7 @@
       "statusFilterLabel": "Compliance-Status filtern",
       "pendingPatches": "Ausstehende Patches ({{count}})",
       "critical": "Kritisch ({{count}})",
+      "failed": "Fehlgeschlagene Installationen ({{count}})",
       "pendingReboot": "Ausstehender Neustart ({{count}})",
       "thirdPartyPending": "Ausstehende Drittanbieter-Patches ({{count}})",
       "compliant": "Konform ({{count}})"
@@ -159,6 +161,11 @@
       "messageOne": "Aktion „{{action}}“ auf {{count}} Gerät in {{org}} ausführen?",
       "messageMany": "Aktion „{{action}}“ auf {{count}} Geräten in {{org}} ausführen?",
       "messageMultiOrg": "Aktion „{{action}}“ auf {{count}} Geräten in {{orgCount}} Organisationen ({{orgNames}}) ausführen?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} von {{total}}",
+      "previous": "Vorherige Seite",
+      "next": "Nächste Seite"
     }
   },
   "patchInstallHistory": {
@@ -259,7 +266,9 @@
       "moderate": "Moderat",
       "low": "Niedrig",
       "unrated": "Unbewertet",
-      "unratedNote": "Wird nicht automatisch genehmigt"
+      "unratedNote": "Wird nicht automatisch genehmigt",
+      "derivedNote": "Abgeleitete Bewertung",
+      "derivedTooltip": "Der Hersteller hat für dieses Update keine Bewertung veröffentlicht. Dieser Schweregrad wurde aus Klassifizierung und Titel abgeleitet."
     },
     "approval": {
       "pending": "Ausstehend",
@@ -331,16 +340,12 @@
       "error": "Die Geräteliste konnte nicht geladen werden.",
       "showing": "{{shown}} von {{total}} angezeigt",
       "loadMore": "Mehr laden",
-      "lastChecked": "Zuletzt geprüft: {{when}}",
-      "status": {
-        "online": "Online",
-        "offline": "Offline",
-        "maintenance": "Wartung",
-        "decommissioned": "Außer Betrieb",
-        "quarantined": "Unter Quarantäne",
-        "updating": "Wird aktualisiert",
-        "pending": "Ausstehend"
-      }
+      "lastChecked": "Zuletzt geprüft: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Paketversion {{version}}",
+      "id": "Katalog-ID {{id}}",
+      "title": "Ein anderer Katalogeintrag hat denselben Titel. Jeder wird separat freigegeben."
     }
   },
   "patchesPage": {
@@ -381,7 +386,8 @@
       "createRing": "Updatering konnte nicht erstellt werden",
       "deleteRing": "Ring konnte nicht gelöscht werden",
       "approveUnknown": "Freigabestatus unbekannt — die Serverantwort konnte nicht gelesen werden. Aktualisieren Sie, um zu prüfen, welche Patches freigegeben wurden.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} Patches wurden zuvor außerdem vom Server abgelehnt.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} Patches wurden zuvor außerdem vom Server abgelehnt.)",
+      "checkRingLinks": "Richtlinien, die diesen Ring verwenden, konnten nicht geprüft werden – es wurde nichts gelöscht"
     },
     "toast": {
       "ringSaved": "Updatering gespeichert",
@@ -411,7 +417,13 @@
       "createTitle": "Updatering erstellen"
     },
     "truncatedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt. Die Filter hier grenzen nur das bereits Geladene ein, der Rest ist über diese Ansicht nicht erreichbar — verwenden Sie die Patches-API für den vollständigen Katalog.",
-    "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen."
+    "shiftedNotice": "Es werden {{shown}} von {{total}} Patches angezeigt — der Katalog hat sich während des Ladens geändert. Laden Sie neu, um den Rest zu sehen.",
+    "ringDelete": {
+      "title": "{{name}} löschen?",
+      "messageOne": "1 Richtlinie führt keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
+      "messageMany": "{{count}} Richtlinien führen keine geplanten Patches mehr aus, bis Sie einen anderen Ring wählen.",
+      "confirm": "Ring löschen"
+    }
   },
   "patchJobsList": {
     "empty": "Noch keine Patch-Jobs. Von Richtlinien, Update-Ringen oder dem KI-Assistenten erstellte Jobs werden hier angezeigt.",
@@ -613,5 +625,24 @@
     "orEnterAPackageIDManually": "Oder geben Sie manuell eine Paket-ID ein",
     "removeRuleFor": "Regel für {{application}} entfernen",
     "scopeNote": "Diese Regeln gelten für jedes Gerät, dessen Konfigurationsrichtlinie mit diesem Ring verknüpft ist."
+  },
+  "patchDetails": {
+    "unknown": "Unbekannt",
+    "source": "Quelle",
+    "packageId": "KB-/Paket-ID",
+    "severity": "Schweregrad",
+    "releaseDate": "Veröffentlichungsdatum",
+    "firstSeen": "Erstmals im Katalog gesehen",
+    "rings": {
+      "title": "Update-Ringe",
+      "note": "Wann jeder Ring diesen Patch automatisch genehmigt (Regel auf Ringebene; Kategorie-Überschreibungen werden nicht angezeigt).",
+      "none": "Keine Update-Ringe konfiguriert.",
+      "manual": "Nicht automatisch genehmigt — manuelle Genehmigung erforderlich",
+      "immediate": "Wird sofort automatisch genehmigt",
+      "needsDate": "Zurückgehalten — kein Veröffentlichungsdatum, um das {{count}}-Tage-Fenster zu starten",
+      "autoApproves": "Wird am {{date}} automatisch genehmigt",
+      "hold_one": "{{count}} Tag Verzögerung",
+      "hold_other": "{{count}} Tage Verzögerung"
+    }
   }
 }

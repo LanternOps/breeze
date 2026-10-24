@@ -332,8 +332,17 @@ export async function loadVerifiedBuiltinPack(): Promise<LoadedBuiltinPack | nul
     const local = await loadLocalPack();
     if (local) return local;
     if (getBinaryEdition() === 'hosted') {
-      const log = process.env.NODE_ENV === 'production' ? console.error : console.warn;
-      log(`${LOG} ${YARA_BUILTIN_PACK_ASSET_NAME} is not staged in the binaries volume; hosted deployments never fetch it from the public release`);
+      // Loud in every NODE_ENV (#9166): a hosted boot with no pack means the
+      // built-in YARA set is never published, which must not pass unnoticed.
+      const agentDir = binaryStoreDir('agent');
+      const manifestPath = join(agentDir, 'release-artifact-manifest.json');
+      console.error(
+        `${LOG} built-in YARA pack NOT loaded: BINARY_SOURCE=local and BINARY_EDITION=hosted select the binaries volume, ` +
+          `and hosted deployments never fetch the pack from the public release. Expected staged files: ` +
+          `${join(agentDir, YARA_BUILTIN_PACK_ASSET_NAME)}, ${manifestPath}, ${manifestPath}.ed25519 ` +
+          `(the signed manifest pair may instead sit in ${binaryStoreDir('helper')} or ${dirname(agentDir)}). ` +
+          `Stage them in the hosted binaries image; the built-in YARA set stays unpublished until then.`,
+      );
       return null;
     }
     console.log(`${LOG} ${YARA_BUILTIN_PACK_ASSET_NAME} is not staged locally; fetching it from the signed GitHub release`);

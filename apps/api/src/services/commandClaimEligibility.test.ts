@@ -73,12 +73,13 @@ const ORG = '22222222-2222-4222-8222-222222222222';
 const OTHER_ORG = '33333333-3333-4333-8333-333333333333';
 const USER = '44444444-4444-4444-8444-444444444444';
 const OTHER_USER = '55555555-5555-4555-8555-555555555555';
-const device = { id: 'd1', orgId: ORG, status: 'online', orgType: 'customer' };
+const device = { id: 'd1', orgId: ORG, status: 'online', orgType: 'customer', installIncarnation: 1 };
 
 type Row = Parameters<typeof partitionClaimable>[2][number];
 const row = (over: Partial<Row> = {}): Row => ({
   id: 'c1',
   type: 'refresh_inventory',
+  deviceIncarnation: 1,
   createdBy: null,
   submittedOrgId: ORG,
   deliverBy: null,
@@ -125,6 +126,30 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.cancelled).toEqual([]);
     expect(r.held).toEqual([]);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('#8318: cancels every row stamped for an earlier install incarnation, the uninstall drain and teardowns included', async () => {
+    const reattached = { ...device, installIncarnation: 2 };
+    const r = await partitionClaimable(tx(), reattached, [
+      row({ id: 'old', deviceIncarnation: 1 }),
+      row({ id: 'old-uninstall', type: 'self_uninstall', deviceIncarnation: 1 }),
+      row({ id: 'old-teardown', type: 'terminal_stop', deviceIncarnation: 1 }),
+      row({ id: 'legacy', deviceIncarnation: null }),
+      row({ id: 'current', deviceIncarnation: 2 }),
+    ]);
+    expect(r.cancelled).toEqual([
+      { id: 'old', reason: 'superseded_by_reattach' },
+      { id: 'old-uninstall', reason: 'superseded_by_reattach' },
+      { id: 'old-teardown', reason: 'superseded_by_reattach' },
+      { id: 'legacy', reason: 'superseded_by_reattach' },
+    ]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['current']);
+  });
+
+  it('#8318: a NULL stamp is incarnation 1, so a never-reattached device keeps today\'s behaviour', async () => {
+    const r = await partitionClaimable(tx(), device, [row({ deviceIncarnation: null })]);
+    expect(r.claimable.map((x) => x.id)).toEqual(['c1']);
+    expect(r.cancelled).toEqual([]);
   });
 
   it('cancels when the device moved org since enqueue', async () => {
@@ -458,8 +483,20 @@ describe('partitionClaimable (#5128 W1 §G)', () => {
     expect(r.claimable).toHaveLength(1);
   });
 
-  it('reboot, shutdown and reboot_safe_mode are the barrier set', () => {
-    expect([...POWER_STATE_BARRIER_TYPES].sort()).toEqual(['reboot', 'reboot_safe_mode', 'shutdown']);
+  it('reboot, shutdown, reboot_safe_mode and force_reboot are the barrier set', () => {
+    expect([...POWER_STATE_BARRIER_TYPES].sort()).toEqual(['force_reboot', 'reboot', 'reboot_safe_mode', 'shutdown']);
+  });
+
+  // #8729: "Force reboot now" force-closes apps, but it must not cut into real
+  // work. It waits behind in-flight commands exactly like a plain reboot; Mark
+  // failed (#8508) is the way past a stuck one.
+  it('force_reboot is held while a script is in flight, and claimed once nothing is', async () => {
+    const held = await partitionClaimable(tx(), device, [row({ id: 'f', type: 'force_reboot' })], { inFlight: 1 });
+    expect(held.claimable).toEqual([]);
+    expect(held.held).toEqual([{ id: 'f', reason: 'power_state_barrier' }]);
+
+    const claimed = await partitionClaimable(tx(), device, [row({ id: 'f', type: 'force_reboot' })], { inFlight: 0 });
+    expect(claimed.claimable.map((x) => x.id)).toEqual(['f']);
   });
 
   it('cancel writes are CAS-guarded on the id AND status=pending', async () => {

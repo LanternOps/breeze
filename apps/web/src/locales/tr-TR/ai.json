@@ -24,6 +24,7 @@
     "reject": "Reddet",
     "approveVerify": "Doğrula ve Onayla",
     "verifying": "Doğrulama bekleniyor…",
+    "approving": "Onaylanıyor…",
     "deny": "Reddet",
     "verificationFailed": "Doğrulama başarısız oldu. Tekrar deneyin.",
     "alreadyDecided": "Bu talebe zaten karar verildi.",
@@ -551,5 +552,8 @@
     "created": "{{model}} üzerinde yeni sohbet bir özetten başlatıldı.",
     "failed": "Yeni sohbet başlatılamadı. Tekrar deneyin.",
     "openFailed": "Yeni sohbet oluşturuldu ancak açılamadı. Sohbet geçmişinizde bulabilirsiniz; mesajınız gönderilmedi."
+  },
+  "buyCredits": {
+    "link": "Kredi satın al"
   }
 }

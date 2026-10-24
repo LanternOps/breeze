@@ -31,8 +31,17 @@ vi.mock('../../db/schema', () => ({
     severity: 'securityThreats.severity',
     filePath: 'securityThreats.filePath',
     status: 'securityThreats.status',
+    detectedAt: 'securityThreats.detectedAt',
     resolvedAt: 'securityThreats.resolvedAt',
     resolvedBy: 'securityThreats.resolvedBy',
+    details: 'securityThreats.details',
+  },
+  yaraRuleSets: {
+    id: 'yaraRuleSets.id',
+    orgId: 'yaraRuleSets.orgId',
+    partnerId: 'yaraRuleSets.partnerId',
+    name: 'yaraRuleSets.name',
+    isBuiltin: 'yaraRuleSets.isBuiltin',
   },
   securityStatus: {},
   auditLogs: {},
@@ -467,5 +476,192 @@ describe('GET /threats/:deviceId — site-scope gate', () => {
 
     // Site gate passed — must not be 403
     expect(res.status).not.toBe(403);
+  });
+});
+
+describe('GET /threats/:id/details (#6263 W04-5)', () => {
+  const RULE_SET_ID = '66666666-6666-4666-8666-666666666666';
+  const RULE_ID = '77777777-7777-4777-8777-777777777777';
+  const SHA = 'ab'.repeat(32);
+  const DETECTED = new Date('2026-10-01T12:00:00Z');
+
+  function threatRow(details: unknown, siteId: string | null = SITE_ALLOWED) {
+    return {
+      id: THREAT_ID,
+      deviceId: DEVICE_ID,
+      deviceSiteId: siteId,
+      orgId: ORG_ID,
+      deviceName: 'host-1',
+      provider: 'breeze',
+      threatName: 'ioc_x_string_0123456789abcdef',
+      threatType: 'malware',
+      severity: 'high',
+      filePath: 'C:\\Users\\Public\\evil.exe',
+      status: 'detected',
+      detectedAt: DETECTED,
+      resolvedAt: null,
+      details,
+    };
+  }
+
+  /** loadThreatForCaller: select().from(securityThreats).innerJoin(devices).where().limit(1) */
+  function mockThreat(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        }),
+      }),
+    } as any);
+  }
+
+  /** loadVisibleSet: select().from(yaraRuleSets).where().limit(1) */
+  function mockSet(rows: unknown[]) {
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }) }),
+    } as any);
+  }
+
+  const yaraDetails = {
+    name: 'ioc_x_string_0123456789abcdef',
+    ruleName: 'ioc_x_string_0123456789abcdef',
+    ruleSetId: RULE_SET_ID,
+    ruleId: RULE_ID,
+    tags: ['ioc', 'string'],
+    matchedStrings: Array.from({ length: 12 }, (_, i) => ({
+      id: `$i${i}`, offset: i * 10, data: i === 0 ? 'x'.repeat(600) : `m\\x00rk${i}`,
+    })),
+    sha256: SHA.toUpperCase(),
+    quarantinedTo: '/var/lib/breeze/quarantine/abc',
+    quarantineFailed: true,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: undefined });
+  });
+
+  it('returns the typed rule view with the joined set', async () => {
+    mockThreat([threatRow(yaraDetails)]);
+    mockSet([{ id: RULE_SET_ID, orgId: null, partnerId: 'partner-1', name: 'MSP baseline', isBuiltin: false }]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.rule).toEqual({
+      engine: 'yara',
+      ruleName: 'ioc_x_string_0123456789abcdef',
+      ruleId: RULE_ID,
+      ruleSetId: RULE_SET_ID,
+      ruleSet: { id: RULE_SET_ID, name: 'MSP baseline', isBuiltin: false, partnerWide: true },
+      tags: ['ioc', 'string'],
+      matchedStrings: [
+        { id: '$i0', offset: 0, data: 'x'.repeat(512) },
+        ...Array.from({ length: 9 }, (_, i) => ({ id: `$i${i + 1}`, offset: (i + 1) * 10, data: `m\\x00rk${i + 1}` })),
+      ],
+      sha256: SHA,
+      quarantinedTo: '/var/lib/breeze/quarantine/abc',
+      quarantineFailed: true,
+    });
+  });
+
+  it('data.threat is the exact item GET /threats returns for the same row', async () => {
+    const row = threatRow(yaraDetails);
+    mockThreat([row]);
+    mockSet([]);
+    const detail = await (await buildApp().request(`/security/threats/${THREAT_ID}/details`)).json();
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ orderBy: vi.fn().mockResolvedValue([row]) }),
+        }),
+      }),
+    } as any);
+    const list = await (await buildApp().request('/security/threats')).json();
+    expect(list.data).toHaveLength(1);
+    expect(detail.data.threat).toEqual(list.data[0]);
+  });
+
+  it('a legacy signature hit is engine legacy with empty fields', async () => {
+    mockThreat([threatRow({ name: 'EICAR' })]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    const { data } = await res.json();
+    expect(data.rule).toEqual({
+      engine: 'legacy', ruleName: null, ruleId: null, ruleSetId: null, ruleSet: null,
+      tags: [], matchedStrings: [], sha256: null, quarantinedTo: null, quarantineFailed: false,
+    });
+    expect(db.select).toHaveBeenCalledTimes(1); // no set lookup without a rule set id
+  });
+
+  it('a set that is no longer visible is ruleSet null; the id is still returned', async () => {
+    mockThreat([threatRow(yaraDetails)]);
+    mockSet([]);
+    const { data } = await (await buildApp().request(`/security/threats/${THREAT_ID}/details`)).json();
+    expect(data.rule.ruleSet).toBeNull();
+    expect(data.rule.ruleSetId).toBe(RULE_SET_ID);
+  });
+
+  it('drops junk instead of passing it through', async () => {
+    mockThreat([threatRow({
+      ruleName: 'r', ruleSetId: 'not-a-uuid', ruleId: 42, tags: 'x',
+      matchedStrings: [{ data: 5 }, { id: '$a', offset: -1, data: 'x' }, { id: '$b', offset: 2, data: 'ok' }, 'junk'],
+      sha256: 'nothex', quarantinedTo: { path: '/x' }, quarantineFailed: 'yes',
+    })]);
+    const { data } = await (await buildApp().request(`/security/threats/${THREAT_ID}/details`)).json();
+    expect(data.rule).toEqual({
+      engine: 'yara', ruleName: 'r', ruleId: null, ruleSetId: null, ruleSet: null,
+      tags: [], matchedStrings: [{ id: '$b', offset: 2, data: 'ok' }], sha256: null, quarantinedTo: null, quarantineFailed: false,
+    });
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+
+  it('a details value that is not an object is a legacy view', async () => {
+    mockThreat([threatRow(null)]);
+    const { data } = await (await buildApp().request(`/security/threats/${THREAT_ID}/details`)).json();
+    expect(data.rule.engine).toBe('legacy');
+  });
+
+  it("404 for a threat the caller cannot see (another org's)", async () => {
+    mockThreat([]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe('Threat not found');
+  });
+
+  it('403 for a site-restricted caller on a device outside their sites — the same answer as quarantine', async () => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: [SITE_ALLOWED] });
+    mockThreat([threatRow(yaraDetails, SITE_FORBIDDEN)]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('Access to this site denied');
+  });
+
+  it('200 for a site-restricted caller on a device inside their sites', async () => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: [SITE_ALLOWED] });
+    mockThreat([threatRow({ name: 'EICAR' }, SITE_ALLOWED)]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
+    ['an empty site allowlist', [], SITE_ALLOWED],
+    ['a device with no site', [SITE_ALLOWED], null],
+  ])('403 for a site-restricted caller with %s', async (_name, allowed, siteId) => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], allowedSiteIds: allowed });
+    mockThreat([threatRow({ name: 'EICAR' }, siteId as string | null)]);
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(403);
+  });
+
+  it('403 when the caller fails requireSecurityReadAccess (no devices:read), before any DB read', async () => {
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'scripts', action: 'read' }], allowedSiteIds: undefined });
+    const res = await buildApp().request(`/security/threats/${THREAT_ID}/details`);
+    expect(res.status).toBe(403);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('400 for a non-uuid id', async () => {
+    const res = await buildApp().request('/security/threats/not-a-uuid/details');
+    expect(res.status).toBe(400);
   });
 });

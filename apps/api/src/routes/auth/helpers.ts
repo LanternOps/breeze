@@ -1910,10 +1910,13 @@ export async function auditUserLoginFailure(
 
 export function auditLogin(
   c: RequestLike,
-  opts: { orgId: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string; method?: string }
+  opts: { orgId: string | null; partnerId?: string | null; userId: string; email: string; name: string; mfa: boolean; scope: string; ip: string; method?: string }
 ): void {
   createAuditLogAsync({
     orgId: opts.orgId ?? undefined,
+    // Partner-axis rows (orgId null) must carry partnerId or they are
+    // invisible in the partner audit view; persistAuditLog drops it when orgId is set.
+    partnerId: opts.partnerId ?? undefined,
     actorId: opts.userId,
     actorEmail: opts.email,
     action: 'user.login',

@@ -119,6 +119,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('migrationWindowSweep'),
   consumers('partnerApiIdempotencyRetention'),
   consumers('quickSupportReaper'),
+  consumers('wispGrantReconciler'),
   consumers('softwareUploadSessionCleanup'),
   consumers('softwareRemediationRequestCleanup'),
   consumers('auditRetention'),
@@ -217,6 +218,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // W02: workstation decision repair (terminal results + late rejections).
   consumers('callerVerificationReconciliation'),
   consumers('ticketSlaWorker'),
+  // #8973 W4: business-calendar holiday recompute (one-shot jobs).
+  consumers('businessCalendarRecomputeWorker'),
   consumers('inboundEmailWorker'),
   consumers('gmailMarkHandledWorker'),
   consumers('ticketMailboxPollWorker'),

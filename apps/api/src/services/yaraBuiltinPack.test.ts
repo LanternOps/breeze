@@ -209,7 +209,28 @@ describe('loadVerifiedBuiltinPack (BINARY_SOURCE=local)', () => {
     process.env.BINARY_EDITION = 'hosted';
     process.env.NODE_ENV = 'production';
     await expect(loadVerifiedBuiltinPack()).resolves.toBeNull();
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('not staged'));
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('NOT loaded'));
+  });
+
+  it('hosted + local with no pack: logs an ERROR (any NODE_ENV) naming the expected absolute paths and the selecting env (#9166)', async () => {
+    process.env.BINARY_EDITION = 'hosted';
+    process.env.NODE_ENV = 'test';
+    await expect(syncBuiltinYaraPack()).resolves.toBe('skipped');
+    const agentDir = resolve(tmp, 'agent');
+    const msg = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0])).join('\n');
+    expect(msg).toContain(join(agentDir, ASSET));
+    expect(msg).toContain(join(agentDir, 'release-artifact-manifest.json'));
+    expect(msg).toContain(join(agentDir, 'release-artifact-manifest.json.ed25519'));
+    expect(msg).toContain('BINARY_SOURCE=local');
+    expect(msg).toContain('BINARY_EDITION=hosted');
+    expect(githubFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('self-host fallback to GitHub logs no error', async () => {
+    const bytes = Buffer.from(packJson());
+    githubFetchMock.mockResolvedValue({ buffer: bytes, verified: { sha256: sha(bytes), release: 'v1.2.3', edition: 'self-host' } });
+    await loadVerifiedBuiltinPack();
+    expect(console.error).not.toHaveBeenCalled();
   });
 
   it('not staged on self-host local mode: falls back to the signed GitHub release', async () => {

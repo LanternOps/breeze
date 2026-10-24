@@ -315,6 +315,16 @@ export function aiOperatorServiceRecoveryEnabled(): boolean {
 }
 
 /**
+ * Recipe-level gate for `identity_offboarding` (Recipe Library W06; spec §9's
+ * `deterministic` class ships behind its own flag). Nests under
+ * AI_OPERATOR_TASKS_ENABLED, exactly as the service-recovery flag does. Stays
+ * OFF until the R1c lab run passes; nothing in the repo enables it.
+ */
+export function aiOperatorIdentityOffboardingEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', false);
+}
+
+/**
  * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
  *
  * THREE conditions, all read at CALL time so a test can flip one without
@@ -333,6 +343,25 @@ export function aiWorkspaceEnabled(): boolean {
     isHosted()
     && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
     && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
+  );
+}
+
+/**
+ * Wisp, the always-on delegated agent (Wisp design §10).
+ *
+ * This is the DEPLOYMENT switch; the `wisp` entitlement (W01) is the commercial
+ * switch, and both must be on before anything Wisp-shaped runs. Same three-term
+ * conjunction as aiWorkspaceEnabled(), all read at CALL time: hosted, the AI
+ * agents platform switch, and BREEZE_WISP_ENABLED. Default OFF. With it off the
+ * /api/v1/wisp routes answer 404, the grant hooks are not installed and the
+ * reconciler skips every tick. config/validate.ts refuses the flag in production
+ * without IS_HOSTED=true.
+ */
+export function wispEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_WISP_ENABLED', false)
   );
 }
 
@@ -690,6 +719,15 @@ export const BILLING_URL = process.env.BILLING_URL ?? '';
 export const OAUTH_DCR_ENABLED = envFlag('OAUTH_DCR_ENABLED', false);
 export const OAUTH_DCR_REQUIRE_IAT = envFlag('OAUTH_DCR_REQUIRE_IAT', false);
 export const OAUTH_DCR_ALLOW_ANONYMOUS = envFlag('OAUTH_DCR_ALLOW_ANONYMOUS', false);
+
+// B-W03 (#6157): OAuth Client ID Metadata Documents — an https URL as
+// client_id, alongside DCR. Default off. Boot-time switch for the provider
+// feature + AS metadata; oauth/cimdPolicy.ts also checks it (and the host
+// allowlist) on every use, so the in-process document cache can never bypass
+// them. A change takes effect on restart. OAUTH_CIMD_ALLOWED_HOSTS
+// (CSV of hostnames / `.suffix`) restricts which hosts may serve documents;
+// unset = any public https host.
+export const OAUTH_CIMD_ENABLED = envFlag('OAUTH_CIMD_ENABLED', false);
 export const OAUTH_ISSUER = process.env.OAUTH_ISSUER ?? '';
 export const OAUTH_RESOURCE_URL = process.env.OAUTH_RESOURCE_URL ?? '';
 

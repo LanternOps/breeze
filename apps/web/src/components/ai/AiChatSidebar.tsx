@@ -22,6 +22,7 @@ import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerSto
 import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
+import BuyCreditsLink from "./BuyCreditsLink";
 import { useTranslation } from "react-i18next";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -41,6 +42,7 @@ export default function AiChatSidebar() {
     turnModel,
     isLoading,
     error,
+    errorCode,
     pageContext,
     pendingApproval,
     pendingPlan,
@@ -87,10 +89,11 @@ export default function AiChatSidebar() {
   const [searchQuery, setSearchQuery] = useState("");
   const restoredSessionIdRef = useRef<string | null>(null);
 
-  // Keyboard shortcut: Cmd+Shift+A to toggle
+  // Keyboard shortcut: Cmd+Shift+A to toggle. With Shift held, `e.key` is "A"
+  // (capital), so compare case-insensitively (#9613).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "a") {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
         if (canUseAi) toggle();
       }
@@ -365,6 +368,9 @@ export default function AiChatSidebar() {
             {error && (
               <div className="flex items-center justify-between border-b border-red-800/50 bg-red-900/20 px-4 py-2">
                 <span className="text-xs text-red-400">{error}</span>
+                {errorCode === "credits_exhausted" && (
+                  <BuyCreditsLink className="ml-2 shrink-0 text-xs font-medium text-red-300 underline underline-offset-2 hover:text-red-200" />
+                )}
                 <button
                   onClick={clearError}
                   className="text-xs text-red-400 hover:text-red-300"

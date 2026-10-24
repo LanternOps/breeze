@@ -28,9 +28,10 @@ import {
   customerLineDetail, resolveDocumentLineDetail, toCustomerInvoiceHeader, toCustomerInvoiceLine, type InvoiceRow,
 } from './invoiceService';
 import { captureException } from './sentry';
-import { invoiceLineTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql } from './invoicePdf';
+import { invoiceLineTicketCategorySql, invoiceLineTicketNumberSql, invoiceLineTicketSubjectSql } from './invoiceRenderHelpers';
 import { resolveInvoicePresentation } from './invoicePresentation';
 import { resolvePartnerDocumentLocale } from './documentLocale';
+import { resolveDocumentBrand } from './partnerDocumentBrand';
 
 export type { CustomerDocumentMode } from '@breeze/shared/documents';
 export type { InvoiceRow } from './invoiceService';
@@ -70,10 +71,18 @@ export function invoiceDisplayStatus(status: InvoiceStatus): Exclude<InvoiceStat
  */
 export async function loadCustomerInvoiceLines(
   invoice: InvoiceRow,
-  /** `projection` defaults to OD9_CUSTOMER_PROJECTION; overridable only so tests can drive both branches. */
-  opts: { detail: InvoiceLineDetail; surface: DocumentSurface; projection?: Od9Projection },
+  /** `projection` defaults to OD9_CUSTOMER_PROJECTION; overridable only so tests can drive both branches.
+   *  `locale` is the document locale (it labels the generic labor line); it defaults to the invoice's
+   *  stamped locale, then 'en' — the assembler passes the partner-resolved locale for an unstamped draft. */
+  opts: { detail: InvoiceLineDetail; surface: DocumentSurface; projection?: Od9Projection; locale?: string },
 ): Promise<CustomerInvoiceLineDto[]> {
-  const rows = await db.select({
+  const rows = await queryCustomerInvoiceLineRows(invoice);
+  return projectCustomerInvoiceLines(rows, { ...opts, locale: opts.locale ?? invoice.documentLocale ?? 'en' });
+}
+
+/** The line query alone (visibility filter in SQL, tickets joined in the invoice's org). */
+async function queryCustomerInvoiceLineRows(invoice: InvoiceRow) {
+  return db.select({
     id: invoiceLines.id,
     parentLineId: invoiceLines.parentLineId,
     ticketId: invoiceLines.ticketId,
@@ -101,9 +110,24 @@ export async function loadCustomerInvoiceLines(
       eq(invoiceLines.customerVisible, true),
     ))
     .orderBy(invoiceLines.sortOrder);
+}
 
+/** A line row as the customer line query selects it. */
+export type CustomerInvoiceLineQueryRow = Parameters<typeof toCustomerInvoiceLine>[0] & { parentLineId?: string | null };
+
+/**
+ * PURE: the customer projection of already-filtered (customer-visible) line
+ * rows — `toCustomerInvoiceLine` (the #8604 boundary) plus the OD-9 keys when
+ * the surface's switch is on. The DB-free invoice PDF entry point
+ * (`renderInvoicePdfBuffer`) calls the same function as the assembler, so the
+ * PDF and the screens cannot project differently.
+ */
+export function projectCustomerInvoiceLines(
+  rows: readonly CustomerInvoiceLineQueryRow[],
+  opts: { detail: InvoiceLineDetail; surface: DocumentSurface; projection?: Od9Projection; locale?: string },
+): CustomerInvoiceLineDto[] {
   const flags = (opts.projection ?? OD9_CUSTOMER_PROJECTION)[opts.surface];
-  const locale = invoice.documentLocale ?? 'en';
+  const locale = opts.locale ?? 'en';
   return rows.map((r) => {
     const line: CustomerInvoiceLineDto = toCustomerInvoiceLine(r, opts.detail, locale);
     if (flags.ticketSubject) line.ticketSubject = r.ticketSubject ?? null;
@@ -112,7 +136,7 @@ export async function loadCustomerInvoiceLines(
   });
 }
 
-type DocumentPartner = {
+export type DocumentPartner = {
   name: string | null;
   billingEmail: string | null;
   documentTheme: string | null;
@@ -173,16 +197,27 @@ async function loadBrandingAndPartner(
     reportSoftFailure('branding', invoice, err);
   }
 
+  return { partner, branding: composeBranding(invoice, partner, brand) };
+}
+
+/** Branding the caller has ALREADY read (strictly, on its own connection). */
+export interface PreloadedBranding {
+  partner: DocumentPartner | null;
+  brand: { logoUrl: string | null; primaryColor: string | null } | null;
+}
+
+function composeBranding(
+  invoice: InvoiceRow, partner: DocumentPartner | null, brand: PreloadedBranding['brand'],
+): CustomerDocumentBrandingDto {
+  const docBrand = resolveDocumentBrand(brand ?? undefined, partner?.settings);
   return {
-    partner,
-    branding: {
-      partnerName: partner?.name ?? null,
-      contactEmail: partner?.billingEmail ?? null,
-      logoUrl: brand?.logoUrl ?? null,
-      primaryColor: brand?.primaryColor ?? null,
-      // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
-      ...resolveInvoicePresentation(invoice, partner),
-    },
+    partnerName: partner?.name ?? null,
+    contactEmail: partner?.billingEmail ?? null,
+    // #9676: org portal_branding wins; the partner's Branding settings fill the rest.
+    logoUrl: docBrand.logoUrl,
+    primaryColor: docBrand.primaryColor,
+    // #6227: the invoice's issue-time snapshot; partner live values only for a draft.
+    ...resolveInvoicePresentation(invoice, partner),
   };
 }
 
@@ -198,7 +233,11 @@ export async function loadCustomerDocumentBranding(invoice: InvoiceRow): Promise
 export async function assembleCustomerInvoiceDocument(
   invoice: InvoiceRow,
   mode: CustomerDocumentMode,
-  opts: { surface?: DocumentSurface } = {},
+  /** `preloaded`: a caller that already holds an open transaction (the PDF render) passes the
+   *  branding it read on that connection. The default reads open their OWN system context,
+   *  i.e. a second connection — inside an open transaction that queues behind any pending
+   *  ACCESS EXCLUSIVE lock request and the outer transaction then waits on it forever. */
+  opts: { surface?: DocumentSurface; preloaded?: PreloadedBranding } = {},
 ): Promise<CustomerInvoiceDocument> {
   const isDraft = invoice.status === 'draft';
   if (isDraft && mode !== 'staff') {
@@ -207,8 +246,16 @@ export async function assembleCustomerInvoiceDocument(
   // A draft previews what issuing will freeze: partner defaults resolved BEFORE
   // projection. Every issued document reads its own frozen columns.
   const detail = isDraft ? await resolveDocumentLineDetail(invoice) : customerLineDetail(invoice);
-  const lines = await loadCustomerInvoiceLines(invoice, { detail, surface: opts.surface ?? 'screen' });
-  const { branding, partner } = await loadBrandingAndPartner(invoice);
+  const rows = await queryCustomerInvoiceLineRows(invoice);
+  const partner = opts.preloaded ? opts.preloaded.partner : null;
+  const { branding, partner: resolvedPartner } = opts.preloaded
+    ? { branding: composeBranding(invoice, partner, opts.preloaded.brand), partner }
+    : await loadBrandingAndPartner(invoice);
+  // The stamped locale, else the partner's language (spec §3.7) — also the
+  // language of the generic labor line, so an unstamped draft reads like the
+  // document it will become.
+  const documentLocale = invoice.documentLocale ?? resolvePartnerDocumentLocale(resolvedPartner);
+  const lines = projectCustomerInvoiceLines(rows, { detail, surface: opts.surface ?? 'screen', locale: documentLocale });
   return {
     invoice: {
       ...toCustomerInvoiceHeader(invoice),
@@ -219,6 +266,6 @@ export async function assembleCustomerInvoiceDocument(
     },
     lines,
     branding,
-    documentLocale: invoice.documentLocale ?? resolvePartnerDocumentLocale(partner),
+    documentLocale,
   };
 }

@@ -1,3 +1,4 @@
+import { setupCompletionDestination } from '../../lib/purchaseHandoff';
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -89,7 +90,7 @@ export default function SetupWizard() {
         if (res.ok) {
           const data = await res.json();
           if (!data.requiresSetup) {
-            window.location.href = '/';
+            window.location.href = setupCompletionDestination(window.location.search);
             return;
           }
         }
@@ -147,7 +148,7 @@ export default function SetupWizard() {
     } catch (err) {
       console.warn('[SetupWizard] Failed to clear localStorage:', err);
     }
-    window.location.href = '/';
+    window.location.href = setupCompletionDestination(window.location.search);
   };
 
   const handleEnrollFinish = () => {

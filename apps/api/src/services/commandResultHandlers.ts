@@ -74,6 +74,8 @@ import { handleInstallPatchesResult } from './patchJobFinalizer';
 import { handleCallerVerifyResult } from './callerVerification/workstationResult';
 import { handleNotifyUserResult, handleRetractMessageResult } from './endpointMessaging/commandResults';
 import { handleChatMessageResult, handleChatOpenResult } from './endpointMessaging/chatResults';
+// #9662: AI/incident containment actions follow their command's real outcome.
+import { handleExecuteContainmentResult } from './incidentContainmentResults';
 
 export type CommandResultHandlerOutcome =
   | { kind: 'pam'; classification: PamActuationResultClassification }
@@ -1264,4 +1266,7 @@ export const commandResultHandlers: Record<string, CommandResultHandler> = {
   // #8743 W03: endpoint live chat. chat_close carries no state to record.
   chat_open: handleChatOpenResult,
   chat_message: handleChatMessageResult,
+  // #9662: the incident action (and, on success, the incident) follows the
+  // agent's containment result.
+  execute_containment: handleExecuteContainmentResult,
 };

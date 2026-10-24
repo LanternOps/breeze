@@ -43,7 +43,11 @@ type Session struct {
 	// advertised at auth (ipc.ConsentProtocolVersion), 0 for version 1. Set
 	// once at auth by consentProtocolFromAuth, never changed afterwards.
 	ConsentProtocolVersion int
-	ConnectedAt            time.Time
+	// SupportsTargetedPamDismiss is true when this SYSTEM helper advertised it
+	// can dismiss one specific consent.exe (ipc.PamDismissConsentRequest.Instance).
+	// Set once at auth by targetedPamDismissFromAuth, never changed afterwards.
+	SupportsTargetedPamDismiss bool
+	ConnectedAt                time.Time
 	LastSeen               time.Time
 
 	conn    *ipc.Conn
@@ -59,6 +63,10 @@ type Session struct {
 
 	broker      *Broker
 	peerProcess *ownedPeerProcessRef
+
+	// helperLog caps relayed helper_log records (#9266); see helperLogLimiter.
+	helperLogOnce sync.Once
+	helperLog     *ipc.HelperLogCap
 }
 
 // NewSession creates a new session for a verified user helper connection.
@@ -119,6 +127,20 @@ var ErrDuplicateCommand = fmt.Errorf("duplicate in-flight command id")
 // SendCommand sends a command to the user helper and waits for a response.
 // Returns the response envelope or an error if the timeout is reached.
 func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Duration) (*ipc.Envelope, error) {
+	wait, err := s.startCommand(id, cmdType, payload)
+	if err != nil {
+		return nil, err
+	}
+	return wait(timeout)
+}
+
+// startCommand registers the pending response for id, sends the command, and
+// returns a function that waits for the correlated reply. The send happens
+// before startCommand returns, so a caller that waits on another goroutine
+// keeps the same on-the-wire ordering as a synchronous SendCommand. The
+// returned wait must be called exactly once: it is what removes the pending
+// entry. On error nothing is left registered.
+func (s *Session) startCommand(id, cmdType string, payload any) (func(timeout time.Duration) (*ipc.Envelope, error), error) {
 	ch := make(chan *ipc.Envelope, 1)
 	s.mu.Lock()
 	if s.closed {
@@ -137,16 +159,25 @@ func (s *Session) SendCommand(id, cmdType string, payload any, timeout time.Dura
 	done := s.done
 	s.mu.Unlock()
 
-	defer func() {
+	unregister := func() {
 		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
-	}()
+	}
 
 	if err := s.conn.SendTyped(id, cmdType, payload); err != nil {
+		unregister()
 		return nil, err
 	}
 
+	return func(timeout time.Duration) (*ipc.Envelope, error) {
+		defer unregister()
+		return awaitResponse(ch, done, timeout)
+	}, nil
+}
+
+// awaitResponse waits for the reply registered by startCommand.
+func awaitResponse(ch chan *ipc.Envelope, done <-chan struct{}, timeout time.Duration) (*ipc.Envelope, error) {
 	select {
 	case resp, ok := <-ch:
 		if !ok || resp == nil {

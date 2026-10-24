@@ -31,6 +31,9 @@ export default defineConfig({
       '@breeze/shared/reportPdf': fileURLToPath(
         new URL('../../packages/shared/src/reportPdf/index.ts', import.meta.url)
       ),
+      '@breeze/shared/documents': fileURLToPath(
+        new URL('../../packages/shared/src/documents/index.ts', import.meta.url)
+      ),
       '@breeze/shared/testing': fileURLToPath(new URL('../../packages/shared/src/testing', import.meta.url)),
       '@breeze/shared/validators': fileURLToPath(new URL('../../packages/shared/src/validators', import.meta.url)),
       '@breeze/shared': fileURLToPath(

@@ -15,6 +15,8 @@ import { sourceBadgeLabelKey } from '../time/timeEntrySource';
 import { formatMoney } from '../billing/shared/format';
 import { ApproximateMoneyLine } from '../billing/shared/ApproximateMoneyLine';
 import { Trash2 } from 'lucide-react';
+import { billedLaborMinutes, laborHours } from '@breeze/shared';
+import { laborBreakdown } from '../time/laborBreakdown';
 
 /** Mirrors the API's `CurrencyAmount` — money is reported per currency, never summed across. */
 interface CurrencyAmount {
@@ -52,6 +54,9 @@ interface EntryRow {
   source?: string | null;
   /** #8133: an invoiced entry is not offered for deletion (the API refuses it). */
   billingStatus?: 'not_billed' | 'billed' | 'no_charge' | 'contract' | 'awaiting_approval';
+  /** Snapshot rate + its currency; null while unrated. Absent on an older API. */
+  hourlyRate?: string | null;
+  currencyCode?: string | null;
 }
 
 /** #8133: localized copy for the API's refusals of a time-entry DELETE. */
@@ -70,8 +75,8 @@ function billedVsWorked(
   durationMinutes: number | null,
   billableMinutes: number | null | undefined
 ): string | null {
-  const worked = ((durationMinutes ?? 0) / 60).toFixed(2);
-  const billed = (((billableMinutes ?? durationMinutes) ?? 0) / 60).toFixed(2);
+  const worked = laborHours(durationMinutes ?? 0);
+  const billed = laborHours(billedLaborMinutes({ billableMinutes, durationMinutes }));
   if (worked === billed) return null;
   return t('ticketTimeBilling.billedVsWorked', { worked, billed });
 }
@@ -314,7 +319,7 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           </div>
           {(summary.time.includedMinutes ?? 0) > 0 && (
             <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-included">
-              {t('ticketTimeBilling.includedMinutes', { hours: ((summary.time.includedMinutes ?? 0) / 60).toFixed(2) })}
+              {t('ticketTimeBilling.includedMinutes', { hours: laborHours(summary.time.includedMinutes ?? 0) })}
             </div>
           )}
           <div className="flex justify-between text-xs">
@@ -331,6 +336,13 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
           {(summary.time.missingRateCount ?? 0) > 0 && (
             <div className="flex justify-end text-xs text-muted-foreground" data-testid="ticket-billing-missing-rate">
               {t('ticketTimeBilling.missingRateCount', { count: summary.time.missingRateCount })}
+            </div>
+          )}
+          {/* #9561: the amount above is a sum of per-entry figures, each billed
+              at its minutes rounded to 2-decimal hours × rate (by design). */}
+          {(summary.time.billableAmounts?.length ?? 0) > 0 && (
+            <div className="flex justify-end text-right text-[11px] text-muted-foreground" data-testid="ticket-billing-labor-rule">
+              {t('ticketTimeBilling.laborRule')}
             </div>
           )}
           <div className="flex justify-end">
@@ -498,6 +510,11 @@ export default function TicketTimeBilling({ ticketId }: { ticketId: string }) {
                 {entry.endedAt != null && billedVsWorked(t, entry.durationMinutes, entry.billableMinutes) && (
                   <span className="block text-[10px] text-muted-foreground" data-testid={`time-entry-billed-vs-worked-${entry.id}`}>
                     {billedVsWorked(t, entry.durationMinutes, entry.billableMinutes)}
+                  </span>
+                )}
+                {laborBreakdown(t, entry) && (
+                  <span className="block text-[10px] tabular-nums text-muted-foreground" data-testid={`ticket-billing-entry-labor-${entry.id}`}>
+                    {laborBreakdown(t, entry)}
                   </span>
                 )}
               </span>

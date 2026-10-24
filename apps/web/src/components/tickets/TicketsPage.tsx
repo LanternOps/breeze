@@ -100,6 +100,8 @@ const SORT_OPTIONS: Array<{ value: TicketSort; labelKey: string }> = [
 const isTicketSort = (value: string): value is TicketSort =>
   SORT_OPTIONS.some((o) => o.value === value);
 
+const isClosedStatus = (status: TicketStatus): boolean => status === 'resolved' || status === 'closed';
+
 const PRIORITY_ORDER: TicketPriority[] = ['low', 'normal', 'high', 'urgent'];
 
 // Bulk status options exclude 'resolved': resolving requires a per-ticket
@@ -349,6 +351,25 @@ export default function TicketsPage() {
     setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
 
+  // #9564: the ticket the user just changed in the workbench, held so a
+  // reconcile that drops it from the current view (resolving from "All open",
+  // reassigning out of "Mine") doesn't swap the workbench to another ticket
+  // under them. It keeps the pane until the user selects something else or
+  // switches tabs. A snapshot, not a fetch: the workbench loads its own detail.
+  const [heldTicket, setHeldTicket] = useState<TicketSummary | null>(null);
+  const ticketsRef = useRef(tickets);
+  ticketsRef.current = tickets;
+  const onWorkbenchPatched = useCallback((id: string, patch: Partial<TicketSummary>) => {
+    patchTicketRow(id, patch);
+    setHeldTicket((prev) => {
+      const base = prev?.id === id ? prev : ticketsRef.current.find((t) => t.id === id);
+      return base ? { ...base, ...patch } : prev;
+    });
+  }, [patchTicketRow]);
+  const onWorkbenchDeleted = useCallback((id: string) => {
+    setHeldTicket((prev) => (prev?.id === id ? null : prev));
+  }, []);
+
   // Debounced background reconcile after a mutation: coalesces bursts (rapid
   // status/assignee changes) into one list+stats refresh instead of one per click.
   const reconcileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -394,15 +415,92 @@ export default function TicketsPage() {
     setBulkStatus('');
   }, [search, priorityFilter, categoryFilter, assigneeFilter, typeFilter]);
 
-  const selected = useMemo(
+  const heldMatchesSelection = heldTicket !== null && selectedNumber !== null
+    && (heldTicket.internalNumber === selectedNumber || heldTicket.id === selectedNumber);
+  const selectedInList = useMemo(
     () => tickets.find((t) => t.internalNumber === selectedNumber || t.id === selectedNumber) ?? null,
     [tickets, selectedNumber]
   );
+  // Fall back to the held ticket when the list no longer contains it, so the
+  // auto-select effect below sees a valid selection and leaves it alone.
+  const selected = selectedInList ?? (heldMatchesSelection ? heldTicket : null);
+  const heldDroppedFromView = selectedInList === null && heldMatchesSelection;
+
+  // Release the hold once the user navigates away: another selection, or a tab
+  // switch. Switching to Closed keeps a resolved/closed hold — that is where the
+  // ticket now lives, and the "View in Closed" link lands there.
+  useEffect(() => {
+    if (heldTicket && !heldMatchesSelection) setHeldTicket(null);
+  }, [heldTicket, heldMatchesSelection]);
+  const prevTab = useRef(tab);
+  useEffect(() => {
+    if (prevTab.current === tab) return;
+    prevTab.current = tab;
+    setHeldTicket((prev) => (prev && tab === 'closed' && isClosedStatus(prev.status) ? prev : null));
+  }, [tab]);
+
+  // Keys of tickets that have appeared in a loaded list this session. A
+  // selection that was once listed (tab switch, filter change) keeps the
+  // original "fall back to the first row" behaviour; a selection that was
+  // NEVER listed is a deep link to a ticket outside this view and must not be
+  // silently swapped for another ticket (sweep G10).
+  const seenKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!listIsCurrent) return;
+    for (const row of tickets) {
+      seenKeysRef.current.add(row.id);
+      if (row.internalNumber) seenKeysRef.current.add(row.internalNumber);
+    }
+  }, [listIsCurrent, tickets]);
+  const deepLinkAbsent = selectedNumber !== null && !selected && !seenKeysRef.current.has(selectedNumber);
+  // null = nothing to look up; 'missing' = lookup finished, caller cannot see it.
+  const [absentLookup, setAbsentLookup] = useState<{ key: string; status: 'pending' | 'missing' } | null>(null);
+  useEffect(() => {
+    if (tab === 'review' || tab === 'archived') return;
+    if (loading || !listIsCurrent || !deepLinkAbsent || selectedNumber === null) return;
+    const key = selectedNumber;
+    let cancelled = false;
+    setAbsentLookup({ key, status: 'pending' });
+    void (async () => {
+      let found: TicketSummary | null = null;
+      try {
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+        if (isUuid) {
+          const res = await fetchWithAuth(`/tickets/${key}`);
+          if (res.ok) found = ((await res.json()) as { data?: TicketSummary }).data ?? null;
+        } else {
+          // No by-number endpoint: the list search matches internalNumber; the
+          // exact match is picked client-side. Status-agnostic (no statusGroup).
+          const res = await fetchWithAuth(`/tickets?${new URLSearchParams({ search: key, limit: '5' })}`);
+          if (res.ok) {
+            const rows = ((await res.json()) as { data?: TicketSummary[] }).data ?? [];
+            found = rows.find((r) => r.internalNumber?.toLowerCase() === key.toLowerCase()) ?? null;
+          }
+        }
+      } catch {
+        found = null;
+      }
+      if (cancelled) return;
+      if (found) {
+        setHeldTicket(found);
+        setAbsentLookup(null);
+      } else {
+        setAbsentLookup({ key, status: 'missing' });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, loading, listIsCurrent, deepLinkAbsent, selectedNumber]);
+  const absentNotice = deepLinkAbsent && absentLookup?.key === selectedNumber && absentLookup.status === 'missing'
+    ? selectedNumber
+    : null;
 
   // Auto-select first row when nothing valid is selected (UI brief: no-selection state auto-selects)
   useEffect(() => {
     // The review + archived tabs have no ticket selection / workbench pane.
     if (tab === 'review' || tab === 'archived') return;
+    // A deep link to an unlisted ticket is resolved by the lookup above, never
+    // by selecting an unrelated row.
+    if (deepLinkAbsent) return;
     // `listIsCurrent`: never auto-select out of a list fetched for other
     // filters — after an external hash change (sidebar entry, back/forward,
     // bookmark) the old rows are still on screen until the refetch lands, and
@@ -412,7 +510,7 @@ export default function TicketsPage() {
       const key = first.internalNumber ?? first.id;
       writeHash(key, sort, typeFilter);
     }
-  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash]);
+  }, [tab, loading, listIsCurrent, tickets, selected, sort, typeFilter, writeHash, deepLinkAbsent]);
 
   const select = useCallback((t: TicketSummary) => {
     // Below the split-pane breakpoint the workbench pane is hidden; navigate
@@ -483,6 +581,8 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       showBulkOutcomeToast(result.data, t('ticketsPage.bulk.updatedPast'), t);
+      // The snapshot may now be stale (or deleted); let the queue re-select.
+      setHeldTicket(null);
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
@@ -506,6 +606,7 @@ export default function TicketsPage() {
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       showBulkOutcomeToast(result.data, t('ticketsPage.bulk.deletedPast'), t);
+      setHeldTicket(null);
       clearBulkSelection();
       setPaneRefresh((t) => t + 1);
       void fetchTickets();
@@ -851,10 +952,42 @@ export default function TicketsPage() {
           </div>
           <div className="hidden min-w-0 flex-1 min-[1100px]:block">
             {selected ? (
-              <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={patchTicketRow} onChanged={scheduleReconcile} />
+              <div className="flex h-full min-h-0 flex-col">
+                {heldDroppedFromView && tab !== 'closed' && isClosedStatus(selected.status) && (
+                  // #9564: the ticket left this view (resolved/closed from an
+                  // open-only tab); say where it went instead of vanishing it.
+                  <div
+                    role="status"
+                    className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 text-sm"
+                    data-testid="tickets-moved-to-closed"
+                  >
+                    <span>
+                      {t('ticketsPage.movedToClosed.message', {
+                        status: selected.statusName || translatedStatusLabel(config, selected.status, t),
+                        tab: t('ticketsPage.tabs.closed'),
+                      })}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTab('closed')}
+                      className="font-medium text-primary hover:underline"
+                      data-testid="tickets-moved-to-closed-view"
+                    >
+                      {t('ticketsPage.movedToClosed.view', { tab: t('ticketsPage.tabs.closed') })}
+                    </button>
+                  </div>
+                )}
+                <div className="min-h-0 flex-1">
+                  <TicketWorkbench ticketId={selected.id} resolveRequestToken={resolveToken} refreshToken={paneRefresh} assignees={assignees} categories={categories} onTicketPatched={onWorkbenchPatched} onDeleted={onWorkbenchDeleted} onChanged={scheduleReconcile} />
+                </div>
+              </div>
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground" data-testid="tickets-no-selection">
-                <p>{t('ticketsPage.noSelection')}</p>
+                {absentNotice ? (
+                  <p role="status" data-testid="tickets-deeplink-absent">{t('ticketsPage.ticketNotInView', { number: absentNotice })}</p>
+                ) : (
+                  <p>{t('ticketsPage.noSelection')}</p>
+                )}
               </div>
             )}
           </div>

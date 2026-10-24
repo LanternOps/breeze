@@ -32,6 +32,7 @@ import { BulkActionBar } from '../billing/bulk/BulkActionBar';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import AccessDenied from '../shared/AccessDenied';
 import { useStableT } from '@/lib/i18n/useStableT';
+import HashLink from '@/components/shared/HashLink';
 
 interface Organization {
   id: string;
@@ -375,10 +376,10 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           </span>
           {/* A plain hash link is enough: ContractsTabs' useHashState already
               subscribes to hashchange, so this swaps the view with no navigation. */}
-          <a href="#tab=currency-mismatches" data-testid="contracts-currency-mismatch-open"
+          <HashLink hash="tab=currency-mismatches" data-testid="contracts-currency-mismatch-open"
              className="font-medium text-primary hover:underline">
             {t('contracts.contractsList.currencyBanner.review')}
-          </a>
+          </HashLink>
         </div>
       )}
 

@@ -37,6 +37,7 @@ export const AGENT_ROUTE_ADMISSION_CLASSES: Readonly<Record<string, RouteClass>>
   'POST /:id/commands/:commandId/result': 'protected',
   'POST /:id/commands/:commandId/pam-observations': 'protected',
   'POST /:id/pam/reconciliation-bindings': 'protected',
+  'POST /:id/pam/elevation-unable': 'protected',
   'POST /:id/rotate-token': 'protected',
   'POST /:id/rotate-token/confirm': 'protected',
   'POST /:id/uninstall-intent': 'protected',
@@ -93,10 +94,20 @@ export const AGENT_WS_UPGRADE_ROUTE = '/api/v1/agent-ws/:id/ws';
 const AGENT_ROUTE_MOUNT = '/api/v1/agents';
 
 /**
- * Retry-After ranges (seconds), jittered uniformly per response. For shipped
- * agents any value >= 30 means "one attempt this cycle" (httputil callers run
- * under typical 15–30 s caller contexts); the ranges are the deferral W09 agents will honour
- * at loop level.
+ * Largest `Retry-After` (seconds) any agent-route source may emit. W09 agents
+ * honour a loop-level `Retry-After` with x1.3 jitter, capped at 300 s, so
+ * 300 / 1.3 = 230. Pinned by retryAfterCeiling.contract.test.ts. Exempt: the
+ * mTLS cert-renew routes (raw renewal client ignores the header, W09 A13).
+ */
+export const AGENT_RETRY_AFTER_MAX_SECONDS = 230;
+
+/**
+ * Retry-After ranges (seconds), jittered uniformly per response. Shipped
+ * (pre-W09) agents treat any value >= 30 as "one attempt this cycle"
+ * (httputil callers run under typical 15–30 s caller contexts). W09 agents
+ * wait out the first-reconnect window (30 s) and honour a loop-level
+ * Retry-After, jittered x1.3 and capped at 300 s, so every range here stays
+ * <= AGENT_RETRY_AFTER_MAX_SECONDS. Cert-renew routes are exempt (raw client).
  */
 export const RETRY_AFTER_SECONDS: Readonly<Record<'bulk' | 'standard', readonly [number, number]>> = Object.freeze({
   bulk: [120, 180] as const,
@@ -105,10 +116,11 @@ export const RETRY_AFTER_SECONDS: Readonly<Record<'bulk' | 'standard', readonly 
 
 export const RETRY_AFTER_OVERRIDES: Readonly<Record<string, readonly [number, number]>> = Object.freeze({
   // The log shipper sleeps Retry-After with no context and Stop() waits for it
-  // (agent/internal/logging/shipper.go:188-193, 571-575): keep it short.
+  // (see the Retry-After handling in agent/internal/logging/shipper.go): keep it short.
   'POST /:id/logs': [2, 4] as const,
   // Raw Do, no retry; cadence is 30 s while collectors exist and ~15 min when
-  // idle (agent/internal/unifi/collector_schedule.go): the value only matters to W09 agents.
+  // idle (agent/internal/unifi/collector_schedule.go): the value only matters to W09 agents,
+  // which honour it at loop level.
   'GET /:id/unifi-collectors': [30, 45] as const,
 });
 

@@ -316,6 +316,18 @@ vi.mock('../ticketEmailLinks', async () => {
   };
 });
 
+// #8972 W0: ticket-child writers lock the ticket row first; these select mocks have
+// no .for(), so the helper is stubbed and its call is asserted below.
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: 'org-1', partnerId: '22222222-2222-4222-8222-222222222222', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+}));
+vi.mock('../ticketRowLock', () => ({
+  lockTicketForWrite: lockTicketForWriteMock,
+  lockTicketsForWrite: vi.fn(async () => new Map()),
+}));
+
 import { processInboundEmail, InboundEmailProcessingRecorded } from './inboundEmailService';
 import type { NormalizedInboundEmail } from './types';
 
@@ -504,6 +516,9 @@ describe('processInboundEmail', () => {
     state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
 
     await processInboundEmail(email({ inReplyTo: '<msg-1@tickets.example.com>' }));
+
+    // #8972 W0: the email-authored comment writer locked the ticket row first
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 't-1');
 
     // public inbound comment inserted directly into ticket_comments
     const comments = state.inserts.filter((i) => i.table === 'ticket_comments').map((i) => i.values);
@@ -1022,6 +1037,21 @@ describe('processInboundEmail', () => {
     expect(captureExceptionMock).toHaveBeenCalledTimes(1);
     expect(captureExceptionMock.mock.calls[0]![0]).toBeInstanceOf(Error);
     expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('deadlock');
+  });
+
+  it('#8972: a ticket merged under the match is retried (BullMQ), not recorded as a terminal failed row', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    const { TicketMergedError } = await import('../ticketMerge/errors');
+    const merged = new TicketMergedError('t-src', 't-survivor');
+    createTicketMock.mockRejectedValue(merged);
+
+    await expect(processInboundEmail(email({ subject: 'Raced a merge' }))).rejects.toBe(merged);
+    expect(inboundOf().filter((r) => r.parseStatus === 'failed')).toEqual([]);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
   it('when the durable failed-row insert ALSO fails, it throws the ORIGINAL error (not the sentinel) so BullMQ retries — no silent ack', async () => {

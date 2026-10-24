@@ -255,6 +255,7 @@ Power management and session locking. Cross-platform.
 | `shutdown` | Schedule a system shutdown | `delay` |
 | `lock` | Lock the current user session | -- |
 | `reboot_safe_mode` | Reboot into Safe Mode with Networking (Windows only) | `delay` |
+| `force_reboot` | Reboot now and close running apps (Force reboot now) | -- |
 
 <Aside type="danger">
 The `reboot` and `shutdown` commands will immediately affect the target device. There is no confirmation prompt on the agent side. Use the `delay` parameter to give users time to save work.
@@ -287,6 +288,24 @@ Reboot a Windows device into Safe Mode with Networking. Uses `bcdedit` to set th
 
 <Aside>
   Windows only. Not available on macOS or Linux. The agent automatically clears the BCD safe boot flag if the shutdown command fails, preventing the device from booting into safe mode on the next organic restart.
+</Aside>
+
+### `force_reboot`
+
+An immediate reboot that closes running applications instead of waiting for them, so unsaved work in open apps is lost. Use it when an unattended device would otherwise stall on "this app is preventing shutdown". Plain `reboot` is unchanged.
+
+No payload parameters, and no delay: it is always immediate. A delayed Windows reboot already closes apps when its countdown ends.
+
+Platform behavior:
+- **Windows**: Runs `shutdown /r /f /t 0`. Windows only implies `/f` when `/t` is greater than 0, so an immediate reboot needs it explicitly.
+- **Linux/macOS**: Runs `shutdown -r +0`, the same as an immediate `reboot`. `shutdown -r` does not wait on applications, so force changes nothing.
+
+The command result reports `force: true` and the exact `argv` that ran.
+
+<Aside type="caution">
+  Sent only by the device's **Force reboot now** action (`POST /devices/{id}/force-reboot`). That needs an interactive user session (API keys, MCP and AI agents are refused), `devices:execute`, MFA, and a single-use `device_force_reboot` step-up grant bound to the device. The operator also types the hostname to confirm. It is not available as a bulk action or from the generic command endpoint.
+
+  The device must be online, and its agent must be 0.125.0 or later: an older agent fails `force_reboot` as an unknown command type, so the API refuses it before the grant is used. Like any reboot, it waits behind commands already running on the device. If it is not picked up within 15 minutes it expires, so it never fires hours later.
 </Aside>
 
 ### `set_auto_update`

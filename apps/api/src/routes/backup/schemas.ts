@@ -277,7 +277,7 @@ export const restoreSchema = z.object({
   snapshotId: z.string().min(1),
   deviceId: z.string().min(1).optional(),
   targetPath: z.string().optional(),
-  selectedPaths: z.array(z.string()).optional(),
+  selectedPaths: z.array(z.string().max(4096)).max(10_000).optional(),
   restoreType: z.enum(['full', 'selective']).default('full'),
 }).superRefine((value, ctx) => {
   if (value.restoreType === 'selective' && (!value.selectedPaths || value.selectedPaths.length === 0)) {

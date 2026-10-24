@@ -8,13 +8,13 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import { sqlTimestamp, sqlUuidArray } from '../../db/sqlValues';
-import { minorUnitScaleSql } from '../currencySql';
+import { laborAmountSql, minorUnitScaleSql } from '../currencySql';
 import { technicianTimeConfigSchema, type TechnicianTimeConfig } from '../reportConfigSchemas';
 import type { ReportResult } from '../reportGenerationService';
 import { reportTypeDef } from '../reportRegistry';
 import { reportOwnerOfScope, runInReportScope, type ReportScope } from '../reportScope';
 import type { ReportGenerationAuthority } from '../siteScope';
-import { PARTNER_ORG_LIST_NOTE, ratio, rowsOf, SITE_RESTRICTED_NOTE } from './common';
+import { effectiveCoverageSql, PARTNER_ORG_LIST_NOTE, ratio, rowsOf, SITE_RESTRICTED_NOTE } from './common';
 import {
   resolveReportOwnerTimezone,
   resolveReportPeriod,
@@ -133,7 +133,7 @@ function baseCte(scope: ReportScope, period: ResolvedReportPeriod): SQL {
       SELECT te.id, te.user_id, te.org_id, te.work_type_id, te.started_at,
         te.duration_minutes, te.billable_minutes, te.hourly_rate, te.currency_code,
         te.billing_status, te.is_approved,
-        COALESCE(te.coverage, CASE WHEN te.is_billable THEN 'billable' ELSE 'non_billable' END) AS eff_coverage
+        ${effectiveCoverageSql(sql`te`)} AS eff_coverage
       FROM time_entries te
       WHERE ${entryScopePredicate(scope)}
         -- A running timer has no duration yet.
@@ -208,7 +208,7 @@ const UNPRICED = sql`
  * disagree. Returned as numeric text; never a JS number.
  */
 const MONEY = sql`
-  COALESCE(SUM(ROUND(ROUND(${BILLED_QUANTITY}::numeric / 60, 2) * e.hourly_rate, ${minorUnitScaleSql(sql`e.currency_code`)})), 0)::numeric(14,2)::text AS billable_value,
+  COALESCE(SUM(${laborAmountSql(BILLED_QUANTITY, sql`e.hourly_rate`, minorUnitScaleSql(sql`e.currency_code`))}), 0)::numeric(14,2)::text AS billable_value,
   ROUND(AVG(e.hourly_rate), 2)::numeric(12,2)::text AS average_rate`;
 const MONEY_ROWS = sql`e.eff_coverage = 'billable' AND e.hourly_rate IS NOT NULL AND e.currency_code IS NOT NULL`;
 

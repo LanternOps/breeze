@@ -36,7 +36,7 @@ function mockQueries(over: Partial<Record<number, unknown[]>> = {}, opts: { edrS
     /* 8 */ [{ isActive: true, provider: 's3', encryption: true }], /* 9 */ [], /* 10 */ [{ status: 'active' }], /* 11 */ [],
     /* 12 */ [{ uacInterceptionEnabled: true }], /* 13 */ [{ id: 'r1' }], /* 14 */ [],
     /* 16 */ [{ overallScore: 82 }],
-    /* 17 */ [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10 }],
+    /* 17 */ [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, score: 90 }],
     /* 18 */ [{ deviceId: 'd1' }, { deviceId: 'd2' }],
   ];
   for (const [i, rows] of Object.entries(over)) if (rows) seq[Number(i) - 1] = rows;
@@ -180,10 +180,33 @@ describe('loadPostureEvidence', () => {
       expect(ev.devices.find((d) => d.id === 'stale')?.patchAssessed).toBe(false);
     });
 
+    it('#9606: the aggregate averages the stored per-device score, not a re-derived passed/total', async () => {
+      mockQueries({
+        3: [], 5: [], 6: [],
+        16: [
+          { deviceId: 'd1', passedChecks: 9, totalChecks: 10, score: 79, checkedAt: recent },
+          { deviceId: 'd2', passedChecks: 9, totalChecks: 10, score: 80, checkedAt: recent },
+          { deviceId: 'd3', passedChecks: 9, totalChecks: 10, score: 79, checkedAt: recent },
+        ],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.hardening_baseline.aggregatePct).toBe(79);
+    });
+
+    it('#9606: a scan that evaluated zero checks (stored score 100) is not assessed as passing', async () => {
+      mockQueries({
+        3: [], 5: [], 6: [],
+        16: [{ deviceId: 'd1', passedChecks: 0, totalChecks: 0, score: 100, checkedAt: recent }],
+      });
+      const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
+      expect(ev.controls.hardening_baseline).toMatchObject({ assessed: 0, aggregatePct: null });
+      expect(ev.devices.find((d) => d.id === 'd1')?.cisPassRate).toBeNull();
+    });
+
     it('a CIS scan older than the window is not assessed and leaves the aggregate out', async () => {
       mockQueries({
         3: [], 5: [], 6: [],
-        16: [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, checkedAt: old }, { deviceId: 'd2', passedChecks: 5, totalChecks: 10, checkedAt: recent }],
+        16: [{ deviceId: 'd1', passedChecks: 9, totalChecks: 10, score: 90, checkedAt: old }, { deviceId: 'd2', passedChecks: 5, totalChecks: 10, score: 50, checkedAt: recent }],
       });
       const ev = await loadPostureEvidence({ version: 1, kind: 'unrestricted', orgId: ORG }, TRUST_PAGE_EVIDENCE_POLICY, AS_OF);
       expect(ev.controls.hardening_baseline).toMatchObject({ eligible: 3, assessed: 1, aggregatePct: 50 });
@@ -268,7 +291,7 @@ describe('loadPostureEvidence', () => {
 
   describe('per-safeguard hardening evidence (W3e)', () => {
     const withSafeguards = { ...TRUST_PAGE_EVIDENCE_POLICY, includeCisSafeguards: true };
-    const scan = (deviceId: string, over: Record<string, unknown> = {}) => ({ id: `scan-${deviceId}`, deviceId, passedChecks: 9, totalChecks: 10, checkedAt: recent, ...over });
+    const scan = (deviceId: string, over: Record<string, unknown> = {}) => ({ id: `scan-${deviceId}`, deviceId, passedChecks: 9, totalChecks: 10, score: 90, checkedAt: recent, ...over });
     const f = (checkId: string, status: string) => ({ checkId, title: `Ensure '${checkId}' verbatim recommendation text`, severity: 'medium', status });
     const run = async (cisRows: unknown[], findingRows: unknown[], policy = withSafeguards) => {
       mockQueries({ 16: cisRows }, { cisFindings: findingRows });

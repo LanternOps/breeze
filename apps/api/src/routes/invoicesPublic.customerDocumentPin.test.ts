@@ -75,7 +75,10 @@ import { PIN_INVOICE_ROW, PIN_PUBLIC_TOKEN, PIN_VISIBLE_LINE_IDS } from './__fix
 import { stripAdditive } from '../__tests__/helpers/stripAdditive';
 
 // The ONLY keys the assembler refactor may add to this response (#9402 W1b).
-const PUBLIC_ADDITIVE = ['data.invoice.displayStatus', 'data.lines[].id', 'data.documentLocale'] as const;
+const PUBLIC_ADDITIVE = [
+  'data.invoice.displayStatus', 'data.lines[].id', 'data.documentLocale',
+  'data.invoice.billToAddress', 'data.invoice.billToTaxId', 'data.invoice.terms', // W3a: values the emailed PDF already carries
+] as const;
 
 function app() {
   const a = new Hono();

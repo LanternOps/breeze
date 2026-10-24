@@ -83,7 +83,9 @@
         "intune_devices": "Dispositivi Intune",
         "ca_policies": "Accesso condizionale",
         "skus": "Licenze",
-        "secure_score": "Punteggio sicuro"
+        "secure_score": "Punteggio sicuro",
+        "signin_events": "Eventi di accesso",
+        "unknown": "Tipo di dati non riconosciuto"
       }
     },
     "errors": {
@@ -338,6 +340,9 @@
     "retry": "Riprova",
     "since": "da {{time}}",
     "fix": "Risolvi",
+    "remedy": {
+      "reconnect": "Riconnettiti dall’app client (ad es. aggiungi di nuovo il server MCP). Nessuna azione in Breeze."
+    },
     "truncated": "Vengono mostrati i primi {{count}}",
     "recentlyResolved": "Risolti di recente ({{count}})",
     "resolution": {
@@ -592,7 +597,7 @@
     "hidePassword": "Nascondi la password",
     "portalLabelToggle": "Mostra il nome del provider nel portale clienti",
     "portalLabelHelp": "Disattivato per impostazione predefinita: i clienti vedono \"Backup cloud gestito\" invece del nome del fornitore.",
-    "credentialsHelp": "Crea un utente dedicato della console Cove con ruolo di sola lettura, una password univoca e senza autenticazione a due fattori. Breeze legge solo lo stato e non modifica nulla in Cove.",
+    "credentialsHelp": "Crea un utente API di Cove (Management → Users → API Users) sotto il tuo cliente di primo livello. Inserisci il nome di quel cliente come nome partner, il nome di accesso dell'utente API come nome utente e il suo token come password. Breeze legge solo lo stato e non modifica nulla in Cove.",
     "test": "Prova la connessione",
     "syncNow": "Sincronizza ora",
     "reauthRequired": "Credenziali rifiutate",
@@ -725,7 +730,10 @@
     "allApplications": "Tutte le applicazioni",
     "searchAllApplicationsFirst2": " (non in Applicazioni di proprietà) un’app Breeze già esistente in questo tenant. ",
     "tenantIdGuidPlaceholder": "ID tenant (GUID), ad es. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Usa l’ID directory (tenant), un GUID, dalla panoramica della registrazione app Entra, non il dominio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Usa l’ID directory (tenant), un GUID, dalla panoramica della registrazione app Entra, non il dominio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Il salvataggio richiede la verifica MFA.",
+    "clientSecretPlaceholder": "segreto client dell'app",
+    "clientSecretStoredPlaceholder": "•••••••••• (memorizzato, crittografato)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Stato dei dispositivi",

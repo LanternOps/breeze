@@ -356,4 +356,20 @@ describe('ToastContainer bottom anchor (#2151)', () => {
     expect(container.className).toContain('fixed');
     expect(container.className).toContain('right-6');
   });
+
+  it('duration 0 keeps the toast until dismissed and copyValue renders a copyable field (#9603)', () => {
+    vi.useFakeTimers();
+    try {
+      render(<ToastContainer />);
+      act(() => {
+        showToast({ type: 'warning', message: 'Share this link', duration: 0, copyValue: 'https://x.test/i', copyLabel: 'Copy link', copiedLabel: 'Copied' });
+      });
+      act(() => { vi.advanceTimersByTime(60_000); });
+      expect(screen.getByTestId('toast')).toBeInTheDocument();
+      expect(screen.getByDisplayValue('https://x.test/i')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy link' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

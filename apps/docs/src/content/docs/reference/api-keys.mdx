@@ -51,7 +51,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
     "orgId": "ORG_UUID",
     "name": "CI/CD Pipeline Key",
     "scopes": ["devices:read", "scripts:execute"],
-    "expiresAt": "2026-12-31T23:59:59Z",
+    "expiresAt": "2099-12-31T23:59:59Z",
     "rateLimit": 5000
   }'
 ```
@@ -63,7 +63,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/api-keys \
 | `orgId` | `string (uuid)` | Yes | -- | Organization the key belongs to. |
 | `name` | `string` | Yes | -- | Human-readable label (1-255 characters). |
 | `scopes` | `string[]` | No | `[]` | Permissions granted to this key. |
-| `expiresAt` | `string (datetime)` | No | `null` (never) | ISO 8601 expiration timestamp. |
+| `expiresAt` | `string (datetime)` | No | `null` (never) | ISO 8601 timestamp with a time and `Z` (e.g. `2099-12-31T23:59:59Z`); a bare date is rejected. Must be in the future. |
 | `rateLimit` | `integer` | No | `1000` | Maximum requests per hour (1-100,000). |
 | `mcpDomains` | `string[] \| null` | No | `null` (all tools) | Limit the key to MCP tool areas. See [MCP tool areas](#mcp-tool-areas-mcpdomains). |
 

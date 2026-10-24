@@ -23,6 +23,8 @@ import { isInLeadWindow, isPastGrace, nextPlannedDueDate, planOccurrences, rebas
 import { addDaysISO } from './contractMath';
 import type { TicketActor } from './ticketService';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
+import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged } from './ticketMerge/errors';
 import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { assertChecklistTemplateUsableByOrg } from './checklistTemplateReference';
@@ -976,6 +978,8 @@ export async function applyTicketStatusChange(args: {
     patch.deliveredVia = null; patch.deliveryNote = null;
   }
 
+  // #8972 W0: the ticket before the occurrence CAS and the evidence note.
+  assertTicketNotMerged(await lockTicketForWrite(db, args.ticketId));
   const updated = await db.update(serviceDeliverableOccurrences).set(patch)
     // CAS on the status we decided from: a concurrent write loses silently.
     .where(and(occurrenceKey(args.orgId, occ.id), eq(serviceDeliverableOccurrences.status, current)))
@@ -1107,6 +1111,9 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
     return 1;
   }
 
+  // #8972 W0: the ticket (created just above, in this transaction) before its
+  // checklist and instruction rows.
+  assertTicketNotMerged(await lockTicketForWrite(db, created.ticketId));
   await db.update(serviceDeliverableOccurrences)
     .set({ ticketId: created.ticketId, updatedAt: new Date() })
     .where(eq(serviceDeliverableOccurrences.id, occ.id));

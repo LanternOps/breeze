@@ -62,10 +62,10 @@ describe('portal quote detail — agreements after the price', () => {
     const contract = screen.getByTestId('contract-block') as HTMLDetailsElement;
     const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
     expect(contract.open).toBe(false);
-    expect(follows(screen.getByTestId('quote-due-on-acceptance'), contract)).toBe(true);
+    expect(follows(screen.getByTestId('document-totals-hero'), contract)).toBe(true);
     expect(follows(screen.getByTestId('quote-agree'), contract)).toBe(true);
-    expect(follows(contract, screen.getByTestId('quote-terms-conditions'))).toBe(true);
-    expect(screen.getByTestId('quote-agreements').contains(contract)).toBe(true);
+    expect(follows(contract, screen.getByTestId('document-agreement-terms'))).toBe(true);
+    expect(screen.getByTestId('document-agreements').contains(contract)).toBe(true);
   });
 
   it('links the agreement and the T&C from the signature checkbox', () => {

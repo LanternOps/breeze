@@ -66,10 +66,7 @@ export default function PartnerAiModelsTab() {
   }
   return (
     <div data-testid="ai-models-tab" className="space-y-6">
-      <div className="space-y-1">
-        <h2 className="text-lg font-semibold">{t('aiModels.title')}</h2>
-        <p className="text-sm text-muted-foreground">{t('aiModels.subtitle')}</p>
-      </div>
+      <p className="max-w-prose text-sm text-muted-foreground">{t('aiModels.subtitle')}</p>
       <ConnectionsCard snapshot={snapshot} onChanged={reload} />
       <ModelsCard snapshot={snapshot} onChanged={reload} />
       <FeatureDefaultsCard snapshot={snapshot} onSaved={reload} />

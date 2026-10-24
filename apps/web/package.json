@@ -22,6 +22,7 @@
   "dependencies": {
     "@astrojs/node": "^11.1.7",
     "@astrojs/react": "^6.0.6",
+    "@breeze/document-ui": "workspace:*",
     "@breeze/extension-web-sdk": "workspace:*",
     "@fontsource/barlow-condensed": "^5.3.0",
     "@fontsource/dm-sans": "^5.3.0",
@@ -62,12 +63,14 @@
     "recharts": "^3.9.2",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.7.0",
-    "zod": "^4.4.3",
+    "zod": "^4.6.7",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "@tailwindcss/forms": "^0.5.10",
+    "@tailwindcss/node": "^4.3.3",
+    "@tailwindcss/oxide": "^4.3.3",
     "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/dom": "^10.4.2",

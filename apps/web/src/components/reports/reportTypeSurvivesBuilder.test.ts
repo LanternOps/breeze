@@ -57,6 +57,12 @@ describe('reportTypeSurvivesBuilder', () => {
     expect(reportTypeSurvivesBuilder('ar_aging')).toBe(false);
     // #7608 W10: curated business report with its own options form.
     expect(reportTypeSurvivesBuilder('ai_usage_by_client')).toBe(false);
+    // mrr_renewals: curated business report measured at run time, own options form.
+    expect(reportTypeSurvivesBuilder('mrr_renewals')).toBe(false);
+    // quote_win_rate: curated business report with its own options form.
+    expect(reportTypeSurvivesBuilder('quote_win_rate')).toBe(false);
+    // client_profitability: curated business report, own options form (period, group-by, labor rate).
+    expect(reportTypeSurvivesBuilder('client_profitability')).toBe(false);
     // backup_status → devices (#6013 W05): curated template with its own
     // options form; the builder must not claim to author it.
     expect(reportTypeSurvivesBuilder('backup_status')).toBe(false);

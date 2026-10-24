@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} ausstehende Genehmigung",
     "pendingApprovals_other": "{{count}} ausstehende Genehmigungen",
     "tickets": "Tickets",
-    "incidents": "Vorfälle",
+    "incidents": "Sicherheitsvorfälle",
     "remoteAccess": "Fernzugriff",
     "scripts": "Skripte",
     "patches": "Patches",
@@ -30,6 +30,7 @@
     "aiForOffice": "KI für Office",
     "networkMonitor": "Netzwerk",
     "jobs": "Aufträge",
+    "flows": "Abläufe",
     "monitoring": "Überwachung",
     "networkDiscovery": "Netzwerkerkennung",
     "edr": "EDR",
@@ -110,12 +111,14 @@
     "timeSync": "Zeitsynchronisierung",
     "aiModels": "KI-Modelle",
     "autopay": "Autopay",
-    "payments": "Payments",
+    "payments": "Zahlungen",
     "ticketsIncidents": "Störungen",
     "ticketsServiceRequests": "Serviceanfragen",
     "ticketsProblems": "Probleme",
     "ticketsChanges": "Änderungen",
-    "endpointMessages": "Nachrichten"
+    "endpointMessages": "Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln",
+    "planAndFeatures": "Tarif & Funktionen"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -426,13 +429,21 @@
       "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "empty": "Noch keine Patch-Daten",
       "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
-      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft",
+      "devicesNeedPatches_one": "{{count}} Gerät benötigt Patches",
+      "devicesNeedPatches_other": "{{count}} Geräte benötigen Patches",
+      "viewPendingDevices": "Geräte mit ausstehenden Patches anzeigen",
+      "viewFailedDevices": "Geräte mit fehlgeschlagenen Patches anzeigen",
+      "viewCriticalDevices": "Geräte mit kritischen Patches anzeigen"
     },
     "vuln": {
       "title": "Schwachstellen",
       "criticalOpen": "Kritisch offen",
       "kev": "Bekannt ausgenutzt",
       "patchReady": "Patch verfügbar",
+      "viewCritical": "Kritische CVEs anzeigen",
+      "viewPatchReady": "CVEs mit verfügbarem Patch anzeigen",
+      "viewOpen": "Offene CVEs anzeigen",
       "totalOpen": "{{count}} offene Funde",
       "totalOpen_one": "{{count}} offener Fund",
       "totalOpen_other": "{{count}} offene Funde",
@@ -770,9 +781,9 @@
     },
     "search": {
       "prompt": "Breeze durchsuchen",
-      "placeholder": "Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen durchsuchen…",
+      "placeholder": "Geräte, Skripte, Warnmeldungen und Einstellungen durchsuchen…",
       "searching": "Wird gesucht…",
-      "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen, Benutzer und Einstellungen zu durchsuchen.",
+      "startTyping": "Beginnen Sie mit der Eingabe, um Geräte, Skripte, Warnmeldungen und Einstellungen zu durchsuchen.",
       "noResults": "Keine Ergebnisse gefunden. Versuchen Sie eine andere Suchanfrage.",
       "navigationHint": "Mit den Pfeiltasten navigieren, mit Enter öffnen",
       "closeHint": "Mit Esc schließen",
@@ -862,6 +873,8 @@
       "cycleSidebar": "Seitenleisten-Modus wechseln",
       "help": "Hilfebereich öffnen",
       "showThis": "Diese Karte anzeigen",
+      "orgSwitcher": "Organisationsauswahl öffnen",
+      "aiSidebar": "KI-Seitenleiste ein- oder ausblenden",
       "close": "Dialog oder Menü schließen",
       "typingNote": "Einzeltasten-Kürzel pausieren, während Sie in ein Feld tippen.",
       "create": "Erstellen",
@@ -1150,27 +1163,10 @@
           "basicInformation": "Grundlegende Informationen",
           "connectionDetails": "Verbindungsdetails",
           "credentials": "Zugangsdaten",
-          "syncSettings": "Synchronisierungseinstellungen"
+          "syncSettings": "Ticket-Synchronisierung"
         },
         "sync": {
-          "autoClose": "PSA-Tickets automatisch schließen",
-          "autoCloseHelp": "Verknüpfte Tickets schließen, wenn Breeze-Warnmeldungen behoben wurden.",
-          "enable": "Synchronisierung aktivieren",
-          "enableHelp": "Tickets und Warnmeldungsverknüpfungen nach Zeitplan aktuell halten.",
-          "notes": "Warnmeldungsnotizen synchronisieren",
-          "notesHelp": "Breeze-Kommentare und -Aktualisierungen an die PSA-Ticket-Zeitleiste übertragen."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirektional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Täglich",
-          "every15Minutes": "Alle 15 Minuten",
-          "every30Minutes": "Alle 30 Minuten",
-          "every6Hours": "Alle 6 Stunden",
-          "everyHour": "Stündlich"
+          "unavailable": "Die Ticket-Synchronisierung ist noch nicht verfügbar. Verbindungen können getestet und zum Importieren von Unternehmen als Organisationen verwendet werden; es werden keine Ticketdaten zwischen Breeze und Ihrem PSA ausgetauscht."
         },
         "testDirtyHint": "Zuerst speichern – der Test prüft die gespeicherten Zugangsdaten, nicht Ihre ungespeicherten Änderungen.",
         "validation": {
@@ -1194,7 +1190,7 @@
         },
         "connectionCount": "{{filtered}} von {{total}} Verbindungen",
         "empty": {
-          "noConnections": "Verbinden Sie einen PSA-Anbieter, um Tickets zu synchronisieren.",
+          "noConnections": "Verbinden Sie einen PSA-Anbieter, um ihn zu testen und seine Unternehmen zu importieren.",
           "noMatches": "Keine Verbindungen entsprechen Ihrer Suche oder den Filtern.",
           "title": "Keine PSA-Verbindungen konfiguriert"
         },
@@ -1228,7 +1224,7 @@
           "tryAgain": "Erneut versuchen"
         },
         "delete": {
-          "activeWarning": "Diese Verbindung ist aktiv. Die Ticket-Synchronisierung wird sofort beendet.",
+          "activeWarning": "Diese Verbindung ist aktiv. Beim Löschen wird die Verbindung sofort entfernt.",
           "confirm": "Möchten Sie {{name}} wirklich löschen?",
           "irreversible": "Diese Aktion kann nicht rückgängig gemacht werden.",
           "title": "PSA-Verbindung löschen",
@@ -1247,10 +1243,10 @@
         "modal": {
           "addDescription": "Richten Sie eine neue PSA-Verbindung für Ihre Organisation ein.",
           "addTitle": "PSA-Verbindung hinzufügen",
-          "editDescription": "Aktualisieren Sie die Details und Synchronisierungseinstellungen der PSA-Verbindung.",
+          "editDescription": "Aktualisieren Sie die Details der PSA-Verbindung.",
           "editTitle": "PSA-Verbindung bearbeiten"
         },
-        "subtitle": "Verbinden Sie Ihr PSA-System, um Tickets zu synchronisieren und Warnmeldungen zu verknüpfen.",
+        "subtitle": "Testen Sie PSA-Verbindungen und importieren Sie Unternehmen als Organisationen.",
         "test": {
           "failedMessage": "Verbindung mit dem PSA-Anbieter nicht möglich.",
           "failedTitle": "Verbindung fehlgeschlagen",
@@ -1265,8 +1261,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Keine Tickets entsprechen Ihrer Suche oder den Filtern.",
-          "noTickets": "Synchronisieren Sie Ihre erste PSA-Verbindung, damit hier Tickets angezeigt werden.",
-          "title": "Keine PSA-Tickets synchronisiert"
+          "noTickets": "Die Ticket-Synchronisierung ist noch nicht verfügbar, daher werden keine PSA-Tickets importiert.",
+          "title": "Keine PSA-Tickets"
         },
         "filters": {
           "allStatuses": "Alle Status",
@@ -1399,6 +1395,12 @@
           "signingSecret": "Verwenden Sie dieses Geheimnis, um Webhook-Signaturen zu prüfen."
         },
         "invalidJsonPreview": "Ungültiges JSON in der Vorlage.",
+        "otherEvents": {
+          "allEvents": "Alle Ereignisse (*)",
+          "allEventsHint": "Dieser Webhook abonniert alle Ereignisse, daher werden die einzelnen Ereignisse unten nicht verwendet. Entfernen Sie „Alle Ereignisse“, um bestimmte auszuwählen.",
+          "remove": "{{event}} entfernen",
+          "title": "Weitere abonnierte Ereignisse"
+        },
         "payload": {
           "previewEmpty": "Die Vorschau wird angezeigt, sobald das JSON gültig ist.",
           "subtitle": "Definieren Sie die Struktur der JSON-Nutzdaten, die an das Ziel gesendet werden.",
@@ -1412,7 +1414,7 @@
           "name": "Produktions-Webhook",
           "signingSecret": "Signaturgeheimnis eingeben"
         },
-        "subtitle": "Konfigurieren Sie Zustellung, Authentifizierung und Nutzdatenverhalten.",
+        "subtitle": "Legen Sie Ziel, Ereignisse, Authentifizierung und Header fest.",
         "title": "Webhook-Konfiguration",
         "validation": {
           "eventRequired": "Wählen Sie mindestens ein Ereignis aus",
@@ -1474,7 +1476,7 @@
           "noPayloadTemplate": "Noch keine Payload-Vorlage gespeichert.",
           "payloadPreview": "Vorschau der Nutzlastvorlage",
           "testEvent": "Testereignis",
-          "testEventHelp": "Tests verwenden das ausgewählte Ereignis und Ihre Nutzlastvorlage.",
+          "testEventHelp": "Sendet eine Beispiel-Nutzlast für das ausgewählte Ereignis an diesen Endpunkt.",
           "title": "Webhook-Details"
         },
         "emptySelection": "Wählen Sie einen Webhook aus, um den Übermittlungsverlauf und die Testtools anzuzeigen.",
@@ -2222,7 +2224,7 @@
         },
         "loading": "Vorfälle werden geladen...",
         "tryAgain": "Versuchen Sie es erneut",
-        "title": "Vorfälle",
+        "title": "Sicherheitsvorfälle",
         "description": "Verfolgen Sie Vorfälle und EDR-Befunde in all Ihren Organisationen.",
         "filters": {
           "tracked": "Verfolgt",
@@ -2252,6 +2254,11 @@
         "genericEdrProvider": "EDR-Anbieter"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Techniker",
+          "system": "System"
+        },
         "errors": {
           "notFound": "Vorfall nicht gefunden",
           "fetchFailed": "Vorfall konnte nicht abgerufen werden"
@@ -2355,6 +2362,8 @@
         "clientId": "Kunden-ID: {{clientId}}",
         "unverifiedLabel": "Nicht verifizierte Integration",
         "unverifiedDescription": "Breeze hat diese Integration nicht überprüft. Sein Name ist selbst gemeldet und könnte eine vertrauenswürdige App imitieren. Genehmigen Sie nur, wenn Sie diese Verbindung gestartet haben und das unten stehende Rückrufziel kennen.",
+        "metadataHostedAt": "App-Details veröffentlicht von {{host}}",
+        "localhostRedirectWarning": "Diese App erhält den Zugriff auf diesem Computer. Fahren Sie nur fort, wenn Sie diese Verbindung selbst gestartet haben.",
         "callbackLabel": "Der Autorisierungscode wird gesendet an:",
         "missingRedirectTitle": "Das Rückrufziel kann nicht überprüft werden",
         "missingRedirectDescription": "Diese Autorisierungsanfrage enthielt kein Rückrufziel und kann daher nicht sicher genehmigt werden. Kehren Sie zu Ihrem MCP-Client zurück und starten Sie die Verbindung erneut.",
@@ -2382,7 +2391,7 @@
           },
           "search": {
             "title": "Alles durchsuchen",
-            "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen, Benutzer oder Einstellungen sofort zu finden."
+            "description": "Drücken Sie Cmd+K, um Geräte, Skripte, Warnungen oder Einstellungen sofort zu finden."
           },
           "switchOrgs": {
             "title": "Wechseln Sie die Organisation",
@@ -2775,5 +2784,9 @@
     "title": "Dieser Bereich ist abgestürzt",
     "description": "Ein Darstellungsfehler hat die Anzeige dieser Seite verhindert. Versuche es erneut und gib bei wiederholtem Auftreten die folgende Meldung in deiner Fehlermeldung an.",
     "retry": "Erneut versuchen"
+  },
+  "featureLock": {
+    "lockedLabel": "Gesperrt",
+    "upgrade": "Tarife ansehen"
   }
 }

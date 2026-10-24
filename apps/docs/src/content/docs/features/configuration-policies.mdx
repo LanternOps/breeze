@@ -71,7 +71,7 @@ A policy can bundle multiple feature types:
 
 | Feature | What it controls |
 |---|---|
-| **Patch Management** | Auto-approval, schedule, reboot policy |
+| **Patch Management** | Schedule, reboot policy, exclusive Windows Update control; patch approval rules live on the linked [update ring](/features/update-rings/) |
 | **Maintenance Windows** | Recurrence, duration, alert/patch/automation suppression |
 | **Compliance Rules** | Desired-state rules, enforcement level, remediation script |
 | **Backup** | Schedule and retention |
@@ -91,6 +91,7 @@ A policy can bundle multiple feature types:
 | **Device Lifecycle** | Days to retain a removed device before it is permanently purged |
 | **System Protection** | Whether Breeze asks Windows devices for a System Restore checkpoint before patch installs, scripts and software installs -- see [System Protection](#system-protection) |
 | **Workload inventory** | Lists the containers and VMs on a host (Docker, Podman, Hyper-V, Proxmox); off by default -- see [Workload Inventory](/features/workload-inventory/) |
+| **Security Agents** | Keeps Huntress or SentinelOne installed on every in-scope device, using the keys from that vendor's integration -- see [Security Agents](#security-agents) |
 
 Each feature can be configured in one of two modes:
 
@@ -146,10 +147,11 @@ Open the policy detail editor and click the tab for the feature you want to conf
 
 | Field | Description |
 |---|---|
-| **Auto-approve** | Automatically approve patches matching the configured criteria |
 | **Schedule** | Frequency (daily/weekly/monthly) and time of day for patch runs |
 | **Reboot policy** | How to handle required reboots after patching |
 | **Manage Windows Update exclusively through Breeze** | Windows-only. Off by default. When on, the agent suppresses the device's native Windows Update automatic-install channel (it sets the `NoAutoUpdate` registry value under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU`) so that device only receives updates through Breeze's schedule and approval rings — no surprise reboots or out-of-band patches. Turning it back off returns update control to native Windows Update. |
+
+There is no auto-approve setting on this tab. Patch approval — automatic approval, severities, deferral days and per-application rules — is configured only on the [update ring](/features/update-rings/) the policy links to.
 
 Patch Management is available on partner-wide (all organizations) policies — an [update ring](/features/update-rings/) can be linked directly, and the policy patches devices across every organization you manage. Behind the scenes, deployments are still tracked per organization: creating a deployment job from a partner-wide policy produces one job per organization with matching devices, so each customer's patch history and compliance reporting stay separate even though the schedule and approval rules are defined once.
 
@@ -226,13 +228,29 @@ The **Vulnerability** feature is a single on/off toggle that controls whether th
 
 Open the policy's **Vulnerability** tab, switch **Enable vulnerability scanning** on, save, and assign the policy. Because resolution is closest-wins, a device- or group-level setting of *off* overrides an organization-wide *on*. Once a scope is enabled, Breeze correlates its software and OS inventory against the CVE feeds once a day. If a policy exists but no device resolves to *on*, the daily job is simply a no-op -- it never falls back to scanning everything. The findings themselves are reviewed and acted on in [Vulnerability Management](/features/vulnerability-management/), not on this tab.
 
+### Security Agents
+
+The **Security Agents** tab (v0.124.0) keeps a vendor's endpoint agent installed on every device the policy reaches. It is configured **inline**: switch **Deploy Huntress** or **Deploy SentinelOne** on and save. Control D and NextDNS are listed but marked **Coming soon** and cannot be turned on yet.
+
+What happens after you save:
+
+- Every in-scope **Windows** device whose organization is mapped in that vendor's [integration](/features/edr-integrations/) gets the agent installed with that organization's own keys — Huntress organization keys, SentinelOne site tokens. Keys never live in the policy. Organizations that are not mapped are skipped and read **Not applicable**, with no failed deployments.
+- Breeze generates a **read-only managed software policy** for the deployment. It appears under **Software → Policies** with a **Managed by configuration policy** badge; change it here, not there.
+- Each device's coverage is evaluated on a schedule and shown on the **Software → Policies** compliance view under **Security agent coverage**, as one of **Covered**, **Gap**, **Vendor only**, **Vendor offline**, **Mismatched org**, **Not applicable** or **Pending**, with a reason (for example *Install pending*, *Awaiting vendor report*, *Organization not mapped to the vendor*). See [Software Policies](/features/software-policies/#managed-security-agent-policies).
+- A device that moves from covered to **Gap** raises a medium alert ("*Vendor* coverage gap on *device*"); a device the vendor reports under a different organization raises one too. Nothing is reinstalled automatically in the mismatched case — reassign the agent in the vendor console. Both alerts resolve on their own when coverage is restored.
+- macOS devices show **Not applicable** for Huntress (it needs MDM approval, so Breeze does not install it automatically) and are not supported for SentinelOne. Linux is not supported for either.
+
+Saving the tab with a vendor turned on needs permission to run commands on devices, with MFA. The save is refused with a link to **Connect the integration** when that vendor's integration is not set up for your partner. **SentinelOne** also needs the built-in SentinelOne package to have a Windows MSI as its **latest** version, with install arguments that include `SITE_TOKEN={s1_site_token}`; otherwise the save is refused with a link to the package's **Versions** tab (**Software → Deployment → SentinelOne**). Breeze does not provide the installer. An organization with no SentinelOne site mapping reads **Organization not mapped to the vendor**.
+
+Turning a vendor off stops enforcement but never uninstalls the agent. With no vendor enabled, devices reached by the policy are opted out of every security agent. A policy assigned closer to a device (site, group or device, or an inheriting child policy) that has its own Security Agents settings replaces these settings entirely for those devices; a vendor left out there is not enforced. The tab can be set on a **partner-wide (all orgs)** policy.
+
 ### System Protection
 
-<Aside type="caution" title="Agent-side checkpoints roll out with a future agent release">
-  The **System Protection** policy tab, server-side resolution, the attempts ledger, the per-action badges and the device **System Restore** tab are available now. **The agent side is not.** Asking a Windows device to create a System Restore checkpoint, and reporting what happened, will start with a future agent release. Until a device runs that release, saving this policy only records what Breeze *asks for*: every attempt stays at **Awaiting the device**, and no outcome is reported. Do not read an empty or "Awaiting" history as a failure, and do not read a saved policy as a restore point that exists.
+<Aside type="caution" title="Checkpoints need agent 0.124.0">
+  Windows devices take System Restore checkpoints and report the outcome from **agent 0.124.0**. On a device still running an older agent, saving this policy only records what Breeze *asks for*: every attempt stays at **Awaiting the device**, and no outcome is reported. Do not read an "Awaiting" entry on an out-of-date device as a failure, and do not read a saved policy as a restore point that exists — only a **Restore point creation confirmed** badge means one was made.
 </Aside>
 
-The **System Protection** feature controls whether Breeze asks a Windows device for a System Restore checkpoint just before it takes a risky action. It is configured **inline** and has three toggles:
+The **System Protection** feature controls whether Breeze asks a Windows device for a System Restore checkpoint just before it takes a risky action. The device takes **one restore point per command**, just before the first change a patch run, script or software install makes; a command that changes nothing spends no restore point. The outcome is reported back on that command. Checkpoints are best-effort and reporting-only: a restore point that cannot be created is reported, and the command still runs. It is configured **inline** and has three toggles:
 
 | Toggle | Default | Applies before |
 |---|---|---|
@@ -244,7 +262,7 @@ It also has a **Checkpoint label prefix** (up to 64 characters, blank means the 
 
 Like other features, System Protection resolves closest-wins (Device → Device Group → Site → Organization → Partner) and can be set on a **partner-wide (all orgs)** policy, so one policy can cover every organization you manage. With no System Protection feature in scope, the platform default applies: a checkpoint is requested before patch installs only.
 
-**What stays the same for patching.** Patch installs keep their existing best-effort checkpoint behavior. A device whose command carries no System Protection setting is treated the legacy way: patch installs are requested, scripts and software installs are not. Turning **Before patch installs** *off* cannot be enforced on a device until that device's agent reports support for the new setting, and the policy tab says so. Scripts and software installs take no checkpoint until you switch them on **and** a device runs an agent release that supports it.
+**What stays the same for patching.** Patch installs keep their existing best-effort checkpoint behavior. A device whose command carries no System Protection setting is treated the legacy way: patch installs are requested, scripts and software installs are not. Turning **Before patch installs** *off* cannot be enforced on a device until that device's agent reports support for the setting (agent 0.124.0 or later), and the policy tab says so. Scripts and software installs take no checkpoint until you switch them on **and** the device runs agent 0.124.0 or later.
 
 #### What System Restore does and does not do
 
@@ -257,36 +275,36 @@ System Restore protects system files, the registry, installed programs and setti
 
 #### Status reference
 
-The badge text is what a technician sees; the status is the value recorded in the ledger.
+The badge text is what a technician sees on the patch, script or deployment and on the device's **System Restore** tab.
 
-| Status | Badge text | What it means and what to do |
-|---|---|---|
-| `requested` | Awaiting the device | Breeze asked; the device has not reported back. Today every attempt stays here, because no agent reports yet. Once a supporting agent is deployed, a row that stays here for a device that has been online means the agent is older than the release that reports outcomes. Update the agent. |
-| `created` | Restore point creation confirmed | The device reported that Windows created a restore point and that it could be found afterwards. Treat it as a record of that moment only; it can be removed or become unusable later. |
-| `existing_accepted` | Existing point reused | Windows' 24-hour limit meant no new point was made, and an earlier one was accepted. Nothing to do. The badge shows the age of the reused point when the device reports it. |
-| `skipped_disabled` | Skipped — System Restore is turned off on this device | System Restore is off for the system drive. **Breeze will not turn System Restore on for you.** If you want checkpoints on this device, enable System Protection for the system drive in Windows (System Properties → System Protection, or `Enable-ComputerRestore` from an elevated PowerShell) and the next action can request one. |
-| `skipped_definition_only` | Skipped — definitions-only update | The patch run only contained definition updates, which do not need a checkpoint. Nothing to do. |
-| `skipped_no_mutation` | Not needed — no changes were made, so no restore point was created | The command stopped before it changed anything (for example the package was already installed, or the request was rejected during validation or preflight), so no System Restore point was needed. Nothing to do. |
-| `unsupported` | Not available on this device | System Restore is not present on this Windows edition (for example the system library or provider is missing). Nothing to enable. See the support matrix below. |
-| `busy` | Skipped — the volume snapshot service was in use | Another volume snapshot operation held the service. Retry the action later if you want a checkpoint. |
-| `insufficient_privileges` | Skipped — not enough privileges | The agent was not running with the rights System Restore needs. Check how the agent service runs on this device. |
-| `verification_failed` | Could not be verified | A request was made but the device could not confirm that the restore point exists. Do not assume one exists; check Windows directly (`Get-ComputerRestorePoint`). |
-| `failed` | Failed — *message* | Windows or the agent returned an error, shown in the badge. Use the message to troubleshoot. |
+| Badge text | What it means and what to do |
+|---|---|
+| Awaiting the device | Breeze asked; the device has not reported back. A row that stays here for a device that has been online means the agent is older than 0.124.0, the release that takes checkpoints and reports outcomes. Update the agent. |
+| Restore point creation confirmed | The device reported that Windows created a restore point and that it could be found afterwards. Treat it as a record of that moment only; it can be removed or become unusable later. |
+| Existing point reused | Windows' 24-hour limit meant no new point was made, and an earlier one was accepted. Nothing to do. The badge shows the age of the reused point when the device reports it. |
+| Skipped — System Restore is turned off on this device | System Restore is off for the system drive. **Breeze will not turn System Restore on for you.** If you want checkpoints on this device, enable System Protection for the system drive in Windows (System Properties → System Protection, or `Enable-ComputerRestore` from an elevated PowerShell) and the next action can request one. |
+| Skipped — definitions-only update | The patch run only contained definition updates, which do not need a checkpoint. Nothing to do. |
+| Not needed — no changes were made, so no restore point was created | The command stopped before it changed anything (for example the package was already installed, or the request was rejected during validation or preflight), so no System Restore point was needed. Nothing to do. |
+| Not available on this device | System Restore is not present on this Windows edition (for example the system library or provider is missing). Nothing to enable. See the support matrix below. |
+| Skipped — the volume snapshot service was in use | Another volume snapshot operation held the service. Retry the action later if you want a checkpoint. |
+| Skipped — not enough privileges | The agent was not running with the rights System Restore needs. Check how the agent service runs on this device. |
+| Could not be verified | A request was made but the device could not confirm that the restore point exists. Do not assume one exists; check Windows directly (`Get-ComputerRestorePoint`). |
+| Failed — *message* | Windows or the agent returned an error, shown in the badge. Use the message to troubleshoot. |
 
-In this version a checkpoint outcome never blocks the action it was requested for. A badge value your console does not recognise (for example after a partial upgrade) shows as "Outcome not recognised by this version of the console".
+A checkpoint outcome never blocks the action it was requested for. A badge value your console does not recognise (for example after a partial upgrade) shows as "Outcome not recognised by this version of the console".
 
 #### Support matrix
 
 This table records what was observed when the native System Restore call was tested on real Windows builds. It is **documentation only: Breeze never gates by Windows edition.** At run time the agent checks whether the system library, the entry point, the WMI provider and the enabled state are actually present and reports what it found. A row here does not turn a device on or off.
 
-| OS and build | Provider present | Creation succeeded | Status Breeze is designed to report | Caveat |
+| OS and build | Provider present | Creation succeeded | Badge Breeze is designed to report | Caveat |
 |---|---|---|---|---|
-| Windows Server 2022 Standard 21H2, build 20348.5256 | No — `srclient.dll` is absent and the `SystemRestore` WMI class is invalid | Not applicable — the provider is absent, so there is nothing to call | `unsupported` | Tested with a diagnostic tool, not the Breeze agent. |
-| Windows 11 Pro 25H2, build 26200.8653 | Yes | Yes, with System Restore enabled on the system drive | `created` when enabled; `skipped_disabled` when System Restore is off (the call returns error 1058, service disabled) | Tested with a diagnostic tool on one physical machine, with the 24-hour limit lifted for the test only. The Breeze agent itself has not yet been run there. |
+| Windows Server 2022 Standard 21H2, build 20348.5256 | No — `srclient.dll` is absent and the `SystemRestore` WMI class is invalid | Not applicable — the provider is absent, so there is nothing to call | **Not available on this device** | Observed with agent 0.124.0 before the release: only the unsupported and skipped paths were exercised, because Server 2022 has no System Restore. |
+| Windows 11 Pro 25H2, build 26200.8653 | Yes | Yes, with System Restore enabled on the system drive | **Restore point creation confirmed** when enabled; **Skipped — System Restore is turned off on this device** when it is off (the call returns error 1058, service disabled) | Tested with a diagnostic tool on one physical machine, with the 24-hour limit lifted for the test only. The Breeze agent itself has not yet been run there. |
 | Windows 10 22H2 | Not yet verified | Not yet verified | — | Tracked in [#8265](https://github.com/LanternOps/breeze/issues/8265). |
 | Windows Server 2025 | Not yet verified | Not yet verified | — | Tracked in [#8265](https://github.com/LanternOps/breeze/issues/8265). Do not infer from Server 2022. |
 
-The status column is a design mapping, not an observation. No agent reports these statuses yet; they will appear with the future agent release.
+The badge column is a design mapping, not an observation on that build. Agent 0.124.0 reports these outcomes; the created path has not been verified on real hardware with the agent before the release, so report a regression on the linked issue.
 
 ## Assigning a policy
 
@@ -438,7 +456,7 @@ When creating a policy, set `ownerScope` to `organization` (the default) or `par
 
 To create a policy that inherits from a baseline, pass `parentPolicyId` in the create request body — see [Baseline policies](#baseline-policies-inheritance) above for which parents a given ownership scope may reference. An invalid, cross-tenant, or already-nested parent is rejected with `400 { "error": "INVALID_PARENT_POLICY" }` — a single error for every rejection reason, so the response can't be used to probe which policy IDs exist.
 
-When calling the features endpoints, the `featureType` value must be one of: `patch`, `backup`, `security`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`, `monitors`, `hardware_monitoring`. `monitors` is the authoring/deployment feature. The retired values `alert_rule` and `monitoring` are rejected with `410 Gone`.
+When calling the features endpoints, the `featureType` value must be one of: `patch`, `backup`, `security`, `maintenance`, `compliance`, `automation`, `event_log`, `software_policy`, `sensitive_data`, `peripheral_control`, `warranty`, `helper`, `remote_access`, `pam`, `onedrive_helper`, `vulnerability`, `device_lifecycle`, `monitors`, `hardware_monitoring`, `security_agents`. `monitors` is the authoring/deployment feature. The retired values `alert_rule` and `monitoring` are rejected with `410 Gone`.
 
 ## Troubleshooting
 

@@ -20,7 +20,6 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { partners, organizations, users, invoices, invoiceLines, tickets, ticketCategories } from '../../db/schema';
 import * as invoiceSvc from '../../services/invoiceService';
 import { assembleCustomerInvoiceDocument } from '../../services/customerDocument';
-import { loadInvoiceForRender } from '../../services/invoicePdf';
 import { getOrMintInvoiceLink } from '../../services/invoiceLinkToken';
 import { invoicesPublicRoutes } from '../../routes/invoicesPublic';
 import type { InvoiceActor } from '../../services/invoiceTypes';
@@ -105,8 +104,10 @@ async function portalCategory(f: Fixture, id: string) {
   return res.lines[0]?.ticketCategory ?? null;
 }
 async function pdfHeader(id: string) {
-  const r = await sys(() => loadInvoiceForRender(id));
-  return pick(r!.lines[0]);
+  // The PDF draws the assembler's 'pdf' surface (#9414 W3a), the only place its lines are loaded.
+  const [row] = await sys(() => db.select().from(invoices).where(eq(invoices.id, id)));
+  const doc = await sys(() => assembleCustomerInvoiceDocument(row!, 'staff', { surface: 'pdf' }));
+  return pick(doc.lines[0]);
 }
 async function publicCategory(id: string) {
   const [row] = await sys(() => db.select().from(invoices).where(eq(invoices.id, id)));

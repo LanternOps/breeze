@@ -1010,9 +1010,9 @@ export default function DevicesPage() {
       // 'watchdogVersion'. The watchdog version refreshes on the next list
       // fetch / device-detail load. Wire a producer in the watchdog heartbeat
       // branch before adding a consumer here.
-    } else if (type === 'device.enrolled' || type === 'device.decommissioned') {
+    } else if (type === 'device.enrolled') {
       // #4147 review: useEventStream connects as soon as there is an auth
-      // token, independent of org resolution, so an enroll/decommission event
+      // token, independent of org resolution, so an enroll event
       // can land inside the same pre-resolution window the mount effect holds
       // for. Refetching here would issue the very unscoped request that gate
       // exists to prevent — and could land AFTER the scoped one, leaving the
@@ -1028,7 +1028,7 @@ export default function DevicesPage() {
   const { subscribe } = useEventStream({ onEvent: handleDeviceEvent });
 
   useEffect(() => {
-    subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled', 'device.decommissioned']);
+    subscribe(['device.online', 'device.offline', 'device.updated', 'device.enrolled']);
   }, [subscribe]);
 
   // A failed advanced-filter preview (403 on a pinned orgId the caller can't

@@ -494,6 +494,7 @@ const actionLabels: Record<string, string> = {
   'agent.mtls.quarantined': 'Device quarantined (mTLS)',
   'agent.filesystem.threshold_scan.queued': 'Disk threshold scan queued',
   'device.command.queue': 'Command queued',
+  'device.agent_recovery.request': 'Agent restart requested through the watchdog',
   'device.update': 'Device updated',
   'device.site_move': 'Device moved to another site',
   'device.site_assignment_confirmed': 'Site assignment confirmed (suggestions off)',

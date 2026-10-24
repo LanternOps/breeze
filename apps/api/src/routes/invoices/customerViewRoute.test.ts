@@ -93,9 +93,9 @@ const ACTORS = {
 
 /** CustomerInvoiceHeaderDto, listed literally: a new header key is a visibility decision. */
 const HEADER_DTO_KEYS = [
-  'amountPaid', 'balance', 'billToName', 'currencyCode', 'depositDue', 'displayStatus', 'dueDate', 'id',
-  'invoiceNumber', 'issueDate', 'lineGrouping', 'notes', 'sellerSnapshot', 'status', 'subtotal', 'taxRate',
-  'taxTotal', 'termsAndConditions', 'total',
+  'amountPaid', 'balance', 'billToAddress', 'billToName', 'billToTaxId', 'currencyCode', 'depositDue', 'displayStatus',
+  'dueDate', 'id', 'invoiceNumber', 'issueDate', 'lineGrouping', 'notes', 'sellerSnapshot', 'status', 'subtotal',
+  'taxRate', 'taxTotal', 'terms', 'termsAndConditions', 'total',
 ];
 const LINE_DTO_KEYS = [
   'description', 'id', 'lineTotal', 'name', 'quantity', 'taxable', 'ticketCategory', 'ticketNumber',

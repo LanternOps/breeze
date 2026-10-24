@@ -5,6 +5,9 @@ import OrganizationScopePanel from './OrganizationScopePanel';
 const fetchWithAuthMock = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuthMock(...a) }));
 
+const showToastMock = vi.fn();
+vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToastMock(...a) }));
+
 const PARTNER_ID = '22222222-2222-2222-2222-222222222222';
 
 function jsonRes(body: unknown, ok = true, status = 200) {
@@ -45,6 +48,7 @@ function findCall(urlIncludes: string, method?: string) {
 
 beforeEach(() => {
   fetchWithAuthMock.mockReset();
+  showToastMock.mockReset();
   // Safe default for any call not explicitly stubbed by a test (e.g. a
   // refetch-after-mutation) so the queue never underflows into `undefined`.
   fetchWithAuthMock.mockImplementation(() =>
@@ -405,5 +409,31 @@ describe('OrganizationScopePanel', () => {
       priority: 0,
       roleFilter: ['server', 'workstation'],
     });
+  });
+
+  it('toasts success when "All organizations" is turned on', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /All organizations/i }));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Policy now applies to all organizations' })),
+    );
+  });
+
+  it('toasts success when "All organizations" is turned off', async () => {
+    fetchWithAuthMock
+      .mockImplementationOnce(() => assignmentsRes([{ id: 'ap1', level: 'partner', targetId: PARTNER_ID, priority: 0 }]))
+      .mockImplementationOnce(() => orgsPageRes([{ id: 'org-acme', name: 'Acme Corp' }]));
+
+    render(<OrganizationScopePanel policyId="p1" partnerId={PARTNER_ID} />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /All organizations/i }));
+
+    await waitFor(() =>
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Policy no longer applies to all organizations' })),
+    );
   });
 });

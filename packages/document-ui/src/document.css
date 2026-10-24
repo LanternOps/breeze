@@ -1,0 +1,168 @@
+/* @breeze/document-ui — the customer-document paper, shared by apps/web and
+   apps/portal. Import it ABOVE `@import 'tailwindcss'` in each host: Vite's
+   postcss-import drops any @import that is not first. Not layered, so it keeps
+   the same cascade position the portal's own rules had.
+
+   Fonts: classic documents use Hanken Grotesk (sans) + Literata (display);
+   condensed documents use Barlow Condensed headings + DM Sans body. Declared
+   unconditionally: a browser only fetches a face an element actually uses. */
+@import '@fontsource/hanken-grotesk/400.css';
+@import '@fontsource/hanken-grotesk/500.css';
+@import '@fontsource/hanken-grotesk/600.css';
+@import '@fontsource/hanken-grotesk/700.css';
+@import '@fontsource/literata/500.css';
+@import '@fontsource/literata/600.css';
+@import '@fontsource/barlow-condensed/600.css';
+@import '@fontsource/dm-sans/400.css';
+@import '@fontsource/dm-sans/500.css';
+@import '@fontsource/dm-sans/700.css';
+
+/* Condensed document theme (Task 12) — plain CSS vars/selectors, not @theme
+   tokens. Scoped to [data-document-root][data-doc-theme='condensed'], stamped by
+   DocumentPaper on the rendered quote/invoice root, so it never touches the
+   rest of the portal. */
+[data-document-root][data-doc-theme='condensed'] {
+  font-family: 'DM Sans', var(--doc-font-sans), sans-serif;
+}
+[data-document-root][data-doc-theme='condensed'] :is(h1, h2, h3, h4, th) {
+  font-family: 'Barlow Condensed', 'DM Sans', sans-serif;
+  letter-spacing: 0.01em;
+}
+
+/* Partner brand accent for proposal/invoice documents. `--doc-accent` arrives
+   from the layout's nonced <style> element (see lib/docAccent.ts for why it
+   cannot be a style attribute); these classes are its only consumers, and the
+   `var()` fallback keeps documents sensible when a partner has set no colour. */
+.doc-accent-bg {
+  background-color: var(--doc-accent, hsl(var(--primary)));
+}
+.doc-accent-text {
+  color: var(--doc-accent, hsl(var(--primary)));
+}
+.doc-accent-border {
+  border-color: var(--doc-accent, hsl(var(--primary)));
+}
+
+/* The typed-name signature preview (a class, not an inline fontFamily — see
+   lib/docAccent.ts). No webfont is loaded for it, so on platforms without one
+   of these faces it degrades to the generic cursive keyword. */
+.signature-preview {
+  font-family: 'Snell Roundhand', 'Brush Script MT', 'Segoe Script', 'Apple Chancery', cursive;
+}
+
+/* Documents are paper. The chrome around them follows the OS colour scheme, but
+   a proposal or invoice carries partner brand colours chosen against white and
+   is what the customer prints or forwards to their accountant, so pin it. */
+[data-document-root] {
+  /* The ground stays true white — this is what the customer prints — but the
+     ink, rules and washes are authored warm neutrals from the portal's own
+     30-40° family. The block previously carried the scaffold's stock cool-slate
+     values verbatim, which put the one surface a customer forwards to their
+     accountant outside the No-Grey Rule the rest of the product lives by. */
+  --background: 0 0% 100%;
+  --foreground: 30 12% 13%;
+  --card: 0 0% 100%;
+  --card-foreground: 30 12% 13%;
+  --muted: 40 22% 96%;
+  --muted-foreground: 32 8% 36%;
+  --border: 38 14% 82%;
+  /* V-7: in dark mode the paper stays white, so everything it paints with stays light:
+     the accent rule, eyebrow, status chips and the Balance-due figure. The chrome
+     accent's light primary arrives as --paper-primary (set only by light blocks). */
+  --primary: var(--paper-primary, 225 62% 48%);
+  --primary-foreground: 42 45% 97%;
+  --primary-on-tint: var(--paper-primary, 225 62% 48%);
+  --ring: var(--paper-primary, 225 62% 48%);
+  /* The document's own faces, independent of the host's --font-*. */
+  --doc-font-sans: 'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --doc-font-display: 'Literata', Georgia, 'Times New Roman', serif;
+  font-family: var(--doc-font-sans);
+  --secondary: 40 24% 90%;
+  --secondary-foreground: 30 12% 14%;
+  --accent: 40 26% 88%;
+  --accent-foreground: 30 12% 12%;
+  --input: 38 16% 74%;
+  --destructive: 8 62% 40%;
+  --success: 152 45% 26%;
+  --warning: 35 90% 44%;
+  --success-on-tint: 152 45% 25%;
+  --warning-on-tint: 33 85% 28%;
+  --destructive-on-tint: 8 62% 38%;
+  color-scheme: light;
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
+}
+
+.doc-font-display {
+  font-family: var(--doc-font-display);
+}
+.doc-paper {
+  font-family: var(--doc-font-sans);
+}
+
+/* rich_text / callout / authored-agreement bodies render sanitized author HTML
+   (the server's fixed p/br/strong/em/u/h3/h4/ul/ol/li/a + table subset). Tailwind's
+   base reset strips list markers and emphasis, so restore the minimal styling that
+   subset needs — plain CSS, kept visually in step with the PDF's rich text
+   (richTextPdf.ts): tinted header row, hairline borders, no zebra. Moved here from
+   the portal's globals.css so the web Preview and the portal draw the same. */
+[data-document-root] .quote-rich-text p { margin-bottom: 0.5rem; }
+[data-document-root] .quote-rich-text p:last-child { margin-bottom: 0; }
+[data-document-root] .quote-rich-text h3 {
+  margin-top: 1rem; margin-bottom: 0.375rem; font-size: 1rem; line-height: 1.5rem; font-weight: 600; color: hsl(var(--foreground));
+}
+[data-document-root] .quote-rich-text h4 {
+  margin-top: 0.75rem; margin-bottom: 0.25rem; font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; color: hsl(var(--foreground));
+}
+[data-document-root] .quote-rich-text :is(h3, h4):first-child { margin-top: 0; }
+[data-document-root] .quote-rich-text :is(ul, ol) { margin-bottom: 0.5rem; padding-left: 1.25rem; }
+[data-document-root] .quote-rich-text :is(ul, ol):last-child { margin-bottom: 0; }
+[data-document-root] .quote-rich-text :is(ul, ol) > * + * { margin-top: 0.25rem; }
+[data-document-root] .quote-rich-text ul { list-style: disc; }
+[data-document-root] .quote-rich-text ol { list-style: decimal; }
+[data-document-root] .quote-rich-text :is(strong, b) { font-weight: 600; color: hsl(var(--foreground)); }
+[data-document-root] .quote-rich-text :is(em, i) { font-style: italic; }
+[data-document-root] .quote-rich-text u { text-decoration: underline; text-underline-offset: 2px; }
+[data-document-root] .quote-rich-text a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
+[data-document-root] .quote-rich-text table {
+  margin-bottom: 0.75rem; width: 100%; table-layout: auto; border-collapse: collapse; text-align: left; font-size: 0.875rem; line-height: 1.25rem;
+}
+[data-document-root] .quote-rich-text table:last-child { margin-bottom: 0; }
+[data-document-root] .quote-rich-text :is(th, td) {
+  border: 1px solid hsl(var(--border)); padding: 0.25rem 0.5rem; vertical-align: top;
+}
+[data-document-root] .quote-rich-text th { background-color: hsl(var(--muted)); font-weight: 600; color: hsl(var(--foreground)); }
+
+/* Proposal cover geometry (OD-5): the cover is the PDF's first page. The frame
+   takes the page aspect (A4 210:297, Letter 8.5:11), the artwork fills it with a
+   centred crop, and the white band that carries the title starts at 62% of the
+   height (apps/api quotePdf.ts renderCoverPage: bandTop = height * 0.62, 0.94 fill).
+   Classes, never style attributes: the portal CSP sets style-src-attr 'none'.
+   The web editor's cover preview wears the same classes (DocumentCoverCrop). */
+.doc-cover-frame {
+  position: relative;
+  overflow: hidden;
+}
+.doc-cover-a4 {
+  aspect-ratio: 210 / 297;
+}
+.doc-cover-letter {
+  aspect-ratio: 8.5 / 11;
+}
+.doc-cover-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+.doc-cover-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 62%;
+  bottom: 0;
+  overflow: hidden;
+  background-color: rgb(255 255 255 / 0.94);
+}

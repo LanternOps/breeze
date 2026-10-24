@@ -27,6 +27,7 @@ const run: PortalRunDto = {
   startedAt: '2026-09-02T12:00:00.000Z',
   completedAt: '2026-09-02T12:01:00.000Z',
   rowCount: 4,
+  csvAvailable: true,
   createdAt: '2026-09-02T12:00:00.000Z',
 };
 
@@ -87,6 +88,14 @@ describe('ReportRunList', () => {
     ).toBe(
       '/api/v1/portal/reports/runs/run-1/csv',
     );
+  });
+
+  it('offers CSV only for runs whose result has rows (#9774)', () => {
+    const noRows: PortalRunDto = { ...run, id: 'run-nr', csvAvailable: false };
+    render(<ReportRunList initialRuns={[run, noRows]} timezone="America/Denver" />);
+    expect(screen.getByTestId('portal-report-run-csv-run-1')).toBeTruthy();
+    expect(screen.getByTestId('portal-report-run-pdf-run-nr')).toBeTruthy();
+    expect(screen.queryByTestId('portal-report-run-csv-run-nr')).toBeNull();
   });
 
   it('renders generated timestamps in the organization timezone with its label', () => {
@@ -377,6 +386,9 @@ describe('ReportRunList', () => {
     { type: 'technician_time_billability', name: 'Technician time & billability' },
     { type: 'ar_aging', name: 'AR aging' },
     { type: 'ai_usage_by_client', name: 'AI usage by client' },
+    { type: 'mrr_renewals', name: 'MRR & renewals' },
+    { type: 'quote_win_rate', name: 'Quote win rate' },
+    { type: 'client_profitability', name: 'Client profitability' },
   ] as const;
   const leakedRun = (type: string, name: string) =>
     ({ ...run, id: `run-${type}`, name, type }) as unknown as PortalRunDto;

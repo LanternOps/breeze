@@ -1,6 +1,6 @@
 import { layoutPatchSchema, layoutWriteResultSchema, isLayoutPatchBodySizeAllowed } from '@breeze/shared/validators/topology';
 import type { LayoutWriteResult, Position, TopologyView } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { topologyWrite } from './topologyApi';
 import { runAction } from '../../lib/runAction';
 import type { LayoutPosition } from './layoutTypes';
 
@@ -8,7 +8,7 @@ export async function saveTopologyLayout(scope: { siteId: string }, view: Topolo
   const body = JSON.stringify(layoutPatchSchema.parse({ expectedRevision, positions }));
   if (!isLayoutPatchBodySizeAllowed(new TextEncoder().encode(body).byteLength)) throw new Error('Layout exceeds the supported batch size');
   return runAction({
-    request: () => fetchWithAuth(`/topology/sites/${encodeURIComponent(scope.siteId)}/layouts/${view}`, { method: 'PATCH', body }),
+    request: () => topologyWrite(`/topology/sites/${encodeURIComponent(scope.siteId)}/layouts/${view}`, { method: 'PATCH', body }),
     errorFallback: 'Unable to save topology layout', successMessage: 'Topology layout saved',
     parseSuccess: (data) => layoutWriteResultSchema.parse(data),
   });

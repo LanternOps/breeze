@@ -39,8 +39,17 @@ vi.mock('../../googleClient', () => ({
   getLicensingClient: () => ({ licenseAssignments: { listForProduct: licenseList } }),
 }));
 const resolveContextByOrg = vi.fn();
+const dbCtx = vi.hoisted(() => ({ opened: [] as unknown[], depth: 0, depthAtResolve: [] as number[] }));
+vi.mock('../../../db', () => ({
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withDbAccessContext: async (c: unknown, fn: () => Promise<unknown>) => {
+    dbCtx.opened.push(c);
+    dbCtx.depth += 1;
+    try { return await fn(); } finally { dbCtx.depth -= 1; }
+  },
+}));
 vi.mock('../../aiToolsGoogle', () => ({
-  resolveContextByOrg: (...a: unknown[]) => resolveContextByOrg(...a),
+  resolveContextByOrg: (...a: unknown[]) => { dbCtx.depthAtResolve.push(dbCtx.depth); return resolveContextByOrg(...a); },
   canonicalizeUserEmail: (raw: string) => {
     const e = raw.trim();
     return /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(e) ? e.toLowerCase() : null;
@@ -333,16 +342,33 @@ describe('probeGoogleWipeMobileDevice', () => {
 });
 
 describe('registerGoogleEffectProbes', () => {
-  it('registers exactly the eight Google write tools and returns their names', () => {
+  it('registers exactly the nine Google write tools and returns their names', () => {
     __resetEffectProbesForTest();
     const names = registerGoogleEffectProbes();
     const expected = [
-      'google_add_mail_delegate', 'google_remove_from_group', 'google_remove_license',
+      'google_account_wipe_mobile_device', 'google_add_mail_delegate', 'google_remove_from_group', 'google_remove_license',
       'google_set_forwarding', 'google_set_vacation', 'google_signout',
       'google_suspend_user', 'google_wipe_mobile_device',
     ];
     expect([...names].sort()).toEqual(expected);
     expect(listProbedTools()).toEqual(expected);
     __resetEffectProbesForTest();
+  });
+});
+
+describe('the connection lookup runs in an org-scoped db context', () => {
+  it('resolveContextByOrg is called INSIDE a context scoped to exactly the task org', async () => {
+    dbCtx.opened = []; dbCtx.depthAtResolve = [];
+    resolveContextByOrg.mockResolvedValue({ conn: { adminEmail: 'admin@x.example' }, keyJson: '{}' });
+    usersGet.mockResolvedValue({ data: { suspended: true } });
+    await probeGoogleSuspendUser(
+      { ordinal: 0, toolName: 'google_suspend_user', provider: 'google', targetId: 't', accountExternalId: '1',
+        canonicalArguments: { userEmail: 'dana@x.example' } } as PlannedEffect,
+      ctx,
+    );
+    // The task worker calls probes with no context; a contextless lookup of the
+    // forced-RLS connection table reads as "not connected".
+    expect(dbCtx.depthAtResolve).toEqual([1]);
+    expect(dbCtx.opened).toEqual([expect.objectContaining({ scope: 'organization', orgId: 'o1', accessibleOrgIds: ['o1'] })]);
   });
 });

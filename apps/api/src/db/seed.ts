@@ -130,6 +130,7 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'devices', action: 'write', description: 'Create and update devices' },
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
+  { resource: 'devices', action: 'recover_agent', description: 'Restart or start the agent through the watchdog' },
 
   { resource: 'agent_rollback', action: 'create', description: 'Authorize a signed agent rollback' },
 
@@ -277,6 +278,10 @@ export const DEFAULT_PERMISSIONS = [
   // it. Granted to no system role; partners grant it deliberately.
   { resource: 'ai_models', action: 'premium',
     description: 'Use AI model offerings that require the premium-model permission' },
+  // Wisp W02 (spec §4.6): execute-class gate on the sandbox workspace tools.
+  // Granted to no system role by name; Partner Admin matches it via `*:*`.
+  { resource: 'ai_workspace', action: 'execute',
+    description: 'Stage, run and collect code in AI sandbox workspaces' },
 
   // Tool sources (BYO MCP/OpenAPI tool catalog, #5215/#5216, spec 2026-09-07 §5):
   // managing the registrations is an admin task; calling the tools they expose
@@ -353,7 +358,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     forceMfa: false,
     permissions: [
       'backup:read', 'backup:write',
-      'devices:read', 'devices:execute',
+      'devices:read', 'devices:execute', 'devices:recover_agent',
       'endpoint_messages:send', 'endpoint_messages:read',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
@@ -430,7 +435,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     forceMfa: false,
     permissions: [
       'backup:read', 'backup:write', 'backup:cross_site_restore',
-      'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
+      'devices:read', 'devices:write', 'devices:delete', 'devices:execute', 'devices:recover_agent',
       'endpoint_messages:send', 'endpoint_messages:read',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
@@ -495,7 +500,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     description: 'Execute scripts and manage devices',
     forceMfa: false,
     permissions: [
-      'devices:read', 'devices:write', 'devices:execute',
+      'devices:read', 'devices:write', 'devices:execute', 'devices:recover_agent',
       'endpoint_messages:send', 'endpoint_messages:read',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',

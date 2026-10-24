@@ -1550,6 +1550,7 @@ export default function QuoteActions({ detail, onChanged, variant, savePending =
           lines={lines}
           recipients={recipients}
           autoEmailInvoiceOnAccept={detail.autoEmailInvoiceOnAccept}
+          emailConfigured={detail.emailConfigured}
           onAccepted={() => { setAcceptOpen(false); refresh(); }}
         />
       )}

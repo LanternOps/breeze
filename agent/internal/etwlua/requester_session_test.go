@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -125,6 +126,7 @@ func TestResolveRequesterSessionWith(t *testing.T) {
 		wantUsername     string
 		wantSessionID    uint32
 		wantSource       string
+		wantConsent      ConsentInstance
 		wantLookups      []uint32
 	}{
 		{
@@ -135,6 +137,36 @@ func TestResolveRequesterSessionWith(t *testing.T) {
 			wantUsername:     `DOMAIN\requester`,
 			wantSessionID:    3,
 			wantSource:       "consent_process",
+			// Two live prompts in the window: the session pick stays as before,
+			// but which consent.exe belongs to THIS request is a guess, so no
+			// instance is recorded and an approve will not dismiss either (#8995).
+			wantLookups: []uint32{3},
+		},
+		{
+			name:             "single consent candidate records its exact instance",
+			candidates:       candidates[1:],
+			consoleSessionID: 1,
+			users:            map[uint32]string{3: `DOMAIN\requester`},
+			wantUsername:     `DOMAIN\requester`,
+			wantSessionID:    3,
+			wantSource:       "consent_process",
+			// The interception records the exact consent.exe it attributed the
+			// request to, so a later approve can dismiss only that prompt (#8995).
+			wantConsent: ConsentInstance{PID: 201, CreatedAt: now.Add(-time.Second)},
+			wantLookups: []uint32{3},
+		},
+		{
+			name: "stale prompt outside the window does not make attribution ambiguous",
+			candidates: []consentProcessCandidate{
+				{PID: 150, SessionID: 3, ImagePath: trustedPath, StartedAt: now.Add(-10 * time.Minute)},
+				{PID: 201, SessionID: 3, ImagePath: trustedPath, StartedAt: now.Add(-time.Second)},
+			},
+			consoleSessionID: 1,
+			users:            map[uint32]string{3: `DOMAIN\requester`},
+			wantUsername:     `DOMAIN\requester`,
+			wantSessionID:    3,
+			wantSource:       "consent_process",
+			wantConsent:      ConsentInstance{PID: 201, CreatedAt: now.Add(-time.Second)},
 			wantLookups:      []uint32{3},
 		},
 		{
@@ -180,19 +212,24 @@ func TestResolveRequesterSessionWith(t *testing.T) {
 				return tc.users[sessionID]
 			}
 
-			username, sessionID, source := resolveRequesterSessionWith(
+			got := resolveRequesterSessionWith(
 				tc.candidates,
 				trustedPath,
 				now,
 				tc.consoleSessionID,
 				lookupUser,
 			)
-			if username != tc.wantUsername || sessionID != tc.wantSessionID || source != tc.wantSource {
+			if got.Username != tc.wantUsername || got.SessionID != tc.wantSessionID || got.Source != tc.wantSource {
 				t.Fatalf(
 					"resolution = (%q, %d, %q), want (%q, %d, %q)",
-					username, sessionID, source,
+					got.Username, got.SessionID, got.Source,
 					tc.wantUsername, tc.wantSessionID, tc.wantSource,
 				)
+			}
+			// Only a consent_process attribution identifies a concrete prompt;
+			// a console fallback must never carry a consent.exe identity.
+			if got.Consent != tc.wantConsent {
+				t.Fatalf("consent instance = %+v, want %+v", got.Consent, tc.wantConsent)
 			}
 			if !reflect.DeepEqual(lookups, tc.wantLookups) {
 				t.Fatalf("session lookups = %v, want %v", lookups, tc.wantLookups)
@@ -209,7 +246,7 @@ func TestResolveRequesterSessionAfterEnumerationDiscardsPartialResultsOnError(t 
 	}
 	var lookups []uint32
 
-	username, sessionID, source := resolveRequesterSessionAfterEnumeration(
+	got := resolveRequesterSessionAfterEnumeration(
 		partialCandidates,
 		errors.New("Process32Next failed"),
 		trustedPath,
@@ -224,15 +261,18 @@ func TestResolveRequesterSessionAfterEnumerationDiscardsPartialResultsOnError(t 
 		},
 	)
 
-	if username != `DOMAIN\console` || sessionID != 1 || source != requesterSourceConsoleFallback {
+	if got.Username != `DOMAIN\console` || got.SessionID != 1 || got.Source != requesterSourceConsoleFallback {
 		t.Fatalf(
 			"resolution = (%q, %d, %q), want (%q, %d, %q)",
-			username, sessionID, source,
+			got.Username, got.SessionID, got.Source,
 			`DOMAIN\console`, 1, requesterSourceConsoleFallback,
 		)
 	}
 	if !reflect.DeepEqual(lookups, []uint32{1}) {
 		t.Fatalf("session lookups = %v, want console fallback only", lookups)
+	}
+	if !got.Consent.IsZero() {
+		t.Fatalf("console fallback carried a consent instance: %+v", got.Consent)
 	}
 }
 
@@ -253,5 +293,20 @@ func TestEventSubjectSessionIDIsLocalOnly(t *testing.T) {
 	}
 	if _, ok := fields["subject_session_id"]; ok {
 		t.Fatalf("subject_session_id must not be serialized: %s", payload)
+	}
+}
+
+func TestEventConsentInstanceIsLocalOnly(t *testing.T) {
+	payload, err := json.Marshal(Event{
+		SubjectUsername:      `DOMAIN\requester`,
+		Consent:              ConsentInstance{PID: 4242, CreatedAt: time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)},
+		TargetExecutablePath: `C:\Windows\System32\cmd.exe`,
+		ObservedAt:           time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Marshal Event: %v", err)
+	}
+	if strings.Contains(string(payload), "4242") {
+		t.Fatalf("consent.exe identity must not be sent to the server: %s", payload)
 	}
 }

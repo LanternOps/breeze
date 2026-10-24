@@ -25,6 +25,16 @@ describe('feature Save action feedback', () => {
     expect.objectContaining({ method: existingId ? 'PATCH' : 'POST' }));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
+  it('save with successMessage null stays silent; a string overrides the default', async () => {
+    vi.clearAllMocks();
+    const row = { id: LINK, ...payload };
+    vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(row), { status: 200 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload, { successMessage: null })).toEqual(row); });
+    expect(showToast).not.toHaveBeenCalled();
+    await act(async () => { await result.current.save(LINK, payload, { successMessage: 'Custom' }); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Custom' }));
+  });
   it.each([200, 403])('surfaces a failed body at HTTP %s and retains inline error', async (status) => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ success: false, error: 'Denied' }), { status }));
     const { result } = renderHook(() => useFeatureLink(POLICY));
@@ -44,6 +54,19 @@ describe('feature Save action feedback', () => {
       type: 'error',
       message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
     }));
+  });
+  it.each([
+    ['TOO_MANY_RULE_SETS', /at most 20 rule sets/],
+    ['INVALID_RULE_SET_IDS', /not valid/],
+    ['YARA_RULE_SET_NOT_ATTACHABLE', /cannot use some of the selected rule sets/],
+  ])('maps the rule-set gate code %s to readable copy (#6267)', async (code, copy) => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'raw gate text', code, ruleSetIds: ['x'] }), { status: 400 }),
+    );
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
+    expect(result.current.error).toMatch(copy);
+    expect(result.current.errorDetail).toMatchObject({ status: 400, code, body: { ruleSetIds: ['x'] } });
   });
   it('redirects on 401 without an extra toast', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));

@@ -223,7 +223,7 @@ describe('request pool admission registry', () => {
 });
 
 describe('waitStats (W08)', () => {
-  it('reports the oldest waiter and the p95 grant wait over the last 3 s', async () => {
+  it('reports the oldest waiter and the p95 grant wait over the last 1.5 s (1.5 admission ticks, #9353)', async () => {
     let nowMs = 0;
     const gate = createPoolAdmission({ permits: 3, nestedReserve: 0, now: () => nowMs });
     const held = [await gate.acquire('a'), await gate.acquire('b'), await gate.acquire('c')];
@@ -242,7 +242,10 @@ describe('waitStats (W08)', () => {
     // waits [0, 0, 0, 100, 500]: ceil(0.95 * 5) = 5th smallest = 500
     expect(gate.waitStats()).toEqual({ oldestWaitMs: 0, grantWaitP95Ms: 500, grantsInWindow: 5 });
 
-    nowMs += 3_001;
+    nowMs += 1_500;
+    // 1.5 s after the waiter grants: the t=0 fast-path grants have aged out, the two waiters are on the edge.
+    expect(gate.waitStats()).toMatchObject({ grantWaitP95Ms: 500, grantsInWindow: 2 });
+    nowMs += 1;
     expect(gate.waitStats()).toEqual({ oldestWaitMs: 0, grantWaitP95Ms: 0, grantsInWindow: 0 });
   });
 });

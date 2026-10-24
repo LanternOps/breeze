@@ -86,7 +86,8 @@ LibreOffice document-to-PDF conversion is not included.
 ## Dependency updates
 
 Base images are pinned by OCI digest. Python direct dependencies are in
-`requirements.in`; `requirements.lock` pins every transitive dependency and wheel
+`requirements.in` (plus a `pip` pin: pip's vendored certifi is what Trivy scans, so
+the base image's pip must not be left in place); `requirements.lock` pins every transitive dependency and wheel
 hash for CPython 3.13/Linux amd64. Regenerate in the same pinned Python image:
 
 ```sh

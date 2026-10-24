@@ -25,13 +25,22 @@ func selectNewestConsentProcess(
 	trustedImagePath string,
 	now time.Time,
 ) (consentProcessCandidate, bool) {
+	selected, _, found := selectNewestConsentProcessCounted(candidates, trustedImagePath, now)
+	return selected, found
+}
+
+// selectNewestConsentProcessCounted also reports how many candidates were
+// eligible, so callers can tell an unambiguous attribution from a guess.
+func selectNewestConsentProcessCounted(
+	candidates []consentProcessCandidate,
+	trustedImagePath string,
+	now time.Time,
+) (selected consentProcessCandidate, eligible int, found bool) {
 	trustedImagePath = normalizeWindowsPath(trustedImagePath)
 	if trustedImagePath == "" {
-		return consentProcessCandidate{}, false
+		return consentProcessCandidate{}, 0, false
 	}
 
-	var selected consentProcessCandidate
-	found := false
 	for _, candidate := range candidates {
 		if !strings.EqualFold(normalizeWindowsPath(candidate.ImagePath), trustedImagePath) ||
 			!validInteractiveSessionID(candidate.SessionID) ||
@@ -43,13 +52,29 @@ func selectNewestConsentProcess(
 		if age < 0 || age > dedupeWindow {
 			continue
 		}
+		eligible++
 		if !found || candidate.StartedAt.After(selected.StartedAt) ||
 			(candidate.StartedAt.Equal(selected.StartedAt) && candidate.PID > selected.PID) {
 			selected = candidate
 			found = true
 		}
 	}
-	return selected, found
+	return selected, eligible, found
+}
+
+// requesterResolution is who raised a UAC prompt and, when it could be pinned
+// down, which consent.exe process is showing it.
+type requesterResolution struct {
+	Username  string
+	SessionID uint32
+	Source    string
+	// Consent identifies the consent.exe the request was attributed to. Set
+	// only for requesterSourceConsentProcess AND only when exactly one recent
+	// consent.exe was eligible: a console-fallback attribution names a
+	// session, not a prompt, and "newest of several" is a guess that could
+	// name another request's prompt. Either way it must never be used to
+	// target one (#8995).
+	Consent ConsentInstance
 }
 
 func resolveRequesterSessionWith(
@@ -58,23 +83,31 @@ func resolveRequesterSessionWith(
 	now time.Time,
 	consoleSessionID uint32,
 	lookupSessionUser func(sessionID uint32) string,
-) (username string, sessionID uint32, source string) {
+) requesterResolution {
 	if lookupSessionUser == nil {
-		return "", 0, requesterSourceUnresolved
+		return requesterResolution{Source: requesterSourceUnresolved}
 	}
 
-	if candidate, ok := selectNewestConsentProcess(candidates, trustedImagePath, now); ok {
+	if candidate, eligible, ok := selectNewestConsentProcessCounted(candidates, trustedImagePath, now); ok {
 		if user := lookupSessionUser(candidate.SessionID); user != "" {
-			return user, candidate.SessionID, requesterSourceConsentProcess
+			resolution := requesterResolution{
+				Username:  user,
+				SessionID: candidate.SessionID,
+				Source:    requesterSourceConsentProcess,
+			}
+			if eligible == 1 {
+				resolution.Consent = ConsentInstance{PID: candidate.PID, CreatedAt: candidate.StartedAt}
+			}
+			return resolution
 		}
 	}
 
 	if validInteractiveSessionID(consoleSessionID) {
 		if user := lookupSessionUser(consoleSessionID); user != "" {
-			return user, consoleSessionID, requesterSourceConsoleFallback
+			return requesterResolution{Username: user, SessionID: consoleSessionID, Source: requesterSourceConsoleFallback}
 		}
 	}
-	return "", 0, requesterSourceUnresolved
+	return requesterResolution{Source: requesterSourceUnresolved}
 }
 
 func resolveRequesterSessionAfterEnumeration(
@@ -84,7 +117,7 @@ func resolveRequesterSessionAfterEnumeration(
 	now time.Time,
 	consoleSessionID uint32,
 	lookupSessionUser func(sessionID uint32) string,
-) (username string, sessionID uint32, source string) {
+) requesterResolution {
 	if enumerationErr != nil {
 		candidates = nil
 	}

@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Yama onayını onaylayın",
-      "selectedOrganization": "seçilen kuruluş",
-      "messageOne": "{{count}} cihazındaki yamayı {{org}}'de onaylasın mı?",
-      "messageMany": "{{count}} cihazlarda {{org}} içindeki yama onaylansın mı?"
+      "selectedRing": "(adsız)",
+      "messageRingOne": "{{ring}} halkasındaki tüm kuruluşlarda {{count}} cihazda yama onaylansın mı?",
+      "messageRingMany": "{{ring}} halkasındaki tüm kuruluşlarda {{count}} cihazda yama onaylansın mı?",
+      "messagePartnerWide": "Yama, iş ortağınızın altındaki tüm kuruluşlar için onaylansın mı?"
     },
     "checkingAccess": "Erişiminiz kontrol ediliyor..."
   },
@@ -95,6 +96,7 @@
       "statusFilterLabel": "Uyumluluk durumuna göre filtrele",
       "pendingPatches": "Bekleyen Yamalar ({{count}})",
       "critical": "Kritik ({{count}})",
+      "failed": "Başarısız Kurulumlar ({{count}})",
       "pendingReboot": "Yeniden Başlatma Bekleniyor ({{count}})",
       "thirdPartyPending": "3. Taraf Beklemede ({{count}})",
       "compliant": "Uyumlu ({{count}})"
@@ -159,6 +161,11 @@
       "messageOne": "{{action}}?\n{{org}} içindeki {{count}} cihazlarda ",
       "messageMany": "{{action}}?\n{{org}} kuruluşlardaki {{count}} cihazlarda ",
       "messageMultiOrg": "{{action}}, {{orgNames}} dahil {{orgCount}} kuruluşta bulunan {{count}} cihazda uygulansın mı?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} / {{total}}",
+      "previous": "Önceki sayfa",
+      "next": "Sonraki sayfa"
     }
   },
   "patchInstallHistory": {
@@ -259,7 +266,9 @@
       "moderate": "Orta",
       "low": "Düşük",
       "unrated": "Derecelendirilmemiş",
-      "unratedNote": "Otomatik onaylanmayacak"
+      "unratedNote": "Otomatik onaylanmayacak",
+      "derivedNote": "Türetilmiş derecelendirme",
+      "derivedTooltip": "Satıcı bu güncelleme için bir derecelendirme yayımlamadı. Bu önem derecesi, sınıflandırmasından ve başlığından türetildi."
     },
     "approval": {
       "pending": "Beklemede",
@@ -331,16 +340,12 @@
       "error": "Cihaz listesi yüklenemedi.",
       "showing": "{{total}} cihazdan {{shown}} tanesi gösteriliyor",
       "loadMore": "Daha fazla yükle",
-      "lastChecked": "Son denetim: {{when}}",
-      "status": {
-        "online": "Çevrimiçi",
-        "offline": "Çevrimdışı",
-        "maintenance": "Bakımda",
-        "decommissioned": "Kullanımdan kaldırıldı",
-        "quarantined": "Karantinada",
-        "updating": "Güncelleniyor",
-        "pending": "Beklemede"
-      }
+      "lastChecked": "Son denetim: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Paket sürümü {{version}}",
+      "id": "Katalog kimliği {{id}}",
+      "title": "Başka bir katalog girdisi aynı başlığa sahip. Her biri ayrı ayrı onaylanır."
     }
   },
   "patchesPage": {
@@ -381,7 +386,8 @@
       "createRing": "Güncelleme halkası oluşturulamadı",
       "deleteRing": "Zil silinemedi",
       "approveUnknown": "Onay durumu bilinmiyor — sunucu yanıtı okunamadı. Hangi yamaların onaylandığını onaylamak için yenileyin.",
-      "approveAbortedWithFailures": "{{message}} ({{count}} yamaları da bundan önce sunucu tarafından reddedilmişti.)"
+      "approveAbortedWithFailures": "{{message}} ({{count}} yamaları da bundan önce sunucu tarafından reddedilmişti.)",
+      "checkRingLinks": "Bu halkayı hangi ilkelerin kullandığı denetlenemedi; hiçbir şey silinmedi"
     },
     "toast": {
       "ringSaved": "Güncelleme halkası kaydedildi",
@@ -411,7 +417,13 @@
       "createTitle": "Güncelleme halkası oluştur"
     },
     "truncatedNotice": "{{total}} yamalardan {{shown}} gösteriliyor. Buradaki filtreler yalnızca önceden yüklenmiş olanları daraltır, dolayısıyla geri kalanlara bu görünümden erişilemez; kataloğun tamamı üzerinde çalışmak için API yamalarını kullanın.",
-    "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin."
+    "shiftedNotice": "{{total}} yamasından {{shown}} gösteriliyor — katalog yüklenirken değişti. Gerisini görmek için yeniden yükleyin.",
+    "ringDelete": {
+      "title": "{{name}} silinsin mi?",
+      "messageOne": "1 ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
+      "messageMany": "{{count}} ilke, siz başka bir halka seçene kadar zamanlanmış yama uygulamayı durduracak.",
+      "confirm": "Halkayı sil"
+    }
   },
   "patchJobsList": {
     "empty": "Henüz yama işi yok. Politikalar, güncelleme halkaları veya yapay zeka asistanı tarafından oluşturulan işler burada görünecek.",
@@ -613,5 +625,24 @@
     "orEnterAPackageIDManually": "Veya manuel olarak bir paket kimliği girin",
     "removeRuleFor": "{{application}} kuralını kaldır",
     "scopeNote": "Bu kurallar, yapılandırma ilkesi bu halkaya bağlı olan her cihaz için geçerlidir."
+  },
+  "patchDetails": {
+    "unknown": "Bilinmiyor",
+    "source": "Kaynak",
+    "packageId": "KB / paket kimliği",
+    "severity": "Önem derecesi",
+    "releaseDate": "Yayın tarihi",
+    "firstSeen": "Katalogda ilk görülme",
+    "rings": {
+      "title": "Güncelleme halkaları",
+      "note": "Her halkanın bu yamayı ne zaman otomatik onayladığı (halka düzeyinde kural; kategori geçersiz kılmaları gösterilmez).",
+      "none": "Yapılandırılmış güncelleme halkası yok.",
+      "manual": "Otomatik onaylanmaz — elle onay gerekir",
+      "immediate": "Hemen otomatik onaylanır",
+      "needsDate": "Bekletiliyor — {{count}} günlük pencereyi başlatacak yayın tarihi yok",
+      "autoApproves": "{{date}} tarihinde otomatik onaylanır",
+      "hold_one": "{{count}} gün erteleme",
+      "hold_other": "{{count}} gün erteleme"
+    }
   }
 }

@@ -1,423 +1,156 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { QUOTE_DTO_FIXTURES, QUOTE_FIXTURE_IDS, type QuoteFixtureName } from '@breeze/shared/documents';
 
-import { QuoteDocument } from './QuoteDocument';
 import QuoteDocumentPreview from './QuoteDocument';
-import type { QuoteDetail as QuoteDetailData, QuoteBlock } from './quoteTypes';
-import { fetchWithAuth } from '../../../stores/auth';
+import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
 
-// QuoteDocument is presentational, but its module imports the auth/org stores and
-// navigation (used by the preview wrapper + authed images). Mock them so the unit
-// renders without real store initialization or network.
-vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
-vi.mock('../../../stores/orgStore', () => ({
-  useOrgStore: (selector: (s: { organizations: { id: string; name: string }[] }) => unknown) =>
-    selector({ organizations: [{ id: 'org-1', name: 'Acme Industries' }] }),
-}));
+const fetchWithAuth = vi.fn();
+vi.mock('../../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
-function makeDetail(overrides: Partial<QuoteDetailData> = {}): QuoteDetailData {
-  return {
-    quote: {
-      id: 'q-1', quoteNumber: 'Q-1042', partnerId: 'p-1', orgId: 'org-1', siteId: null, status: 'sent',
-      currencyCode: 'USD', issueDate: '2026-06-01', expiryDate: '2026-07-01', subtotal: '500.00', taxRate: null,
-      taxTotal: '0.00', total: '545.00', oneTimeTotal: '500.00', monthlyRecurringTotal: '45.00',
-      annualRecurringTotal: '0.00', dueOnAcceptanceTotal: '500.00', billToName: 'Acme Industries',
-      introNotes: 'Thanks for considering us.', terms: null, termsAndConditions: 'Net 30.',
-      sellerSnapshot: null, acceptedAt: null, declinedAt: null, convertedAt: null, convertedInvoiceId: null,
-      sentAt: '2026-06-01T00:00:00Z', viewedAt: null, createdBy: null, createdAt: '2026-06-01T00:00:00Z',
-      updatedAt: '2026-06-01T00:00:00Z',
-    },
-    blocks: [
-      { id: 'b-1', quoteId: 'q-1', orgId: 'org-1', blockType: 'line_items', content: { label: 'Services' }, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
-    ],
-    lines: [
-      { id: 'l-1', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: null, description: 'Managed Workstation', quantity: '10', unitPrice: '45.00', unitCost: null, sku: null, partNumber: null, taxable: false, customerVisible: true, lineTotal: '450.00', recurrence: 'monthly', termMonths: null, billingFrequency: null, sortOrder: 0, createdAt: '2026-06-01T00:00:00Z' },
-      { id: 'l-2', quoteId: 'q-1', blockId: 'b-1', orgId: 'org-1', sourceType: 'manual', catalogItemId: null, parentLineId: null, name: null, description: 'Onboarding', quantity: '1', unitPrice: '500.00', unitCost: null, sku: null, partNumber: null, taxable: false, customerVisible: true, lineTotal: '500.00', recurrence: 'one_time', termMonths: null, billingFrequency: null, sortOrder: 1, createdAt: '2026-06-01T00:00:00Z' },
-    ],
-    branding: {
-      partnerName: 'Lantern IT', logoUrl: null, primaryColor: '#1c8a9e', footer: 'Thank you for your business.',
-      currencyCode: 'USD', seller: { name: 'Lantern IT', address: null, phone: null, email: 'hi@lantern.it', website: null },
-    },
-    ...overrides,
-  };
-}
+const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+const detail = () => ({ quote: { id: 'q-1', quoteNumber: 'Q-1', status: 'sent' }, blocks: [], lines: [] } as unknown as QuoteDetailData);
+const ok = (name: QuoteFixtureName, patch?: (d: (typeof QUOTE_DTO_FIXTURES)[QuoteFixtureName]) => unknown) =>
+  ({ ok: true, status: 200, json: async () => ({ data: patch ? patch(QUOTE_DTO_FIXTURES[name]) : QUOTE_DTO_FIXTURES[name] }) });
 
-describe('QuoteDocument', () => {
-  it('renders the proposal inline (no PDF iframe) with number, customer, lines and due total', () => {
-    render(<QuoteDocument detail={makeDetail()} customerName="Acme Industries" />);
-
-    // Regression guard: the preview is inline HTML, never a downloaded/embedded PDF.
-    expect(document.querySelector('iframe')).toBeNull();
-
-    expect(screen.getByTestId('quote-document-number')).toHaveTextContent('Q-1042');
-    expect(screen.getByTestId('quote-document-customer')).toHaveTextContent('Acme Industries');
-    expect(screen.getByText('Managed Workstation')).toBeInTheDocument();
-    expect(screen.getByTestId('quote-document-due')).toHaveTextContent('$500.00');
-    // Recurring summary surfaces the monthly figure.
-    expect(screen.getByText(/Monthly recurring/i)).toBeInTheDocument();
-    // Seller "From" block + footer render.
-    expect(screen.getByText('hi@lantern.it')).toBeInTheDocument();
-    expect(screen.getByText('Thank you for your business.')).toBeInTheDocument();
-  });
-
-  it('shows an empty state when the proposal has no content', () => {
-    render(<QuoteDocument detail={makeDetail({ blocks: [], lines: [] })} customerName="Acme Industries" />);
-    expect(screen.getByText(/doesn’t have any content yet/i)).toBeInTheDocument();
-    // No totals block without content.
-    expect(screen.queryByTestId('quote-document-due')).toBeNull();
-  });
-
-  it('stamps data-doc-theme="condensed" when the DTO resolves the condensed theme', () => {
-    render(
-      <QuoteDocument
-        detail={makeDetail({ presentation: { theme: 'condensed', pageSize: 'letter' } })}
-        customerName="Acme Industries"
-      />
-    );
-    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'condensed');
-  });
-
-  it('stamps data-doc-theme="classic" when the DTO resolves the classic theme', () => {
-    render(
-      <QuoteDocument
-        detail={makeDetail({ presentation: { theme: 'classic', pageSize: 'a4' } })}
-        customerName="Acme Industries"
-      />
-    );
-    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'classic');
-  });
-
-  it('defaults data-doc-theme to "classic" when the payload omits presentation', () => {
-    render(<QuoteDocument detail={makeDetail({ presentation: undefined })} customerName="Acme Industries" />);
-    expect(screen.getByTestId('quote-document')).toHaveAttribute('data-doc-theme', 'classic');
-  });
-
-  it('falls back to a draft label and partner wordmark when number/logo are absent', () => {
-    const d = makeDetail();
-    d.quote.quoteNumber = null;
-    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
-    expect(screen.getByTestId('quote-document-number')).toHaveTextContent('Draft');
-    expect(screen.getByTestId('quote-document-wordmark')).toHaveTextContent('Lantern IT'); // no logoUrl → wordmark
-  });
-
-  it('renders the resolved customer billing address and tax id in the Prepared for block', () => {
-    const detail = makeDetail({
-      billTo: {
-        name: 'Paws at Home Vet',
-        address: { line1: '123 Vet Way', line2: 'Suite 4', city: 'Springfield', region: 'CO', postalCode: '80000', country: 'US' },
-        taxId: '84-1234567',
-      },
-    });
-    render(<QuoteDocument detail={detail} customerName="Paws at Home Vet" />);
-    const addr = screen.getByTestId('quote-document-billto-address');
-    expect(addr).toHaveTextContent('123 Vet Way');
-    expect(addr).toHaveTextContent('Springfield, CO, 80000');
-    expect(screen.getByTestId('quote-document-billto-taxid')).toHaveTextContent('84-1234567');
-  });
-
-  it('omits the address block when the org has saved no billing address', () => {
-    const detail = makeDetail({ billTo: { name: 'Acme', address: null, taxId: null } });
-    render(<QuoteDocument detail={detail} customerName="Acme" />);
-    expect(screen.queryByTestId('quote-document-billto-address')).toBeNull();
-    expect(screen.queryByTestId('quote-document-billto-taxid')).toBeNull();
-  });
-
-  it('shows a per-table subtotal row only when the block opts in', () => {
-    // Default block has no showSubtotal → no subtotal row.
-    render(<QuoteDocument detail={makeDetail()} customerName="Acme" />);
-    expect(screen.queryByTestId('quote-table-subtotal')).toBeNull();
-  });
-
-  it('renders the opt-in subtotal split by recurrence', () => {
-    const d = makeDetail();
-    d.blocks[0].content = { label: 'Services', showSubtotal: true };
-    render(<QuoteDocument detail={d} customerName="Acme" />);
-    const row = screen.getByTestId('quote-table-subtotal');
-    // Fixture: $500 one-time + $450/mo.
-    expect(row).toHaveTextContent('$500.00');
-    expect(row.textContent).toMatch(/\$450\.00/);
-  });
-
-  it('renders a rich_text block as formatted HTML (not stripped to plain text)', () => {
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        id: 'b-2', quoteId: 'q-1', orgId: 'org-1', blockType: 'rich_text',
-        content: { html: '<p>Please review <strong>carefully</strong>.</p><ul><li>Item one</li></ul>' },
-        sortOrder: 1, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme" />);
-
-    // Real elements, not escaped/stripped text — the API is trusted to have
-    // already sanitized this HTML (richTextSanitize.ts), so it's rendered as-is.
-    const strongEl = screen.getByText('carefully');
-    expect(strongEl.tagName).toBe('STRONG');
-    const listItem = screen.getByText('Item one');
-    expect(listItem.closest('li')).not.toBeNull();
-  });
-
-  it('renders an authored contract block via dangerouslySetInnerHTML with a template name + version footer', () => {
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        id: 'b-3', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
-        content: {
-          label: 'Master Services Agreement',
-          templateName: 'MSA',
-          versionNumber: 3,
-          sourceType: 'authored',
-          renderedHtml: '<p>Acme Industries agrees to Texas law.</p>',
-          fileUrl: null,
-        },
-        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
-
-    const el = screen.getByTestId('contract-block');
-    expect(el.textContent).toContain('Acme Industries agrees to Texas law.');
-    expect(el.textContent).toContain('Master Services Agreement');
-    expect(el.textContent).toContain('MSA');
-    expect(el.textContent).toContain('3');
-    expect(el.innerHTML).not.toContain('{{');
-    expect(el.querySelector('iframe')).toBeNull();
-  });
-
-  it('renders an uploaded contract block as an authed-fetched iframe + download link', async () => {
-    const blob = new Blob(['%PDF-1.4'], { type: 'application/pdf' });
-    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: true, status: 200, blob: vi.fn().mockResolvedValue(blob) } as unknown as Response);
-    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:mock-contract'), revokeObjectURL: vi.fn() });
-
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        id: 'b-4', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
-        content: {
-          templateName: 'Vendor MSA (uploaded)',
-          versionNumber: 1,
-          sourceType: 'uploaded',
-          renderedHtml: null,
-          fileUrl: '/quotes/q-1/contract-file/b-4',
-        },
-        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
-
-    // Collapsed by default, and the file is only fetched once the row is opened.
-    const row = screen.getByTestId('contract-block') as HTMLDetailsElement;
-    expect(row.open).toBe(false);
-    expect(fetchWithAuth).not.toHaveBeenCalled();
-    row.open = true;
-    fireEvent(row, new Event('toggle'));
-
-    await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull());
-    expect(document.querySelector('iframe')?.getAttribute('src')).toBe('blob:mock-contract');
-    expect(fetchWithAuth).toHaveBeenCalledWith('/quotes/q-1/contract-file/b-4');
-    expect(screen.getByTestId('quote-contract-download')).toHaveAttribute('href', 'blob:mock-contract');
-
-    vi.unstubAllGlobals();
-  });
-
-  it('shows an unavailable fallback for an uploaded contract block with no fileUrl (no iframe fetch attempted)', () => {
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        id: 'b-5', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
-        content: { templateName: 'MSA', versionNumber: 1, sourceType: 'uploaded', renderedHtml: null, fileUrl: null },
-        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme Industries" />);
-    const row = screen.getByTestId('contract-block') as HTMLDetailsElement;
-    row.open = true;
-    fireEvent(row, new Event('toggle'));
-    expect(row).toHaveTextContent('Agreement file unavailable');
-    expect(document.querySelector('iframe')).toBeNull();
-    expect(fetchWithAuth).not.toHaveBeenCalled();
-  });
-
-  it('renders a table block with column labels, inline HTML cells, zebra striping and caption', () => {
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        id: 'b-6', quoteId: 'q-1', orgId: 'org-1', blockType: 'table',
-        content: {
-          columns: [{ label: '<strong>Item</strong>' }, { label: 'Qty', align: 'right' }],
-          rows: [
-            { cells: ['Widget', '1'] },
-            { cells: ['Gadget', '2'] },
-          ],
-          caption: 'Pricing detail',
-          zebra: true,
-        },
-        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme" />);
-
-    const table = screen.getByTestId('quote-table-block');
-    expect(table.querySelector('table')).not.toBeNull();
-    const header = screen.getByText('Item');
-    expect(header.tagName).toBe('STRONG');
-    expect(screen.getByText('Widget')).toBeInTheDocument();
-    expect(screen.getByText('Gadget')).toBeInTheDocument();
-    expect(screen.getByText('Pricing detail')).toBeInTheDocument();
-    // Zebra striping: second row (index 1) gets the muted background class.
-    const rows = table.querySelectorAll('tbody tr');
-    expect(rows[0]).not.toHaveClass('bg-muted/30');
-    expect(rows[1]).toHaveClass('bg-muted/30');
-  });
-
-  it('renders a callout block with a variant-tinted container, title and html', () => {
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        id: 'b-7', quoteId: 'q-1', orgId: 'org-1', blockType: 'callout',
-        content: { variant: 'warn', title: 'Heads up', html: '<p>Please read <strong>carefully</strong>.</p>' },
-        sortOrder: 2, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme" />);
-
-    const callout = screen.getByTestId('quote-callout-block');
-    expect(callout).toHaveClass('border-amber-500/40');
-    expect(screen.getByText('Heads up')).toBeInTheDocument();
-    const strongEl = screen.getByText('carefully');
-    expect(strongEl.tagName).toBe('STRONG');
-  });
-
-  it('renders a visible placeholder for an unsupported/unknown block type', () => {
-    const d = makeDetail();
-    d.blocks = [
-      ...d.blocks,
-      {
-        // Intentionally a blockType the client doesn't know about (e.g. a
-        // future server-added type) — must fail visibly, not silently vanish.
-        id: 'b-8', quoteId: 'q-1', orgId: 'org-1', blockType: 'future_block_type' as unknown as QuoteBlock['blockType'],
-        content: {},
-        sortOrder: 3, createdAt: '2026-06-01T00:00:00Z',
-      },
-    ];
-    render(<QuoteDocument detail={d} customerName="Acme" />);
-    expect(screen.getByTestId('unsupported-block')).toBeInTheDocument();
-  });
-
-  it('never renders internal cost/markup/net on the customer document', () => {
-    const detail = makeDetail({
-      lines: [
-        {
-          id: 'l-3',
-          quoteId: 'q-1',
-          blockId: 'b-1',
-          orgId: 'org-1',
-          sourceType: 'manual',
-          catalogItemId: null,
-          parentLineId: null,
-          unitCost: '100.00',
-          sku: 'SKU-1',
-          partNumber: 'PN-001',
-          name: null,
-          description: 'Test Product',
-          quantity: '1',
-          unitPrice: '130.00',
-          taxable: false,
-          customerVisible: true,
-          lineTotal: '130.00',
-          recurrence: 'one_time',
-          termMonths: null,
-          billingFrequency: null,
-          sortOrder: 0,
-          createdAt: '2026-06-01T00:00:00Z',
-        },
-      ],
-    });
-    const { container } = render(<QuoteDocument detail={detail} customerName="Acme" />);
-    expect(container.textContent).not.toMatch(/markup/i);
-    expect(container.textContent).not.toContain('100.00'); // the cost value
-  });
-});
-
-// Agreements (contract blocks + T&C) render after the totals, collapsed — the
-// same order as the customer's portal page and the PDF (#7040). They used to
-// render in block order ahead of the totals, fully expanded.
-describe('QuoteDocument — agreements after the price', () => {
-  const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-  const withContract = () => {
-    const d = makeDetail({ quote: { ...makeDetail().quote, termsAndConditions: '1. Payment\nNet 30.\n2. Term\nOne year.' } });
-    d.blocks = [
-      {
-        id: 'b-0', quoteId: 'q-1', orgId: 'org-1', blockType: 'contract',
-        content: {
-          label: 'Managed Services Agreement', templateName: 'MSA', versionNumber: 3, sourceType: 'authored',
-          renderedHtml: `<p>${'clause '.repeat(450)}</p>`, fileUrl: null,
-        },
-        // Authored FIRST in the block order: it must still land after the totals.
-        sortOrder: -1, createdAt: '2026-06-01T00:00:00Z',
-      },
-      ...d.blocks,
-    ];
-    return d;
-  };
-
-  it('renders the agreement and the T&C after the totals, in that order', () => {
-    render(<QuoteDocument detail={withContract()} customerName="Acme Industries" />);
-    const contract = screen.getByTestId('contract-block');
-    const terms = screen.getByTestId('quote-document-terms-conditions');
-    expect(follows(screen.getByTestId('quote-document-due'), contract)).toBe(true);
-    expect(follows(screen.getByText('Managed Workstation'), contract)).toBe(true);
-    expect(follows(contract, terms)).toBe(true);
-    expect(screen.getByTestId('quote-document-agreements').contains(contract)).toBe(true);
-  });
-
-  it('collapses each row and summarises it with a reading time', () => {
-    render(<QuoteDocument detail={withContract()} customerName="Acme Industries" />);
-    const contract = screen.getByTestId('contract-block') as HTMLDetailsElement;
-    const terms = screen.getByTestId('quote-document-terms-conditions') as HTMLDetailsElement;
-    expect(contract.tagName).toBe('DETAILS');
-    expect(contract.open).toBe(false);
-    expect(contract.querySelector('summary')).toHaveTextContent('Managed Services Agreement');
-    expect(contract.querySelector('summary')).toHaveTextContent('~3 min read');
-    expect(terms.open).toBe(false);
-    expect(terms.querySelector('summary')).toHaveTextContent('Terms & Conditions');
-    expect(terms.querySelector('summary')).toHaveTextContent('2 sections · ~1 min read');
-  });
-
-  it('renders T&C sections as headings once opened', () => {
-    render(<QuoteDocument detail={withContract()} customerName="Acme Industries" />);
-    const terms = screen.getByTestId('quote-document-terms-conditions') as HTMLDetailsElement;
-    expect(terms.querySelectorAll('h4')).toHaveLength(2);
-    expect(terms.querySelector('h4')).toHaveTextContent('1. Payment');
-  });
-});
+// Braces: a returned mock would be run by vitest as a cleanup hook.
+beforeEach(() => { fetchWithAuth.mockReset(); });
 
 describe('QuoteDocumentPreview', () => {
-  it('renders the customer document with a Download PDF action and resolves the org name', () => {
-    const d = makeDetail();
-    d.quote.billToName = null; // force org-list resolution
-    render(<QuoteDocumentPreview detail={d} />);
-    expect(screen.getByTestId('quote-preview')).toBeInTheDocument();
+  it('renders the CUSTOMER document from GET /quotes/:id/customer-view, with a Download PDF action', async () => {
+    fetchWithAuth.mockResolvedValue(ok('issued'));
+    render(<QuoteDocumentPreview detail={detail()} />);
+    expect(screen.getByTestId('quote-preview-loading')).toBeInTheDocument();
+    await screen.findByTestId('document-root');
+    expect(fetchWithAuth).toHaveBeenCalledWith('/quotes/q-1/customer-view');
     expect(screen.getByTestId('quote-preview-download-pdf')).toBeInTheDocument();
-    expect(screen.getByTestId('quote-document-customer')).toHaveTextContent('Acme Industries');
+    expect(screen.getByTestId('document-root')).toHaveTextContent('Q-0042');
+    expect(screen.getByTestId('document-root')).toHaveTextContent('Viewed');
     expect(document.querySelector('iframe')).toBeNull();
   });
 
-  it('falls back to an em-dash (never a raw org UUID fragment) when neither billToName nor the org store resolves', () => {
-    const d = makeDetail();
-    d.quote.billToName = null; // no explicit bill-to
-    d.quote.orgId = '9f8e7d6c-1234-4abc-9def-0123456789ab'; // not in the mocked org store
-    render(<QuoteDocumentPreview detail={d} />);
-    const customer = screen.getByTestId('quote-document-customer');
-    expect(customer).toHaveTextContent('—');
-    // The UUID (or its first 8 chars) must never leak onto the customer document.
-    expect(customer).not.toHaveTextContent('9f8e7d6c');
+  it('refetches when the workspace hands a new detail object (reload), and when the tab remounts', async () => {
+    fetchWithAuth.mockResolvedValue(ok('issued'));
+    const views = () => fetchWithAuth.mock.calls.filter(([p]) => p === '/quotes/q-1/customer-view').length;
+    const d = detail();
+    const { rerender, unmount } = render(<QuoteDocumentPreview detail={d} />);
+    await screen.findByTestId('document-root');
+    expect(views()).toBe(1);
+    rerender(<QuoteDocumentPreview detail={d} />);
+    expect(views()).toBe(1); // same object: no refetch
+    rerender(<QuoteDocumentPreview detail={detail()} />);
+    await waitFor(() => expect(views()).toBe(2));
+    unmount();
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await waitFor(() => expect(views()).toBe(3));
+  });
+
+  it('shows an error with a working Retry when the customer view fails', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('quote-preview-error');
+    fetchWithAuth.mockResolvedValueOnce(ok('issued'));
+    fireEvent.click(screen.getByTestId('quote-preview-retry'));
+    await screen.findByTestId('document-root');
+    spy.mockRestore();
+  });
+
+  it('treats a malformed body as an error rather than throwing in render', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ data: { quote: {} } }) });
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('quote-preview-error');
+    spy.mockRestore();
+  });
+
+  it('discards an older response that finishes after a newer request', async () => {
+    let releaseOld!: (v: unknown) => void;
+    fetchWithAuth.mockImplementationOnce(() => new Promise((r) => { releaseOld = r; }));
+    const { rerender } = render(<QuoteDocumentPreview detail={detail()} />);
+    fetchWithAuth.mockResolvedValueOnce(ok('cover'));
+    rerender(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('document-cover');
+    await act(async () => { releaseOld(ok('issued')); });
+    expect(screen.getByTestId('document-cover')).toBeInTheDocument();
+  });
+
+  it('marks where the customer signs, inert, while the quote can still be signed', async () => {
+    fetchWithAuth.mockResolvedValue(ok('issued'));
+    render(<QuoteDocumentPreview detail={detail()} />);
+    const slot = await screen.findByTestId('quote-preview-signature');
+    expect(slot).toHaveTextContent('Your customer signs here');
+    expect(slot.querySelector('button, input')).toBeNull();
+  });
+
+  it('shows no signature placeholder on an accepted quote', async () => {
+    fetchWithAuth.mockResolvedValue(ok('issued', (d) => ({ ...d, quote: { ...d.quote, status: 'accepted', displayStatus: 'accepted' } })));
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('document-root');
+    expect(screen.queryByTestId('quote-preview-signature')).toBeNull();
+  });
+
+  it('a draft previews with the draft number and the cover when enabled', async () => {
+    fetchWithAuth.mockResolvedValue(ok('draft'));
+    render(<QuoteDocumentPreview detail={detail()} />);
+    expect((await screen.findByTestId('document-root')).querySelector('h1')).toHaveTextContent('Proposal');
+    expect(screen.getByTestId('quote-preview-signature')).toBeInTheDocument();
+  });
+
+  it('delivers the partner accent through CSSOM on the wrapper, never a style attribute on the paper', async () => {
+    fetchWithAuth.mockResolvedValue(ok('issued'));
+    render(<QuoteDocumentPreview detail={detail()} />);
+    const wrapper = await screen.findByTestId('quote-preview-paper');
+    await waitFor(() => expect(wrapper.style.getPropertyValue('--doc-accent')).toBe('#1d4ed8'));
+    expect(screen.getByTestId('document-root').getAttribute('style')).toBeNull();
+  });
+});
+
+describe('web host components for a quote (authenticated routes)', () => {
+  it('loads a line thumbnail, the cover and a block image through the authed fetch, from the payload routes', async () => {
+    const create = vi.fn(() => 'blob:img');
+    Object.defineProperty(window.URL, 'createObjectURL', { value: create, configurable: true });
+    fetchWithAuth.mockImplementation(async (path: string) => {
+      if (path.endsWith('/customer-view')) return ok('cover');
+      return { ok: true, status: 200, blob: async () => new Blob(['x']) };
+    });
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('document-cover');
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(`/api/v1/quotes/${QUOTE_FIXTURE_IDS.quote}/images/${QUOTE_FIXTURE_IDS.coverImage}`));
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledWith(`/quotes/public/tok/line-image/${id(101)}`));
+  });
+
+  it('an uploaded agreement is fetched only once opened, then shown in an iframe with a download link', async () => {
+    Object.defineProperty(window.URL, 'createObjectURL', { value: vi.fn(() => 'blob:pdf'), configurable: true });
+    fetchWithAuth.mockImplementation(async (path: string) => {
+      if (path.endsWith('/customer-view')) return ok('agreements');
+      return { ok: true, status: 200, blob: async () => new Blob(['pdf']) };
+    });
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('document-agreements');
+    const row = document.getElementById(`agreement-${id(40)}`) as HTMLDetailsElement;
+    const filePath = `/quotes/public/tok/contract-file/${id(40)}`;
+    expect(fetchWithAuth).not.toHaveBeenCalledWith(filePath);
+    row.open = true;
+    fireEvent(row, new Event('toggle'));
+    await waitFor(() => expect(row.querySelector('iframe')?.getAttribute('src')).toBe('blob:pdf'));
+    expect(fetchWithAuth).toHaveBeenCalledWith(filePath);
+    expect(row.querySelector('iframe')?.getAttribute('title')).toBe('MSA (PDF)');
+    expect(screen.getByTestId('quote-contract-download').textContent).toBe('Download agreement');
+  });
+
+  it('a failed agreement fetch shows the unavailable text instead of a frame', async () => {
+    fetchWithAuth.mockImplementation(async (path: string) => {
+      if (path.endsWith('/customer-view')) return ok('agreements');
+      return { ok: false, status: 404 };
+    });
+    render(<QuoteDocumentPreview detail={detail()} />);
+    await screen.findByTestId('document-agreements');
+    const row = document.getElementById(`agreement-${id(40)}`) as HTMLDetailsElement;
+    row.open = true;
+    fireEvent(row, new Event('toggle'));
+    await waitFor(() => expect(row.textContent).toContain('Agreement file unavailable'));
+    expect(row.querySelector('iframe')).toBeNull();
   });
 });

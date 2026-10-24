@@ -23,6 +23,8 @@
     "adminUsersDetailDevices": "Dispositivos do usuário",
     "aiAgentsImpact": "Impacto da IA",
     "aiAgentsFixMemory": "Memória de correções",
+    "flows": "Fluxos",
+    "flowDetail": "Fluxo",
     "aiAgentsRunsDetail": "Detalhes da execução",
     "aiAgentsRuns": "Execuções de agentes",
     "aiForOffice": "IA para Office",
@@ -73,7 +75,7 @@
     "fleet": "Orquestração de frota",
     "forgotPassword": "Esqueci minha senha",
     "incidentsDetail": "Detalhes do incidente",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de segurança",
     "dashboard": "Painel",
     "integrations": "Integrações",
     "integrationsPsa": "Integrações PSA",
@@ -139,6 +141,7 @@
     "settingsBilling": "Configurações de faturamento",
     "settingsCatalog": "Catálogo de produtos",
     "settingsConnectedApps": "Aplicativos conectados",
+    "settingsDeliverableTemplates": "Modelos de entregáveis",
     "settingsCustomFields": "Campos personalizados",
     "settingsEnrollmentKeys": "Chaves de registro",
     "settingsFilters": "Filtros salvos",
@@ -175,8 +178,10 @@
     "securityScans": "Varreduras de IOC",
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Mensagens para dispositivos"
+    "billingAutopay": "Pagamentos automáticos",
+    "endpointMessages": "Mensagens para dispositivos",
+    "securityDetectionRules": "Regras de detecção",
+    "settingsPlan": "Plano e recursos"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",
@@ -259,6 +264,10 @@
       },
       "alertTemplates": {
         "title": "Modelos de alerta"
+      },
+      "plan": {
+        "title": "Plano e recursos",
+        "description": "Seu plano, quais recursos ele inclui e de onde vem cada um."
       }
     },
     "groups": {

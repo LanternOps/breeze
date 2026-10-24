@@ -34,6 +34,7 @@ vi.mock('./contractQuantities', () => ({
 vi.mock('./contractHourBlockEstimate', () => ({ computeOpenHourBlockPeriod: vi.fn() }));
 
 import * as svc from './contractService';
+import { summarizeActiveContractMrrByOrg } from './contractMrr';
 import { db } from '../db';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
@@ -95,7 +96,8 @@ describe('addContractLineToContract — hour_block (#4547 W03)', () => {
   });
 
   it('PAUSE -> RESUME on an advance contract: the pointer was reset onto a period claimed before the pause, so the block starts at the first UNCLAIMED one', async () => {
-    // resumeContract points nextBillingAt at the period containing today (June), which was claimed before the pause.
+    // Before #9509, resumeContract pointed nextBillingAt at the period containing today (June), which was claimed
+    // before the pause. A contract stuck that way keeps the pointer until its next billing run heals it.
     expect(await addAndRead({ nextBillingAt: '2026-06-01' }, [{ periodStart: '2026-06-01' }]))
       .toMatchObject({ hourBlockFirstPeriodStart: '2026-07-01' });
     results.length = 0; (db as unknown as Chain).values.mock.calls.length = 0;
@@ -270,7 +272,7 @@ describe('estimate and MRR count the block fee once and never hours (#4547 W03)'
       results.length = 0;
       queueResult([{ id: 'c1', orgId: 'org1', status: 'active', currencyCode: 'USD', intervalMonths: 1, endDate: null, nextBillingAt: '2026-07-01', billingTiming: 'advance' }]);
       queueResult([line]);
-      const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-06-20T00:00:00Z'));
+      const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2026-06-20T00:00:00Z'));
       const total = out.get('org1')?.find((r) => r.currencyCode === 'USD')?.amount ?? '0.00';
       expect(Number(total)).toBe(Number(expected));
     }

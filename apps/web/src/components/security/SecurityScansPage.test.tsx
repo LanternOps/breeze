@@ -59,7 +59,20 @@ describe('SecurityScansPage', () => {
 
   it('clicking a threat row opens ThreatDetail with a Restore action, and close returns to the list (MSA-3)', async () => {
     window.location.hash = '#threats';
-    fetchWithAuth.mockResolvedValue(makeJsonResponse({ data: [quarantinedThreat] }));
+    // ThreatDetail reads the selected threat from /details (#6267 W04-5).
+    fetchWithAuth.mockImplementation(async (url: string) =>
+      url.endsWith('/details')
+        ? makeJsonResponse({
+            data: {
+              threat: quarantinedThreat,
+              rule: {
+                engine: 'legacy', ruleName: null, ruleId: null, ruleSetId: null, ruleSet: null,
+                tags: [], matchedStrings: [], sha256: null, quarantinedTo: null, quarantineFailed: false,
+              },
+            },
+          })
+        : makeJsonResponse({ data: [quarantinedThreat] }),
+    );
 
     render(<SecurityScansPage />);
 

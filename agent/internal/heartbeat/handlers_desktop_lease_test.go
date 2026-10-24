@@ -36,6 +36,20 @@ type fakeLifecycle struct {
 	// blockWait makes WaitForHelperReady behave like the real manager for a
 	// helper that never comes up: it returns only when ctx ends.
 	blockWait bool
+	// pamHolds records every SetPAMHelperHold call in order.
+	pamHolds []bool
+}
+
+func (f *fakeLifecycle) SetPAMHelperHold(enabled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pamHolds = append(f.pamHolds, enabled)
+}
+
+func (f *fakeLifecycle) pamHoldCalls() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.pamHolds...)
 }
 
 func (f *fakeLifecycle) Stop()                 {}

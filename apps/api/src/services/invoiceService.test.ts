@@ -502,7 +502,9 @@ describe('invoiceService guards', () => {
     expect(Object.keys(invoice).sort()).toEqual([
       'amountPaid',
       'balance',
+      'billToAddress',
       'billToName',
+      'billToTaxId',
       'currencyCode',
       'depositDue',
       'dueDate',
@@ -516,9 +518,14 @@ describe('invoiceService guards', () => {
       'subtotal',
       'taxRate',
       'taxTotal',
+      'terms',
       'termsAndConditions',
       'total',
     ].sort());
+    // W3a: the three PDF-parity fields the customer already receives in the emailed PDF.
+    expect(invoice.billToAddress).toEqual({ line1: 'internal-address-field', line2: null, city: null, region: null, postalCode: null, country: null });
+    expect(invoice.billToTaxId).toBe('internal-tax-id');
+    expect(invoice.terms).toBe('implementation-only legacy terms');
     expect(invoice).not.toHaveProperty('createdBy');
     expect(invoice).not.toHaveProperty('replacesInvoiceId');
     expect(invoice).not.toHaveProperty('replacedByInvoiceId');
@@ -531,6 +538,19 @@ describe('invoiceService guards', () => {
     expect(invoice).not.toHaveProperty('updatedAt');
     // The untyped jsonb is rebuilt from the known snapshot keys (#9402).
     expect(invoice.sellerSnapshot).toEqual({ name: 'MSP, Inc.', address: null, phone: null, email: null, website: null });
+  });
+
+  it('asDocumentBillToAddress rebuilds from the known keys and nulls everything else (W3a)', () => {
+    expect(svc.asDocumentBillToAddress({ line1: 'a', internalNote: 'x', vaultRef: 'y', city: 5 })).toEqual({
+      line1: 'a', line2: null, city: null, region: null, postalCode: null, country: null,
+    });
+    for (const bad of [null, undefined, [], 'str', 42]) expect(svc.asDocumentBillToAddress(bad)).toBeNull();
+  });
+
+  it('toCustomerInvoiceHeader carries billToAddress / billToTaxId / terms as null, not absent', () => {
+    const h = svc.toCustomerInvoiceHeader({ id: 'i1', status: 'sent', currencyCode: 'USD', billToName: 'C' } as unknown as Parameters<typeof svc.toCustomerInvoiceHeader>[0]);
+    expect(h).toMatchObject({ billToAddress: null, billToTaxId: null, terms: null });
+    expect(Object.keys(h)).toEqual(expect.arrayContaining(['billToAddress', 'billToTaxId', 'terms']));
   });
 
   it('asDocumentSellerSnapshot drops unknown keys and non-objects', () => {

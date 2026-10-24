@@ -112,7 +112,7 @@ describe('AuditLogViewer', () => {
     await screen.findByText(/audit log/i);
     fireEvent.click(screen.getByRole('button', { name: /filters/i }));
     fireEvent.click(await screen.findByText('apply-test-filters'));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('user='))).toBe(true));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes('userId='))).toBe(true));
 
     fireEvent.click(screen.getByRole('button', { name: /export/i }));
 
@@ -121,6 +121,9 @@ describe('AuditLogViewer', () => {
       expect(call).toBeTruthy();
       const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
       expect(qs.get('userId')).toBe('11111111-1111-4111-8111-111111111111');
+      // #9671: a picked user is matched by id; the email text match would AND
+      // away that user's rows that carry no actor email (agent.command.*).
+      expect(qs.has('user')).toBe(false);
     });
   });
 
@@ -139,7 +142,7 @@ describe('AuditLogViewer', () => {
       const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/audit-logs/export'));
       expect(call).toBeTruthy();
       const qs = new URLSearchParams(String(call![0]).split('?')[1] ?? '');
-      for (const key of ['user', 'action', 'resource', 'q']) {
+      for (const key of ['userId', 'action', 'resource', 'q']) {
         expect(listQs.get(key), `list sends ${key}`).toBeTruthy();
         expect(qs.get(key), `export sends ${key}`).toBe(listQs.get(key));
       }
@@ -153,6 +156,58 @@ describe('AuditLogViewer', () => {
       expect(qs.has('page')).toBe(false);
       expect(qs.has('limit')).toBe(false);
       expect(qs.has('skipCount')).toBe(false);
+    });
+  });
+
+  describe('row presentation (#9672)', () => {
+    const row = (action: string, extra: Record<string, unknown> = {}) => ({
+      id: `log-${action}`,
+      timestamp: '2026-10-01T12:00:00.000Z',
+      user: { name: 'Dana Admin', email: 'dana@example.com', role: 'user' },
+      action,
+      resource: 'Disk cleanup',
+      resourceType: 'script',
+      details: JSON.stringify({ a: 1, b: 2, c: 3 }),
+      ipAddress: '10.0.0.1',
+      userAgent: 'test',
+      sessionId: '',
+      changes: { before: {}, after: {} },
+      ...extra,
+    });
+
+    it('colours badges by the first segment of the dotted code', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ entries: [row('user.login'), row('script.execute')], pagination: { total: 2, totalPages: 1 } }),
+      );
+      render(<AuditLogViewer />);
+      await screen.findAllByTestId('audit-action-badge');
+      const [login, script] = screen.getAllByTestId('audit-action-badge');
+      expect(login.className).not.toBe(script.className);
+      expect(script.className).not.toContain('slate');
+    });
+
+    it('does not claim "N fields updated" when there is no before-state', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('script.execute', { changes: { before: {}, after: { a: 1, b: 2, c: 3 } } })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      fireEvent.click((await screen.findAllByTestId('audit-row-toggle'))[0]);
+      expect(screen.queryByText(/fields? updated/i)).toBeNull();
+    });
+
+    it('counts changed fields when a before-state exists', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          entries: [row('device.update', { changes: { before: { a: 0 }, after: { a: 1, b: 2 } } })],
+          pagination: { total: 1, totalPages: 1 },
+        }),
+      );
+      render(<AuditLogViewer />);
+      fireEvent.click((await screen.findAllByTestId('audit-row-toggle'))[0]);
+      expect(screen.getByText(/2 fields updated/i)).toBeTruthy();
     });
   });
 });

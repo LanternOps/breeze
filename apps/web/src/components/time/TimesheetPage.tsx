@@ -20,6 +20,8 @@ import { useHashState } from '@/lib/useHashState';
 import '../../lib/i18n';
 import { replaceUrl } from '../../lib/replaceUrl';
 import { AwaitingApprovalChip, WriteOffHeldButton, isAwaitingApproval } from './HeldEntryControls';
+import { laborHours, billedLaborMinutes } from '@breeze/shared';
+import { laborBreakdown } from './laborBreakdown';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,15 +60,15 @@ interface TsEntry extends BillingOutcomeStamp {
 
 /** #4628 §3.5 — one line naming the worked time whenever a minimum or the
  *  card's rounding moved the billed quantity. Returns null when they agree.
- *  Duplicated locally from TicketTimeBilling: a two-line helper, per the
- *  repo's file guidance. */
+ *  The rounding itself is the shared labour rule (#9561, `laborHours`); only
+ *  the locale key differs from TicketTimeBilling's copy. */
 function billedVsWorked(
   t: (key: string, options?: Record<string, unknown>) => string,
   durationMinutes: number | null,
   billableMinutes: number | null | undefined
 ): string | null {
-  const worked = ((durationMinutes ?? 0) / 60).toFixed(2);
-  const billed = (((billableMinutes ?? durationMinutes) ?? 0) / 60).toFixed(2);
+  const worked = laborHours(durationMinutes ?? 0);
+  const billed = laborHours(billedLaborMinutes({ billableMinutes, durationMinutes }));
   if (worked === billed) return null;
   return t('longTail.time.TimesheetPage.billedVsWorked', { worked, billed });
 }
@@ -726,6 +728,11 @@ export default function TimesheetPage() {
                                   {billedVsWorked(t, entry.durationMinutes, entry.billableMinutes)}
                                 </span>
                               )}
+                              {laborBreakdown(t, entry) && (
+                                <span className="block text-xs" data-testid={`timesheet-labor-${entry.id}`}>
+                                  {laborBreakdown(t, entry)}
+                                </span>
+                              )}
                             </span>
                             {/* Rate in its stamped currency only — a rate without a currency
                                 cannot exist server-side, and guessing USD would relabel money. */}
@@ -797,6 +804,13 @@ export default function TimesheetPage() {
               </span>
             )}
           </div>
+          {/* #9561: each chip is a sum of per-entry figures billed at 2-decimal
+              hours × rate (by design) — say so where the money is. */}
+          {(sheet.totals.billableAmounts?.length ?? 0) > 0 && (
+            <span className="text-xs font-normal text-muted-foreground" data-testid="timesheet-labor-rule">
+              {t('tickets:ticketTimeBilling.laborRule')}
+            </span>
+          )}
           {/* Reporting-only companion to the chips above; hides itself whenever
               a leg is missing or stale (multi-currency spec §8). */}
           <ApproximateMoneyLine

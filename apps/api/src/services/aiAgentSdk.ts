@@ -30,7 +30,8 @@ import {
   checkTenantToolRateLimit,
 } from './toolSources/guardrails';
 import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
-import { checkBudget, checkAiRateLimit } from './aiCostTracker';
+import { checkBudgetDetailed, checkAiRateLimit } from './aiCostTracker';
+import { aiDenialClientCode, type AiDenialClientCode } from './aiDenialCode';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
 import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
@@ -45,6 +46,8 @@ import { loadProposalApprovalSummary } from './scriptProposals/approvalSummary';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
+import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
+import { applyHelperDeviceScope } from './helperToolFilter';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from './expoPush';
 import { decideHelperToolAction } from './pamToolActionGovernance';
 import { loadSession, loadConnection } from './m365Helpers';
@@ -69,8 +72,10 @@ import {
 import { requiresDurableRelease } from './actionIntents/durableRelease';
 import {
   APPROVED_FAILED_STATUS,
+  buildToolHandoffResult,
   describeIntentOutcome,
   handoffDenialForOutcome,
+  handoffLedgerStatus,
   type HandoffOutcome,
   type ToolHandoffStatus,
 } from './aiToolHandoff';
@@ -92,6 +97,7 @@ import type { ResolveFailureReason } from './aiModels/eligibility';
 import type { ModelUnavailable, ResolvedModel } from './aiModels/resolveModel';
 import { resolveSessionTurn } from './aiModels/sessionModel';
 import { resolveLiveSessionToolAuthority } from './aiSessionLiveAuthority';
+import { approvalCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 
 import { SESSION_IDLE_TIMEOUT_MS, SESSION_MAX_AGE_MS } from './aiAgentSessionLimits';
 
@@ -314,6 +320,18 @@ const DECIDED_APPROVAL_METHODS: ReadonlySet<ApprovalMethod> = new Set([
   'plan_step',
 ]);
 
+/**
+ * The approval method a decided tier>=2 call records: the durable tier-3
+ * intent (requester self-decided a SUPERVISED intent, or a second approver
+ * decided a four_eyes one — an unscoped tier 3 never defaults to the weaker
+ * `supervised_self`) or the tier-2 lightweight card. Shared by the inline
+ * release and the #9530 worker hand-off so the two cannot drift.
+ */
+function decidedApprovalMethod(check: { tier: number; approvalScope?: string }): ApprovalMethod {
+  if (check.tier >= 3) return check.approvalScope === 'supervised' ? 'supervised_self' : 'action_intent';
+  return 'per_step_user';
+}
+
 /** Consume the recorded approval method for the audit event's details. */
 function approvalAuditDetails(
   session: ActiveSession,
@@ -410,6 +428,8 @@ export type PreFlightResult = {
   status?: number;
   /** A recoverable model-resolution failure (the route answers 409 with it). */
   code?: ResolveFailureReason;
+  /** The credit / plan gate refused the turn (status is 402): the code the client switches on. */
+  billingCode?: AiDenialClientCode;
 };
 
 /**
@@ -474,8 +494,11 @@ export async function runPreFlightChecks(
   // Budget
   try {
     // Funding from the RESOLVED offering (quorum #4).
-    const budgetError = await checkBudget(orgId, model.funding);
-    if (budgetError) return { ok: false, error: budgetError };
+    const denial = await checkBudgetDetailed(orgId, model.funding);
+    if (denial) {
+      const billingCode = aiDenialClientCode(denial.reason);
+      return { ok: false, error: denial.message, status: 402, ...(billingCode ? { billingCode } : {}) };
+    }
   } catch (err) {
     console.error('[AI-SDK] Budget check failed:', err);
     return { ok: false, error: 'Unable to verify budget. Please try again.' };
@@ -806,6 +829,33 @@ export function intentCreationRefusal(toolName: string, input: unknown, err: unk
   return 'Failed to create approval record';
 }
 
+/**
+ * #9854: the refusal `executeTool` would return for this input, computed
+ * before approval so a call that can never run is not put to a human.
+ *
+ * Validates exactly what `executeTool` will validate: the helper-scoped input
+ * for a Helper session (`applyHelperDeviceScope`), the raw input otherwise.
+ * Only core tools with a `toolInputSchemas` entry are checked here — tenant
+ * (BYO MCP), extension and session-aware tools validate on their own path,
+ * and `validateToolInput` refuses a tool with no schema outright.
+ */
+function preApprovalInputRefusal(
+  session: ActiveSession,
+  toolName: string,
+  input: Record<string, unknown>,
+  isTenantTool: boolean,
+): string | null {
+  if (isTenantTool || !Object.hasOwn(toolInputSchemas, toolName)) return null;
+  let effectiveInput = input;
+  if (session.auth.helperDeviceId) {
+    const scoped = applyHelperDeviceScope(toolName, input, session.auth.helperDeviceId);
+    if ('error' in scoped) return scoped.error;
+    effectiveInput = scoped.input;
+  }
+  const validation = validateToolInput(toolName, effectiveInput);
+  return validation.success ? null : validation.error;
+}
+
 export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallback {
   return async (toolName, input, mcpToolName) => {
     // Set only by the tier-3 branch below when it creates a durable intent;
@@ -876,6 +926,16 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         error: `Tool '${stripMcpPrefix(exposedToolName)}' is not allowed for this session`,
       };
     }
+
+    // #9854: validate the input against the tool's full schema BEFORE any
+    // guardrail, approval card, action intent or PAM elevation exists. The SDK
+    // tool shapes carry no refinements (e.g. the AI path deny-list on
+    // execute_command file_read/file_list), so a call the platform will always
+    // refuse used to reach a human for approval and fail only afterwards, in
+    // executeTool. Mirrors createMcpActionIntent (mcpIntentCreation.ts).
+    // executeTool keeps its own check as the backstop.
+    const inputRefusal = preApprovalInputRefusal(session, toolName, input, tenant !== undefined);
+    if (inputRefusal) return { allowed: false, error: inputRefusal };
 
     // Guardrails (tier check + action-based escalation). A proposal-backed
     // run_script needs the proposal's reviewed risk tier to pick supervised vs
@@ -1013,7 +1073,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           return { allowed: false, error: 'Failed to create approval record' };
         }
 
-        session.eventBus.publish({
+        // #9427: tracked until the decision below ends, however it ends.
+        const helperCardKey = approvalCardKey(helperExec.id);
+        publishPendingCard(session, helperCardKey, {
           type: 'approval_required',
           executionId: helperExec.id,
           approvalWindowMs: session.approvalWaitBudgetMs,
@@ -1023,35 +1085,39 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           requiresAdminApproval: true,
         });
 
-        const decision = await decideHelperToolAction({
-          orgId: session.orgId,
-          deviceId: helperDeviceId,
-          executionId: helperExec.id,
-          toolName: stripMcpPrefix(toolName),
-          toolInput: input as Record<string, unknown>,
-          riskTier: guardrailCheck.tier,
-          subjectUsername: session.auth.user.name ?? 'helper',
-        });
-
-        if (decision === 'denied') {
-          return { allowed: false, error: 'This action was denied by organization policy' };
-        }
-
-        // Block until PAM decides (an auto-approved elevation has already
-        // flipped the row, so this returns on the first poll). Draws from the
-        // same shared per-cycle approval-wait budget as the tier-2/tier-3
-        // flows (#3089) so stacked helper approvals can't outlive the turn
-        // timeout, and settleApprovalWaits can conclude a blocked helper turn.
-        const helperApprovalWait = beginApprovalWait(session);
         let approved: boolean;
         try {
-          approved = await waitForApproval(
-            helperExec.id,
-            helperApprovalWait.timeoutMs,
-            helperApprovalWait.signal,
-          );
+          const decision = await decideHelperToolAction({
+            orgId: session.orgId,
+            deviceId: helperDeviceId,
+            executionId: helperExec.id,
+            toolName: stripMcpPrefix(toolName),
+            toolInput: input as Record<string, unknown>,
+            riskTier: guardrailCheck.tier,
+            subjectUsername: session.auth.user.name ?? 'helper',
+          });
+
+          if (decision === 'denied') {
+            return { allowed: false, error: 'This action was denied by organization policy' };
+          }
+
+          // Block until PAM decides (an auto-approved elevation has already
+          // flipped the row, so this returns on the first poll). Draws from the
+          // same shared per-cycle approval-wait budget as the tier-2/tier-3
+          // flows (#3089) so stacked helper approvals can't outlive the turn
+          // timeout, and settleApprovalWaits can conclude a blocked helper turn.
+          const helperApprovalWait = beginApprovalWait(session);
+          try {
+            approved = await waitForApproval(
+              helperExec.id,
+              helperApprovalWait.timeoutMs,
+              helperApprovalWait.signal,
+            );
+          } finally {
+            helperApprovalWait.end();
+          }
         } finally {
-          helperApprovalWait.end();
+          resolvePendingCard(session, helperCardKey);
         }
         if (!approved) {
           // Mirrors the tier-2/tier-3 close-out below: on an early settle
@@ -1220,6 +1286,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
        */
       const releaseHandoffDenial = async (
         intentId: string,
+        executionId: string,
       ): Promise<{ allowed: false; error: string; handoff: ToolHandoffStatus }> => {
         const readBack = beginApprovalWait(session);
         let outcome: HandoffOutcome;
@@ -1251,6 +1318,55 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           outcome = describeIntentOutcome(null);
         } finally {
           readBack.end();
+        }
+
+        // #9530: the human DID approve this call — both callers sit behind the
+        // decision gate, which only lets approved/executing/completed/failed
+        // through — and only the executor differs. That stays true even if the
+        // intent later expired or was cancelled before the worker ran it; the
+        // audit row's `toolOutcome` (approved_failed) and error carry that
+        // half. Without this the postToolUse audit row read approved:false /
+        // approvalMethod:'unknown', contradicting `action_intent.approved`.
+        lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
+
+        // #9530: close the execution-ledger row. Nothing else will — the worker
+        // never touches ai_tool_executions, and postToolUse's update is guarded
+        // on `executing`, which this branch never sets — so it stayed `pending`
+        // with no output forever. The stored output is the hand-off payload the
+        // model reads (already default-deny projected), NEVER the raw intent
+        // result, which can carry sealed secrets. Guarded on `pending` so it
+        // can never clobber a row another path already closed. Best-effort: a
+        // failed write leaves the old `pending` row, and must not change what
+        // the turn reports.
+        const ledgerStatus = handoffLedgerStatus(outcome.handoff);
+        try {
+          await withDbAccessContext(
+            { scope: 'organization', orgId: session.orgId, accessibleOrgIds: [session.orgId] },
+            () =>
+              db
+                .update(aiToolExecutions)
+                .set({
+                  status: ledgerStatus,
+                  toolOutput: { ...buildToolHandoffResult(outcome.handoff, outcome.message) },
+                  ...(ledgerStatus === 'failed'
+                    ? { errorMessage: (outcome.reason ?? outcome.message).slice(0, 1000) }
+                    : {}),
+                  ...(ledgerStatus === 'approved' ? {} : { completedAt: new Date() }),
+                })
+                .where(and(
+                  eq(aiToolExecutions.id, executionId),
+                  eq(aiToolExecutions.status, 'pending'),
+                )),
+          );
+        } catch (err) {
+          console.error(`[AI-SDK] Failed to close hand-off execution record ${executionId}:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            area: 'ai_handoff_ledger_close',
+            intent_id: intentId,
+            execution_id: executionId,
+            session_id: session.breezeSessionId,
+            tool_name: toolName,
+          });
         }
 
         return await failMatchedPlanStep(
@@ -1613,7 +1729,8 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // branch applies and the card offers an inline WebAuthn self-approve
           // for that one row (an L3 proof satisfying, not bypassing, the decide
           // handler's gate).
-          session.eventBus.publish({
+          // #9427: tracked until the decision wait below ends.
+          publishPendingCard(session, approvalCardKey(approvalExec.id), {
             type: 'approval_required',
             executionId: approvalExec.id,
             approvalRequestId: intent.approvalRequestIds[0],
@@ -1663,16 +1780,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // — and the durable release worker (jobs/intentReleaseWorker.ts) will
           // execute it — after this session has moved on or died. This is the
           // new durable capability the design adds (spec §6.1).
-          const approvalWait = beginApprovalWait(session);
           let decisionStatus: Awaited<ReturnType<typeof waitForIntentDecision>>;
           try {
-            decisionStatus = await waitForIntentDecision(
-              intent.id,
-              approvalWait.timeoutMs,
-              approvalWait.signal,
-            );
+            const approvalWait = beginApprovalWait(session);
+            try {
+              decisionStatus = await waitForIntentDecision(
+                intent.id,
+                approvalWait.timeoutMs,
+                approvalWait.signal,
+              );
+            } finally {
+              approvalWait.end();
+            }
           } finally {
-            approvalWait.end();
+            // A no-op for the unattended-release branch, which recorded no card.
+            resolvePendingCard(session, approvalCardKey(approvalExec.id));
           }
 
           if (decisionStatus === 'pending_approval') {
@@ -1756,7 +1878,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // `approved -> executing` CAS below, so the worker's claim remains
           // available and the intent is never stranded in `executing`.
           if (requiresDurableRelease(toolName)) {
-            return await releaseHandoffDenial(intent.id);
+            return await releaseHandoffDenial(intent.id, approvalExec.id);
           }
 
           // COORDINATION INVARIANT (CRITICAL — prevents double execution): the
@@ -1796,7 +1918,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
             // Nothing about the invariant changes: the CAS was attempted and
             // lost, we still refuse to execute inline, and we still do not
             // touch the intent (the winner owns every subsequent transition).
-            return await releaseHandoffDenial(intent.id);
+            return await releaseHandoffDenial(intent.id, approvalExec.id);
           }
 
           // Won the CAS: record the intent id so the outer catch can
@@ -2254,7 +2376,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           }
 
           // Emit approval_required event via session event bus → UI shows Approve/Reject
-          session.eventBus.publish({
+          // #9427: tracked until the wait below ends, however it ends.
+          const cardKey = approvalCardKey(approvalExec.id);
+          publishPendingCard(session, cardKey, {
             type: 'approval_required',
             executionId: approvalExec.id,
             approvalRequestId,
@@ -2274,11 +2398,15 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
           // Block until user clicks Approve/Reject, the cycle's shared approval
           // wait budget (the org's interactive approval timeout) elapses, or the wait is settled early
           // (session teardown / new user message / interrupt — #3089).
-          approved = await waitForApproval(
-            approvalExec.id,
-            approvalWait.timeoutMs,
-            approvalWait.signal,
-          );
+          try {
+            approved = await waitForApproval(
+              approvalExec.id,
+              approvalWait.timeoutMs,
+              approvalWait.signal,
+            );
+          } finally {
+            resolvePendingCard(session, cardKey);
+          }
         } finally {
           approvalWait.end();
         }
@@ -2379,15 +2507,7 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       // decided: the durable tier-3 intent flow (approver via the approvals
       // surface, or the requester self-deciding a SUPERVISED intent — Task 6)
       // or the tier-2 lightweight card (user clicked Approve).
-      lastApprovalBySession.set(session, {
-        toolName,
-        method:
-          guardrailCheck.tier >= 3
-            ? guardrailCheck.approvalScope === 'supervised'
-              ? 'supervised_self'
-              : 'action_intent'
-            : 'per_step_user',
-      });
+      lastApprovalBySession.set(session, { toolName, method: decidedApprovalMethod(guardrailCheck) });
     }
     return { allowed: true, intentId: createdIntentId, context: verifiedToolContext };
   };

@@ -39,6 +39,15 @@ describe('KeyboardShortcutsHelp', () => {
     }
   });
 
+  it('lists the org switcher and AI sidebar chords', () => {
+    render(<KeyboardShortcutsHelp />);
+    act(() => { useUiStore.getState().openShortcutsHelp(); });
+    expect(screen.getByText('Ctrl+O', { selector: 'kbd' })).toBeInTheDocument();
+    expect(screen.getByText('Ctrl+Shift+A', { selector: 'kbd' })).toBeInTheDocument();
+    expect(screen.getByText('Open the organization switcher')).toBeInTheDocument();
+    expect(screen.getByText('Toggle the AI sidebar')).toBeInTheDocument();
+  });
+
   it('closes from its button and from Escape', () => {
     render(<KeyboardShortcutsHelp />);
     act(() => { useUiStore.getState().openShortcutsHelp(); });

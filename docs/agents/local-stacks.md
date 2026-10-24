@@ -41,3 +41,5 @@ Before ending a session, tear down what you brought up and say what you left run
 
 **Deleting a config file? Sweep the Compose mounts in the same PR.** Docker creates a missing bind-mount source as an empty **directory** on the host, which then gets `COPY`d into dev images where Vite/PostCSS discovery dies on it (`EISDIR`) — `breeze-web` comes up permanently unhealthy on a fresh clone. `apps/api/src/config/composeBindMounts.test.ts` (required **Test API** job) parses every tracked compose file and fails when a file-shaped, repo-relative bind-mount source doesn't exist — or has already become a phantom directory. Extensionless sources (`./agent/bin`) are exempt as intended build outputs; out-of-repo sources (`../breeze-billing/…`) can't be asserted and are skipped. Shipped three times before the guard existed: #1999 (postcss), #2208 (partial tailwind), #2012 (the mounts #2208 missed).
 
+
+**colima (vz + virtiofs) on macOS:** Node's native recursive `fs.cpSync` throws `EACCES` on virtiofs bind mounts, so `apps/web/scripts/copy-monaco-assets.ts` falls back to `cp -R` (#9535); if `breeze-web` restart-loops unhealthy, check its `predev` log first.

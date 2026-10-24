@@ -70,6 +70,7 @@ import { timeEntriesRoutes } from './routes/timeEntries';
 import { billingProfilesRoutes } from './routes/billingProfiles';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
+import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
@@ -201,6 +202,7 @@ import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { fleetDesignRoutes } from './routes/fleetDesign';
 import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
+import { wispRoutes } from './routes/wisp';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -327,6 +329,8 @@ import {
   shutdownAgentCommandRelayWorker,
 } from './jobs/agentCommandRelayWorker';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
+import { wispEnabled } from './config/env';
+import { installWispGrantHooks } from './services/wisp/grantLifecycle';
 import { logAiAgentsSubsystemState } from './services/aiAgents/subsystemState';
 import { startPlatformModelSnapshotRefresher, warnOnUnsupportedPlatformInferenceGeo } from './services/aiModels/platformModels';
 import { partnerTrustMode } from './config/partnerTrustMode';
@@ -340,6 +344,7 @@ import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { closeModelGateway } from './services/aiModels/gateway/server';
 import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
+import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
@@ -868,6 +873,7 @@ api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
+api.route('/business-calendars', businessCalendarRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
@@ -1099,6 +1105,9 @@ api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// Wisp W02 (#9908): delegation grants. Every route 404s while
+// BREEZE_WISP_ENABLED is off (checked per request inside wispRoutes).
+api.route('/wisp', wispRoutes);
 // W03 (#5612): more specific than '/ai', so it must be registered first — same
 // reason '/ai/agents/schedules' sits above '/ai/agents'. Hono matches in
 // registration order.
@@ -1775,6 +1784,9 @@ async function bootstrap(): Promise<void> {
   // userId bumps the shared Redis version key, so every replica invalidates at
   // once rather than each aging out independently.
   await clearPermissionCache();
+  // Wisp W02: re-evaluate a user's delegation grants whenever their permission
+  // authority changes (pause on lost access, lift its own pauses on recovery).
+  if (wispEnabled()) installWispGrantHooks();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
@@ -2000,6 +2012,11 @@ async function bootstrap(): Promise<void> {
   server = serve({
     fetch: app.fetch,
     port
+  });
+
+  // #9372: one non-blocking TURN preflight (never rejects, never delays boot).
+  startTurnPreflight(process.env).catch(() => {
+    console.warn('[turn-preflight] preflight failed unexpectedly');
   });
 
   injectWebSocket(server);

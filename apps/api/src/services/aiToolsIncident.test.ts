@@ -154,3 +154,105 @@ describe('incident AI tools — cross-org device gate', () => {
     });
   }
 });
+
+/**
+ * #9662: the action row is the containment's only lifecycle record, and the
+ * agent-result handler finds it by command id. It must therefore exist (and
+ * name the command id) BEFORE the command can reach the agent — a fast agent
+ * answering before a post-dispatch insert left the row `in_progress` forever.
+ */
+describe('execute_containment action lifecycle (#9662)', () => {
+  const input = {
+    incidentId: INCIDENT_ID,
+    deviceId: OWN_DEVICE_ID,
+    actionType: 'process_kill',
+    approvalRef: 'appr-1',
+    parameters: { pid: 1234 },
+  };
+
+  function updateChain() {
+    const chain: any = {};
+    chain.set = vi.fn(() => chain);
+    chain.where = vi.fn(() => Promise.resolve([]));
+    return chain;
+  }
+
+  beforeEach(() => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: ORG_ID, hostname: 'host-1', status: 'online' },
+    } as any);
+  });
+
+  it('records the action with a preallocated command id before dispatching that same id', async () => {
+    const order: string[] = [];
+    let insertedValues: any;
+    vi.mocked(db.insert).mockImplementation(() => {
+      const chain = createInsertChain([{ id: 'action-1' }]);
+      chain.values = vi.fn((v: unknown) => { order.push('insert'); insertedValues = v; return chain; });
+      return chain as any;
+    });
+    vi.mocked(aiQueueCommandForExecution).mockImplementation(async (...args: any[]) => {
+      order.push('dispatch');
+      return { command: { id: args[5].commandId, status: 'sent' } } as any;
+    });
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(order).toEqual(['insert', 'dispatch']);
+    const dispatchedId = vi.mocked(aiQueueCommandForExecution).mock.calls[0]![5]!.commandId;
+    expect(dispatchedId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(insertedValues).toMatchObject({ status: 'in_progress', result: { commandId: dispatchedId } });
+    expect(out).toMatchObject({ success: true, commandId: dispatchedId, actionId: 'action-1' });
+  });
+
+  it('does not dispatch when the action cannot be recorded', async () => {
+    vi.mocked(db.insert).mockImplementation(() => {
+      const chain = createInsertChain([]);
+      chain.returning = vi.fn(() => Promise.reject(new Error('insert failed')));
+      return chain as any;
+    });
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+    expect(out.error).toMatch(/could not be recorded/i);
+  });
+
+  it('fails the recorded action when the dispatch is refused', async () => {
+    const chain = updateChain();
+    vi.mocked(db.update).mockImplementation(() => chain);
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ error: 'Device is offline' } as any);
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(out.error).toBe('Device is offline');
+    expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      result: expect.objectContaining({ error: 'Device is offline' }),
+    }));
+  });
+
+  it('cancels the recorded action when the dispatch was cancelled at claim time', async () => {
+    const chain = updateChain();
+    vi.mocked(db.update).mockImplementation(() => chain);
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
+      command: { id: 'cmd-1', status: 'cancelled' }, error: 'Command cancelled', refusal: 'cancelled',
+    } as any);
+
+    await buildToolMap().get('execute_containment')!.handler(input, makeAuth());
+
+    expect(chain.set).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+  });
+
+  it('refuses a device outside the incident organization', async () => {
+    vi.mocked(verifyDeviceAccess).mockResolvedValue({
+      device: { id: OWN_DEVICE_ID, orgId: '77777777-7777-7777-7777-777777777777', hostname: 'h', status: 'online' },
+    } as any);
+
+    const out = JSON.parse(await buildToolMap().get('execute_containment')!.handler(input, makeAuth()));
+
+    expect(out.error).toMatch(/same organization/i);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
+  });
+});
