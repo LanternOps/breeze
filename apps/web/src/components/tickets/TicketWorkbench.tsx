@@ -27,6 +27,7 @@ import TicketTypeChip from './TicketTypeChip';
 import { TICKET_TYPE_ORDER, isTicketType, ticketTypeLabelKey } from './ticketType';
 import { CallerVerificationEntry } from '../callerVerification/CallerVerificationEntry';
 import { TicketVerificationBadge } from '../callerVerification/TicketVerificationBadge';
+import OffboardPersonLauncher from '../aiOperator/OffboardPersonLauncher';
 import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
@@ -1191,6 +1192,8 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               />
             </>
           )}
+          {/* Renders nothing unless the Operator flag is on and the org can run offboarding. */}
+          <OffboardPersonLauncher orgId={ticket.orgId} source="ticket" contactId={ticket.requesterContactId ?? null} personHint={ticket.submitterEmail ?? null} label={ticket.submitterName ?? ticket.submitterEmail ?? null} />
           {slaState(ticket).kind !== 'none' && (
             // SlaChip renders nothing for no-SLA tickets — the separator must follow suit.
             <>

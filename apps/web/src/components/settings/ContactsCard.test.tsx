@@ -605,3 +605,58 @@ describe('ContactsCard load failures', () => {
     expect(listCalls().length).toBeGreaterThan(before);
   });
 });
+
+// Operator Recipe Library W06 R1b (#6171) — MOUNT proof for the contact launch
+// point. A launcher, not a setting: it starts an Operator task for this contact.
+describe('ContactsCard — Offboard a person launcher', () => {
+  const workflow = (readiness: string) => ({
+    recipeKey: 'identity_offboarding', recipeVersion: 4, name: 'Offboard a person', summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(opts: { flag: boolean; readiness?: string }) {
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === '/config') return jsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) return jsonResponse({ data: [workflow(opts.readiness ?? 'ready')] });
+      if (url.startsWith('/devices')) return jsonResponse({ data: [] });
+      if (url.startsWith('/orgs/sites')) {
+        return jsonResponse({ data: SITES, pagination: { page: 1, limit: 50, total: SITES.length } });
+      }
+      return jsonResponse({ data: CONTACTS, pagination: { page: 1, limit: 25, total: CONTACTS.length } });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders per contact row and opens the form with that contact, read-only, and no ticket source', async () => {
+    mockWithOperator({ flag: true });
+    await renderCard();
+    fireEvent.click(await screen.findByTestId('offboard-launcher-contact-c-ada'));
+    expect(await screen.findByTestId('start-recipe-form')).toBeInTheDocument();
+    expect(screen.getByTestId('start-recipe-person')).toHaveTextContent('Ada Byron');
+    expect(screen.getByTestId('start-recipe-person')).toHaveTextContent('Started from this contact.');
+    expect(screen.queryByTestId('start-recipe-person-hint')).toBeNull();
+    expect(screen.queryByTestId('start-recipe-person-use-hint')).toBeNull();
+    // The Library was read once for the org, not once per row.
+    expect(fetchWithAuthMock.mock.calls.filter(([u]) => String(u).startsWith('/ai/operator/workflows'))).toHaveLength(1);
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['the recipe is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(opts);
+    await renderCard();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId('offboard-launcher-contact-c-ada')).not.toBeInTheDocument();
+  });
+});
