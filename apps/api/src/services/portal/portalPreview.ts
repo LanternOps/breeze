@@ -9,7 +9,7 @@ import {
   type PortalSectionGateRow,
   type PortalSectionKey,
 } from '../../routes/portal/featureFlags';
-import { portalTicketOwnership } from '../../routes/portal/ticketOwnership';
+import { portalDashboardTicketScope } from '../../routes/portal/ticketReadAccess';
 import { backupOverview } from './backupReadModel';
 import { dashboardForOrg } from './dashboard';
 import { documentsForOrg } from './documentsReadModel';
@@ -107,7 +107,8 @@ const RUNNERS: Partial<Record<PortalSectionKey, Runner>> = {
   dashboard: async ({ orgId, timezone, now, portalUser, can }) => {
     // Without a user there is no ownership predicate; `false` matches nothing,
     // and the support tile it feeds is dropped rather than shown as a bogus 0.
-    const ownership: SQL = portalUser ? portalTicketOwnership(portalUser) : sql`false`;
+    // #8972: the portal dashboard's own ticket set (incl. survivors of merged tickets).
+    const ownership: SQL = portalUser ? portalDashboardTicketScope(portalUser) : sql`false`;
     const dto = await dashboardForOrg(orgId, { timezone, now }, ownership);
     const full = dto as unknown as Record<string, unknown>;
     const data: Record<string, unknown> = {};

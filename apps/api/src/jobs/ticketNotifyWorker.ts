@@ -217,6 +217,7 @@ type PartnerSettings = {
     ticket_comment_notification?: unknown;
     ticket_autoresponse?: unknown;
     ticket_resolved?: unknown;
+    ticket_merged?: unknown;
   };
 };
 
@@ -631,6 +632,114 @@ async function collectRequesterEmail(
 }
 
 /**
+ * Ticket merge (#8972, spec §3.7). The event's ticket is the SURVIVOR.
+ *  - The survivor's assignee gets an in-app notice, unless they did the merge
+ *    (same eligibility predicate as assignment; dedupe per source + assignee).
+ *  - When `notifyRequester` (D6), the SOURCE's requester gets ONE email from
+ *    the partner-editable `ticket_merged` template (Gate B8), threaded to the
+ *    survivor (In-Reply-To = the survivor's anchor) so a reply lands there.
+ *    Always the platform/partner lane, never the connected M365 mailbox: that
+ *    path replies to the survivor's latest inbound message, whose recipients
+ *    are the survivor's requester, not this one.
+ * Throws (BullMQ retry) while the source does not yet read as merged: the
+ * event can be dequeued before the merge transaction is visible.
+ */
+async function collectMergeNotifications(
+  event: Extract<TicketEvent, { type: 'ticket.merged' }>,
+  eventId: string,
+): Promise<EmailPayload[]> {
+  void eventId; // dedupe is per (source, assignee): a retried merge event never re-notifies
+  const survivor = await getTicket(event.payload.targetTicketId);
+  const source = await getTicket(event.payload.sourceTicketId);
+  if (!survivor || !source?.mergedIntoTicketId) {
+    throw new Error(`Merge not yet visible (likely uncommitted): ${event.payload.sourceTicketId}`);
+  }
+  if (survivor.deletedAt) return [];
+  const label = survivor.internalNumber ?? survivor.ticketNumber ?? survivor.id;
+  const sourceLabel = source.internalNumber ?? source.ticketNumber ?? source.id;
+  const partnerId = await resolveCurrentTicketPartner(survivor, event.partnerId);
+
+  const assigneeId = survivor.assignedTo;
+  if (assigneeId && assigneeId !== event.actorUserId && partnerId) {
+    const assignee = await loadUserCandidate(assigneeId);
+    if (assignee && assertSamePartner(assignee, partnerId, { ticketId: survivor.id })
+      && await isEligibleTicketRecipient(assignee, partnerId, survivor.orgId, survivor.deviceId)) {
+      await createNotification({
+        userId: assigneeId,
+        orgId: survivor.orgId,
+        type: 'ticket',
+        priority: 'normal',
+        title: `Ticket ${sourceLabel} merged into ${label}`,
+        message: survivor.subject,
+        link: `/tickets#${survivor.internalNumber ?? survivor.id}`,
+        dedupeKey: `ticket:${survivor.id}:merged:${source.id}:${assigneeId}`,
+      });
+    }
+  }
+
+  if (!event.payload.notifyRequester) return [];
+  if (!source.submitterEmail) {
+    // notifyRequester defaults from the requester identity (contact / portal
+    // login), which can exist without an email address on the ticket.
+    console.warn(`[TicketNotify] merge notice skipped: ticket ${source.id} has no requester email`);
+    return [];
+  }
+  let href = '';
+  let hasPortalUser = false;
+  try {
+    const resolved = await resolveCommentNotificationPortalHref({
+      ticketId: survivor.id,
+      orgId: survivor.orgId,
+      submitterEmail: source.submitterEmail,
+    });
+    href = resolved.href;
+    hasPortalUser = resolved.hasPortalUser;
+  } catch (err) {
+    console.error('[TicketNotify] portal href unavailable; sending merge notice without CTA', err);
+  }
+  const partner = await loadPartnerMailBits(partnerId);
+  const orgName = survivor.orgId ? await getOrgName(survivor.orgId) : '';
+  const rendered = renderPartnerEmail({
+    id: 'ticket_merged',
+    custom: asPartnerEmailCustom(partner.emailTemplates?.ticket_merged),
+    vars: {
+      ticket_number: String(sourceLabel),
+      ticket_subject: source.subject ?? '',
+      requester_name: source.submitterName ?? '',
+      requester_email: source.submitterEmail,
+      org_name: orgName,
+      partner_name: partner.name,
+      portal_url: href,
+      email_only_hint: hasPortalUser ? '' : EMAIL_ONLY_HINT,
+      merged_into_number: String(label),
+    },
+    ctaUrl: href || undefined,
+    brandName: partner.name,
+    // The SOURCE's number and subject: the requester knows that ticket, and a
+    // reply's subject token resolves through the merge to the survivor (§3.8).
+    ticketNumber: String(sourceLabel),
+    ticketSubject: source.subject,
+  });
+  // A unique Message-ID under the survivor; In-Reply-To/References = the
+  // survivor's anchor, stamped onto it the first time (as a comment reply does).
+  const built = buildThreadingHeaders({ ticketId: survivor.id, commentId: `merged-${source.id}` });
+  const anchor = ticketThreadAnchor(survivor.id);
+  if (anchor && !survivor.emailThreadKey) {
+    await db.update(tickets).set({ emailThreadKey: anchor }).where(eq(tickets.id, survivor.id));
+  }
+  return [{
+    to: source.submitterEmail,
+    subject: rendered.subject,
+    html: rendered.html,
+    replyTo: partner.replyTo,
+    headers: Object.keys(built).length > 0 ? built : undefined,
+    purpose: 'ticket.customer_notification',
+    partnerId: partnerId ?? null,
+    partnerName: partner.name.trim() || null,
+  }];
+}
+
+/**
  * Append the actual reply text to a comment-notification email (fullMessageReply
  * partners only). The body is HTML-escaped and newline-preserved, wrapped in a
  * quoted block below the rendered notification. Kept deliberately simple — the
@@ -870,6 +979,10 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
       }
       case 'ticket.autoresponse': {
         emailPayloads = await collectAutoresponse(event);
+        return;
+      }
+      case 'ticket.merged': {
+        emailPayloads = await collectMergeNotifications(event, eventId);
         return;
       }
       case 'ticket.status_changed': {

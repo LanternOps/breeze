@@ -1,10 +1,18 @@
 import { BACKUP_WRITE_GATED_COMMAND_TYPES } from './backupWriteHelperGate';
 import { deliverBackupWriteCommand } from './backupStorageWriteDelivery';
-import { hasDbAccessContext, withDbTransaction } from '../db';
+import { eq } from 'drizzle-orm';
+import { db, hasDbAccessContext, withDbTransaction } from '../db';
+import { devices } from '../db/schema';
 import { BROKERED_READ_COMMAND_TYPES, deliverBrokeredReadCommand } from './backupStorageSessions';
 import { RECOVERY_INTEGRITY_COMMAND_TYPES, deliverRecoveryCommandIntegrity } from './backupRecoveryCommandIntegrity';
 import { expireRefusedClaimedCommandDelivery, releaseClaimedCommandDelivery } from './commandDispatch';
 import {
+  agentSupportsInstallScripts,
+  agentUpdateRequiredInstallMessage,
+  payloadNeedsInstallScriptSupport,
+} from './softwareInstallAgentSupport';
+import {
+  CommandDeliveryRefusedError,
   isCommandDeliveryDeferral,
   isCommandDeliveryRefusal,
   type DeliveryRefreshContext,
@@ -88,9 +96,45 @@ export function __resetDeliveryRefreshersForTests(): void {
 registerDeliveryRefresher('diag_file_list', (payload, ctx) => prepareDiagnosticDelivery('list', payload, ctx));
 registerDeliveryRefresher('diag_file_read', (payload, ctx) => prepareDiagnosticDelivery('read', payload, ctx));
 
+/**
+ * #6958 claim-time agent gate (plan Review Focus 1). The enqueue gate in
+ * softwareDeployment.ts already refused agents too old for install scripts or
+ * a zip, but the reported agent version is not sticky: a device downgraded
+ * between enqueue and delivery would ignore the script keys and install
+ * without them. Re-checked here, inside the shipped software_install
+ * refresher, so the heartbeat batch and the enqueue-time push both run it.
+ *
+ * - Device reports a version below the minimum: REFUSED. The row is expired
+ *   and the reaper fails it (and its deployment result) with this reason.
+ * - Device row not returned at all: unknown, never assumed old. An ordinary
+ *   error, so the row is released and the refusal stays reversible (the
+ *   scriptSecretDelivery.ts rule).
+ * Plain installs need no read at all.
+ */
+async function assertAgentCanRunInstallScripts(
+  payload: Record<string, unknown>,
+  ctx: DeliveryRefreshContext,
+): Promise<void> {
+  if (!payloadNeedsInstallScriptSupport(payload)) return;
+  const [device] = ctx.deviceId
+    ? await db
+      .select({ agentVersion: devices.agentVersion })
+      .from(devices)
+      .where(eq(devices.id, ctx.deviceId))
+      .limit(1)
+    : [];
+  if (!device) {
+    throw new Error(`install-script agent gate: device row not found for command ${ctx.commandId}`);
+  }
+  if (!agentSupportsInstallScripts(device.agentVersion)) {
+    throw new CommandDeliveryRefusedError(agentUpdateRequiredInstallMessage());
+  }
+}
+
 // Uploaded installers travel as an S3 key; the one-hour presigned URL is
 // minted at delivery so an install claimed six hours later still downloads.
-registerDeliveryRefresher('software_install', async (payload) => {
+registerDeliveryRefresher('software_install', async (payload, ctx) => {
+  await assertAgentCanRunInstallScripts(payload, ctx);
   const s3Key = typeof payload.s3Key === 'string' ? payload.s3Key : null;
   if (!s3Key || !isS3Configured()) return payload;
   return { ...payload, downloadUrl: await getPresignedUrl(s3Key, 3600) };

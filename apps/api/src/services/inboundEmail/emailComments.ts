@@ -4,6 +4,7 @@ import { ticketComments, tickets } from '../../db/schema';
 import { emitTicketEvent } from '../ticketEvents';
 import { writeTicketCommentedOutbox } from '../ticketService';
 import { lockTicketForWrite } from '../ticketRowLock';
+import { assertTicketNotMerged } from '../ticketMerge/errors';
 
 export interface EmailCommentInput {
   ticketId: string;
@@ -33,7 +34,8 @@ export async function insertEmailAuthoredComment(input: EmailCommentInput): Prom
 
   // #8972 W0: ticket row lock before the comment. A ticket this context
   // cannot lock leaves the INSERT to answer exactly as before (RLS / FK).
-  await lockTicketForWrite(db, ticketId);
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(await lockTicketForWrite(db, ticketId));
   const inserted = await db.insert(ticketComments).values({
     ticketId,
     userId: null,

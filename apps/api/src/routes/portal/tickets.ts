@@ -22,7 +22,7 @@ import {
   validatePortalCookieCsrfRequest,
   writePortalAudit,
 } from './helpers';
-import { portalTicketOwnership } from './ticketOwnership';
+import { portalTicketReadAccess } from './ticketReadAccess';
 import { createTicket, TicketServiceError, portalCommentMutable, editTicketComment, deleteTicketComment } from '../../services/ticketService';
 import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { editCommentSchema, PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
@@ -41,6 +41,7 @@ import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
 import { lockTicketForWrite } from '../../services/ticketRowLock';
+import { isMergedTombstone } from '../../services/ticketMerge/errors';
 
 export const ticketRoutes = new Hono();
 
@@ -222,8 +223,12 @@ ticketRoutes.get('/tickets', zValidator('query', listSchema), async (c) => {
 
   const conditions = and(
     eq(tickets.orgId, auth.user.orgId),
-    portalTicketOwnership(auth.user),
-    isNull(tickets.deletedAt) // soft-deleted tickets are invisible to portal customers
+    // #8972 D1(b): own tickets + survivors of the user's merged tickets.
+    portalTicketReadAccess(auth.user),
+    isNull(tickets.deletedAt), // soft-deleted tickets are invisible to portal customers
+    // A merged tombstone is listed through its survivor; a bookmark of the
+    // tombstone still opens (GET /tickets/:id answers the merged payload).
+    isNull(tickets.mergedIntoTicketId)
   );
 
   const ticketCountResult = await db
@@ -374,6 +379,8 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       createdAt: tickets.createdAt,
       updatedAt: tickets.updatedAt,
       statusName: ticketStatuses.name,
+      mergedIntoTicketId: tickets.mergedIntoTicketId,
+      mergedAt: tickets.mergedAt,
       ...PORTAL_TICKET_SLA_COLUMNS,
     })
     .from(tickets)
@@ -382,7 +389,8 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
       and(
         eq(tickets.id, id),
         eq(tickets.orgId, auth.user.orgId),
-        portalTicketOwnership(auth.user),
+        // #8972 D1(b): own tickets + survivors of the user's merged tickets.
+        portalTicketReadAccess(auth.user),
         isNull(tickets.deletedAt)
       )
     )
@@ -390,6 +398,30 @@ ticketRoutes.get('/tickets/:id', zValidator('param', ticketParamSchema), async (
 
   if (!ticket) {
     return c.json({ error: 'Ticket not found' }, 404);
+  }
+
+  // #8972 spec §6.1: a merged tombstone (only its own requester reaches it —
+  // the read-access arm grants survivors, never tombstones) answers where its
+  // request went. `mergedInto` is non-null only while the user may read the
+  // survivor; a soft-deleted survivor yields `survivorDeleted` and nothing of
+  // the survivor itself (Review Focus #5).
+  if (ticket.mergedIntoTicketId) {
+    const [survivor] = await db
+      .select({ id: tickets.id, internalNumber: tickets.internalNumber, deletedAt: tickets.deletedAt })
+      .from(tickets)
+      .where(and(
+        eq(tickets.id, ticket.mergedIntoTicketId),
+        eq(tickets.orgId, auth.user.orgId),
+        portalTicketReadAccess(auth.user),
+      ))
+      .limit(1);
+    const readable = survivor && !survivor.deletedAt;
+    return c.json({
+      merged: true,
+      mergedInto: readable ? { id: survivor.id, internalNumber: survivor.internalNumber } : null,
+      mergedAt: ticket.mergedAt ? new Date(ticket.mergedAt).toISOString() : null,
+      ...(survivor?.deletedAt ? { survivorDeleted: true } : {}),
+    });
   }
 
   const comments = await db
@@ -504,7 +536,11 @@ ticketRoutes.post(
         and(
           eq(tickets.id, id),
           eq(tickets.orgId, auth.user.orgId),
-          portalTicketOwnership(auth.user),
+          // #8972 D1(b): the ONE write the read predicate grants — a public
+          // reply on the survivor of the user's merged ticket (the thread their
+          // email replies already reach). Every other portal write keeps
+          // portalTicketOwnership.
+          portalTicketReadAccess(auth.user),
           isNull(tickets.deletedAt)
         )
       )
@@ -520,6 +556,10 @@ ticketRoutes.post(
     const locked = await lockTicketForWrite(db, ticket.id);
     if (!locked || locked.orgId !== auth.user.orgId || locked.deletedAt) {
       return c.json({ error: 'Ticket not found' }, 404);
+    }
+    // #8972 W1: a merged tombstone is read-only; the reply belongs on the survivor.
+    if (isMergedTombstone(locked)) {
+      return c.json({ error: 'This request was merged into another ticket', code: 'TICKET_MERGED' }, 409);
     }
 
     const [comment] = await db
@@ -696,7 +736,9 @@ ticketRoutes.get(
       .where(and(
         eq(tickets.id, id),
         eq(tickets.orgId, auth.user.orgId),
-        portalTicketOwnership(auth.user),
+        // #8972 D1(b): the survivor's public attachments read like its
+        // public comments; the public + non-deleted filters below still apply.
+        portalTicketReadAccess(auth.user),
         isNull(tickets.deletedAt)
       ))
       .limit(1);

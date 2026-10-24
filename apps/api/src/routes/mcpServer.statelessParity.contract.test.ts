@@ -216,11 +216,14 @@ function app() {
   return new Hono().route('/mcp', mcpServerRoutes);
 }
 
-async function legacyCall(method: string, params?: Record<string, unknown>) {
+async function legacyCall(method: string, params?: Record<string, unknown>, initCapabilities?: Record<string, unknown>) {
   const init = await app().request('/mcp/sse', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } }),
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-11-25', ...(initCapabilities ? { capabilities: initCapabilities } : {}) },
+    }),
   });
   const sid = init.headers.get('mcp-session-id');
   mocks.writeAuditEvent.mockClear();
@@ -398,6 +401,75 @@ describe('documented exception: Tier-3 call by a URL-elicitation-capable modern 
     });
     expect(url.body.result).not.toHaveProperty('ttlMs');
     expect(JSON.stringify([legacy.body, plain.body, url.body])).not.toContain('"mode":"form"');
+  });
+});
+
+// B-W05 (#6159, D-B40/D-B42): a client declaring MCP Apps through legacy
+// `initialize` and one declaring it per request in the stateless era get the
+// same app listing, the same view and the same tool result, modulo the
+// documented modern decoration. No new documented exception.
+describe('MCP Apps parity across eras (B-W05)', () => {
+  const UI_CAPS = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
+  const APP_URI = 'ui://breeze/fleet-health/v1';
+  const APP_CASES: Case[] = [
+    { label: 'tools/list', method: 'tools/list' },
+    { label: 'resources/read of the app view', method: 'resources/read', params: { uri: APP_URI } },
+    { label: 'tools/call get_fleet_health', method: 'tools/call', params: { name: 'get_fleet_health', arguments: {} } },
+  ];
+
+  beforeEach(() => {
+    process.env.MCP_APPS_ENABLED = 'true';
+    const catalog: Record<string, { tier: number; domain: string }> = { ...CATALOG, get_fleet_health: { tier: 1, domain: 'devices' } };
+    mocks.getToolDefinitions.mockImplementation(() => Object.keys(catalog).map((name) => ({ name, description: name, input_schema: { type: 'object', properties: {} } })) as any);
+    mocks.getToolTier.mockImplementation((name: string) => catalog[name]?.tier);
+    mocks.getToolDomain.mockImplementation((name: string) => catalog[name]?.domain as any);
+    mocks.executeTool.mockResolvedValue(JSON.stringify({ devices: [], showing: 0, limit: 25, offset: 0, total: 0, hasMore: false, nextCursor: null, summary: {} }));
+  });
+  afterEach(() => { delete process.env.MCP_APPS_ENABLED; });
+
+  describe.each([PRINCIPALS[0]!, PRINCIPALS[1]!, PRINCIPALS[3]!])('$label', (principal) => {
+    beforeEach(() => { current = principal; });
+
+    it.each(APP_CASES)('$label: declaring legacy == declaring modern', async (testCase) => {
+      const legacy = await legacyCall(testCase.method, testCase.params, UI_CAPS);
+      const modern = await modernCall(testCase.method, testCase.params, UI_CAPS);
+      expect(modern.body?.error ?? null).toEqual(legacy.body?.error ?? null);
+      expect(stripModernDecoration(modern.body?.result)).toEqual(legacy.body?.result);
+      expect(modern.status).toBe(legacy.status);
+      expect(omitCorrelation(modern.requestAudit?.details)).toEqual(omitCorrelation(legacy.requestAudit?.details));
+
+      const fleetGranted = principal.context.mcpDomains === null;
+      if (testCase.method === 'tools/list') {
+        const fleet = (legacy.body.result.tools as Array<{ name: string; _meta: Record<string, unknown> }>).find((t) => t.name === 'get_fleet_health');
+        if (fleetGranted) expect(fleet!._meta).toEqual({ 'app.breeze/domain': 'devices', ui: { resourceUri: APP_URI, visibility: ['model'] } });
+        else expect(fleet).toBeUndefined();
+      }
+      if (testCase.method === 'resources/read') {
+        if (fleetGranted) expect(legacy.body.result.contents[0].mimeType).toBe('text/html;profile=mcp-app');
+        else expect(legacy.body.error).toEqual({ code: -32602, message: `Unknown resource URI: ${APP_URI}` });
+      }
+    });
+
+    it('tools/call get_fleet_health: declaring == non-declaring in both eras (text parity)', async () => {
+      const params = { name: 'get_fleet_health', arguments: {} };
+      const legacyUi = await legacyCall('tools/call', params, UI_CAPS);
+      const legacyPlain = await legacyCall('tools/call', params);
+      const modernUi = await modernCall('tools/call', params, UI_CAPS);
+      const modernPlain = await modernCall('tools/call', params);
+      expect(legacyUi.body).toEqual(legacyPlain.body);
+      expect(modernUi.body).toEqual(modernPlain.body);
+      expect(stripModernDecoration(modernUi.body?.result)).toEqual(legacyUi.body?.result);
+    });
+
+    it('a non-declaring client sees no _meta.ui and no view in either era', async () => {
+      for (const result of [await legacyCall('tools/list'), await modernCall('tools/list')]) {
+        for (const tool of result.body.result.tools as Array<{ _meta: Record<string, unknown> }>) expect(tool._meta.ui).toBeUndefined();
+      }
+      const legacy = await legacyCall('resources/read', { uri: APP_URI });
+      const modern = await modernCall('resources/read', { uri: APP_URI });
+      expect(legacy.body.error).toEqual({ code: -32602, message: `Unknown resource URI: ${APP_URI}` });
+      expect(modern.body.error).toEqual(legacy.body.error);
+    });
   });
 });
 

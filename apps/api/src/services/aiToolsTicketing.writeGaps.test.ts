@@ -91,6 +91,24 @@ vi.mock('./timeEntryService', () => ({
   TimeEntryServiceError: class TimeEntryServiceError extends Error {},
 }));
 
+const mergeMocks = vi.hoisted(() => ({
+  mergeTickets: vi.fn(),
+  previewMerge: vi.fn(),
+  loadMergeTicketRows: vi.fn(),
+}));
+vi.mock('./ticketMerge/execute', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMerge/execute')>('./ticketMerge/execute');
+  return { ...actual, mergeTickets: mergeMocks.mergeTickets };
+});
+vi.mock('./ticketMerge/preview', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMerge/preview')>('./ticketMerge/preview');
+  return { ...actual, previewMerge: mergeMocks.previewMerge };
+});
+vi.mock('./ticketMerge/eligibility', async () => {
+  const actual = await vi.importActual<typeof import('./ticketMerge/eligibility')>('./ticketMerge/eligibility');
+  return { ...actual, loadMergeTicketRows: mergeMocks.loadMergeTicketRows };
+});
+
 vi.mock('./ticketConfigService', () => ({
   findStatusByName: vi.fn(),
   listActiveStatusNames: vi.fn(),
@@ -101,6 +119,7 @@ import type { AiTool } from './aiTools';
 import { registerTicketingTools } from './aiToolsTicketing';
 import { TicketServiceError } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
+import { MergeRefusedError, TicketMergedError } from './ticketMerge/errors';
 
 function getTool(): AiTool {
   const tools = new Map<string, AiTool>();
@@ -419,5 +438,117 @@ describe('manage_tickets write-gap actions', () => {
 
     expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
     expect(linkMocks.listTicketLinks).not.toHaveBeenCalled();
+  });
+});
+
+describe('manage_tickets merge_preview / merge (#8972)', () => {
+  const SRC_ROW: { id: string; orgId: string; deviceId: string | null } = { id: TICKET_ID, orgId: '00000000-0000-0000-0000-000000000010', deviceId: null };
+  const DST_ROW = { id: OTHER_TICKET_ID, orgId: '00000000-0000-0000-0000-000000000010', deviceId: DEVICE_ID };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLimit.mockResolvedValue([]);
+    siteScopeMocks.deviceInSiteScope.mockResolvedValue(true);
+    siteScopeMocks.ticketSiteScopeCondition.mockReturnValue(undefined);
+    mergeMocks.loadMergeTicketRows.mockResolvedValue(
+      new Map([[TICKET_ID, SRC_ROW], [OTHER_TICKET_ID, DST_ROW]]),
+    );
+  });
+
+  it('merge_preview returns the preview after checking access to BOTH tickets', async () => {
+    mockAccessibleTicket(TICKET_ID);
+    mockAccessibleTicket(OTHER_TICKET_ID);
+    const preview = { eligible: true, refusals: [], suggestedSurvivorId: OTHER_TICKET_ID };
+    mergeMocks.previewMerge.mockResolvedValue(preview);
+
+    const out = await getTool().handler(
+      { action: 'merge_preview', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID },
+      makeAuth(),
+    );
+
+    expect(JSON.parse(out)).toEqual(preview);
+    expect(mergeMocks.previewMerge).toHaveBeenCalledTimes(1);
+    const [, src, dst, ctx] = mergeMocks.previewMerge.mock.calls[0]!;
+    expect(src).toBe(SRC_ROW);
+    expect(dst).toBe(DST_ROW);
+    // The caller's site/device rule is passed through, not defaulted to "visible".
+    siteScopeMocks.deviceInSiteScope.mockResolvedValueOnce(false);
+    expect(await ctx.canAccessTicket(DST_ROW)).toBe(false);
+    expect(await ctx.canAccessTicket(SRC_ROW)).toBe(true);
+  });
+
+  it('merge_preview requires intoTicketId and hides a survivor the caller cannot see', async () => {
+    const missing = await getTool().handler({ action: 'merge_preview', ticketId: TICKET_ID }, makeAuth());
+    expect(JSON.parse(missing).error).toMatch(/intoTicketId/);
+
+    mockAccessibleTicket(TICKET_ID);
+    mockDeniedTicket();
+    const out = await getTool().handler(
+      { action: 'merge_preview', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID },
+      makeAuth(),
+    );
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(mergeMocks.previewMerge).not.toHaveBeenCalled();
+  });
+
+  it('merge passes notifyRequester through and returns survivorId, counts, droppedLinks only', async () => {
+    mockAccessibleTicket(TICKET_ID);
+    mockAccessibleTicket(OTHER_TICKET_ID);
+    mergeMocks.mergeTickets.mockResolvedValue({
+      survivorId: OTHER_TICKET_ID, counts: { comments: 2 }, droppedLinks: [], retainedExternalRefIds: ['x'], notifyRequester: false,
+    });
+
+    const out = await getTool().handler(
+      { action: 'merge', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID, notifyRequester: false },
+      makeAuth(),
+    );
+
+    expect(JSON.parse(out)).toEqual({ survivorId: OTHER_TICKET_ID, counts: { comments: 2 }, droppedLinks: [] });
+    expect(mergeMocks.mergeTickets).toHaveBeenCalledWith(
+      { sourceTicketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID, notifyRequester: false },
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({ canAccessTicket: expect.any(Function) }),
+    );
+  });
+
+  it('merge leaves notifyRequester undefined when omitted (service default, D6)', async () => {
+    mockAccessibleTicket(TICKET_ID);
+    mockAccessibleTicket(OTHER_TICKET_ID);
+    mergeMocks.mergeTickets.mockResolvedValue({ survivorId: OTHER_TICKET_ID, counts: {}, droppedLinks: [] });
+    await getTool().handler({ action: 'merge', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID }, makeAuth());
+    expect(mergeMocks.mergeTickets.mock.calls[0]![0].notifyRequester).toBeUndefined();
+  });
+
+  it('merge does not run when the survivor is not visible', async () => {
+    mockAccessibleTicket(TICKET_ID);
+    mockDeniedTicket();
+    const out = await getTool().handler(
+      { action: 'merge', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID },
+      makeAuth(),
+    );
+    expect(JSON.parse(out)).toEqual({ error: 'Ticket not found' });
+    expect(mergeMocks.mergeTickets).not.toHaveBeenCalled();
+  });
+
+  it('merge maps MergeRefusedError to a tool error carrying code and side', async () => {
+    mockAccessibleTicket(TICKET_ID);
+    mockAccessibleTicket(OTHER_TICKET_ID);
+    mergeMocks.mergeTickets.mockRejectedValue(new MergeRefusedError('MERGE_CROSS_ORG', 'both', 'Tickets are in different organizations'));
+    const out = await getTool().handler(
+      { action: 'merge', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID },
+      makeAuth(),
+    );
+    expect(JSON.parse(out)).toEqual({ error: 'Tickets are in different organizations', code: 'MERGE_CROSS_ORG', side: 'both' });
+  });
+
+  it('merge maps TicketMergedError to TICKET_MERGED with mergedIntoTicketId', async () => {
+    mockAccessibleTicket(TICKET_ID);
+    mockAccessibleTicket(OTHER_TICKET_ID);
+    mergeMocks.mergeTickets.mockRejectedValue(new TicketMergedError(OTHER_TICKET_ID, ALERT_ID));
+    const out = await getTool().handler(
+      { action: 'merge', ticketId: TICKET_ID, intoTicketId: OTHER_TICKET_ID },
+      makeAuth(),
+    );
+    expect(JSON.parse(out)).toMatchObject({ code: 'TICKET_MERGED', mergedIntoTicketId: ALERT_ID });
   });
 });

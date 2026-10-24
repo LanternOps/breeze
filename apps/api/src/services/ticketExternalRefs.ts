@@ -4,6 +4,7 @@ import { ticketExternalRefs, tickets } from '../db/schema';
 import { pgErrorConstraint } from '../utils/pgErrors';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged } from './ticketMerge/errors';
 
 /**
  * A ticket's id/url in an external PSA/ITSM, namespaced by the partner service
@@ -80,6 +81,8 @@ export async function upsertTicketExternalRef(input: {
   // which would release a lock taken inside it).
   const ticket = await lockTicketForWrite(db, input.ticketId);
   if (!ticket) throw new Error(`ticket ${input.ticketId} is not visible to this context; authorize it before writing an external ref`);
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(ticket);
   try {
     const [row] = await db.transaction((tx) =>
       tx.insert(ticketExternalRefs)
@@ -123,7 +126,8 @@ export async function upsertTicketExternalRef(input: {
 export async function clearTicketExternalRef(principalId: string, ticketId: string): Promise<void> {
   // #8972 W0: ticket first. A ticket this context cannot lock leaves the
   // DELETE to match nothing, exactly as before.
-  await lockTicketForWrite(db, ticketId);
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED), checked under the lock.
+  assertTicketNotMerged(await lockTicketForWrite(db, ticketId));
   await db.delete(ticketExternalRefs).where(and(
     eq(ticketExternalRefs.partnerServicePrincipalId, principalId),
     eq(ticketExternalRefs.ticketId, ticketId),

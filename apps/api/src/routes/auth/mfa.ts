@@ -37,10 +37,10 @@ import {
 import { getTwilioService } from '../../services/twilio';
 import { readMobileDeviceId, carryForwardBinding } from '../../services/mobileDeviceBinding';
 import { authMiddleware, type AuthContext } from '../../middleware/auth';
-import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource } from './schemas';
+import { ENABLE_2FA, mfaVerifySchema, mfaEnableSchema, mfaStepUpSchema, maintenanceStepUpResource, moveOrgStepUpResource, forceRebootStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, rollbackStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, migrationWindowOpenStepUpResource, callerVerificationAdministrativeStepUpResource, wispGrantStepUpResource } from './schemas';
 import { getEffectiveMfaPolicy } from '../../services/mfaPolicy';
 import { TEARDOWN_FAILED } from '../../services/remoteSessionTeardown';
-import { forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest } from '../../services/mfaStepUpGrant';
+import { forceRebootResourceDigest, maintenanceResourceDigest, mintStepUpGrant, moveOrgResourceDigest, parkedAssignResourceDigest, parkedBulkAssignResourceDigest, passkeyRemovalResourceDigest, rollbackResourceDigest, scriptLanePolicyResourceDigest, partnerScriptCeilingResourceDigest, topologyArmResourceDigest, preAssignmentEnableResourceDigest, unattestedRestoreResourceDigest, autopayChargeNowResourceDigest, partnerPaymentSettingsResourceDigest, autopayRequestRecipientResourceDigest, orgPaymentSettingsResourceDigest, migrationWindowOpenResourceDigest, callerVerificationAdministrativeDigest, wispGrantResourceDigest } from '../../services/mfaStepUpGrant';
 import { verifyStepUpPasskeyAssertion } from './passkeys';
 import {
   getClientIP,
@@ -1266,6 +1266,7 @@ const RESOURCE_BOUND_OPERATIONS = {
   org_payment_settings_update: orgPaymentSettingsStepUpResource,
   migration_window_open: migrationWindowOpenStepUpResource,
   caller_verification_administrative_disable: callerVerificationAdministrativeStepUpResource,
+  wisp_grant: wispGrantStepUpResource,
 } as const;
 
 /**
@@ -1302,7 +1303,7 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
   const auth = c.get('auth');
   const body = c.req.valid('json');
   const resourceSchema = RESOURCE_BOUND_OPERATIONS[body.operation as keyof typeof RESOURCE_BOUND_OPERATIONS];
-  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof forceRebootStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | z.infer<typeof orgPaymentSettingsStepUpResource> | z.infer<typeof migrationWindowOpenStepUpResource> | z.infer<typeof callerVerificationAdministrativeStepUpResource> | undefined;
+  let boundResource: z.infer<typeof rollbackStepUpResource> | z.infer<typeof maintenanceStepUpResource> | z.infer<typeof moveOrgStepUpResource> | z.infer<typeof forceRebootStepUpResource> | z.infer<typeof parkedAssignStepUpResource> | z.infer<typeof parkedBulkAssignStepUpResource> | z.infer<typeof scriptLaneStepUpResource> | z.infer<typeof partnerScriptCeilingStepUpResource> | z.infer<typeof topologyArmStepUpResource> | z.infer<typeof preAssignmentEnableStepUpResource> | z.infer<typeof unattestedRestoreStepUpResource> | z.infer<typeof autopayChargeNowStepUpResource> | z.infer<typeof partnerPaymentSettingsStepUpResource> | z.infer<typeof autopayRequestRecipientStepUpResource> | z.infer<typeof orgPaymentSettingsStepUpResource> | z.infer<typeof migrationWindowOpenStepUpResource> | z.infer<typeof callerVerificationAdministrativeStepUpResource> | z.infer<typeof wispGrantStepUpResource> | undefined;
   if (resourceSchema) {
     const parsedResource = resourceSchema.safeParse(body.resource);
     if (!parsedResource.success) {
@@ -1453,6 +1454,9 @@ mfaRoutes.post('/mfa/step-up', authMiddleware, mfaStepUpRateLimit, zValidator('j
                 ? migrationWindowOpenResourceDigest(boundResource as z.infer<typeof migrationWindowOpenStepUpResource>)
               : body.operation === 'caller_verification_administrative_disable'
                 ? callerVerificationAdministrativeDigest(boundResource as z.infer<typeof callerVerificationAdministrativeStepUpResource>)
+              : body.operation === 'wisp_grant'
+                // The grantor is always the caller, never a body field.
+                ? wispGrantResourceDigest({ grantorUserId: auth.user.id, ...(boundResource as z.infer<typeof wispGrantStepUpResource>) })
               : body.operation === 'delete_passkey'
                 ? passkeyRemovalResourceDigest(body.passkeyId!)
                 : '',

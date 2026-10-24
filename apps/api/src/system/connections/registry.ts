@@ -268,6 +268,19 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     },
   }),
   defineEntry({
+    id: 'wisp',
+    group: 'ai',
+    label: 'Wisp (hosted)',
+    vars: [
+      { name: 'BREEZE_WISP_ENABLED', secret: false },
+    ],
+    status: {
+      kind: 'flags',
+      flags: ['BREEZE_WISP_ENABLED'],
+      requiredWhenOn: [],
+    },
+  }),
+  defineEntry({
     id: 'workspace-extension',
     group: 'ai',
     label: 'Workspace extension (pgvector)',

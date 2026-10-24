@@ -429,7 +429,12 @@
       "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
       "empty": "No patch data yet",
       "imagesNotChecked_one": "{{count}} container image not checked",
-      "imagesNotChecked_other": "{{count}} container images not checked"
+      "imagesNotChecked_other": "{{count}} container images not checked",
+      "devicesNeedPatches_one": "{{count}} device needs patches",
+      "devicesNeedPatches_other": "{{count}} devices need patches",
+      "viewPendingDevices": "View devices with pending patches",
+      "viewFailedDevices": "View devices with failed patches",
+      "viewCriticalDevices": "View devices with critical patches"
     },
     "vuln": {
       "title": "Vulnerabilities",

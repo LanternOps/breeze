@@ -182,6 +182,7 @@ const STEP_UP_OPERATIONS = [
   'org_payment_settings_update',
   'migration_window_open',
   'caller_verification_administrative_disable',
+  'wisp_grant',
 ] as const satisfies readonly Exclude<
   StepUpOperation,
   'enroll_first_factor' | 'sso_reauth_manage_factor' | 'approval_decide'
@@ -332,7 +333,17 @@ export const callerVerificationAdministrativeStepUpResource = z.object({
   entraOid: z.string().min(1).max(64),
   reason: z.string().trim().min(20).max(2000),
 }).strict();
-const stepUpResource = z.union([callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
+// Wisp W02 (Wisp design §4.2): grant create/refresh. `requestedCeilingHash` is
+// the server-computed hash from GET /wisp/grants/preview. `.strict()` and FIRST
+// in `stepUpResource`: the non-strict { partnerId } members below would
+// otherwise match first and strip orgId/requestedCeilingHash. No grantor
+// field — the digest always uses the authenticated caller.
+export const wispGrantStepUpResource = z.object({
+  partnerId: z.string().uuid(),
+  orgId: z.string().uuid().nullable(),
+  requestedCeilingHash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+const stepUpResource = z.union([wispGrantStepUpResource, callerVerificationAdministrativeStepUpResource, rollbackStepUpResource, maintenanceStepUpResource, moveOrgStepUpResource, parkedAssignStepUpResource, parkedBulkAssignStepUpResource, scriptLaneStepUpResource, partnerScriptCeilingStepUpResource, topologyArmStepUpResource, preAssignmentEnableStepUpResource, unattestedRestoreStepUpResource, autopayChargeNowStepUpResource, partnerPaymentSettingsStepUpResource, autopayRequestRecipientStepUpResource, orgPaymentSettingsStepUpResource, forceRebootStepUpResource]);
 export const mfaStepUpSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('totp'),
