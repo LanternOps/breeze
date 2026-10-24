@@ -458,7 +458,7 @@ export const bulkDeviceIdsSchema = z.object({
  * Per-request cap on POST /devices/bulk/site (#9796, plan Gate B item 2: 100, the 50-per-batch
  * bulk-restore precedent doubled). Each device is a row lock + guarded UPDATE + denormalized
  * rewrite in its own short transaction, so the request stays well inside a normal timeout.
- * The web mirrors this constant (components/devices/bulkSiteMove.ts) and disables — never
+ * The web mirrors this constant (apps/web/src/components/devices/bulkActionGating.ts) and disables — never
  * chunks — a larger selection.
  */
 export const BULK_SITE_MOVE_CAP = 100;

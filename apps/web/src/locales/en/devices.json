@@ -360,7 +360,22 @@
     "moving": "Moving...",
     "toADifferentSite": "to a different site.",
     "deviceMovedByOther": "This device was moved by someone else — reload to see its current site",
-    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically."
+    "policyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to {{device}}. Breeze will not move it back automatically.",
+    "bulkIntro": "Move {{count}} selected devices to a different site within {{org}}.",
+    "bulkIntro_one": "Move {{count}} selected device to a different site within {{org}}.",
+    "bulkIntro_other": "Move {{count}} selected devices to a different site within {{org}}.",
+    "bulkIntroNoOrg": "Move {{count}} selected devices to a different site.",
+    "bulkIntroNoOrg_one": "Move {{count}} selected device to a different site.",
+    "bulkIntroNoOrg_other": "Move {{count}} selected devices to a different site.",
+    "devicesFromSites": "{{count}} devices from {{siteCount}} sites",
+    "devicesFromSites_one": "{{count}} device from {{siteCount}} sites",
+    "devicesFromSites_other": "{{count}} devices from {{siteCount}} sites",
+    "selectSite": "Select a site",
+    "moveDevices": "Move {{count}} devices",
+    "moveDevices_one": "Move {{count}} device",
+    "moveDevices_other": "Move {{count}} devices",
+    "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
+    "failedToMoveDevices": "Failed to move devices"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",
@@ -1846,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} of {{count}} device",
     "countLine_other": "{{shown}} of {{count}} devices",
-    "noMatchesTitle": "No devices match these filters"
+    "noMatchesTitle": "No devices match these filters",
+    "moveToSite": "Move to site",
+    "moveSelectedToSite": "Move to site",
+    "moveSiteMixedOrgs": "Selected devices belong to more than one organization",
+    "moveSiteOverCap": "Select at most {{count}} devices to move at once"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Failed to fetch device logs",
@@ -2696,7 +2715,13 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} device had already received the uninstall — that machine may need the agent reinstalled.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} devices had already received the uninstall — those machines may need the agent reinstalled.",
       "bulkRestored_one": "{{count}} device restored",
-      "bulkRestored_other": "{{count}} devices restored"
+      "bulkRestored_other": "{{count}} devices restored",
+      "bulkMoveSiteSuccess": "Moved {{count}} devices to {{site}}",
+      "bulkMoveSiteSuccess_one": "Moved {{count}} device to {{site}}",
+      "bulkMoveSiteSuccess_other": "Moved {{count}} devices to {{site}}",
+      "bulkMoveSiteSomeFailed": "Moved {{moved}} of {{total}} devices to {{site}}. Not moved: {{devices}}",
+      "bulkMoveSiteAllFailed": "No devices were moved to {{site}}. Not moved: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} moved to a new site"
     },
     "tryAgain": "Try again",
     "unknownDevice": "Unknown",
