@@ -324,6 +324,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_INTENT_CREATES_PER_USER_PER_HOUR: 'rate limit knob',
   MCP_APPROVAL_WAIT_MS: 'timing knob',
   MCP_APPROVAL_WAITS_PER_PRINCIPAL: 'rate limit knob',
+  MCP_APPS_ENABLED: 'MCP rollout flag',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*

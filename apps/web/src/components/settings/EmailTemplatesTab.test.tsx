@@ -66,6 +66,7 @@ describe('EmailTemplatesTab', () => {
       'ticket_comment_notification',
       'ticket_autoresponse',
       'ticket_resolved',
+      'ticket_merged',
       'quote_send',
       'invoice_send',
       'invoice_autopay',

@@ -1491,6 +1491,49 @@ describe('releaseApprovedIntent', () => {
       );
       expect(auditMock.writeAuditEvent).toHaveBeenCalled();
     });
+
+    // Wisp W02: a paused/revoked delegation grant PAUSES like the kill
+    // switch; a ceiling violation is terminal.
+    it('grant_inactive CASes executing -> approved (pausable) like kill_switch_engaged', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'grant_inactive',
+        details: { grantId: 'g1', grantRevisionId: 'r1', code: 'inactive' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> approved
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(intent.id, 'executing', 'approved');
+      expect(intentServiceMock.transitionIntent).not.toHaveBeenCalledWith(
+        intent.id, 'executing', 'failed', expect.anything(),
+      );
+      expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+    });
+
+    it('grant_ceiling_violation CASes executing -> failed', async () => {
+      const intent = baseIntent({ requestingAgentRunId: 'run-1' } as Partial<ActionIntent>);
+      primeAgentIntentThroughClaim(intent);
+      agentReleaseAuthorityMock.checkAgentReleaseAuthority.mockResolvedValueOnce({
+        ok: false,
+        errorCode: 'grant_ceiling_violation',
+        details: { grantId: 'g1', grantRevisionId: 'r1', code: 'org' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'grant_ceiling_violation' }),
+      );
+    });
   });
 
   // Wave 5 Part B (#3827): the FINAL pre-effect kill read, immediately

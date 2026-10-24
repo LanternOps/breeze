@@ -278,6 +278,10 @@ export const DEFAULT_PERMISSIONS = [
   // it. Granted to no system role; partners grant it deliberately.
   { resource: 'ai_models', action: 'premium',
     description: 'Use AI model offerings that require the premium-model permission' },
+  // Wisp W02 (spec §4.6): execute-class gate on the sandbox workspace tools.
+  // Granted to no system role by name; Partner Admin matches it via `*:*`.
+  { resource: 'ai_workspace', action: 'execute',
+    description: 'Stage, run and collect code in AI sandbox workspaces' },
 
   // Tool sources (BYO MCP/OpenAPI tool catalog, #5215/#5216, spec 2026-09-07 §5):
   // managing the registrations is an admin task; calling the tools they expose

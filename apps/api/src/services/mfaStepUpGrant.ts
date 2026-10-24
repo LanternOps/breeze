@@ -146,7 +146,14 @@ export type StepUpOperation =
   // Caller verification (#6354 W05): an administrative disable authorised by
   // an interactive step-up instead of a caller challenge. Bound to the exact
   // { orgId, Entra tenant, Entra OID, reason } the technician confirmed.
-  | 'caller_verification_administrative_disable';
+  | 'caller_verification_administrative_disable'
+  // Wisp W02 (Wisp design §4.2): creating or refreshing (widening) a
+  // delegation grant. Bound by resourceDigest to the grantor (always the
+  // caller), the anchor partner, the scope org ('*' = partner-wide) and the
+  // server-computed ceiling hash the user was shown (GET /wisp/grants/preview),
+  // so a grant can never be spent on a different scope or a wider ceiling.
+  // TTL 600 s (OPERATION_TTL_SECONDS below).
+  | 'wisp_grant';
 
 export interface StepUpGrant {
   id: string;
@@ -191,6 +198,9 @@ const TTL_SECONDS = 300;
  */
 const OPERATION_TTL_SECONDS: Partial<Record<StepUpOperation, number>> = {
   approval_decide: 120,
+  // Wisp W02: the grant-creation modal shows the ceiling preview, then the
+  // factor prompt, then the confirm — a longer single-use window (spec §4.2).
+  wisp_grant: 600,
 };
 
 /** Redis TTL a grant of this operation is written with. */
@@ -533,6 +543,21 @@ export function callerVerificationAdministrativeDigest(input: {
 }): `sha256:${string}` {
   const reasonHash = createHash('sha256').update(input.reason.trim()).digest('hex');
   const canonical = [input.orgId, input.entraTenantId, input.entraOid, reasonHash].join('|');
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Wisp W02 grant binding (w00 "Flags, env, permissions"): canonical
+ * `${grantorUserId}:${partnerId}:${orgId ?? '*'}:${requestedCeilingHash}`.
+ * The grantor is always the authenticated caller, never a body field.
+ */
+export function wispGrantResourceDigest(input: {
+  grantorUserId: string;
+  partnerId: string;
+  orgId: string | null;
+  requestedCeilingHash: string;
+}): `sha256:${string}` {
+  const canonical = `${input.grantorUserId}:${input.partnerId}:${input.orgId ?? '*'}:${input.requestedCeilingHash}`;
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

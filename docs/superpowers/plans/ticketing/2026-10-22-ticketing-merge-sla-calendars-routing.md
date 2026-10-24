@@ -1,9 +1,10 @@
 ---
-tracking_issue: LanternOps/breeze#8883
+tracking_issue: LanternOps/breeze#9779
+spec_issue: LanternOps/breeze#8883
 refs: [LanternOps/breeze#8972, LanternOps/breeze#8973]
 spec: docs/superpowers/specs/ticketing/2026-10-18-ticketing-merge-sla-calendars-routing-spec.md
 base: origin/main @ 520d3dade2
-status: draft — awaiting Gate B
+status: approved (Gate B) — waves tracked on LanternOps/breeze#9779
 ---
 
 # Ticketing: merge, business-hours SLA calendars, routing — Implementation Plan
