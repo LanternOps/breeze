@@ -340,7 +340,9 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     expect(await bySource(fx.principal.id, 'f-exe')).toEqual([]);
 
     // Spec §4.5: header 2 (create, ref); the reservation of the four fetchable files, one unit each; the chunk 3 + 1 status.
-    expect(chargeHook.costs).toEqual([2, 4, 4]);
+    // Marking each of the three stored files is a transaction of its own, unit-free.
+    expect(chargeHook.costs.filter((c) => c > 0)).toEqual([2, 4, 4]);
+    expect(chargeHook.costs.filter((c) => c === 0)).toHaveLength(3);
     expect(await bucketSize(window.id)).toBe(10);
     expect(await getRedis()!.hexists(migrationWindowBytesKey(window.id), 'tokens')).toBe(1);
 
@@ -417,11 +419,11 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     expect((await attachmentsOf(ticketId)).map((r) => r.importSourceId)).toEqual(['f1', 'f2']);
   }, CASE_TIMEOUT);
 
-  runDb('a crash after the put leaves a pending row and its object, which a later pass attaches', async () => {
+  runDb('a crash after the put, before it is marked stored, leaves a pending row and its object, which a later pass re-puts and attaches', async () => {
     const fx = await seed();
     const window = await openWindow(fx);
     const ticket = source(fx, [comment('c1', 10, 'Crash test.', [file('f1', 'one.png', PNG.length)])]);
-    // Header (1st charge), reservation (2nd), then the process dies before the chunk transaction (3rd).
+    // Header (1st charge), reservation (2nd), then the process dies before the mark-stored transaction (3rd).
     chargeHook.before = async (call) => {
       if (call === 3) throw new Error('simulated crash');
     };
@@ -442,6 +444,59 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     await getTestDb().update(ticketAttachments).set({ createdAt: new Date(Date.now() - 2 * DAY) }).where(eq(ticketAttachments.id, attached!.id));
     await reapPendingAttachments();
     expect(await bySource(fx.principal.id, 'f1')).toHaveLength(1);
+  }, CASE_TIMEOUT);
+
+  runDb('a crash after the file is marked stored: a later pass claims it without fetching or storing it again', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const ticket = source(fx, [comment('c1', 10, 'Crash test.', [file('f1', 'one.png', PNG.length)])]);
+    // Header, reservation, mark stored, then the process dies before the chunk transaction (4th).
+    chargeHook.before = async (call) => {
+      if (call === 4) throw new Error('simulated crash');
+    };
+    await expect(importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: PNG }) })).rejects.toThrow('simulated crash');
+    chargeHook.before = null;
+    const [stored] = await bySource(fx.principal.id, 'f1');
+    expect(stored).toMatchObject({ commentId: null, attachedAt: null, contentType: 'image/png', byteSize: PNG.length, sha256: sha(PNG) });
+
+    const fetchAttachment = fetcher({ f1: PNG });
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment });
+    expect(result).toMatchObject({ commentsWritten: 1, attachmentsWritten: 1, attachmentBytes: PNG.length });
+    expect(fetchAttachment).not.toHaveBeenCalled();
+    expect(s3.puts).toHaveLength(1);
+    const [attached] = await bySource(fx.principal.id, 'f1');
+    expect(attached).toMatchObject({ id: stored!.id, contentType: 'image/png', sha256: sha(PNG), createdAt: minutes(10) });
+    expect(attached!.commentId).not.toBeNull();
+  }, CASE_TIMEOUT);
+
+  runDb('a chunk whose files exceed one pass of the byte budget finishes across passes (review finding 1)', async () => {
+    // The floor: one 10 MiB file an hour. Two 6 MiB files never fit one pass.
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = String(10 * MIB);
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const big1 = Buffer.concat([PNG.subarray(0, 8), Buffer.alloc(6 * MIB - 8, 1)]);
+    const big2 = Buffer.concat([ZIP.subarray(0, 4), Buffer.alloc(6 * MIB - 4, 2)]);
+    const ticket = source(fx, [comment('c1', 10, 'Two big files.', [file('b1', 'one.png', 6 * MIB), file('b2', 'two.zip', 6 * MIB)])]);
+
+    const first = fetcher({ b1: big1, b2: big2 });
+    await expect(importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: first }))
+      .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', status: 429, details: { kind: 'bytes' } });
+    expect(first.mock.calls.map((c) => c[0])).toEqual(['b1']);
+    // b1 is in object storage and marked stored; b2 waits, unstored.
+    const [b1] = await bySource(fx.principal.id, 'b1');
+    expect(b1).toMatchObject({ commentId: null, contentType: 'image/png', byteSize: 6 * MIB, sha256: sha(big1) });
+    const [b2] = await bySource(fx.principal.id, 'b2');
+    expect(b2).toMatchObject({ commentId: null, sha256: '0'.repeat(64) });
+
+    // An hour later the bucket is full again: the second pass fetches b2 only.
+    await getRedis()!.del(migrationWindowBytesKey(window.id));
+    const second = fetcher({ b1: big1, b2: big2 });
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: second });
+    expect(result).toMatchObject({ outcome: 'resumed', commentsWritten: 1, attachmentsWritten: 2, attachmentBytes: 12 * MIB });
+    expect(second.mock.calls.map((c) => c[0])).toEqual(['b2']);
+    const rows = await attachmentsOf(result.ticketId);
+    expect(rows.map((r) => [r.id, r.contentType, r.byteSize])).toEqual([[b1!.id, 'image/png', 6 * MIB], [b2!.id, 'application/octet-stream', 6 * MIB]]);
+    expect(rows.every((r) => r.commentId !== null)).toBe(true);
   }, CASE_TIMEOUT);
 
   runDb('past the grace the reaper deletes a crashed reservation and its object, and a later pass reserves again', async () => {
@@ -542,7 +597,7 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     const reserved = await withDbAccessContext(context, () => reserveImportAttachments({
       ticketId: inWindow!.id, windowId: window.id, principalId: fx.principal.id, files: [{ sourceId: 'x1', filename: 'a.png', declaredBytes: 10 }],
     }));
-    expect(reserved).toEqual([{ id: expect.any(String), sourceId: 'x1', inserted: true }]);
+    expect(reserved).toEqual([{ id: expect.any(String), sourceId: 'x1', inserted: true, stored: null }]);
 
     const forged = (ticketId: string, orgId: string, sourceId: string) => {
       const id = crypto.randomUUID();

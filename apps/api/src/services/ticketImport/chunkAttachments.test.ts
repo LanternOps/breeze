@@ -30,19 +30,42 @@ function comment(sourceId: string, attachments: ImportedComment['attachments']):
 }
 const file = (sourceId: string, filename: string, declaredBytes?: number) => ({ sourceId, filename, inline: false, ...(declaredBytes !== undefined ? { declaredBytes } : {}) });
 
-function harness(chunk: ImportedComment[], states: Record<string, 'pending' | 'attached'> = {}, attachedUnderLock: string[] = []) {
+const STORED_SHA = 'e'.repeat(64);
+
+function harness(
+  chunk: ImportedComment[],
+  states: Record<string, 'pending' | 'stored' | 'attached'> = {},
+  attachedUnderLock: string[] = [],
+) {
   const reserveCalls: string[][] = [];
+  const costs: number[] = [];
+  const marked: string[] = [];
   const input: ChunkAttachmentsInput = {
     chunk,
     readStates: vi.fn(async () => new Map(Object.entries(states))),
-    reserve: vi.fn(async (files: ReservationFile[]) => {
+    reserve: vi.fn(async (files: ReservationFile[], cost: number) => {
       reserveCalls.push(files.map((f) => f.sourceId));
-      return { merged: null, reserved: files.filter((f) => !attachedUnderLock.includes(f.sourceId)).map((f) => ({ id: `id-${f.sourceId}`, sourceId: f.sourceId })) };
+      costs.push(cost);
+      return {
+        merged: null,
+        reserved: files.filter((f) => !attachedUnderLock.includes(f.sourceId)).map((f) => ({
+          id: `id-${f.sourceId}`,
+          sourceId: f.sourceId,
+          inserted: !states[f.sourceId],
+          stored: states[f.sourceId] === 'stored'
+            ? { id: `id-${f.sourceId}`, contentType: 'application/pdf', byteSize: 777, sha256: STORED_SHA }
+            : null,
+        })),
+      };
+    }),
+    markStored: vi.fn(async (claim: { id: string }) => {
+      marked.push(claim.id);
+      return true;
     }),
     fetchAttachment: vi.fn(),
     chargeBytes: vi.fn(),
   };
-  return { input, reserveCalls };
+  return { input, reserveCalls, costs, marked };
 }
 
 beforeEach(() => {
@@ -82,16 +105,46 @@ describe('prepareChunkAttachments', () => {
   });
 
   it('neither reserves nor stores a file this principal already attached; a pending one is reserved again (reused)', async () => {
-    const { input, reserveCalls } = harness([comment('c1', [file('done', 'a.png', 10), file('half', 'b.png', 10), file('new', 'c.png', 10)])], {
+    const { input, reserveCalls, costs } = harness([comment('c1', [file('done', 'a.png', 10), file('half', 'b.png', 10), file('new', 'c.png', 10)])], {
       done: 'attached',
       half: 'pending',
     });
     const out = await prepareChunkAttachments(input);
     expect(input.readStates).toHaveBeenCalledWith(['done', 'half', 'new']);
     expect(reserveCalls).toEqual([['half', 'new']]);
+    // One unit per new file only: the reused reservation costs nothing.
+    expect(costs).toEqual([1]);
     expect(store.calls).toEqual(['half', 'new']);
     if (out.merged) throw new Error('unexpected merge');
     expect(out.files.byComment.get('c1')).toEqual({ claims: [expect.objectContaining({ id: 'id-half' }), expect.objectContaining({ id: 'id-new' })], skips: [] });
+  });
+
+  it('claims a reservation an earlier pass stored as it is: no fetch, no byte charge, no unit, no mark', async () => {
+    const { input, costs, marked } = harness([comment('c1', [file('kept', 'a.pdf', 777), file('new', 'b.png', 10)])], { kept: 'stored' });
+    const out = await prepareChunkAttachments(input);
+    expect(store.calls).toEqual(['new']);
+    expect(costs).toEqual([1]);
+    expect(marked).toEqual(['id-new']);
+    if (out.merged) throw new Error('unexpected merge');
+    expect(out.files.byComment.get('c1')!.claims).toEqual([
+      { id: 'id-kept', contentType: 'application/pdf', byteSize: 777, sha256: STORED_SHA },
+      expect.objectContaining({ id: 'id-new' }),
+    ]);
+  });
+
+  it('marks each file stored right after its put, so progress survives a later failure in the chunk', async () => {
+    store.outcomes.set('second', Object.assign(new Error('429'), { code: 'MIGRATION_WINDOW_RATE_LIMITED' }));
+    const { input, marked } = harness([comment('c1', [file('first', 'a.png', 10), file('second', 'b.png', 10)])]);
+    await expect(prepareChunkAttachments(input)).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED' });
+    expect(marked).toEqual(['id-first']);
+  });
+
+  it('a file whose reservation is no longer pending when it is marked is not claimed', async () => {
+    const { input } = harness([comment('c1', [file('gone', 'a.png', 10)])]);
+    input.markStored = vi.fn(async () => false);
+    const out = await prepareChunkAttachments(input);
+    if (out.merged) throw new Error('unexpected merge');
+    expect(out.files.byComment.get('c1')?.claims ?? []).toEqual([]);
   });
 
   it('a file attached under the lock (not returned by the reservation) is neither stored, claimed nor skipped', async () => {
@@ -102,14 +155,15 @@ describe('prepareChunkAttachments', () => {
     expect(out.files.byComment.get('c1')).toEqual({ claims: [expect.objectContaining({ id: 'id-mine' })], skips: [] });
   });
 
-  it('reserves at most 100 files per transaction, across comments', async () => {
+  it('reserves at most 100 files per transaction, across comments, each charged its new files', async () => {
     const chunk = [
       comment('c1', Array.from({ length: 150 }, (_, i) => file(`a${i}`, `a${i}.png`, 10))),
       comment('c2', Array.from({ length: 55 }, (_, i) => file(`b${i}`, `b${i}.png`, 10))),
     ];
-    const { input, reserveCalls } = harness(chunk);
+    const { input, reserveCalls, costs } = harness(chunk, { a0: 'pending', b54: 'stored' });
     await prepareChunkAttachments(input);
     expect(reserveCalls.map((c) => c.length)).toEqual([100, 100, 5]);
+    expect(costs).toEqual([99, 100, 4]);
   });
 
   it('a permanent failure after the reservation is a skip whose reservation the chunk transaction deletes', async () => {

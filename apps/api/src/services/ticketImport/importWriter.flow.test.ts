@@ -103,6 +103,10 @@ vi.mock('./importAttachments', async (orig) => ({
     if (ids.length > 0) h.writes.push(['deleteSkippedReservations', ids]);
     return ids.length;
   }),
+  markReservationStored: vi.fn(async (_ticketId: string, _principalId: string, claim: { id: string }) => {
+    h.writes.push(['markReservationStored', claim.id]);
+    return true;
+  }),
 }));
 
 vi.mock('../ticketExternalRefs', () => ({
@@ -474,13 +478,14 @@ describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2
     const fetchAttachment = vi.fn(async () => PNG);
     const result = await run(withFiles, { fetchAttachment });
 
-    // Header (create + ref), the reservation of f1 alone, the chunk (3 comments + the status).
+    // Header (create + ref), the reservation of f1 alone, the chunk (3 comments
+    // + the status); marking f1 stored is a transaction of its own, unit-free.
     expect(h.charges).toEqual([2, 1, 4]);
-    expect(h.locks).toBe(3);
+    expect(h.locks).toBe(4);
     expect(h.byteCharges).toEqual([PNG.length]);
     expect(fetchAttachment).toHaveBeenCalledWith('f1', 10 * 1024 * 1024);
     expect(h.writes.map((w) => w[0])).toEqual([
-      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments',
+      'createTicket', 'upsertTicketExternalRef', 'reserveImportAttachments', 'markReservationStored',
       'addTicketComment', 'addTicketComment', 'addTicketComment', 'changeTicketStatus',
     ]);
     expect(h.writes[2]).toEqual(['reserveImportAttachments', ['f1']]);

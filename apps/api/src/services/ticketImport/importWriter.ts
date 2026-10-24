@@ -26,6 +26,7 @@ import {
 import {
   deleteSkippedReservations,
   importAttachmentStates,
+  markReservationStored,
   reserveImportAttachments,
   withAttachmentSkipNote,
   type ImportAttachmentSkip,
@@ -941,17 +942,23 @@ export async function importTicket(
   for (const [index, chunk] of chunks.entries()) {
     const last = index === chunks.length - 1;
     // §4.3 steps 1 and 2: reserve the chunk's files (each reservation
-    // transaction locks the ticket first and charges one unit per file),
-    // then fetch and store them with no DB context.
+    // transaction locks the ticket first and charges one unit per new file),
+    // then fetch and store them with no DB context, marking each stored in a
+    // short transaction of its own (no unit: an update of the same row).
     const prepared = hasAttachments(chunk)
       ? await prepareChunkAttachments({
         chunk,
         readStates: (sourceIds) => withDbAccessContext(context, () => importAttachmentStates(principalId, sourceIds)),
-        reserve: (files) => inImportTransaction(descriptor, context, orgId, files.length, async (scope) => {
+        reserve: (files, cost) => inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
           const merged = await lockImportedTicket(ticketId, t.sourceId);
           if (merged) return { merged };
           const reserved = await reserveImportAttachments({ ticketId, windowId: scope.window.id, principalId: scope.window.principalId, files });
           return { merged: null, reserved };
+        }),
+        markStored: (claim) => inImportTransaction(descriptor, context, orgId, 0, async (scope) => {
+          // A merge since the reservation: the chunk transaction answers it.
+          if (await lockImportedTicket(ticketId, t.sourceId)) return false;
+          return markReservationStored(ticketId, scope.window.principalId, claim);
         }),
         fetchAttachment: options.fetchAttachment!,
         chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),

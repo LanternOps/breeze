@@ -214,6 +214,7 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   // ticket lock (a no-op) and guards the tombstone itself.
   'services/ticketImport/importAttachments.ts::reserveImportAttachments': TF(['ticket_attachments']),
   'services/ticketImport/importAttachments.ts::deleteSkippedReservations': TF(['ticket_attachments']),
+  'services/ticketImport/importAttachments.ts::markReservationStored': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments/from-artifact': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::DELETE /:id/attachments/:attachmentId': TF(['ticket_attachments'], {

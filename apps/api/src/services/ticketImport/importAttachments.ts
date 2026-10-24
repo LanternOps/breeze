@@ -8,6 +8,7 @@ import { sniffAttachmentMime } from '../attachmentSniff';
 import { objectKeyFor } from '../ticketAttachmentStorage';
 import { assertTicketNotMerged } from '../ticketMerge/errors';
 import { lockTicketForWrite } from '../ticketRowLock';
+import type { ImportedAttachmentClaim } from '../ticketService';
 
 /**
  * Attachments in import mode (#8313 W1; spec
@@ -201,13 +202,26 @@ export function withAttachmentSkipNote(
  */
 export const ATTACHMENT_SKIP_NOTE_PG_PATTERN = '(^|\\n\\n)\\[Attachments not imported: [^\\n]*\\]$';
 
-/** What a file's resume key holds for this principal: nothing, a reservation, or an attached file. */
-export type ImportAttachmentState = 'pending' | 'attached';
+/**
+ * What a file's resume key holds for this principal, as far as the window can
+ * see: a reservation (`pending`), a reservation whose bytes are already in
+ * object storage (`stored`, see `markReservationStored`), or an attached file.
+ */
+export type ImportAttachmentState = 'pending' | 'stored' | 'attached';
 
 /**
- * This principal's rows for `sourceIds`, by source id: the read before the
- * reservation, so an attached file is neither reserved nor charged again. In
- * the window's context, unlocked; the reservation re-checks under the lock.
+ * A stored reservation carries its real digest; one not yet stored carries
+ * `PROVISIONAL_SHA256`. Built per call, not at module load, so suites that
+ * partially mock the schema can import this file.
+ */
+const storedColumn = () => sql<boolean>`${ticketAttachments.sha256} <> ${PROVISIONAL_SHA256}`;
+
+/**
+ * This principal's rows for `sourceIds` that the window can see, by source
+ * id: the read before the reservation, so an attached file is neither
+ * reserved nor charged again, and only a file with no row is charged its
+ * unit. In the window's context, unlocked; the reservation re-checks under
+ * the lock.
  */
 export async function importAttachmentStates(
   principalId: string,
@@ -217,18 +231,29 @@ export async function importAttachmentStates(
   for (let i = 0; i < sourceIds.length; i += 500) {
     const slice = sourceIds.slice(i, i + 500);
     const rows = await db
-      .select({ sourceId: ticketAttachments.importSourceId, attached: sql<boolean>`${ticketAttachments.commentId} IS NOT NULL` })
+      .select({
+        sourceId: ticketAttachments.importSourceId,
+        attached: sql<boolean>`${ticketAttachments.commentId} IS NOT NULL`,
+        stored: storedColumn(),
+      })
       .from(ticketAttachments)
       .where(and(eq(ticketAttachments.originPrincipalId, principalId), inArray(ticketAttachments.importSourceId, slice)));
-    for (const row of rows) if (row.sourceId) states.set(row.sourceId, row.attached ? 'attached' : 'pending');
+    for (const row of rows) {
+      if (row.sourceId) states.set(row.sourceId, row.attached ? 'attached' : row.stored ? 'stored' : 'pending');
+    }
   }
   return states;
 }
 
 export type ReservationFile = { sourceId: string; filename: string; declaredBytes?: number };
 
-/** A reserved row: `inserted` by this reservation, or an existing pending row it refreshed. */
-export type ReservedRow = { id: string; sourceId: string; inserted: boolean };
+/**
+ * A reserved row: `inserted` by this reservation, or an existing pending row
+ * it refreshed. `stored` holds the real metadata of a refreshed row whose
+ * bytes an earlier pass already stored (`markReservationStored`): the chunk
+ * claims it without fetching or charging anything.
+ */
+export type ReservedRow = { id: string; sourceId: string; inserted: boolean; stored: ImportedAttachmentClaim | null };
 
 /**
  * Reserves `files` on `ticketId` for the window's principal (§4.3 step 1):
@@ -310,11 +335,53 @@ export async function reserveImportAttachments(input: {
       isNull(ticketAttachments.commentId),
       isNull(ticketAttachments.uploadedByUserId),
     ))
-    .returning({ id: ticketAttachments.id, sourceId: ticketAttachments.importSourceId });
+    .returning({
+      id: ticketAttachments.id,
+      sourceId: ticketAttachments.importSourceId,
+      stored: storedColumn(),
+      contentType: ticketAttachments.contentType,
+      byteSize: ticketAttachments.byteSize,
+      sha256: ticketAttachments.sha256,
+    });
   return [
-    ...inserted.map((r) => ({ id: r.id, sourceId: r.sourceId!, inserted: true })),
-    ...refreshed.map((r) => ({ id: r.id, sourceId: r.sourceId!, inserted: false })),
+    ...inserted.map((r) => ({ id: r.id, sourceId: r.sourceId!, inserted: true, stored: null })),
+    ...refreshed.map((r) => ({
+      id: r.id,
+      sourceId: r.sourceId!,
+      inserted: false,
+      stored: r.stored ? { id: r.id, contentType: r.contentType, byteSize: r.byteSize, sha256: r.sha256 } : null,
+    })),
   ];
+}
+
+/**
+ * Records that a reservation's bytes are in object storage (spec 2026-10-19
+ * §4.3 step 2, review finding 1): the real type, size and digest on the
+ * still-pending row. From then on a later pass claims the file without
+ * fetching it or charging the byte bucket again, so a chunk whose files
+ * exceed one pass of the byte budget still finishes, one budget at a time.
+ *
+ * Put first, then this: a crash between the two leaves a pending row that is
+ * not marked, which the next pass re-puts (the crash table holds). Runs in a
+ * short import transaction after lockImportedTicket; the ticket lock here is
+ * a no-op re-take. Only this principal's pending, unclaimed row on this
+ * ticket matches: false when it was claimed, re-pointed or reaped since, and
+ * the caller then treats the file as present elsewhere.
+ */
+export async function markReservationStored(ticketId: string, principalId: string, claim: ImportedAttachmentClaim): Promise<boolean> {
+  assertTicketNotMerged(await lockTicketForWrite(db, ticketId));
+  const rows = await db
+    .update(ticketAttachments)
+    .set({ contentType: claim.contentType, byteSize: claim.byteSize, sha256: claim.sha256 })
+    .where(and(
+      eq(ticketAttachments.id, claim.id),
+      eq(ticketAttachments.ticketId, ticketId),
+      isNull(ticketAttachments.commentId),
+      isNull(ticketAttachments.uploadedByUserId),
+      eq(ticketAttachments.originPrincipalId, principalId),
+    ))
+    .returning({ id: ticketAttachments.id });
+  return rows.length === 1;
 }
 
 /**
