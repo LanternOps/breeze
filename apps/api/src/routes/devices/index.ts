@@ -51,6 +51,7 @@ import { optionsRoutes } from './options';
 import { healthRoutes } from './health';
 import { removalConfigRoutes } from './removalConfig';
 import { bulkLifecycleRoutes } from './bulkLifecycle';
+import { bulkSiteRoutes } from './bulkSite';
 import { agentRollbackRoutes } from '../agentRollback';
 
 export const deviceRoutes = new Hono();
@@ -143,6 +144,9 @@ deviceRoutes.route('/', removalConfigRoutes);
 // `POST /:id/restore` with the literal id "bulk" and 404). Pinned by
 // bulkLifecycle.mountorder.test.ts.
 deviceRoutes.route('/', bulkLifecycleRoutes);
+// POST /devices/bulk/site (#9796) — same reason: the static `bulk` segment must be matched before
+// core's `/:id`. Pinned by bulkLifecycle.mountorder.test.ts.
+deviceRoutes.route('/', bulkSiteRoutes);
 
 // Mount core routes (/, /:id, PATCH /:id, DELETE /:id)
 // Topology site location W3 (#7887): PUT/DELETE /:id/site-assignment-confirmation ("Keep at <site>").

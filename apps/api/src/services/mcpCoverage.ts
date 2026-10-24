@@ -438,6 +438,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/billing.ts': { gap: '#6784' },
   'devices/bootMetrics.ts': { tools: ['analyze_boot_performance', 'manage_startup_items'] },
   'devices/bulkLifecycle.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk restore / permanent-delete; the single-item equivalents already have tools.' },
+  'devices/bulkSite.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk site move (#9796); the single-device move (PATCH /devices/:id) is covered by core.ts tools.' },
   'devices/commands.ts': { tools: ['registry_operations', 'execute_command', 'trigger_agent_restart', 'trigger_agent_upgrade'] },
   'devices/core.ts': { tools: ['query_devices', 'get_device_details', 'get_device_context', 'set_device_context', 'resolve_device_context', 'manage_tags'] },
   'devices/customFieldImport.ts': { exempt: 'ui_file_transfer', note: 'CSV import preview/commit -- a browser file flow.' },
