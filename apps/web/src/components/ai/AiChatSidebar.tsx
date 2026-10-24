@@ -79,6 +79,8 @@ export default function AiChatSidebar() {
     boundM365ConnectionId,
     loadM365Connections,
     setSelectedM365Connection,
+    composerDraft,
+    setComposerDraft,
   } = useAiStore();
   // #6396: every own-session route requires ai_sessions:use; a role without it
   // (Org Viewer, billing roles) gets no sidebar rather than a shell that 403s.
@@ -407,6 +409,8 @@ export default function AiChatSidebar() {
             {/* Input */}
             <AiChatInput
               onSend={sendMessage}
+              value={composerDraft}
+              onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}

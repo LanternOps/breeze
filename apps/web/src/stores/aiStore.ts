@@ -152,6 +152,22 @@ interface AiState {
    * rejects. Exported on the state for tests; the store calls it itself.
    */
   attachCurrent: (opts?: { afterClosedOr409?: boolean }) => Promise<void>;
+  /**
+   * #9427: let go of `sessionId` locally (it moved elsewhere). No request at
+   * all — never DELETEs (D3). Cancels the held send reader and the attach
+   * synchronously. A no-op unless `sessionId` is the bound session.
+   */
+  releaseSession: (sessionId: string) => void;
+  /**
+   * #9427: bind `sessionId` as an explicit pick (switchSession semantics: no
+   * org-mismatch drop, chat types only), open the panel and attach. Resolves
+   * once the attach is ready (snapshot applied), never after the turn. An abort
+   * of `signal` before the bind commits → 'aborted' with nothing changed.
+   */
+  adoptSession: (
+    sessionId: string,
+    opts?: { draft?: string; signal?: AbortSignal },
+  ) => Promise<'ok' | 'not_found' | 'closed' | 'error' | 'aborted'>;
 }
 
 /**
@@ -1239,6 +1255,71 @@ export const useAiStore = create<AiState>()(
   setComposerDraft: (text: string) => set({ composerDraft: text }),
 
   attachCurrent: (opts) => startAttach(set, get, opts).finished,
+
+  releaseSession: (sessionId: string) => {
+    if (get().sessionId !== sessionId) return;
+    // An in-flight create/load/switch/close must not rebind after this.
+    claimSessionOwnership();
+    ++activeStreamToken;
+    // The token is only noticed after the next read() returns; cancel the
+    // parked reads now so nothing lands after the release (#5684 class).
+    const reader = currentSendReader;
+    currentSendReader = null;
+    if (reader) void reader.cancel().catch(() => undefined);
+    abortCurrentAttach();
+    set({ ...CLEARED_SESSION, isLoading: false, composerDraft: '' });
+    // Drop the released chat's model picker state without reloading the menu
+    // (that is a request); the sidebar reloads it when it next opens unbound.
+    useAiModelPickerStore.getState().reset();
+    get().close();
+  },
+
+  adoptSession: async (sessionId, opts) => {
+    const signal = opts?.signal;
+    if (signal?.aborted) return 'aborted';
+    const ownsSession = claimSessionOwnership();
+    const stale = () => !!signal?.aborted || !ownsSession();
+    try {
+      const res = await fetchWithAuth(`/ai/sessions/${sessionId}`, signal ? { signal } : undefined);
+      if (stale()) return 'aborted';
+      if (res.status === 404) return 'not_found';
+      if (!res.ok) return 'error';
+      const data = await res.json();
+      if (stale()) return 'aborted';
+      if (!isChatSessionType(data.session?.type)) return 'not_found';
+      if (data.session?.status !== 'active') return 'closed';
+
+      // Committed from here on: the signal no longer applies.
+      if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
+      set({
+        ...CLEARED_SESSION,
+        sessionId,
+        // An explicit pick, like switchSession: not dropped on an org mismatch,
+        // but the org is recorded so a later page navigation can rebind (#5684).
+        sessionOrgId: data.session.orgId ?? null,
+        hydratedSessionId: sessionId,
+        messages: mapMessagesFromApi(data.messages || []),
+        isLoading: false,
+        error: null,
+        errorCode: null,
+        showHistory: false,
+        isFlagged: !!data.session.flaggedAt,
+        flagReason: data.session.flagReason ?? null,
+        boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
+        turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
+        ...topologyFieldsOf(data.session),
+        composerDraft: opts?.draft ?? '',
+      });
+      adoptSessionModelPicker(sessionId);
+      get().open();
+      const ready = await startAttach(set, get).ready;
+      return ready === 'not_found' ? 'not_found' : 'ok';
+    } catch (err) {
+      if (stale()) return 'aborted';
+      console.warn('[AI] Adopting a session failed:', err);
+      return 'error';
+    }
+  },
     }),
     {
       name: 'breeze-ai-chat',
