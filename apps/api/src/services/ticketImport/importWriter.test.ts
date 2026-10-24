@@ -5,6 +5,8 @@
  * and the up-front validation. The transactions themselves run against
  * Postgres in ticketImport.integration.test.ts.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../db', () => ({
@@ -22,6 +24,7 @@ import {
   IMPORT_COMMENT_CHUNK_BYTES,
   IMPORT_COMMENT_CHUNK_SIZE,
   importTicket,
+  MERGE_SURVIVOR_FIELDS,
   statusSteps,
 } from './importWriter';
 import { parseImportedTicket, type ImportedTicket } from './importedTicket';
@@ -58,7 +61,7 @@ function stored(overrides: Record<string, unknown> = {}) {
     subject: 'Printer jams', description: 'Every second page.', priority: 'normal' as const, categoryId: null,
     tags: [] as string[], ticketType: 'incident', assignedTo: null as string | null, fieldProvenance: {} as Record<string, string>,
     requesterContactId: null as string | null, submitterEmail: 'maya@customer.example' as string | null,
-    mergedIntoTicketId: null as string | null, windowPrincipalId: PRINCIPAL as string | null,
+    mergedIntoTicketId: null as string | null, windowPrincipalId: PRINCIPAL as string | null, receivedMerge: false,
     ...overrides,
   };
 }
@@ -251,6 +254,14 @@ describe('headerChanges — a resume converges the header on the source, except 
     expect(headerChanges(stored({ assignedTo: AGENT }), ref, null, t, PRINCIPAL).assign).toBeNull();
   });
 
+  it('keeps the fields a native merge wrote on a ticket that received one; the rest still follow the source', () => {
+    const changed = ticket({ subject: 'New', tags: ['printer'] });
+    const survivor = stored({ tags: ['printer', 'vip'], receivedMerge: true });
+    expect(headerChanges(survivor, ref, ourAssignment, changed, PRINCIPAL).fieldNames).toEqual(['subject']);
+    // A ticket that never received a merge converges its tags as before.
+    expect(headerChanges({ ...survivor, receivedMerge: false }, ref, ourAssignment, changed, PRINCIPAL).fieldNames).toEqual(['subject', 'tags']);
+  });
+
   it('refreshes the external ref when the source number or url changed', () => {
     expect(headerChanges(stored(), ref, ourAssignment, ticket({ sourceNumber: '#41024' }), PRINCIPAL).refreshRef).toBe(true);
     expect(headerChanges(stored(), ref, ourAssignment, ticket({ sourceUrl: 'https://helpdesk.example.test/t/1' }), PRINCIPAL).refreshRef).toBe(true);
@@ -301,5 +312,18 @@ describe('importTicket', () => {
     const { getCurrentDbAccessContext } = await import('../../db');
     vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce({ scope: 'system' } as never);
     await expect(importTicket('w-1', ticket(), { partnerId: 'p-1' })).rejects.toThrow(/outside any DB context/);
+  });
+});
+
+describe('MERGE_SURVIVOR_FIELDS — what a native merge writes on its survivor (#8972)', () => {
+  it('matches the survivor update in ticketMerge/execute.ts: the import re-applies only tags of what it sets', () => {
+    const source = readFileSync(join(__dirname, '..', 'ticketMerge', 'execute.ts'), 'utf8');
+    const updates = [...source.matchAll(/\.update\(tickets\)\s*\.set\(\{([^}]*)\}\)\s*\.where\(and\(eq\(tickets\.id, dstId\)/g)];
+    // If this fails, the merge now writes the survivor differently: list every
+    // header field a resume re-applies (headerChanges) in MERGE_SURVIVOR_FIELDS.
+    expect(updates).toHaveLength(1);
+    const keys = updates[0]![1]!.split(',').map((part) => part.split(':')[0]!.trim()).filter(Boolean).sort();
+    expect(keys).toEqual(['deviceId', 'tags', 'updatedAt']);
+    expect(MERGE_SURVIVOR_FIELDS).toEqual(['tags']);
   });
 });

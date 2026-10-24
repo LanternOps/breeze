@@ -27,7 +27,9 @@
  *   - (#8313 W0, not in the spec) a ticket this principal imported and a
  *     technician merged in Breeze (#8972) is skipped as merged_in_breeze,
  *     also when the merge commits mid-ticket; a ref the merge moved onto a
- *     live ticket or another principal's import is refused, never resumed.
+ *     live ticket or another principal's import is refused, never resumed;
+ *   - a survivor of a native merge decides Breeze-wins on its own feed rows
+ *     only, and keeps the tags the merge wrote.
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -820,6 +822,56 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await getTestDb().select().from(ticketComments)
       .where(and(eq(ticketComments.originPrincipalId, fx.principal.id), eq(ticketComments.migrationWindowId, second.id)))).toEqual([]);
     expect(await bucketSize(second.id)).toBe(1);
+  });
+
+  runDb('a survivor of a native merge keeps its own Breeze-wins history: moved feed rows do not decide, and the merged tags stay', async () => {
+    const fx = await seed();
+    const first = await openWindow(fx);
+    const open = { comments: [], assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
+    // S1 absorbs T1, S2 absorbs T2; all four are this principal's imports.
+    const s1 = source(fx, { ...open, tags: ['printer'] });
+    const t1 = source(fx, { ...open, tags: ['vip'] });
+    const s2 = source(fx, { ...open });
+    const t2 = source(fx, { ...open });
+    const [rs1, rt1, rs2, rt2] = [
+      await importTicket(first.id, s1, { partnerId: fx.partner.id }),
+      await importTicket(first.id, t1, { partnerId: fx.partner.id }),
+      await importTicket(first.id, s2, { partnerId: fx.partner.id }),
+      await importTicket(first.id, t2, { partnerId: fx.partner.id }),
+    ];
+    await closeWindow(fx, first.id);
+
+    // A technician puts S1 and T2 on hold.
+    const tech = { kind: 'user' as const, userId: fx.owner.id, name: 'Owner' };
+    await withDbAccessContext(fx.ownerContext(), () => changeTicketStatus(rs1.ticketId, { status: 'on_hold' }, {}, tech));
+    await withDbAccessContext(fx.ownerContext(), () => changeTicketStatus(rt2.ticketId, { status: 'on_hold' }, {}, tech));
+    // A delta pass then moves T1 to pending in the source, at a source time
+    // after the technician's change: T1's newest status row is the import's.
+    const second = await openWindow(fx);
+    await importTicket(second.id, { ...t1, finalStatus: 'pending', updatedAt: new Date() }, { partnerId: fx.partner.id });
+
+    // The technician merges T1 into S1 and T2 into S2: each tombstone's feed
+    // rows move onto its survivor, and S1 gets the tag union.
+    const merge = (src: string, dst: string) => withDbAccessContext(fx.ownerContext(), () => mergeTickets({ sourceTicketId: src, intoTicketId: dst, notifyRequester: false }, tech));
+    await merge(rt1.ticketId, rs1.ticketId);
+    await merge(rt2.ticketId, rs2.ticketId);
+    const ticketRow = async (id: string) => (await getTestDb().select().from(tickets).where(eq(tickets.id, id)))[0]!;
+    expect((await ticketRow(rs1.ticketId)).tags).toEqual(['printer', 'vip']);
+
+    // The next pass resolves both in the source, and S1's source still says ['printer'].
+    const resolved = { finalStatus: 'resolved' as const, resolvedAt: minutes(400), updatedAt: minutes(400) };
+    const r1 = await importTicket(second.id, { ...s1, ...resolved }, { partnerId: fx.partner.id });
+    const r2 = await importTicket(second.id, { ...s2, ...resolved }, { partnerId: fx.partner.id });
+
+    // S1: its own newest status row is the technician's; T1's newer import
+    // row, moved in, does not make the status the import's.
+    expect(r1).toMatchObject({ outcome: 'resumed', fieldsUpdated: 0, statusSkipped: true });
+    expect(r1.statusSkip).toEqual({ statusOwner: { kind: 'user', principalId: null }, sourceStatus: 'resolved', currentStatus: 'on_hold' });
+    expect(await ticketRow(rs1.ticketId)).toMatchObject({ status: 'on_hold', tags: ['printer', 'vip'] });
+    // S2: the technician's row moved in from T2 does not keep S2's status;
+    // S2's own newest row is the import's, so the source status applies.
+    expect(r2).toMatchObject({ outcome: 'resumed', statusSkipped: false });
+    expect(await ticketRow(rs2.ticketId)).toMatchObject({ status: 'resolved', resolvedAt: minutes(400) });
   });
 
   runDb('a ticket deleted between two of its transactions stops the import; a close-only source ticket keeps its note', async () => {

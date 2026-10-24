@@ -138,7 +138,7 @@ function storedRow(overrides: Record<string, unknown> = {}) {
     subject: 'Printer jams', description: 'Every second page.', priority: 'normal', categoryId: null,
     tags: [], ticketType: 'incident', assignedTo: null, fieldProvenance: {},
     requesterContactId: null, submitterEmail: 'maya@customer.example',
-    mergedIntoTicketId: null, windowPrincipalId: PRINCIPAL,
+    mergedIntoTicketId: null, windowPrincipalId: PRINCIPAL, receivedMerge: false,
     ...overrides,
   };
 }

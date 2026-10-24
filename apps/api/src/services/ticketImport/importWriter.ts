@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { ticketComments, ticketExternalRefs, tickets } from '../../db/schema';
 import { isPgUniqueViolation, pgErrorConstraint } from '../../utils/pgErrors';
@@ -172,7 +172,20 @@ type HeaderRow = {
   ticketType: string;
   assignedTo: string | null;
   fieldProvenance: Record<string, string>;
+  /** A Breeze merge folded another ticket into this one (#8972): see `MERGE_SURVIVOR_FIELDS`. */
+  receivedMerge: boolean;
 };
+
+/**
+ * The header fields a native merge (#8972) writes on its survivor that a
+ * resume would otherwise re-apply. The survivor update in
+ * ticketMerge/execute.ts sets `tags` (the union of both tickets'),
+ * `deviceId` and `updatedAt`, and stamps no field_provenance; the import
+ * re-applies only `tags`. On a ticket that has received a merge they are
+ * Breeze's, like a field a user set (importWriter.test.ts pins the list
+ * against execute.ts).
+ */
+export const MERGE_SURVIVOR_FIELDS: readonly string[] = ['tags'];
 
 /** The plan's read of the ticket a source id resolves to. */
 type StoredTicket = HeaderRow & {
@@ -267,6 +280,9 @@ const headerColumns = () => ({
   ticketType: tickets.ticketType,
   assignedTo: tickets.assignedTo,
   fieldProvenance: tickets.fieldProvenance,
+  // The outer row is named `tickets`: drizzle leaves a one-table select's
+  // columns unqualified. An indexed probe (tickets_merged_into_idx).
+  receivedMerge: sql<boolean>`EXISTS (SELECT 1 FROM tickets m WHERE m.merged_into_ticket_id = tickets.id)`,
 });
 
 /**
@@ -309,13 +325,16 @@ type FeedAuthor = { kind: string; principalId: string | null };
 
 /**
  * Who wrote the ticket's latest feed row of `type`, or null when it has none
- * (never assigned; status never changed through changeTicketStatus).
+ * (never assigned; status never changed through changeTicketStatus). Only
+ * the ticket's own rows: a row a Breeze merge moved in from a tombstone
+ * (`merged_from_ticket_id` set, ticketMerge/repoint.ts) is that ticket's
+ * history, and must not decide who owns this ticket's status or assignee.
  */
 async function lastFeedRowBy(ticketId: string, type: 'assignment' | 'status_change'): Promise<FeedAuthor | null> {
   const [row] = await db
     .select({ kind: ticketComments.originPrincipalKind, principalId: ticketComments.originPrincipalId })
     .from(ticketComments)
-    .where(and(eq(ticketComments.ticketId, ticketId), eq(ticketComments.commentType, type)))
+    .where(and(eq(ticketComments.ticketId, ticketId), eq(ticketComments.commentType, type), isNull(ticketComments.mergedFromTicketId)))
     .orderBy(desc(ticketComments.createdAt), desc(ticketComments.id))
     .limit(1);
   return row ?? null;
@@ -350,6 +369,9 @@ async function presentCommentSourceIds(principalId: string, sourceIds: readonly 
  * - A field whose `field_provenance` is 'user' was set by a Breeze user after
  *   the import and keeps the Breeze value. Every other stamp (the import's
  *   own 'service_principal', 'ai_agent', 'system', none) yields to the source.
+ * - On a ticket that has received a native merge, the fields the merge wrote
+ *   (`MERGE_SURVIVOR_FIELDS`) keep the Breeze value too: the merge stamps no
+ *   provenance.
  * - The assignee has no field provenance. Its latest assignment feed row
  *   stands in for it: the source assignee is applied only when that row was
  *   written by this import principal, or the ticket was never assigned.
@@ -364,11 +386,12 @@ export function headerChanges(
   principalId: string,
 ): HeaderChanges {
   const provenance = stored.fieldProvenance ?? {};
-  const userOwned = (field: string) => provenance[field] === 'user';
+  const breezeOwned = (field: string) => provenance[field] === 'user'
+    || (stored.receivedMerge && MERGE_SURVIVOR_FIELDS.includes(field));
   const fields: UpdateTicketFieldsInput = {};
   const fieldNames: string[] = [];
   const consider = <K extends keyof UpdateTicketFieldsInput>(field: K, differs: boolean, value: UpdateTicketFieldsInput[K]) => {
-    if (!differs || userOwned(field)) return;
+    if (!differs || breezeOwned(field)) return;
     fields[field] = value;
     fieldNames.push(field);
   };
