@@ -387,6 +387,50 @@ describe('useSiteCrud', () => {
       expect((del[1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_A);
     });
 
+    it('a slower, superseded refresh never overwrites the newer org\'s list', async () => {
+      let resolveSlow!: (r: Response) => void;
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes(`organizationId=${ORG_A}`)
+          ? new Promise<Response>((resolve) => { resolveSlow = resolve; })
+          : Promise.resolve(jsonResponse({ data: [SITE_B] })),
+      );
+      const { result, rerender } = renderHook(
+        ({ orgId }: { orgId: string | null }) => useSiteCrud(orgId, { onUnauthorized, t, fleet: true }),
+        { initialProps: { orgId: ORG_A as string | null } },
+      );
+
+      let slow!: Promise<unknown>;
+      act(() => { slow = result.current.refresh(); });
+      rerender({ orgId: ORG_B });
+      await act(async () => {
+        await result.current.refresh();
+      });
+      expect(result.current.sites).toEqual([SITE_B]);
+
+      await act(async () => {
+        resolveSlow(jsonResponse({ data: [SITE_A] }));
+        await slow;
+      });
+      expect(result.current.sites).toEqual([SITE_B]);
+      expect(result.current.sitesLoading).toBe(false);
+    });
+
+    it('a write with no resolvable org is refused loudly, not silently', async () => {
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+      const orphan = { ...SITE, id: 'site-x' }; // a row without orgId
+      act(() => result.current.openEdit(orphan));
+      await act(async () => {
+        await result.current.submit({ name: 'Renamed' });
+      });
+      act(() => result.current.openDelete(orphan));
+      await act(async () => {
+        await result.current.confirmDelete();
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(showToastMock).toHaveBeenCalledTimes(2);
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+
     it('an MFA-required 403 on the write keeps the modal open and surfaces it (same path as OrgSitesTab)', async () => {
       fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
         init?.method === 'POST'

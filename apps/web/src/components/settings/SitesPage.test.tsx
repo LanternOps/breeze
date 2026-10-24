@@ -113,6 +113,30 @@ describe('SitesPage (#9794)', () => {
     expect(await screen.findByTestId(`sites-row-${SITE_A.id}`)).toBeInTheDocument();
     expect(screen.queryByTestId(`sites-row-${SITE_B.id}`)).toBeNull();
     expect(listCalls()).toHaveLength(1);
+    // Exactly the plain listing — no extra params that could ask for more.
+    expect(String(listCalls()[0]![0])).toBe('/orgs/sites?page=1&limit=100');
+  });
+
+  it('Edit in fleet view writes to the row\'s own org, not the (null) ambient scope', async () => {
+    granted.add('sites:write');
+    serveSites([SITE_A, SITE_B]);
+    fetchMock.mockImplementation(async (input, init) => {
+      const method = (init as RequestInit | undefined)?.method;
+      if (method === 'PATCH') return jsonResponse({});
+      return jsonResponse({ data: [SITE_A, SITE_B] });
+    });
+    render(<SitesPage />);
+    await screen.findByTestId(`sites-row-${SITE_B.id}`);
+
+    fireEvent.click(screen.getAllByTestId(`site-${SITE_B.id}-menu`)[0]!);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }));
+    fireEvent.change(await screen.findByLabelText('Site name'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const patch = fetchMock.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')!;
+    expect(patch[0]).toBe(`/orgs/sites/${SITE_B.id}`);
+    expect((patch[1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_B);
   });
 
   it('hides Add site, Edit and Delete without sites:write', async () => {

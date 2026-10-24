@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
@@ -130,11 +130,17 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
   const [siteSubmitting, setSiteSubmitting] = useState(false);
   const [guidingFirstSite, setGuidingFirstSite] = useState(false);
   const [writeOrgId, setWriteOrgId] = useState<string | null>(null);
+  // Only the most recent refresh may write list state: an org switch starts a
+  // new listing while the previous (possibly multi-page) one is in flight, and
+  // that older response must not land under the new scope.
+  const refreshSeq = useRef(0);
 
   const refresh = useCallback(
     async (orgIdOverride?: string): Promise<Site[] | null> => {
       const targetOrgId = orgIdOverride ?? orgId;
       if (!targetOrgId && !fleet) return null;
+      const seq = ++refreshSeq.current;
+      const isLatest = () => seq === refreshSeq.current;
       setSitesLoading(true);
       setSitesFailed(false);
       try {
@@ -149,21 +155,25 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
               { strictShape: true },
             )
           : await fetchAllSites<Site>('/orgs/sites', { orgIdOverride: null }, { strictShape: true });
-        setSites(siteList);
+        if (isLatest()) setSites(siteList);
         return siteList;
       } catch (err) {
-        setSites([]);
-        setSitesFailed(true);
         console.warn('[useSiteCrud] failed to fetch sites', targetOrgId ?? '(fleet)', err);
+        if (isLatest()) {
+          setSites([]);
+          setSitesFailed(true);
+        }
         return null;
       } finally {
-        setSitesLoading(false);
+        if (isLatest()) setSitesLoading(false);
       }
     },
     [orgId, fleet],
   );
 
   const clear = useCallback(() => {
+    refreshSeq.current += 1; // an in-flight refresh must not repopulate a cleared list
+    setSitesLoading(false);
     setSites([]);
     setSitesFailed(false);
   }, []);
@@ -218,12 +228,22 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     [t],
   );
 
+  const refuseNoOrg = useCallback(() => {
+    console.warn('[useSiteCrud] write refused: no organization resolved for this site');
+    showToast({ message: t('settings:organizationsPage.errors.generic'), type: 'error' });
+  }, [t]);
+
   const submit = useCallback(
     async (values: Record<string, unknown>) => {
       // The org captured when the modal opened — never the bound org at submit
       // time, which an org switch may have moved since.
       const targetOrgId = writeOrgId;
-      if (!targetOrgId) return;
+      if (!targetOrgId) {
+        // Fleet-view add is stopped earlier by the dialog's org picker; this
+        // only trips on a row that carries no org — refuse visibly.
+        refuseNoOrg();
+        return;
+      }
       setSiteSubmitting(true);
       try {
         const payload = {
@@ -265,12 +285,16 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         setSiteSubmitting(false);
       }
     },
-    [writeOrgId, siteModalMode, selectedSite, refresh, close, onUnauthorized, t, surfaceUnexpectedError],
+    [writeOrgId, siteModalMode, selectedSite, refresh, close, onUnauthorized, t, surfaceUnexpectedError, refuseNoOrg],
   );
 
   const confirmDelete = useCallback(async () => {
     const targetOrgId = writeOrgId;
-    if (!selectedSite || !targetOrgId) return;
+    if (!selectedSite) return;
+    if (!targetOrgId) {
+      refuseNoOrg();
+      return;
+    }
     setSiteSubmitting(true);
     try {
       await runAction({
@@ -286,7 +310,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     } finally {
       setSiteSubmitting(false);
     }
-  }, [selectedSite, writeOrgId, refresh, close, onUnauthorized, t, surfaceUnexpectedError]);
+  }, [selectedSite, writeOrgId, refresh, close, onUnauthorized, t, surfaceUnexpectedError, refuseNoOrg]);
 
   const getSiteFormDefaults = useCallback(
     (site: Site): SiteFormDefaults => ({
