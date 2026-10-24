@@ -1,8 +1,8 @@
+import { sanitizeAttachmentFilename } from '../attachmentFilename';
 import type { ImportedAttachmentClaim } from '../ticketService';
 import type { ImportedComment } from './importedTicket';
 import {
   IMPORT_RESERVATION_BATCH,
-  importedAttachmentFilename,
   reservationSkip,
   type ImportAttachmentSkip,
   type ImportAttachmentSkipReason,
@@ -102,7 +102,10 @@ export async function prepareChunkAttachments(
   input: ChunkAttachmentsInput,
 ): Promise<{ merged: { mergedIntoTicketId: string } } | { merged: null; files: ChunkFiles }> {
   const planned: Planned[] = input.chunk.flatMap((comment) => (comment.attachments ?? []).map((a) => {
-    const filename = importedAttachmentFilename(a.filename);
+    // The live upload route's sanitizer: basename only, no control
+    // characters, quotes or backslashes, at most 255 characters, the
+    // extension kept (§4.4).
+    const filename = sanitizeAttachmentFilename(a.filename);
     return { commentId: comment.sourceId, sourceId: a.sourceId, filename, declaredBytes: a.declaredBytes, skip: reservationSkip(a.declaredBytes, filename) };
   }));
   if (planned.length === 0) return { merged: null, files: NO_CHUNK_FILES };

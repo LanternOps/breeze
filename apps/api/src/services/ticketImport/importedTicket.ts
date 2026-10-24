@@ -30,7 +30,7 @@ export const IMPORTED_TICKET_FINAL_STATUSES = ['new', 'open', 'pending', 'on_hol
  * `sourceId` is the source's attachment id, the resume key per principal
  * (ticket_attachments_import_source_uq), unique across the whole source like
  * the comment ids. `filename` is the source's name; the writer sanitizes it
- * (importedAttachmentFilename) rather than refusing the ticket over it.
+ * (sanitizeAttachmentFilename) rather than refusing the ticket over it.
  * `declaredBytes` is the size the source reports: over the 10 MiB cap or
  * zero, the file is skipped without being fetched. `inline` marks an image
  * the source showed inside the body (decision 4); the writer stores it like

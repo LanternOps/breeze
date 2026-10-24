@@ -3,28 +3,31 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { TICKET_ATTACHMENT_LIMITS } from '@breeze/shared';
 import { db } from '../../db';
 import { ticketAttachments } from '../../db/schema';
-import { sanitizeAttachmentFilename } from '../attachmentFilename';
 import { sniffAttachmentMime } from '../attachmentSniff';
 import { objectKeyFor } from '../ticketAttachmentStorage';
 import { assertTicketNotMerged } from '../ticketMerge/errors';
 import { lockTicketForWrite } from '../ticketRowLock';
 import type { ImportedAttachmentClaim } from '../ticketService';
+import { readInIdSlices } from './idSlices';
 
 /**
  * Attachments in import mode (#8313 W1; spec
  * docs/superpowers/specs/api-platform/2026-10-19-ticket-import-modules-design.md
- * §4): the rules that decide what an imported file becomes, and the two
+ * §4): the rules that decide what an imported file becomes, and the
  * statements the import writer (importWriter.ts) runs on `ticket_attachments`
  * before `addTicketComment` claims the files:
  *
  *   - `reserveImportAttachments`: the reservation, a pending row per file
  *     written BEFORE its bytes, so the pending reaper cleans up after a crash
  *     (§4.3 step 1);
+ *   - `markReservationStored`: the real metadata on a pending row once its
+ *     bytes are put (step 2), so a later pass claims it without a new fetch;
  *   - `deleteSkippedReservations`: the pending rows of files that turned out
- *     to be permanently skipped, deleted in the chunk transaction (step 3).
+ *     to be permanently skipped, deleted in the chunk transaction (step 3);
+ *   - and two reads, `importAttachmentStates` and `isReservationPending`.
  *
- * Both run only inside importTicket's window transactions. They take no write
- * mode and produce no side effect: no event, no outbox row, no audit row
+ * The writes run only inside importTicket's window transactions. None takes a
+ * write mode or produces a side effect: no event, no outbox row, no audit row
  * (ticketService.sideEffects.test.ts scans this file for it).
  */
 
@@ -38,12 +41,12 @@ export const IMPORT_RESERVATION_BATCH = 100;
 export const IMPORTED_OCTET_STREAM = 'application/octet-stream';
 
 /**
- * A reservation's metadata until the claim replaces it (§4.3): the generic
- * type and a zero digest. A pending row with no uploader is served to no one
- * (the content route answers a pending row to its uploader only), so this is
- * never seen; the claim in addTicketComment always overwrites it.
+ * A reservation's digest until its bytes are stored (§4.3): zero. With the
+ * generic type `IMPORTED_OCTET_STREAM`, it is the provisional metadata of a
+ * pending row with no uploader, which is served to no one (the content route
+ * answers a pending row to its uploader only); markReservationStored or the
+ * claim in addTicketComment replaces both.
  */
-export const PROVISIONAL_CONTENT_TYPE = IMPORTED_OCTET_STREAM;
 export const PROVISIONAL_SHA256 = '0'.repeat(64);
 
 /** The declared size clamped into the size CHECK's 1..10,485,760; 1 when the source declared none. */
@@ -123,16 +126,6 @@ export const EXECUTABLE_HEADERS: ReadonlyArray<{ name: string; magic: readonly n
 ]);
 
 const EXECUTABLE_EXTENSION_SET = new Set(EXECUTABLE_EXTENSIONS);
-
-/**
- * The name an imported file is stored under: the live upload route's
- * sanitizer (basename only; no control characters, quotes or backslashes;
- * at most 255 characters; `attachment` when nothing is left). The
- * extension is kept (§4.4).
- */
-export function importedAttachmentFilename(raw: string): string {
-  return sanitizeAttachmentFilename(raw);
-}
 
 /**
  * A filename's final extension, lower-cased, after trailing dots and spaces
@@ -270,19 +263,16 @@ export async function importAttachmentStates(
   sourceIds: readonly string[],
 ): Promise<Map<string, ImportAttachmentState>> {
   const states = new Map<string, ImportAttachmentState>();
-  for (let i = 0; i < sourceIds.length; i += 500) {
-    const slice = sourceIds.slice(i, i + 500);
-    const rows = await db
-      .select({
-        sourceId: ticketAttachments.importSourceId,
-        attached: sql<boolean>`${ticketAttachments.commentId} IS NOT NULL`,
-        stored: storedColumn(),
-      })
-      .from(ticketAttachments)
-      .where(and(eq(ticketAttachments.originPrincipalId, principalId), inArray(ticketAttachments.importSourceId, slice)));
-    for (const row of rows) {
-      if (row.sourceId) states.set(row.sourceId, row.attached ? 'attached' : row.stored ? 'stored' : 'pending');
-    }
+  const rows = await readInIdSlices(sourceIds, (slice) => db
+    .select({
+      sourceId: ticketAttachments.importSourceId,
+      attached: sql<boolean>`${ticketAttachments.commentId} IS NOT NULL`,
+      stored: storedColumn(),
+    })
+    .from(ticketAttachments)
+    .where(and(eq(ticketAttachments.originPrincipalId, principalId), inArray(ticketAttachments.importSourceId, slice))));
+  for (const row of rows) {
+    if (row.sourceId) states.set(row.sourceId, row.attached ? 'attached' : row.stored ? 'stored' : 'pending');
   }
   return states;
 }
@@ -348,7 +338,7 @@ export async function reserveImportAttachments(input: {
       storageBackend: 's3' as const,
       storageKey: objectKeyFor(id),
       data: null,
-      contentType: PROVISIONAL_CONTENT_TYPE,
+      contentType: IMPORTED_OCTET_STREAM,
       byteSize: provisionalByteSize(file.declaredBytes),
       originalFilename: file.filename,
       sha256: PROVISIONAL_SHA256,

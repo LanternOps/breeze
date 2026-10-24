@@ -32,6 +32,7 @@ import {
   withAttachmentSkipNote,
   type ImportAttachmentSkip,
 } from './importAttachments';
+import { readInIdSlices } from './idSlices';
 import { parseImportedTicket, type ImportedComment, type ImportedTicket } from './importedTicket';
 import {
   importedCommentsOf,
@@ -403,16 +404,11 @@ function writtenByImport(row: FeedAuthor, principalId: string): boolean {
  * another ticket (a merge in the source moved it) is skipped, not duplicated.
  */
 async function presentCommentSourceIds(principalId: string, sourceIds: readonly string[]): Promise<Set<string>> {
-  const present = new Set<string>();
-  for (let i = 0; i < sourceIds.length; i += 500) {
-    const slice = sourceIds.slice(i, i + 500);
-    const rows = await db
-      .select({ sourceId: ticketComments.importSourceId })
-      .from(ticketComments)
-      .where(and(eq(ticketComments.originPrincipalId, principalId), inArray(ticketComments.importSourceId, slice)));
-    for (const row of rows) if (row.sourceId) present.add(row.sourceId);
-  }
-  return present;
+  const rows = await readInIdSlices(sourceIds, (slice) => db
+    .select({ sourceId: ticketComments.importSourceId })
+    .from(ticketComments)
+    .where(and(eq(ticketComments.originPrincipalId, principalId), inArray(ticketComments.importSourceId, slice))));
+  return new Set(rows.flatMap((row) => (row.sourceId ? [row.sourceId] : [])));
 }
 
 /**

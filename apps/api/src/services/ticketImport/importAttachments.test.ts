@@ -16,9 +16,8 @@ import {
   finalExtension,
   hasExecutableHeader,
   IMPORT_ATTACHMENT_MAX_BYTES,
-  importedAttachmentFilename,
   isBlockedFilename,
-  PROVISIONAL_CONTENT_TYPE,
+  IMPORTED_OCTET_STREAM,
   PROVISIONAL_SHA256,
   provisionalByteSize,
   reservationSkip,
@@ -217,21 +216,13 @@ describe('the note appended to a comment (§4.4, the inbound shape F8)', () => {
   });
 });
 
-describe('filenames and provisional metadata (§4.3)', () => {
-  it('sanitizes like the live upload route: basename, no quotes, backslashes or control characters', () => {
-    expect(importedAttachmentFilename('C:\\Users\\maya\\invoice.pdf')).toBe('invoice.pdf');
-    expect(importedAttachmentFilename('../../etc/passwd')).toBe('passwd');
-    expect(importedAttachmentFilename('a"b\r\nc.txt')).toBe('abc.txt');
-    expect(importedAttachmentFilename('')).toBe('attachment');
-    expect(importedAttachmentFilename('x'.repeat(400) + '.pdf')).toHaveLength(255);
-  });
-
+describe('provisional metadata (§4.3)', () => {
   it('a reservation carries the declared size clamped into the size CHECK, the generic type and a zero digest', () => {
     expect(provisionalByteSize(undefined)).toBe(1);
     expect(provisionalByteSize(0)).toBe(1);
     expect(provisionalByteSize(4096)).toBe(4096);
     expect(provisionalByteSize(50 * MIB)).toBe(10 * MIB);
-    expect(PROVISIONAL_CONTENT_TYPE).toBe('application/octet-stream');
+    expect(IMPORTED_OCTET_STREAM).toBe('application/octet-stream');
     expect(PROVISIONAL_SHA256).toBe('0'.repeat(64));
   });
 });

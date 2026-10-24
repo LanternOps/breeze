@@ -614,6 +614,9 @@ export async function listMigrationWindows(partnerId: string, limit = 100): Prom
   const views: MigrationWindowView[] = [];
   for (const row of rows) {
     const orgIds = await windowOrgIds(db, row.id);
+    // Live counts (tickets, comments, attachments) for the open window only:
+    // migration_windows_one_open_per_partner allows one, so this is at most
+    // one countImported per list. Closed windows read their frozen summary.
     const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : storedSummary(row.summary, orgIds);
     views.push(toView(row, orgIds, counts));
   }
