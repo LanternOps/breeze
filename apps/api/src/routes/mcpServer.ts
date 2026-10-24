@@ -70,6 +70,14 @@ import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWh
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
 import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpAppsEnabled, mcpAppsServerExtensions } from '../services/mcpAppsConfig';
+import {
+  NO_MCP_CLIENT_EXTENSIONS,
+  parseMcpClientExtensions,
+  readLegacySessionExtensions,
+  writeLegacySessionExtensions,
+  type McpClientExtensions,
+} from '../services/mcpClientExtensions';
 import { mcpRequestStateKey, openMcpRequestState, sealMcpRequestState } from '../services/mcpRequestState';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import { isMcpIntentEligible, mcpOriginRef, type McpIntentIneligibleReason } from '../services/mcpIntentEligibility';
@@ -712,7 +720,29 @@ type McpDispatchContext = {
   correlation: McpRequestCorrelation;
   /** B-W04 (#6158, D-B32): the modern request's declared client capabilities; null/absent in the legacy era. */
   clientCapabilities?: Record<string, unknown> | null;
+  /**
+   * B-W05 (#6159, D-B40): the HTTP transport. Both legacy transports dispatch
+   * with era `legacy`; only `streamable` may advertise or resolve MCP Apps.
+   */
+  transport: 'http_sse' | 'streamable';
+  /**
+   * B-W05 (#6159, D-B42): the client's negotiated extensions for THIS request —
+   * memoised (at most one side-key read per request) and never throwing.
+   * Handlers receive the resolved value, never the thunk.
+   */
+  resolveClientExtensions: () => Promise<McpClientExtensions>;
+  /** B-W05 (#6159, D-B44): per-request audit additions, read by dispatchAndAudit after dispatch. */
+  auditExtras: { mcpApp?: string };
 };
+
+/** Legacy-era methods that may read the negotiated-extension side key (D-B42). */
+const MCP_SIDE_KEY_METHODS: ReadonlySet<string> = new Set(['tools/list', 'resources/read', 'tools/call']);
+
+/** B-W05 (#6159): memoise a resolver and degrade any failure to "nothing declared". */
+function memoizeClientExtensions(resolve: () => Promise<McpClientExtensions>): () => Promise<McpClientExtensions> {
+  let pending: Promise<McpClientExtensions> | undefined;
+  return () => (pending ??= resolve().catch(() => NO_MCP_CLIENT_EXTENSIONS));
+}
 
 async function dispatchAndAudit(
   c: Context,
@@ -723,6 +753,8 @@ async function dispatchAndAudit(
 ): Promise<JsonRpcResponse> {
   const response = await handleJsonRpc(body, auth, apiKey.scopes, apiKey, c, ctx);
   const sessionId = ctx.correlation.sessionId;
+  // B-W05 (#6159, D-B44): memoised, so a handler's read is reused here.
+  const clientExtensions = await ctx.resolveClientExtensions();
 
   // OAuth-bearer callers carry partner-scope tokens with apiKey.orgId=null
   // by design (partner admins span every org). Without the fallback, every
@@ -751,6 +783,10 @@ async function dispatchAndAudit(
         ? { principalType: 'partner_service_principal', partnerServicePrincipalId: apiKey.partnerServicePrincipalId }
         : {}),
       ...domainDenialAuditDetails(body, response),
+      // B-W05 (#6159, D-B44): both keys absent unless set, so pre-W05 rows and
+      // queries are unchanged. `mcpApp` is a registry key, never caller text.
+      ...(clientExtensions.ui ? { uiExtension: true } : {}),
+      ...(ctx.auditExtras.mcpApp ? { mcpApp: ctx.auditExtras.mcpApp } : {}),
       ...correlationAuditDetails(ctx.correlation),
     },
     result: response.error ? 'failure' : 'success',
@@ -860,7 +896,14 @@ mcpServerRoutes.post(
       principalKey,
       apiKeyId: apiKey.id,
     });
-    const response = await dispatchAndAudit(c, pre.body, { era: 'legacy', correlation }, auth, apiKey);
+    // B-W05 (#6159, D-B42): the deprecated HTTP+SSE transport never negotiates MCP Apps.
+    const response = await dispatchAndAudit(c, pre.body, {
+      era: 'legacy',
+      correlation,
+      transport: 'http_sse',
+      resolveClientExtensions: async () => NO_MCP_CLIENT_EXTENSIONS,
+      auditExtras: {},
+    }, auth, apiKey);
 
     // Legacy SSE transport: if the request carries a verified-owned sessionId
     // pointing at an active SSE stream, push the response into that stream
@@ -1023,6 +1066,12 @@ mcpServerRoutes.post(
     }
     const redis = getRedis();
 
+    // B-W05 (#6159, D-B42): the legacy era declares extensions once, on
+    // initialize. Parsed only while the flag is on; otherwise nothing is kept.
+    const initializeExtensions = isInitialize && mcpAppsEnabled()
+      ? parseMcpClientExtensions(pre.body.params?.capabilities)
+      : NO_MCP_CLIENT_EXTENSIONS;
+
     let trustedSessionId: string | undefined;
     if (isInitialize) {
       // Ignore any client-supplied Mcp-Session-Id on initialize. The server
@@ -1035,6 +1084,9 @@ mcpServerRoutes.post(
             MCP_SESSION_TTL_SECONDS,
             principalKey,
           );
+          // B-W05: side key with the SAME absolute, never-refreshed lifetime.
+          // No-op unless ui was declared; never throws.
+          await writeLegacySessionExtensions(redis, trustedSessionId, initializeExtensions, MCP_SESSION_TTL_SECONDS);
         } catch (err) {
           // We still mint and return the id. Either way the next call fails
           // closed, but WHICH way depends on the failure, so don't promise one:
@@ -1152,7 +1204,21 @@ mcpServerRoutes.post(
       apiKeyId: apiKey.id,
       rawClientInfo: isInitialize ? pre.body.params?.clientInfo : undefined,
     });
-    const dispatchCtx: McpDispatchContext = { era: 'legacy', correlation };
+    const dispatchCtx: McpDispatchContext = {
+      era: 'legacy',
+      correlation,
+      transport: 'streamable',
+      // B-W05 (#6159, D-B42): reached only after the ownership check above
+      // passed. The side key is read lazily, at most once, only with the flag
+      // on and only for the three methods that use it.
+      resolveClientExtensions: memoizeClientExtensions(async () => {
+        if (!mcpAppsEnabled()) return NO_MCP_CLIENT_EXTENSIONS;
+        if (isInitialize) return initializeExtensions;
+        if (!MCP_SIDE_KEY_METHODS.has(pre.body.method)) return NO_MCP_CLIENT_EXTENSIONS;
+        return readLegacySessionExtensions(redis, trustedSessionId);
+      }),
+      auditExtras: {},
+    };
 
     if (pre.body.id === undefined) {
       void dispatchAndAudit(c, pre.body, dispatchCtx, auth, apiKey).catch((err) => {
@@ -1198,7 +1264,17 @@ async function handleModernStreamableRequest(
   // side effect worth dispatching one for (D-B17).
   if (body.id === undefined) return c.body(null, 202);
 
-  const response = await dispatchAndAudit(c, body, { era: 'modern', correlation, clientCapabilities: meta.clientCapabilities }, auth, apiKey);
+  const response = await dispatchAndAudit(c, body, {
+    era: 'modern',
+    correlation,
+    clientCapabilities: meta.clientCapabilities,
+    transport: 'streamable',
+    // B-W05 (#6159, D-B42): declared per request; nothing is stored.
+    resolveClientExtensions: memoizeClientExtensions(async () => (
+      mcpAppsEnabled() ? parseMcpClientExtensions(meta.clientCapabilities) : NO_MCP_CLIENT_EXTENSIONS
+    )),
+    auditExtras: {},
+  }, auth, apiKey);
   const status = resolveMcpHttpStatus('modern', response, applyInsufficientScopeChallenge(c, apiKey, response));
   const decorated: JsonRpcResponse = response.result !== undefined
     ? { ...response, result: decorateModernResult(body.method, response.result as Record<string, unknown>) }
@@ -1215,13 +1291,20 @@ mcpServerRoutes.delete('/sse', (c) => {
 // JSON-RPC Method Dispatcher
 // ============================================
 
-export function buildInitializeResult(requestedProtocolVersion?: unknown) {
+/**
+ * `advertiseApps` (B-W05 #6159, D-B40): true only for the streamable
+ * transport. HTTP+SSE `/message` shares this builder and never gets Apps, so
+ * the default is false and existing one-argument callers are unchanged.
+ */
+export function buildInitializeResult(requestedProtocolVersion?: unknown, opts: { advertiseApps?: boolean } = {}) {
+  const extensions = opts.advertiseApps ? mcpAppsServerExtensions() : undefined;
   return {
     protocolVersion: negotiateMcpProtocolVersion(requestedProtocolVersion),
     capabilities: {
       tools: { listChanged: false },
       resources: { subscribe: false, listChanged: false },
       prompts: { listChanged: false },
+      ...(extensions ? { extensions } : {}),
     },
     serverInfo: {
       name: 'breeze-rmm',
@@ -1247,7 +1330,10 @@ async function handleJsonRpc(
     // `server/discover` replaces them; each falls through to -32601 in the
     // other era (still audited by the caller).
     if (ctx.era === 'legacy' && req.method === 'initialize') {
-      return jsonRpcResult(req.id, buildInitializeResult((req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion));
+      return jsonRpcResult(req.id, buildInitializeResult(
+        (req.params as { protocolVersion?: unknown } | undefined)?.protocolVersion,
+        { advertiseApps: ctx.transport === 'streamable' },
+      ));
     }
     if (ctx.era === 'legacy' && req.method === 'notifications/initialized') {
       // Client acknowledgment — no response needed but return empty result

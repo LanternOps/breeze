@@ -1,3 +1,5 @@
+import { MCP_UI_EXTENSION_ID } from './mcpClientExtensions';
+
 /**
  * B-W05 (#6159, D-B45): kill switch for the MCP Apps pilot, read per call.
  *
@@ -15,4 +17,13 @@ export function mcpAppsEnabled(): boolean {
   const raw = process.env.MCP_APPS_ENABLED;
   if (!raw) return false;
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
+}
+
+/**
+ * The server-side `capabilities.extensions` value advertised on streamable
+ * `initialize` and on `server/discover` while the flag is on (D-B40), else
+ * undefined so callers can add the key conditionally and keep flag-off bytes.
+ */
+export function mcpAppsServerExtensions(): { readonly [MCP_UI_EXTENSION_ID]: Record<string, never> } | undefined {
+  return mcpAppsEnabled() ? { [MCP_UI_EXTENSION_ID]: {} } : undefined;
 }
