@@ -227,33 +227,42 @@ export async function importAttachmentStates(
 
 export type ReservationFile = { sourceId: string; filename: string; declaredBytes?: number };
 
+/** A reserved row: `inserted` by this reservation, or an existing pending row it refreshed. */
+export type ReservedRow = { id: string; sourceId: string; inserted: boolean };
+
 /**
  * Reserves `files` on `ticketId` for the window's principal (§4.3 step 1):
- * one pending row each, before any byte is stored. A new row gets a fresh id,
- * `storage_backend 's3'` and the key `ticket-attachments/<id>`, no comment and
- * no uploader, the three import columns, and provisional metadata
- * (`provisionalByteSize`, `PROVISIONAL_CONTENT_TYPE`, `PROVISIONAL_SHA256`).
- * Its created_at is now, never historic, or the reaper (F9) would take it at
- * once.
+ * one pending row each, before any byte is stored. Two statements, so that a
+ * resume key held where the window cannot see never reaches an RLS check:
  *
- * On the resume key (ticket_attachments_import_source_uq), a PENDING row keeps
- * its id and key; its created_at is refreshed, and it is re-pointed to this
- * ticket, its org and this window. An ATTACHED row is left alone and is not
- * returned: the file is already imported.
+ *   1. `INSERT … ON CONFLICT (origin_principal_id, import_source_id) DO
+ *      NOTHING`: a new row gets a fresh id, `storage_backend 's3'` and the key
+ *      `ticket-attachments/<id>`, no comment and no uploader, the three import
+ *      columns, and provisional metadata (`provisionalByteSize`,
+ *      `IMPORTED_OCTET_STREAM`, `PROVISIONAL_SHA256`). Its created_at is now,
+ *      never historic, or the reaper (F9) would take it at once. A conflict,
+ *      visible or not, inserts nothing and raises nothing.
+ *   2. `UPDATE` of this principal's PENDING rows among the rest that the
+ *      window can see: each keeps its id and key; its created_at is refreshed
+ *      and it is re-pointed to this ticket, its org and this window.
+ *
+ * A key neither inserted nor refreshed is held by an attached row, or by a
+ * row in an org outside the window (a source merge moved its article, or its
+ * ticket was moved): the file is present elsewhere, and is not returned.
+ * (An `ON CONFLICT DO UPDATE` here raised 42501 on such a row: Postgres
+ * checks the UPDATE policy's USING clause against the conflicting row.)
  *
  * Ticket first (#8972 W0): the caller's transaction already holds the ticket
  * row (lockImportedTicket); the lock here re-takes it, a no-op, and reads the
  * org the rows take. A merged tombstone was skipped by the caller under the
  * same lock; the guard here never fires.
- *
- * Returns the reserved rows (new or reused) by source id.
  */
 export async function reserveImportAttachments(input: {
   ticketId: string;
   windowId: string;
   principalId: string;
   files: readonly ReservationFile[];
-}): Promise<Array<{ id: string; sourceId: string }>> {
+}): Promise<ReservedRow[]> {
   if (input.files.length === 0) return [];
   if (input.files.length > IMPORT_RESERVATION_BATCH) {
     throw new Error(`reserveImportAttachments takes at most ${IMPORT_RESERVATION_BATCH} files per transaction`);
@@ -282,24 +291,30 @@ export async function reserveImportAttachments(input: {
       importSourceId: file.sourceId,
     };
   });
-  const rows = await db
+  const inserted = await db
     .insert(ticketAttachments)
     .values(values)
-    .onConflictDoUpdate({
+    .onConflictDoNothing({
       target: [ticketAttachments.originPrincipalId, ticketAttachments.importSourceId],
-      targetWhere: sql`${ticketAttachments.importSourceId} IS NOT NULL`,
-      set: {
-        createdAt: sql`now()`,
-        ticketId: sql`excluded.ticket_id`,
-        orgId: sql`excluded.org_id`,
-        migrationWindowId: sql`excluded.migration_window_id`,
-        originalFilename: sql`excluded.original_filename`,
-        byteSize: sql`excluded.byte_size`,
-      },
-      setWhere: sql`${ticketAttachments.commentId} IS NULL`,
+      where: sql`${ticketAttachments.importSourceId} IS NOT NULL`,
     })
     .returning({ id: ticketAttachments.id, sourceId: ticketAttachments.importSourceId });
-  return rows.filter((r): r is { id: string; sourceId: string } => r.sourceId !== null);
+  const insertedIds = new Set(inserted.map((r) => r.sourceId));
+  const rest = input.files.map((f) => f.sourceId).filter((id) => !insertedIds.has(id));
+  const refreshed = rest.length === 0 ? [] : await db
+    .update(ticketAttachments)
+    .set({ createdAt: sql`now()`, ticketId: input.ticketId, orgId: locked.orgId, migrationWindowId: input.windowId })
+    .where(and(
+      eq(ticketAttachments.originPrincipalId, input.principalId),
+      inArray(ticketAttachments.importSourceId, rest),
+      isNull(ticketAttachments.commentId),
+      isNull(ticketAttachments.uploadedByUserId),
+    ))
+    .returning({ id: ticketAttachments.id, sourceId: ticketAttachments.importSourceId });
+  return [
+    ...inserted.map((r) => ({ id: r.id, sourceId: r.sourceId!, inserted: true })),
+    ...refreshed.map((r) => ({ id: r.id, sourceId: r.sourceId!, inserted: false })),
+  ];
 }
 
 /**

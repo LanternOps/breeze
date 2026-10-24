@@ -242,6 +242,16 @@ const bySource = (principalId: string, sourceId: string) => getTestDb().select()
 const commentsOf = (ticketId: string) => getTestDb().select().from(ticketComments)
   .where(eq(ticketComments.ticketId, ticketId)).orderBy(ticketComments.createdAt);
 
+/** Moves an imported ticket and its org-stamped children to the org outside the window (as a ticket org move would). */
+async function moveOutside(fx: Fx, ticketId: string) {
+  await getTestDb().transaction(async (tx) => {
+    await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
+    await tx.update(tickets).set({ orgId: fx.orgOutside.id }).where(eq(tickets.id, ticketId));
+    await tx.update(ticketExternalRefs).set({ orgId: fx.orgOutside.id }).where(eq(ticketExternalRefs.ticketId, ticketId));
+    await tx.update(ticketAttachments).set({ orgId: fx.orgOutside.id }).where(eq(ticketAttachments.ticketId, ticketId));
+  });
+}
+
 async function bucketSize(windowId: string): Promise<number> {
   return Number(await getRedis()!.zcard(migrationWindowRateKey(windowId)));
 }
@@ -532,7 +542,7 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     const reserved = await withDbAccessContext(context, () => reserveImportAttachments({
       ticketId: inWindow!.id, windowId: window.id, principalId: fx.principal.id, files: [{ sourceId: 'x1', filename: 'a.png', declaredBytes: 10 }],
     }));
-    expect(reserved).toEqual([{ id: expect.any(String), sourceId: 'x1' }]);
+    expect(reserved).toEqual([{ id: expect.any(String), sourceId: 'x1', inserted: true }]);
 
     const forged = (ticketId: string, orgId: string, sourceId: string) => {
       const id = crypto.randomUUID();
@@ -563,6 +573,47 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     // The resume key: one row per (principal, source id).
     const dup = await admin.insert(ticketAttachments).values(forged(inWindow!.id, fx.orgA.id, 'x3')).catch((e: unknown) => e);
     expect((dup as { cause?: { code?: string } }).cause?.code ?? (dup as { code?: string }).code).toBe('23505');
+  }, CASE_TIMEOUT);
+
+  runDb("a resume key held by a pending reservation in an org outside the window is present elsewhere, not a 42501", async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    // A pass leaves f1 pending on its ticket (a transient failure), then the
+    // ticket is moved to an org outside the window.
+    const first = source(fx, [comment('c1', 10, 'First.', [file('f1', 'one.png', PNG.length)])]);
+    await expect(importTicket(window.id, first, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: new Error('503') }) }))
+      .rejects.toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE' });
+    const [pending] = await bySource(fx.principal.id, 'f1');
+    await moveOutside(fx, pending!.ticketId);
+    const [outside] = await bySource(fx.principal.id, 'f1');
+    expect(outside).toMatchObject({ orgId: fx.orgOutside.id, commentId: null });
+
+    // The source moved that article to another ticket of a window org.
+    const moved = source(fx, [comment('c9', 20, 'Moved here.', [file('f1', 'one.png', PNG.length), file('f2', 'two.png', PNG2.length)])]);
+    const fetchAttachment = fetcher({ f1: PNG, f2: PNG2 });
+    const result = await importTicket(window.id, moved, { partnerId: fx.partner.id, fetchAttachment });
+    expect(result).toMatchObject({ outcome: 'created', commentsWritten: 1, attachmentsWritten: 1 });
+    expect(fetchAttachment.mock.calls.map((c) => c[0])).toEqual(['f2']);
+    // The reservation outside the window is untouched (the reaper owns it).
+    expect(await bySource(fx.principal.id, 'f1')).toEqual([outside]);
+    expect((await attachmentsOf(result.ticketId)).map((r) => r.importSourceId)).toEqual(['f2']);
+  }, CASE_TIMEOUT);
+
+  runDb('a comment and its file imported on a ticket now outside the window (a cross-org source merge) are skipped, not a 42501', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const article = comment('c1', 10, 'Merged article.', [file('f1', 'one.png', PNG.length)]);
+    const original = await importTicket(window.id, source(fx, [article]), { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: PNG }) });
+    expect(original).toMatchObject({ attachmentsWritten: 1 });
+    await moveOutside(fx, original.ticketId);
+
+    // The survivor in the source now carries the article; its ticket is new here.
+    const fetchAttachment = fetcher({ f1: PNG });
+    const survivor = await importTicket(window.id, source(fx, [article]), { partnerId: fx.partner.id, fetchAttachment });
+    expect(survivor).toMatchObject({ outcome: 'created', commentsWritten: 0, commentsSkipped: 1, attachmentsWritten: 0 });
+    expect(fetchAttachment).not.toHaveBeenCalled();
+    expect(await bySource(fx.principal.id, 'f1')).toHaveLength(1);
+    expect(await attachmentsOf(survivor.ticketId)).toEqual([]);
   }, CASE_TIMEOUT);
 
   runDb('the reservation locks the ticket first: no deadlock against a ticket-first writer', async () => {
