@@ -211,7 +211,7 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // assessment run carries depth 1, the requesting run and the grant revision
   // the request was made under; every other row is depth 0 with both NULL
   // (`ai_agent_runs_depth_chk`). FKs are SQL-ONLY
-  // (migrations/2027-01-04-120600-wisp-specialist-lineage.sql): the
+  // (migrations/2027-01-04-140100-wisp-specialist-lineage.sql): the
   // (requested_by_run_id, org_id) self-FK uses `ON DELETE SET NULL
   // (requested_by_run_id)`, which Drizzle cannot model.
   requestedByRunId: uuid('requested_by_run_id'),

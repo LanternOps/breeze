@@ -159,7 +159,7 @@ export const aiOperatorTasks = pgTable(
     grantId: uuid('grant_id'),
     grantRevisionId: uuid('grant_revision_id'),
     // Wisp W07 (w00 A11): specialist lineage — see ai_agent_runs. SQL-only FKs
-    // (migrations/2027-01-04-120600-wisp-specialist-lineage.sql).
+    // (migrations/2027-01-04-140100-wisp-specialist-lineage.sql).
     requestedByRunId: uuid('requested_by_run_id'),
     parentGrantRevisionId: uuid('parent_grant_revision_id'),
     depth: smallint('depth').notNull().default(0),
