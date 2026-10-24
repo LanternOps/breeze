@@ -1,7 +1,7 @@
 -- @no-transaction
 -- Ticket import attachments, part 2 (#8313 W1; spec
 -- docs/superpowers/specs/api-platform/2026-10-19-ticket-import-modules-design.md
--- §4.2), after 2027-01-05-100000-ticket-import-attachments.sql.
+-- §4.2), after 2027-01-06-100000-ticket-import-attachments.sql.
 --
 -- VALIDATE runs here, outside a transaction: on its own it takes only SHARE
 -- UPDATE EXCLUSIVE, so reads and writes of ticket_attachments continue during

@@ -8,7 +8,7 @@
 --     like ticket_comments.origin_principal_id.
 --   - import_source_id: the source's attachment id, the resume key, unique per
 --     principal (ticket_attachments_import_source_uq, built CONCURRENTLY in
---     2027-01-05-100100-ticket-import-attachment-indexes.sql).
+--     2027-01-06-100100-ticket-import-attachment-indexes.sql).
 --
 -- The CHECK pins the import shape: the source id and the principal come
 -- together, and an imported row has no uploader, has its window, and lives in
