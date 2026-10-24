@@ -1137,6 +1137,13 @@ aiRoutes.post(
       // own system transaction never runs beside a held request connection.
       await abortTopology();
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      // Wisp W04: getOrCreate refuses a grant-pinned session it cannot gate
+      // (services/wisp/chatCeiling.ts WispSessionUnavailableError) — a typed
+      // 409, never a 500 and never an ungated turn. Matched on `code` so this
+      // route does not load the Wisp graph.
+      if (dispatch.kind === 'failed' && (dispatch.error as { code?: unknown } | null)?.code === 'wisp_session_unavailable') {
+        return c.json({ error: (dispatch.error as Error).message, code: 'wisp_session_unavailable' }, 409);
+      }
       if (dispatch.kind === 'failed') throw dispatch.error;
       return dispatch.response;
     }

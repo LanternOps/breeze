@@ -137,7 +137,15 @@ export type PreToolUseCallback = (
    */
   toolUseId?: string,
 ) => Promise<
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext }
+  /**
+   * `toolAuth`: Wisp W04 — the auth THIS call executes under, cut to the
+   * session's delegation ceiling for this call's org and permissions
+   * (services/wisp/chatCeiling.ts). Per call, never written to the shared
+   * session: the SDK runs calls concurrently and two calls need different
+   * reach. Set for every allowed call of a Wisp session; absent otherwise,
+   * and the handler then reads `getAuth()` as before.
+   */
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
   /**
    * Not run by THIS session. Two different things wear this shape:
    *
@@ -785,11 +793,13 @@ function makeToolHandler(
     // `undefined` for every caller that verified nothing, which is what keeps
     // the executeTool call three arguments wide.
     let verifiedContext: ToolExecutionContext | undefined;
+    // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
+    let callToolAuth: AuthContext | undefined;
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
       let check:
-        | { allowed: true; intentId?: string; context?: ToolExecutionContext }
+        | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
         | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
@@ -813,6 +823,7 @@ function makeToolHandler(
         verifiedContext = check.intentId
           ? { ...check.context, actionIntentId: check.intentId }
           : check.context;
+        callToolAuth = check.toolAuth;
       }
       if (!check.allowed) {
         const denial = preToolUseDenialResult(toolName, check);
@@ -824,7 +835,7 @@ function makeToolHandler(
       }
     }
     try {
-      const auth = getAuth();
+      const auth = callToolAuth ?? getAuth();
       // Use the user's actual auth scope instead of system context so that
       // RLS policies and DB-level tenant isolation are enforced.
       //
@@ -847,8 +858,15 @@ function makeToolHandler(
       // partner-scope login — and `session.breezeSessionId` IS the
       // ai_sessions.id the artifact row's session_id FK points at.
       const captureSession = getActiveSession?.();
+      // W04 T6b reach: a Wisp session's thread lets `read_artifact` open the
+      // thread's attachments. The key is added ONLY when set, so an ordinary
+      // session's capture scope is byte-identical (verifiedContext.test pins it).
       const capture: CaptureScope | undefined = captureSession
-        ? { orgId: captureSession.orgId, sessionId: captureSession.breezeSessionId }
+        ? {
+          orgId: captureSession.orgId,
+          sessionId: captureSession.breezeSessionId,
+          ...(captureSession.wispGrant ? { wispThreadId: captureSession.wispGrant.threadId } : {}),
+        }
         : undefined;
       // An absent member means no KEY at all, and an empty bag means no FOURTH
       // ARGUMENT at all — both are behaviour changes for an ordinary chat tool
@@ -1018,9 +1036,11 @@ function makeSessionAwareHandler(
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval). IDENTICAL to makeHandler.
     let intentId: string | undefined;
+    // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
+    let callToolAuth: AuthContext | undefined;
     if (onPreToolUse) {
       let check:
-        | { allowed: true; intentId?: string }
+        | { allowed: true; intentId?: string; toolAuth?: AuthContext }
         | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
@@ -1040,6 +1060,7 @@ function makeSessionAwareHandler(
         };
       }
       intentId = check.intentId;
+      callToolAuth = check.toolAuth;
     }
 
     // Fail closed on confidentiality BEFORE the provider-side action executes,
@@ -1066,7 +1087,7 @@ function makeSessionAwareHandler(
     }
 
     try {
-      const auth = getAuth();
+      const auth = callToolAuth ?? getAuth();
       // Use the user's actual auth scope so RLS / DB-level tenant isolation is
       // enforced. Canonical builder — see the note on the sibling literal in
       // `makeHandler` above for why the hand-rolled object was a partner-axis

@@ -56,6 +56,7 @@ import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools'
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
+import type { WispSessionGrant } from './wisp/chatCeiling';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
@@ -475,6 +476,16 @@ export interface ActiveSession {
    * `buildChatSessionToolAuth`, refreshed alongside `auth` on every request.
    */
   toolAuth: AuthContext;
+  /**
+   * Wisp W04 Task 4: the delegation grant this session runs under, or null
+   * for an ordinary session. Resolved by `getOrCreate` ITSELF from the
+   * ai_sessions row (`lookupWispGrant`) — never passed in by a route — so no
+   * caller can forget it; immutable for the session's life (the row's grant
+   * columns never change). When set, `createSessionPreToolUse` gates every
+   * tool call on the live ceiling and the tool runs under the per-call
+   * narrowed auth, never under `toolAuth` itself.
+   */
+  readonly wispGrant: WispSessionGrant | null;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
@@ -983,6 +994,21 @@ export class StreamingSessionManager {
       }
     }
 
+    // Wisp W04 Task 4 (structural): every ActiveSession for a grant-pinned
+    // ai_sessions row carries its grant, whichever route built it — resolved
+    // HERE from the row, not from a caller argument. A reused session (above)
+    // already carries it. Fails closed: a pinned row that cannot be resolved
+    // (no revision pin, no thread link, lookup error) throws, so the turn is
+    // refused rather than run ungated. A Wisp session runs only on the default
+    // Breeze MCP server, whose handlers execute under the gate's per-call auth;
+    // a custom-factory surface (script builder, helper, client AI, topology)
+    // is refused outright.
+    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
+    const wispGrant = await lookupWispGrant(breezeSessionId);
+    if (wispGrant && mcpServerFactory) {
+      throw new WispSessionUnavailableError('surface_unsupported', breezeSessionId);
+    }
+
     // Create new session components
     const inputController = new StreamInputController();
     const eventBus = new SessionEventBus();
@@ -1081,6 +1107,7 @@ export class StreamingSessionManager {
       createdAt: now,
       auth: authWithOrigin,
       toolAuth,
+      wispGrant,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
@@ -1126,7 +1153,9 @@ export class StreamingSessionManager {
       mcpServerName = custom.name;
     } else {
       mcpServer = createBreezeMcpServer(
-        () => session.toolAuth,
+        // A Wisp session's handlers run under the gate's per-call auth
+        // (check.toolAuth); this shared fallback reaches no org at all.
+        wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
         preToolUse,
         postToolUse,
         () => session,

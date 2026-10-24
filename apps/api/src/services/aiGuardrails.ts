@@ -2862,7 +2862,7 @@ type ToolPermissionResolution =
   | { ok: true; requirements: ToolPermissionRequirement[] }
   | { ok: false; denial: string };
 
-function resolveToolPermissionRequirements(
+export function resolveToolPermissionRequirements(
   toolName: string,
   input: Record<string, unknown>,
 ): ToolPermissionResolution {
