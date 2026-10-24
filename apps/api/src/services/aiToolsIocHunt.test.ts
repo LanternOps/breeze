@@ -16,6 +16,12 @@ vi.mock('./securityScanSweeps', () => ({
 }));
 vi.mock('./securityScanSweepHits', () => ({ topSweepRuleHits: vi.fn() }));
 vi.mock('./yaraRuleSetAccess', () => ({ listVisibleRuleSets: vi.fn() }));
+vi.mock('./aiDispatch', () => ({
+  requireAiOrigin: (a: { aiOrigin?: unknown }, tool: string) => {
+    if (!a.aiOrigin) throw new Error(`no aiOrigin for ${tool}`);
+    return a.aiOrigin;
+  },
+}));
 vi.mock('./aiToolDbContext', () => ({ inToolDbPhase: vi.fn((_auth: unknown, fn: () => Promise<unknown>) => fn()) }));
 
 import * as sweeps from './securityScanSweeps';
@@ -42,7 +48,8 @@ function tool(): AiTool {
   registerIocHuntTools(m);
   return m.get('ioc_hunt')!;
 }
-const call = (input: Record<string, unknown>) => tool().handler(input, auth).then((s) => JSON.parse(s));
+const call = (input: Record<string, unknown>, context?: Parameters<AiTool['handler']>[2]) =>
+  tool().handler(input, auth, context).then((s) => JSON.parse(s));
 
 const summary = {
   id: SWEEP, groupId: 'g-1', orgId: ORG, orgName: 'Acme', ruleSets: [{ id: SET_A, name: 'Advisory 7', version: 3 }],
@@ -151,5 +158,80 @@ describe('ioc_hunt exposure and limits', () => {
   it('rate limit is 30 per 600 s', { timeout: 180_000 }, async () => {
     const { TOOL_RATE_LIMITS } = await import('./aiToolRateLimits');
     expect(TOOL_RATE_LIMITS.ioc_hunt).toEqual({ limit: 30, windowSeconds: 600 });
+  });
+});
+
+describe('ioc_hunt sweep (released Tier-3 action)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const sweepInput = (extra: Record<string, unknown> = {}) => ({
+    action: 'sweep', orgId: ORG, ruleSetIds: [SET_A], scope: { kind: 'all' }, scanType: 'quick',
+    expectedDeviceCount: 12, previewDigest: DIGEST, ...extra,
+  });
+  const released = (extra: Record<string, unknown> = {}) => ({ actionIntentId: 'intent-1', intentSource: 'chat' as const, ...extra });
+
+  it('creates through createSweep with origin ai_chat, aiOrigin, intentId, the org and the expected count', async () => {
+    vi.mocked(sweeps.createSweep).mockResolvedValue({ ok: true, groupId: 'g-1', sweeps: [summary] } as never);
+    const out = await call(sweepInput(), released());
+    expect(out).toEqual({ groupId: 'g-1', sweeps: [summary] });
+    expect(sweeps.createSweep).toHaveBeenCalledWith(
+      auth,
+      { ruleSetIds: [SET_A], scope: { kind: 'all' }, scanType: 'quick', previewDigest: DIGEST },
+      { origin: 'ai_chat', aiOrigin: auth.aiOrigin, intentId: 'intent-1', mfaSatisfied: false, onlyOrgId: ORG, expectedDeviceCount: 12 },
+    );
+  });
+
+  it('an MCP-filed intent stamps origin mcp', async () => {
+    vi.mocked(sweeps.createSweep).mockResolvedValue({ ok: true, groupId: 'g-1', sweeps: [] } as never);
+    await call(sweepInput({ scanType: 'custom', paths: ['C:\\Temp'], ttlHours: 6 }), released({ intentSource: 'mcp_api' }));
+    expect(sweeps.createSweep).toHaveBeenCalledWith(
+      auth,
+      { ruleSetIds: [SET_A], scope: { kind: 'all' }, scanType: 'custom', paths: ['C:\\Temp'], ttlHours: 6, previewDigest: DIGEST },
+      expect.objectContaining({ origin: 'mcp', intentId: 'intent-1' }),
+    );
+  });
+
+  it('surfaces SWEEP_SCOPE_CHANGED from createSweep and writes nothing else', async () => {
+    vi.mocked(sweeps.createSweep).mockResolvedValue({ ok: false, status: 409, code: 'SWEEP_SCOPE_CHANGED', detail: { targeted: 14 } });
+    expect(await call(sweepInput(), released())).toEqual({ error: 'SWEEP_SCOPE_CHANGED', code: 'SWEEP_SCOPE_CHANGED', status: 409, detail: { targeted: 14 } });
+    expect(sweeps.createSweep).toHaveBeenCalledTimes(1);
+    expect(sweeps.cancelSweep).not.toHaveBeenCalled();
+  });
+
+  it('refuses an approver-release mismatch before any write', async () => {
+    expect(await call(sweepInput(), released({ approverRelease: { approverUserId: 'someone-else' } }))).toEqual({ error: 'approver_auth_mismatch' });
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+
+  it('refuses outside an approved release (no actionIntentId)', async () => {
+    expect(await call(sweepInput())).toEqual({ error: 'intent_required' });
+    expect(await call(sweepInput(), { intentSource: 'chat' })).toEqual({ error: 'intent_required' });
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+
+  it('refuses a cross-org scope and incomplete input before createSweep', async () => {
+    expect(await call(sweepInput({ scope: { kind: 'orgs', orgIds: [OTHER_ORG] } }), released())).toMatchObject({ error: 'single_org_only' });
+    expect(await call(sweepInput({ previewDigest: undefined }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(sweepInput({ expectedDeviceCount: undefined }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(sweepInput({ expectedDeviceCount: -1 }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(sweeps.createSweep).not.toHaveBeenCalled();
+  });
+});
+
+describe('ioc_hunt cancel_sweep', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('cancels through cancelSweep and returns the counts', async () => {
+    vi.mocked(sweeps.cancelSweep).mockResolvedValue({ ok: true, sweeps: [summary], cancelledQueued: 3, cancelledUndelivered: 1, stillRunning: 2 } as never);
+    expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ sweeps: [summary], cancelledQueued: 3, cancelledUndelivered: 1, stillRunning: 2 });
+    expect(sweeps.cancelSweep).toHaveBeenCalledWith(auth, SWEEP);
+  });
+
+  it('surfaces 403 for a restricted caller on another user\'s sweep, and 404', async () => {
+    vi.mocked(sweeps.cancelSweep).mockResolvedValueOnce({ ok: false, status: 403 });
+    expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ error: 'forbidden', status: 403 });
+    vi.mocked(sweeps.cancelSweep).mockResolvedValueOnce({ ok: false, status: 404 });
+    expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ error: 'not_found', status: 404 });
+    expect(await call({ action: 'cancel_sweep' })).toMatchObject({ error: 'invalid_input' });
   });
 });

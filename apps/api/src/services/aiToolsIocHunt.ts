@@ -25,8 +25,11 @@ import { z } from 'zod';
 import { securitySweepRequestSchema, type SecuritySweepRequest } from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { requireAiOrigin } from './aiDispatch';
 import { inToolDbPhase } from './aiToolDbContext';
-import { getSweep, listSweeps, previewSweep } from './securityScanSweeps';
+import { approverReleaseMismatch } from './aiToolReleaseGuards';
+import { cancelSweep, createSweep, getSweep, listSweeps, previewSweep } from './securityScanSweeps';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import { topSweepRuleHits } from './securityScanSweepHits';
 import { listVisibleRuleSets } from './yaraRuleSetAccess';
 
@@ -151,7 +154,76 @@ async function sweepStatusAction(input: Record<string, unknown>, auth: AuthConte
   });
 }
 
-async function handle(input: Record<string, unknown>, auth: AuthContext): Promise<ToolResult> {
+/**
+ * `sweep` (Tier 3). Reaches the handler only through a released intent, in chat
+ * and over MCP; the approval card showed "up to expectedDeviceCount devices"
+ * and the intent pinned previewDigest + the set bytes. createSweep re-resolves
+ * the targets under the (rebuilt) auth and refuses SWEEP_SCOPE_CHANGED when
+ * the preview no longer matches or would target more devices; it also stamps
+ * origin / ai_origin / intent_id and writes the security.scan_sweep.create
+ * audit rows, so this handler adds neither a second check nor a second row.
+ * Runs with NO ambient DB context (selfManagedDbContext).
+ */
+async function sweepAction(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context: ToolExecutionContext | undefined,
+): Promise<ToolResult> {
+  const parsed = parseSingleOrgRequest(input);
+  if (!parsed.ok) return parsed.result;
+  const expected = input.expectedDeviceCount;
+  if (typeof expected !== 'number' || !Number.isInteger(expected) || expected < 0) {
+    return invalid('expectedDeviceCount (the targeted count from preview_sweep) is required');
+  }
+  const previewDigest = typeof input.previewDigest === 'string' && /^[0-9a-f]{64}$/.test(input.previewDigest)
+    ? input.previewDigest
+    : null;
+  if (!previewDigest) return invalid('previewDigest (from preview_sweep) is required');
+
+  // Defence in depth: never write under an auth that is not the approver the
+  // release path named (no such release exists for ioc_hunt today — it is in
+  // AGENT_HUMAN_ONLY_TOOLS — but the guard costs nothing).
+  if (approverReleaseMismatch(auth, context)) return { error: 'approver_auth_mismatch' };
+  // A Tier-3 call reaches a handler only through an approved release, which
+  // always names its intent. Fail closed rather than create an unapproved,
+  // unattributed fleet sweep.
+  if (!context?.actionIntentId) return { error: 'intent_required' };
+
+  const result = await createSweep(
+    auth,
+    { ...parsed.request, previewDigest },
+    {
+      origin: context.intentSource === 'mcp_api' ? 'mcp' : 'ai_chat',
+      aiOrigin: requireAiOrigin(auth, 'ioc_hunt'),
+      intentId: context.actionIntentId,
+      mfaSatisfied: false,
+      onlyOrgId: parsed.orgId,
+      expectedDeviceCount: expected,
+    },
+  );
+  if (!result.ok) return failure(result);
+  return { groupId: result.groupId, sweeps: result.sweeps };
+}
+
+/** `cancel_sweep` (Tier 2): queued scans are cancelled, running ones finish. No ambient DB context. */
+async function cancelSweepAction(input: Record<string, unknown>, auth: AuthContext): Promise<ToolResult> {
+  const sweepId = uuid.safeParse(input.sweepId);
+  if (!sweepId.success) return invalid('sweepId (uuid) is required');
+  const result = await cancelSweep(auth, sweepId.data);
+  if (!result.ok) return { error: result.status === 404 ? 'not_found' : 'forbidden', status: result.status };
+  return {
+    sweeps: result.sweeps,
+    cancelledQueued: result.cancelledQueued,
+    cancelledUndelivered: result.cancelledUndelivered,
+    stillRunning: result.stillRunning,
+  };
+}
+
+async function handle(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context: ToolExecutionContext | undefined,
+): Promise<ToolResult> {
   switch (input.action) {
     case 'list_rule_sets':
       return listRuleSetsAction(input, auth);
@@ -161,6 +233,10 @@ async function handle(input: Record<string, unknown>, auth: AuthContext): Promis
       return listSweepsAction(input, auth);
     case 'sweep_status':
       return sweepStatusAction(input, auth);
+    case 'sweep':
+      return sweepAction(input, auth, context);
+    case 'cancel_sweep':
+      return cancelSweepAction(input, auth);
     default:
       return { error: `Unknown action: ${String(input.action)}` };
   }
@@ -209,6 +285,6 @@ export function registerIocHuntTools(aiTools: Map<string, AiTool>): void {
         required: ['action'],
       },
     },
-    handler: async (input, auth) => JSON.stringify(await handle(input, auth)),
+    handler: async (input, auth, context) => JSON.stringify(await handle(input, auth, context)),
   });
 }

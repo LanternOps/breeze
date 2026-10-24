@@ -859,7 +859,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -943,7 +943,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
     expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
       intent.id,
@@ -975,7 +975,7 @@ describe('releaseApprovedIntent', () => {
       // Same auth and context bag as any other release — only the wrapper differs.
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
         intent.actionName, intent.arguments, fakeAuth,
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(mockedWithAuthContext).not.toHaveBeenCalled();
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
@@ -1622,7 +1622,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1655,7 +1655,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
@@ -1761,7 +1761,7 @@ describe('releaseApprovedIntent', () => {
         // P2-5 (#4192): the durable worker ALWAYS names the intent it is
         // releasing. A handler that may only run as an approved release
         // (manage_ai_agents:authorize_supervised_key) reads it from here.
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,
@@ -2304,7 +2304,7 @@ describe('releaseApprovedIntent', () => {
         {
           context: {
             actionIntentId: intent.id,
-            releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia },
+            releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia }, intentSource: intent.source,
             approverRelease: { approverUserId: 'approver-1' },
           },
         },
@@ -2405,7 +2405,7 @@ describe('releaseApprovedIntent', () => {
         {
           context: {
             actionIntentId: intent.id,
-            releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+            releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source,
             approverRelease: { approverUserId: APPROVER_ID },
           },
         },
@@ -2505,7 +2505,7 @@ describe('releaseApprovedIntent', () => {
       expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
       expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
         'manage_tickets', expect.anything(), agentAuth,
-        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source } },
       );
     });
 
@@ -2563,7 +2563,7 @@ describe('releaseApprovedIntent', () => {
           {
             context: {
               actionIntentId: intent.id,
-              releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+              releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source,
               approverRelease: { approverUserId: APPROVER_ID },
             },
           },
@@ -2622,7 +2622,7 @@ describe('releaseApprovedIntent', () => {
         expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
         expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
           'manage_patches', expect.anything(), agentAuth,
-          { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
+          { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia }, intentSource: intent.source } },
         );
       });
     });
@@ -2727,7 +2727,7 @@ describe('releaseApprovedIntent', () => {
           {
             context: {
               actionIntentId: intent.id,
-              releaseDecision: { approvalScope: scope, decidedVia: intent.decidedVia },
+              releaseDecision: { approvalScope: scope, decidedVia: intent.decidedVia }, intentSource: intent.source,
               approverRelease: { approverUserId: APPROVER_ID },
             },
           },

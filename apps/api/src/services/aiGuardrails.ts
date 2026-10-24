@@ -29,6 +29,8 @@ import { getCachedAiKillStateSnapshot } from './aiKillState';
 import { AGENT_HUMAN_ONLY_TOOLS, AGENT_DENIED_READ_TOOLS } from './aiToolExposure';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+// Env-only operator knob; the module imports nothing but @breeze/shared.
+import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -945,6 +947,17 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 'ioc_hunt' && action === 'sweep') {
+    // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is
+    // supervised up to the four-eyes threshold, four_eyes above it. A count
+    // that is missing or not a non-negative integer cannot be trusted to bound
+    // the sweep, so it takes the stricter scope. createSweep refuses the
+    // released call (SWEEP_SCOPE_CHANGED) when it would target more devices.
+    const n = input.expectedDeviceCount;
+    return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= iocHuntFourEyesDeviceThreshold()
+      ? 'supervised'
+      : 'four_eyes';
   }
   if (isInputAwareTier3(toolName, action, input)) {
     // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
@@ -3163,6 +3176,43 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
   },
 };
 
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+function iocSweepScopeLabel(scope: unknown): string {
+  const s = (scope && typeof scope === 'object' ? scope : {}) as Record<string, unknown>;
+  const count = (key: string) => (Array.isArray(s[key]) ? (s[key] as unknown[]).length : 0);
+  switch (s.kind) {
+    case 'sites': return plural(count('siteIds'), 'site', 'sites');
+    case 'groups': return plural(count('groupIds'), 'group', 'groups');
+    case 'devices': return plural(count('deviceIds'), 'device', 'devices');
+    case 'orgs': return 'this organization';
+    default: return 'all reachable devices';
+  }
+}
+
+/**
+ * #6268 approval headlines for ioc_hunt. Sync and DB-free, so a sweep names
+ * the rule-set COUNT and "this organization" rather than set and org names
+ * (the approval card shows the ids and the org beside it).
+ */
+function iocHuntHeadline(action: string | undefined, input: Record<string, unknown>): string {
+  const idPrefix = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v.slice(0, 8) : 'unknown');
+  if (action === 'sweep') {
+    const sets = Array.isArray(input.ruleSetIds) ? input.ruleSetIds.length : 0;
+    const n = input.expectedDeviceCount;
+    const reach = typeof n === 'number' && Number.isInteger(n) && n >= 0
+      ? `up to ${plural(n, 'device', 'devices')}`
+      : 'an unconfirmed number of devices';
+    return `IOC sweep: ${plural(sets, 'rule set', 'rule sets')} on ${reach} in this organization (${iocSweepScopeLabel(input.scope)})`;
+  }
+  if (action === 'import_iocs') {
+    const count = Array.isArray(input.iocs) ? input.iocs.length : 0;
+    return `Import ${plural(count, 'IOC', 'IOCs')} into rule set ${idPrefix(input.ruleSetId)}`;
+  }
+  if (action === 'cancel_sweep') return `Cancel IOC sweep ${idPrefix(input.sweepId)}`;
+  return humanizeToolAction('ioc_hunt', action);
+}
+
 /**
  * Build a human-readable description of what the tool is about to do.
  */
@@ -3284,6 +3334,10 @@ export function buildApprovalDescription(
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }
+      break;
+
+    case 'ioc_hunt':
+      parts.push(iocHuntHeadline(action, input));
       break;
 
     case 'security_scan':

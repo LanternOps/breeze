@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
@@ -7,6 +7,8 @@ import {
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
 } from '../../db/schema';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
+import { yaraRuleSets } from '../../db/schema/yara';
+import { canonicalizeArguments } from './canonicalize';
 import { canonicalizeEffectSet } from '@breeze/shared/canonicalize/effectSet';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
@@ -605,6 +607,73 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   // so they share one resolver.
   confirm_memory: (args, database) => resolveMemoryBlockMaterial(args.blockId, database),
   retract_memory: (args, database) => resolveMemoryBlockMaterial(args.blockId, database),
+
+  // ioc_hunt:sweep (#6268, W05-7). The approver approves a PREVIEW: its
+  // previewDigest (computed under the requester's own context over the
+  // eligible targets and the set shas) plus the sets' published bytes. Pins
+  // both, so a set republished between approval and release is
+  // content_changed here, and a target change is refused by createSweep
+  // itself (SWEEP_SCOPE_CHANGED: previewDigest re-proved under the rebuilt
+  // auth, or more targets than expectedDeviceCount). Resolvers get no auth,
+  // so caller-scoped eligibility is carried only by previewDigest.
+  'ioc_hunt:sweep': async (args, database) => {
+    const orgId = typeof args.orgId === 'string' && UUID_RE.test(args.orgId) ? args.orgId.toLowerCase() : null;
+    const previewDigest = typeof args.previewDigest === 'string' && /^[0-9a-f]{64}$/.test(args.previewDigest)
+      ? args.previewDigest
+      : null;
+    const ids = Array.isArray(args.ruleSetIds) ? args.ruleSetIds : [];
+    if (!orgId || !previewDigest || ids.length === 0 || !ids.every((id) => typeof id === 'string' && UUID_RE.test(id))) {
+      return MISSING_ARG;
+    }
+    const setIds = [...new Set((ids as string[]).map((id) => id.toLowerCase()))].sort();
+    const rows = await database
+      .select({
+        id: yaraRuleSets.id,
+        enabled: yaraRuleSets.enabled,
+        publishedVersion: yaraRuleSets.publishedVersion,
+        publishedSha256: yaraRuleSets.publishedSha256,
+      })
+      .from(yaraRuleSets)
+      .where(inArray(yaraRuleSets.id, setIds));
+    const byId = new Map(rows.map((r) => [r.id.toLowerCase(), r]));
+    const pins: Array<{ id: string; version: number; sha256: string }> = [];
+    for (const id of setIds) {
+      const row = byId.get(id);
+      if (!row || !row.enabled || row.publishedVersion === null || !row.publishedSha256) return TARGET_ABSENT;
+      pins.push({ id, version: row.publishedVersion, sha256: row.publishedSha256 });
+    }
+    return material(canonicalizeArguments({ v: 1, orgId, previewDigest, pins }));
+  },
+
+  // ioc_hunt:import_iocs (#6268). Pins the set's draft and published
+  // versions, so a set edited or republished between approval and release is
+  // content_changed, and a digest of the IOC list (also immutable in the
+  // intent's arguments; pinned here so the effect names exactly what is added).
+  'ioc_hunt:import_iocs': async (args, database) => {
+    const ruleSetId = typeof args.ruleSetId === 'string' && UUID_RE.test(args.ruleSetId) ? args.ruleSetId.toLowerCase() : null;
+    const iocs = Array.isArray(args.iocs) ? args.iocs : [];
+    if (!ruleSetId || iocs.length === 0) return MISSING_ARG;
+    const [set] = await database
+      .select({ currentVersion: yaraRuleSets.currentVersion, publishedVersion: yaraRuleSets.publishedVersion })
+      .from(yaraRuleSets)
+      .where(eq(yaraRuleSets.id, ruleSetId))
+      .limit(1);
+    if (!set) return TARGET_ABSENT;
+    const sorted = iocs
+      .map((ioc) => {
+        const o = (ioc && typeof ioc === 'object' ? ioc : {}) as Record<string, unknown>;
+        return { kind: String(o.kind ?? ''), value: String(o.value ?? '') };
+      })
+      .sort((a, b) => a.kind.localeCompare(b.kind) || a.value.localeCompare(b.value));
+    const iocDigest = createHash('sha256').update(canonicalizeArguments(sorted)).digest('hex');
+    return material(canonicalizeArguments({
+      v: 1,
+      ruleSetId,
+      currentVersion: set.currentVersion,
+      publishedVersion: set.publishedVersion ?? 0,
+      iocDigest,
+    }));
+  },
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

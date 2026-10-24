@@ -35,22 +35,12 @@ import { inToolDbPhase } from './aiToolDbContext';
 // `commandTypes.ts` is a constant table with no dispatch surface, so importing
 // it does not re-open the hole the contract scan closes.
 import { CommandTypes } from './commandTypes';
-import type { ToolExecutionContext } from './toolExecutionContext';
+// #6911: remediate_sensitive_data writes auth.user.id into remediation_metadata.updatedBy, a users FK; refused on an approver-release mismatch.
+import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { notInHoldingOrgCondition } from './unassignedPool/selectorPredicate';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
-}
-
-/**
- * #6911: `remediate_sensitive_data`'s mutating actions all write
- * `auth.user.id` into `sensitive_data_findings.remediation_metadata.updatedBy`
- * — under the rebuilt agent auth that id is an `aiAgents.id`, so refuse
- * rather than write a row whose owner the worker and this handler's auth
- * disagree about. Mirrors `aiToolsBrowser.ts`'s `approverReleaseMismatch`.
- */
-function approverReleaseMismatch(auth: AuthContext, context: ToolExecutionContext | undefined): boolean {
-  return !!context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id;
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;

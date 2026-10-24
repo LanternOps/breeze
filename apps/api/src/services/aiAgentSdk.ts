@@ -2330,6 +2330,8 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
           verifiedToolContext = {
             ...verifiedToolContext,
             releaseDecision: { approvalScope: intentRow.approvalScope, decidedVia: intentRow.decidedVia ?? null },
+            // #6268: which surface filed the approval (ioc_hunt sweep origin).
+            intentSource: intentRow.source,
           };
 
           // Won the release: track the intent id so createSessionPostToolUse can
