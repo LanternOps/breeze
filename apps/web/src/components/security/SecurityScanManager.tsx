@@ -33,7 +33,14 @@ type ScanRecord = {
   deviceId: string;
   deviceName: string;
   scanType: "quick" | "full" | "custom";
-  status: "queued" | "running" | "completed" | "failed" | "timed_out";
+  status:
+    | "queued"
+    | "running"
+    | "completed"
+    | "failed"
+    | "timed_out"
+    | "cancelled"
+    | "expired";
   startedAt: string | null;
   finishedAt: string | null;
   threatsFound: number;
@@ -84,7 +91,9 @@ export default function SecurityScanManager() {
           (scan) =>
             scan.status === "completed" ||
             scan.status === "failed" ||
-            scan.status === "timed_out",
+            scan.status === "timed_out" ||
+            scan.status === "cancelled" ||
+            scan.status === "expired",
         )
         .slice(0, 25),
     [scans],
@@ -299,6 +308,18 @@ export default function SecurityScanManager() {
           found > 0
             ? t("securitySecurityScanManager.scanTimedOutWithCount", { count: found })
             : t("securitySecurityScanManager.scanTimedOut"),
+      };
+    }
+    // Sweep outcomes (#6263 W05): a cancelled or expired scan never finished,
+    // so it carries no verdict either way.
+    if (scan.status === "cancelled" || scan.status === "expired") {
+      return {
+        kind: scan.status,
+        icon: scan.status === "cancelled" ? XCircle : Timer,
+        className: "bg-muted text-muted-foreground",
+        label: t(
+          /* i18n-dynamic */ `securitySecurityScanManager.scanStatus.${scan.status}`,
+        ),
       };
     }
     if (scan.status === "failed") {
@@ -648,13 +669,15 @@ export default function SecurityScanManager() {
                           const outcome = scanOutcome(scan);
                           const Icon = outcome.icon;
                           return (
-                            <span
-                              data-testid="scan-history-outcome"
-                              data-outcome={outcome.kind}
-                              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${outcome.className}`}
-                            >
-                              <Icon className="h-3 w-3" />
-                              {outcome.label}
+                            <span data-testid={`scan-history-status-${scan.status}`}>
+                              <span
+                                data-testid="scan-history-outcome"
+                                data-outcome={outcome.kind}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${outcome.className}`}
+                              >
+                                <Icon className="h-3 w-3" />
+                                {outcome.label}
+                              </span>
                             </span>
                           );
                         })()}
