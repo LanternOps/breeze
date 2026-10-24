@@ -128,6 +128,7 @@ describe('TicketQueueList merged chip (#8972)', () => {
         ]}
         selectedId={null}
         onSelect={vi.fn()}
+        loading={false}
       />
     );
     expect(screen.getByTestId('ticket-row-merged-tk-m')).toHaveTextContent('Merged');
