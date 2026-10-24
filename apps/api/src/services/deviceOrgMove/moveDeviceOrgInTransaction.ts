@@ -18,6 +18,7 @@
 import { and, eq, ne, sql } from 'drizzle-orm';
 import type { db } from '../../db';
 import { deviceCommands, devices, tickets } from '../../db/schema';
+import { carryMergedTombstonesInTx } from '../ticketMerge/movers';
 import type { AuthContext } from '../../middleware/auth';
 import {
   getDeviceOrgDenormalizedTables,
@@ -199,13 +200,17 @@ export async function moveDeviceOrgInTransaction(
   // devices UPDATE, long before the child tail deletes the links of the
   // moved tickets, so an IMMEDIATE check would 23503 first.
   //
+  // #8972 W1 adds tickets_merged_into_org_fk: the device's survivor tickets
+  // and their merged tombstones are re-stamped row by row, so the self-FK is
+  // checked at COMMIT, when all of them carry the target org.
+  //
   // The device-org cascade trigger restamps tickets.org_id before the
   // loop below can align partner_id; defer their composite FK too.
   //
   // Safe to precede the org lock below: SET CONSTRAINTS takes no table
   // locks, so it does not participate in this transaction's lock order.
   await tx.execute(
-    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED`,
+    sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED`,
   );
   // #7900 W02: the source org's ticket_links lock, SHARED, before any row
   // lock (an advisory lock, so the step-up row lock below is still the first
@@ -1228,6 +1233,16 @@ export async function moveDeviceOrgInTransaction(
               (source_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS source_moved,
               (target_ticket_id IN (SELECT id FROM tickets WHERE device_id = ${deviceId}::uuid)) AS target_moved`);
   const removedTicketLinks = removedTicketLinksFromRows(removedLinkRows);
+
+  // #8972 W1 (spec §3.9): a merged tombstone's device_id is NULL, so the
+  // `device_id = D` joins above never reach it; it moves with its survivor
+  // here (the full per-ticket routine), or tickets_merged_into_org_fk
+  // (deferred at the top) fails at commit.
+  await carryMergedTombstonesInTx(
+    tx,
+    (await tx.select({ id: tickets.id }).from(tickets).where(eq(tickets.deviceId, deviceId))).map((r) => r.id),
+    targetOrgId,
+  );
 
   // #4867 — the ALERT-axis children (ALERT_CHILD_ORG_REWRITE_TABLES in
   // core.ts): alert_correlation_groups, alert_correlation_members and

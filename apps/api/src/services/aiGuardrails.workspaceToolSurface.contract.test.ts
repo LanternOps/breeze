@@ -77,11 +77,11 @@ describe('workspace_* tools: what actually gates them', () => {
     },
   );
 
-  it('their TOOL_PERMISSIONS mapping is still the low-bar ai_agents:read this note is about', () => {
+  it('their TOOL_PERMISSIONS mapping is the execute-class ai_workspace:execute (spec §4.6)', () => {
     for (const name of WORKSPACE_TOOL_NAMES) {
       expect(TOOL_PERMISSIONS[name], `${name} lost its TOOL_PERMISSIONS entry`).toEqual({
-        resource: 'ai_agents',
-        action: 'read',
+        resource: 'ai_workspace',
+        action: 'execute',
       });
     }
   });

@@ -17,6 +17,7 @@ import { encodeDeviceClassToHash } from '../devices/deviceClassFilter';
 import { encodeAlertsHash } from '../alerts/alertsHash';
 import { encodeVulnHash, type VulnHashInput } from '../vulnerabilities/vulnHash';
 import { encodeThreatsHash } from '../security/threatsHash';
+import { encodePatchesHash, type ComplianceStatusFilter } from '../patches/patchesHash';
 import { canOpenDestination, type NavDestinationGate, type NavViewer } from '../../lib/navVisibility';
 import type { DeviceStats } from './types';
 
@@ -104,6 +105,10 @@ const vulnCvesHref = (filters: Omit<VulnHashInput, 'tab' | 'status'>): string =>
 const alertsGate = gatedBy('/alerts');
 const vulnGate = gatedBy('/vulnerabilities');
 
+/** Patches page, compliance tab, optionally filtered to one device status. */
+const patchesHref = (status?: ComplianceStatusFilter): string => `/patches${encodePatchesHash({ status })}`;
+const patchesGate = gatedBy('/patches');
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -139,10 +144,11 @@ export const DASHBOARD_METRICS = {
     reason: 'Sub-line inside a whole-tile link; a tile never contains a second interactive element.',
   },
   'kpi.patchCompliance': {
-    kind: 'section',
-    href: () => '/patches',
-    visible: gatedBy('/patches'),
-    reason: 'Percentage has no matching list until the patch-compliance metric is unified.',
+    // The tile and the /patches headline are the same devicePercent from the
+    // same GET /patches/compliance (#9791 C, Decision 4).
+    kind: 'count',
+    href: () => patchesHref(),
+    visible: patchesGate,
   },
 
   // --- Alerts feed header --------------------------------------------------
@@ -235,16 +241,24 @@ export const DASHBOARD_METRICS = {
   'patch.title': {
     kind: 'section',
     href: () => '/patches',
-    visible: gatedBy('/patches'),
+    visible: patchesGate,
     testId: 'dashboard-patch-title-link',
   },
   'patch.headline': {
     kind: 'exempt',
-    reason: 'Same metric as the KPI tile, which carries the section link.',
+    reason: 'Same devicePercent as the KPI tile, which carries the count link to /patches.',
   },
   'patch.devicesCompliant': {
-    kind: 'exempt',
-    reason: 'Needs the compliance list to take its split from the API (patch wave).',
+    kind: 'count',
+    href: () => patchesHref('compliant'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-compliant-link',
+  },
+  'patch.devicesNonCompliant': {
+    kind: 'count',
+    href: () => patchesHref('needs-patches'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-noncompliant-link',
   },
   'patch.installed': {
     kind: 'exempt',
@@ -252,15 +266,33 @@ export const DASHBOARD_METRICS = {
   },
   'patch.pending': {
     kind: 'exempt',
-    reason: 'Affected link "View devices" lands with the patch wave.',
+    reason: 'Counts device×patch rows; the affected link "View devices with pending patches" carries the destination.',
+  },
+  'patch.viewPendingDevices': {
+    kind: 'affected',
+    href: () => patchesHref('needs-patches'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-pending-devices-link',
   },
   'patch.failed': {
     kind: 'exempt',
-    reason: 'Affected link "View devices with failed patches" lands with the patch wave.',
+    reason: 'Counts device×patch rows; the affected link "View devices with failed patches" carries the destination.',
+  },
+  'patch.viewFailedDevices': {
+    kind: 'affected',
+    href: () => patchesHref('failed'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-failed-devices-link',
   },
   'patch.criticalPending': {
     kind: 'exempt',
-    reason: 'Affected link "View devices" lands with the patch wave.',
+    reason: 'Counts pending critical patches; the affected link "View devices with critical patches" carries the destination.',
+  },
+  'patch.viewCriticalDevices': {
+    kind: 'affected',
+    href: () => patchesHref('critical'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-critical-devices-link',
   },
   'patch.unratedPending': {
     kind: 'exempt',

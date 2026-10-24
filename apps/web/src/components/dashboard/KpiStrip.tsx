@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { formatNumber } from '@/lib/i18n/format';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import { DashboardMetric } from './DashboardMetric';
+import { patchDevicePercent } from './PatchComplianceCard';
 import type { MetricKey } from './dashboardLinks';
 import type { AlertsSummary, DeviceStats, PatchCompliance, TicketStats } from './types';
 
@@ -199,15 +200,22 @@ export default function KpiStrip({
   }
 
   if (patch.data) {
-    const pct = Math.round(patch.data.compliancePercent);
+    // The device % (#9791 C, Decision 4), the same figure /patches shows. An
+    // empty fleet has no percentage: "—" plus the card's empty copy.
+    const hasDevices = patch.data.totalDevices > 0;
+    const pct = patchDevicePercent(patch.data);
     tiles.push({
       key: 'patch',
       metric: 'kpi.patchCompliance',
       testId: 'dashboard-patch-card',
       label: t('dashboard.stats.patchCompliance'),
-      value: `${formatNumber(pct)}%`,
+      value: hasDevices ? `${formatNumber(pct)}%` : '—',
+      sub: hasDevices ? undefined : t('dashboard.patch.empty'),
+      subTone: 'muted',
       icon: ShieldCheck,
-      iconTone: pct >= 90 ? 'text-success' : pct >= 70 ? 'text-warning-strong' : 'text-destructive',
+      iconTone: !hasDevices
+        ? 'text-muted-foreground'
+        : pct >= 90 ? 'text-success' : pct >= 70 ? 'text-warning-strong' : 'text-destructive',
     });
   } else if (patch.error && !patch.unavailable) {
     tiles.push({

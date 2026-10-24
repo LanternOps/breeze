@@ -53,7 +53,7 @@ export const RESERVED_ROUTE_NAMESPACES = new Set([
   'ticket-approval-requests', 'ticket-categories', 'ticket-checklist-templates', 'ticket-config', 'ticket-forms',
   'ticket-response-templates', 'ticketing', 'tickets', 'time-entries', 'time-status', 'tool-sources', 'topology', 'trust', 'trust-page-template', 'tunnel-http', 'tunnel-ws',
   'tunnels', 'unifi', 'update-rings', 'user-risk', 'users', 'verify', 'viewers',
-  'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks',
+  'vnc-exchange', 'vnc-viewer', 'vulnerabilities', 'webhooks', 'wisp',
 ]);
 
 export const SHARED_TABLE_ALLOWLIST: ReadonlySet<string> = new Set(['memory_blocks']);

@@ -152,6 +152,8 @@ describe('generateTicketSlaAttainmentReport', () => {
       expect(call.params).toEqual(expect.arrayContaining([ORG_A, ORG_B]));
       expect(call.sql).toContain("t.work_kind = 'support'");
       expect(call.sql).toContain('t.deleted_at IS NULL');
+      // #8972 spec §3.6: merged tombstones are excluded from attainment.
+      expect(call.sql).toContain('t.merged_into_ticket_id IS NULL');
       expect(call.sql).toMatch(/t\.created_at >= \$\d+ AND t\.created_at < \$\d+/);
       // [start, end) in the owner's zone (UTC here): the custom end date is inclusive.
       expect(call.params).toEqual(expect.arrayContaining(['2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z']));
@@ -313,6 +315,7 @@ describe('generateTicketSlaAttainmentReport', () => {
     expect(text).toMatch(/frozen at the first response/i);
     expect(text).toMatch(/recomputed from ticket timestamps/);
     expect(text).toMatch(/CURRENT assignee/);
+    expect(text).toMatch(/merged into another ticket are excluded/i);
     expect(text).toMatch(/no SLA target are excluded from the attainment denominators/);
     expect(text).toMatch(/Planned work/);
   });

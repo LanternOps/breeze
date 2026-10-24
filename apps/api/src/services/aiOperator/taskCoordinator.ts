@@ -579,6 +579,13 @@ async function admitReasoningRun(args: {
       agentId: task.agentId,
       promptVersion: args.recipe.promptVersion,
     },
+    // Wisp W02 (Wisp design §4.3, §4.5): runs the coordinator creates for a
+    // grant-bearing task inherit the task's pinned ceiling. No
+    // requestedByRunId: these are the coordinator's own deterministic steps,
+    // not a run spawning a run.
+    ...(task.grantId && task.grantRevisionId
+      ? { grant: { grantId: task.grantId, grantRevisionId: task.grantRevisionId } }
+      : {}),
   });
 
   if (!result.created) {
@@ -872,6 +879,9 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   // the task's live target rows. For every recipe that declares an arm,
   // `checkpointMatchesRecipe` above already guarantees the arm belongs to it.
   if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
+    // Wisp W02: the device-keyed gate re-checks a grant-bearing task for
+    // `devices:execute` (its default effect — it only ever guards a device
+    // command) inside the pinned ceiling.
     const accessCheck = isServiceRecoveryCheckpoint(checkpoint)
       ? await requesterAccessLost(task, checkpoint.recipeInput.deviceId)
       : await requesterAccessLostForTargets(task);

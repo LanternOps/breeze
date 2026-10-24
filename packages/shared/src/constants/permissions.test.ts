@@ -116,3 +116,9 @@ describe('agent recovery grant (#9234)', () => {
     expect(PERMISSION_GRANTS.DEVICES_RECOVER_AGENT).not.toEqual(PERMISSION_GRANTS.DEVICES_EXECUTE);
   });
 });
+
+describe('AI workspace execute grant (Wisp W02, spec §4.6)', () => {
+  it('is its own execute-class key, not ai_agents:read', () => {
+    expect(PERMISSION_GRANTS.AI_WORKSPACE_EXECUTE).toEqual({ resource: 'ai_workspace', action: 'execute' });
+  });
+});

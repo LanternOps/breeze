@@ -1475,7 +1475,8 @@
       "approval_ask": "Approval ask",
       "approval_snapshot": "Approval figures",
       "approval_expires": "Approval deadline",
-      "approval_status": "Approval status"
+      "approval_status": "Approval status",
+      "merged_into_number": "Merged-into ticket number"
     },
     "billingPayments": "Billing & payments",
     "supportPortal": "Support & portal",
@@ -1490,7 +1491,8 @@
       "payment_failed": "Payment could not be completed",
       "ticket_approval_requested_approver": "Work approval request (approver)",
       "ticket_approval_requested_notify": "Work approval request (for information)",
-      "ticket_approval_decided": "Work approval decision"
+      "ticket_approval_decided": "Work approval decision",
+      "ticket_merged": "Ticket merged"
     }
   },
   "inboundEmail": {

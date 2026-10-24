@@ -11,7 +11,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const mockWithSystemDbAccessContext = vi.fn(<T>(fn: () => Promise<T>) => fn());
 const mockRunOutsideDbContext = vi.fn(<T>(fn: () => T) => fn());
 const mockGetCurrentDbAccessContext = vi.fn<() => unknown>(() => undefined);
+const mockRunAfterDbContextExit = vi.fn<(label: string, work: () => unknown) => void>();
 vi.mock('../db', () => ({
+  runAfterDbContextExit: (label: string, work: () => unknown) => mockRunAfterDbContextExit(label, work),
   db: {
     select: vi.fn()
   },
@@ -60,6 +62,7 @@ import {
   canAccessOrg,
   canAccessSite,
   clearPermissionCache,
+  onPermissionAuthorityChanged,
   isAssignablePermission,
   isKnownPermission,
   userCanDecideApprovals,
@@ -361,6 +364,60 @@ describe('permissions service', () => {
 
     it('should not throw when clearing cache for specific user', async () => {
       await expect(clearPermissionCache('user-123')).resolves.toBeUndefined();
+    });
+
+    describe('permission-authority listeners (Wisp W02)', () => {
+      it('clearPermissionCache(userId) awaits registered listeners and isolates a throwing one', async () => {
+        const order: string[] = [];
+        const offA = onPermissionAuthorityChanged(async (id) => {
+          await new Promise((r) => setTimeout(r, 5));
+          order.push(`a:${id}`);
+        });
+        const offB = onPermissionAuthorityChanged(async () => { throw new Error('listener boom'); });
+        const offC = onPermissionAuthorityChanged(async (id) => { order.push(`c:${id}`); });
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          await expect(clearPermissionCache('user-9')).resolves.toBeUndefined();
+          expect(order.sort()).toEqual(['a:user-9', 'c:user-9']);
+          expect(errSpy).toHaveBeenCalled();
+        } finally {
+          offA(); offB(); offC(); errSpy.mockRestore();
+        }
+      });
+
+      it('clearPermissionCache() with no userId calls no listener', async () => {
+        const listener = vi.fn(async () => {});
+        const off = onPermissionAuthorityChanged(listener);
+        try {
+          await clearPermissionCache();
+          expect(listener).not.toHaveBeenCalled();
+        } finally {
+          off();
+        }
+      });
+
+      it('the unsubscribe handle removes the listener', async () => {
+        const listener = vi.fn(async () => {});
+        const off = onPermissionAuthorityChanged(listener);
+        off();
+        await clearPermissionCache('user-1');
+        expect(listener).not.toHaveBeenCalled();
+      });
+
+      it('inside a DB context the listeners are deferred until the transaction settles (they must read committed state)', async () => {
+        const listener = vi.fn(async () => {});
+        const off = onPermissionAuthorityChanged(listener);
+        mockGetCurrentDbAccessContext.mockReturnValue({ scope: 'partner' });
+        try {
+          await clearPermissionCache('user-2');
+          expect(listener).not.toHaveBeenCalled();
+          expect(mockRunAfterDbContextExit).toHaveBeenCalledTimes(1);
+          await mockRunAfterDbContextExit.mock.calls[0]![1]();
+          expect(listener).toHaveBeenCalledWith('user-2');
+        } finally {
+          off();
+        }
+      });
     });
 
     it('bumps shared Redis user versions so stale entries are rejected across API instances', async () => {
