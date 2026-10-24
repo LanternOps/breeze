@@ -351,6 +351,8 @@ export const navSections: NavSection[] = [
     items: [
       { name: 'Overview', labelKey: 'nav.securityOverview', href: '/security', icon: ShieldCheck, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'IOC Scans', labelKey: 'nav.securityScans', href: '/security/scans', icon: ScanSearch, requiredPermission: { resource: 'devices', action: 'read' } },
+      // YARA rule sets used by IOC scans (#6267).
+      { name: 'Detection Rules', labelKey: 'nav.securityDetectionRules', href: '/security/detection-rules', icon: FileCode, requiredPermission: { resource: 'devices', action: 'read' } },
       ...(ENABLE_EDR_INTEGRATIONS
         ? [{ name: 'EDR', labelKey: 'nav.edr', href: '/security/edr', icon: ShieldAlert, requiredPermission: { resource: 'devices', action: 'read' } } satisfies NavItem]
         : []),

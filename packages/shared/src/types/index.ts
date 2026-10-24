@@ -635,13 +635,6 @@ export interface AuditLog {
 
 export type DateFormat = 'MM/DD/YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD';
 export type TimeFormat = '12h' | '24h';
-export type BusinessHoursPreset = '24/7' | 'business' | 'extended' | 'custom';
-
-export interface DaySchedule {
-  start: string;
-  end: string;
-  closed?: boolean;
-}
 
 export interface InheritableSecuritySettings {
   minLength?: number;
@@ -803,10 +796,6 @@ export interface PartnerSettings {
   dateFormat?: DateFormat;
   timeFormat?: TimeFormat;
   language?: SupportedLocale;
-  businessHours?: {
-    preset: BusinessHoursPreset;
-    custom?: Record<string, DaySchedule>;
-  };
   contact?: {
     name?: string;
     email?: string;

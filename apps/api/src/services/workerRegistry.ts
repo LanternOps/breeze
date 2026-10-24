@@ -1543,6 +1543,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #8973 W4: one-shot holiday recompute of business-calendar SLA deadlines.
+    name: 'businessCalendarRecomputeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/businessCalendarRecomputeWorker');
+      return { init: m.initializeBusinessCalendarRecomputeWorker, shutdown: m.shutdownBusinessCalendarRecomputeWorker };
+    },
+  },
+  {
     name: 'inboundEmailWorker',
     placement: 'global',
     load: async () => {

@@ -1176,6 +1176,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   validate_flow: { resource: 'automations', action: 'read' },
   get_flow: { resource: 'automations', action: 'read' },
   list_flows: { resource: 'automations', action: 'read' },
+  // #8973 W4: business-hours calendars read with the ticket permission.
+  list_business_calendars: { resource: 'tickets', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },

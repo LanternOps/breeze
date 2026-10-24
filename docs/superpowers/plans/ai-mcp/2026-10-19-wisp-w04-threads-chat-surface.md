@@ -17,6 +17,22 @@ tracking_issue: LanternOps/breeze#9906
 
 **Spec:** `docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md` (§4.3 chat bullet, §5, §6, §10, §14). Names and signatures come from the orchestrator doc `2026-10-19-wisp-w00-wave-map-and-contracts.md` ("Threads (W04)" block, consumed W01/W02/W03 contracts); where this plan and w00 disagree on a name, w00 wins.
 
+## Execution split and parallelism (orchestrator, 2026-10-23)
+
+W04 is split into two sub-issues that run **in parallel**:
+- **W04a — Threads API** (sub-issue #9910, branch `feature/9906-wisp/wave-9910`): Tasks 1, 2, 3, 4, 5, 6, 6b and the API half of Task 9. Owns `packages/shared` additions, `apps/api/**`, the `RESERVED_ROUTE_NAMESPACES` entry (`wisp`).
+- **W04b — Chat surface (web)** (sub-issue #9916, branch `feature/9906-wisp/wave-9916`): Tasks 7, 8 and the web half of Task 9. Owns `apps/web/**` only. Builds against the w00 "Threads (W04)" route contracts with mocked `fetchWithAuth`.
+
+PARALLEL GROUPS (W04a): G1 = Task 1. G2 = Task 2 ∥ Task 3 ∥ Task 6b-store (threads.ts, sessionGrant.ts + createSession, threadAttachments.ts). G3 = Task 4 ∥ Task 5 (SDK gate vs summary finalize — different files). G4 = Task 6 ∥ Task 6b-routes. Task 9-API last.
+PARALLEL GROUPS (W04b): G1 = Task 7-store (`aiStore.ts` slice) ; G2 = Task 7-components ∥ Task 8 (`WispToggle`/`WispGrantStepUpModal` vs `WispThreadHeader`/sidebar). Task 9-web last.
+**Sonnet:** Task 7 locale fan-out (8 dirs), `WispThreadAttachments.tsx` list rendering; W04a Task 9 PR body.
+**Rules for every sub-issue and parallel group**
+- Every part bases on `origin/main` and targets `main` (never a stacked PR). The w00 contracts are the oracle, so parts can be built against each other's interfaces before they merge; web/mobile tests mock the API.
+- **Shared-package ownership:** the API part owns `packages/shared` additions. A web/mobile part that needs a type not yet on main copies the file **verbatim** from the API part's branch (`git show origin/feature/9906-wisp/wave-<api#>:<path>`) into the same path; whichever PR lands second rebases, and byte-identical files resolve cleanly. Never re-type a contract.
+- **In-wave fan-out:** tasks inside one PARALLEL GROUP are file-disjoint and may run as concurrent subagents in the same worktree. Concurrent subagents never run `git commit`; the fixer commits once per group after all members pass. Groups run in the listed order.
+- **Model routing:** the session and every tenancy/auth/permission/migration task are Opus. Tasks marked **Sonnet** are mechanical (locale fan-out, page scaffolds, pure helpers, docs, DTO plumbing) and run on Sonnet subagents with an Opus reviewer.
+- The part that lands last owns the whole-wave verification task and the PR-body statement that covers both parts.
+
 ## Global Constraints
 
 - **Dark by default.** Every new server path returns 404 when `wispEnabled()` (`apps/api/src/config/env.ts`, added by W02) is false; `createSession` refuses `wispGrantId` with `wisp_disabled` when off. Nothing changes for a session created without `wispGrantId`.

@@ -319,6 +319,8 @@ export const TOOL_TIERS = {
   validate_flow: 1,
   get_flow: 1,
   list_flows: 1,
+  // #8973 W4: read-only business-hours calendars (writes human-only, spec §5.7).
+  list_business_calendars: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -4300,6 +4302,18 @@ export function buildBreezeSdkTools(
         orgId: uuid.describe('Organization UUID'),
       },
       makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // #8973 W4 (spec §5.7): read-only business-hours calendars; writes stay human-only.
+    tool(
+      'list_business_calendars',
+      registryDescription('list_business_calendars'),
+      {
+        orgId: uuid.optional().describe("Only this organization's calendars plus its partner-wide ones (UUID)"),
+        includeArchived: z.boolean().optional().describe('Include archived calendars (default false)'),
+        limit: z.number().int().min(1).max(100).optional().describe('Max calendars (default 50, max 100)'),
+      },
+      makeHandler('list_business_calendars', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound

@@ -1693,6 +1693,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
+  // #8973 W4: read-only business-hours calendars (spec §5.7).
+  list_business_calendars: z.object({
+    orgId: uuid.optional(),
+    includeArchived: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
 
   export_dataset: z.object({
     dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),

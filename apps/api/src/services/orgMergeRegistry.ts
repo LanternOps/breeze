@@ -646,6 +646,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // child may repoint in separate statements under SET CONSTRAINTS ALL
   // DEFERRED.
   ticket_checklist_template_items: { kind: 'repoint' },
+  // Business-hours calendars (#8973 W4): org-owned calendars follow their org
+  // (spec §8.2). No org-axis unique exists (business_calendars_partner_name_uq
+  // is partner rows only), so a plain repoint cannot collide. The children copy
+  // the owner pair; their owner guards are DEFERRABLE INITIALLY IMMEDIATE, and
+  // the revision/interval immutability triggers allow an org_id-only restamp
+  // (Gate B15), so tickets that snapshotted a loser revision keep a valid one.
+  business_calendars: { kind: 'repoint' },
+  business_calendar_revisions: { kind: 'repoint' },
+  business_calendar_intervals: { kind: 'repoint' },
+  business_calendar_holidays: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)

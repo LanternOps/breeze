@@ -29,6 +29,7 @@ import {
   type CalendarRevision,
   type HolidaySet,
 } from '@breeze/shared';
+import { sql } from 'drizzle-orm';
 import type { Database } from '../db';
 import { SLA_AT_RISK_RATIO, breachedTargets } from './ticketSla';
 
@@ -150,10 +151,95 @@ export function freezeResponse(row: SlaClockRow, calendar: TicketCalendar, now: 
 }
 
 /**
- * The calendar snapshot a ticket's deadlines are computed on. W3 has no
- * calendars, so this is always null (24×7); W4 resolves the revision and its
- * holidays here.
+ * A ticket names a calendar revision its DB context cannot see. That is a
+ * caller-context bug (a write point running without the partner-wide read
+ * branch), never data: computing on the wall clock instead would silently
+ * store wrong deadlines, so it fails the write.
  */
-export async function loadTicketCalendar(_db: Database, _revisionId: string | null): Promise<TicketCalendar> {
-  return null;
+export class TicketCalendarUnavailableError extends Error {
+  constructor(readonly revisionId: string) {
+    super(`Business calendar revision ${revisionId} is not visible in this DB context`);
+    this.name = 'TicketCalendarUnavailableError';
+  }
+}
+
+type CalendarSnapshotRow = {
+  revision_id: string;
+  timezone: string;
+  intervals: CalendarRevision['intervals'];
+  holidays: string[];
+};
+
+/**
+ * Calendar snapshots for a set of revisions, one query for the whole set (the
+ * list payload batch-loads a page this way — no per-row read). Reads on the
+ * caller's connection: a revision shares its calendar's owner pair, so it is
+ * visible wherever the calendar is (Gate B1). Holidays sit on the calendar,
+ * not the revision (spec §4.1), sorted ascending as HolidaySet requires.
+ */
+export async function loadTicketCalendars(
+  db: Pick<Database, 'execute'>,
+  revisionIds: ReadonlyArray<string | null>,
+): Promise<Map<string, NonNullable<TicketCalendar>>> {
+  const ids = [...new Set(revisionIds.filter((id): id is string => !!id))];
+  const out = new Map<string, NonNullable<TicketCalendar>>();
+  if (ids.length === 0) return out;
+  const result = await db.execute<CalendarSnapshotRow>(sql`
+    SELECT r.id AS revision_id,
+           r.timezone,
+           COALESCE((
+             SELECT json_agg(json_build_object('weekday', i.weekday, 'startMinute', i.start_minute, 'endMinute', i.end_minute)
+                             ORDER BY i.weekday, i.start_minute)
+               FROM business_calendar_intervals i
+              WHERE i.revision_id = r.id
+           ), '[]'::json) AS intervals,
+           COALESCE((
+             SELECT array_agg(to_char(h.holiday_date, 'YYYY-MM-DD') ORDER BY h.holiday_date)
+               FROM business_calendar_holidays h
+              WHERE h.calendar_id = r.calendar_id
+           ), ARRAY[]::text[]) AS holidays
+      FROM business_calendar_revisions r
+     WHERE r.id IN (${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)})
+  `);
+  const rows = (result as unknown as { rows?: CalendarSnapshotRow[] }).rows ?? (result as unknown as CalendarSnapshotRow[]);
+  for (const row of rows) {
+    out.set(row.revision_id, { revision: { timezone: row.timezone, intervals: row.intervals }, holidays: row.holidays });
+  }
+  return out;
+}
+
+/**
+ * The calendar snapshot a ticket's deadlines are computed on (#8973 W4):
+ * null revision = 24×7 (wall clock); otherwise the revision's time zone and
+ * intervals plus its calendar's holidays.
+ */
+export async function loadTicketCalendar(db: Pick<Database, 'execute'>, revisionId: string | null): Promise<TicketCalendar> {
+  if (!revisionId) return null;
+  const calendar = (await loadTicketCalendars(db, [revisionId])).get(revisionId);
+  if (!calendar) throw new TicketCalendarUnavailableError(revisionId);
+  return calendar;
+}
+
+/**
+ * Spec §4.3 readers 5–6: business minutes left until each UNFROZEN deadline,
+ * so a countdown is honest across nights and weekends. Null without a
+ * calendar (the client's wall-clock countdown is already exact) and for a
+ * frozen or target-less arm; 0 once the deadline has passed.
+ */
+export function slaBusinessMinutesRemaining(
+  row: Pick<SlaClockRow, 'firstResponseAt' | 'resolvedAt' | 'slaBreachReason'>,
+  deadlines: { responseDueAt: Date | null; resolutionDueAt: Date | null },
+  calendar: TicketCalendar,
+  now: Date,
+): { response: number | null; resolution: number | null } | null {
+  if (!calendar) return null;
+  const left = (due: Date | null, frozen: boolean): number | null => {
+    if (frozen || !due) return null;
+    if (now.getTime() >= due.getTime()) return 0;
+    return Math.max(0, Math.ceil(businessMinutesBetween(calendar.revision, calendar.holidays, now, due)));
+  };
+  return {
+    response: left(deadlines.responseDueAt, isResponseFrozen(row)),
+    resolution: left(deadlines.resolutionDueAt, isResolutionFrozen(row)),
+  };
 }

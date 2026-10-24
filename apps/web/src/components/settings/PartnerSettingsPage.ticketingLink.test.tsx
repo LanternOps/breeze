@@ -22,7 +22,7 @@ const makeJsonResponse = (payload: unknown): Response =>
 const PARTNER = {
   id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
   createdAt: '2026-02-09T00:00:00.000Z',
-  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {}, address: {} },
+  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {}, address: {} },
 };
 
 function mountPage() {

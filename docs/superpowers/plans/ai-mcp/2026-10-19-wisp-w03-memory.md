@@ -18,6 +18,19 @@ tracking_issue: LanternOps/breeze#9906
 
 **Spec:** `docs/superpowers/specs/ai-mcp/2026-10-19-wisp-orchestrator-design.md` §4.3 (memory-delivery bullet), §8.1–§8.4, §14. Names, signatures and tables come from the orchestrator doc (`2026-10-19-wisp-w00-wave-map-and-contracts.md`, "Memory (W03)"); where this plan and that doc disagree on a name, that doc wins.
 
+## Execution split and parallelism (orchestrator, 2026-10-23)
+
+W03 stays one sub-issue (#9909). 
+
+PARALLEL GROUPS: G1 = Task 1 ∥ Task 2 (migration/schema vs registries — Task 2 only edits registries). G2 = Task 3 ∥ Task 4 ∥ Task 12 (broker, human service, `recordHumanBlock` — three files). G3 = Task 5 ∥ Task 6 ∥ Task 7 ∥ Task 8 (contract test, tools, routes, web page). Task 9 last.
+**Sonnet:** Task 8 locale fan-out and the settings-page scaffold (logic stays Opus), Task 9 PR body.
+**Rules for every sub-issue and parallel group**
+- Every part bases on `origin/main` and targets `main` (never a stacked PR). The w00 contracts are the oracle, so parts can be built against each other's interfaces before they merge; web/mobile tests mock the API.
+- **Shared-package ownership:** the API part owns `packages/shared` additions. A web/mobile part that needs a type not yet on main copies the file **verbatim** from the API part's branch (`git show origin/feature/9906-wisp/wave-<api#>:<path>`) into the same path; whichever PR lands second rebases, and byte-identical files resolve cleanly. Never re-type a contract.
+- **In-wave fan-out:** tasks inside one PARALLEL GROUP are file-disjoint and may run as concurrent subagents in the same worktree. Concurrent subagents never run `git commit`; the fixer commits once per group after all members pass. Groups run in the listed order.
+- **Model routing:** the session and every tenancy/auth/permission/migration task are Opus. Tasks marked **Sonnet** are mechanical (locale fan-out, page scaffolds, pure helpers, docs, DTO plumbing) and run on Sonnet subagents with an Opus reviewer.
+- The part that lands last owns the whole-wave verification task and the PR-body statement that covers both parts.
+
 ## Global Constraints
 
 - **Dark by default.** `wispEnabled()` (`apps/api/src/config/env.ts`, added by W02) gates every route in this wave (404 when off). Tools register unconditionally (registration is inert; nothing calls them until W04/W05 attach a grant) but refuse to run without `auth.wispGrant`. No behaviour change while the flag is unset.

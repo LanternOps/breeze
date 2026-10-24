@@ -180,6 +180,7 @@
     "adminAiModels": "Yapay zeka modelleri",
     "billingAutopay": "Otomatik ödemeler",
     "endpointMessages": "Uç Nokta Mesajları",
+    "securityDetectionRules": "Tespit Kuralları",
     "settingsPlan": "Plan ve özellikler"
   },
   "layout": {

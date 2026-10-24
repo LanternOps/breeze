@@ -17,6 +17,24 @@ tracking_issue: LanternOps/breeze#9906
 
 **Spec:** §17 (product surface; quorum 2 verdicts), §5 (surfaces), §6.1 (4)–(5), §7.4, §8.2, §10, §14. Contracts come from w00 A28–A35 and "Routes (2026-10-23)"; where this plan and w00 disagree on a name, w00 wins.
 
+## Execution split and parallelism (orchestrator, 2026-10-23)
+
+W08 is split into three sub-issues that run **in parallel**:
+- **W08a — Home API, links, partner switch** (sub-issue #9914, branch `feature/9906-wisp/wave-9914`): Tasks 1, 2, 3, 4, 5, 6, 7, 13. Owns `packages/shared`, `apps/api/**`.
+- **W08b — Home web** (sub-issue #9921, branch `feature/9906-wisp/wave-9921`): Tasks 8, 9, 10, 14 (docs + e2e + PR body for the surface). Owns `apps/web/**`, `apps/docs/**`.
+- **W08c — Mobile sections + connector relabel** (sub-issue #9922, branch `feature/9906-wisp/wave-9922`): Tasks 11, 12. Owns `apps/mobile/**`, `ee/workspace/**`, `packages/extension-sdk` reserved-namespace entry, `apps/api/src/extensions/builtinExtensions.ts` alias (the only API file W08c touches; W08a does not touch it).
+
+PARALLEL GROUPS (W08a): G1 = Task 1 ∥ Task 2 ∥ Task 6-migration. G2 = Task 3. G3 = Task 4 ∥ Task 5 ∥ Task 6-service+route. G4 = Task 7. Task 13 last.
+PARALLEL GROUPS (W08b): G1 = Task 8 (route move, nav, locales). G2 = Task 9-helpers (`wispHome.ts`, `wispEntityHref.ts`) ∥ Task 9-picker ∥ Task 9-panels (brief, needs-you, links) ∥ Task 10-button. G3 = Task 9-page composition ∥ Task 10-sidebar+detail-headers. Task 14 last.
+PARALLEL GROUPS (W08c): Task 11 ∥ Task 12.
+**Sonnet:** Task 8 locale fan-out + baseline edits + docsMapping/routeScope lines, Task 9 `wispEntityHref.ts` + brief card rendering, Task 11 (copy-only relabel), Task 12 pure helpers, Task 14 docs.
+**Rules for every sub-issue and parallel group**
+- Every part bases on `origin/main` and targets `main` (never a stacked PR). The w00 contracts are the oracle, so parts can be built against each other's interfaces before they merge; web/mobile tests mock the API.
+- **Shared-package ownership:** the API part owns `packages/shared` additions. A web/mobile part that needs a type not yet on main copies the file **verbatim** from the API part's branch (`git show origin/feature/9906-wisp/wave-<api#>:<path>`) into the same path; whichever PR lands second rebases, and byte-identical files resolve cleanly. Never re-type a contract.
+- **In-wave fan-out:** tasks inside one PARALLEL GROUP are file-disjoint and may run as concurrent subagents in the same worktree. Concurrent subagents never run `git commit`; the fixer commits once per group after all members pass. Groups run in the listed order.
+- **Model routing:** the session and every tenancy/auth/permission/migration task are Opus. Tasks marked **Sonnet** are mechanical (locale fan-out, page scaffolds, pure helpers, docs, DTO plumbing) and run on Sonnet subagents with an Opus reviewer.
+- The part that lands last owns the whole-wave verification task and the PR-body statement that covers both parts.
+
 ## Global Constraints
 
 - **Dark by default.** Every new API path returns 404 when `wispEnabled()` (W02, `apps/api/src/config/env.ts`) is false; `/wisp` renders the same `FeatureLock` (W01) the thread page shows when the partner has no entitlement; `/wisp/chat` is the old page and works with the flag off exactly as `/workspace` does today.

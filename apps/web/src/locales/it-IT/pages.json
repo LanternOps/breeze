@@ -180,6 +180,7 @@
     "adminAiModels": "Modelli di IA",
     "billingAutopay": "Pagamenti automatici",
     "endpointMessages": "Messaggi agli endpoint",
+    "securityDetectionRules": "Regole di rilevamento",
     "settingsPlan": "Piano e funzionalità"
   },
   "layout": {

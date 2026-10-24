@@ -180,6 +180,7 @@
     "adminAiModels": "KI-Modelle",
     "billingAutopay": "Automatische Zahlungen",
     "endpointMessages": "Endpunkt-Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln",
     "settingsPlan": "Tarif & Funktionen"
   },
   "layout": {

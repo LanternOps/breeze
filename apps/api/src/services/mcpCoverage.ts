@@ -374,6 +374,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'billingProfiles.ts': { gap: '#6784' },
   'billingStepUp.ts': { exempt: 'internal_plumbing', note: 'Second-factor confirmation shared by the charge-now, partner and organization payment-settings and autopay request routes; no endpoint of its own.' },
   'browserSecurity.ts': { tools: ['get_browser_security', 'manage_browser_policy'] },
+  // #8973 W4 business-hours calendars: read-only list_business_calendars; writes are human-only in v1 (spec §5.7).
+  'businessCalendars.ts': { tools: ['list_business_calendars'] },
   'c2c/configs.ts': { gap: '#6788' },
   'c2c/connections.ts': { tools: ['query_c2c_connections'] },
   'c2c/items.ts': { tools: ['search_c2c_items', 'restore_c2c_items'] },

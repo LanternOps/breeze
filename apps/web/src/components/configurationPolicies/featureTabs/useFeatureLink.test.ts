@@ -45,6 +45,19 @@ describe('feature Save action feedback', () => {
       message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
     }));
   });
+  it.each([
+    ['TOO_MANY_RULE_SETS', /at most 20 rule sets/],
+    ['INVALID_RULE_SET_IDS', /not valid/],
+    ['YARA_RULE_SET_NOT_ATTACHABLE', /cannot use some of the selected rule sets/],
+  ])('maps the rule-set gate code %s to readable copy (#6267)', async (code, copy) => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'raw gate text', code, ruleSetIds: ['x'] }), { status: 400 }),
+    );
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
+    expect(result.current.error).toMatch(copy);
+    expect(result.current.errorDetail).toMatchObject({ status: 400, code, body: { ruleSetIds: ['x'] } });
+  });
   it('redirects on 401 without an extra toast', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));
     const { result } = renderHook(() => useFeatureLink(POLICY));

@@ -701,12 +701,6 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
 // NOTE: all /partners/me handlers (GET, PATCH) must stay above /partners/:id in this file
 // so Hono's router matches the static segment "me" before the dynamic :id handler.
 
-const dayScheduleSchema = z.object({
-  start: z.string(),
-  end: z.string(),
-  closed: z.boolean().optional()
-});
-
 const supportedLocales = SUPPORTED_LOCALES;
 
 /*
@@ -753,10 +747,10 @@ const partnerSettingsSchema = z.object({
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
   language: z.enum(supportedLocales).optional(),
-  businessHours: z.object({
-    preset: z.enum(['24/7', 'business', 'extended', 'custom']),
-    custom: z.record(z.string(), dayScheduleSchema).optional()
-  }).optional(),
+  // businessHours retired (#8973 W4, Gate B5): business hours are business
+  // calendars now (routes/businessCalendars.ts). Zod strips the key, so a stale
+  // client's value never reaches the shallow merge below and the stored blob
+  // (imported into a calendar by 2027-01-03-160000) is left untouched.
   contact: z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
