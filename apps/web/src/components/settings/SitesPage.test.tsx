@@ -5,7 +5,7 @@ import SitesPage from './SitesPage';
 import { decodeFilterFromHash } from '../devices/filterUrl';
 import { readDeviceClassFromHash } from '../devices/deviceClassFilter';
 import { fetchWithAuth } from '../../stores/auth';
-import { useOrgStore } from '../../stores/orgStore';
+import { useOrgStore, type Organization } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -38,7 +38,8 @@ const ORG_A = '11111111-1111-4111-8111-111111111111';
 const ORG_B = '22222222-2222-4222-8222-222222222222';
 const SITE_A = { id: 'aaaaaaaa-0000-4000-8000-000000000001', orgId: ORG_A, orgName: 'Alpha Co', name: 'Alpha HQ', timezone: 'UTC', deviceCount: 3 };
 const SITE_B = { id: 'bbbbbbbb-0000-4000-8000-000000000002', orgId: ORG_B, orgName: 'Bravo Ltd', name: 'Bravo Depot', timezone: 'UTC', deviceCount: 5 };
-const ORGS = [{ id: ORG_A, name: 'Alpha Co' }, { id: ORG_B, name: 'Bravo Ltd' }];
+const org = (id: string, name: string): Organization => ({ id, name, partnerId: 'partner-1', status: 'active', createdAt: '2026-01-01T00:00:00Z' });
+const ORGS = [org(ORG_A, 'Alpha Co'), org(ORG_B, 'Bravo Ltd')];
 
 const jsonResponse = (payload: unknown, status = 200): Response =>
   ({ ok: status >= 200 && status < 300, status, statusText: 'OK', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
