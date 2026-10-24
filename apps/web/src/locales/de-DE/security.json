@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpunkterkennung und -reaktion",
     "huntressIncidents": "Huntress-Vorfälle",
     "sentineloneThreats": "SentinelOne-Bedrohungen",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Bedrohungen und Vorfälle in Ihrer gesamten Flotte durch SentinelOne und Huntress.",
+    "iocScansLink": "Suchen Sie die IOC-Scans von Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Weitere EDR",
@@ -750,7 +751,27 @@
     "threatRemoved": "Bedrohung entfernt",
     "threatStatus": "Bedrohungsstatus",
     "threatWasMovedToQuarantineByPolicy": "Die Bedrohung wurde durch eine Richtlinie oder eine Aktion des Bedieners in die Quarantäne verschoben.",
-    "timeline": "Zeitleiste"
+    "timeline": "Zeitleiste",
+    "actionFailed": "Aktion fehlgeschlagen",
+    "quarantineSucceeded": "Bedrohung unter Quarantäne gestellt",
+    "restoreSucceeded": "Bedrohung wiederhergestellt",
+    "removeSucceeded": "Bedrohung entfernt",
+    "notFound": "Diese Bedrohung wurde nicht gefunden. Sie wurde möglicherweise gelöscht, oder Sie haben keinen Zugriff auf ihr Gerät.",
+    "relatedLoadFailed": "Verwandte Bedrohungen konnten nicht geladen werden.",
+    "rule": {
+      "title": "Erkennungsregel",
+      "legacy": "Integrierte Signatur (älterer Scan)",
+      "ruleName": "Regel",
+      "ruleSet": "Regelsatz",
+      "ruleSetMissing": "Regelsatz nicht mehr verfügbar",
+      "tags": "Schlagwörter",
+      "matchedStrings": "Gefundene Zeichenfolgen",
+      "noMatchedStrings": "Es wurden keine gefundenen Zeichenfolgen gemeldet.",
+      "sha256": "SHA-256 der Datei",
+      "copy": "SHA-256 kopieren",
+      "quarantinedTo": "In Quarantäne verschoben nach (zum Scanzeitpunkt)",
+      "quarantineFailed": "Automatische Quarantäne fehlgeschlagen"
+    }
   },
   "securityThreatList": {
     "active": "Aktiv",
@@ -2319,6 +2340,191 @@
       "awaitingVendorReport": "Warten auf Herstellerbericht",
       "awaitingEvaluation": "Warten auf Auswertung",
       "vendorOrgMismatch": "Hersteller meldet eine andere Organisation"
+    }
+  },
+  "detectionRules": {
+    "title": "Erkennungsregeln",
+    "subtitle": "Regelsätze für IOC-Scans und Threat Hunting. Jede Änderung wird auf dem Server geprüft, bevor Geräte sie erhalten.",
+    "listHelp": "Hängen Sie Regelsätze im Sicherheits-Tab einer Konfigurationsrichtlinie an, um sie in IOC-Scans zu verwenden.",
+    "newRuleSet": "Neuer Regelsatz",
+    "back": "Zurück zu den Regelsätzen",
+    "loadFailed": "Die Regelsätze konnten nicht geladen werden.",
+    "empty": "Noch keine Regelsätze.",
+    "rulesLabel": "Regeln: {{total}}",
+    "publishedVersion": "Version {{version}}",
+    "created": "Regelsatz erstellt",
+    "deleted": "Regelsatz gelöscht",
+    "columns": {
+      "name": "Bezeichnung",
+      "owner": "Eigentümer",
+      "rules": "Regeln",
+      "published": "Veröffentlicht"
+    },
+    "owner": {
+      "builtin": "Breeze (integriert)",
+      "allOrgs": "Alle Organisationen",
+      "organization": "Organisation"
+    },
+    "badges": {
+      "builtin": "Integriert",
+      "allOrgs": "Alle Organisationen",
+      "errors": "Fehlerhaft",
+      "unpublished": "Nicht veröffentlicht",
+      "disabled": "Deaktiviert"
+    },
+    "create": {
+      "title": "Neuer Regelsatz",
+      "name": "Bezeichnung",
+      "description": "Beschreibung (optional)",
+      "owner": "Eigentümer",
+      "ownerAllOrgs": "Alle Organisationen (partnerweit)",
+      "ownerOrganization": "Eine Organisation",
+      "organization": "Organisation",
+      "selectOrganization": "Organisation auswählen",
+      "submit": "Regelsatz erstellen"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Zum Aktivieren der automatischen Quarantäne ist die Berechtigung devices:execute erforderlich, da sie Dateien auf jedem Gerät verschiebt, das mit diesem Satz scannt.",
+      "iocBatchAlreadyImported": "Diese IOCs wurden bereits in diesen Satz importiert.",
+      "iocRuleNameTaken": "In diesem Satz gibt es bereits eine Regel mit demselben generierten Namen, aber anderem Inhalt. Benennen Sie sie um oder löschen Sie sie und importieren Sie erneut.",
+      "iocTooManyRules": "Mit diesem Import hätte der Satz mehr als {{max}} Regeln. Importieren Sie in einen anderen Satz.",
+      "iocInvalid": "Einige IOCs sind ungültig. Korrigieren Sie die markierten Zeilen und versuchen Sie es erneut."
+    },
+    "test": {
+      "requestFailed": "Der Test wurde nicht abgeschlossen. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+      "privacy": "Die Datei wird auf dem Breeze-Server in einer Sandbox mit den aktuellen Regeln dieses Satzes gescannt, einschließlich noch nicht veröffentlichter Änderungen. Die Datei wird nicht gespeichert. Im Audit-Protokoll werden nur ihr SHA-256-Wert, ihre Größe und die Anzahl der Treffer erfasst.",
+      "sandboxUnavailable": "Dateitests sind auf diesem Server nicht verfügbar",
+      "sandboxUnavailableHelp": "Der Server kann den Scan nicht isolieren und führt daher keine hochgeladenen Dateien aus. Regelbearbeitung, IOC-Import und Gerätescans sind nicht betroffen.",
+      "file": "Zu testende Datei",
+      "filepath": "Pfad auf dem Gerät (optional)",
+      "filepathHelp": "Wo die Datei auf einem Gerät liegen würde. Regeln, die auf den Pfad prüfen, verwenden ihn; standardmäßig der Dateiname.",
+      "run": "Test starten",
+      "running": "Wird getestet…",
+      "testedVersion": "Getestete Version {{version}}",
+      "unpublishedChanges": "Ihre unveröffentlichten Änderungen werden getestet.",
+      "noMatches": "Keine Regel hat angeschlagen.",
+      "errors": {
+        "tooLarge": "Die Datei ist größer als {{max}} MB. Wählen Sie eine kleinere Datei.",
+        "busy": "Ein anderer Test läuft gerade. Versuchen Sie es in einigen Sekunden erneut.",
+        "rateLimited": "Sie haben in den letzten Minuten zu viele Tests ausgeführt. Versuchen Sie es später erneut.",
+        "unavailable": "Die Regelprüfung ist nicht verfügbar. Versuchen Sie es später erneut.",
+        "noRules": "Dieser Satz hat keine aktivierten Regeln zum Testen.",
+        "compileFailed": "Dieser Satz lässt sich mit seinen aktuellen Regeln nicht kompilieren, daher wurde nichts gescannt:",
+        "bodyTimeout": "Der Upload hat zu lange gedauert. Versuchen Sie es erneut.",
+        "unexpected": "Der Test konnte nicht abgeschlossen werden. Versuchen Sie es erneut."
+      }
+    },
+    "severity": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch",
+      "critical": "Kritisch"
+    },
+    "publish": {
+      "saved": "Gespeichert",
+      "autoQuarantineOnly": "Die automatische Quarantäne ist auf den Geräten jetzt aus. Ihre übrigen Änderungen sind noch nicht aktiv.",
+      "published": "Gespeichert und als Version {{version}} veröffentlicht",
+      "savedDisabled": "Gespeichert. Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
+      "checkerUnavailable": "Gespeichert, nicht veröffentlicht: Die Regelprüfung ist nicht verfügbar. {{devices}}",
+      "compileErrors_one": "Gespeichert, nicht veröffentlicht: {{count}} Regel ist fehlerhaft. {{devices}}",
+      "compileErrors_other": "Gespeichert, nicht veröffentlicht: {{count}} Regeln sind fehlerhaft. {{devices}}",
+      "setErrors": "Gespeichert, nicht veröffentlicht: {{message}}. {{devices}}",
+      "noEnabledRules": "Keine aktivierten Regeln: Geräte scannen nicht mehr mit diesem Satz.",
+      "unknown": "Gespeichert, aber das Veröffentlichungsergebnis konnte nicht gelesen werden. Laden Sie den Satz neu, um zu sehen, welche Version die Geräte verwenden.",
+      "devicesKeep": "Geräte behalten Version {{version}}.",
+      "neverPublished": "Dieser Satz wurde noch nicht veröffentlicht, daher verwenden Geräte ihn nicht.",
+      "setDisabled": "Der Satz ist deaktiviert, daher verwenden Geräte ihn nicht.",
+      "staleBanner": "Nicht veröffentlicht: Beheben Sie die Fehler unten. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regeln",
+        "import": "IOCs importieren",
+        "test": "Datei testen"
+      },
+      "rename": "Regelsatz umbenennen",
+      "enabled": "Aktiviert",
+      "autoQuarantine": "Automatische Quarantäne",
+      "autoQuarantineHelp": "Treffende Dateien auf jedem Gerät, das mit diesem Satz scannt, in die Quarantäne verschieben.",
+      "deleteSet": "Löschen",
+      "deleteSetTitle": "Diesen Regelsatz löschen?",
+      "deleteSetMessage": "Seine Regeln werden ebenfalls gelöscht. Richtlinien, die ihn noch enthalten, melden ihn beim nächsten Scan als nicht gefunden.",
+      "deleteRuleTitle": "Diese Regel löschen?",
+      "deleteRuleMessage": "Der Satz wird ohne sie geprüft und erneut veröffentlicht.",
+      "addRule": "Regel hinzufügen",
+      "noRules": "Dieser Satz enthält noch keine Regeln.",
+      "columns": {
+        "name": "Regel",
+        "severity": "Schweregrad",
+        "tags": "Schlagwörter",
+        "state": "Zustand"
+      },
+      "viewSource": "Quelltext anzeigen",
+      "hideSource": "Quelltext ausblenden",
+      "editRule": "Regel bearbeiten",
+      "deleteRule": "Regel löschen",
+      "errorLine": "Zeile {{line}}:",
+      "publishedVersion": "Veröffentlichte Version {{version}}",
+      "readOnlyBuiltin": "Der integrierte Regelsatz ist schreibgeschützt. Seine Regeln werden mit Breeze-Versionen aktualisiert.",
+      "refreshFailed": "Die Änderung wurde gesendet, aber der Regelsatz konnte nicht neu geladen werden. Die Anzeige ist möglicherweise veraltet."
+    },
+    "dialog": {
+      "titleAdd": "Regel hinzufügen",
+      "titleEdit": "Regel bearbeiten",
+      "name": "Regelname",
+      "nameHelp": "Buchstaben, Ziffern und Unterstriche; beginnt mit einem Buchstaben oder Unterstrich (max. 128).",
+      "severity": "Schweregrad",
+      "tags": "Schlagwörter",
+      "tagsHelp": "Durch Kommas getrennt, z. B. ransomware, advisory-42",
+      "enabled": "Aktiviert",
+      "source": "YARA-Quelltext",
+      "sourceTooLarge": "Der Regelquelltext ist größer als {{max}} KB.",
+      "checkedOnSave": "Beim Speichern wird der Satz mit demselben Compiler geprüft, den die Geräte verwenden. Fehlerhafte Regeln werden nicht veröffentlicht."
+    },
+    "ioc": {
+      "help": {
+        "title": "So funktioniert der Import",
+        "format": "Ein IOC pro Zeile (# leitet einen Kommentar ein) oder ein JSON-Array. Stellen Sie einer Zeile ihre Art voran, etwa sha256: oder domain:, um die Art selbst festzulegen.",
+        "exactMatch": "Nur exakte Übereinstimmung: keine Platzhalter oder Muster.",
+        "contentNotTraffic": "Domains und IP-Adressen werden mit Text in gescannten Dateien abgeglichen, nicht mit Netzwerkverkehr.",
+        "partialOverlap": "Ein erneuter Import derselben IOCs wird erkannt. Ein Stapel, der sich nur teilweise mit einem früheren Import überschneidet, wird nicht dedupliziert."
+      },
+      "label": "Bezeichnung",
+      "labelPlaceholder": "Zum Beispiel: Herstellerhinweis 2026-10",
+      "labelRequired": "Geben Sie eine Bezeichnung ein, um die erzeugten Regeln in der Vorschau zu sehen.",
+      "paste": "IOCs einfügen",
+      "textTooLong": "Der eingefügte Text ist größer als {{max}} KB. Teilen Sie ihn auf mehrere Importe auf.",
+      "skippedLines": "Diese Zeilen werden übersprungen:",
+      "lineError": "Zeile {{line}}: {{error}}",
+      "validCount": "{{valid}} von {{total}} IOCs bereit zum Import",
+      "kind": "Art",
+      "value": "Wert",
+      "kinds": {
+        "md5": "MD5-Hash",
+        "sha1": "SHA-1-Hash",
+        "sha256": "SHA-256-Hash",
+        "filename": "Dateiname",
+        "filepath": "Dateipfad",
+        "domain": "Domäne",
+        "ip": "IP-Adresse",
+        "string": "Textzeichenfolge"
+      },
+      "errors": {
+        "empty": "Leerer Wert",
+        "unknown_kind": "Unbekannte Art",
+        "bad_hash": "Kein gültiger Hash für diese Art",
+        "too_short": "Text muss mindestens 4 Byte lang sein",
+        "too_long": "Zu lang",
+        "bad_path": "Kein gültiger Pfad für diese Art",
+        "bad_ip": "Keine gültige IP-Adresse",
+        "bad_domain": "Keine gültige Domäne",
+        "duplicate": "Duplikat einer früheren Zeile"
+      },
+      "overCap": "Höchstens {{max}} IOCs pro Import. Teilen Sie die Liste auf mehrere Importe auf.",
+      "hashNote": "Hash-IOCs lassen Geräte jede gescannte Datei vollständig hashen, daher dauern vollständige Scans länger.",
+      "generateFailed": "Aus diesen IOCs konnten keine Regeln erzeugt werden.",
+      "generatedTitle": "Regeln, die gespeichert werden: {{total}}",
+      "import": "{{total}} IOCs importieren"
     }
   },
   "sensitiveDataAccess": {

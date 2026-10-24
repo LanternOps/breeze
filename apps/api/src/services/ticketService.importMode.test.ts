@@ -65,6 +65,10 @@ const lockMock = vi.hoisted(() => vi.fn(async (_tx: unknown, id: string) => ({
 })));
 vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock, lockTicketsForWrite: vi.fn(async () => new Map()) }));
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: mocks.emit }));
+// #8973 W4: a live create resolves the org's business calendar (none here, 24×7).
+vi.mock('./businessCalendars/resolve', () => ({
+  resolveBusinessCalendar: vi.fn(async () => ({ revisionId: null, calendarId: null, source: 'none' })),
+}));
 vi.mock('./auditService', () => ({ createAuditLogAsync: mocks.audit }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: mocks.triage }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: mocks.allocate }));

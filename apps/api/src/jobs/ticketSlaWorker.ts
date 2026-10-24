@@ -79,18 +79,25 @@ function extractRows<T>(result: unknown): T[] {
  *     stored-deadline passes below would never breach it;
  *   - a pause it ends is folded into sla_paused_minutes only, so the stored
  *     deadline stays too early and would breach falsely.
- * Both are detectable without a calendar (business minutes equal
- * sla_paused_minutes until W4), so each tick repairs at most HEAL_BATCH such
+ * Both are detectable on a ticket with no calendar (its business minutes
+ * equal sla_paused_minutes), so each tick repairs at most HEAL_BATCH such
  * rows with the wall-clock formula the backfill used (2027-01-02-190200):
  * business minutes are raised to sla_paused_minutes, a missing arm is filled,
  * and an unfrozen arm of a lagging row is recomputed. Frozen arms keep their
- * deadline. The partial index tickets_sla_deadlines_missing_idx
- * (2027-01-02-190300) matches exactly this predicate and is empty in steady
- * state, so the heal costs one empty index probe per tick.
+ * deadline.
  *
- * W4 adds `sla_calendar_revision_id IS NULL` to the predicate: on a calendar,
- * business minutes legitimately differ from sla_paused_minutes and the
- * calendar-aware writers own the deadlines.
+ * Calendar tickets (`sla_calendar_revision_id` set, #8973 W4) are excluded on
+ * every branch: on a calendar, business minutes legitimately differ from
+ * sla_paused_minutes, and the calendar-aware writers own those deadlines. A
+ * pre-W4 instance cannot write a calendar ticket at all — nothing carries a
+ * revision until a partner marks a default after the deploy.
+ *
+ * The partial index tickets_sla_deadlines_missing_idx (rebuilt by
+ * 2027-01-03-160100) matches exactly this predicate — and the Drizzle
+ * declaration in db/schema/portal.ts — and is empty in steady state, so the
+ * heal costs one empty index probe per tick. The extra
+ * `merged_into_ticket_id IS NULL` conjunct (#8972: merged tombstones are never
+ * healed) only narrows that predicate, so the index still applies.
  */
 const HEAL_BATCH = 500;
 
@@ -106,9 +113,10 @@ export async function healMissingDeadlines(): Promise<number> {
       SELECT id
       FROM tickets
       WHERE merged_into_ticket_id IS NULL
+        AND sla_calendar_revision_id IS NULL
         AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
-         OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
-         OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))
+          OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+          OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))
       ORDER BY created_at ASC
       LIMIT ${sql.raw(String(HEAL_BATCH))}
       FOR UPDATE SKIP LOCKED

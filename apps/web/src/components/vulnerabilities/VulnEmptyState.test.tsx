@@ -12,7 +12,7 @@ import type { FleetVulnStats } from '../../lib/api/vulnerabilities';
 
 function stats(overrides: Partial<FleetVulnStats> = {}): FleetVulnStats {
   return {
-    criticalOpen: 0, openBySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+    criticalOpen: 0, openFindings: 0, openBySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
     kevCveCount: 0,
     kevDeviceCount: 0,
     patchReadyFindingCount: 0,

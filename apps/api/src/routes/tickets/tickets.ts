@@ -9,6 +9,7 @@ import { alertInSiteScope, deviceInSiteScope, ticketSiteScopeCondition } from '.
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { ticketSearchCondition } from '../../services/ticketSearch';
 import { checklistCountsForTickets } from '../../services/ticketChecklistService';
+import { withBusinessMinutesRemaining } from '../../services/businessCalendars/remaining';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
@@ -407,6 +408,8 @@ ticketsRoutes.get(
         resolutionDueAt: tickets.resolutionDueAt,
         responseWarnAt: tickets.responseWarnAt,
         resolutionWarnAt: tickets.resolutionWarnAt,
+        // #8973 W4: the business-calendar snapshot (null = 24×7).
+        slaCalendarRevisionId: tickets.slaCalendarRevisionId,
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
         deletedAt: tickets.deletedAt,
@@ -424,9 +427,9 @@ ticketsRoutes.get(
       .orderBy(...orderBy)
       .limit(q.limit)
       .offset(offset);
-    // #8973: business minutes remaining is computed server-side once a
-    // calendar applies (W4); with no calendar the client counts wall-clock.
-    const data = rows.map((row) => ({ ...row, slaBusinessMinutesRemaining: null }));
+    // #8973 W4: business minutes remaining, server-side, only for rows on a
+    // calendar (one batch load per page); with none the client counts wall-clock.
+    const data = await withBusinessMinutesRemaining(db, rows);
 
     const countRows = await db
       .select({ count: sql<number>`count(*)` })
@@ -581,8 +584,9 @@ ticketsRoutes.get(
       .leftJoin(alerts, eq(ticketAlertLinks.alertId, alerts.id))
       .where(eq(ticketAlertLinks.ticketId, id));
 
-    // #8973: slaBusinessMinutesRemaining is null until W4 applies a calendar.
-    return c.json({ data: { ...ticket, slaBusinessMinutesRemaining: null, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
+    // #8973 W4: non-null only when the ticket carries a calendar revision.
+    const [withRemaining] = await withBusinessMinutesRemaining(db, [ticket]);
+    return c.json({ data: { ...ticket, slaBusinessMinutesRemaining: withRemaining!.slaBusinessMinutesRemaining, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
   }
 );
 

@@ -464,6 +464,7 @@ export default function ConfigPolicyDetailPage({
       parentLink: parentLinkFor(ft),
       siblingLinks: featureLinks,
       orgId: policy?.orgId ?? null,
+      partnerId: policy?.partnerId ?? null,
     };
     switch (ft) {
       case 'patch': return <PatchTab {...props} />;

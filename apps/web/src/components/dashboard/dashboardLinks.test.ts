@@ -138,7 +138,12 @@ describe('each metric is gated by its own destination', () => {
     if (def.kind === 'exempt') continue;
     it(key, () => {
       const href = metricHref(key, { devices: stats })!;
-      const path = new URL(href, 'http://x').pathname as keyof typeof DESTINATION_GATES;
+      // A sub-page (`/security/vulnerabilities`) is gated by its Sidebar section
+      // root (`/security`): resolve to the longest registered gate prefix.
+      const pathname = new URL(href, 'http://x').pathname;
+      const path = ((Object.keys(DESTINATION_GATES) as Array<keyof typeof DESTINATION_GATES>)
+        .filter((g) => pathname === g || pathname.startsWith(`${g}/`))
+        .sort((a, b) => b.length - a.length)[0] ?? pathname) as keyof typeof DESTINATION_GATES;
       expect(DESTINATION_GATES[path], `no gate for ${path}`).toBeTruthy();
       for (const v of viewers) {
         expect(def.visible?.(v)).toBe(canOpenDestination(DESTINATION_GATES[path], v));

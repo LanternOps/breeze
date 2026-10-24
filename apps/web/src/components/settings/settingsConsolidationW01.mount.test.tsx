@@ -28,7 +28,7 @@ const PARTNER_SHAPE = {
   createdAt: '2026-02-09T00:00:00.000Z', serviceManagementMode: 'native',
   currencyCode: 'USD', invoiceNumberPrefix: 'INV', invoiceTermsDays: 30,
   defaultMarkupPercent: null, autoTaxHardware: true, catalogAiStyle: null,
-  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {}, address: {} },
+  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {}, address: {} },
 };
 
 const jsonResponse = (payload: unknown): Response =>
