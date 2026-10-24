@@ -532,6 +532,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // Forge proof: wispThreadsRls.integration.test.ts.
   ['wisp_threads', 'partner_id'],
   ['wisp_thread_sessions', 'partner_id'],
+  // Wisp W06a (#9912, plan 2026-10-19-wisp-w06-nudges-mobile.md Task 1):
+  // wisp_nudge_preferences is user-axis inside a partner — its FOR ALL policy is
+  // `system OR (user_id = breeze_current_user_id() AND breeze_has_partner_access(partner_id))`
+  // plus an additive SELECT-only partner read branch; also in USER_ID_SCOPED_TABLES.
+  // wisp_partner_nudge_settings is plain shape 3. No org_id on either → no
+  // cascade/merge/export registration. Forge proof: wispNudgePreferencesRls.integration.test.ts.
+  ['wisp_nudge_preferences', 'partner_id'],
+  ['wisp_partner_nudge_settings', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
@@ -1318,6 +1326,11 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
   // connectionHealthDigest.integration.test.ts.
   'user_email_optouts',
   'connection_health_digest_deliveries',
+  // Wisp W06a (#9912, plan 2026-10-19-wisp-w06-nudges-mobile.md Task 1): the
+  // user's own nudge preferences; also in PARTNER_TENANT_TABLES (the same FOR
+  // ALL policy ANDs breeze_has_partner_access). Behavioural proof:
+  // wispNudgePreferencesRls.integration.test.ts.
+  'wisp_nudge_preferences',
 ]);
 
 // Tables WITHOUT their own org_id whose permissive policies may admit rows by
@@ -1349,6 +1362,7 @@ const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
   'user_email_optouts', // the user's own email opt-out choice (topic + source).
   'user_passkeys', // the user's own WebAuthn credentials.
   'user_sso_identities', // the user's own link to an external identity.
+  'wisp_nudge_preferences', // Wisp W06a: the user's own nudge channel / quiet-hour / brief preferences (user_id PK, no org reference); the user branch also ANDs breeze_has_partner_access(partner_id).
 ]);
 
 // Platform bookkeeping tables that hold no tenant data and are not a tenancy

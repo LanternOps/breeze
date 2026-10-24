@@ -53,6 +53,8 @@ import {
   TIME_SUGGESTION_PUSH_TTL_SECONDS,
   TIME_SUGGESTIONS_PUSH_EVENT_TYPE,
   buildTicketPush,
+  buildWispNudgePush,
+  WISP_NUDGE_PUSH_TTL_SECONDS,
   dispatchPushToTokens,
   dispatchApprovalPushToTokens,
 } from './expoPush';
@@ -546,6 +548,55 @@ describe('buildTicketPush', () => {
   it('truncates a long org name', () => {
     const spec = buildTicketPush({ ticketId: 't-1', reason: 'assigned', internalNumber: 'T-1', orgName: 'x'.repeat(200) });
     expect(spec.body.length).toBeLessThanOrEqual('T-1 \u00b7 '.length + 60);
+  });
+});
+
+describe('buildWispNudgePush', () => {
+  const threadId = '0f5a1c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b';
+  const concernId = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+  const grantId = '2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e';
+  const base = { threadId, concernId, grantId, title: 'Title', body: 'Body', deepLink: 'breeze://wisp/thread' };
+
+  it('builds the data payload with all ids and fixed routing fields', () => {
+    const spec = buildWispNudgePush({ ...base, approvalIntentId: 'intent-1' });
+    expect(spec.data).toEqual({
+      type: 'wisp_nudge', threadId, concernId, grantId, deepLink: 'breeze://wisp/thread', approvalIntentId: 'intent-1',
+    });
+    expect(spec.ttl).toBe(WISP_NUDGE_PUSH_TTL_SECONDS);
+    expect(WISP_NUDGE_PUSH_TTL_SECONDS).toBe(14_400);
+    expect(spec.channelId).toBe('wisp');
+    expect(spec.category).toBe('BREEZE_WISP_NUDGE');
+    expect(spec.priority).toBe('normal');
+    expect(spec.sound).toBe('default');
+    expect(spec.threadId).toBe(`wisp:${threadId}`);
+    expect(spec.title).toBe('Title');
+    expect(spec.body).toBe('Body');
+  });
+  it('omits the approvalIntentId key when null or omitted, keeps concernId key when null', () => {
+    expect(buildWispNudgePush({ ...base, approvalIntentId: null }).data).not.toHaveProperty('approvalIntentId');
+    expect(buildWispNudgePush(base).data).not.toHaveProperty('approvalIntentId');
+    const digest = buildWispNudgePush({ ...base, concernId: null });
+    expect(digest.data).toHaveProperty('concernId', null);
+  });
+  it('collapse ids are exact and inside the 64-byte APNs limit for uuids', () => {
+    const concern = buildWispNudgePush(base);
+    const digest = buildWispNudgePush({ ...base, concernId: null });
+    expect(concern.collapseId).toBe(`wisp:${concernId}`);
+    expect(digest.collapseId).toBe(`wisp:digest:${threadId}`);
+    expect(Buffer.byteLength(concern.collapseId!, 'utf8')).toBe(41);
+    expect(Buffer.byteLength(digest.collapseId!, 'utf8')).toBe(48);
+  });
+  it('truncates title to 60 and body to 120 characters', () => {
+    const spec = buildWispNudgePush({ ...base, title: 'x'.repeat(100), body: 'y'.repeat(300) });
+    expect(spec.title).toBe('x'.repeat(60));
+    expect(spec.body).toBe('y'.repeat(120));
+  });
+  it('never splits a surrogate pair when truncating', () => {
+    const spec = buildWispNudgePush({ ...base, title: 'a'.repeat(59) + '\u{1F600}\u{1F600}', body: '\u{1F600}'.repeat(130) });
+    expect(Array.from(spec.title)).toHaveLength(60);
+    expect(spec.title).toBe('a'.repeat(59) + '\u{1F600}');
+    expect(Array.from(spec.body)).toHaveLength(120);
+    expect(spec.body).toBe('\u{1F600}'.repeat(120));
   });
 });
 
