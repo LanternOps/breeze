@@ -200,6 +200,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // here keeps that generic check honest; PARENT_FK_JOIN_POLICY_TABLES is the
   // real assertion for this table's policy shape.
   'ticket_form_org_links',
+  // ticket_routing_rule_org_links (#8883 W5, 2027-01-04-120000): same shape as
+  // ticket_form_org_links — its own org_id is the ALLOWLISTED org for a
+  // partner-wide ticket_routing_rules row, not the tenancy axis; its policies
+  // join through the parent rule (PARENT_FK_JOIN_POLICY_TABLES).
+  'ticket_routing_rule_org_links',
   // backup_provider_customers (#6008 W01): partner-axis (Shape 3) carrying a
   // denormalized NULLABLE org_id — the MAPPING TARGET, not the tenancy axis.
   // An unmapped customer has org_id NULL and must stay visible to the partner
@@ -624,6 +629,11 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   'business_calendar_revisions',
   'business_calendar_intervals',
   'business_calendar_holidays',
+  // Ticket routing rules (#8883 W5, 2027-01-04-120000): org_id XOR partner_id
+  // config table with the partner-wide SELECT branch and the org-member SELECT
+  // branch in the creating migration. Functional forge proof:
+  // ticketRoutingRulesPartnerRls.integration.test.ts.
+  'ticket_routing_rules',
   'users',
   // connection_health_incidents (#8845, spec 2026-10-15 connection health
   // §2.1): partner_id always set, org_id NULL only for a partner-owned
@@ -977,6 +987,9 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   'business_calendar_revisions',
   'business_calendar_intervals',
   'business_calendar_holidays',
+  // ticket_routing_rules_one_owner_chk, 2027-01-04-120000 (#8883 W5); its
+  // partner-wide SELECT branch ships in the same file.
+  'ticket_routing_rules',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',
@@ -1176,6 +1189,11 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access(parent.org_id) join would be WRONG because the
   // parent's org_id is NULL for the partner-wide forms this table scopes.
   ['ticket_form_org_links', ['ticket_forms']],
+  // ticket_routing_rule_org_links (#8883 W5, 2027-01-04-120000): org allowlist
+  // for partner-wide ticket_routing_rules, same parent-join shape as
+  // ticket_form_org_links, plus a SELECT-only branch admitting any link whose
+  // parent rule the caller can read (the create-path allowlist read).
+  ['ticket_routing_rule_org_links', ['ticket_routing_rules']],
   // RMM-QA-220: script_versions (script content history) and script_to_tags
   // (script↔tag join) shipped in the baseline with NO rls and reach their
   // tenant only through scripts (dual-axis, nullable org_id, is_system) and

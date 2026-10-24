@@ -1066,6 +1066,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ticket_outbox',
   'offline_transition_effects',
   'ticket_parts',
+  // Ticket routing rules (#8883 W5, 2027-01-04-120000). Dual-axis XOR config
+  // table plus its org-links FK child (whose org_id is the allowlisted org).
+  // localeCompare: 'ticket_parts' < 'ticket_routing_rule_org_links' <
+  // 'ticket_routing_rules' < 'tickets' ('p' < 'r'; 'rule_' < 'rules'), so the
+  // child precedes its parent. tickets.routing_rule_id -> rules is ON DELETE
+  // SET NULL and closes no FK cycle, so it needs no
+  // CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry (the delete order is topological).
+  'ticket_routing_rule_org_links',
+  'ticket_routing_rules',
   'tickets',
   'time_entries',
   'time_series_metrics',

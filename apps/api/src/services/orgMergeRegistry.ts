@@ -656,6 +656,13 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   business_calendar_revisions: { kind: 'repoint' },
   business_calendar_intervals: { kind: 'repoint' },
   business_calendar_holidays: { kind: 'repoint' },
+  // Ticket routing rules (#8883 W5): org-owned rules follow their org. No
+  // org-axis unique exists on name or (org_id, position) — ordering is
+  // (position, id) — so a plain repoint cannot collide. The same-partner
+  // reference guard is a DEFERRABLE INITIALLY IMMEDIATE constraint trigger and
+  // a merge stays inside one partner, so it checks the final state and passes.
+  ticket_routing_rules: { kind: 'repoint' },
+  ticket_routing_rule_org_links: { kind: 'repoint-dedupe', key: ['rule_id'] }, // verified: ticket_routing_rule_org_links_rule_org_uq (rule_id, org_id)
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
