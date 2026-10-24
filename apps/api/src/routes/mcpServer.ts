@@ -1415,7 +1415,8 @@ async function handleJsonRpc(
 // around normal tier design — fix the tier in aiGuardrails.ts instead if a
 // tool's tier is simply wrong; this constant is a narrow, documented
 // exception, not a second gating mechanism.
-const MCP_APPROVAL_REQUIRED_EXTRA_TOOLS: Record<string, true> = {
+// Exported read-only for the MCP App registry contract (B-W05 #6159, D-B46).
+export const MCP_APPROVAL_REQUIRED_EXTRA_TOOLS: Readonly<Record<string, true>> = {
   collect_evidence: true,
 };
 
