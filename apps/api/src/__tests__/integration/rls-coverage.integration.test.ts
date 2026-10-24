@@ -287,6 +287,17 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // partner_entitlements (Partner Entitlements W1, Wisp W01 #9907): shape 3,
   // no org_id — partner-axis only, so this is its ONLY registration list.
   ['partner_entitlements', 'partner_id'],
+  // ai_memory_blocks (Wisp W03 #9909): partner-axis anchor (tenant_partner_id)
+  // with owner sub-axes — owner_kind user | org | partner, each owner bound to
+  // the anchor by a DEFERRABLE composite FK (users / organizations (id,
+  // partner_id), ON DELETE CASCADE). RLS branches on owner_kind; the partner
+  // branch is breeze_has_partner_access(tenant_partner_id). Private memory, not
+  // config, so no partner-wide SELECT branch. No `org_id` column (it is
+  // `owner_org_id`), so the org cascade/merge/export engines — which key on a
+  // literal `org_id` — cannot see it: org/user/partner erasure removes rows by
+  // FK cascade instead (w00 A9). This is its ONLY registration list.
+  // Functional proof: aiMemoryBlocksRls.integration.test.ts.
+  ['ai_memory_blocks', 'tenant_partner_id'],
   ['huntress_integrations', 'partner_id'],
   ['huntress_org_mappings', 'partner_id'],
   ['pax8_integrations', 'partner_id'],
@@ -1300,6 +1311,7 @@ const USER_ID_SCOPED_TABLES: ReadonlySet<string> = new Set<string>([
 // see 'every child table without org_id checks its parent org wherever a policy
 // admits by user identity' below.
 const USER_OWNED_CHILD_TABLES: ReadonlySet<string> = new Set<string>([
+  'ai_memory_blocks', // Wisp W03: the user branch admits only owner_kind='user' rows, whose owner_org_id is NULL by CHECK (no org parent) — the technician's own private memory; org facts are org-owned rows gated by breeze_has_org_access.
   'approval_requests', // step-up approval the requesting user creates and answers; their own decision record.
   'authenticator_devices', // the user's own approver device keys.
   'connection_health_digest_deliveries', // the user's own digest delivery receipts: date, status and bare incident ids (no FK, no org content).

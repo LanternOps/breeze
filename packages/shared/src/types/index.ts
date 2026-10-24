@@ -1015,3 +1015,6 @@ export * from './autopay';
 
 // Windows System Restore checkpoint requests (#4609 W05)
 export * from './restorePoint';
+
+// Wisp memory blocks (#9906 W03)
+export * from './wispMemory';

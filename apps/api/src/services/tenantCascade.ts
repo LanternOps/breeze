@@ -678,6 +678,7 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // ai_memory_blocks: deliberately absent — no `org_id` column (owner_org_id); owner rows cascade by FK; see migration 2027-01-04-110100-ai-memory-blocks.sql header (Wisp W03, w00 A9).
   // AI Suggested Fixes W1: fix_memory is dual-owner (org_id XOR partner_id).
   // Org rows cascade with the org; partner rows (org_id NULL) are untouched by
   // an org erasure and are rebuilt by jobs/tenantErasure.ts afterwards. FKs out

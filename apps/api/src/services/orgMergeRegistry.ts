@@ -366,6 +366,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // org — same "history stays put" decision as ai_agent_fix_watches /
   // ai_agent_runs above, not a separate call.
   ai_agent_op_evidence: { kind: 'leave-for-erasure', note: 'evidence rows are historical copies of outcomes tied to runs/watches that stay with the source org (ai_agent_runs disposition); rows die with the loser shell' },
+  // ai_memory_blocks: deliberately absent — no `org_id` column (owner_org_id); owner rows cascade by FK; see migration 2027-01-04-110100-ai-memory-blocks.sql header (Wisp W03, w00 A9). A survivor repoint of
+  // org-owned blocks is a possible later enhancement; today the loser's blocks die with the loser shell.
   // AI Suggested Fixes W1. fix_outcomes: each row is one historical attempt in
   // the org it ran in; restamping would double-count or re-attribute proof.
   // fix_memory: derived; org rows are recomputed from fix_outcomes, partner
