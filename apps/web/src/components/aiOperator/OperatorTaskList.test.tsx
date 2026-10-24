@@ -22,6 +22,7 @@ function item(id: string, overrides: Partial<AiOperatorTaskListItemDto> = {}): A
     currentStepKey: 'effects', deadlineAt: null, nextWakeAt: null, outcome: null, outcomeDetail: null,
     handoffSummary: null, accountingRootTaskId: null, successorOfTaskId: null,
     createdAt: '2026-10-20T10:00:00.000Z', updatedAt: '2026-10-20T11:00:00.000Z', nextAction: 'approve_in_inbox',
+    wisp: null,
     ...overrides,
   };
 }
