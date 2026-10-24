@@ -105,7 +105,8 @@ export const usePartnerSettingsDraftStore = create<DraftStore>()((set, get) => {
         console.error(`[partnerSettings] loading ${id} failed`, err);
         patchSlice(id, { status: 'error' });
       } finally {
-        if (inflight.get(id) === promise) inflight.delete(id);
+        // A newer load (reload, invalidate) owns the in-flight slot now.
+        if (loadGen.get(id) === gen) inflight.delete(id);
       }
     })();
     inflight.set(id, promise);

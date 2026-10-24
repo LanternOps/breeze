@@ -1120,7 +1120,6 @@
     "title": "Impostazioni partner",
     "description": "Configura i valori predefiniti per {{name}}.",
     "yourMsp": "il tuo MSP",
-    "selfSaving": "Questa sezione salva autonomamente le proprie modifiche.",
     "saveSettings": "Salva impostazioni",
     "enforcedDescription": "I valori impostati qui vengono applicati a tutte le organizzazioni. Lascia i campi vuoti per consentire a ogni organizzazione di configurarli singolarmente.",
     "ticketingDescription": "Configura stati dei ticket, valori predefiniti SLA per priorità, categorie ed esportazioni di fatturazione. Si applicano a tutte le tue organizzazioni.",
@@ -1149,6 +1148,19 @@
       "topologyAiDescription": "Consenti a Breeze AI di riassumere la mappa e segnalare cambiamenti insoliti nella topologia di un sito.",
       "saved": "Moduli aggiornati",
       "saveFailed": "Impossibile aggiornare i moduli"
+    },
+    "status": {
+      "clean": "Tutte le modifiche salvate · {{time}}",
+      "cleanNoTime": "Tutte le modifiche salvate",
+      "dirty": "Modifiche non salvate in <tabs></tabs>.",
+      "invalid_one": "Correggi {{count}} campo in {{tab}} per salvare.",
+      "invalid_other": "Correggi {{count}} campi in {{tab}} per salvare.",
+      "saving": "Salvataggio…",
+      "partial": "Impossibile salvare <tabs></tabs>. Le altre modifiche sono state salvate.",
+      "failed": "Impossibile salvare <tabs></tabs>.",
+      "autosaved": "Salvato · {{time}}",
+      "autosaveFailed": "Impossibile salvare — riprova",
+      "readOnly": "Per salvare serve l’accesso completo da partner"
     }
   },
   "partnerSendingDomains": {

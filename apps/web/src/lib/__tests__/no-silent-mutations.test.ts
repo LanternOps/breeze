@@ -115,6 +115,7 @@ const TARGET_GLOBS = [
   // gone when it is still being stamped.
   'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
+  'src/components/settings/partnerSettings/usePartnersMeUnit.ts',
   'src/components/settings/aiModels/PartnerAiModelsTab.tsx',
   'src/components/settings/aiModels/ConnectionDrawer.tsx',
   'src/components/settings/aiModels/ResidencySwitch.tsx',
@@ -962,7 +963,8 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
     // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
-    expect(absoluteFiles.length).toBe(253);
+    // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 253 → 254.
+    expect(absoluteFiles.length).toBe(254);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

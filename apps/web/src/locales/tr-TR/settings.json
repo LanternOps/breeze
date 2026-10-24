@@ -1120,7 +1120,6 @@
     "title": "İş Ortağı Ayarları",
     "description": "{{name}} için varsayılanları yapılandırın.",
     "yourMsp": "MSP'ınız",
-    "selfSaving": "Bu bölüm kendi değişikliklerini kaydeder.",
     "saveSettings": "Ayarları Kaydet",
     "enforcedDescription": "Burada belirlediğiniz değerler tüm kuruluşlarda uygulanır. Her kuruluşun ayrı ayrı yapılandırmasına izin vermek için alanları boş bırakın.",
     "ticketingDescription": "Bilet durumlarını, öncelik SLA varsayılanlarını, kategorileri ve faturalandırma dışa aktarımlarını yapılandırın. Bunlar tüm kuruluşlarınız için geçerlidir.",
@@ -1149,6 +1148,19 @@
       "topologyAiDescription": "Breeze AI'nın haritayı özetlemesine ve bir lokasyonun topolojisindeki olağandışı değişiklikleri işaretlemesine izin ver.",
       "saved": "Modüller güncellendi",
       "saveFailed": "Modüller güncellenemedi"
+    },
+    "status": {
+      "clean": "Tüm değişiklikler kaydedildi · {{time}}",
+      "cleanNoTime": "Tüm değişiklikler kaydedildi",
+      "dirty": "Kaydedilmemiş değişiklikler: <tabs></tabs>.",
+      "invalid_one": "Kaydetmek için {{tab}} içindeki {{count}} alanı düzeltin.",
+      "invalid_other": "Kaydetmek için {{tab}} içindeki {{count}} alanı düzeltin.",
+      "saving": "Kaydediliyor…",
+      "partial": "<tabs></tabs> kaydedilemedi. Diğer değişiklikler kaydedildi.",
+      "failed": "<tabs></tabs> kaydedilemedi.",
+      "autosaved": "Kaydedildi · {{time}}",
+      "autosaveFailed": "Kaydedilemedi — tekrar deneyin",
+      "readOnly": "Kaydetmek için tam iş ortağı erişimi gerekir"
     }
   },
   "partnerSendingDomains": {

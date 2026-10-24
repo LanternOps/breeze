@@ -25,6 +25,15 @@ type Props = {
   testId?: string;
   /** The input's `id`, so the caller's `<label htmlFor>` can name it. */
   id?: string;
+  /**
+   * Controlled mode (partner settings, W2): the caller owns the raw text, so an
+   * unparseable draft survives this input unmounting on a tab switch. `null`
+   * means "not edited yet" and shows `value`. Every keystroke reports the text;
+   * a parseable one also goes to `onChange`. Validity is derived from the text
+   * on every render and Enter is left to the surrounding form.
+   */
+  text?: string | null;
+  onTextChange?: (text: string) => void;
 };
 
 export function parseThresholds(raw: string): { ok: true; value: number[] | undefined } | { ok: false } {
@@ -38,7 +47,55 @@ export function parseThresholds(raw: string): { ok: true; value: number[] | unde
   return { ok: true, value: uniq };
 }
 
-export default function AiBudgetThresholdsInput({ value, onChange, onValidityChange, disabled, placeholder, testId = 'ai-budget-thresholds', id }: Props) {
+function Chips({ value }: { value: number[] | undefined }) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {(value ?? []).map((v) => (
+        <span key={v} className="rounded-full bg-muted px-2 py-0.5 text-xs">{v}%</span>
+      ))}
+    </div>
+  );
+}
+
+function ControlledThresholdsInput({ value, onChange, text, onTextChange, disabled, placeholder, testId = 'ai-budget-thresholds', id }: Props & { onTextChange: (text: string) => void }) {
+  const { t } = useTranslation('settings');
+  const shown = text ?? value?.join(', ') ?? '';
+  const invalid = text != null && !parseThresholds(text).ok;
+  const errorId = `${testId}-error`;
+  return (
+    <div className="space-y-1">
+      <Chips value={value} />
+      <input
+        id={id}
+        type="text"
+        inputMode="numeric"
+        data-testid={`${testId}-input`}
+        value={shown}
+        disabled={disabled}
+        placeholder={placeholder}
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? errorId : undefined}
+        onChange={(e) => {
+          const next = e.target.value;
+          onTextChange(next);
+          const parsed = parseThresholds(next);
+          if (parsed.ok) onChange(parsed.value);
+        }}
+        className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+      />
+      {invalid && (
+        <p id={errorId} data-testid={errorId} className="text-xs text-red-600">{t('aiBudgetThresholds.invalid')}</p>
+      )}
+    </div>
+  );
+}
+
+export default function AiBudgetThresholdsInput(props: Props) {
+  if (props.onTextChange) return <ControlledThresholdsInput {...props} onTextChange={props.onTextChange} />;
+  return <UncontrolledThresholdsInput {...props} />;
+}
+
+function UncontrolledThresholdsInput({ value, onChange, onValidityChange, disabled, placeholder, testId = 'ai-budget-thresholds', id }: Props) {
   const { t } = useTranslation('settings');
   const [text, setText] = useState(() => value?.join(', ') ?? '');
   const [invalid, setInvalid] = useState(false);
@@ -105,11 +162,7 @@ export default function AiBudgetThresholdsInput({ value, onChange, onValidityCha
 
   return (
     <div className="space-y-1">
-      <div className="flex flex-wrap gap-1">
-        {(value ?? []).map((v) => (
-          <span key={v} className="rounded-full bg-muted px-2 py-0.5 text-xs">{v}%</span>
-        ))}
-      </div>
+      <Chips value={value} />
       <input
         id={id}
         type="text"

@@ -38,11 +38,16 @@ export interface SaveUnit {
   save(): Promise<SaveOutcome>;
 }
 
+const PARTNERS_ME_TABS = [
+  'company', 'regional', 'defaults', 'eventLogs', 'remoteAccess',
+  'security', 'notifications', 'aiBudgets', 'aiApprovals', 'branding',
+] as const satisfies readonly TabKey[];
+
+/** The ten tabs saved together by `PATCH /orgs/partners/me`. */
+export type PartnersMeTab = (typeof PARTNERS_ME_TABS)[number];
+
 export const UNIT_TABS: Record<SaveUnitId, readonly TabKey[]> = {
-  partnersMe: [
-    'company', 'regional', 'defaults', 'eventLogs', 'remoteAccess',
-    'security', 'notifications', 'aiBudgets', 'aiApprovals', 'branding',
-  ],
+  partnersMe: PARTNERS_ME_TABS,
   callerVerification: ['callerVerification'],
   loginBranding: ['loginBranding'],
   trustCenter: ['trustCenter'],

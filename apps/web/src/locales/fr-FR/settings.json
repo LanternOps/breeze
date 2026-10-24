@@ -1120,7 +1120,6 @@
     "title": "Paramètres partenaires",
     "description": "Configurez les paramètres par défaut pour {{name}}.",
     "yourMsp": "votre MSP",
-    "selfSaving": "Cette section conserve ses propres modifications.",
     "saveSettings": "Enregistrer les paramètres",
     "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
     "ticketingDescription": "Configurez les statuts des tickets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
@@ -1149,6 +1148,19 @@
       "topologyAiDescription": "Laisser Breeze AI résumer la carte et signaler les changements inhabituels dans la topologie d'un site.",
       "saved": "Modules mis à jour",
       "saveFailed": "Échec de la mise à jour des modules"
+    },
+    "status": {
+      "clean": "Toutes les modifications sont enregistrées · {{time}}",
+      "cleanNoTime": "Toutes les modifications sont enregistrées",
+      "dirty": "Modifications non enregistrées dans <tabs></tabs>.",
+      "invalid_one": "Corrigez {{count}} champ dans {{tab}} pour enregistrer.",
+      "invalid_other": "Corrigez {{count}} champs dans {{tab}} pour enregistrer.",
+      "saving": "Enregistrement…",
+      "partial": "Impossible d’enregistrer <tabs></tabs>. Les autres modifications ont été enregistrées.",
+      "failed": "Impossible d’enregistrer <tabs></tabs>.",
+      "autosaved": "Enregistré · {{time}}",
+      "autosaveFailed": "Échec de l’enregistrement — réessayez",
+      "readOnly": "L’enregistrement nécessite un accès partenaire complet"
     }
   },
   "partnerSendingDomains": {

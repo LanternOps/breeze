@@ -11,7 +11,9 @@ import { getJwtClaims } from '../../lib/authScope';
 import { i18n, loadLocale } from '../../lib/i18n';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  // The header Save gates on partner-wide access (W2).
+  useAuthStore: (sel: (s: unknown) => unknown) => sel({ user: { canManagePartnerWide: true } }),
 }));
 
 vi.mock('../../stores/orgStore', () => ({
@@ -660,7 +662,7 @@ describe('PartnerSettingsPage Email templates tab', () => {
     expect(screen.getByText(/quotes, invoices, invites/i)).not.toBeNull();
   });
 
-  it('mounts the email templates tab as self-saving with hash #email-templates', async () => {
+  it('mounts the email templates tab (list kind) with hash #email-templates', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
 
@@ -672,8 +674,8 @@ describe('PartnerSettingsPage Email templates tab', () => {
 
     expect(screen.getByTestId('stub-email-templates-tab')).not.toBeNull();
     expect(window.location.hash).toBe('#email-templates');
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
-    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+    // W2: one header Save on every tab; nothing is dirty, so it is disabled.
+    expect((screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('deep-links #email-templates straight to the Email templates tab on mount', async () => {
@@ -801,15 +803,15 @@ describe('PartnerSettingsPage sidebar nav & save contract', () => {
     expect(screen.getByRole('link', { name: /^company \(unsaved changes\)$/i })).not.toBeNull();
   });
 
-  it('replaces the global Save button with a note on self-saving tabs', async () => {
+  it('keeps the header Save on list tabs: an edit on Company stays saveable from Email templates', async () => {
     render(<PartnerSettingsPage />);
 
-    await screen.findByText('Partner Settings');
     const user = userEvent.setup();
+    await user.type(await screen.findByLabelText(/company name/i), ' Inc.');
     await user.click(screen.getByRole('link', { name: /^email templates$/i }));
 
-    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
-    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+    expect((screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText('This section saves its own changes.')).toBeNull();
   });
 
   it('marks the active tab with aria-current and pushes the canonical kebab hash on click', async () => {
