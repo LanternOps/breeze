@@ -76,9 +76,11 @@ For **Software** deployments, Breeze can verify what's actually installed on the
 | `registry` | **Registry key/value** | A registry key exists, optionally with a specific value name and/or expected value data. Windows only. |
 | `file_exists` | **File or folder exists** | A file or folder is present at an absolute path. Cross-platform. |
 | `msi_product_code` | **MSI product code** | The given MSI product code GUID is registered as installed. Windows only. |
+| `service_running` | **Service running** | The named Windows service, macOS launchd label or Linux systemd unit is running (`{ type: 'service_running', serviceName }`). Cross-platform. |
 
 - A software version can have up to **20 detection clauses**.
 - When a version has more than one clause, **all clauses must pass (AND)** for the software to count as "detected" — there's no OR/any-match option.
+- A **Service running** clause is evaluated in the pre-install check and again after the install, polling for up to 60 seconds for the service to come up.
 - **Registry key/value** and **MSI product code** clauses only work on Windows. If a clause type can't be evaluated on a device's platform (or no detection rules are configured at all), Breeze falls back to the installer's **exit code** to determine success — it never guesses at pass/fail for a clause type it can't check.
 
 With detection rules configured, two things change about how a Software deployment behaves:
@@ -91,6 +93,21 @@ To reinstall regardless of what's already on the device, enable **Reinstall even
 <Aside type="tip">
   **Reboot-pending exit codes are now handled correctly.** Some installers exit with `3010` (`ERROR_SUCCESS_REBOOT_REQUIRED`) or `1641` (`ERROR_SUCCESS_REBOOT_INITIATED`) to report a successful install that needs a reboot to finish. Breeze now treats both codes as **success** for both `.exe` and `.msi` installers. Previously, an `.exe` installer returning `3010`, or an `.msi` installer returning `1641`, was incorrectly reported as a failed deployment.
 </Aside>
+
+### Zip packages and install scripts
+
+Software versions can use the **zip** package type and can carry **pre-install** and **post-install** scripts.
+
+- **Zip is extract-only.** The agent downloads the archive and extracts it to a staging folder; it does not run anything by itself. A **post-install script is required** for a zip version, and a zip version without one is rejected.
+- **Scripts run as SYSTEM** (Windows) or **root** (macOS and Linux) through the agent's script executor, with a **10-minute timeout** for each script. The server-side software install timeout is 75 minutes.
+- **Tokens.** Script text can use `{{org.*}}`, `{{site.*}}`, `{{device.hostname}}`, `{{device.customField.<key>}}` and `{{var.<key>}}` tokens, plus two filled in by the agent: `{{install.dir}}` (the extraction or staging folder) and `{{install.file}}` (the downloaded file). Values are delivered to the script as parameters and are never spliced into the script text. A secret tenant variable referenced by a script fails the device with the existing secret-variable message, because secrets are not supported in install scripts.
+- **One operating system per version.** A version with scripts must target exactly one operating system. Scripts run as PowerShell on Windows and bash on macOS and Linux.
+- **Permissions.** Creating a version with a script requires the `devices.execute` permission, on top of `devices.write` and MFA.
+- **Silent install arguments** are not supported for `pkg`, `dmg`, `deb` and `zip` versions and are rejected.
+- **Agent version.** Devices whose agent is older than **0.125.0** fail with `agent_update_required`, and nothing is dispatched to them.
+- **Existing versions.** Scripts stored on versions created before this release stay inactive until the version is re-created. The version manager shows a notice on those versions.
+
+Breeze also ships a small set of vendor-pinned packages built on this mechanism; see [Deploying DNS filtering clients](/features/dns-security/#deploying-dns-filtering-clients-control-d-nextdns).
 
 ### Additional success exit codes
 
