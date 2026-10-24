@@ -8,6 +8,7 @@ import type { Tx } from '../autopay/types';
 import type { TimeEntryActor } from '../timeEntryService';
 import { evaluateApprovalGate } from './gate';
 import { lockTicketForWrite } from '../ticketRowLock';
+import { assertTicketNotMerged } from '../ticketMerge/errors';
 import {
   acquirePendingRequest, approvalDecidedEvent, approvalRequestedEvent, billedMinutes, holdEntryOnRequest,
   insertApprovalComment, loadGateContext, loadPlainApprovalSettings, normalizeApprovalEmail, refreshRequestAsk,
@@ -90,6 +91,10 @@ async function lockRequestScope(db: Tx, requestId: string, opts: { skipLocked?: 
       if (opts.skipLocked) return null;
       throw new ApprovalDecisionError('Ticket not found', 404, 'TICKET_NOT_FOUND');
     }
+    // #8972 W1: unreachable in practice (a ticket with any approval request
+    // is refused for merge, D3), kept so no approval write can ever land on a
+    // merged tombstone.
+    assertTicketNotMerged(ticket);
     const [req] = await db.select().from(ticketApprovalRequests).where(eq(ticketApprovalRequests.id, requestId)).limit(1).for('update');
     if (!req) throw new ApprovalDecisionError('Approval request not found', 404, 'REQUEST_NOT_FOUND');
     if (req.ticketId !== peek.ticketId || req.orgId !== peek.orgId || ticket.orgId !== req.orgId) continue;
@@ -320,7 +325,7 @@ export async function writeOffHeldEntry(db: Tx, args: { entryId: string; actor: 
       throw new ApprovalDecisionError('Time entry not found', 404, 'ENTRY_NOT_FOUND');
     }
     await readOrgStampingDefaults(db, peek.orgId);
-    await lockTicketForWrite(db, peek.ticketId); // #8972 W0: the shared ticket row lock
+    assertTicketNotMerged(await lockTicketForWrite(db, peek.ticketId)); // #8972 W0 lock; W1 tombstone guard
     const [req] = peek.approvalRequestId
       ? await db.select().from(ticketApprovalRequests).where(eq(ticketApprovalRequests.id, peek.approvalRequestId)).limit(1).for('update')
       : [];
@@ -372,6 +377,8 @@ export async function createStaffApprovalRequest(db: Tx, args: {
   await readOrgStampingDefaults(db, peek.orgId);
   // #8972 W0: the shared ticket row lock, then the budget currency under it.
   const lockedTicket = await lockTicketForWrite(db, args.ticketId);
+  // #8972 W1: no approval request is opened on a merged tombstone.
+  assertTicketNotMerged(lockedTicket);
   const [budget] = lockedTicket
     ? await db.select({ budgetCurrencyCode: tickets.budgetCurrencyCode }).from(tickets).where(eq(tickets.id, args.ticketId)).limit(1)
     : [];

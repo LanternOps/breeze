@@ -48,7 +48,8 @@ vi.mock('../db/schema', () => ({
 }));
 
 const { permissionGate, mfaGate } = vi.hoisted(() => ({
-  permissionGate: { deny: false },
+  // `denied` withholds single grants (e.g. 'devices:execute', #6958).
+  permissionGate: { deny: false, denied: new Set<string>() },
   mfaGate: { deny: false },
 }));
 
@@ -65,8 +66,10 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (permissionGate.deny) return c.json({ error: 'Permission denied' }, 403);
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionGate.deny || permissionGate.denied.has(`${resource}:${action}`)) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -191,6 +194,7 @@ describe('software upload-session routes', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     permissionGate.deny = false;
+    permissionGate.denied.clear();
     mfaGate.deny = false;
     vi.mocked(isS3Configured).mockReturnValue(true);
     app = new Hono();
@@ -431,7 +435,8 @@ describe('software upload-session routes', () => {
       const res = await app.request(`/software/catalog/${CATALOG_ID}/versions/uploads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...validBody, fileName: 'evil.zip' }),
+        // .zip became a supported type in #6958; .rar never was.
+        body: JSON.stringify({ ...validBody, fileName: 'evil.rar' }),
       });
       expect(res.status).toBe(400);
       expect((await res.json()).error).toContain('Unsupported file type');
@@ -1133,6 +1138,144 @@ describe('software upload-session routes', () => {
         expect((await res.json()).error).toBe('Failed to create uploaded software version');
         expect(deleteBinary).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+});
+
+// #6958 PR C: the chunked-upload path is a third version create path, so it
+// gets the same install-spec validation, devices.execute rule, supportedOs
+// de-duplication and built-in immutability as routes/software.ts.
+describe('chunked upload install spec (#6958)', () => {
+  let app: Hono;
+  const createUrl = `/software/catalog/${CATALOG_ID}/versions/uploads`;
+  const completeUrl = `/software/catalog/${CATALOG_ID}/versions/uploads/${UPLOAD_ID}/complete`;
+  const baseBody = { fileName: 'client.msi', fileSize: 10, chunkSize: 5 * 1024 * 1024, version: '1.0.0' };
+
+  const reset = (mock: any, impl: () => unknown) => mock.mockReset().mockImplementation(impl);
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    reset(vi.mocked(db.select), () => chainMock([]));
+    reset(vi.mocked(db.insert), () => chainMock([]));
+    reset(vi.mocked(db.update), () => chainMock([]));
+    reset(vi.mocked(db.delete), () => chainMock(undefined));
+    vi.mocked(insertLatestSoftwareVersion).mockReset();
+    vi.mocked(uploadBinary).mockReset();
+    permissionGate.deny = false;
+    permissionGate.denied.clear();
+    mfaGate.deny = false;
+    vi.mocked(isS3Configured).mockReturnValue(true);
+    app = new Hono();
+    app.route('/software', softwareUploadRoutes);
+    await rm(uploadSessionTempPath(UPLOAD_ID), { force: true });
+  });
+
+  const createSession = async (body: Record<string, unknown>, row: unknown = catalogRow) => {
+    selectQueue([row], [makeUsage()]);
+    const insertCapture = captureChain([{ id: UPLOAD_ID, chunkSize: baseBody.chunkSize }]);
+    vi.mocked(db.insert).mockReturnValueOnce(insertCapture.chain);
+    const res = await app.request(createUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...baseBody, ...body }),
+    });
+    return { res, inserted: insertCapture.calls.values?.[0]?.[0] };
+  };
+
+  describe('session create', () => {
+    it('(a) a zip with no post-install script → 400 before any session exists', async () => {
+      const { res, inserted } = await createSession({ fileName: 'client.zip', supportedOs: ['windows'] });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['zip_requires_post_install_script']);
+      expect(inserted).toBeUndefined();
+    });
+
+    it('(a) scripts on two OSes → 400 scripts_require_single_os', async () => {
+      const { res } = await createSession({ supportedOs: ['Windows', 'macOS'], postInstallScript: 'x' });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['scripts_require_single_os']);
+    });
+
+    it('dedupes supportedOs (case-insensitively) before validation and stores the result', async () => {
+      const { res, inserted } = await createSession({ supportedOs: ['Windows', 'windows'], postInstallScript: 'x' });
+      expect(res.status).toBe(201);
+      expect(inserted.versionMetadata.supportedOs).toEqual(['Windows']);
+    });
+
+    it('rejects an empty supportedOs entry with 400', async () => {
+      const { res, inserted } = await createSession({ supportedOs: [''] });
+      expect(res.status).toBe(400);
+      expect(inserted).toBeUndefined();
+    });
+
+    it('(b) a script without devices.execute → 403 before any session exists', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, inserted } = await createSession({ supportedOs: ['windows'], preInstallScript: 'x' });
+      expect(res.status).toBe(403);
+      expect(inserted).toBeUndefined();
+    });
+
+    it('(b) no script needs no devices.execute', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res } = await createSession({ supportedOs: ['windows'] });
+      expect(res.status).toBe(201);
+    });
+
+    it('(d) a Breeze built-in package takes no upload → 403', async () => {
+      const { res, inserted } = await createSession({}, { ...catalogRow, builtinPackageKey: 'controld_windows' });
+      expect(res.status).toBe(403);
+      expect(inserted).toBeUndefined();
+    });
+  });
+
+  describe('completion', () => {
+    async function complete(versionMetadata: Record<string, unknown>, fileName = 'client.msi', row: unknown = catalogRow) {
+      const p = uploadSessionTempPath(UPLOAD_ID);
+      await mkdir(dirname(p), { recursive: true });
+      await writeFile(p, 'helloworld');
+      const session = makeSession({ bytesReceived: 10, fileName, versionMetadata: { version: '1.0.0', ...versionMetadata } });
+      selectQueue([session], [session], [row]);
+      vi.mocked(insertLatestSoftwareVersion).mockResolvedValueOnce({ id: 'ver-1' } as any);
+      const res = await app.request(completeUrl, { method: 'POST' });
+      return { res, insertArgs: vi.mocked(insertLatestSoftwareVersion).mock.calls[0]?.[1] };
+    }
+
+    it('(b) enables scripts when the completing writer holds devices.execute', async () => {
+      const { res, insertArgs } = await complete({ supportedOs: ['windows'], postInstallScript: 'Copy-Item a b' }, 'client.zip');
+      expect(res.status).toBe(201);
+      expect(insertArgs).toMatchObject({ fileType: 'zip', installScriptsEnabled: true, supportedOs: ['windows'] });
+    });
+
+    it('(b) no script → installScriptsEnabled:false', async () => {
+      const { res, insertArgs } = await complete({});
+      expect(res.status).toBe(201);
+      expect(insertArgs!.installScriptsEnabled).toBe(false);
+    });
+
+    it('(b) re-checks devices.execute at completion (a grant revoked mid-upload) → 403, nothing uploaded', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, insertArgs } = await complete({ supportedOs: ['windows'], preInstallScript: 'x' });
+      expect(res.status).toBe(403);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertArgs).toBeUndefined();
+    });
+
+    it('(a) re-validates the stored spec at completion → 400, nothing uploaded', async () => {
+      const { res, insertArgs } = await complete({ supportedOs: ['windows'] }, 'client.zip');
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['zip_requires_post_install_script']);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(insertArgs).toBeUndefined();
+    });
+
+    it('stores supportedOs de-duplicated', async () => {
+      const { res, insertArgs } = await complete({ supportedOs: ['windows', 'windows'] });
+      expect(res.status).toBe(201);
+      expect(insertArgs!.supportedOs).toEqual(['windows']);
+    });
+
+    it('(d) a Breeze built-in package is refused at completion too → 403', async () => {
+      const { res } = await complete({}, 'client.msi', { ...catalogRow, builtinPackageKey: 'controld_windows' });
+      expect(res.status).toBe(403);
+      expect(uploadBinary).not.toHaveBeenCalled();
     });
   });
 });

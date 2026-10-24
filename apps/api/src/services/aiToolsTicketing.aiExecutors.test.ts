@@ -72,7 +72,11 @@ vi.mock('../db', () => ({
           }),
         })),
         where: vi.fn(() => ({
-          limit: vi.fn(() => Promise.resolve((dbState.selectQueues.get(table) ?? []).shift() ?? [])),
+          // `.for('update')` on the result: #8972 W1's ticket row lock (link_device).
+          limit: vi.fn(() => {
+            const rows = (dbState.selectQueues.get(table) ?? []).shift() ?? [];
+            return Object.assign(Promise.resolve(rows), { for: vi.fn(() => Promise.resolve(rows)) });
+          }),
         })),
       })),
     })),
@@ -270,6 +274,20 @@ describe('link_device (P2-4, #4191)', () => {
     expect(deviceWhereSql.params).toEqual(expect.arrayContaining([false, 'decommissioned']));
   });
 
+  it('#8972: refuses a merged tombstone under its row lock (TICKET_MERGED to the model, no write)', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    queueSelect(devices, [{ id: DEVICE_ID }]);
+    queueSelect(tickets, [{ ...accessibleTicket(), id: TICKET_ID, mergedIntoTicketId: 'survivor-1' }]); // lockTicketForWrite
+
+    const out = await getTool().handler(
+      { action: 'link_device', ticketId: TICKET_ID, hostname: 'WKS-042' },
+      makeAgentAuth(),
+    );
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'TICKET_MERGED', mergedIntoTicketId: 'survivor-1' });
+    expect(topUpdateSetMock).not.toHaveBeenCalled();
+  });
+
   it('is a no-op with reason "no_match" when zero devices match', async () => {
     queueSelect(tickets, [accessibleTicket()]);
     queueSelect(devices, []);
@@ -366,7 +384,9 @@ describe('draft (P2-4, #4191)', () => {
     // WHERE clause names ticket_id/kind/state='active' (not some other
     // column, which would make the lock meaningless).
     expect(txSelectForMock).toHaveBeenCalledWith('update');
-    expect(txSelectWhereMock).toHaveBeenCalledTimes(1);
+    // #8972 W1: the draft lock, then the ticket row lock (tombstone guard).
+    expect(txSelectWhereMock).toHaveBeenCalledTimes(2);
+    expect(sqlOf(txSelectWhereMock.mock.calls[1]![0]).sql).toContain('"tickets"."id" = $');
     const whereSql = sqlOf(txSelectWhereMock.mock.calls[0]![0]);
     expect(whereSql.sql.toLowerCase()).toContain('"ticket_id" = $');
     expect(whereSql.sql.toLowerCase()).toContain('"kind" = $');
@@ -497,6 +517,19 @@ describe('comment routes ai_agent-principal calls to addAiTriageNote (P2-4, #419
 
     expect(JSON.parse(out)).toEqual({ comment: { id: 'c-1' } });
     expect(serviceMocks.addAiTriageNote).not.toHaveBeenCalled();
+  });
+
+  it('#8972: a write that reaches a merged tombstone answers the model with the survivor (no thrown tool error)', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    const { TicketMergedError } = await import('./ticketMerge/errors');
+    serviceMocks.addTicketComment.mockRejectedValue(new TicketMergedError(TICKET_ID, 'survivor-9'));
+
+    const out = await getTool().handler(
+      { action: 'comment', ticketId: TICKET_ID, content: 'Human note' },
+      makeHumanAuth(),
+    );
+
+    expect(JSON.parse(out)).toMatchObject({ code: 'TICKET_MERGED', mergedIntoTicketId: 'survivor-9' });
   });
 });
 

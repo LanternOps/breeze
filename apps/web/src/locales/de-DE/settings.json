@@ -1475,7 +1475,8 @@
       "approval_ask": "Freigabeanfrage",
       "approval_snapshot": "Freigabe-Kennzahlen",
       "approval_expires": "Freigabefrist",
-      "approval_status": "Freigabestatus"
+      "approval_status": "Freigabestatus",
+      "merged_into_number": "Nummer des Ziel-Tickets"
     },
     "billingPayments": "Abrechnung und Zahlungen",
     "supportPortal": "Support und Portal",
@@ -1490,7 +1491,8 @@
       "payment_failed": "Zahlung konnte nicht abgeschlossen werden",
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
       "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
-      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe"
+      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe",
+      "ticket_merged": "Ticket zusammengeführt"
     }
   },
   "inboundEmail": {

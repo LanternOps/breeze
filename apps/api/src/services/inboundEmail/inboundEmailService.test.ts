@@ -1039,6 +1039,21 @@ describe('processInboundEmail', () => {
     expect((captureExceptionMock.mock.calls[0]![0] as Error).message).toContain('deadlock');
   });
 
+  it('#8972: a ticket merged under the match is retried (BullMQ), not recorded as a terminal failed row', async () => {
+    resolveMock.mockResolvedValue('p-1');
+    state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['tickets'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-1', orgId: 'o-1' }];
+    state.selectRows['organizations'] = [{ id: 'o-1' }];
+    const { TicketMergedError } = await import('../ticketMerge/errors');
+    const merged = new TicketMergedError('t-src', 't-survivor');
+    createTicketMock.mockRejectedValue(merged);
+
+    await expect(processInboundEmail(email({ subject: 'Raced a merge' }))).rejects.toBe(merged);
+    expect(inboundOf().filter((r) => r.parseStatus === 'failed')).toEqual([]);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
+
   it('when the durable failed-row insert ALSO fails, it throws the ORIGINAL error (not the sentinel) so BullMQ retries — no silent ack', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];

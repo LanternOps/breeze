@@ -102,6 +102,9 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   model_unavailable: 'succeeded',
   // AI Suggested Fixes W3: memory attached a proven fix instead of a shadow run.
   proven_fix_available: 'succeeded',
+  // Wisp W02: delegation-ceiling refusals are policy outcomes.
+  grant_inactive: 'succeeded',
+  grant_org_out_of_ceiling: 'succeeded',
   ownership_mismatch: 'failed',
   device_not_in_org: 'failed',
 };
