@@ -68,6 +68,8 @@ import { eq, and, desc, sql, inArray, gte, lte, isNull, isNotNull, or, SQL } fro
 import { alertSiteScopeByDeviceIds, alertSiteScopeCondition } from '../routes/alerts/helpers';
 import type { AuthContext } from '../middleware/auth';
 import { isAutomationPrincipal } from '../middleware/principalKind';
+import { mfaGatedToolError } from './aiToolMfaGate';
+import { isAiAgentPrincipal } from '../middleware/auth';
 
 async function scheduleAiGroupPeripheralReconciliation(deviceIds: readonly string[]): Promise<void> {
   await Promise.all([...new Set(deviceIds)].map((deviceId) =>
@@ -1223,6 +1225,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_patches', async (input, auth, context) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_patches', action, auth);
+      if (mfaError) return mfaError;
       const orgId = getOrgId(auth);
 
       if (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve') {

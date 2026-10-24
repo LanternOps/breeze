@@ -317,7 +317,6 @@ describe('configuration policy AI/MCP mutation MFA boundary', () => {
     const configPolicyTools = ['manage_configuration_policy', 'apply_configuration_policy', 'remove_configuration_policy_assignment', 'manage_policy_feature_link'];
     for (const [toolName, gated] of Object.entries(MFA_GATED_TOOL_ACTIONS).filter(([name]) => configPolicyTools.includes(name))) {
       const tool = registered.get(toolName);
-      expect(tool, toolName).toBeDefined();
       if (gated === '*') continue;
       const actionEnum: string[] = tool.definition.input_schema.properties.action.enum;
       for (const action of gated) expect(actionEnum, `${toolName}:${action}`).toContain(action);

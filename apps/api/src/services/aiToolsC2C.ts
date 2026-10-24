@@ -26,6 +26,7 @@ import {
   SQL,
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { enqueueC2cRestore, enqueueC2cSync } from '../jobs/c2cEnqueue';
 import { createC2cSyncJobIfIdle } from './c2cJobCreation';
@@ -312,6 +313,8 @@ export function registerC2CTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: safeHandler('trigger_c2c_sync', async (input, auth) => {
+      const mfaError = mfaGatedToolError('trigger_c2c_sync', undefined, auth);
+      if (mfaError) return mfaError;
       const configId = input.configId as string;
       if (!configId) return JSON.stringify({ error: 'configId is required' });
 

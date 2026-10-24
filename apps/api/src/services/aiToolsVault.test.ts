@@ -150,7 +150,7 @@ function mockUpdateSequence(rowsList: any[][]) {
 function makeAuth(): AuthContext {
   return {
     user: { id: 'user-1', email: 'test@example.com', name: 'Test User' },
-    token: {} as any,
+    token: { mfa: true } as any,
     partnerId: null,
     orgId: ORG_ID,
     scope: 'organization',

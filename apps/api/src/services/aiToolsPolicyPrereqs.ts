@@ -15,6 +15,7 @@ import { backupConfigs, backupProfiles } from '../db/schema/backup';
 import { configPolicyBackupSettings } from '../db/schema/configurationPolicies';
 import { eq, and, desc, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
+import { mfaGatedToolError } from './aiToolMfaGate';
 import type { AiTool } from './aiTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 import { bumpApprovalGeneration } from './approvalGeneration';
@@ -824,6 +825,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_profiles', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_backup_profiles', action, auth);
+      if (mfaError) return mfaError;
       // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
       if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
@@ -1020,6 +1023,8 @@ export function registerPolicyPrereqTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('manage_backup_configs', async (input, auth) => {
       const action = input.action as string;
+      const mfaError = mfaGatedToolError('manage_backup_configs', action, auth);
+      if (mfaError) return mfaError;
       // Reads (list/get) are not gated by the site-ceiling — only create/update/delete.
       if (action !== 'list' && action !== 'get' && !canMutateOrgWideGovernance(auth)) {
         return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
