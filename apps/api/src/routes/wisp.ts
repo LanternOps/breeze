@@ -49,6 +49,7 @@ import {
 import { wispConcernsRoutes } from './wispConcerns';
 import { wispThreadRoutes } from './wispThreads';
 import { wispWatchesRoutes } from './wispWatches';
+import { wispNudgePreferenceRoutes, wispNudgeSettingsRoutes } from './wispNudgePreferences';
 
 /** Field-by-field wire shape: never `{...row}`, never the ceiling snapshot or factor proof. */
 export type WispGrantDto = {
@@ -276,3 +277,6 @@ wispRoutes.route('/thread', wispThreadRoutes);
 // W05: same inheritance.
 wispRoutes.route('/concerns', wispConcernsRoutes);
 wispRoutes.route('/watches', wispWatchesRoutes);
+// W06: same inheritance.
+wispRoutes.route('/nudge-preferences', wispNudgePreferenceRoutes);
+wispRoutes.route('/nudge-settings', wispNudgeSettingsRoutes);

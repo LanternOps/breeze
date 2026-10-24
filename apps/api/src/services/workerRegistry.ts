@@ -584,6 +584,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Wisp W06a (#9912): 15-minute digest + morning-brief sweep; the Worker is
+    // constructed unconditionally and each sweep returns zeros while
+    // BREEZE_WISP_ENABLED is off.
+    name: 'wispNudgeDigest',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/wispNudgeDigest');
+      return { init: m.initializeWispNudgeDigestWorker, shutdown: m.shutdownWispNudgeDigestWorker };
+    },
+  },
+  {
     name: 'ipHistoryRetention',
     placement: 'global',
     load: async () => {

@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   loadNudgeBookkeeping: vi.fn(),
   markBriefSent: vi.fn(),
   captureException: vi.fn(),
+  wispEnabled: vi.fn(() => true),
 }));
 
 vi.mock('../../db', async () => {
@@ -54,6 +55,10 @@ vi.mock('./notifyUser', () => ({ notifyUser: h.notifyUser }));
 vi.mock('./nudgePreferences', () => ({ loadNudgeBookkeeping: h.loadNudgeBookkeeping, markBriefSent: h.markBriefSent }));
 vi.mock('./nudgeLinks', () => ({ mobileDeepLink: (threadId: string) => `breeze://wisp/thread/${threadId}` }));
 vi.mock('../sentry', () => ({ captureException: h.captureException }));
+vi.mock('../../config/env', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  wispEnabled: () => h.wispEnabled(),
+}));
 
 import { GrantInactiveError } from './grantAuthority';
 import { briefDue, buildBrief, runMorningBriefs } from './brief';
@@ -282,6 +287,14 @@ describe('runMorningBriefs', () => {
     h.selectQueue.wisp_grants = [grants, ...Array.from({ length: 10 }, () => [{ currentRevisionId: REVISION, status: 'active' }])];
     h.selectQueue.mobile_devices = [devices];
   }
+
+  it('is dark while wispEnabled() is false: no read, no brief', async () => {
+    h.wispEnabled.mockReturnValueOnce(false);
+    queueSweep([grantRow()]);
+    await expect(runMorningBriefs(NOW)).resolves.toEqual({ due: 0, sent: 0, suppressed: 0 });
+    expect(h.selects).toHaveLength(0);
+    expect(h.notifyUser).not.toHaveBeenCalled();
+  });
 
   it('sends one brief per local day across two sweeps (lastBriefAt from the first sweep)', async () => {
     const store = new Map<string, Date>();

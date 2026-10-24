@@ -13,6 +13,7 @@
 import { and, asc, eq, gt, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { CONCERN_SEVERITIES, resolveWispNudgePrefs } from '@breeze/shared';
 import type { BriefSection, Concern, ConcernSeverity } from '@breeze/shared';
+import { wispEnabled } from '../../config/env';
 import { db } from '../../db';
 import { mobileDevices } from '../../db/schema/mobile';
 import { wispGrants } from '../../db/schema/wisp';
@@ -215,6 +216,8 @@ async function fallbackTimezones(userIds: string[]): Promise<Map<string, string>
 
 export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: number; sent: number; suppressed: number }> {
   const result = { due: 0, sent: 0, suppressed: 0 };
+  // Dark by default: checked every run so the flag can flip without a restart.
+  if (!wispEnabled()) return result;
 
   const { grants, tzByUser } = await inSystemContext(async () => {
     const rows: SweepGrant[] = await db

@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   dismissConcern: vi.fn(),
   resolveConcern: vi.fn(),
   markAnswered: vi.fn(),
+  recordFeedback: vi.fn(),
+  recordHumanBlock: vi.fn(),
   writeRouteAudit: vi.fn(),
   captureException: vi.fn(),
   /** Results handed to successive `await db.select()…` chains, in order. */
@@ -77,6 +79,11 @@ vi.mock('../services/wisp/concerns', async (importOriginal) => ({
   dismissConcern: h.dismissConcern,
   resolveConcern: h.resolveConcern,
   markAnswered: h.markAnswered,
+  recordFeedback: h.recordFeedback,
+}));
+vi.mock('../services/wisp/memoryService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/memoryService')>()),
+  recordHumanBlock: h.recordHumanBlock,
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
@@ -423,5 +430,85 @@ describe('POST /wisp/concerns/:id/resolve', () => {
   it('an outcome over 1000 chars → 400', async () => {
     const res = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/resolve`, { grantId: GRANT_ID, outcome: 'x'.repeat(1001) });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /wisp/concerns/:id/feedback (W06 Task 16, w00 A34)', () => {
+  const recipient = (o: Record<string, unknown> = {}) => ({
+    nudgeCount: 1, lastNudgedAt: '2026-10-21T00:00:00.000Z', nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null,
+    answeredAt: null, digestOnly: false, feedback: null, ...o,
+  });
+  beforeEach(() => {
+    h.dbResults.length = 0;
+    h.whereArgs.length = 0;
+    vi.clearAllMocks();
+    h.wispEnabled.mockReturnValue(true);
+    h.hasPerm.mockReturnValue(true);
+    h.hasEntitlement.mockResolvedValue(true);
+    h.resolveGrantCeiling.mockResolvedValue(ceiling);
+    h.recordFeedback.mockResolvedValue(undefined);
+    h.recordHumanBlock.mockResolvedValue({ id: 'block-1' });
+  });
+
+  it('records the feedback as a human preference memory, then on the recipient, and audits', async () => {
+    h.dbResults.push([grantRow()]);
+    h.getConcernForCeiling
+      .mockResolvedValueOnce(concern({ recipient: recipient() }))
+      .mockResolvedValueOnce(concern({ recipient: recipient({ feedback: 'not_useful', nudgeCount: 0 }) }));
+    const res = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID, useful: false, note: '  too noisy  ' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { recipient: recipient({ feedback: 'not_useful', nudgeCount: 0 }) } });
+    expect(h.recordHumanBlock).toHaveBeenCalledWith(expect.objectContaining({ user: expect.objectContaining({ id: USER }) }), {
+      owner: { kind: 'user' },
+      blockType: 'preference',
+      subjectKey: 'nudge_feedback:ticket:medium',
+      content: { useful: false, concernId: CONCERN_ID, summary: 'Ticket waiting 3 days', note: 'too noisy' },
+      confidence: 'high',
+      authoredByGrantId: GRANT_ID,
+    });
+    expect(h.recordFeedback).toHaveBeenCalledWith(CONCERN_ID, GRANT_ID, { useful: false, note: 'too noisy' });
+    // Memory first: a retry after a failed recipient write re-records (supersedes) the memory and completes.
+    expect(h.recordHumanBlock.mock.invocationCallOrder[0]!).toBeLessThan(h.recordFeedback.mock.invocationCallOrder[0]!);
+    expect(h.writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'wisp.concern.feedback', resourceType: 'wisp_concern', resourceId: CONCERN_ID,
+      details: expect.objectContaining({ grantId: GRANT_ID, useful: false }),
+    }));
+  });
+
+  it('refuses a grant that is not the caller\'s own (404, nothing written)', async () => {
+    h.dbResults.push([grantRow({ grantorUserId: OTHER_USER })]);
+    const res = await post(buildApp(asPartnerAdmin), `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID, useful: true });
+    expect(res.status).toBe(404);
+    expect(h.recordFeedback).not.toHaveBeenCalled();
+    expect(h.recordHumanBlock).not.toHaveBeenCalled();
+  });
+
+  it('a concern outside the ceiling is 404', async () => {
+    h.dbResults.push([grantRow()]);
+    h.getConcernForCeiling.mockResolvedValue(null);
+    const res = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID, useful: true });
+    expect(res.status).toBe(404);
+    expect(h.recordFeedback).not.toHaveBeenCalled();
+  });
+
+  it('the same answer again is idempotent (200, no second memory); a different answer is 409', async () => {
+    h.dbResults.push([grantRow()]);
+    h.getConcernForCeiling.mockResolvedValue(concern({ recipient: recipient({ feedback: 'useful' }) }));
+    const same = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID, useful: true });
+    expect(same.status).toBe(200);
+    expect(h.recordHumanBlock).not.toHaveBeenCalled();
+    expect(h.recordFeedback).not.toHaveBeenCalled();
+
+    h.dbResults.push([grantRow()]);
+    const other = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID, useful: false });
+    expect(other.status).toBe(409);
+    expect((await other.json()).code).toBe('feedback_already_recorded');
+    expect(h.recordFeedback).not.toHaveBeenCalled();
+  });
+
+  it('a note over 200 characters and a missing useful are 400', async () => {
+    const app = buildApp();
+    expect((await post(app, `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID, useful: true, note: 'x'.repeat(201) })).status).toBe(400);
+    expect((await post(app, `/wisp/concerns/${CONCERN_ID}/feedback`, { grantId: GRANT_ID })).status).toBe(400);
   });
 });
