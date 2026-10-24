@@ -30,6 +30,7 @@ import {
   type McpRequestCorrelation,
 } from './mcpRequestCorrelation';
 import type { McpApiKeyContext } from './mcpPrincipalAuth';
+import { summarizeToolInputForAudit } from './aiToolAuditInput';
 
 /** Receives the uniform tool audit event. */
 export type McpAuditSink = (event: AuditEventInput) => void;
@@ -147,8 +148,9 @@ export function writeMcpToolAuditEvent(
         ? { requestedToolName: event.requestedToolName, deprecatedToolAlias: true }
         : {}),
       tier: event.tier,
-      target: summarizePayload(event.toolInput, { maxStringLength: 512 }),
-      arguments: sanitizeAuditPayload(event.toolInput, { maxStringLength: 2048 }),
+      // #6268: per-tool input summary first (ioc_hunt IOC values never reach audit_logs).
+      target: summarizePayload(summarizeToolInputForAudit(event.toolName, event.toolInput), { maxStringLength: 512 }),
+      arguments: sanitizeAuditPayload(summarizeToolInputForAudit(event.toolName, event.toolInput), { maxStringLength: 2048 }),
       durationMs: event.durationMs,
       ...(event.result ? { result: summarizeToolResult(event.result, { maxStringLength: 500 }) } : {}),
       ...(error ? { errorClass: error.name } : {}),

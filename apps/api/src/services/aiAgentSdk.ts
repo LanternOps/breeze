@@ -9,6 +9,7 @@
  * - safeParseJson(): utility for parsing tool output
  */
 
+import { summarizeToolInputForAudit } from './aiToolAuditInput';
 import {
   db,
   withDbAccessContext,
@@ -3299,7 +3300,8 @@ export function createSessionPostToolUse(session: ActiveSession): PostToolUseCal
             : {}),
         details: {
           sessionId,
-          toolInput: input,
+          // #6268: per-tool input summary (ioc_hunt IOC values never reach audit_logs).
+          toolInput: summarizeToolInputForAudit(toolName, input),
           durationMs,
           tier: guardrailCheck.tier,
           ...(handoffStatus ? { toolOutcome: handoffStatus } : {}),

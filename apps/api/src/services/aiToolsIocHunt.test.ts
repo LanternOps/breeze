@@ -16,6 +16,8 @@ vi.mock('./securityScanSweeps', () => ({
 }));
 vi.mock('./securityScanSweepHits', () => ({ topSweepRuleHits: vi.fn() }));
 vi.mock('./yaraRuleSetAccess', () => ({ listVisibleRuleSets: vi.fn() }));
+vi.mock('./yaraIocImportService', () => ({ importIocsIntoSet: vi.fn() }));
+vi.mock('./auditEvents', () => ({ writeAuditEvent: vi.fn(), requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })) }));
 vi.mock('./aiDispatch', () => ({
   requireAiOrigin: (a: { aiOrigin?: unknown }, tool: string) => {
     if (!a.aiOrigin) throw new Error(`no aiOrigin for ${tool}`);
@@ -27,6 +29,8 @@ vi.mock('./aiToolDbContext', () => ({ inToolDbPhase: vi.fn((_auth: unknown, fn: 
 import * as sweeps from './securityScanSweeps';
 import * as hits from './securityScanSweepHits';
 import * as ruleSets from './yaraRuleSetAccess';
+import * as importer from './yaraIocImportService';
+import * as audit from './auditEvents';
 import { IOC_HUNT_ACTIONS, registerIocHuntTools } from './aiToolsIocHunt';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -233,5 +237,59 @@ describe('ioc_hunt cancel_sweep', () => {
     vi.mocked(sweeps.cancelSweep).mockResolvedValueOnce({ ok: false, status: 404 });
     expect(await call({ action: 'cancel_sweep', sweepId: SWEEP })).toEqual({ error: 'not_found', status: 404 });
     expect(await call({ action: 'cancel_sweep' })).toMatchObject({ error: 'invalid_input' });
+  });
+});
+
+describe('ioc_hunt import_iocs (released Tier-3 action)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const MD5 = 'f'.repeat(32);
+  const importInput = (extra: Record<string, unknown> = {}) => ({
+    action: 'import_iocs', ruleSetId: SET_A, label: 'Advisory 7', severity: 'high',
+    iocs: [{ kind: 'md5', value: MD5 }, { kind: 'domain', value: 'bad.example' }], ...extra,
+  });
+  const released = (extra: Record<string, unknown> = {}) => ({ actionIntentId: 'intent-1', intentSource: 'chat' as const, ...extra });
+  const publish = { published: true, version: 4, currentVersion: 4, stale: false, errors: [] };
+  const okOutcome = {
+    ok: true, status: 201,
+    body: { data: { rules: [{ id: 'r-1', name: 'ioc_md5_advisory_7', kind: 'md5', iocCount: 1 }] }, publish },
+    audit: { orgId: ORG, partnerId: null, action: 'security.yara_rule.ioc_import', resourceType: 'yara_rule_set', resourceId: SET_A, resourceName: 'Advisories', details: { iocCount: 2 } },
+  };
+
+  it('imports through the extracted W04 service with the auto-quarantine refusal on, and returns the publish body', async () => {
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(okOutcome as never);
+    const out = await call(importInput(), released());
+    expect(out).toEqual({ ruleSetId: SET_A, rules: okOutcome.body.data.rules, publish });
+    expect(importer.importIocsIntoSet).toHaveBeenCalledWith(
+      auth, SET_A,
+      { label: 'Advisory 7', severity: 'high', iocs: [{ kind: 'md5', value: MD5 }, { kind: 'domain', value: 'bad.example' }] },
+      { refuseAutoQuarantine: true },
+    );
+    expect(audit.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'security.yara_rule.ioc_import', actorId: 'u-1', initiatedBy: 'ai', details: expect.objectContaining({ tool_name: 'ioc_hunt' }),
+    }));
+  });
+
+  it('surfaces the service refusals (auto-quarantine set, 403) with their code and writes no audit', async () => {
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValueOnce({ ok: false, status: 409, body: { error: 'quarantines', code: 'AI_IMPORT_AUTO_QUARANTINE_SET' } });
+    expect(await call(importInput(), released())).toMatchObject({ error: 'AI_IMPORT_AUTO_QUARANTINE_SET', code: 'AI_IMPORT_AUTO_QUARANTINE_SET', status: 409 });
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValueOnce({ ok: false, status: 403, body: { error: 'The built-in rule set is read-only' } });
+    expect(await call(importInput(), released())).toMatchObject({ error: 'forbidden', status: 403, detail: 'The built-in rule set is read-only' });
+    expect(audit.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  it('refuses outside a release, on an approver mismatch, and on malformed input before the service', async () => {
+    expect(await call(importInput())).toEqual({ error: 'intent_required' });
+    expect(await call(importInput(), released({ approverRelease: { approverUserId: 'other' } }))).toEqual({ error: 'approver_auth_mismatch' });
+    expect(await call(importInput({ iocs: [] }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(importInput({ ruleSetId: 'nope' }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(await call(importInput({ iocs: [{ kind: 'md5', value: MD5, extra: 1 }] }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(importer.importIocsIntoSet).not.toHaveBeenCalled();
+  });
+
+  it('an MCP release is attributed as an integration', async () => {
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(okOutcome as never);
+    await call(importInput(), released({ intentSource: 'mcp_api' }));
+    expect(audit.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ initiatedBy: 'integration' }));
   });
 });

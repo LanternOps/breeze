@@ -22,15 +22,25 @@
  * Redis first and open their own transaction, so they refuse an ambient one.
  */
 import { z } from 'zod';
-import { securitySweepRequestSchema, type SecuritySweepRequest } from '@breeze/shared';
+import {
+  securitySweepRequestSchema,
+  YARA_IOC_KINDS,
+  YARA_IOC_LABEL_MAX,
+  YARA_IOC_MAX_PER_BATCH,
+  YARA_IOC_VALUE_MAX_CHARS,
+  YARA_RULE_SEVERITIES,
+  type SecuritySweepRequest,
+} from '@breeze/shared';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { requireAiOrigin } from './aiDispatch';
 import { inToolDbPhase } from './aiToolDbContext';
 import { approverReleaseMismatch } from './aiToolReleaseGuards';
+import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { cancelSweep, createSweep, getSweep, listSweeps, previewSweep } from './securityScanSweeps';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { topSweepRuleHits } from './securityScanSweepHits';
+import { importIocsIntoSet } from './yaraIocImportService';
 import { listVisibleRuleSets } from './yaraRuleSetAccess';
 
 export const IOC_HUNT_ACTIONS = [
@@ -219,6 +229,65 @@ async function cancelSweepAction(input: Record<string, unknown>, auth: AuthConte
   };
 }
 
+/** The W04 route's body schema (routes/security/yaraSchemas.ts), from the same shared constants. */
+const iocImportSchema = z
+  .object({
+    label: z.string().trim().min(1).max(YARA_IOC_LABEL_MAX),
+    severity: z.enum(YARA_RULE_SEVERITIES).optional(),
+    iocs: z
+      .array(z.object({ kind: z.enum(YARA_IOC_KINDS), value: z.string().max(YARA_IOC_VALUE_MAX_CHARS) }).strict())
+      .min(1)
+      .max(YARA_IOC_MAX_PER_BATCH),
+  })
+  .strict();
+
+/**
+ * `import_iocs` (Tier 3 supervised). Runs the W04 importer with every W04 gate
+ * (built-in 403, site ceiling, partner-wide, set lock, 500-rule cap, 409s)
+ * plus Gate B 8: a set with auto-quarantine on is refused under the set lock.
+ * Writes the same `security.yara_rule.ioc_import` audit row as the route.
+ */
+async function importIocsAction(
+  input: Record<string, unknown>,
+  auth: AuthContext,
+  context: ToolExecutionContext | undefined,
+): Promise<ToolResult> {
+  const ruleSetId = uuid.safeParse(input.ruleSetId);
+  if (!ruleSetId.success) return invalid('ruleSetId (uuid) is required');
+  const candidate: Record<string, unknown> = { label: input.label, iocs: input.iocs };
+  if (input.severity !== undefined) candidate.severity = input.severity;
+  const parsed = iocImportSchema.safeParse(candidate);
+  if (!parsed.success) {
+    return invalid(parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; '));
+  }
+  if (approverReleaseMismatch(auth, context)) return { error: 'approver_auth_mismatch' };
+  if (!context?.actionIntentId) return { error: 'intent_required' };
+
+  const outcome = await inToolDbPhase(auth, () =>
+    importIocsIntoSet(auth, ruleSetId.data, parsed.data, { refuseAutoQuarantine: true }),
+  );
+  if (!outcome.ok) {
+    const code = typeof outcome.body.code === 'string' ? outcome.body.code : null;
+    const name = code ?? (outcome.status === 404 ? 'not_found' : outcome.status === 403 ? 'forbidden' : 'import_failed');
+    return {
+      error: name,
+      ...(code ? { code } : {}),
+      status: outcome.status,
+      detail: outcome.body.error,
+      ...(Array.isArray(outcome.body.errors) ? { errors: outcome.body.errors } : {}),
+      ...(Array.isArray(outcome.body.names) ? { names: outcome.body.names } : {}),
+    };
+  }
+  writeAuditEvent(requestLikeFromSnapshot({}), {
+    ...outcome.audit,
+    actorId: auth.user.id,
+    actorEmail: auth.user.email,
+    initiatedBy: context.intentSource === 'mcp_api' ? 'integration' : 'ai',
+    details: { ...outcome.audit.details, tool_name: 'ioc_hunt' },
+  });
+  return { ruleSetId: ruleSetId.data, rules: outcome.body.data.rules, publish: outcome.body.publish };
+}
+
 async function handle(
   input: Record<string, unknown>,
   auth: AuthContext,
@@ -237,6 +306,8 @@ async function handle(
       return sweepAction(input, auth, context);
     case 'cancel_sweep':
       return cancelSweepAction(input, auth);
+    case 'import_iocs':
+      return importIocsAction(input, auth, context);
     default:
       return { error: `Unknown action: ${String(input.action)}` };
   }
