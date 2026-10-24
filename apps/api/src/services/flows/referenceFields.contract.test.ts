@@ -170,6 +170,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "get_vm_restore_estimate.snapshotId",
         "list_ai_agent_runs.agentId",
         "list_ai_agent_runs.orgId",
+        "list_business_calendars.orgId",
         "list_contracts.orgId",
         "list_deliverable_templates.orgId",
         "list_deliverables.contractId",

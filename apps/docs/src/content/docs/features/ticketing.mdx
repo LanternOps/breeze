@@ -91,7 +91,7 @@ For a newly created ticket, the assignment notification is sent on the next noti
 
 If a ticket landed under the wrong customer, use **Move to another org…** in the ticket header to reassign it to a different organization. Pick the target from the dropdown and click **Move**. The ticket — along with its time entries, parts, and linked alerts — follows to the new organization, and the move is recorded in the activity feed and the audit log.
 
-Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee, category, and SLA carry over unchanged.
+Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee and category carry over unchanged. The ticket's business calendar is re-resolved for the target organization, and its response and resolution deadlines that haven't been met yet are recalculated on that calendar (see [Business hours](#business-hours)).
 
 If the two organizations bill in different currencies and the ticket still has **unbilled** time entries or parts with amounts, the move is blocked: the dialog explains how many entries and parts are priced in the old currency and in which currency the target organization bills. The clean path is to invoice that work first (or assemble a draft in the old currency from the ticket), then move. If you need to move regardless, tick the acknowledgement and click **Move anyway** -- those items keep their amounts in the old currency, they are never converted, and they can only be invoiced later on a draft in that currency. "Move anyway" additionally requires invoice edit permission, and the acknowledgement is recorded in the activity feed and the audit log.
 
@@ -389,6 +389,19 @@ Categories also carry SLA targets (response and resolution times) and can name a
 <Aside>
   The automated SLA engine is live. Breeze tracks each ticket against its category's response and resolution targets, pauses the clock while a ticket is **On Hold**, monitors for breaches, and notifies the assignee (and escalates to the configured contacts) as a target approaches or is missed.
 </Aside>
+
+## Business hours
+
+SLA deadlines can be counted on business hours instead of the clock. Go to **Settings → Ticketing → Priorities & SLAs** and open the **Business hours** card to manage calendars. A calendar has a time zone, a weekly schedule (each weekday can have several open intervals, such as a split shift), and a list of holidays.
+
+Which calendar a ticket uses is resolved when the ticket is created: the organization's own override if it has one, otherwise the partner's default calendar, otherwise round-the-clock (24×7). A partner-wide calendar is marked **All orgs**; the default is marked **Default**. The calendar and its current hours are then **snapshotted on the ticket**, so later edits don't silently shift deadlines on tickets that already exist.
+
+- **Choosing a calendar for one organization.** In the organization's **Ticketing** settings, the **Business hours** field is blank by default and shows what it inherits (for example "Inherited: Support hours (partner default)"). Pick a calendar to override it for that organization.
+- **Editing hours or the time zone affects new tickets only.** Open tickets keep the hours they were created with.
+- **Holidays.** Adding or removing a holiday dated in the future recomputes the deadlines of open tickets. Holidays dated today or earlier don't change open tickets.
+- **Apply to open tickets.** To move tickets that are already open onto a calendar's current hours, use **Apply to open tickets**. Breeze first shows a preview: how many tickets would be updated, how many of those would become breached immediately, and how many are skipped because they have been paused. Tickets that have ever been paused are never changed. If the hours change between the preview and your confirmation, the apply is rejected and the preview is reloaded so you can review the new counts.
+- **Archiving and deleting.** An archived calendar can't be chosen for new work. A calendar that tickets or organizations still use, or that is the default, can't be deleted.
+- **Customer portal.** The portal shows SLA status only; it doesn't show your calendars or hours.
 
 ## Custom Statuses & SLA Configuration
 

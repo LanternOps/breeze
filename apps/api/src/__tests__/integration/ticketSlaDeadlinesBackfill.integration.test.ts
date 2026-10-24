@@ -28,6 +28,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 const DDL = '2027-01-02-190100-ticket-sla-deadlines.sql';
 const BACKFILL = '2027-01-02-190200-ticket-sla-deadlines-backfill.sql';
 const INDEXES = '2027-01-02-190300-ticket-sla-due-indexes.sql';
+const CALENDAR_REVISION = '2027-01-03-160100-ticket-sla-calendar-revision.sql';
 
 async function migrationSql(name: string): Promise<string> {
   return readFile(new URL(`../../../migrations/${name}`, import.meta.url), 'utf8');
@@ -404,20 +405,58 @@ describe('ticket SLA deadline backfill (#8973 W3)', () => {
     expect(await withSystemDbAccessContext(() => healMissingDeadlines())).toBe(0);
   });
 
+  // #8973 W4 rebuilt the index (2027-01-03-160100) with
+  // `sla_calendar_revision_id IS NULL` ANDed onto the whole predicate, matching
+  // healMissingDeadlines(); re-applying that file is a drop + rebuild.
   runDb('the heal pass probes the partial missing-deadline index', async () => {
     await seedFixtures();
     await applyNoTransaction(INDEXES);
+    await applyNoTransaction(CALENDAR_REVISION);
     const db = getTestDb();
     const rows = await db.transaction(async (tx) => {
       await tx.execute(sql.raw('SET LOCAL enable_seqscan = off'));
       return tx.execute<{ 'QUERY PLAN': string }>(sql.raw(`
         EXPLAIN SELECT id FROM tickets
-         WHERE (response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
-            OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
-            OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0)
+         WHERE sla_calendar_revision_id IS NULL
+           AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL)
+             OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL)
+             OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))
          ORDER BY created_at ASC LIMIT 500`));
     });
     expect([...rows].map((r) => r['QUERY PLAN']).join('\n')).toContain('tickets_sla_deadlines_missing_idx');
+  });
+
+  // #8973 W4 hand-off: a ticket on a business calendar accrues business pause
+  // minutes that legitimately differ from sla_paused_minutes; its deadlines
+  // belong to the calendar-aware writers, so the wall-clock heal skips it.
+  runDb('the heal is a no-op on a calendar ticket whose business minutes differ from sla_paused_minutes', async () => {
+    const partner = await createPartner({ name: 'SlaHealCal-Partner' });
+    const org = await createOrganization({ partnerId: partner.id, name: 'SlaHealCal-Org' });
+    const db = getTestDb();
+    const [cal] = [...await db.execute<{ id: string }>(sql`
+      INSERT INTO business_calendars (partner_id, name) VALUES (${partner.id}, 'Heal IT') RETURNING id`)];
+    const [rev] = [...await db.execute<{ id: string }>(sql`
+      INSERT INTO business_calendar_revisions (calendar_id, partner_id, revision, timezone)
+      VALUES (${cal!.id}, ${partner.id}, 1, 'UTC') RETURNING id`)];
+    const created = minutesAgo(600);
+    const responseDueAt = new Date(created.getTime() + 900 * 60_000);
+    await db.insert(tickets).values({
+      orgId: org.id, partnerId: partner.id, source: 'api', priority: 'normal', status: 'open',
+      subject: 'calendar-ticket', ticketNumber: `HEALCAL-${crypto.randomUUID().slice(0, 8)}`, createdAt: created,
+      slaCalendarRevisionId: rev!.id,
+      responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+      // 120 wall-clock paused minutes, of which only 10 fell in business hours.
+      slaPausedMinutes: 120, slaPausedBusinessMinutes: 10,
+      responseDueAt, responseWarnAt: new Date(created.getTime() + 840 * 60_000),
+      resolutionDueAt: null, resolutionWarnAt: null,
+    });
+    const before = await storedState(org.id);
+
+    const { withSystemDbAccessContext } = await import('../../db');
+    const { healMissingDeadlines } = await import('../../jobs/ticketSlaWorker');
+    expect(await withSystemDbAccessContext(() => healMissingDeadlines())).toBe(0);
+    expect(await storedState(org.id)).toEqual(before);
+    expect(before[0]).toMatchObject({ sla_paused_business_minutes: 10, resolution_due_at: null });
   });
 
   runDb('the backfill reaches rows only under system scope (FORCE RLS binds breeze_app)', async () => {

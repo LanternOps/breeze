@@ -116,7 +116,8 @@
     "ticketsServiceRequests": "Solicitudes de servicio",
     "ticketsProblems": "Problemas",
     "ticketsChanges": "Cambios",
-    "endpointMessages": "Mensajes"
+    "endpointMessages": "Mensajes",
+    "securityDetectionRules": "Reglas de detección"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -434,6 +435,9 @@
       "criticalOpen": "Críticas abiertas",
       "kev": "Explotación conocida",
       "patchReady": "Parche disponible",
+      "viewCritical": "Ver CVE críticas",
+      "viewPatchReady": "Ver CVE con parche listo",
+      "viewOpen": "Ver CVE abiertas",
       "totalOpen": "{{count}} hallazgos abiertos",
       "totalOpen_one": "{{count}} hallazgo abierto",
       "totalOpen_other": "{{count}} hallazgos abiertos",

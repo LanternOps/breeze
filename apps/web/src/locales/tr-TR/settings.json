@@ -254,41 +254,7 @@
       "twelveHour": "12 saat",
       "twentyFourHour": "24 saat",
       "language": "Dil",
-      "languageDescription": "İş ortağı ayarları için varsayılan dil.",
-      "businessHours": {
-        "title": "Çalışma Saatleri",
-        "description": "Destek ve uyarılar için standart çalışma saatlerinizi ayarlayın.",
-        "presets": {
-          "always": {
-            "label": "7/24",
-            "description": "Her zaman ulaşılabilir"
-          },
-          "business": {
-            "label": "Çalışma Saatleri",
-            "description": "Pazartesi-Cum 9:00-17:00"
-          },
-          "extended": {
-            "label": "Uzatılmış Çalışma Saatleri",
-            "description": "Pazartesi-Cum 07:00-19:00, Cumartesi 09:00-13:00"
-          },
-          "custom": {
-            "label": "Özel",
-            "description": "Kendi programınızı belirleyin"
-          }
-        },
-        "customSchedule": "Özel Program",
-        "open": "Aç",
-        "to": "'ye"
-      },
-      "days": {
-        "mon": "Pazartesi",
-        "tue": "Salı",
-        "wed": "Çarşamba",
-        "thu": "Perşembe",
-        "fri": "Cuma",
-        "sat": "Cumartesi",
-        "sun": "Pazar"
-      }
+      "languageDescription": "İş ortağı ayarları için varsayılan dil."
     }
   },
   "partnerAiBudgets": {
@@ -5799,6 +5765,20 @@
       "sourceOrg": "Kuruluş geçersiz kılması",
       "sourcePartner": "İş ortağı varsayılanı",
       "sourceDefault": "Yerleşik varsayılan"
+    },
+    "businessCalendar": {
+      "title": "Çalışma saatleri",
+      "description": "Bu kuruluşun SLA sürelerinin sayıldığı takvim. İş ortağı varsayılanını izlemek için Devral seçeneğinde bırakın.",
+      "label": "Çalışma takvimi",
+      "inherit": "Devral",
+      "inheritedDefault": "Devralınan: {{name}} (iş ortağı varsayılanı)",
+      "inheritedNone": "Devralınan: 24×7 (iş ortağı varsayılanı yok)",
+      "partnerWideOption": "{{name}} (tüm kuruluşlar)",
+      "archivedOverride": "Arşivlenmiş takvim (artık geçerli değil)",
+      "loadFailed": "Çalışma takvimi yüklenemedi.",
+      "errors": {
+        "save": "Çalışma takvimi kaydedilemedi. Yeniden deneyin."
+      }
     }
   },
   "organizationForm": {
@@ -6923,5 +6903,104 @@
     "enabledToast": "Tek tuşlu kısayollar açıldı",
     "disabledToast": "Tek tuşlu kısayollar kapatıldı",
     "saveFailed": "Tek tuşlu kısayollar kaydedilemedi."
+  },
+  "businessHoursCard": {
+    "title": "Çalışma saatleri",
+    "description": "Yanıt ve çözüm SLA sürelerinin sayıldığı takvimler. Bir talep, kuruluşunun takvimini ya da varsayılan takviminizi kullanır; hiçbiri yoksa süre günün 24 saati işler.",
+    "newTicketsOnly": "Saatleri veya saat dilimini düzenlemek yalnızca yeni taleplere uygulanır. Zaten açık olan talepleri güncellemek için \"Açık taleplere uygula\" seçeneğini kullanın.",
+    "create": "Yeni takvim",
+    "loading": "Çalışma saatleri yükleniyor…",
+    "loadError": "Çalışma saatleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "empty": "Henüz çalışma saatleri takvimi yok. Bir takvim oluşturup varsayılan yapana kadar talepler günün 24 saati (24×7) işler.",
+    "allOrgs": "Tüm kuruluşlar",
+    "default": "Varsayılan",
+    "archived": "Arşivlendi",
+    "edit": "Düzenle",
+    "setDefault": "Varsayılan yap",
+    "clearDefault": "Varsayılanı kaldır",
+    "applyOpen": "Açık taleplere uygula",
+    "archive": "Arşivle",
+    "unarchive": "Arşivden çıkar",
+    "delete": "Sil",
+    "deleteTitle": "{{name}} silinsin mi?",
+    "deleteMessage": "Bu işlem takvimi ve tatillerini kalıcı olarak siler. Talepler veya kuruluşlar tarafından hâlâ kullanılan bir takvim silinemez; bunun yerine arşivleyin.",
+    "name": "Ad",
+    "timezone": "Saat dilimi",
+    "appliesTo": "Geçerli olduğu yer",
+    "ownerPartner": "Tüm kuruluşlar (iş ortağı geneli)",
+    "ownerOrg": "Tek bir kuruluş",
+    "organization": "Kuruluş",
+    "chooseOrg": "Bir kuruluş seçin",
+    "weeklyHours": "Haftalık saatler",
+    "closed": "Kapalı",
+    "to": "ile",
+    "addInterval": "Saat ekle",
+    "intervalStart": "{{day}} açılış saati",
+    "intervalEnd": "{{day}} kapanış saati",
+    "removeInterval": "{{day}} saatlerini kaldır",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor…",
+    "cancel": "İptal",
+    "holidays": "Tatiller",
+    "holidayHint": "Bugünün veya daha eski bir tarihin tatilleri açık talepleri değiştirmez.",
+    "noHolidays": "Tatil yok.",
+    "holidayDate": "Tarih",
+    "holidayName": "Ad",
+    "holidayAdd": "Tatil ekle",
+    "holidayRemove": "{{name}} tatilini kaldır",
+    "weekdays": {
+      "0": "Pazar",
+      "1": "Pazartesi",
+      "2": "Salı",
+      "3": "Çarşamba",
+      "4": "Perşembe",
+      "5": "Cuma",
+      "6": "Cumartesi"
+    },
+    "errors": {
+      "nameRequired": "Bir ad girin.",
+      "orgRequired": "Bir kuruluş seçin.",
+      "invalidTime": "Saatleri SS:DD biçiminde girin (örneğin 09:00); bitiş 24:00 olabilir.",
+      "order": "Her aralık başladıktan sonra bitmelidir.",
+      "overlap": "Aynı gündeki aralıklar çakışmamalıdır.",
+      "empty": "En az bir açık aralık ekleyin.",
+      "timezone": "Geçerli bir saat dilimi seçin.",
+      "save": "Takvim kaydedilemedi. Yeniden deneyin.",
+      "holidayInvalid": "Tatil için geçerli bir tarih ve ad girin.",
+      "holidayAdd": "Tatil eklenemedi. Yeniden deneyin.",
+      "holidayRemove": "Tatil kaldırılamadı. Yeniden deneyin.",
+      "inUse": "Bu takvim taleplerce veya kuruluşlarca kullanılıyor ve silinemez. Bunun yerine arşivleyin.",
+      "isDefault": "Bu takvim varsayılandır. Silmeden önce varsayılanı kaldırın.",
+      "default": "Varsayılan takvim değiştirilemedi. Yeniden deneyin.",
+      "archive": "Arşiv durumu değiştirilemedi. Yeniden deneyin.",
+      "delete": "Takvim silinemedi. Yeniden deneyin.",
+      "apply": "Takvim açık taleplere uygulanamadı. Yeniden deneyin."
+    },
+    "toasts": {
+      "created": "Takvim oluşturuldu",
+      "updated": "Takvim güncellendi",
+      "defaultSet": "Varsayılan takvim ayarlandı",
+      "defaultCleared": "Varsayılan kaldırıldı; geçersiz kılması olmayan talepler 24×7 işler",
+      "archived": "Takvim arşivlendi",
+      "unarchived": "Takvim arşivden çıkarıldı",
+      "deleted": "Takvim silindi",
+      "holidayAdded": "Tatil eklendi",
+      "holidayRemoved": "Tatil kaldırıldı",
+      "recompute": "Açık taleplerin son tarihleri güncelleniyor.",
+      "applied": "Açık taleplere uygulandı: {{count}} güncellendi",
+      "appliedPartial": "{{skipped}} talep düzenleniyordu ve eski çalışma saatlerini korudu. Yeniden denemek için tekrar uygulayın."
+    },
+    "apply": {
+      "title": "{{name}} takvimini açık taleplere uygula",
+      "explanation": "Hiç duraklatılmamış açık talepler geçerli saatlere geçer ve son tarihleri yeniden hesaplanır. Duraklatma geçmişi olan talepler olduğu gibi kalır.",
+      "loading": "Önizleme yükleniyor…",
+      "loadFailed": "Önizleme yüklenemedi.",
+      "revisionChanged": "Saatler bu önizlemeden sonra değişti. Uygulamadan önce güncellenen sayıları gözden geçirin.",
+      "eligible": "Güncellenecek talepler: {{count}}",
+      "breached": "Bunlardan hemen süresi aşılacaklar: {{count}}",
+      "paused": "Duraklatıldıkları için atlananlar: {{count}}",
+      "confirm": "Açık taleplere uygula"
+    }
   }
 }

@@ -5764,3 +5764,228 @@ describe('SLA deadlines — live first-response writers freeze the response dead
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8973 W4 — business-hours calendars at the SLA write points (spec §4.3).
+// The resolver and the snapshot loader are module-mocked here (the unit db
+// mock has no execute); real Postgres coverage lives in
+// businessCalendarCallerContexts / ticket-move-org integration tests.
+// Default: no calendar applies (24×7), so every test above is unchanged.
+// ---------------------------------------------------------------------------
+
+const { calendarMocks } = vi.hoisted(() => ({
+  calendarMocks: {
+    resolve: vi.fn(async (..._args: unknown[]) => ({ revisionId: null as string | null, calendarId: null as string | null, source: 'none' as 'org' | 'partner' | 'none' })),
+    load: vi.fn(async (_db: unknown, _revisionId: string | null): Promise<unknown> => null),
+  },
+}));
+vi.mock('./businessCalendars/resolve', () => ({ resolveBusinessCalendar: calendarMocks.resolve }));
+vi.mock('./ticketSlaDeadlines', async () => {
+  const actual = await vi.importActual<typeof import('./ticketSlaDeadlines')>('./ticketSlaDeadlines');
+  return { ...actual, loadTicketCalendar: calendarMocks.load };
+});
+
+/** Mon–Fri 09:00–17:00 America/New_York (EDT = UTC-4 in June). */
+const NY_WEEKDAYS = {
+  revision: { timezone: 'America/New_York', intervals: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, startMinute: 540, endMinute: 1020 })) },
+  holidays: [] as string[],
+};
+
+function useCalendar(revisionId: string) {
+  calendarMocks.resolve.mockResolvedValue({ revisionId, calendarId: 'cal-1', source: 'partner' });
+  calendarMocks.load.mockImplementation(async (_db: unknown, id: string | null) => (id === revisionId ? NY_WEEKDAYS : null));
+}
+
+function resetCalendar() {
+  calendarMocks.resolve.mockReset().mockResolvedValue({ revisionId: null, calendarId: null, source: 'none' });
+  calendarMocks.load.mockReset().mockImplementation(async () => null);
+}
+
+describe('SLA calendars — createTicket snapshots the resolved revision (#8973 W4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    vi.useFakeTimers();
+    // Friday 16:00 in New York.
+    vi.setSystemTime(new Date('2026-06-12T20:00:00Z'));
+    useCalendar('rev-1');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetCalendar();
+    configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: null, resolutionMinutes: null });
+  });
+
+  it('resolves for the ticket org + its partner and writes business-time due/warn', async () => {
+    configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: 120, resolutionMinutes: 480 });
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Printer', source: 'manual' }, actor);
+
+    expect(calendarMocks.resolve).toHaveBeenCalledWith(expect.anything(), { partnerId: 'p-1', orgId: 'o-1' });
+    expect(calendarMocks.load).toHaveBeenCalledWith(expect.anything(), 'rev-1');
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({
+      slaCalendarRevisionId: 'rev-1',
+      // Fri 16:00 + 120 business minutes = Mon 10:00 NY; warn 96 = Mon 09:36.
+      responseDueAt: new Date('2026-06-15T14:00:00Z'),
+      responseWarnAt: new Date('2026-06-15T13:36:00Z'),
+      // 480 = Fri 60 + Mon 420 → Mon 16:00; warn 384 → Mon 14:24.
+      resolutionDueAt: new Date('2026-06-15T20:00:00Z'),
+      resolutionWarnAt: new Date('2026-06-15T18:24:00Z'),
+    });
+  });
+
+  it('with no calendar the snapshot is null and the deadlines are wall clock', async () => {
+    resetCalendar();
+    configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: 120, resolutionMinutes: null });
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Printer', source: 'manual' }, actor);
+
+    expect(valuesMock.mock.calls[0]![0]).toMatchObject({ slaCalendarRevisionId: null, responseDueAt: new Date('2026-06-12T22:00:00Z') });
+  });
+});
+
+describe('SLA calendars — write points use the ticket snapshot (#8973 W4)', () => {
+  // Mon 2026-06-15 09:00 New York.
+  const created = new Date('2026-06-15T13:00:00Z');
+  const base = {
+    id: 't-1', orgId: 'o-1', partnerId: 'p-1', createdAt: created, slaCalendarRevisionId: 'rev-1',
+    responseSlaMinutes: 60, resolutionSlaMinutes: 480,
+    slaPausedMinutes: 10, slaPausedBusinessMinutes: 10,
+    firstResponseAt: null, resolvedAt: null, slaBreachReason: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setMock.mockClear();
+    vi.useFakeTimers();
+    dbMocks.updateReturning.mockResolvedValue([{ id: 't-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1', isPublic: true }]);
+    useCalendar('rev-1');
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    resetCalendar();
+  });
+
+  it('pause end accrues BUSINESS minutes over a weekend and recomputes on the calendar', async () => {
+    // Paused Fri 16:00 NY, resumed Mon 10:00 NY: 66 wall-clock hours, 120 business minutes.
+    vi.setSystemTime(new Date('2026-06-22T14:00:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{ ...base, status: 'pending', slaPausedAt: new Date('2026-06-19T20:00:00Z') }]);
+
+    await changeTicketStatus('t-1', { status: 'open' }, {}, actor);
+
+    expect(calendarMocks.load).toHaveBeenCalledWith(expect.anything(), 'rev-1');
+    expect(setMock.mock.calls[0]![0]).toMatchObject({
+      slaPausedMinutes: 10 + 66 * 60,
+      slaPausedBusinessMinutes: 130,
+      // created Mon 09:00 + (60 + 130) business minutes = Mon 12:10 NY.
+      responseDueAt: new Date('2026-06-15T16:10:00Z'),
+      // + (480 + 130) = Mon 480 + Tue 130 → Tue 11:10 NY.
+      resolutionDueAt: new Date('2026-06-16T15:10:00Z'),
+    });
+  });
+
+  it('a first response freezes on the ticket calendar (addTicketComment)', async () => {
+    vi.setSystemTime(new Date('2026-06-15T13:30:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{ ...base, status: 'open', slaPausedAt: null }]);
+
+    await addTicketComment('t-1', { content: 'On it', isPublic: true }, actor);
+
+    expect(calendarMocks.load).toHaveBeenCalledWith(expect.anything(), 'rev-1');
+    // 60 + 10 paused business minutes from Mon 09:00 → Mon 10:10 NY.
+    expect(setMock.mock.calls[0]![0]).toMatchObject({ responseDueAt: new Date('2026-06-15T14:10:00Z') });
+  });
+
+  it('a target override recomputes on the ticket calendar (updateTicketFields)', async () => {
+    vi.setSystemTime(new Date('2026-06-15T13:30:00Z'));
+    dbMocks.selectResult.mockResolvedValue([{ ...base, status: 'open', slaPausedAt: null, fieldProvenance: {} }]);
+
+    await updateTicketFields('t-1', { responseSlaMinutes: 600 }, actor).catch(() => undefined);
+
+    expect(calendarMocks.load).toHaveBeenCalledWith(expect.anything(), 'rev-1');
+  });
+});
+
+describe('SLA calendars — moveTicketOrg re-resolves for the target org (#8973 W4)', () => {
+  const created = new Date('2026-06-15T13:00:00Z'); // Mon 09:00 NY
+  const snapshot = {
+    id: 't1', orgId: 'oA', partnerId: 'p1', createdAt: created, slaCalendarRevisionId: 'rev-src',
+    responseSlaMinutes: 60, resolutionSlaMinutes: 480, slaPausedAt: null, slaPausedBusinessMinutes: 0,
+    firstResponseAt: null, resolvedAt: null, slaBreachReason: null,
+  };
+
+  function queueMove(ticket: object) {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([ticket])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta', currencyCode: 'USD' },
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB' }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'comment' }]);
+  }
+  const moveSet = () => setMock.mock.calls.map((c) => c[0] as Record<string, unknown>).find((s) => s.orgId === 'oB' && 'requesterContactId' in s)!;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setMock.mockClear();
+    guardMock.mockReset().mockResolvedValue(null);
+  });
+  afterEach(() => resetCalendar());
+
+  it('snapshots the target org revision and recomputes the unfrozen arms in the move statement', async () => {
+    useCalendar('rev-tgt');
+    queueMove(snapshot);
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    expect(calendarMocks.resolve).toHaveBeenCalledWith(expect.anything(), { orgId: 'oB', partnerId: 'p1' });
+    expect(moveSet()).toMatchObject({
+      orgId: 'oB',
+      slaCalendarRevisionId: 'rev-tgt',
+      responseDueAt: new Date('2026-06-15T14:00:00Z'), // Mon 10:00 NY
+      resolutionDueAt: new Date('2026-06-15T21:00:00Z'), // Mon 17:00 NY
+    });
+  });
+
+  it('a frozen arm keeps its deadline across the move', async () => {
+    useCalendar('rev-tgt');
+    queueMove({ ...snapshot, firstResponseAt: new Date('2026-06-15T13:20:00Z') });
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    const set = moveSet();
+    expect(set.slaCalendarRevisionId).toBe('rev-tgt');
+    expect(set).not.toHaveProperty('responseDueAt');
+    expect(set).toHaveProperty('resolutionDueAt');
+  });
+
+  it("never leaves the source org's calendar referenced: no target calendar → null snapshot, wall clock", async () => {
+    queueMove(snapshot);
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    expect(moveSet()).toMatchObject({
+      slaCalendarRevisionId: null,
+      responseDueAt: new Date(created.getTime() + 60 * 60_000),
+    });
+  });
+
+  it('the same revision on both sides writes no SLA columns', async () => {
+    useCalendar('rev-src');
+    queueMove(snapshot);
+
+    await moveTicketOrg('t1', 'oB', actor);
+
+    const set = moveSet();
+    expect(set).not.toHaveProperty('slaCalendarRevisionId');
+    expect(set).not.toHaveProperty('responseDueAt');
+  });
+});

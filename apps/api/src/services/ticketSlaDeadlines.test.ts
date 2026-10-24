@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CalendarRevision } from '@breeze/shared';
 import {
   accruePauseEnd,
@@ -7,7 +7,10 @@ import {
   isResolutionFrozen,
   isResponseFrozen,
   loadTicketCalendar,
+  loadTicketCalendars,
+  slaBusinessMinutesRemaining,
   slaClockRowOf,
+  TicketCalendarUnavailableError,
   type SlaClockRow,
   type TicketCalendar,
 } from './ticketSlaDeadlines';
@@ -174,9 +177,66 @@ describe('slaClockRowOf', () => {
   });
 });
 
-describe('loadTicketCalendar', () => {
-  it('is null in W3 (no calendars yet)', async () => {
-    await expect(loadTicketCalendar({} as never, null)).resolves.toBeNull();
-    await expect(loadTicketCalendar({} as never, 'rev-1')).resolves.toBeNull();
+describe('loadTicketCalendar (#8973 W4)', () => {
+  const calendarRow = {
+    revision_id: 'rev-1',
+    timezone: 'America/New_York',
+    intervals: [{ weekday: 1, startMinute: 540, endMinute: 1020 }, { weekday: 2, startMinute: 540, endMinute: 1020 }],
+    holidays: ['2030-07-04', '2030-12-25'],
+  };
+
+  it('a null revision is the 24×7 calendar and reads nothing', async () => {
+    const db = { execute: vi.fn() };
+    await expect(loadTicketCalendar(db as never, null)).resolves.toBeNull();
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it("loads the revision's time zone and intervals and the calendar's sorted holidays", async () => {
+    const db = { execute: vi.fn().mockResolvedValue([calendarRow]) };
+    await expect(loadTicketCalendar(db as never, 'rev-1')).resolves.toEqual({
+      revision: { timezone: 'America/New_York', intervals: calendarRow.intervals },
+      holidays: ['2030-07-04', '2030-12-25'],
+    });
+  });
+
+  it('a revision the DB context cannot see fails loudly instead of silently counting wall-clock time', async () => {
+    const db = { execute: vi.fn().mockResolvedValue([]) };
+    await expect(loadTicketCalendar(db as never, 'rev-x')).rejects.toBeInstanceOf(TicketCalendarUnavailableError);
+  });
+
+  it('loadTicketCalendars batch-loads each distinct revision once (no per-row query)', async () => {
+    const db = { execute: vi.fn().mockResolvedValue([calendarRow, { ...calendarRow, revision_id: 'rev-2', timezone: 'UTC' }]) };
+    const map = await loadTicketCalendars(db as never, ['rev-1', null, 'rev-2', 'rev-1']);
+    expect(db.execute).toHaveBeenCalledTimes(1);
+    expect([...map.keys()].sort()).toEqual(['rev-1', 'rev-2']);
+    expect(map.get('rev-2')?.revision.timezone).toBe('UTC');
+    const none = { execute: vi.fn() };
+    expect((await loadTicketCalendars(none as never, [null, null])).size).toBe(0);
+    expect(none.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('business minutes remaining (#8973 W4 payload)', () => {
+  const nyWeekdays: TicketCalendar = {
+    revision: { timezone: 'America/New_York', intervals: [1, 2, 3, 4, 5].map((weekday) => ({ weekday: weekday as 1, startMinute: 540, endMinute: 1020 })) },
+    holidays: [],
+  };
+
+  it('is null with no calendar, and counts only open business minutes until each unfrozen deadline', () => {
+    const r = row({ createdAt: new Date('2030-06-03T13:00:00Z') }); // Mon 09:00 New York
+    const deadlines = { responseDueAt: new Date('2030-06-03T15:00:00Z'), resolutionDueAt: new Date('2030-06-04T17:00:00Z') };
+    expect(slaBusinessMinutesRemaining(r, deadlines, null, new Date('2030-06-03T14:00:00Z'))).toBeNull();
+    // Mon 10:00 NY: 60 business minutes to the response deadline; resolution Tue 13:00 NY = 420 + 240.
+    expect(slaBusinessMinutesRemaining(r, deadlines, nyWeekdays, new Date('2030-06-03T14:00:00Z'))).toEqual({ response: 60, resolution: 660 });
+    // Overnight the countdown does not move: Mon 20:00 NY and Tue 08:00 NY both have 240 left on resolution.
+    expect(slaBusinessMinutesRemaining(r, deadlines, nyWeekdays, new Date('2030-06-04T00:00:00Z'))?.resolution).toBe(240);
+    expect(slaBusinessMinutesRemaining(r, deadlines, nyWeekdays, new Date('2030-06-04T12:00:00Z'))?.resolution).toBe(240);
+  });
+
+  it('a frozen, missing or passed deadline reads null / 0', () => {
+    const r = row({ createdAt: new Date('2030-06-03T13:00:00Z'), firstResponseAt: new Date('2030-06-03T13:30:00Z') });
+    const out = slaBusinessMinutesRemaining(r, { responseDueAt: new Date('2030-06-03T15:00:00Z'), resolutionDueAt: new Date('2030-06-03T14:00:00Z') }, nyWeekdays, new Date('2030-06-03T16:00:00Z'));
+    expect(out).toEqual({ response: null, resolution: 0 });
+    expect(slaBusinessMinutesRemaining(row(), { responseDueAt: null, resolutionDueAt: null }, nyWeekdays, new Date())).toEqual({ response: null, resolution: null });
   });
 });
