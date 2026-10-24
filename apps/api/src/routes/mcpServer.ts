@@ -69,7 +69,7 @@ import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
-import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpMessageRateLimitPerMinute, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
 import { mcpAppsEnabled, mcpAppsServerExtensions } from '../services/mcpAppsConfig';
 import {
   NO_MCP_CLIENT_EXTENSIONS,
@@ -613,7 +613,7 @@ async function preflightMcpRequest(
     if (!redis) {
       return { kind: 'response', status: 503, body: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Service temporarily unavailable' } } };
     }
-    const limit = envInt('MCP_MESSAGE_RATE_LIMIT_PER_MINUTE', 120);
+    const limit = mcpMessageRateLimitPerMinute();
     const rate = await rateLimiter(redis, `mcp:msg:${principalKey}`, limit, 60);
     if (!rate.allowed) {
       const retryAfter = Math.max(1, Math.ceil((rate.resetAt.getTime() - Date.now()) / 1000));
