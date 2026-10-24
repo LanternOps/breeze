@@ -755,6 +755,21 @@ describe('org routes', () => {
         return captured;
       };
 
+      it('persists the launch default on direct system creation without granting paid entitlement', async () => {
+        const captured = captureInsertedValues();
+        const res = await app.request('/orgs/partners', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Partner', slug: 'partner', plan: 'enterprise', maxDevices: 1000 })
+        });
+        expect(res.status).toBe(201);
+        expect(captured[0]?.purchaseSelection).toEqual({
+          catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly',
+        });
+        expect(captured[0]).not.toHaveProperty('plan');
+        expect(captured[0]).not.toHaveProperty('maxDevices');
+      });
+
       it('writes settings.ticketing.inbound.enabled=false when the caller sends no settings', async () => {
         const captured = captureInsertedValues();
 
@@ -6278,25 +6293,83 @@ describe('org routes', () => {
   });
 
   describe('GET /orgs/sites/:id', () => {
+    const siteRow = {
+      id: 'site-1',
+      name: 'HQ',
+      orgId: '11111111-1111-1111-1111-111111111111'
+    };
+    const mockSiteLookup = () => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([siteRow])
+        })
+      })
+    }) as any;
+
     it('should return a site', async () => {
       setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{
-              id: 'site-1',
-              name: 'HQ',
-              orgId: '11111111-1111-1111-1111-111111111111'
-            }])
-          })
-        })
-      } as any);
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValue(mockSiteDeviceCounts([]));
 
       const res = await app.request('/orgs/sites/site-1');
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe('site-1');
+    });
+
+    // #9792: the dashboard-style "View all devices" link on the site page
+    // needs the same count the Sites list shows, from the same helper.
+    it('returns deviceCount and removedDeviceCount like the list route', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 7 }]))
+        .mockReturnValueOnce(mockSiteDeviceCounts([{ siteId: 'site-1', count: 2 }]));
+
+      const res = await app.request('/orgs/sites/site-1');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toMatchObject({ id: 'site-1', deviceCount: 7, removedDeviceCount: 2 });
+    });
+
+    it('defaults deviceCount to 0 for a site with no devices', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValue(mockSiteDeviceCounts([]));
+
+      const res = await app.request('/orgs/sites/site-1');
+
+      const body = await res.json();
+      expect(body.deviceCount).toBe(0);
+      expect(body.removedDeviceCount).toBe(0);
+    });
+
+    it('count predicate excludes decommissioned devices (same predicate as the list)', async () => {
+      setAuthContext({ scope: 'organization', orgId: '11111111-1111-1111-1111-111111111111' });
+      let countWhere: SQL | undefined;
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockSiteLookup())
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockImplementation((condition: SQL) => {
+              countWhere = condition;
+              return { groupBy: vi.fn().mockResolvedValue([{ siteId: 'site-1', count: 4 }]) };
+            })
+          })
+        } as any)
+        .mockReturnValue(mockSiteDeviceCounts([]));
+
+      const res = await app.request('/orgs/sites/site-1');
+
+      expect(res.status).toBe(200);
+      const compiled = new PgDialect().sqlToQuery(countWhere as SQL);
+      expect(compiled.sql).toContain('<>');
+      expect(compiled.params).toContain('decommissioned');
+      expect(compiled.params).toContainEqual({ __column: 'devices.status' });
     });
 
     it('should return 404 when site not found', async () => {
@@ -6650,7 +6723,9 @@ describe('org routes', () => {
 
       it('allows a site-confined user reading their own site (site-x)', async () => {
         setAuthContext({ scope: 'organization', orgId: ORG, allowedSiteIds: ['site-x'] });
-        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-x') as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(siblingSiteRow('site-x') as any)
+          .mockReturnValue(mockSiteDeviceCounts([]));
 
         const res = await app.request('/orgs/sites/site-x');
 
@@ -6661,7 +6736,9 @@ describe('org routes', () => {
 
       it('allows an unconfined user (allowedSiteIds undefined) to read any sibling site', async () => {
         setAuthContext({ scope: 'organization', orgId: ORG });
-        vi.mocked(db.select).mockReturnValue(siblingSiteRow('site-y') as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(siblingSiteRow('site-y') as any)
+          .mockReturnValue(mockSiteDeviceCounts([]));
 
         const res = await app.request('/orgs/sites/site-y');
 
@@ -6913,6 +6990,39 @@ describe('org routes', () => {
       const body = await res.json();
       expect(body.id).toBe('partner-123');
       expect(body.name).toBe('Acme MSP');
+    });
+
+    describe('wispEnabled (Wisp W03 web gate — computed, not a column)', () => {
+      const mockPartnerRow = () => vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', settings: {} }])
+          })
+        })
+      } as any);
+      afterEach(() => { vi.unstubAllEnvs(); });
+
+      it('is false by default (flags unset)', async () => {
+        vi.stubEnv('IS_HOSTED', '');
+        vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', '');
+        vi.stubEnv('BREEZE_WISP_ENABLED', '');
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockPartnerRow();
+        const body = await (await app.request('/orgs/partners/me')).json();
+        expect(body.wispEnabled).toBe(false);
+      });
+
+      it('is true when wispEnabled() is (hosted + AI agents + Wisp flags), and is never selected from the table', async () => {
+        vi.stubEnv('IS_HOSTED', 'true');
+        vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+        vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockPartnerRow();
+        const body = await (await app.request('/orgs/partners/me')).json();
+        expect(body.wispEnabled).toBe(true);
+        const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(Object.keys(projection)).not.toContain('wispEnabled');
+      });
     });
 
     it('returns 404 when the partner record is not found (soft-deleted)', async () => {
@@ -7614,6 +7724,66 @@ describe('org routes', () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // #8973 W4 Gate B5: business hours moved to Ticketing → Priorities & SLAs
+    // (business calendars). partnerSettingsSchema no longer reads or writes
+    // settings.businessHours: a stale client's key is stripped, and the stored
+    // blob (already imported into a calendar by 2027-01-03-160000) survives.
+    describe('PATCH /partners/me — retired businessHours (Gate B5)', () => {
+      const STORED = { preset: 'custom', custom: { mon: { start: '08:00', end: '16:00' } } };
+
+      function mockStoredPartner() {
+        const currentPartner = { id: 'partner-123', name: 'Acme MSP', settings: { timezone: 'UTC', businessHours: STORED } };
+        vi.mocked(db.select)
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([currentPartner]) })
+            })
+          } as any)
+          .mockReturnValue({
+            from: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+                limit: vi.fn().mockResolvedValue([])
+              })
+            })
+          } as any);
+        let captured: any;
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn().mockImplementation((data: any) => {
+            captured = data;
+            return { where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ ...currentPartner, ...data }]) }) };
+          })
+        } as any);
+        return () => captured;
+      }
+
+      it('a stale client still sending businessHours parses, the key is dropped, and the stored blob is kept', async () => {
+        const updateData = mockStoredPartner();
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { timezone: 'Europe/London', businessHours: { preset: '24/7' } } })
+        });
+        expect(res.status).toBe(200);
+        expect(updateData().settings.timezone).toBe('Europe/London');
+        // The incoming '24/7' never reaches the write; the stored value survives untouched.
+        expect(updateData().settings.businessHours).toEqual(STORED);
+      });
+
+      it('accepts a malformed legacy businessHours shape without a 400 (it is no longer validated)', async () => {
+        const updateData = mockStoredPartner();
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        const res = await app.request('/orgs/partners/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { timezone: 'UTC', businessHours: { preset: 'not-a-preset' } } })
+        });
+        expect(res.status).toBe(200);
+        expect(updateData().settings.businessHours).toEqual(STORED);
+      });
     });
 
     describe('PATCH /partners/me — inboundLocalPart', () => {
@@ -9390,7 +9560,9 @@ describe('org routes', () => {
 
       it('GET /orgs/sites/:id masks settings secrets', async () => {
         setAuthContext({ scope: 'organization', orgId: SITE_ORG });
-        vi.mocked(db.select).mockReturnValue(siteSelect({ overrides: { apiKey: 'enc:v1:site-api-key' } }) as any);
+        vi.mocked(db.select)
+          .mockReturnValueOnce(siteSelect({ overrides: { apiKey: 'enc:v1:site-api-key' } }) as any)
+          .mockReturnValue(mockSiteDeviceCounts([]));
 
         const res = await app.request('/orgs/sites/site-1');
 

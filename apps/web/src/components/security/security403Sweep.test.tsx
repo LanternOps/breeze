@@ -34,6 +34,7 @@ import SecurityScanManager from './SecurityScanManager';
 import ThreatDetail from './ThreatDetail';
 import ThreatList from './ThreatList';
 import VulnerabilitiesPage from './VulnerabilitiesPage';
+import DetectionRulesPage from './detectionRules/DetectionRulesPage';
 
 /**
  * A permission denial resolves (does NOT reject) with a non-ok 403 Response.
@@ -78,6 +79,7 @@ const CONVERTED = [
   ['EdrSummaryPanel', <EdrSummaryPanel />, 'edr-summary-denied'],
   ['S1ThreatList', <S1ThreatList />, 's1-denied'],
   ['HuntressIncidentList', <HuntressIncidentList />, 'huntress-denied'],
+  ['DetectionRulesPage', <DetectionRulesPage />, 'detection-rules-denied'],
 ] as const;
 
 /**

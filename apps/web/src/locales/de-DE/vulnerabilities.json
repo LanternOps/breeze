@@ -95,7 +95,9 @@
     "high": "Hoch",
     "medium": "Mittel",
     "low": "Niedrig",
-    "unknown": "Unbekannt"
+    "unknown": "Unbekannt",
+    "unscored": "Nicht bewertet",
+    "unscoredTitle": "Für diese CVE wurde noch keine NVD-Schweregradbewertung veröffentlicht."
   },
   "softwareGroupDrawer": {
     "titleFallback": "Softwaregruppe",
@@ -190,7 +192,8 @@
       "patch": "Patch"
     },
     "help": {
-      "riskAria": "Über den Risikoscore"
+      "riskAria": "Über den Risikoscore",
+      "patchAria": "Über die Spalte „Patch“"
     },
     "actions": {
       "openDetailsAria": "Öffnen Sie {{name}} Schwachstellendetails"
@@ -314,9 +317,9 @@
       },
       "patchReady": {
         "label": "Patch bereit",
-        "detail": "{{count}} offene Befunde mit verfügbarem Patch",
-        "detail_one": "{{count}} offener Befund mit verfügbarem Patch",
-        "detail_other": "{{count}} offene Befunde mit verfügbarem Patch"
+        "detail": "{{count}} offene Befunde mit einem freigegebenen, installationsbereiten Patch",
+        "detail_one": "{{count}} offener Befund mit einem freigegebenen, installationsbereiten Patch",
+        "detail_other": "{{count}} offene Befunde mit einem freigegebenen, installationsbereiten Patch"
       },
       "acceptedExpiring": {
         "label": "Akzeptiert, läuft bald ab",
@@ -350,13 +353,15 @@
       "cvssAria": "Über den CVSS-Score",
       "riskAria": "Über den Risikoscore",
       "epssAria": "Über den EPSS-Score",
-      "kevAria": "Über die KEV-Flagge"
+      "kevAria": "Über die KEV-Flagge",
+      "patchAria": "Über die Spalte „Patch“"
     },
     "actions": {
       "openDetailsAria": "{{cveId}} Details öffnen"
     },
     "patch": {
-      "ready": "Bereit"
+      "ready": "Bereit",
+      "update": "Auf die neueste Version aktualisieren"
     },
     "hasMore": "Die 500 CVEs mit dem höchsten Risiko werden angezeigt. Filter eingrenzen, um die übrigen CVEs anzuzeigen."
   }

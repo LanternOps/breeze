@@ -38,6 +38,14 @@ export function canManagePartnerWidePolicies(
 export const PARTNER_WIDE_WRITE_DENIED_MESSAGE =
   'Managing partner-wide state requires full partner org access (orgAccess must be "all")';
 
+/**
+ * Returned by partner-wide READ models gated on `canManagePartnerWidePolicies`
+ * (the partner settings inheritance counts and drill-down, #9170). The write
+ * message above describes a write, so a fleet-analysis read gets its own.
+ */
+export const PARTNER_WIDE_READ_DENIED_MESSAGE =
+  'Viewing the organization breakdown requires full partner org access (orgAccess must be "all")';
+
 /** Thrown by service mutators when a partner-wide row is visible to the caller but not administrable. Routes map it to 403. */
 export class PartnerWideWriteDeniedError extends Error {
   constructor() {

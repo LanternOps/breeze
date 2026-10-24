@@ -6,7 +6,10 @@ import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
-import { DETECTION_CLASSES, DATA_TYPE_COLORS } from './constants';
+import { nextCronOccurrenceAt } from '@breeze/shared';
+import { DETECTION_CLASSES, DATA_TYPE_COLORS, dataTypeLabel } from './constants';
+import SensitiveDataAccessDenied from './SensitiveDataAccessDenied';
+import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import { useStableT } from '@/lib/i18n/useStableT';
@@ -32,7 +35,22 @@ type FormState = {
   scheduleType: string;
   intervalMinutes: number;
   cron: string;
+  // `schedule.enabled` as stored. The form has no control for it, so an edit
+  // sends it back unchanged — the API defaults a missing value to `true`, which
+  // would silently re-enable a paused schedule (#9683). undefined = never set.
+  scheduleEnabled?: boolean;
+  // Stored but not editable here; the API replaces `schedule` wholesale on PUT,
+  // so they must be sent back or an edit silently resets them.
+  scheduleTimezone?: string;
+  scheduleDeviceIds?: string[];
 };
+
+/** Next cron firing as a browser-local string, or null when it cannot be computed. */
+function nextCronRunLabel(cron: string, timezone?: string): string | null {
+  if (!cron.trim()) return null;
+  const iso = nextCronOccurrenceAt(cron, timezone || 'UTC');
+  return iso ? formatDateTime(iso) : null;
+}
 
 const defaultForm: FormState = {
   name: '',
@@ -49,6 +67,7 @@ export default function PoliciesTab() {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [forbidden, setForbidden] = useState(false);
 
   // Edit/Create state
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -69,7 +88,13 @@ export default function PoliciesTab() {
     try {
       setLoading(true);
       setError(undefined);
+      setForbidden(false);
       const res = await fetchWithAuth('/sensitive-data/policies');
+      if (res.status === 403) {
+        setPolicies([]);
+        setForbidden(true);
+        return;
+      }
       if (!res.ok) {
         throw new Error(
           stableT('sensitiveDataPoliciesTab.errors.fetchPolicies', {
@@ -80,6 +105,7 @@ export default function PoliciesTab() {
       const json = await res.json();
       setPolicies(json.data ?? []);
     } catch (err) {
+      setPolicies([]);
       setError(
         err instanceof Error
           ? err.message
@@ -112,6 +138,11 @@ export default function PoliciesTab() {
       scheduleType: typeof schedule?.type === 'string' ? schedule.type : 'manual',
       intervalMinutes: typeof schedule?.intervalMinutes === 'number' ? schedule.intervalMinutes : 60,
       cron: typeof schedule?.cron === 'string' ? schedule.cron : '',
+      scheduleEnabled: typeof schedule?.enabled === 'boolean' ? schedule.enabled : undefined,
+      scheduleTimezone: typeof schedule?.timezone === 'string' && schedule.timezone ? schedule.timezone : undefined,
+      scheduleDeviceIds: Array.isArray(schedule?.deviceIds)
+        ? (schedule.deviceIds as unknown[]).filter((v): v is string => typeof v === 'string')
+        : undefined,
     });
     setShowForm(true);
   };
@@ -146,6 +177,9 @@ export default function PoliciesTab() {
       const schedule: Record<string, unknown> = { type: form.scheduleType };
       if (form.scheduleType === 'interval') schedule.intervalMinutes = form.intervalMinutes;
       if (form.scheduleType === 'cron') schedule.cron = form.cron;
+      if (editingId && form.scheduleEnabled !== undefined) schedule.enabled = form.scheduleEnabled;
+      if (editingId && form.scheduleTimezone) schedule.timezone = form.scheduleTimezone;
+      if (editingId && form.scheduleDeviceIds?.length) schedule.deviceIds = form.scheduleDeviceIds;
 
       const body = {
         name: form.name,
@@ -232,6 +266,11 @@ export default function PoliciesTab() {
       reportFailure(err, fallback);
     }
   };
+
+  if (forbidden) return <SensitiveDataAccessDenied />;
+
+  const formCronNextRun = form.scheduleType === 'cron' ? nextCronRunLabel(form.cron, form.scheduleTimezone) : null;
+  const cronZone = form.scheduleTimezone || 'UTC';
 
   return (
     <>
@@ -378,9 +417,14 @@ export default function PoliciesTab() {
               {form.scheduleType === 'cron' && (
                 <div>
                   <label className="text-sm font-medium">
-                    {t('sensitiveDataPoliciesTab.form.cronExpression', {
-                      defaultValue: 'Cron Expression',
-                    })}
+                    {cronZone === 'UTC'
+                      ? t('sensitiveDataPoliciesTab.form.cronExpressionUtc', {
+                          defaultValue: 'Cron Expression (UTC)',
+                        })
+                      : t('sensitiveDataPoliciesTab.form.cronExpressionZone', {
+                          defaultValue: 'Cron Expression ({{zone}})',
+                          zone: cronZone,
+                        })}
                   </label>
                   <input
                     value={form.cron}
@@ -390,6 +434,14 @@ export default function PoliciesTab() {
                     })}
                     className="mt-1 h-10 w-full rounded-md border bg-background px-3 text-sm"
                   />
+                  {formCronNextRun && (
+                    <p className="mt-1 text-xs text-muted-foreground" data-testid="sensitive-policy-cron-next-run">
+                      {t('sensitiveDataPoliciesTab.form.cronNextRun', {
+                        defaultValue: 'Next run (your local time): {{time}}',
+                        time: formCronNextRun,
+                      })}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -452,8 +504,12 @@ export default function PoliciesTab() {
                     minutes: schedule.intervalMinutes,
                   })
                 : schedule?.type === 'cron'
-                  ? String(schedule.cron ?? 'cron')
+                  ? `${String(schedule.cron ?? 'cron')} (${
+                      typeof schedule.timezone === 'string' && schedule.timezone ? schedule.timezone : 'UTC'
+                    })`
                   : t('sensitiveDataPoliciesTab.schedule.manual', { defaultValue: 'Manual' });
+              const schedulePaused = schedule?.enabled === false
+                && (schedule.type === 'interval' || schedule.type === 'cron');
 
               return (
                 <tr key={policy.id} className="text-sm hover:bg-muted/20">
@@ -482,12 +538,27 @@ export default function PoliciesTab() {
                           key={cls}
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${DATA_TYPE_COLORS[cls] ?? ''}`}
                         >
-                          {cls}
+                          {dataTypeLabel(cls)}
                         </span>
                       ))}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{scheduleLabel}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>{scheduleLabel}</span>
+                      {schedulePaused && (
+                        <span
+                          className="inline-flex items-center rounded-full border border-yellow-500/40 bg-yellow-500/15 px-2 py-0.5 text-xs font-medium text-yellow-700"
+                          title={t('sensitiveDataPoliciesTab.schedule.pausedTitle', {
+                            defaultValue: 'Scheduling is turned off for this policy, so it will not run automatically',
+                          })}
+                          data-testid="sensitive-policy-schedule-paused"
+                        >
+                          {t('sensitiveDataPoliciesTab.schedule.paused', { defaultValue: 'Paused' })}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <button
                       type="button"

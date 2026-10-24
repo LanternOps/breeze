@@ -3,6 +3,7 @@ import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import {
   actionIntentTaskContextSchema,
   type ActionIntentTaskContext,
@@ -14,6 +15,7 @@ import {
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
+import { publishEvent } from '../eventBus';
 import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
 import { subjectMatchesArguments } from './intentTargetScope';
 import {
@@ -101,6 +103,25 @@ import {
  * source of truth for both the onConflictDoNothing target predicate and the
  * idempotent-replay re-select below, so the two can never drift apart. */
 const LIVE_INTENT_STATUSES: readonly ActionIntentStatus[] = ['pending_approval', 'approved', 'executing'];
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * B-W04 (#6158, D-B27): a key collision between an MCP-origin request and a
+ * live row is only a replay when the SAME credential and the same human
+ * asked. Applied whenever either side is MCP-origin, so a different key of
+ * the same user (or an in-app request) can never converge on, read or cancel
+ * another credential's intent.
+ */
+function mcpOriginReplayMismatch(
+  existing: Pick<ActionIntent, 'source' | 'originPrincipalKind' | 'originPrincipalId' | 'requestedByUserId'>,
+  incoming: { source: string; originPrincipalKind: string; originPrincipalId: string | null; requestedByUserId: string | null },
+): boolean {
+  if (!isMcpOriginIntent(existing) && !isMcpOriginIntent(incoming)) return false;
+  return existing.originPrincipalKind !== incoming.originPrincipalKind
+    || (existing.originPrincipalId ?? null) !== incoming.originPrincipalId
+    || (existing.requestedByUserId ?? null) !== incoming.requestedByUserId;
+}
 
 /**
  * Shape of the loaded/verified agent run an agent-originated intent carries
@@ -209,6 +230,26 @@ export interface CreateActionIntentInput {
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
   idempotencyKey?: string;
+  /**
+   * B-W04 (#6158): the MCP request's server-minted request id, stored as the
+   * intent's `correlation_id` so the creation audit row and the intent link.
+   * Honoured only for an MCP-origin intent (source mcp_api, api_key/oauth_grant
+   * principal); every other intent keeps a fresh randomUUID().
+   */
+  correlationId?: string;
+  /**
+   * B-W04 (#6158, D-B27): cap on LIVE MCP-origin intents per origin
+   * credential (across orgs). When set (MCP-origin only), the insert takes a
+   * per-origin advisory lock, lets a live replay through first, then refuses
+   * with `too_many_pending_actions` at or over the cap.
+   */
+  maxLiveForOrigin?: number;
+  /**
+   * B-W04 (#6158, D-B27): churn charge, invoked outside any DB context only
+   * when a NEW row is about to be inserted (a live replay is never charged).
+   * Throws ActionIntentError('rate_limited') to refuse. MCP-origin only.
+   */
+  beforeInsert?: () => Promise<void>;
   /** Resolved via resolveWritableToolOrgId when absent. */
   orgId?: string;
   /**
@@ -319,6 +360,12 @@ export interface CreateActionIntentInput {
 export type ActionIntentSnapshot = {
   id: string;
   status: ActionIntentStatus;
+  /**
+   * B-W04 (#6158): true when this call converged on an existing LIVE intent
+   * (idempotent replay) instead of inserting one. Set only by
+   * createActionIntent; absent elsewhere.
+   */
+  replayed?: boolean;
   actionName: string;
   argumentDigest: string;
   source: ActionIntentSource;
@@ -505,6 +552,43 @@ const IMPACT_SUMMARY_BUILDERS: Record<string, (input: Record<string, unknown>) =
     'Rebooting the device will disconnect any active sessions and interrupt running work until it comes back online.',
   shutdown: () =>
     'Shutting down the device will power it off; it will stay unreachable until someone turns it back on.',
+  // #9657: plain-language impact for tools whose catalog description is
+  // model-facing prompt text. Display only.
+  remediate_vulnerability: () =>
+    'Queues patches for the selected vulnerabilities on the affected devices; devices may restart to finish installing them.',
+  restore_snapshot: () =>
+    'Restores data from a backup snapshot. Files at the restore target can be overwritten.',
+  trigger_backup: () => 'Starts a backup job now. It uses device and storage resources while it runs.',
+  manage_invoices: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'issue': return 'Issues the invoice to the customer.';
+      case 'void': return 'Voids the invoice. It will no longer be payable.';
+      case 'record_payment': return 'Records a payment against the invoice.';
+      case 'void_payment': return 'Voids a recorded payment, reopening the invoice balance.';
+      default: return null;
+    }
+  },
+  manage_quotes: (input) =>
+    nonEmptyString(input.action) === 'send' ? 'Sends the quote to the customer.' : null,
+  manage_contracts: (input) => {
+    switch (nonEmptyString(input.action)) {
+      case 'activate': return 'Activates the contract so billing starts.';
+      case 'pause': return 'Pauses the contract and its billing.';
+      case 'resume': return 'Resumes the contract and its billing.';
+      case 'cancel': return 'Cancels the contract.';
+      default: return null;
+    }
+  },
+  m365_disable_user: () => 'Blocks the Microsoft 365 user from signing in.',
+  m365_reset_password: () => 'Resets the Microsoft 365 user\'s password; they are signed out until they use the new one.',
+  m365_revoke_sessions: () => 'Signs the Microsoft 365 user out of all active sessions.',
+  m365_remove_license: () => 'Removes a license from the Microsoft 365 user; access to the licensed service may end.',
+  m365_assign_license: () => 'Assigns a license to the Microsoft 365 user, which may add cost.',
+  m365_remove_from_group: () => 'Removes the user from a Microsoft 365 group, which may remove their access.',
+  m365_add_to_group: () => 'Adds the user to a Microsoft 365 group, which may grant them access.',
+  m365_retire_intune_device: () => 'Retires the device from Intune management and removes company data from it.',
+  m365_create_user: () => 'Creates a new Microsoft 365 user account.',
+  m365_set_auto_reply: () => 'Sets the Microsoft 365 mailbox auto-reply.',
   // #5173: execute_command multiplexes on `commandType` (input.payload is the
   // agent-command-specific parameters, `z.record(z.string(), z.unknown())` —
   // deliberately unvalidated, so this is a read-only extraction for display,
@@ -1281,6 +1365,23 @@ export async function createActionIntent(
     );
   }
   const originPrincipalKind: ActionIntentOriginPrincipalKind = auth.principal.kind;
+  // B-W04 (#6158): the credential id for an api_key / oauth_grant principal,
+  // and whether this is an MCP-origin intent (see isMcpOriginIntent).
+  const credentialOriginId: string | null = auth.principal.kind === 'api_key'
+    ? auth.principal.apiKeyId ?? null
+    : auth.principal.kind === 'oauth_grant'
+      ? auth.principal.grantId ?? null
+      : null;
+  const isMcpOrigin = isMcpOriginIntent({ source: input.source, originPrincipalKind });
+  if (input.correlationId !== undefined && isMcpOrigin && !UUID_RE.test(input.correlationId)) {
+    throw new ActionIntentError('correlationId must be a UUID', 'invalid_correlation_id');
+  }
+  const replayIdentity = {
+    source: input.source,
+    originPrincipalKind,
+    originPrincipalId: credentialOriginId,
+    requestedByUserId: auth.user.id as string | null,
+  };
   // Same reasoning, for the scope union: every later use site (idempotency
   // key, the insert values, the ticket-autonomy evaluation) needs a plain
   // `string | null` it can read without re-narrowing `input.scope`. The two
@@ -1942,7 +2043,8 @@ export async function createActionIntent(
     if (callerReplay) {
       if (callerReplay.requestedByUserId !== requesterId || callerReplay.requestingAgentRunId
         || callerReplay.actionName !== input.toolName || callerReplay.source !== input.source
-        || callerReplay.argumentDigest !== argumentDigest) {
+        || callerReplay.argumentDigest !== argumentDigest
+        || mcpOriginReplayMismatch(callerReplay, replayIdentity)) {
         throw new ActionIntentError('Idempotency key already belongs to a different live request', 'idempotency_conflict');
       }
       return withDbAccessContext(dbContext, async () => {
@@ -2115,6 +2217,45 @@ export async function createActionIntent(
   // system-scoped is internally consistent. Cross-tenant READS remain denied —
   // RLS filters reads by org_id regardless of which scope inserted the row
   // (proven by createIntentAtomicity.integration.test.ts).
+  // B-W04 (#6158, D-B27 step 4): the churn charge (Redis) runs outside any
+  // DB context and only when a NEW row is about to be inserted — a live
+  // replay of the same request is never charged. A race that turns this into
+  // a replay inside the transaction over-charges by one (accepted).
+  if (isMcpOrigin && input.beforeInsert) {
+    const [liveReplay] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+      .select({ id: actionIntents.id })
+      .from(actionIntents)
+      .where(and(
+        eq(actionIntents.orgId, orgId),
+        eq(actionIntents.idempotencyKey, idempotencyKey),
+        inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+      ))
+      .limit(1)));
+    if (!liveReplay) {
+      // Advisory cap pre-check (the locked check in the transaction stays
+      // authoritative): a credential already at its live cap must not burn
+      // its hourly churn budget on calls that will be refused anyway.
+      if (input.maxLiveForOrigin !== undefined) {
+        const [live] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(actionIntents)
+          .where(and(
+            eq(actionIntents.source, 'mcp_api'),
+            eq(actionIntents.originPrincipalKind, originPrincipalKind),
+            eq(actionIntents.originPrincipalId, credentialOriginId ?? ''),
+            inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+          ))));
+        if ((live?.n ?? 0) >= input.maxLiveForOrigin) {
+          throw new ActionIntentError(
+            'Too many actions from this connection are waiting for approval',
+            'too_many_pending_actions',
+          );
+        }
+      }
+      await runOutsideDbContext(() => input.beforeInsert!());
+    }
+  }
+
   let creation: CreationResult;
   try {
     creation = await withSystemDbAccessContext(async (): Promise<CreationResult> => {
@@ -2250,6 +2391,42 @@ export async function createActionIntent(
           ? { scriptLaneRefusal: scriptLaneDecision.reason }
           : null;
 
+      // B-W04 (#6158, D-B27 steps 1-3): per-origin cap, serialised by an
+      // advisory lock on the origin credential so N concurrent creations can
+      // never overshoot it. A live replay of this exact request is let
+      // through first (it converges on the existing row below and is never
+      // refused for the cap). The count reads action_intents_live_origin_idx.
+      if (isMcpOrigin && input.maxLiveForOrigin !== undefined) {
+        const originRef = `${originPrincipalKind}:${credentialOriginId ?? ''}`;
+        await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`mcp-intent-cap:${originRef}`}))`);
+        const [liveReplay] = await db
+          .select({ id: actionIntents.id })
+          .from(actionIntents)
+          .where(and(
+            eq(actionIntents.orgId, orgId),
+            eq(actionIntents.idempotencyKey, idempotencyKey),
+            inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+          ))
+          .limit(1);
+        if (!liveReplay) {
+          const [live] = await db
+            .select({ n: sql<number>`count(*)::int` })
+            .from(actionIntents)
+            .where(and(
+              eq(actionIntents.source, 'mcp_api'),
+              eq(actionIntents.originPrincipalKind, originPrincipalKind),
+              eq(actionIntents.originPrincipalId, credentialOriginId ?? ''),
+              inArray(actionIntents.status, LIVE_INTENT_STATUSES),
+            ));
+          if ((live?.n ?? 0) >= input.maxLiveForOrigin) {
+            throw new ActionIntentError(
+              'Too many actions from this connection are waiting for approval',
+              'too_many_pending_actions',
+            );
+          }
+        }
+      }
+
       const [inserted] = await db
         .insert(actionIntents)
         .values({
@@ -2315,7 +2492,7 @@ export async function createActionIntent(
           toolSourceToolId: externalTool?.toolSourceToolId ?? null,
           toolRevision: externalTool?.revision ?? null,
           idempotencyKey,
-          correlationId: randomUUID(),
+          correlationId: isMcpOrigin && input.correlationId ? input.correlationId : randomUUID(),
           approvalScope,
           classificationVersion: CLASSIFICATION_VERSION,
           effectDigest,
@@ -2459,7 +2636,9 @@ export async function createActionIntent(
           // going to refuse as `external_tool_disabled`/`_drift` — a confusing
           // spurious failure instead of an honest conflict here.
           (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
-          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null) ||
+          // B-W04 (#6158, D-B27): same credential, same human.
+          mcpOriginReplayMismatch(existing, replayIdentity)
         ) {
           throw new ActionIntentError(
             'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
@@ -2701,7 +2880,10 @@ export async function createActionIntent(
   if (
     creation.isNew &&
     creation.intent.status === 'pending_approval' &&
-    (creation.intent.approvalScope === 'four_eyes' || creation.intent.source === 'ai_agent')
+    (creation.intent.approvalScope === 'four_eyes' || creation.intent.source === 'ai_agent'
+      // B-W04 (#6158, D-B28): an MCP-origin intent is headless too — nobody
+      // is watching a chat pane — so a supervised one notifies its requester.
+      || isMcpOriginIntent(creation.intent))
   ) {
     await notifyFannedOutApprovers({
       orgId,
@@ -2821,7 +3003,10 @@ export async function createActionIntent(
     });
   }
 
-  return toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds);
+  return {
+    ...toSnapshot(creation.intent, creation.approvalRequestIds, creation.requesterApprovalRequestId, creation.fanOutUserIds),
+    replayed: !creation.isNew,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3304,17 +3489,70 @@ export async function transitionIntent(
         : sql`COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) > now()`;
   }
 
-  return withSystemDbAccessContext(async () => {
+  const decided = await withSystemDbAccessContext(async () => {
     const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
     if (deadlineCondition) conditions.push(deadlineCondition);
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })
       .where(and(...conditions))
-      .returning({ id: actionIntents.id });
-    return rows.length > 0;
+      .returning({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        toolName: actionIntents.actionName,
+        requestingAgentRunId: actionIntents.requestingAgentRunId,
+      });
+    const row = rows[0];
+    if (!row) return null;
+    // Wisp W05: the grant is reachable through the run that minted the intent
+    // (action_intents carries no grant column). Only decision transitions
+    // publish, so only they pay for the extra read.
+    let grantId: string | null = null;
+    if (DECISION_STATUSES.has(to) && row.requestingAgentRunId) {
+      const [run] = await db
+        .select({ grantId: aiAgentRuns.grantId })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, row.requestingAgentRunId))
+        .limit(1);
+      grantId = run?.grantId ?? null;
+    }
+    return { row, grantId };
   });
+  if (!decided) return false;
+
+  // Wisp W05: `ai.intent.decided` wakes the triage engine. Published AFTER the
+  // system block has returned (never inside an open DB context, #1105) and
+  // never awaited: a bus outage must not fail or delay the CAS the caller won.
+  if (DECISION_STATUSES.has(to)) {
+    const { row, grantId } = decided;
+    // publishEvent is `async`, so in production it only ever rejects; the
+    // outer catch covers a non-async stand-in (test doubles) that throws.
+    try {
+      void publishEvent('ai.intent.decided', row.orgId, {
+        intentId: row.id,
+        orgId: row.orgId,
+        toolName: row.toolName,
+        decision: to,
+        requestingAgentRunId: row.requestingAgentRunId ?? null,
+        grantId,
+      }, 'action-intents').catch(reportIntentDecidedPublishFailure);
+    } catch (err) {
+      reportIntentDecidedPublishFailure(err);
+    }
+  }
+  return true;
 }
+
+/** A lost `ai.intent.decided` is a lost Wisp wake: report it, never fail the caller. */
+function reportIntentDecidedPublishFailure(err: unknown): void {
+  console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'actionIntents', op: 'publish_intent_decided' });
+}
+
+/** Statuses that are decisions (not execution progress) — they emit `ai.intent.decided`. */
+const DECISION_STATUSES: ReadonlySet<ActionIntentStatus> = new Set<ActionIntentStatus>([
+  'approved', 'rejected', 'expired', 'cancelled',
+]);
 
 // ---------------------------------------------------------------------------
 // waitForIntentDecision — chat SDK's blocking poll (spec §6.1)

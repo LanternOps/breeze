@@ -970,7 +970,15 @@
       "allAdmitted": "Tutti i dispositivi selezionati sono stati ammessi e messi in coda.",
       "partiallyAdmitted": "Alcuni dispositivi sono stati ammessi e messi in coda. Esamina le destinazioni rimanenti.",
       "rejected": "Nessun dispositivo è stato ammesso. Esamina i motivi qui sotto.",
-      "queued": "In coda"
+      "queued": "In coda",
+      "reasons": {
+        "not_found_or_inaccessible": "Dispositivo non trovato o non accessibile",
+        "site_access_denied": "Non hai accesso al sito di questo dispositivo",
+        "script_org_mismatch": "Lo script appartiene a un'organizzazione diversa da quella del dispositivo",
+        "os_incompatible": "Lo script non è compatibile con il sistema operativo di questo dispositivo",
+        "device_decommissioned": "Il dispositivo è stato dismesso",
+        "maintenance_suppressed": "Saltato: il dispositivo è in una finestra di manutenzione"
+      }
     },
     "confirm": {
       "title": "Conferma esecuzione",

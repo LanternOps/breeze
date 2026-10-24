@@ -24,7 +24,8 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import {
   contractBillingPeriods, contractLines, contractRenewalNotices, contracts, invoices, organizations, partners,
 } from '../../db/schema';
-import { generateDueInvoice, summarizeActiveContractMrrByOrg } from '../../services/contractService';
+import { generateDueInvoice } from '../../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../../services/contractMrr';
 import { addDaysISO } from '../../services/contractMath';
 import { runBillingSweepJob } from '../../jobs/contractWorker';
 import { seedBlockFixture } from './hourBlockFixtures';

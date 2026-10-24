@@ -24,6 +24,12 @@ const GROUP_LABEL_KEYS: Record<SpendGroupBy, string> = {
   user: 'aiModels.usage.groupBy.user',
   org: 'aiModels.usage.groupBy.org',
 };
+const TITLE_KEYS: Record<SpendGroupBy, string> = {
+  model: 'aiModels.usage.titleBy.model',
+  surface: 'aiModels.usage.titleBy.feature',
+  user: 'aiModels.usage.titleBy.technician',
+  org: 'aiModels.usage.titleBy.organization',
+};
 const QUALITY_GROUP_LABEL_KEYS: Record<QualityGroupBy, string> = {
   model: 'aiModels.quality.groupBy.model',
   surface: 'aiModels.quality.groupBy.surface',
@@ -144,7 +150,7 @@ export default function AiUsageBreakdown({ orgId }: { orgId: string | null }) {
     <div className="rounded-lg border bg-card" data-testid="ai-usage-breakdown">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-4">
         <div>
-          <h2 className="text-lg font-semibold">{quality ? t('aiModels.quality.title') : t('aiModels.usage.title')}</h2>
+          <h2 className="text-lg font-semibold">{quality ? t('aiModels.quality.title') : t(/* i18n-dynamic */ TITLE_KEYS[spendGroup])}</h2>
           <p className="text-sm text-muted-foreground">
             {quality
               ? (orgId ? t('aiModels.quality.subtitleOrg') : t('aiModels.quality.subtitleAll'))

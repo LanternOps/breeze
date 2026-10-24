@@ -160,3 +160,19 @@ describe('notes, terms, footer and pay-online line', () => {
     expect(t).toEqual(expect.arrayContaining(['OBSERVAÇÕES', 'TERMOS E CONDIÇÕES', 'Pagar on-line: ']));
   });
 });
+
+describe('deposit line', () => {
+  it('prints "Deposit of $540.00 due" under the totals, as the web and portal views do', async () => {
+    const pdf = await renderInvoicePdfBuffer(
+      makeFixtureInvoice({ depositDue: '540.00', amountPaid: '0.00' }), goldenLines(), fixtureBranding);
+    const all = texts(pdf).join(' ');
+    expect(all).toContain('Deposit of');
+    expect(all).toContain('$540.00');
+    expect(all).toMatch(/due/);
+  });
+
+  it('prints no deposit line when the invoice has no deposit', async () => {
+    const all = texts(await renderInvoicePdfBuffer(makeFixtureInvoice({ depositDue: null }), goldenLines(), fixtureBranding)).join(' ');
+    expect(all).not.toContain('Deposit of');
+  });
+});

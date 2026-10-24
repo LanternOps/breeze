@@ -190,8 +190,21 @@ export const SENTRY_EVENT_CODES = [
   // --- ai spend / billing -----------------------------------------------
   /** The billing service's AI-credit check failed; the gate fell open. */
   'ai_billing_credits_check_failed',
-  /** A platform-funded AI deduction did not land — that spend went unbilled. */
+  /**
+   * A platform-funded AI deduction did not land — that spend went unbilled.
+   * Emitted only by the legacy UNKEYED deduct, deleted in #9451 (compute now
+   * debits keyed: `ai_credit_debit_rejected` / `_retries_exhausted`). Kept
+   * registered so historical events and alert rules keep resolving.
+   */
   'ai_billing_credits_deduct_failed',
+  /**
+   * #7717 item 3: the sweep found platform credit debits stamped failed
+   * (terminal 4xx incl. auth after a billing-key rotation, or retries
+   * exhausted) and/or dead pending settlements. Neither is retried on its own;
+   * an operator re-drives / replays them at /api/v1/admin/ai-billing. At most
+   * hourly per process; tags carry the two counts.
+   */
+  'ai_billing_operator_backlog',
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
   /**
@@ -374,6 +387,8 @@ export const SENTRY_EVENT_CODES = [
   'mcp_session_unknown_rate_high',
   /** SEP-2243 header/body mismatch rate spiked on stateless MCP — suspect a body-rewriting gateway or request smuggling (B-W03 #6157). */
   'mcp_header_mismatch_rate_high',
+  /** A legacy MCP session's negotiated-extension side key could not be written; that session gets no MCP Apps for its lifetime (B-W05 #6159). */
+  'mcp_session_ext_write_failed',
 
   // --- retention --------------------------------------------------------
   /**

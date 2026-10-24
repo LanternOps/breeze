@@ -85,7 +85,7 @@ describe('LifecyclePage', () => {
       data: {
         id: 'run-2', reportId: 'report-1', type: 'hardware_lifecycle',
         name: 'Hardware lifecycle', status: 'completed', startedAt: null,
-        completedAt: null, rowCount: 1, createdAt: '2026-06-10T12:00:00.000Z',
+        completedAt: null, rowCount: 1, csvAvailable: true, createdAt: '2026-06-10T12:00:00.000Z',
       },
       statusCode: 201,
     });

@@ -18,6 +18,7 @@ import { captureException } from './sentry';
 import type { InvoiceActor } from './invoiceTypes';
 import { ContractServiceError } from './contractTypes';
 import { hourBlockDayStart, loadPeriodClaims } from './contractHourBlockHolds';
+import { lockTicketsForWrite } from './ticketRowLock';
 import {
   computePeriodMath, selectClosablePeriods, sumEntryHours, type ClosablePeriod, type RolloverPolicy,
 } from './contractHourBlocks';
@@ -42,7 +43,79 @@ type OverageInvoice = { id: string; actor: InvoiceActor };
 const dayStart = hourBlockDayStart;
 const todayUTC = (d: Date): string => d.toISOString().slice(0, 10);
 
-/** Closes every closable period of one block line, earliest first. Caller holds the contract row lock. */
+/** The closable periods of one block line (read under the caller's contract row lock). */
+async function closablePeriodsFor(contract: ContractRow, line: LineRow, asOf: Date) {
+  if (line.lineType !== 'hour_block' || line.hourBlockFirstPeriodStart == null
+    || line.includedQuantity == null || line.overageUnitPrice == null || line.rolloverPolicy == null) {
+    // contract_lines_hour_block_chk makes these non-null on a block line; a row
+    // that slips past it must fail loudly, never close against a guessed zero.
+    throw new ContractServiceError(`Contract line ${line.id} is not a complete block of hours`, 500, 'INVALID_STATE');
+  }
+  const claims = await loadPeriodClaims(contract.id);
+  const closed = await db.select({ s: contractHourPeriods.periodStart }).from(contractHourPeriods)
+    .where(eq(contractHourPeriods.contractLineId, line.id));
+  return selectClosablePeriods({
+    contractStartDate: contract.startDate, intervalMonths: contract.intervalMonths,
+    firstPeriodStart: line.hourBlockFirstPeriodStart,
+    retiredAt: line.hourBlockRetiredAt ?? null,
+    claims,
+    closedPeriodStarts: new Set(closed.map((r) => r.s)),
+    todayISO: todayUTC(asOf),
+  });
+}
+
+/** The entries one period's close claims (closeOne's step 1 locks exactly these). */
+function eligibleEntries(contract: ContractRow, p: ClosablePeriod) {
+  return and(
+    eq(timeEntries.orgId, contract.orgId),
+    eq(timeEntries.isBillable, true),
+    eq(timeEntries.billingStatus, 'not_billed'),
+    isNotNull(timeEntries.endedAt),
+    gte(timeEntries.endedAt, dayStart(p.periodStart)),
+    lt(timeEntries.endedAt, dayStart(p.periodEnd)),
+  );
+}
+
+/**
+ * #8972 W0: the tickets of every entry the caller's closes will claim — all
+ * of `lines`, all of their closable periods — locked `FOR UPDATE` in ONE
+ * ascending batch (lockTicketsForWrite), before the first close. Call it
+ * after the contract row lock and before closeHourBlockPeriods, once per
+ * transaction.
+ *
+ * Why one batch, here: the closes run in the caller's contract transaction,
+ * so the contract row is already held (the billing run's first statement,
+ * #3778) and the order is contract → tickets → time_entries. Invoice issue
+ * and void take their source tickets after their contracts too. A batch per
+ * period would hold one period's tickets while requesting the next period's,
+ * out of ascending order against every other multi-ticket writer.
+ *
+ * No org SHARE: it could not be this transaction's first lock (the contract
+ * is), and the close never took it before W0.
+ *
+ * The set comes from an unlocked read. An entry that becomes eligible after
+ * it is claimed without its ticket's lock: safe, because nothing in these
+ * transactions requests a ticket lock after this call (no late lock), so the
+ * close never holds an entry while waiting on a ticket.
+ */
+export async function lockHourBlockSourceTickets(contract: ContractRow, lines: readonly LineRow[], asOf: Date): Promise<void> {
+  assertInTransaction('lockHourBlockSourceTickets');
+  const ticketIds = new Set<string>();
+  for (const line of lines) {
+    const { periods } = await closablePeriodsFor(contract, line, asOf);
+    for (const p of periods) {
+      const rows = await db.selectDistinct({ ticketId: timeEntries.ticketId }).from(timeEntries).where(eligibleEntries(contract, p));
+      for (const r of rows) if (r.ticketId) ticketIds.add(r.ticketId);
+    }
+  }
+  if (ticketIds.size > 0) await lockTicketsForWrite(db, [...ticketIds]);
+}
+
+/**
+ * Closes every closable period of one block line, earliest first. Caller
+ * holds the contract row lock AND has called lockHourBlockSourceTickets for
+ * this line (#8972 W0).
+ */
 export async function closeHourBlockPeriods(args: {
   contract: ContractRow; line: LineRow;
   overageInvoice: OverageInvoice | (() => Promise<OverageInvoice>);
@@ -50,24 +123,7 @@ export async function closeHourBlockPeriods(args: {
 }): Promise<{ closes: HourBlockCloseSummary[]; truncated: boolean }> {
   assertInTransaction('closeHourBlockPeriods');
   const { contract, line } = args;
-  if (line.lineType !== 'hour_block' || line.hourBlockFirstPeriodStart == null
-    || line.includedQuantity == null || line.overageUnitPrice == null || line.rolloverPolicy == null) {
-    // contract_lines_hour_block_chk makes these non-null on a block line; a row
-    // that slips past it must fail loudly, never close against a guessed zero.
-    throw new ContractServiceError(`Contract line ${line.id} is not a complete block of hours`, 500, 'INVALID_STATE');
-  }
-
-  const claims = await loadPeriodClaims(contract.id);
-  const closed = await db.select({ s: contractHourPeriods.periodStart }).from(contractHourPeriods)
-    .where(eq(contractHourPeriods.contractLineId, line.id));
-  const { periods, truncated } = selectClosablePeriods({
-    contractStartDate: contract.startDate, intervalMonths: contract.intervalMonths,
-    firstPeriodStart: line.hourBlockFirstPeriodStart,
-    retiredAt: line.hourBlockRetiredAt ?? null,
-    claims,
-    closedPeriodStarts: new Set(closed.map((r) => r.s)),
-    todayISO: todayUTC(args.asOf),
-  });
+  const { periods, truncated } = await closablePeriodsFor(contract, line, args.asOf);
   if (truncated) {
     console.warn('[contractHourBlocks] close backlog hit the cap; the rest close on later runs',
       { contractId: contract.id, lineId: line.id, closing: periods.length });
@@ -97,19 +153,17 @@ async function closeOne(
   contract: ContractRow, line: LineRow, p: ClosablePeriod,
   closeSource: 'billing_run' | 'close_out', getInvoice: () => Promise<OverageInvoice>,
 ): Promise<HourBlockCloseSummary> {
+  // 0. #8972 W0: the eligible entries' tickets are already locked by the
+  //    caller (lockHourBlockSourceTickets, one ascending batch for every
+  //    period of every line it closes).
+  const eligible = eligibleEntries(contract, p);
+
   // 1. Claim: lock exactly the eligible rows, in issueInvoice's order.
   const locked = await db.select({
     id: timeEntries.id,
     minutes: sql<number>`COALESCE(${timeEntries.billableMinutes}, ${timeEntries.durationMinutes}, 0)`.mapWith(Number),
     currencyCode: timeEntries.currencyCode,
-  }).from(timeEntries).where(and(
-    eq(timeEntries.orgId, contract.orgId),
-    eq(timeEntries.isBillable, true),
-    eq(timeEntries.billingStatus, 'not_billed'),
-    isNotNull(timeEntries.endedAt),
-    gte(timeEntries.endedAt, dayStart(p.periodStart)),
-    lt(timeEntries.endedAt, dayStart(p.periodEnd)),
-  )).orderBy(asc(timeEntries.id)).for('update');
+  }).from(timeEntries).where(eligible).orderBy(asc(timeEntries.id)).for('update');
 
   // 2. Compute from exactly the locked set.
   const consumed = sumEntryHours(locked.map((r) => r.minutes));
@@ -227,13 +281,15 @@ export async function runHourBlockCloseOutSweep(asOf: Date = new Date()): Promis
         const [c] = await db.select().from(contracts).where(eq(contracts.id, contractId)).limit(1).for('update');
         if (!c) return 0; // deleted since the candidate read
         const actor: InvoiceActor = { userId: c.createdBy, partnerId: c.partnerId, accessibleOrgIds: [c.orgId] };
-        const lines = await db.select().from(contractLines)
+        const allLines = await db.select().from(contractLines)
           .where(and(eq(contractLines.contractId, contractId), eq(contractLines.lineType, 'hour_block')))
           .orderBy(asc(contractLines.id));
+        // A live line on an active contract belongs to the billing run (re-read under the lock).
+        const lines = allLines.filter((line) => (c.status as string) !== 'active' || line.hourBlockRetiredAt !== null);
+        // #8972 W0: every close's tickets, one ascending batch, after the contract.
+        await lockHourBlockSourceTickets(c, lines, asOf);
         let n = 0;
         for (const line of lines) {
-          // A live line on an active contract belongs to the billing run (re-read under the lock).
-          if ((c.status as string) === 'active' && line.hourBlockRetiredAt === null) continue;
           const r = await closeHourBlockPeriods({
             contract: c, line, closeSource: 'close_out', asOf,
             overageInvoice: async () => {

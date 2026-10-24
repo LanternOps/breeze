@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} approvazione in attesa",
     "pendingApprovals_other": "{{count}} approvazioni in attesa",
     "tickets": "Ticket",
-    "incidents": "Incidenti",
+    "incidents": "Incidenti di sicurezza",
     "remoteAccess": "Accesso remoto",
     "scripts": "Script",
     "patches": "Patch",
@@ -116,7 +116,9 @@
     "ticketsServiceRequests": "Richieste di servizio",
     "ticketsProblems": "Problemi",
     "ticketsChanges": "Modifiche",
-    "endpointMessages": "Messaggi"
+    "endpointMessages": "Messaggi",
+    "securityDetectionRules": "Regole di rilevamento",
+    "planAndFeatures": "Piano e funzionalità"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -427,13 +429,21 @@
       "unratedPending_other": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
       "empty": "Nessun dato sulle patch ancora",
       "imagesNotChecked_one": "{{count}} immagine container non verificata",
-      "imagesNotChecked_other": "{{count}} immagini container non verificate"
+      "imagesNotChecked_other": "{{count}} immagini container non verificate",
+      "devicesNeedPatches_one": "{{count}} dispositivo necessita di patch",
+      "devicesNeedPatches_other": "{{count}} dispositivi necessitano di patch",
+      "viewPendingDevices": "Visualizza i dispositivi con patch in sospeso",
+      "viewFailedDevices": "Visualizza i dispositivi con patch non riuscite",
+      "viewCriticalDevices": "Visualizza i dispositivi con patch critiche"
     },
     "vuln": {
       "title": "Vulnerabilità",
       "criticalOpen": "Critiche aperte",
       "kev": "Sfruttamento noto",
       "patchReady": "Patch disponibile",
+      "viewCritical": "Mostra CVE critiche",
+      "viewPatchReady": "Mostra CVE con patch pronta",
+      "viewOpen": "Mostra CVE aperte",
       "totalOpen": "{{count}} rilevamenti aperti",
       "totalOpen_one": "{{count}} rilevamento aperto",
       "totalOpen_other": "{{count}} rilevamenti aperti",
@@ -771,9 +781,9 @@
     },
     "search": {
       "prompt": "Cerca in Breeze",
-      "placeholder": "Cerca dispositivi, script, avvisi, utenti, impostazioni...",
+      "placeholder": "Cerca dispositivi, script, avvisi, impostazioni...",
       "searching": "Ricerca…",
-      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi, utenti e impostazioni.",
+      "startTyping": "Inizia a digitare per eseguire ricerche tra dispositivi, script, avvisi e impostazioni.",
       "noResults": "Nessun risultato trovato. Prova una query diversa.",
       "navigationHint": "Usa le frecce per navigare, Invio per aprire",
       "closeHint": "Esc per chiudere",
@@ -863,6 +873,8 @@
       "cycleSidebar": "Cambia la modalità della barra laterale",
       "help": "Apri il pannello di aiuto",
       "showThis": "Mostra questa scheda",
+      "orgSwitcher": "Apri il selettore dell'organizzazione",
+      "aiSidebar": "Mostra o nascondi la barra laterale IA",
       "close": "Chiudi una finestra di dialogo o un menu",
       "typingNote": "Le scorciatoie a tasto singolo sono sospese mentre digiti in un campo.",
       "create": "Crea",
@@ -1151,27 +1163,10 @@
           "basicInformation": "Informazioni di base",
           "connectionDetails": "Dettagli di connessione",
           "credentials": "Credenziali",
-          "syncSettings": "Sincronizza impostazioni"
+          "syncSettings": "Sincronizzazione dei ticket"
         },
         "sync": {
-          "autoClose": "Chiudi automaticamente i ticket PSA.",
-          "autoCloseHelp": "Chiudi i ticket collegati quando gli avvisi Breeze vengono risolti.",
-          "enable": "Abilita la sincronizzazione",
-          "enableHelp": "Mantieni aggiornati i ticket e i collegamenti di avviso secondo una pianificazione.",
-          "notes": "Sincronizza le note di avviso",
-          "notesHelp": "Invia commenti e aggiornamenti da Breeze alla cronologia dei ticket PSA."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirezionale",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Ogni giorno",
-          "every15Minutes": "Ogni 15 minuti",
-          "every30Minutes": "Ogni 30 minuti",
-          "every6Hours": "Ogni 6 ore",
-          "everyHour": "Ogni ora"
+          "unavailable": "La sincronizzazione dei ticket non è ancora disponibile. Le connessioni possono essere testate e usate per importare aziende come organizzazioni; nessun dato dei ticket viene scambiato tra Breeze e il tuo PSA."
         },
         "testDirtyHint": "Salva prima di procedere: il test verifica le credenziali memorizzate, non le modifiche non salvate.",
         "validation": {
@@ -1195,7 +1190,7 @@
         },
         "connectionCount": "{{filtered}} di {{total}} connessioni",
         "empty": {
-          "noConnections": "Connetti un provider PSA per avviare la sincronizzazione dei ticket.",
+          "noConnections": "Collega un provider PSA per testarlo e importarne le aziende.",
           "noMatches": "Nessuna connessione corrisponde alla tua ricerca o ai tuoi filtri.",
           "title": "Nessuna connessione PSA configurata"
         },
@@ -1229,7 +1224,7 @@
           "tryAgain": "Riprova"
         },
         "delete": {
-          "activeWarning": "Questa connessione è attiva. La sincronizzazione dei ticket verrà interrotta immediatamente.",
+          "activeWarning": "Questa connessione è attiva. Eliminandola, la connessione viene rimossa immediatamente.",
           "confirm": "Sei sicuro di voler eliminare {{name}}?",
           "irreversible": "Questa azione non può essere annullata.",
           "title": "Elimina la connessione PSA",
@@ -1248,10 +1243,10 @@
         "modal": {
           "addDescription": "Configura una nuova connessione PSA per la tua organizzazione.",
           "addTitle": "Aggiungi connessione PSA",
-          "editDescription": "Aggiorna i dettagli di connessione e le preferenze di sincronizzazione di PSA",
+          "editDescription": "Aggiorna i dettagli della connessione PSA.",
           "editTitle": "Modifica la connessione PSA"
         },
-        "subtitle": "Collega il tuo PSA per sincronizzare i ticket e collegare gli avvisi.",
+        "subtitle": "Testa le connessioni PSA e importa le aziende come organizzazioni.",
         "test": {
           "failedMessage": "Impossibile connettersi al provider PSA.",
           "failedTitle": "Connessione non riuscita",
@@ -1266,8 +1261,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nessun ticket corrisponde alla tua ricerca o ai tuoi filtri.",
-          "noTickets": "Sincronizza la tua prima connessione PSA per vedere i ticket qui.",
-          "title": "Nessun ticket PSA sincronizzato"
+          "noTickets": "La sincronizzazione dei ticket non è ancora disponibile, quindi i ticket PSA non vengono importati.",
+          "title": "Nessun ticket PSA"
         },
         "filters": {
           "allStatuses": "Tutti gli stati",
@@ -1400,6 +1395,12 @@
           "signingSecret": "Utilizza questo segreto per verificare le firme dei webhook."
         },
         "invalidJsonPreview": "JSON non valido nel modello.",
+        "otherEvents": {
+          "allEvents": "Tutti gli eventi (*)",
+          "allEventsHint": "Questo webhook è sottoscritto a tutti gli eventi, quindi gli eventi singoli qui sotto non vengono usati. Rimuovi «Tutti gli eventi» per sceglierne di specifici.",
+          "remove": "Rimuovi {{event}}",
+          "title": "Altri eventi sottoscritti"
+        },
         "payload": {
           "previewEmpty": "L'anteprima viene visualizzata una volta che JSON è valido.",
           "subtitle": "Definisci la forma del payload JSON inviato alla tua destinazione.",
@@ -1413,7 +1414,7 @@
           "name": "Webhook di produzione",
           "signingSecret": "Inserisci un segreto per la firma"
         },
-        "subtitle": "Imposta il comportamento di consegna, autenticazione e payload.",
+        "subtitle": "Imposta destinazione, eventi, autenticazione e intestazioni.",
         "title": "Configurazione del webhook",
         "validation": {
           "eventRequired": "Seleziona almeno un evento",
@@ -1475,7 +1476,7 @@
           "noPayloadTemplate": "Nessun modello di payload ancora salvato.",
           "payloadPreview": "Anteprima del modello di carico utile",
           "testEvent": "Evento di prova",
-          "testEventHelp": "I test utilizzano l'evento selezionato e il modello di payload.",
+          "testEventHelp": "Invia a questo endpoint un payload di esempio per l'evento selezionato.",
           "title": "Dettagli del webhook"
         },
         "emptySelection": "Seleziona un webhook per visualizzare la cronologia di consegna e gli strumenti di test.",
@@ -2223,7 +2224,7 @@
         },
         "loading": "Caricamento incidenti...",
         "tryAgain": "Riprova",
-        "title": "Incidenti",
+        "title": "Incidenti di sicurezza",
         "description": "Tieni traccia degli incidenti e dei risultati EDR nelle tue organizzazioni.",
         "filters": {
           "tracked": "Monitorati",
@@ -2253,6 +2254,11 @@
         "genericEdrProvider": "Provider EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Tecnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente non trovato",
           "fetchFailed": "Impossibile recuperare l'incidente"
@@ -2385,7 +2391,7 @@
           },
           "search": {
             "title": "Cerca qualsiasi cosa",
-            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi, utenti o impostazioni."
+            "description": "Premi Cmd+K per trovare immediatamente dispositivi, script, avvisi o impostazioni."
           },
           "switchOrgs": {
             "title": "Cambia organizzazione",
@@ -2778,5 +2784,9 @@
     "title": "Questa sezione si è bloccata",
     "description": "Un errore di rendering ha impedito la visualizzazione di questa pagina. Riprova e, se il problema persiste, includi il messaggio qui sotto nella segnalazione.",
     "retry": "Riprova"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloccato",
+    "upgrade": "Vedi i piani"
   }
 }

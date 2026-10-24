@@ -273,6 +273,7 @@ describe('bodyLimitForPath', () => {
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
       'agent-workloads': '/api/v1/agents/agent-1/workloads',
       'edr-webhook': '/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
+      'wisp-thread-attachment': '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments',
     };
     for (const [rule, path] of Object.entries(sampled)) {
       expect({ path, rule: bodyLimitForPath(path).rule }).toEqual({ path, rule });
@@ -387,6 +388,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 5 * MB,
     note: 'carved out — 5MB agent connections ingest (#3516); same shape as heartbeat/inventory.',
   },
+  'agents/pamElevationUnable.ts': {
+    paths: ['/api/v1/agents/agent-1/pam/elevation-unable'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 8 KiB device-unable report (#9517), enforced on bytes read so a chunked body is capped too.',
+  },
   'agents/hardwareHealth.ts': {
     paths: ['/api/v1/agents/agent-1/hardware-health'],
     globalMaxSize: 2 * MB,
@@ -413,6 +419,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     ],
     globalMaxSize: 1 * MB,
     note: 'route limit (32KB) is TIGHTER than the global default, so it applies as written.',
+  },
+  'wispThreads.ts': {
+    paths: ['/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments'],
+    globalMaxSize: 6 * MB,
+    note: 'carved out — Wisp thread attachment (5 MiB text + 1 MiB envelope/JSON escaping); route and gate agree at 6MB.',
   },
   'agents/processSample.ts': {
     paths: ['/api/v1/agents/agent-1/process-sample'],
@@ -479,6 +490,27 @@ describe('route-level bodyLimit registrations vs the global gate', () => {
           `${file} (${note})`,
         ).toEqual({ file, path, maxSize: expected });
       }
+    }
+  });
+});
+
+describe('Wisp thread attachment carve-out (W04 6b)', () => {
+  it('gives POST /wisp/thread/:id/attachments 5 MiB + 1 MiB of headroom', () => {
+    expect(bodyLimitForPath('/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments')).toEqual({
+      rule: 'wisp-thread-attachment',
+      maxSize: 6 * MB,
+      error: 'Attachment too large (max 5 MiB)',
+    });
+  });
+
+  it('does NOT widen the sibling thread routes', () => {
+    for (const path of [
+      '/api/v1/wisp/thread',
+      '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/focus',
+      '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments/x',
+      '/api/v1/wisp/grants',
+    ]) {
+      expect(bodyLimitForPath(path).rule, path).toBe('default');
     }
   });
 });
@@ -552,5 +584,30 @@ describe('quote acceptance evidence carve-out (#6633)', () => {
   it('does NOT widen the quote JSON routes', () => {
     expect(bodyLimitForPath(`/api/v1/quotes/${Q}/accept-on-behalf`).rule).toBe('default');
     expect(bodyLimitForPath(`/api/v1/quotes/${Q}/acceptance`).rule).toBe('default');
+  });
+});
+
+describe('YARA rule test sample carve-out (#6263 W04-2)', () => {
+  const SET = '22222222-2222-4222-8222-222222222222';
+
+  it('gives the test upload 10 MiB + 64 KiB so the route answers its own 413', () => {
+    expect(bodyLimitForPath(`/api/v1/security/yara/rule-sets/${SET}/test`)).toEqual({
+      rule: 'yara-test-sample',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'File too large (max 10 MB)',
+    });
+  });
+
+  it('leaves every other /security/yara path at the default', () => {
+    for (const p of [
+      `/api/v1/security/yara/rule-sets/${SET}`,
+      `/api/v1/security/yara/rule-sets/${SET}/rules`,
+      `/api/v1/security/yara/rule-sets/${SET}/ioc-import`,
+      `/api/v1/security/yara/rule-sets/${SET}/test/extra`,
+      '/api/v1/security/yara/rule-sets/not-a-uuid/test',
+      '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333',
+    ]) {
+      expect(bodyLimitForPath(p).rule, p).toBe('default');
+    }
   });
 });

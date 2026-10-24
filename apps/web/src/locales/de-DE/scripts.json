@@ -970,7 +970,15 @@
       "allAdmitted": "Alle ausgewählten Geräte wurden zugelassen und in die Warteschlange gestellt.",
       "partiallyAdmitted": "Einige Geräte wurden zugelassen und in die Warteschlange gestellt. Prüfen Sie die übrigen Ziele.",
       "rejected": "Keine Geräte wurden zugelassen. Prüfen Sie die Gründe unten.",
-      "queued": "In Warteschlange"
+      "queued": "In Warteschlange",
+      "reasons": {
+        "not_found_or_inaccessible": "Gerät nicht gefunden oder nicht zugänglich",
+        "site_access_denied": "Sie haben keinen Zugriff auf den Standort dieses Geräts",
+        "script_org_mismatch": "Das Skript gehört zu einer anderen Organisation als das Gerät",
+        "os_incompatible": "Das Skript ist mit dem Betriebssystem dieses Geräts nicht kompatibel",
+        "device_decommissioned": "Das Gerät wurde außer Betrieb genommen",
+        "maintenance_suppressed": "Übersprungen: Das Gerät befindet sich in einem Wartungsfenster"
+      }
     },
     "confirm": {
       "title": "Bestätigen Sie die Ausführung",

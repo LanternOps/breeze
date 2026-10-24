@@ -1,7 +1,8 @@
 # Partner settings: one save model, panel structure, inheritance panel
 
 **Date:** 2026-10-18
-**Status:** Draft — awaiting Todd's decisions (§9)
+**Status:** Approved 2026-10-22 (Todd, Gate A); decisions recorded in §9
+**Approval:** approved 2026-10-22 by Todd. All seven Open Decisions are decided as recommended (also covers #9169).
 **Issues:** #9170 (anchor), #9169 (co-anchor), #9171 and #9172 (referenced). Part of epic #8985.
 **Scope:** `/settings/partner` (`apps/web/src/components/settings/PartnerSettingsPage.tsx` and its tabs), plus one
 new read-only API surface for the inheritance panel. This document decides intent; it does not contain plans or
@@ -568,12 +569,16 @@ W4 also depends on W2's saved-versus-draft and refetch-after-save contract.
    *Trade-off:* (a) gives one place to save and one dirty model, at the cost of multi-endpoint partial failure,
    which must be shown per tab. (b) is less work and has no multi-endpoint semantics, but leaves two Save locations.
    **Recommend (a).** Partial failure is already per tab, and the status line makes it visible.
+
+   **Decided 2026-10-22:** (a). One header Save, with per-unit save adapters (§3.3).
 2. **Who may read the inheritance data?** *(Todd-gated: a tenancy read-scope choice.)*
    *Options:* (a) Only full-access partner users (`canManagePartnerWidePolicies`). Others see badges and the
    partner's own value, and the counts are replaced by "Org breakdown requires full partner access". (b) Any
    partner user, with counts over the orgs they can see.
    **Recommend (a).** Selected-access users cannot save the page, and "4 of 12 orgs" over a partial set misstates
    the fleet a partner default reaches.
+
+   **Decided 2026-10-22:** (a). Inheritance counts are gated on `canManagePartnerWidePolicies`.
 3. **Fix `locked[]` over-reporting?** *(Todd-gated: it changes org-side behaviour.)*
    `getEffectiveOrgSettings` reports partner-set org-wins fields (pins, enrollment defaults, Pushover, a partially
    configured Event Logs destination) as locked.
@@ -582,21 +587,31 @@ W4 also depends on W2's saved-versus-draft and refetch-after-save contract.
    move to a catalog lookup.
    **Recommend (a) now, with (b) filed as its own issue.** It changes org-side behaviour, and the org editors need
    their own review.
+
+   **Decided 2026-10-22:** (a) now. The `locked[]` over-reporting fix is filed as its own issue.
 4. **Drill-down shows values or counts only?** *(Todd-gated: what org data partner users see.)*
    *Options:* (a) The org name and its own value, through the per-field non-secret projection (§5.6). (b) Counts
    and org names only.
    **Recommend (a).** "Which orgs override, and to what" is the question the panel exists to answer.
+
+   **Decided 2026-10-22:** (a). The drill-down shows the non-secret org value through the allowlisted per-field projection (§5.6).
 5. **Known Guests' home.** *(Todd-gated: product placement.)*
    *Options:* (a) Its own partner-settings tab under Devices & agents (§4.3). (b) Move it to a network-discovery
    settings surface, following settings rule 2 ("settings live with their domain").
    **Recommend (a) now.** It is partner-wide state and there is no partner-level discovery settings home today.
    Revisit if one appears.
+
+   **Decided 2026-10-22:** (a). Known Guests gets its own tab under "Devices & agents".
 6. **Side-panel breakpoint.** *(Plan decides unless Todd objects.)* (a) 1920 px, as measured in #9171. (b)
    Tailwind `2xl` (1536 px), where the three columns do not fit beside the app sidebar without shrinking the form.
    **Recommend (a).**
+
+   **Decided 2026-10-22:** (a). 1920 px.
 7. **Rail group names.** *(Plan decides unless Todd objects.)* "Devices & agents" and "AI" are new. The alternative
    is "Fleet" for the former.
    **Recommend** "Devices & agents" (it matches the product's nav vocabulary).
+
+   **Decided 2026-10-22:** "Devices & agents".
 
 ## 10. Out of scope
 

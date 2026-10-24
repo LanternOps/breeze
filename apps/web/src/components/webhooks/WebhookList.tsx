@@ -20,12 +20,6 @@ export const isWebhookActive = (webhook: Pick<Webhook, 'status' | 'enabled'>): b
 
 export type WebhookAuthType = 'hmac' | 'bearer';
 
-export type WebhookAuth = {
-  type: WebhookAuthType;
-  secret?: string;
-  token?: string;
-};
-
 export type WebhookHeader = {
   key: string;
   // GET /webhooks returns every header value as a redaction marker object.
@@ -39,17 +33,15 @@ export type Webhook = {
   events: string[];
   status?: WebhookStatus;
   enabled?: boolean;
-  lastTriggeredAt?: string | null;
-  lastTriggered?: string;
+  lastDeliveryAt?: string | null;
   successCount?: number;
   failureCount?: number;
-  secret?: string;
-  bearerToken?: string;
-  auth?: WebhookAuth;
   // Set by GET /webhooks in place of the secret itself, which is never returned.
   hasSecret?: boolean;
+  // Derived by the API (#9652): 'bearer' when an `Authorization: Bearer …`
+  // header is stored, else 'hmac' when a signing secret is, else 'none'.
+  authType?: WebhookAuthType | 'none';
   headers?: WebhookHeader[];
-  payloadTemplate?: string;
 };
 
 type WebhookListProps = {
@@ -61,6 +53,8 @@ type WebhookListProps = {
   onSelect?: (webhook: Webhook) => void;
   selectedWebhookId?: string | null;
   timezone?: string;
+  /** False when the host already titles the panel (embedded in Integrations). */
+  showTitle?: boolean;
 };
 
 const statusStyles: Record<DisplayStatus, string> = {
@@ -85,7 +79,8 @@ export default function WebhookList({
   onToggle,
   onSelect,
   selectedWebhookId,
-  timezone
+  timezone,
+  showTitle = true
 }: WebhookListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
@@ -138,7 +133,9 @@ export default function WebhookList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
+          {showTitle && (
+            <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
+          )}
           <p className="text-sm text-muted-foreground">
             {t('longTail.webhooks.WebhookList.webhookCount', { filtered: filteredWebhooks.length, total: webhooks.length })}
           </p>
@@ -190,7 +187,7 @@ export default function WebhookList({
                 const eventsToShow = webhook.events.slice(0, 2);
                 const remainingEvents = webhook.events.length - eventsToShow.length;
                 const status = getStatus(webhook);
-                const lastTriggered = webhook.lastTriggeredAt ?? webhook.lastTriggered;
+                const lastTriggered = webhook.lastDeliveryAt;
 
                 return (
                   <tr

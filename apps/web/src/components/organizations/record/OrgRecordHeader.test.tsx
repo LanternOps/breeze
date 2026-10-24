@@ -13,6 +13,7 @@ vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
 import OrgRecordHeader from './OrgRecordHeader';
+import { installAstroClientRouterStandIn } from '../../../__tests__/astroClientRouterStandIn';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
 
 const ORG: OrgRecordOrg = {
@@ -231,6 +232,30 @@ describe('OrgRecordHeader', () => {
       expect(screen.getByTestId(id).className, id).toMatch(/\bh-9\b/);
     }
     granted.clear();
+  });
+});
+
+describe('OrgRecordHeader - primary-contact links switch the tab (#9337)', () => {
+  it.each([
+    ['no primary at all', { contacts: { count: 0, primary: null } }],
+    ['site-level primaries only', { contacts: { count: 1, primary: null, sitePrimaries: [{ id: 'a', name: 'Sam', email: null, phone: null, siteId: 's', siteName: 'HQ' }] } }],
+  ])('%s: clicking fires hashchange to #contacts even with the Astro router claiming anchors', async (_n, patch) => {
+    const router = installAstroClientRouterStandIn();
+    window.location.hash = '';
+    try {
+      renderHeader({ summary: { ...SUMMARY, ...patch } as OrgSummary });
+      const changed = new Promise<string>((resolve) => {
+        window.addEventListener('hashchange', (e) => {
+          if ((e as HashChangeEvent).newURL.endsWith('#contacts')) resolve('ok');
+        }, { once: false });
+      });
+      await userEvent.click(screen.getByTestId('org-record-primary-contact-link'));
+      expect(window.location.hash).toBe('#contacts');
+      await expect(changed).resolves.toBe('ok');
+    } finally {
+      router.uninstall();
+      window.location.hash = '';
+    }
   });
 });
 

@@ -15,7 +15,8 @@ vi.mock('./EdrSummaryPanel', () => ({
 }));
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth
+  fetchWithAuth,
+  registerOrgIdProvider: vi.fn()
 }));
 
 import SecurityDashboard from './SecurityDashboard';

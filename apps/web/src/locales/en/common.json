@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} pending approval",
     "pendingApprovals_other": "{{count}} pending approvals",
     "tickets": "Tickets",
-    "incidents": "Incidents",
+    "incidents": "Security Incidents",
     "remoteAccess": "Remote Access",
     "scripts": "Scripts",
     "patches": "Patches",
@@ -116,7 +116,9 @@
     "ticketsServiceRequests": "Service Requests",
     "ticketsProblems": "Problems",
     "ticketsChanges": "Changes",
-    "endpointMessages": "Messages"
+    "endpointMessages": "Messages",
+    "securityDetectionRules": "Detection Rules",
+    "planAndFeatures": "Plan & features"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -427,13 +429,21 @@
       "unratedPending_other": "{{count}} unrated patches pending (won't auto-approve)",
       "empty": "No patch data yet",
       "imagesNotChecked_one": "{{count}} container image not checked",
-      "imagesNotChecked_other": "{{count}} container images not checked"
+      "imagesNotChecked_other": "{{count}} container images not checked",
+      "devicesNeedPatches_one": "{{count}} device needs patches",
+      "devicesNeedPatches_other": "{{count}} devices need patches",
+      "viewPendingDevices": "View devices with pending patches",
+      "viewFailedDevices": "View devices with failed patches",
+      "viewCriticalDevices": "View devices with critical patches"
     },
     "vuln": {
       "title": "Vulnerabilities",
       "criticalOpen": "Critical open",
       "kev": "Known exploited",
       "patchReady": "Patch available",
+      "viewCritical": "View critical CVEs",
+      "viewPatchReady": "View patch-ready CVEs",
+      "viewOpen": "View open CVEs",
       "totalOpen": "{{count}} open findings",
       "totalOpen_one": "{{count}} open finding",
       "totalOpen_other": "{{count}} open findings",
@@ -771,9 +781,9 @@
     },
     "search": {
       "prompt": "Search Breeze",
-      "placeholder": "Search devices, scripts, alerts, users, settings…",
+      "placeholder": "Search devices, scripts, alerts, settings…",
       "searching": "Searching…",
-      "startTyping": "Start typing to search across devices, scripts, alerts, users, and settings.",
+      "startTyping": "Start typing to search across devices, scripts, alerts, and settings.",
       "noResults": "No results found. Try a different query.",
       "navigationHint": "Use arrows to navigate, Enter to open",
       "closeHint": "Esc to close",
@@ -863,6 +873,8 @@
       "cycleSidebar": "Cycle the sidebar mode",
       "help": "Open the help panel",
       "showThis": "Show this card",
+      "orgSwitcher": "Open the organization switcher",
+      "aiSidebar": "Toggle the AI sidebar",
       "close": "Close a dialog or menu",
       "typingNote": "Single-key shortcuts pause while you are typing in a field.",
       "create": "Create",
@@ -1151,27 +1163,10 @@
           "basicInformation": "Basic Information",
           "connectionDetails": "Connection Details",
           "credentials": "Credentials",
-          "syncSettings": "Sync Settings"
+          "syncSettings": "Ticket Sync"
         },
         "sync": {
-          "autoClose": "Auto-close PSA tickets",
-          "autoCloseHelp": "Close linked tickets when Breeze alerts are resolved.",
-          "enable": "Enable sync",
-          "enableHelp": "Keep tickets and alert links up to date on a schedule.",
-          "notes": "Sync alert notes",
-          "notesHelp": "Push Breeze comments and updates to the PSA ticket timeline."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirectional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Daily",
-          "every15Minutes": "Every 15 minutes",
-          "every30Minutes": "Every 30 minutes",
-          "every6Hours": "Every 6 hours",
-          "everyHour": "Every hour"
+          "unavailable": "Ticket sync is not available yet. Connections can be tested and used to import companies as organizations; no ticket data moves between Breeze and your PSA."
         },
         "testDirtyHint": "Save first — Test checks the stored credentials, not your unsaved edits.",
         "validation": {
@@ -1195,7 +1190,7 @@
         },
         "connectionCount": "{{filtered}} of {{total}} connections",
         "empty": {
-          "noConnections": "Connect a PSA provider to start syncing tickets.",
+          "noConnections": "Connect a PSA provider to test it and import its companies.",
           "noMatches": "No connections match your search or filters.",
           "title": "No PSA connections configured"
         },
@@ -1229,7 +1224,7 @@
           "tryAgain": "Try again"
         },
         "delete": {
-          "activeWarning": "This connection is active. Ticket syncing will stop immediately.",
+          "activeWarning": "This connection is active. Deleting it removes the connection immediately.",
           "confirm": "Are you sure you want to delete {{name}}?",
           "irreversible": "This action cannot be undone.",
           "title": "Delete PSA Connection",
@@ -1248,10 +1243,10 @@
         "modal": {
           "addDescription": "Set up a new PSA connection for your organization.",
           "addTitle": "Add PSA Connection",
-          "editDescription": "Update the PSA connection details and sync preferences.",
+          "editDescription": "Update the PSA connection details.",
           "editTitle": "Edit PSA Connection"
         },
-        "subtitle": "Connect your PSA to sync tickets and link alerts.",
+        "subtitle": "Test PSA connections and import companies as organizations.",
         "test": {
           "failedMessage": "Unable to connect to the PSA provider.",
           "failedTitle": "Connection failed",
@@ -1266,8 +1261,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "No tickets match your search or filters.",
-          "noTickets": "Sync your first PSA connection to see tickets here.",
-          "title": "No PSA tickets synced"
+          "noTickets": "Ticket sync is not available yet, so PSA tickets are not imported.",
+          "title": "No PSA tickets"
         },
         "filters": {
           "allStatuses": "All statuses",
@@ -1400,6 +1395,12 @@
           "signingSecret": "Use this secret to verify webhook signatures."
         },
         "invalidJsonPreview": "Invalid JSON in template.",
+        "otherEvents": {
+          "allEvents": "All events (*)",
+          "allEventsHint": "This webhook is subscribed to all events, so the individual events below are not used. Remove \"All events\" to choose specific ones.",
+          "remove": "Remove {{event}}",
+          "title": "Other subscribed events"
+        },
         "payload": {
           "previewEmpty": "Preview appears once JSON is valid.",
           "subtitle": "Define the JSON payload shape sent to your destination.",
@@ -1413,7 +1414,7 @@
           "name": "Production Webhook",
           "signingSecret": "Enter a signing secret"
         },
-        "subtitle": "Set delivery, authentication, and payload behavior.",
+        "subtitle": "Set the destination, events, authentication, and headers.",
         "title": "Webhook configuration",
         "validation": {
           "eventRequired": "Select at least one event",
@@ -1475,7 +1476,7 @@
           "noPayloadTemplate": "No payload template saved yet.",
           "payloadPreview": "Payload template preview",
           "testEvent": "Test event",
-          "testEventHelp": "Tests use the selected event and your payload template.",
+          "testEventHelp": "Sends a sample payload for the selected event to this endpoint.",
           "title": "Webhook details"
         },
         "emptySelection": "Select a webhook to view delivery history and testing tools.",
@@ -2223,7 +2224,7 @@
         },
         "loading": "Loading incidents...",
         "tryAgain": "Try again",
-        "title": "Incidents",
+        "title": "Security Incidents",
         "description": "Tracked incidents and EDR findings across your organizations.",
         "filters": {
           "tracked": "Tracked",
@@ -2253,6 +2254,11 @@
         "genericEdrProvider": "EDR provider"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Technician",
+          "system": "System"
+        },
         "errors": {
           "notFound": "Incident not found",
           "fetchFailed": "Failed to fetch incident"
@@ -2385,7 +2391,7 @@
           },
           "search": {
             "title": "Search anything",
-            "description": "Press Cmd+K to instantly find devices, scripts, alerts, users, or settings."
+            "description": "Press Cmd+K to instantly find devices, scripts, alerts, or settings."
           },
           "switchOrgs": {
             "title": "Switch organizations",
@@ -2778,5 +2784,9 @@
     "title": "This section crashed",
     "description": "A rendering error stopped this page from displaying. Try again, and if it keeps happening, include the message below when you report it.",
     "retry": "Try again"
+  },
+  "featureLock": {
+    "lockedLabel": "Locked",
+    "upgrade": "See plans"
   }
 }

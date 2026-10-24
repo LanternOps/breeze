@@ -254,41 +254,7 @@
       "twelveHour": "12 ore",
       "twentyFourHour": "24 ore",
       "language": "Lingua",
-      "languageDescription": "Lingua predefinita per le impostazioni del partner.",
-      "businessHours": {
-        "title": "Orario lavorativo",
-        "description": "Imposta l'orario operativo standard per assistenza e avvisi.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Sempre disponibile"
-          },
-          "business": {
-            "label": "Orario lavorativo",
-            "description": "Lun-ven 9:00-17:00"
-          },
-          "extended": {
-            "label": "Orario esteso",
-            "description": "Lun-ven 7:00-19:00, sab 9:00-13:00"
-          },
-          "custom": {
-            "label": "Personalizzato",
-            "description": "Imposta il tuo calendario"
-          }
-        },
-        "customSchedule": "Calendario personalizzato",
-        "open": "Aperto",
-        "to": "a"
-      },
-      "days": {
-        "mon": "Lunedì",
-        "tue": "Martedì",
-        "wed": "Mercoledì",
-        "thu": "Giovedì",
-        "fri": "Venerdì",
-        "sat": "Sabato",
-        "sun": "Domenica"
-      }
+      "languageDescription": "Lingua predefinita per le impostazioni del partner."
     }
   },
   "partnerAiBudgets": {
@@ -700,7 +666,13 @@
         "quality": "Qualità"
       },
       "failovers": "Failover",
-      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile"
+      "failoversHelp": "Chiamate gestite da un modello di riserva perché quello configurato non è riuscito o non era disponibile",
+      "titleBy": {
+        "model": "Utilizzo dell'IA per modello",
+        "organization": "Utilizzo dell'IA per organizzazione",
+        "technician": "Utilizzo dell'IA per tecnico",
+        "feature": "Utilizzo dell'IA per funzionalità"
+      }
     },
     "link": {
       "summary": "Modello: {{model}} — impostato in Provider e modelli IA → Predefiniti per funzionalità",
@@ -777,13 +749,10 @@
     "maintenancePlaceholder": "ad es. Sun 02:00-06:00, 02:00-04:00 oppure 24/7",
     "maintenanceInvalid": "Usa una finestra UTC come <first>Sun 02:00-04:00</first> o <second>02:00-04:00</second>, oppure <always>24/7</always> per sempre attivo. Lascia vuoto per consentire alle org di configurarla.",
     "maintenanceHelp": "Finestra oraria (UTC) per aggiornamenti e riavvii automatici. Usa <always>24/7</always> per sempre attivo, oppure lascia vuoto per consentire alle org di configurarla singolarmente.",
-    "deviceGroup": "Gruppo dispositivi predefinito",
-    "alertThreshold": "Soglia avvisi predefinita",
     "autoEnrollment": {
       "title": "Registrazione automatica",
       "enable": "Abilita la registrazione automatica per i nuovi dispositivi",
-      "requireApproval": "Richiedi approvazione amministratore",
-      "sendWelcome": "Invia notifica di benvenuto"
+      "requireApproval": "Richiedi approvazione amministratore"
     },
     "enrollment": {
       "title": "Registrazione dispositivi",
@@ -1030,8 +999,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Azienda",
+      "devices": "Dispositivi e agenti",
       "security": "Sicurezza e accesso",
       "communications": "Comunicazioni",
+      "ai": "IA",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1031,11 @@
       },
       "company": {
         "label": "Azienda",
-        "description": "Nome, indirizzo, contatti"
+        "description": "Nome, indirizzo, contatti, firma email"
       },
       "regional": {
         "label": "Area geografica",
-        "description": "Fuso orario, formati, orari"
+        "description": "Fuso orario, lingua, formati, orari"
       },
       "defaults": {
         "label": "Predefiniti",
@@ -1072,7 +1043,7 @@
       },
       "security": {
         "label": "Sicurezza",
-        "description": "Allowlist IP e accesso"
+        "description": "Password, sessioni, MFA e allowlist IP"
       },
       "remoteAccess": {
         "label": "Accesso remoto",
@@ -1080,11 +1051,11 @@
       },
       "eventLogs": {
         "label": "Log eventi",
-        "description": "Inoltro e conservazione"
+        "description": "Inoltra i log eventi dei dispositivi a Elasticsearch"
       },
       "notifications": {
         "label": "Notifiche",
-        "description": "Avvisi email e webhook"
+        "description": "Indirizzo mittente, SMTP e valori predefiniti di Slack e Pushover"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1109,7 +1080,7 @@
       },
       "aiFeatures": {
         "label": "Funzionalità IA",
-        "description": "Valori predefiniti per rilevamento anomalie e correzioni suggerite"
+        "description": "Policy sui dati IA, rilevamento anomalie e correzioni suggerite"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1097,14 @@
       "aiApprovals": {
         "label": "Timeout di approvazione IA",
         "description": "Per quanto tempo la chat IA attende l'approvazione di un'azione controllata"
+      },
+      "callerVerification": {
+        "label": "Verifica del chiamante",
+        "description": "Verifica dell’identità di chi chiama per le richieste di assistenza"
+      },
+      "knownGuests": {
+        "label": "Ospiti noti",
+        "description": "Dispositivi approvati di visitatori e tecnici per indirizzo MAC"
       }
     },
     "saved": "Impostazioni partner salvate",
@@ -1388,6 +1367,14 @@
     "never": "Mai",
     "downloadInstaller": "Scarica programma di installazione preconfigurato",
     "downloading": "Download in corso...",
+    "installerDialogTitle": "Scarica il programma di installazione per \"{{name}}\"",
+    "installerDialogDescription": "Il programma di installazione viene creato per un numero fisso di dispositivi. Ogni dispositivo che lo esegue ne utilizza uno.",
+    "installerDeviceCount": "Numero di dispositivi",
+    "installerDeviceCountRemaining": "A questa chiave restano {{count}} registrazioni.",
+    "installerDeviceCountRemaining_one": "A questa chiave resta {{count}} registrazione.",
+    "installerDeviceCountRemaining_other": "A questa chiave restano {{count}} registrazioni.",
+    "installerDeviceCountUnlimited": "Questa chiave non ha limiti di utilizzo.",
+    "installerDeviceCountRange": "Inserisci un numero intero da 1 a {{max}}.",
     "rotate": "Ruota",
     "page": "Pagina {{current}} di {{total}}",
     "previous": "Precedente",
@@ -1401,7 +1388,10 @@
     "retrySites": "Riprova",
     "createASite": "Crea un sito",
     "maxUsage": "Utilizzo massimo (opzionale)",
-    "defaultDeviceLimit": "50 (predefinito)",
+    "defaultDeviceLimit": "{{count}} (predefinito dell’organizzazione)",
+    "expiresAtHelp": "Lascia vuoto per {{duration}} (predefinito dell’organizzazione).",
+    "usageFromDefault": "predefinito",
+    "usageFromDefaultTitle": "Il limite di dispositivi deriva dal valore predefinito dell’organizzazione.",
     "maxUsageHelp": "Numero massimo di agent che possono registrarsi con questa chiave.",
     "expiresAt": "Scade il (opzionale)",
     "creating": "Creazione in corso...",
@@ -1485,7 +1475,8 @@
       "approval_ask": "Richiesta di approvazione",
       "approval_snapshot": "Dati dell’approvazione",
       "approval_expires": "Scadenza dell’approvazione",
-      "approval_status": "Stato dell’approvazione"
+      "approval_status": "Stato dell’approvazione",
+      "merged_into_number": "Numero del ticket di destinazione"
     },
     "billingPayments": "Fatturazione e pagamenti",
     "supportPortal": "Assistenza e portale",
@@ -1500,7 +1491,8 @@
       "payment_failed": "Impossibile completare il pagamento",
       "ticket_approval_requested_approver": "Richiesta di approvazione dei lavori (approvatore)",
       "ticket_approval_requested_notify": "Richiesta di approvazione dei lavori (per informazione)",
-      "ticket_approval_decided": "Decisione sull’approvazione dei lavori"
+      "ticket_approval_decided": "Decisione sull’approvazione dei lavori",
+      "ticket_merged": "Ticket unito"
     }
   },
   "inboundEmail": {
@@ -1792,27 +1784,13 @@
     "deviceGroup": {
       "title": "Gruppo dispositivi predefinito",
       "description": "I dispositivi appena registrati vengono aggiunti automaticamente a questo gruppo.",
-      "options": {
-        "AllManagedDevices": "Tutti i dispositivi gestiti",
-        "CriticalInfrastructure": "Infrastruttura critica",
-        "RemoteStaff": "Personale remoto",
-        "Contractors": "Collaboratori esterni"
-      }
-    },
-    "alertSeverity": {
-      "title": "Gravità avviso predefinita",
-      "description": "Gli avvisi sotto questa gravità vengono inviati solo al feed riepilogativo.",
-      "options": {
-        "critical": "Solo critici",
-        "high": "Alti e critici",
-        "medium": "Medi e superiori"
-      }
+      "none": "Nessuno",
+      "unavailable": "Gruppo selezionato (non disponibile)"
     },
     "autoEnrollment": {
       "title": "Registrazione automatica",
       "enable": "Abilita registrazione automatica",
-      "requireApproval": "Richiedi approvazione amministratore",
-      "sendWelcome": "Invia messaggio di benvenuto"
+      "requireApproval": "Richiedi approvazione amministratore"
     },
     "agentUpdates": {
       "title": "Criterio aggiornamento agent",
@@ -1863,7 +1841,7 @@
     "disabledDescription": "Abilita l'inoltro log sopra per configurare le impostazioni di connessione.",
     "enable": {
       "title": "Abilita inoltro log",
-      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store con una pianificazione ricorrente."
+      "description": "Quando abilitato, i log eventi vengono inoltrati al tuo log store man mano che ogni dispositivo li segnala."
     },
     "connection": {
       "title": "Connessione",
@@ -1952,6 +1930,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Vista cliente",
+      "subtitle": "Anteprima: cosa vede {{who}}",
+      "whoOrganization": "il cliente",
+      "pickerLabel": "Visualizza come",
+      "pickerAll": "Intera organizzazione",
+      "loading": "Caricamento dell’anteprima…",
+      "loadFailed": "Impossibile caricare la vista cliente.",
+      "on": "Attivo",
+      "off": "Disattivato",
+      "notAvailable": "Un’anteprima dettagliata di questa sezione non è ancora disponibile.",
+      "permissionWithheld": "Non mostrato: per visualizzare questa anteprima serve {{permissions}}.",
+      "tilesWithheld": "Alcuni riquadri non sono mostrati: per visualizzarli serve {{permissions}}.",
+      "noteNoUser": "I dati dei ticket sono nascosti. Scegli un utente del portale per vedere ciò che vede quella persona.",
+      "readinessTitle": "Controlli di preparazione",
+      "readinessNone": "Nessun problema rilevato.",
+      "fix": "Correggi",
+      "readiness": {
+        "documents_empty": "Documenti è attivo, ma nessun documento è contrassegnato come Visibile nel portale: il cliente vede una libreria vuota.",
+        "reports_empty": "Report è attivo, ma non ci sono ancora esecuzioni di report: il cliente vede un elenco vuoto.",
+        "service_one_time_visible": "Servizio è attivo e gli elementi una tantum sono ancora visibili al cliente.",
+        "backups_no_data": "Backup è attivo, ma non ci sono ancora dati di backup da mostrare.",
+        "dashboard_security_no_data": "Dashboard è attiva, ma il punteggio di sicurezza non ha ancora dati: quel riquadro è vuoto per il cliente.",
+        "branding_unset": "Il branding del portale non è mai stato impostato (logo, colori, messaggio di benvenuto o contatto di supporto)."
+      }
+    },
     "loading": "Caricamento impostazioni portale…",
     "save": "Salva impostazioni portale",
     "toasts": {
@@ -2443,7 +2447,11 @@
     "sourceDefault": "Predefinito",
     "selectOrgForEffectiveBudget": "Seleziona un'organizzazione per vedere il suo budget effettivo, oppure modifica i valori predefiniti a livello di partner.",
     "editPartnerWideDefaults": "Modifica i valori predefiniti a livello di partner",
-    "thresholdsOff": "Disattivato"
+    "thresholdsOff": "Disattivato",
+    "todaysCost": "Costo di oggi",
+    "monthlyCost": "Costo mensile",
+    "messagesToday": "Messaggi di oggi",
+    "tokensThisMonth": "Token di questo mese"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4350,6 +4358,13 @@
     "commitmentTermRange": "Durata dell'impegno: inserisci un numero intero da 1 a 120 mesi."
   },
   "catalogItemsTab": {
+    "viewActive": "Attivi",
+    "viewArchived": "Archiviati",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Servizio"
+    },
     "itemArchived": "Elemento archiviato",
     "itemRestored": "Elemento ripristinato",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Il catalogo prodotti è disponibile solo per account partner.",
@@ -4467,6 +4482,9 @@
     "notEnabledBody": "MCP OAuth è disabilitato su questo server. Imposta MCP_OAUTH_ENABLED=true e riavvia l'API per consentire le app connesse.",
     "revokeConfirm": "Revocare l'accesso per {{name}}? Il relativo token di accesso smetterà di funzionare entro 10 minuti.",
     "revokeFailed": "Revoca non riuscita ({{status}})",
+    "revokeTitle": "Revoca app connessa",
+    "revokeSuccess": "Accesso revocato per {{name}}",
+    "revokeFailedGeneric": "Revoca non riuscita",
     "networkError": "Errore di rete",
     "networkErrorDuringRevoke": "Errore di rete durante la revoca",
     "revoking": "Revoca in corso…",
@@ -4698,6 +4716,7 @@
     "actions": "Azioni",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nessun ruolo trovato. Prova a modificare la ricerca o i filtri.",
     "cloneRole": "Clona ruolo: {{name}}",
+    "cloneDescription": "Copia di {{name}}",
     "clone": "Clona",
     "edit": "Modifica",
     "delete": "Elimina",
@@ -5746,6 +5765,20 @@
       "sourceOrg": "Sovrascrittura dell’organizzazione",
       "sourcePartner": "Predefinito del partner",
       "sourceDefault": "Predefinito integrato"
+    },
+    "businessCalendar": {
+      "title": "Orari di lavoro",
+      "description": "Il calendario su cui vengono conteggiati i timer SLA di questa organizzazione. Lascia su Eredita per seguire il predefinito del partner.",
+      "label": "Calendario degli orari di lavoro",
+      "inherit": "Eredita",
+      "inheritedDefault": "Ereditato: {{name}} (predefinito del partner)",
+      "inheritedNone": "Ereditato: 24×7 (nessun predefinito del partner)",
+      "partnerWideOption": "{{name}} (tutte le org)",
+      "archivedOverride": "Calendario archiviato (non si applica più)",
+      "loadFailed": "Impossibile caricare il calendario degli orari di lavoro.",
+      "errors": {
+        "save": "Impossibile salvare il calendario degli orari di lavoro. Riprova."
+      }
     }
   },
   "organizationForm": {
@@ -6875,5 +6908,208 @@
     "enabledToast": "Scorciatoie a tasto singolo attivate",
     "disabledToast": "Scorciatoie a tasto singolo disattivate",
     "saveFailed": "Impossibile salvare le scorciatoie a tasto singolo."
+  },
+  "businessHoursCard": {
+    "title": "Orari di lavoro",
+    "description": "Calendari su cui vengono conteggiati i timer SLA di risposta e risoluzione. Un ticket usa il calendario della sua organizzazione o il calendario predefinito; se non ce n'è nessuno, il timer corre 24 ore su 24.",
+    "newTicketsOnly": "La modifica di orari o fuso orario si applica solo ai nuovi ticket. Usa \"Applica ai ticket aperti\" per aggiornare i ticket già aperti.",
+    "create": "Nuovo calendario",
+    "loading": "Caricamento degli orari di lavoro…",
+    "loadError": "Impossibile caricare gli orari di lavoro.",
+    "retry": "Riprova",
+    "empty": "Nessun calendario di orari di lavoro. I ticket corrono 24 ore su 24 (24×7) finché non ne crei uno e lo imposti come predefinito.",
+    "allOrgs": "Tutte le org",
+    "default": "Predefinito",
+    "archived": "Archiviato",
+    "edit": "Modifica",
+    "setDefault": "Imposta come predefinito",
+    "clearDefault": "Rimuovi predefinito",
+    "applyOpen": "Applica ai ticket aperti",
+    "archive": "Archivia",
+    "unarchive": "Ripristina",
+    "delete": "Elimina",
+    "deleteTitle": "Eliminare {{name}}?",
+    "deleteMessage": "Questa azione elimina definitivamente il calendario e le sue festività. Un calendario ancora usato da ticket o organizzazioni non può essere eliminato; archivialo invece.",
+    "name": "Nome",
+    "timezone": "Fuso orario",
+    "appliesTo": "Si applica a",
+    "ownerPartner": "Tutte le organizzazioni (a livello di partner)",
+    "ownerOrg": "Una organizzazione",
+    "organization": "Organizzazione",
+    "chooseOrg": "Scegli un'organizzazione",
+    "weeklyHours": "Orari settimanali",
+    "closed": "Chiuso",
+    "to": "a",
+    "addInterval": "Aggiungi orario",
+    "intervalStart": "{{day}} apre alle",
+    "intervalEnd": "{{day}} chiude alle",
+    "removeInterval": "Rimuovi l'orario di {{day}}",
+    "save": "Salva",
+    "saving": "Salvataggio…",
+    "cancel": "Annulla",
+    "holidays": "Festività",
+    "holidayHint": "Le festività con data odierna o precedente non modificano i ticket aperti.",
+    "noHolidays": "Nessuna festività.",
+    "holidayDate": "Data",
+    "holidayName": "Nome",
+    "holidayAdd": "Aggiungi festività",
+    "holidayRemove": "Rimuovi la festività {{name}}",
+    "weekdays": {
+      "0": "Domenica",
+      "1": "Lunedì",
+      "2": "Martedì",
+      "3": "Mercoledì",
+      "4": "Giovedì",
+      "5": "Venerdì",
+      "6": "Sabato"
+    },
+    "errors": {
+      "nameRequired": "Inserisci un nome.",
+      "orgRequired": "Scegli un'organizzazione.",
+      "invalidTime": "Inserisci gli orari come HH:MM (ad esempio 09:00); la fine può essere 24:00.",
+      "order": "Ogni intervallo deve terminare dopo il suo inizio.",
+      "overlap": "Gli intervalli dello stesso giorno non devono sovrapporsi.",
+      "empty": "Aggiungi almeno un intervallo di apertura.",
+      "timezone": "Scegli un fuso orario valido.",
+      "save": "Impossibile salvare il calendario. Riprova.",
+      "holidayInvalid": "Inserisci una data valida e un nome per la festività.",
+      "holidayAdd": "Impossibile aggiungere la festività. Riprova.",
+      "holidayRemove": "Impossibile rimuovere la festività. Riprova.",
+      "inUse": "Questo calendario è usato da ticket o organizzazioni e non può essere eliminato. Archivialo invece.",
+      "isDefault": "Questo calendario è quello predefinito. Rimuovi il predefinito prima di eliminarlo.",
+      "default": "Impossibile modificare il calendario predefinito. Riprova.",
+      "archive": "Impossibile modificare lo stato di archiviazione. Riprova.",
+      "delete": "Impossibile eliminare il calendario. Riprova.",
+      "apply": "Impossibile applicare il calendario ai ticket aperti. Riprova."
+    },
+    "toasts": {
+      "created": "Calendario creato",
+      "updated": "Calendario aggiornato",
+      "defaultSet": "Calendario predefinito impostato",
+      "defaultCleared": "Predefinito rimosso; i ticket senza eccezione corrono 24×7",
+      "archived": "Calendario archiviato",
+      "unarchived": "Calendario ripristinato",
+      "deleted": "Calendario eliminato",
+      "holidayAdded": "Festività aggiunta",
+      "holidayRemoved": "Festività rimossa",
+      "recompute": "Le scadenze dei ticket aperti sono in aggiornamento.",
+      "applied": "Applicato ai ticket aperti: {{count}} aggiornati",
+      "appliedPartial": "{{skipped}} ticket erano in modifica e mantengono il vecchio orario. Applica di nuovo per riprovare."
+    },
+    "apply": {
+      "title": "Applica {{name}} ai ticket aperti",
+      "explanation": "I ticket aperti mai messi in pausa passeranno agli orari attuali e le loro scadenze verranno ricalcolate. I ticket con cronologia di pause restano invariati.",
+      "loading": "Caricamento dell'anteprima…",
+      "loadFailed": "Impossibile caricare l'anteprima.",
+      "revisionChanged": "Gli orari sono cambiati dopo questa anteprima. Controlla i conteggi aggiornati prima di applicare.",
+      "eligible": "Ticket che verranno aggiornati: {{count}}",
+      "breached": "Di questi, scaduti immediatamente: {{count}}",
+      "paused": "Ignorati perché sono stati in pausa: {{count}}",
+      "confirm": "Applica ai ticket aperti"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Piano e funzionalità",
+    "description": "Cosa include il tuo piano. Le funzionalità bloccate restano visibili, così puoi vedere cosa aggiunge un upgrade.",
+    "currentPlan": "Piano attuale",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Illimitato"
+    },
+    "columns": {
+      "feature": "Funzionalità",
+      "state": "Stato",
+      "source": "Origine",
+      "expires": "Scadenza",
+      "limits": "Limiti"
+    },
+    "state": {
+      "enabled": "Inclusa",
+      "disabled": "Bloccata"
+    },
+    "source": {
+      "plan": "Predefinito del piano",
+      "billing": "Fatturazione",
+      "license": "Licenza",
+      "manual": "Assegnazione manuale"
+    },
+    "graceWarning": "Scaduta il {{expiresAt}} — periodo di tolleranza fino al {{graceUntil}}",
+    "noExpiry": "Mai",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisore dell’onboarding",
+        "why": "Un supervisore IA che diagnostica e ripara gli errori dell’onboarding zero-touch."
+      },
+      "verified_library": {
+        "label": "Libreria software verificata",
+        "why": "Pacchetti selezionati e verificati che puoi distribuire in tutta sicurezza."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp esamina di continuo il tuo parco dispositivi e sollecita la persona giusta; disponibile da Pro in su."
+      }
+    },
+    "loadError": "Impossibile caricare il tuo piano.",
+    "retry": "Riprova"
+  },
+  "wispMemory": {
+    "title": "Memoria di Wisp",
+    "description": "Controlla ciò che Wisp ha memorizzato per te, per un cliente o per tutto il team, e confermalo o ritiralo.",
+    "tabs": {
+      "mine": "La mia memoria",
+      "org": "Cliente",
+      "partner": "Tutti i clienti",
+      "users": "Tecnici"
+    },
+    "empty": "Nessun blocco di memoria per ora.",
+    "loading": "Caricamento della memoria…",
+    "loadFailed": "Impossibile caricare la memoria.",
+    "retry": "Riprova",
+    "columns": {
+      "subject": "Oggetto",
+      "type": "Tipo",
+      "status": "Stato",
+      "confidence": "Affidabilità",
+      "updated": "Aggiornato",
+      "actions": "Azioni"
+    },
+    "statusValue": {
+      "unconfirmed": "Non confermato",
+      "confirmed": "Confermato",
+      "retracted": "Ritirato"
+    },
+    "type": {
+      "preference": "Preferenza",
+      "standing_instruction": "Istruzione permanente",
+      "fact": "Fatto",
+      "decision": "Decisione",
+      "concern_outcome": "Esito di una segnalazione",
+      "work_summary": "Riepilogo del lavoro"
+    },
+    "confidenceValue": {
+      "low": "Bassa",
+      "medium": "Media",
+      "high": "Alta"
+    },
+    "confirm": "Conferma",
+    "retract": "Ritira",
+    "confirmed": "Memoria confermata.",
+    "retracted": "Memoria ritirata.",
+    "confirmFailed": "Impossibile confermare la memoria.",
+    "retractFailed": "Impossibile ritirare la memoria.",
+    "fromConversation": "Dalla conversazione",
+    "pickOrg": "Seleziona un cliente",
+    "pickUser": "Seleziona un tecnico",
+    "pickPrompt": "Scegli un’opzione sopra per vedere la sua memoria.",
+    "showContent": "Mostra contenuto",
+    "hideContent": "Nascondi contenuto",
+    "conversationUnavailable": "Questa conversazione non è più disponibile.",
+    "usersLoadFailed": "Impossibile caricare i tecnici."
   }
 }

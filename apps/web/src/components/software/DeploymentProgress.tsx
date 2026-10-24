@@ -101,6 +101,31 @@ const resultStatusStyles: Record<
   },
 };
 
+/** Header caption under the percentage: one label per real aggregate status. */
+function headerStatusLabel(d: DeploymentDetail): string {
+  switch (d.status) {
+    case "completed":
+      return i18n.t("policies:software.deploymentProgress.deploymentComplete");
+    case "completed_with_errors":
+      return i18n.t("policies:software.deploymentProgress.completedWithErrors");
+    case "failed":
+      return i18n.t("policies:software.deploymentProgress.failed");
+    case "cancelled":
+      return i18n.t("policies:software.deploymentProgress.cancelled");
+    case "pending": {
+      const at = d.scheduledAt ? Date.parse(d.scheduledAt) : NaN;
+      if (Number.isFinite(at) && at > Date.now()) {
+        return i18n.t("policies:software.deploymentProgress.scheduledFor", {
+          time: formatDateTimeCentral(d.scheduledAt),
+        });
+      }
+      return i18n.t("policies:software.deploymentProgress.inProgress");
+    }
+    default:
+      return i18n.t("policies:software.deploymentProgress.inProgress");
+  }
+}
+
 const queuedOfflineStyle = {
   labelKey: "policies:software.deploymentProgress.queuedOffline",
   color: "bg-amber-500/20 text-amber-700 border-amber-500/40",
@@ -393,11 +418,7 @@ export default function DeploymentProgress({
               {percent}%
             </p>
             <p className="text-xs text-muted-foreground">
-              {deployment.status === "completed"
-                ? i18n.t(
-                    "policies:software.deploymentProgress.deploymentComplete",
-                  )
-                : i18n.t("policies:software.deploymentProgress.inProgress")}
+              {headerStatusLabel(deployment)}
             </p>
           </div>
         </div>

@@ -970,7 +970,15 @@
       "allAdmitted": "Todos os dispositivos selecionados foram admitidos e colocados na fila.",
       "partiallyAdmitted": "Alguns dispositivos foram admitidos e colocados na fila. Revise os destinos restantes.",
       "rejected": "Nenhum dispositivo foi admitido. Revise os motivos abaixo.",
-      "queued": "Na fila"
+      "queued": "Na fila",
+      "reasons": {
+        "not_found_or_inaccessible": "Dispositivo não encontrado ou inacessível",
+        "site_access_denied": "Você não tem acesso ao site deste dispositivo",
+        "script_org_mismatch": "O script pertence a uma organização diferente da do dispositivo",
+        "os_incompatible": "O script não é compatível com o sistema operacional deste dispositivo",
+        "device_decommissioned": "O dispositivo foi desativado",
+        "maintenance_suppressed": "Ignorado: o dispositivo está em uma janela de manutenção"
+      }
     },
     "confirm": {
       "title": "Confirmar execução",

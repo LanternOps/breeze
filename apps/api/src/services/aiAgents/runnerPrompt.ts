@@ -58,6 +58,10 @@ import type { SweepEvidence, SweepEvidenceRow } from './sweepEvidence';
 // THIS module. An `import type` in the other direction is erased at compile
 // time, so the pair stays acyclic at runtime — see that module's own note.
 import type { NarrativeContext } from './narrativeContext';
+// Wisp W05b — the assessment task turn lives in its own module (this file is
+// already ~2k lines); re-exported here so callers keep one import path.
+import { buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
+export { ASSESSMENT_NO_CHANGES_LINE, buildAssessmentTaskPrompt, type AgentRunAssessmentPromptContext } from './assessmentPrompt';
 
 export const OPERATOR_GUIDANCE_OPEN_TAG = '<operator-guidance>';
 export const OPERATOR_GUIDANCE_CLOSE_TAG = '</operator-guidance>';
@@ -349,6 +353,13 @@ export interface AgentRunPromptContext {
    * existing context literal stays valid.
    */
   provenFixes?: RunProvenFixes | null;
+  /**
+   * Wisp W05b — the assessment run's grant-scoped context
+   * (`AgentRunAssessmentPromptContext`, assessmentPrompt.ts). Set only for
+   * `profile: 'assessment'`. Optional (absent ≡ null) so every existing
+   * context literal stays valid.
+   */
+  assessment?: AgentRunAssessmentPromptContext | null;
 }
 
 /**
@@ -487,6 +498,19 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
     // file, ticket body or alert description can reach the part of the prompt
     // that tells the model what the sandbox can and cannot do.
     sections.push(ANALYSIS_WORKSPACE_PROMPT);
+  } else if (ctx.profile === 'assessment') {
+    // Wisp W05b — ahead of shadow/act for the same reason as the profiles
+    // above: `assessmentLimits` pins `maxActionsPerRun: 0` and the floor is
+    // read-only, so the agent's configured mode says nothing about this run.
+    // Its only effects are the five outcome tools, applied by the finalizer.
+    sections.push(
+      '## Mode: assessment\n'
+      + 'You are Wisp, keeping watch over ONE organization for the technician who delegated it to you. '
+      + 'You may verify what changed with the read-only tools you have; you cannot change anything directly. '
+      + 'Your only effects are the outcome tools — record_concern, update_concern, nudge, propose_action '
+      + '(an approval request a human decides on) and request_specialist — and they may be called more than '
+      + 'once. When nothing needs attention, call none of them: staying quiet is a correct outcome.',
+    );
   } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'
@@ -1766,6 +1790,7 @@ export function buildAgentRunTaskPrompt(ctx: AgentRunPromptContext): string {
   if (ctx.profile === 'design') return buildFleetDesignTaskPrompt(ctx);
   if (ctx.profile === 'patch') return buildPatchTaskPrompt(ctx);
   if (ctx.profile === 'remediation_research') return buildResearchTaskPrompt(ctx);
+  if (ctx.profile === 'assessment') return buildAssessmentTaskPrompt(ctx);
 
   const lines: string[] = [];
 

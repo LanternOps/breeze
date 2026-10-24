@@ -28,6 +28,13 @@ const {
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
 }));
 
+// #8973 W4: moved tickets re-resolve their business calendar; the real read
+// runs in businessCalendarDeviceMove.integration.test.ts. The tx stub here
+// does not model that select, so the helper is a no-op in this suite.
+vi.mock('../../services/businessCalendars/reresolve', () => ({
+  reresolveMovedTicketCalendars: vi.fn(async () => 0),
+  calendarPatchForOrgMove: vi.fn(async () => ({})),
+}));
 vi.mock('../../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
@@ -1521,7 +1528,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED',
       );
       // #7900 W02 — the source org's ticket_links advisory lock, SHARED, is
       // the second statement: before any row lock (services/ticketLinkLock.ts).
@@ -1667,7 +1674,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, ticket_external_refs_ticket_org_fk, partner_api_idempotency_keys_ticket_org_fk, ticket_approval_requests_ticket_org_fk, ticket_links_source_org_fk, ticket_links_target_org_fk, tickets_org_partner_fk, tickets_merged_into_org_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });

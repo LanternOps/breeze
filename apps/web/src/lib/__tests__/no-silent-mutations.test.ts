@@ -61,6 +61,11 @@ const TARGET_GLOBS = [
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
+  // Business-hours calendars (#8973): every mutation through runAction.
+  'src/components/settings/BusinessHoursCard.tsx',
+  'src/components/settings/BusinessHoursForm.tsx',
+  'src/components/settings/BusinessHoursHolidays.tsx',
+  'src/components/settings/BusinessHoursApplyDialog.tsx',
   // #8330: saved-filter create/edit/delete surface the API's error text.
   'src/components/filters/SavedFilterList.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
@@ -74,6 +79,14 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/ai/AiContinuationPrompt.tsx', // W05 #7603: POST /ai/sessions/:id/continue via runAction
+  // Wisp W04b (#9916): grant create/refresh/revoke/settings and thread attachments go through runAction.
+  'src/components/ai/WispToggle.tsx',
+  'src/components/ai/WispGrantStepUpModal.tsx',
+  'src/components/ai/WispThreadHeader.tsx',
+  'src/components/ai/WispThreadAttachments.tsx',
+  // Wisp W05a (#9911): concerns list snooze/dismiss/resolve go through runAction.
+  'src/components/ai/WispConcernsPanel.tsx',
+  'src/lib/wispConcernsApi.ts',
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -542,6 +555,9 @@ const TARGET_GLOBS = [
   // restarted from their fix — or reverted to full history — when it did not.
   'src/components/devices/ReliabilityBaselineDialog.tsx',
   'src/components/devices/ReliabilityBaselineSection.tsx',
+  // Sweep G4: peripheral policy save + config-policy partner-wide toggle toast their outcome.
+  'src/components/peripherals/PeripheralPolicyForm.tsx',
+  'src/components/configurationPolicies/OrganizationScopePanel.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -952,7 +968,11 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
     // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
-    expect(absoluteFiles.length).toBe(247);
+    // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
+    // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
+    // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
+    // Wisp W05a (#9911) adds WispConcernsPanel/wispConcernsApi (+2 = 259).
+    expect(absoluteFiles.length).toBe(259);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -95,15 +95,15 @@ import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kind
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
-  normalizeAgentUpdatePolicy,
-  type AgentUpdateSettings,
-} from './agentUpdatePolicy';
+  resolveAgentUpdateConfig,
+  type AgentUpdateConfig,
+  type AgentVersionPins,
+} from '../../services/agentUpdateConfig';
+import { type AgentUpdateSettings } from './agentUpdatePolicy';
 import {
   normalizeScanPath,
   osRootScanPath,
-  isAlwaysMaintenanceWindow,
   parseMaintenanceWindow,
-  resolveInheritedAgentVersionPins,
 } from '@breeze/shared';
 import {
   type SecurityProviderValue,
@@ -1608,9 +1608,22 @@ export async function handleCisCommandResult(
     return;
   }
 
-  const completed = resultData.status === 'completed';
   const payloadDetails = isObject(payload.details) ? payload.details : null;
   const resultPayload = parseResultJson(resultData.stdout);
+  // #9604: the remediation's own `success` flag decides too, not just the
+  // command status. Agents before the fix report a remediation they could not
+  // apply as a COMPLETED command whose stdout says `{ success: false, error }`;
+  // fixed agents send a failed command. Only an explicit `false` flips the
+  // outcome, so a stdout without the field keeps the command status.
+  const agentReportedNotApplied = resultPayload?.success === false;
+  const completed = resultData.status === 'completed' && !agentReportedNotApplied;
+  const failureError = completed
+    ? null
+    : readTrimmedString(resultData.error)
+      ?? readTrimmedString(resultPayload?.error)
+      ?? (agentReportedNotApplied
+        ? 'Agent reported the remediation was not applied'
+        : `Remediation command ${resultData.status}`);
   const resultDetails = resultPayload && isObject(resultPayload.details)
     ? resultPayload.details
     : null;
@@ -1641,7 +1654,10 @@ export async function handleCisCommandResult(
     commandId: command.id,
     commandStatus: resultData.status,
     exitCode: resultData.exitCode ?? null,
-    error: resultData.error ?? null,
+    error: completed ? (resultData.error ?? null) : failureError,
+    // Older agents send `completed` + `success:false`; this explains why the
+    // action reads failed while commandStatus reads completed.
+    ...(agentReportedNotApplied ? { agentReportedNotApplied: true } : {}),
     stderr: resultData.stderr ?? null,
     completedAt: new Date().toISOString(),
   };
@@ -3019,25 +3035,10 @@ function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
   return isObject(root.defaults) ? root.defaults : {};
 }
 
-/**
- * Effective per-component update version pins (issue #2124). `null` means "no
- * pin" → track the globally promoted latest version (historical behaviour).
- */
-export interface AgentVersionPins {
-  agent: string | null;
-  watchdog: string | null;
-}
-
-/**
- * The full effective agent-update config for an org: the update-policy gate
- * inputs PLUS the version pins. Both are resolved from the SAME single org⋈
- * partner join (see getOrgAgentUpdateConfig) so the heartbeat hot path pays one
- * round trip for everything it needs.
- */
-export interface AgentUpdateConfig {
-  settings: AgentUpdateSettings;
-  pins: AgentVersionPins;
-}
+// The pure resolution (#9170) and its types live in services/agentUpdateConfig.ts
+// so the partner settings inheritance read model can call it without this
+// module's import graph. Re-exported for existing importers.
+export type { AgentVersionPins, AgentUpdateConfig };
 
 /**
  * Resolve the EFFECTIVE agent update config for an org (Org > General). The
@@ -3083,34 +3084,14 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  const orgDefaults = extractSettingsDefaults(row?.orgSettings);
-  const partnerDefaults = extractSettingsDefaults(row?.partnerSettings);
-
-  // Effective merge, per field (mirrors effectiveSettings.mergeCategory): a
-  // partner-set field wins and locks; the org value fills the gap only where the
-  // partner has not set that field. `in` (not truthiness) matches mergeCategory,
-  // which locks any key the partner has present.
-  const effectivePolicy =
-    'agentUpdatePolicy' in partnerDefaults
-      ? partnerDefaults.agentUpdatePolicy
-      : orgDefaults.agentUpdatePolicy;
-  const effectiveWindow =
-    'maintenanceWindow' in partnerDefaults
-      ? partnerDefaults.maintenanceWindow
-      : orgDefaults.maintenanceWindow;
-  // Version pins: inherit-with-override, per component (issue #2124). Resolved
-  // via the shared `resolveInheritedAgentVersionPins` (packages/shared) — the
-  // SAME function `getOrgAgentVersionPinsBatch`
-  // (services/orgAgentVersionPins.ts, issue #5285) calls, so the two resolvers
-  // can never silently drift apart. See that function's docstring for the
-  // full precedence contract.
-  const pins: AgentVersionPins = resolveInheritedAgentVersionPins(orgDefaults, partnerDefaults);
-
-  const policy = normalizeAgentUpdatePolicy(effectivePolicy);
-  const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';
-  // The explicit "24/7"/empty always-state means "no restriction" → null, same
-  // as an absent window. Only a real window string is carried through to the gate.
-  const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;
+  // Effective merge (partner-locks for the policy fields, inherit-with-override
+  // for the version pins via the shared `resolveInheritedAgentVersionPins`, the
+  // SAME function `getOrgAgentVersionPinsBatch` calls): see the pure core.
+  const config = resolveAgentUpdateConfig(
+    extractSettingsDefaults(row?.partnerSettings),
+    extractSettingsDefaults(row?.orgSettings),
+  );
+  const { maintenanceWindow } = config.settings;
   // New writes are validated at save time (issue #1963), but a legacy malformed
   // value still parses to null in the gate and fails open (lifts the time
   // restriction). Surface that so the silently-lifted restriction is observable
@@ -3128,7 +3109,7 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
       `agent updates are NOT time-restricted (failing open). value=${JSON.stringify(maintenanceWindow)}`,
     );
   }
-  return { settings: { policy, maintenanceWindow }, pins };
+  return config;
 }
 
 /**

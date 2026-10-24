@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Sparkles } from 'lucide-react';
+import { ExternalLink, Pencil, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TicketTemplateVars } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
@@ -231,6 +231,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [config, setConfig] = useState<TicketConfig | null>(null);
   const [editingDescription, setEditingDescription] = useState(false);
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Subject is a heading at rest; the pencil swaps in an input. `subjectCommittedRef`
+  // makes commit idempotent: Enter commits and leaves edit mode, and the blur that
+  // follows (unmount or explicit) must not PATCH the same value a second time.
+  const [editingSubject, setEditingSubject] = useState(false);
+  const subjectCommittedRef = useRef(false);
   // Requester editor: picker options (portal users for the org) + edit state.
   const [requesters, setRequesters] = useState<Array<{ id: string; name: string | null; email: string }>>([]);
   const [editingRequester, setEditingRequester] = useState(false);
@@ -470,6 +475,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // tickets — same-ticket refreshes keep the tree mounted (see render below).
   useEffect(() => {
     setTicket(null);
+    setEditingSubject(false);
     setResolveOpen(false);
     setResolutionNote('');
     setPendingOpen(null);
@@ -964,13 +970,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       }
       return; // keep the form open and the typed note intact on failure
     }
-    afterMutation({ status: 'resolved', resolutionNote: note });
+    // The patch must carry the resolved status's own name/colour: the host's
+    // "now under Closed" banner reads `statusName`, and omitting it left the
+    // previous status name ("Open — now under Closed"). A plain core resolve
+    // has no custom name (null falls back to the translated core label).
+    const resolvedRow = pendingStatusId ? config?.statuses.find((s) => s.id === pendingStatusId) : undefined;
+    afterMutation({
+      status: 'resolved',
+      resolutionNote: note,
+      statusName: resolvedRow?.name ?? null,
+      statusColor: resolvedRow?.color ?? null,
+    });
     if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
+  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
@@ -1117,38 +1133,64 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     : null;
   const triageReasons = triageSuggestion?.reasons.filter((reason) => reason.trim().length > 0) ?? [];
 
+  const commitSubject = (raw: string) => {
+    if (subjectCommittedRef.current) return;
+    subjectCommittedRef.current = true;
+    setEditingSubject(false);
+    const next = raw.trim();
+    if (!next || next === ticket.subject) return;
+    handleFieldSave({ subject: next });
+  };
+  const cancelSubjectEdit = () => {
+    subjectCommittedRef.current = true;
+    setEditingSubject(false);
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="ticket-workbench" aria-busy={loading || undefined}>
       {/* Header */}
       <div className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-muted-foreground" data-testid="ticket-workbench-number">{ticket.internalNumber ?? ticket.id.slice(0, 8)}</span>
-          <input
-            type="text"
-            defaultValue={ticket.subject}
-            key={ticket.subject}
-            className="min-w-0 flex-1 truncate bg-transparent text-base font-semibold outline-hidden hover:bg-muted/30 focus:bg-muted/30 focus:ring-1 focus:ring-ring rounded px-1 -mx-1"
-            data-testid="ticket-workbench-subject-edit"
-            aria-label={t('ticketWorkbench.ticketSubject')}
-            onBlur={(e) => {
-              const next = e.target.value.trim();
-              if (!next || next === ticket.subject) return;
-              handleFieldSave({ subject: next });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                const next = (e.target as HTMLInputElement).value.trim();
-                if (!next || next === ticket.subject) return;
-                handleFieldSave({ subject: next });
-                (e.target as HTMLInputElement).blur();
-              }
-              if (e.key === 'Escape') {
-                (e.target as HTMLInputElement).value = ticket.subject;
-                (e.target as HTMLInputElement).blur();
-              }
-            }}
-          />
+          {editingSubject ? (
+            <input
+              type="text"
+              defaultValue={ticket.subject}
+              autoFocus
+              className="-my-0.5 min-w-0 flex-1 rounded-md border bg-background px-1.5 py-0.5 text-lg font-semibold outline-hidden focus:ring-1 focus:ring-ring"
+              data-testid="ticket-workbench-subject-edit"
+              aria-label={t('ticketWorkbench.ticketSubject')}
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={(e) => commitSubject(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitSubject(e.currentTarget.value);
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelSubjectEdit();
+                }
+              }}
+            />
+          ) : (
+            <>
+              <h2 className="min-w-0 truncate text-lg font-semibold" title={ticket.subject} data-testid="ticket-workbench-subject">
+                {ticket.subject}
+              </h2>
+              {canWrite && (
+                <button
+                  type="button"
+                  onClick={() => { subjectCommittedRef.current = false; setEditingSubject(true); }}
+                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
+                  aria-label={t('ticketWorkbench.subjectEditButton')}
+                  title={t('ticketWorkbench.subjectEditButton')}
+                  data-testid="ticket-workbench-subject-edit-btn"
+                >
+                  <Pencil className="h-4 w-4" aria-hidden="true" />
+                </button>
+              )}
+            </>
+          )}
           {!expanded && (
             <a href={`/tickets/${ticket.id}`} className="ml-auto rounded p-1 text-muted-foreground hover:text-foreground" title={t('ticketWorkbench.openFullPage')} data-testid="ticket-workbench-expand">
               <ExternalLink className="h-4 w-4" />

@@ -3039,6 +3039,31 @@ describe('validateConfig', () => {
     });
   });
 
+  // Wisp W02 (Wisp design §10): the deployment switch is hosted-only.
+  it('refuses BREEZE_WISP_ENABLED=true in production without IS_HOSTED=true', () => {
+    withEnv({ ...workspaceProdEnv, IS_HOSTED: 'false', BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires IS_HOSTED=true/);
+    });
+  });
+
+  it('accepts BREEZE_WISP_ENABLED=true in production when hosted', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('refuses BREEZE_WISP_ENABLED=true in production with ENABLE_2FA=false (grants need step-up proof)', () => {
+    withEnv({ ...workspaceProdEnv, BREEZE_WISP_ENABLED: 'true', ENABLE_2FA: 'false' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED=true requires ENABLE_2FA/);
+    });
+  });
+
+  it('rejects a non-boolean BREEZE_WISP_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_WISP_ENABLED: 'maybe' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_WISP_ENABLED must be a boolean/);
+    });
+  });
+
   // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
   // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
   // as a margin discrepancy nobody traces back to an env var.
@@ -3526,6 +3551,58 @@ describe('MCP_STATELESS_ENABLED boolean guard', () => {
       expect(() => validateConfig()).toThrow(/MCP_STATELESS_ENABLED/);
     });
   });
+});
+
+describe('MCP Apps env guard (B-W05 #6159)', () => {
+  it('declares MCP_APPS_ENABLED in the schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('MCP_APPS_ENABLED');
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_APPS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_APPS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_APPS_ENABLED).toBe(value);
+    });
+  });
+});
+
+describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
+  const intKnobs = [
+    'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
+    'MCP_INTENT_CREATES_PER_HOUR',
+    'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
+    'MCP_APPROVAL_WAIT_MS',
+    'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+  ];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TIER3_INTENTS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TIER3_INTENTS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0'])('accepts MCP_TIER3_INTENTS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TIER3_INTENTS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_TIER3_INTENTS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15' }, () => {
+      expect(validateConfig()[knob as 'MCP_APPROVAL_WAIT_MS']).toBe('15');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
 });
 
 describe('AGENT_AUTO_PROMOTE boolean guard (dead code until #2896)', () => {

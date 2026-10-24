@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Building2, Check, ChevronDown, Mail, MapPin, Phone, Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import HashLink from '@/components/shared/HashLink';
 import { usePermissions } from '@/lib/permissions';
 import { ENABLE_ENDPOINT_MESSAGING } from '@/lib/featureFlags';
 import { formatDate } from '@/lib/dateTimeFormat';
@@ -232,9 +233,9 @@ export default function OrgRecordHeader({
                     {t('orgRecord.header.moreSitePrimaries', { count: sitePrimaries.length - 1 })}
                   </span>
                 )}
-                <a data-testid="org-record-primary-contact-link" href="#contacts" className="text-primary hover:underline">
+                <HashLink hash="contacts" data-testid="org-record-primary-contact-link" className="text-primary hover:underline">
                   {t('orgRecord.header.setOrgPrimaryLink')}
-                </a>
+                </HashLink>
               </div>
             ) : (
               summary && (
@@ -242,9 +243,9 @@ export default function OrgRecordHeader({
                 <p data-testid="org-record-no-primary-contact" className="mt-1 text-sm text-muted-foreground">
                   {t('orgRecord.header.noPrimaryContact')}
                   <span aria-hidden="true"> · </span>
-                  <a data-testid="org-record-primary-contact-link" href="#contacts" className="text-primary hover:underline">
+                  <HashLink hash="contacts" data-testid="org-record-primary-contact-link" className="text-primary hover:underline">
                     {t('orgRecord.header.addContactLink')}
-                  </a>
+                  </HashLink>
                 </p>
               )
             )}

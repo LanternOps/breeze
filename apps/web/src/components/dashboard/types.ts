@@ -48,9 +48,18 @@ export interface TicketStats {
 /** GET /patches/compliance — apps/api/src/routes/patches/compliance.ts */
 export interface PatchCompliance {
   summary: { total: number; pending: number; installed: number; failed: number; missing: number; skipped: number };
+  /** Item percentage (installed over installed + pending). Not shown on the dashboard. */
   compliancePercent: number;
   totalDevices: number;
   compliantDevices: number;
+  /**
+   * #9791 C: round(compliantDevices / totalDevices * 100), 0 for an empty
+   * fleet. The figure the KPI, the card headline and /patches all show.
+   * Optional only so a web build ahead of its API still renders.
+   */
+  devicePercent?: number;
+  /** #9791 C: devices with an outstanding patch whose latest install failed. */
+  failedDevices?: number;
   criticalSummary: { total: number; patched: number; pending: number };
   importantSummary: { total: number; patched: number; pending: number };
   unratedSummary: { total: number; patched: number; pending: number };
@@ -71,6 +80,7 @@ export interface SecurityOverview {
 /** GET /vulnerabilities/stats — apps/api/src/routes/vulnerabilities.ts */
 export interface VulnerabilityStats {
   criticalOpen: number;
+  openFindings: number;
   kevCveCount: number;
   kevDeviceCount: number;
   patchReadyFindingCount: number;

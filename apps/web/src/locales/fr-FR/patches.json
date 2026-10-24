@@ -39,9 +39,9 @@
     },
     "confirm": {
       "title": "Confirmer l’approbation du correctif",
-      "selectedOrganization": "l’organisation sélectionnée",
-      "messageOne": "Approuver le correctif sur {{count}} appareil dans {{org}} ?",
-      "messageMany": "Approuver le correctif sur {{count}} appareils dans {{org}} ?",
+      "selectedRing": "(sans nom)",
+      "messageRingOne": "Approuver le correctif sur {{count}} appareil dans toutes les organisations de l’anneau {{ring}} ?",
+      "messageRingMany": "Approuver le correctif sur {{count}} appareils dans toutes les organisations de l’anneau {{ring}} ?",
       "messagePartnerWide": "Approuver le correctif pour toutes les organisations de votre partenaire ?"
     },
     "checkingAccess": "Vérification de votre accès..."
@@ -96,6 +96,7 @@
       "statusFilterLabel": "Filtrer par état de conformité",
       "pendingPatches": "Correctifs en attente ({{count}})",
       "critical": "Critique ({{count}})",
+      "failed": "Installations échouées ({{count}})",
       "pendingReboot": "Redémarrage en attente ({{count}})",
       "thirdPartyPending": "En attente de tiers ({{count}})",
       "compliant": "Docile ({{count}})"
@@ -160,6 +161,11 @@
       "messageOne": "{{action}} sur {{count}} appareil dans {{org}} ?",
       "messageMany": "{{action}} sur {{count}} appareils dans {{org}} ?",
       "messageMultiOrg": "{{action}} sur {{count}} appareils à travers {{orgCount}} organisations ({{orgNames}}) ?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} sur {{total}}",
+      "previous": "Page précédente",
+      "next": "Page suivante"
     }
   },
   "patchInstallHistory": {
@@ -335,6 +341,11 @@
       "showing": "{{shown}} sur {{total}} affichés",
       "loadMore": "En charger plus",
       "lastChecked": "Dernière vérification : {{when}}"
+    },
+    "disambiguator": {
+      "version": "Version du paquet {{version}}",
+      "id": "ID de catalogue {{id}}",
+      "title": "Une autre entrée du catalogue porte le même titre. Chacune est approuvée séparément."
     }
   },
   "patchesPage": {
@@ -614,5 +625,24 @@
     "orEnterAPackageIDManually": "Ou entrer un colis ID manuellement",
     "removeRuleFor": "Supprimer la règle pour {{application}}",
     "scopeNote": "Ces règles s'appliquent à chaque appareil dont la stratégie de configuration est liée à cet anneau."
+  },
+  "patchDetails": {
+    "unknown": "Inconnu",
+    "source": "Origine",
+    "packageId": "KB / ID de paquet",
+    "severity": "Gravité",
+    "releaseDate": "Date de publication",
+    "firstSeen": "Première apparition dans le catalogue",
+    "rings": {
+      "title": "Anneaux de mise à jour",
+      "note": "Quand chaque anneau approuve automatiquement ce correctif (règle au niveau de l’anneau ; les exceptions par catégorie ne sont pas affichées).",
+      "none": "Aucun anneau de mise à jour configuré.",
+      "manual": "Pas d’approbation automatique — approbation manuelle requise",
+      "immediate": "Approuvé automatiquement immédiatement",
+      "needsDate": "Retenu — aucune date de publication pour démarrer la fenêtre de {{count}} jours",
+      "autoApproves": "Approuvé automatiquement le {{date}}",
+      "hold_one": "Report de {{count}} jour",
+      "hold_other": "Report de {{count}} jours"
+    }
   }
 }

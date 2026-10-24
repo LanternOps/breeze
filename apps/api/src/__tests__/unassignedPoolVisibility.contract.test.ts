@@ -168,8 +168,14 @@ const EPHEMERAL_ONLY: Record<string, string> = {
   'services/topology/originEligibility.ts': 'pinned to the calling technician\'s org and site',
 };
 
-/** Pinned: every file with an ephemeral-device filter, all buckets together. */
-const EPHEMERAL_DISCOVERED_FILES = 76;
+/**
+ * Pinned: every file with an ephemeral-device filter, all buckets together.
+ * 76 → 74 (#9611): routes/patches/compliance.ts and
+ * jobs/patchComplianceReportWorker.ts now take their device population from
+ * techFacingDeviceConditions() in services/deviceStats.ts, which stays in this
+ * scan with the ephemeral filter and notParkedDeviceCondition() side by side.
+ */
+const EPHEMERAL_DISCOVERED_FILES = 74;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES

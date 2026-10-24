@@ -62,8 +62,18 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
-import { taskCheckpointSchema, type TaskCheckpoint } from '@breeze/shared';
+import { publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
+import {
+  isIdentityOffboardingCheckpoint,
+  isServiceRecoveryCheckpoint,
+  serviceRecoveryCheckpointSchema,
+  type ServiceRecoveryCheckpoint,
+  type TaskCheckpoint,
+} from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
+import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
+import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
@@ -78,7 +88,7 @@ import {
   recordAiOperatorUnknownEffectHandoff,
 } from '../aiOperatorCoordinatorMetrics';
 import { aiOperatorTasksEnabled } from '../../config/env';
-import { requesterAccessLost } from './requesterAccessGate';
+import { requesterAccessLost, requesterAccessLostForTargets } from './requesterAccessGate';
 import { aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { appendTaskEvent, type TaskEventActor } from './eventService';
 import { planEffectStep, planProbeStep, type EffectStepDirective } from './effectDispatch';
@@ -394,13 +404,14 @@ async function settle(args: {
   handoffSummary?: string;
   checkpoint?: TaskCheckpoint;
 }): Promise<boolean> {
+  const terminalState = nextTaskState(args.task.state as string, args.event);
   const committed = await writeLeased({
     orgId: args.task.orgId,
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
     patch: {
-      state: nextTaskState(args.task.state as string, args.event),
+      state: terminalState,
       outcome: args.outcome,
       outcomeDetail: args.detail.slice(0, 4000),
       ...(args.handoffSummary ? { handoffSummary: args.handoffSummary.slice(0, 4000) } : {}),
@@ -449,7 +460,35 @@ async function settle(args: {
   // independently re-derived the same verdict. An alerting metric that
   // over-reports is worse than none: it trains the reader to ignore it.
   if (committed && args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
+  // Wisp W05: tell the triage engine the task reached a terminal state.
+  // `settle`'s `event` is narrowed to complete | partial | hand_off | fail,
+  // whose destinations (completed | partial | handed_off | failed) are all
+  // terminal and are exactly the states the payload type allows; the
+  // stopping-path terminals (cancelled / expired) settle elsewhere and are not
+  // a "finished" signal. Fire-and-forget, after the commit, outside any DB
+  // context (#1105): a bus outage must not fail a settled task.
+  // publishEvent is `async`, so in production it only ever rejects; the outer
+  // catch covers a non-async stand-in (test doubles) that throws.
+  if (committed) {
+    try {
+      void publishEvent('ai.operator.task.finished', args.task.orgId, {
+        taskId: args.task.id,
+        orgId: args.task.orgId,
+        state: terminalState,
+        outcome: args.outcome,
+        grantId: args.task.grantId ?? null,
+      }, 'ai-operator').catch(reportTaskFinishedPublishFailure);
+    } catch (err) {
+      reportTaskFinishedPublishFailure(err);
+    }
+  }
   return committed;
+}
+
+/** A lost `ai.operator.task.finished` is a lost Wisp wake: report it, never fail the settle. */
+function reportTaskFinishedPublishFailure(err: unknown): void {
+  console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'aiOperator', op: 'publish_task_finished' });
 }
 
 /**
@@ -556,7 +595,9 @@ async function admitReasoningRun(args: {
     kind: task.agentKind as never,
     triggerKind: task.originKind === 'alert' ? 'alert' : 'manual',
     deviceId: task.deviceId,
-    alertId: checkpoint.recipeInput.triggeringAlertId ?? null,
+    // Only the service-recovery arm carries a triggering alert; any other
+    // recipe's reasoning run is not alert-linked.
+    alertId: isServiceRecoveryCheckpoint(checkpoint) ? checkpoint.recipeInput.triggeringAlertId ?? null : null,
     // Derived from the task admission identity, so a retried or
     // lease-recovered admission converges on the SAME row rather than minting
     // a second attempt (`ai_agent_runs_task_admission_uq` says the same thing
@@ -569,6 +610,13 @@ async function admitReasoningRun(args: {
       agentId: task.agentId,
       promptVersion: args.recipe.promptVersion,
     },
+    // Wisp W02 (Wisp design §4.3, §4.5): runs the coordinator creates for a
+    // grant-bearing task inherit the task's pinned ceiling. No
+    // requestedByRunId: these are the coordinator's own deterministic steps,
+    // not a run spawning a run.
+    ...(task.grantId && task.grantRevisionId
+      ? { grant: { grantId: task.grantId, grantRevisionId: task.grantRevisionId } }
+      : {}),
   });
 
   if (!result.created) {
@@ -626,7 +674,7 @@ export function resolveTaskRecipe(
 }
 
 /** How the coordinator advances ONE step of ONE recipe. */
-type StepAdvancer = (args: {
+export type StepAdvancer = (args: {
   task: AiOperatorTaskRow;
   leaseEpoch: number;
   checkpoint: TaskCheckpoint;
@@ -646,12 +694,65 @@ type StepAdvancer = (args: {
  */
 const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdvancer>>>> = {
   [SERVICE_RECOVERY_WORKFLOW_KEY]: {
-    investigate: (a) => advanceInvestigate(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
-    execute: (a) => advanceExecute(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
-    observe: (a) => advanceObserve(a.task, a.leaseEpoch, a.checkpoint, a.recipe, a.now),
-    verify: (a) => advanceVerify(a.task, a.leaseEpoch, a.checkpoint, a.recipe),
+    investigate: withServiceRecoveryCheckpoint((a, c) => advanceInvestigate(a.task, a.leaseEpoch, c, a.recipe)),
+    execute: withServiceRecoveryCheckpoint((a, c) => advanceExecute(a.task, a.leaseEpoch, c, a.recipe)),
+    observe: withServiceRecoveryCheckpoint((a, c) => advanceObserve(a.task, a.leaseEpoch, c, a.recipe, a.now)),
+    verify: withServiceRecoveryCheckpoint((a, c) => advanceVerify(a.task, a.leaseEpoch, c, a.recipe)),
   },
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: IDENTITY_OFFBOARDING_ADVANCERS,
 };
+
+/**
+ * Narrow once, at the `service_recovery` advancer entry, instead of casting
+ * inside each advancer. `advanceTask`'s `checkpointMatchesRecipe` already
+ * refuses a mismatched arm, so a miss here cannot happen for an admitted task —
+ * but if it ever did it terminalizes with a named reason rather than reading a
+ * field the checkpoint does not have.
+ */
+function withServiceRecoveryCheckpoint(
+  fn: (a: Parameters<StepAdvancer>[0], checkpoint: ServiceRecoveryCheckpoint) => Promise<string>,
+): StepAdvancer {
+  return async (a) => {
+    if (!isServiceRecoveryCheckpoint(a.checkpoint)) {
+      await settle({
+        task: a.task, leaseEpoch: a.leaseEpoch, event: 'fail', outcome: 'unresolved',
+        detail: `service_recovery step '${a.task.currentStepKey ?? 'investigate'}' reached without a service-recovery checkpoint`,
+      });
+      return 'failed: checkpoint arm mismatch';
+    }
+    return fn(a, a.checkpoint);
+  };
+}
+
+/**
+ * Each production recipe's checkpoint arm guard (plan Amendment A.4). R1a
+ * appends `identity_offboarding: isIdentityOffboardingCheckpoint`.
+ *
+ * Every key in the production registry (`RECIPES`) MUST have an entry here.
+ * `taskCoordinatorPlanApproval.test.ts` pins that, so a shipped recipe can
+ * never skip the agreement check below.
+ */
+export const RECIPE_CHECKPOINT_ARMS: Readonly<Record<string, (c: TaskCheckpoint) => boolean>> = Object.freeze({
+  [SERVICE_RECOVERY_WORKFLOW_KEY]: isServiceRecoveryCheckpoint,
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: isIdentityOffboardingCheckpoint,
+});
+
+/**
+ * A task's checkpoint arm must agree with its recipe (plan Amendment A.4).
+ * Checked in `advanceTask` before any advancer or gate runs, so a production
+ * task can never borrow another arm's requester gate or advancers.
+ *
+ * A recipe that declares an arm must hold it. A recipe with no entry in
+ * `RECIPE_CHECKPOINT_ARMS` is not checked and keeps the pre-R1a-0 behaviour.
+ * Only test-local recipes reach that branch, because every registered recipe
+ * is pinned to declare an arm. One example is the E3 human-work fixture
+ * `fixture_identity`, which holds the only checkpoint shape that exists until
+ * R1a adds the identity arm.
+ */
+function checkpointMatchesRecipe(recipeKey: string, checkpoint: TaskCheckpoint): boolean {
+  const holdsOwnArm = RECIPE_CHECKPOINT_ARMS[recipeKey];
+  return holdsOwnArm ? holdsOwnArm(checkpoint) : true;
+}
 
 /**
  * Step kinds whose execution is IDENTICAL for every recipe (Recipe Library
@@ -775,7 +876,15 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   }
   const recipe = resolved.recipe;
 
-  const stepKey = task.currentStepKey ?? 'investigate';
+  if (!checkpointMatchesRecipe(recipe.key, checkpoint)) {
+    await settle({
+      task, leaseEpoch, event: 'fail', outcome: 'unresolved',
+      detail: `checkpoint does not match workflow '${recipe.key}'`,
+    });
+    return `failed: checkpoint does not match workflow ${recipe.key}`;
+  }
+
+  const stepKey = task.currentStepKey ?? recipe.entryStepKey ?? 'investigate';
   const advance =
     RECIPE_ADVANCERS[recipe.key]?.[stepKey]
     ?? KIND_ADVANCERS[recipe.steps[stepKey]?.kind as StepKind];
@@ -795,8 +904,18 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   // resume that jumps straight to a step by name), passes through this same
   // check before anything below it can run. No-op for a task with no human
   // requester (automatic origins have nothing to re-check).
+  //
+  // Selected by checkpoint ARM (R1a-0): the service-recovery arm keeps the
+  // device-keyed gate, call and arguments unchanged; every other arm re-checks
+  // the task's live target rows. For every recipe that declares an arm,
+  // `checkpointMatchesRecipe` above already guarantees the arm belongs to it.
   if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
-    const accessCheck = await requesterAccessLost(task, checkpoint.recipeInput.deviceId);
+    // Wisp W02: the device-keyed gate re-checks a grant-bearing task for
+    // `devices:execute` (its default effect — it only ever guards a device
+    // command) inside the pinned ceiling.
+    const accessCheck = isServiceRecoveryCheckpoint(checkpoint)
+      ? await requesterAccessLost(task, checkpoint.recipeInput.deviceId)
+      : await requesterAccessLostForTargets(task);
     if (accessCheck.lost) {
       await settle({
         task, leaseEpoch, event: 'hand_off', outcome: 'unresolved',
@@ -820,7 +939,7 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
 async function advanceInvestigate(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const run = await readLatestTaskRun(task.orgId, task.id, 'investigate');
@@ -864,7 +983,7 @@ async function advanceInvestigate(
       });
       return 'handed off: awaiting_approval with no operation';
     }
-    const next: TaskCheckpoint = taskCheckpointSchema.parse({
+    const next: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
       ...checkpoint,
       findings: mergeFindings(checkpoint, run.outcome),
       lastOperationKey: operation.operationKey,
@@ -884,7 +1003,7 @@ async function advanceInvestigate(
   // Terminal without an approval: the run either proposed a handoff/question,
   // proposed nothing, or failed.
   const proposal = run.outcome?.taskStep;
-  const withFindings: TaskCheckpoint = taskCheckpointSchema.parse({
+  const withFindings: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
     ...checkpoint,
     findings: mergeFindings(checkpoint, run.outcome),
   });
@@ -964,7 +1083,7 @@ async function advanceInvestigate(
 async function advanceExecute(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
   // Spec §5.1's requester-access recheck ("rechecks current access before
@@ -1015,7 +1134,7 @@ async function advanceExecute(
   // status CAS (baseline §4), so it is the authoritative signal that something
   // was actually sent.
   if (operation.executionRefId) {
-    const next: TaskCheckpoint = taskCheckpointSchema.parse({
+    const next: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
       ...checkpoint,
       mutationAttempts: checkpoint.mutationAttempts + 1,
     });
@@ -1053,7 +1172,7 @@ async function advanceExecute(
 async function advanceObserve(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
   now: Date,
 ): Promise<string> {
@@ -1131,7 +1250,7 @@ async function advanceObserve(
 async function advanceVerify(
   task: AiOperatorTaskRow,
   leaseEpoch: number,
-  checkpoint: TaskCheckpoint,
+  checkpoint: ServiceRecoveryCheckpoint,
   recipe: RecipeDefinition<never>,
 ): Promise<string> {
   const operation = await readLatestOperation(task.orgId, task.id);
@@ -1150,7 +1269,7 @@ async function advanceVerify(
     intentId: operation?.intentId ?? null,
   });
 
-  const next: TaskCheckpoint = taskCheckpointSchema.parse({
+  const next: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
     ...checkpoint,
     lastVerification: {
       result: evaluation.result,
@@ -1781,4 +1900,17 @@ export async function handleTaskWake(args: {
  *  writers, and the test that pins their task-graph writes needs to call them
  *  directly — the alternative is a test that drives `advanceTask` through a
  *  fake DB, which would assert the fake and not the wiring. */
+/**
+ * The ONLY coordinator surface a per-recipe advancer module outside this file
+ * may call (R1a-0). Frozen; each member IS the existing lease-safe function,
+ * unchanged — not a wrapper. An advancer module must import this LAZILY
+ * (`const { COORDINATOR_STEP_OPS } = await import('./taskCoordinator')` inside
+ * the advancer body): this file imports the advancer table at load, so a
+ * static import back is a load-time cycle in which the table captures
+ * `undefined`.
+ */
+export const COORDINATOR_STEP_OPS = Object.freeze({
+  settle, yieldToWait, admitReasoningRun, settleStepAndMove, writeLeasedStep, readLatestTaskRun,
+});
+
 export const __testOnly = { writeLeasedStep, yieldToWait, settle, admitReasoningRun, advanceVerify };

@@ -13,7 +13,7 @@ import TicketChecklistTemplatesPage from './TicketChecklistTemplatesPage';
 import TimeTrackingSettingsCard from './TimeTrackingSettingsCard';
 import { useJwtClaims } from '../../lib/authScope';
 import { usePermissions } from '../../lib/permissions';
-import { useHashTab } from '../../lib/useHashState';
+import { useHashState } from '../../lib/useHashState';
 
 export const TICKETING_HUB_TABS = [
   'statuses', 'priorities', 'categories', 'forms', 'email', 'templates', 'timeTracking',
@@ -75,7 +75,15 @@ export default function TicketingSettingsTabs() {
   const [deepLinkMailbox] = useState(
     () => typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('ticketMailbox')
   );
-  const [activeTab, setActiveTab] = useHashTab<TicketingHubTab>(TICKETING_HUB_TABS, deepLinkMailbox ? 'email' : 'statuses');
+  // The hash is `<tab>` or `<tab>/<detail>` (e.g. `priorities/<calendarId>`, the selected
+  // business-hours calendar) — only the head segment picks the tab.
+  const [activeTab, setActiveTab] = useHashState<TicketingHubTab>(
+    deepLinkMailbox ? 'email' : 'statuses',
+    (hash) => {
+      const head = hash.split('/')[0] as TicketingHubTab;
+      return (TICKETING_HUB_TABS as readonly string[]).includes(head) ? head : undefined;
+    },
+  );
 
   const TABS = [...BASE_TABS, ...(canManagePartnerTicketing ? PARTNER_ONLY_TABS : [])].map((tab) => ({
     ...tab,

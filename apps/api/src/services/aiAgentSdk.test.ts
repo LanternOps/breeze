@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // #5645: every inline release hands the handler the released intent's decision
 // record (`approvalScope` + `decidedVia`) on the execution context — the same
@@ -33,7 +33,11 @@ vi.mock('./aiSessionLiveAuthority', () => ({
 // Mocks
 // ============================================
 
+const finalizeMock = vi.hoisted(() => vi.fn(async (_id: string) => ({ updated: false })));
+vi.mock('./wisp/threadSummary', () => ({ finalizeWispSessionSummary: finalizeMock }));
+
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -268,6 +272,18 @@ vi.mock('./scriptRunContextApproval', async (importOriginal) => {
 
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+}));
+
+// #9854: the pre-tool-use gate validates input against the full tool schema
+// before any approval. Most fixtures in this file use placeholder ids
+// ('d-1', 'device-1') that the real schemas reject, so the validator defaults
+// to "valid" here; the #9854 block below swaps the REAL validator back in.
+const mockValidateToolInput = vi.fn(
+  (..._args: unknown[]): { success: true } | { success: false; error: string } => ({ success: true }),
+);
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolSchemas')>()),
+  validateToolInput: (...args: unknown[]) => mockValidateToolInput(...args),
 }));
 
 // ============================================
@@ -628,6 +644,41 @@ describe('runPreFlightChecks', () => {
       expect(result.error).toContain('24h');
     }
     expect(db.update).toHaveBeenCalled();
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+  });
+
+  it('a rejected thread-summary finalize does not change the expiry result, and is captured + logged', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockGetSession.mockResolvedValue(makeSession({ createdAt, lastActivityAt: new Date() }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('24h');
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('a rejected finalize on the INACTIVITY (2h idle) branch is captured + logged and keeps the expiry result', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockGetSession.mockResolvedValue(makeSession({ lastActivityAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('idle summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('inactivity') });
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
   });
 
   // --- Idle timeout ---
@@ -646,6 +697,7 @@ describe('runPreFlightChecks', () => {
       expect(result.error).toContain('inactivity');
     }
     expect(db.update).toHaveBeenCalled();
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
   });
 
   // --- Input sanitization ---
@@ -1371,6 +1423,141 @@ describe('createSessionPreToolUse', () => {
         input,
         expect.objectContaining({ chatSession: true }),
       );
+    });
+  });
+
+  describe('#9854: input is validated before any approval is requested', () => {
+    const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
+    const HELPER_DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import('./aiToolSchemas')>('./aiToolSchemas');
+      mockValidateToolInput.mockImplementation((toolName, input) =>
+        actual.validateToolInput(toolName as string, input as Record<string, unknown>));
+      mockCreateActionIntent.mockReset();
+      mockWaitForIntentDecision.mockReset();
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+    });
+
+    afterEach(() => {
+      mockValidateToolInput.mockReset();
+      mockValidateToolInput.mockImplementation(() => ({ success: true }));
+    });
+
+    it('refuses an execute_command file_read on a deny-listed path with no intent, approval card or audit row', async () => {
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_read',
+        payload: { path: '/proc/1/status' },
+      });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: expect.stringMatching(/^Invalid input: payload\.path: .*blocked/i),
+      });
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(session.eventBus.publish).not.toHaveBeenCalled();
+      expect(mockWaitForIntentDecision).not.toHaveBeenCalled();
+      expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+      // Refused before the guardrail/RBAC/rate-limit gates spend anything.
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(checkToolRateLimit).not.toHaveBeenCalled();
+    });
+
+    it('still creates exactly one intent for a valid Tier-3 execute_command', async () => {
+      mockInsertReturning({ id: 'exec-valid' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-valid', approvalRequestIds: ['appr-v'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+      const input = { deviceId: DEVICE_ID, commandType: 'file_read', payload: { path: '/var/log/syslog' } };
+
+      const result = await createSessionPreToolUse(session)('execute_command', input);
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+      expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+        toolName: 'execute_command',
+        input,
+      }));
+    });
+
+    it('validates a helper session call against the helper-scoped input, as executeTool will', async () => {
+      const session = makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: HELPER_DEVICE_ID,
+          user: { id: HELPER_DEVICE_ID, email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+      });
+
+      // No deviceId from the model: the helper scope supplies it, so this is
+      // valid and must reach PAM governance.
+      mockInsertReturning({ id: 'exec-h-valid' });
+      mockDecideHelperToolAction.mockResolvedValue('denied');
+      const allowedShape = await createSessionPreToolUse(session)('execute_command', {
+        commandType: 'file_read',
+        payload: { path: '/var/log/syslog' },
+      });
+      expect(allowedShape).toEqual({ allowed: false, error: 'This action was denied by organization policy' });
+      expect(mockDecideHelperToolAction).toHaveBeenCalledTimes(1);
+
+      // A deny-listed path never reaches PAM.
+      vi.mocked(db.insert).mockClear();
+      mockDecideHelperToolAction.mockClear();
+      const blocked = await createSessionPreToolUse(session)('execute_command', {
+        commandType: 'file_read',
+        payload: { path: '/proc/1/status' },
+      });
+      expect(blocked).toEqual({
+        allowed: false,
+        error: expect.stringMatching(/^Invalid input: payload\.path: .*blocked/i),
+      });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
+    });
+
+    it('refuses a helper session call to a tool the helper scope does not cover, before PAM', async () => {
+      const session = makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: HELPER_DEVICE_ID,
+          user: { id: HELPER_DEVICE_ID, email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+      });
+
+      // query_devices has a core schema but is org-wide: no HELPER_TOOL_SCOPING entry.
+      const result = await createSessionPreToolUse(session)('query_devices', {});
+
+      expect(result).toEqual({ allowed: false, error: "Tool 'query_devices' is not available in the Helper context" });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
+      expect(checkGuardrails).not.toHaveBeenCalled();
+    });
+
+    it('leaves a tool with no core input schema to its own handler (session-aware tools)', async () => {
+      mockInsertReturning({ id: 'exec-m365' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-m365', actionName: 'm365_reset_password' }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('m365_reset_password', { userPrincipalName: 'a@b.test' });
+
+      expect(result).not.toEqual(expect.objectContaining({ error: expect.stringContaining('No input schema') }));
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -4003,6 +4190,53 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
   // must also be re-proved by revalidateApprovedIntentForRelease before the
   // step counts as run. Winning the CAS but failing revalidation must not
   // advance the plan.
+  it('a Wisp release refusal surfaces its own reason, not the generic revalidation copy (W04 Review Focus 2)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-wisp-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-wisp-revalidate-fail', approvalRequestIds: ['appr-wisp-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+      ok: false,
+      errorCode: 'wisp_grant_inactive',
+      details: { wispRefusal: 'inactive', reason: 'Wisp is paused for this grant.', grantId: 'g-1', aiSessionId: 's-1' },
+    });
+    const result = await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' });
+    expect(result).toEqual({ allowed: false, error: 'Wisp is paused for this grant.' });
+  });
+
+  it('a non-Wisp revalidation failure never surfaces details.reason', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-nonwisp-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-nonwisp-revalidate-fail', approvalRequestIds: ['appr-nonwisp-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+      ok: false,
+      errorCode: 'actor_invalid',
+      details: { reason: 'internal detail that must stay private' },
+    });
+    const result = await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' });
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization for this action could no longer be verified; it was not executed.',
+    });
+  });
+
   it('does NOT advance when the release CAS is won but revalidation fails', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,

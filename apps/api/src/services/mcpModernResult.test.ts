@@ -41,6 +41,43 @@ describe('mcpModernResult', () => {
     decorateModernResult('tools/list', input);
     expect(input).toEqual({ tools: [], _meta: { a: 1 } });
   });
+  it('B-W04: server/discover serves the approval-intent instructions only with MCP_TIER3_INTENTS_ENABLED on', () => {
+    const prev = process.env.MCP_TIER3_INTENTS_ENABLED;
+    try {
+      process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+      expect(buildDiscoverResult().instructions).toContain('get_action_status');
+      delete process.env.MCP_TIER3_INTENTS_ENABLED;
+      expect(buildDiscoverResult().instructions).toBe(MCP_SERVER_INSTRUCTIONS);
+    } finally {
+      if (prev === undefined) delete process.env.MCP_TIER3_INTENTS_ENABLED; else process.env.MCP_TIER3_INTENTS_ENABLED = prev;
+    }
+  });
+
+  it('B-W04: decorateModernResult keeps a tool result\'s own input_required and adds no cache hints to tools/call', () => {
+    const r = decorateModernResult('tools/call', { resultType: 'input_required', inputRequests: {}, requestState: 's' });
+    expect(r.resultType).toBe('input_required');
+    expect(r).not.toHaveProperty('ttlMs');
+    expect(r).not.toHaveProperty('cacheScope');
+    expect(decorateModernResult('tools/call', { content: [] }).resultType).toBe('complete');
+    expect(decorateModernResult('tools/list', { resultType: 'input_required' }).resultType).toBe('complete');
+  });
+
+  it('B-W05: buildDiscoverResult advertises the MCP Apps extension only when MCP_APPS_ENABLED', () => {
+    const prev = process.env.MCP_APPS_ENABLED;
+    try {
+      delete process.env.MCP_APPS_ENABLED;
+      const off = buildDiscoverResult();
+      expect(off.capabilities).toEqual({ tools: {}, resources: {}, prompts: {} });
+      expect(JSON.stringify(off.capabilities)).toBe('{"tools":{},"resources":{},"prompts":{}}');
+      process.env.MCP_APPS_ENABLED = 'true';
+      expect(buildDiscoverResult().capabilities).toEqual({
+        tools: {}, resources: {}, prompts: {}, extensions: { 'io.modelcontextprotocol/ui': {} },
+      });
+    } finally {
+      if (prev === undefined) delete process.env.MCP_APPS_ENABLED; else process.env.MCP_APPS_ENABLED = prev;
+    }
+  });
+
   it('buildDiscoverResult advertises every supported version, private 5-minute cache', () => {
     expect(buildDiscoverResult()).toEqual({
       resultType: 'complete',

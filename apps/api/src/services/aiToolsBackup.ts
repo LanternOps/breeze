@@ -36,6 +36,7 @@ import { resolveSelectedSnapshotPaths, selectedSnapshotPathError } from './backu
 import { inArray } from 'drizzle-orm';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { restoreIntegrityRefusalForActor } from './backupRestoreActorGate';
+import { sumStoredSnapshotBytes } from './backupStoredBytes';
 
 type BackupHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -376,20 +377,19 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(backupJobs.completedAt))
           .limit(1);
 
-        // Total snapshot count and size
+        // Total snapshot count and STORED size — an incremental counts the
+        // bytes it uploaded, not its full logical size (#9631).
         const snapOrgCond = orgWhere(auth, backupSnapshots.orgId);
-        const [snapshotStats] = await db.select({
-          count: sql<number>`count(*)`,
-          totalSize: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)`,
-        }).from(backupSnapshots)
-          .where(and(eq(backupSnapshots.deviceId, deviceId), ...(snapOrgCond ? [snapOrgCond] : [])));
+        const snapshotStats = await sumStoredSnapshotBytes(
+          and(eq(backupSnapshots.deviceId, deviceId), ...(snapOrgCond ? [snapOrgCond] : [])),
+        );
 
         return JSON.stringify({
           deviceId,
           latestJob: latestJob ?? null,
           lastSuccessfulBackup: lastSuccess?.completedAt ?? null,
-          snapshotCount: snapshotStats?.count ?? 0,
-          totalBackupSize: snapshotStats?.totalSize ?? 0,
+          snapshotCount: snapshotStats.count,
+          totalBackupSize: snapshotStats.totalBytes,
         });
       }
 
@@ -427,11 +427,10 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const sc = orgWhere(auth, backupSnapshots.orgId);
       if (sc) snapshotConditions.push(sc);
 
-      const [storageStats] = await db.select({
-        snapshotCount: sql<number>`count(*)`,
-        totalStorage: sql<number>`coalesce(sum(${backupSnapshots.size}), 0)`,
-      }).from(backupSnapshots)
-        .where(snapshotConditions.length > 0 ? and(...snapshotConditions) : undefined);
+      // Stored bytes, not the sum of logical snapshot sizes (#9631).
+      const storageStats = await sumStoredSnapshotBytes(
+        snapshotConditions.length > 0 ? and(...snapshotConditions) : undefined,
+      );
 
       return JSON.stringify({
         configs: {
@@ -440,8 +439,8 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         },
         jobsLast7Days: jobStats ?? {},
         storage: {
-          snapshotCount: storageStats?.snapshotCount ?? 0,
-          totalBytes: storageStats?.totalStorage ?? 0,
+          snapshotCount: storageStats.count,
+          totalBytes: storageStats.totalBytes,
         },
       });
     }),

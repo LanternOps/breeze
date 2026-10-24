@@ -146,7 +146,7 @@ function routeFetch(list: Row[], sites: StoreSite[] = []) {
 beforeEach(() => {
   fetchWithAuth.mockReset();
   // Reset the store mock to the default single-org shape between tests.
-  seedOrgState({ currentOrgId: 'org-1', currentSiteId: null, sites: [], organizations: [], isLoading: false });
+  seedOrgState({ currentOrgId: 'org-1', currentSiteId: null, sites: [], organizations: [], isLoading: false, enrollmentDefaults: null });
 });
 
 describe('EnrollmentKeyManager — short code column', () => {
@@ -351,7 +351,7 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     expect(screen.queryByText('Expiry must be in the future.')).toBeNull();
   });
 
-  it('leaving the device-limit field blank sends the 50-device default, not a single-use maxUsage (#4126 paper cut #31)', async () => {
+  it('leaving the device-limit field blank never yields a single-use key: placeholder shows 50 and the body omits it so the server resolves the default (#4126 paper cut #31, #9616)', async () => {
     seedOrgState({
       currentOrgId: 'org-1',
       organizations: [makeOrg('org-1', 'Org One')],
@@ -381,7 +381,127 @@ describe('EnrollmentKeyManager — create form site selector', () => {
       expect(calls.some((c) => c.url === '/enrollment-keys' && c.method === 'POST')).toBe(true);
     });
     const post = calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
-    expect(post?.body?.maxUsage).toBe(50);
+    // Defaults not loaded: the form omits the fields so the SERVER resolves the
+    // partner/org default (never a single-use key, never an unvetted client value).
+    expect(post?.body && 'maxUsage' in post.body).toBe(false);
+    expect(post?.body && 'ttlMinutes' in post.body).toBe(false);
+  });
+
+  // #9616 — Create Key must honour the partner/org enrollment defaults the way
+  // Add Device does, and say what a blank field means.
+  describe('partner/org enrollment defaults (#9616)', () => {
+    async function openCreateForm() {
+      render(<EnrollmentKeyManager />);
+      await screen.findByText(EMPTY);
+      fireEvent.click(screen.getByText('Create Key'));
+      fireEvent.change(screen.getByPlaceholderText('e.g., Production servers'), {
+        target: { value: 'CI key' },
+      });
+      const siteSelect = screen.getByTestId('enrollment-key-site-select');
+      await waitFor(() => {
+        expect(siteSelect).toBeEnabled();
+        expect(siteSelect).toHaveValue('site-a');
+      });
+    }
+    const submitForm = () =>
+      fireEvent.click(document.querySelector('form button[type="submit"]') as HTMLButtonElement);
+    const postOf = (calls: ReturnType<typeof routeFetch>) =>
+      calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
+
+    function seedDefaults() {
+      seedOrgState({
+        currentOrgId: 'org-1',
+        organizations: [makeOrg('org-1', 'Org One')],
+        enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 10, maxTtlMinutes: 525600 },
+      });
+    }
+
+    it('shows the resolved device count and expiry as the blank-field meaning', async () => {
+      seedDefaults();
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      await openCreateForm();
+      expect(screen.getByPlaceholderText('10 (org default)')).toBeInTheDocument();
+      expect(screen.getByText('Leave blank for 7 days (org default).')).toBeInTheDocument();
+    });
+
+    // #9876: direct load of /settings/enrollment-keys never runs the org
+    // switcher's fetchSites, so the store's defaults are null.
+    it('fetches the resolved defaults on mount when the store has none', async () => {
+      seedOrgState({
+        currentOrgId: 'org-1',
+        organizations: [makeOrg('org-1', 'Org One')],
+        enrollmentDefaults: null,
+      });
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/orgs/sites?') && url.includes('includeEnrollmentDefaults=1')) {
+          return Promise.resolve(
+            jsonRes({
+              data: [],
+              enrollmentDefaults: { ttlMinutes: 1440, deviceCount: 7, maxTtlMinutes: 525600 },
+            }),
+          );
+        }
+        return base(url, opts);
+      });
+      render(<EnrollmentKeyManager />);
+      await screen.findByText(EMPTY);
+      fireEvent.click(screen.getByText('Create Key'));
+      expect(await screen.findByPlaceholderText('7 (org default)')).toBeInTheDocument();
+      expect(screen.getByText('Leave blank for 1 day (org default).')).toBeInTheDocument();
+    });
+
+    it('sends the resolved device count and ttlMinutes (not expiresAt) when both are blank', async () => {
+      seedDefaults();
+      const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      await openCreateForm();
+      submitForm();
+      await waitFor(() => expect(postOf(calls)).toBeTruthy());
+      expect(postOf(calls)?.body?.maxUsage).toBe(10);
+      expect(postOf(calls)?.body?.ttlMinutes).toBe(10080);
+      expect(postOf(calls)?.body?.expiresAt).toBeUndefined();
+    });
+
+    it('an explicit expiry wins over the default and is sent as expiresAt only', async () => {
+      seedDefaults();
+      const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      await openCreateForm();
+      fireEvent.change(screen.getByTestId('enrollment-key-expires-at'), {
+        target: { value: '2999-01-01T00:00' },
+      });
+      submitForm();
+      await waitFor(() => expect(postOf(calls)).toBeTruthy());
+      expect(typeof postOf(calls)?.body?.expiresAt).toBe('string');
+      expect(postOf(calls)?.body?.ttlMinutes).toBeUndefined();
+    });
+
+    it('hints in the Usage column when the count came from the default', async () => {
+      seedDefaults();
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      const base = fetchWithAuth.getMockImplementation()!;
+      let created = false;
+      fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string; body?: string }) => {
+        const url = String(rawUrl ?? '');
+        if (url === '/enrollment-keys' && opts?.method === 'POST') {
+          created = true;
+          return Promise.resolve(jsonRes({ key: 'NEWKEY-123', id: 'k-new' }));
+        }
+        if (created && url.startsWith('/enrollment-keys?')) {
+          return Promise.resolve(
+            jsonRes({
+              data: [makeRow({ id: 'k-new', maxUsage: 10 }), makeRow({ id: 'k-old', maxUsage: 10 })],
+              pagination: { page: 1, limit: 50, total: 2 },
+            }),
+          );
+        }
+        return base(rawUrl, opts);
+      });
+      await openCreateForm();
+      submitForm();
+      expect(await screen.findByTestId('key-usage-default-k-new')).toHaveTextContent('default');
+      expect(screen.queryByTestId('key-usage-default-k-old')).toBeNull();
+    });
   });
 
   it('blocks submit and hides the site dropdown when the org has no sites', async () => {
@@ -675,5 +795,223 @@ describe('EnrollmentKeyManager — subtitle (#3964)', () => {
     const code = subtitle.querySelector('code');
     expect(code, 'the components={{ code }} map must actually bind').toBeTruthy();
     expect(code?.textContent).toBe('breeze-agent enroll <key>');
+  });
+});
+
+// #9615: the row's "Download pre-configured installer" used to send no
+// `count`, so the API's `?? 1` default built an installer that enrolled ONE
+// device even for a key with 55 uses left. The row now asks how many devices
+// (defaulting to the key's remaining uses, like Add Device's device-count
+// field) and sends that as `count`.
+describe('EnrollmentKeyManager — row installer download device count (#9615)', () => {
+  const okInstaller = () =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'Content-Disposition': 'attachment; filename="breeze.msi"' }),
+      blob: async () => new Blob(['msi']),
+      json: async () => ({}),
+    } as unknown as Response);
+
+  function routeInstallerFetch(list: Row[], installer: () => Promise<Response> = okInstaller) {
+    const calls = routeFetch(list);
+    const base = fetchWithAuth.getMockImplementation()!;
+    fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string; body?: string }) => {
+      const url = String(rawUrl ?? '');
+      if (url.includes('/installer/')) {
+        calls.push({ url, method: opts?.method ?? 'GET' });
+        return installer();
+      }
+      return base(rawUrl, opts);
+    });
+    return calls;
+  }
+
+  beforeEach(() => {
+    Object.assign(URL, {
+      createObjectURL: vi.fn(() => 'blob:installer'),
+      revokeObjectURL: vi.fn(),
+    });
+  });
+
+  async function openInstallerDialog(platform: 'Windows (.msi)' | 'macOS (.zip)', row = 0) {
+    await screen.findAllByText('Prod key');
+    fireEvent.click(screen.getAllByTitle('Download pre-configured installer')[row]);
+    fireEvent.click(screen.getByText(platform));
+    return (await screen.findByTestId('installer-device-count')) as HTMLInputElement;
+  }
+
+  const installerCalls = (calls: Array<{ url: string }>) =>
+    calls.filter((c) => c.url.includes('/installer/'));
+
+  it("defaults the device count to the key's remaining uses and sends it as count", async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55, usageCount: 3 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('52');
+    // Nothing is minted until the admin confirms.
+    expect(installerCalls(calls)).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    await waitFor(() => expect(installerCalls(calls)).toHaveLength(1));
+    expect(installerCalls(calls)[0].url).toBe('/enrollment-keys/k-1/installer/windows?count=52');
+  });
+
+  it('sends the device count the admin entered (macOS)', async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55, usageCount: 0 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('macOS (.zip)');
+    fireEvent.change(input, { target: { value: '10' } });
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    await waitFor(() => expect(installerCalls(calls)).toHaveLength(1));
+    expect(installerCalls(calls)[0].url).toBe('/enrollment-keys/k-1/installer/macos?count=10');
+  });
+
+  it("refuses a count above the key's remaining uses", async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 5, usageCount: 2 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('3');
+    fireEvent.change(input, { target: { value: '4' } });
+
+    const confirm = screen.getByTestId('installer-download-confirm') as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+
+  it.each(['0', '', '2.5'])('refuses a non-positive-integer count (%j)', async (value) => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: null }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    fireEvent.change(input, { target: { value } });
+
+    const confirm = screen.getByTestId('installer-download-confirm') as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+
+  it('defaults an unlimited key to the product default device count', async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: null, usageCount: 7 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('50');
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    await waitFor(() => expect(installerCalls(calls)).toHaveLength(1));
+    expect(installerCalls(calls)[0].url).toBe('/enrollment-keys/k-1/installer/windows?count=50');
+  });
+
+  it('cancel closes the dialog without minting an installer', async () => {
+    const calls = routeInstallerFetch([
+      makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    await openInstallerDialog('Windows (.msi)');
+    fireEvent.click(screen.getByTestId('installer-download-cancel'));
+
+    expect(screen.queryByTestId('installer-device-count')).toBeNull();
+    expect(installerCalls(calls)).toHaveLength(0);
+  });
+
+  it.each([
+    ['100000', false],
+    ['100001', true],
+  ])('bounds an unlimited key at the route maximum (%s)', async (value, disabled) => {
+    routeInstallerFetch([makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: null })]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    fireEvent.change(input, { target: { value } });
+    expect((screen.getByTestId('installer-download-confirm') as HTMLButtonElement).disabled).toBe(disabled);
+  });
+
+  it('uses the singular form when one enrollment is left', async () => {
+    routeInstallerFetch([makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 5, usageCount: 4 })]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    expect(input.value).toBe('1');
+    expect(screen.getByText('This key has 1 enrollment left.')).toBeTruthy();
+  });
+
+  it("reopening for another key starts from that key's default, not the last value", async () => {
+    routeInstallerFetch([
+      makeRow({ id: 'k-a', siteId: 's-1', siteName: 'HQ', maxUsage: 55, usageCount: 0 }),
+      makeRow({ id: 'k-b', siteId: 's-1', siteName: 'HQ', maxUsage: 8, usageCount: 0 }),
+    ]);
+    render(<EnrollmentKeyManager />);
+
+    const first = await openInstallerDialog('Windows (.msi)', 0);
+    fireEvent.change(first, { target: { value: '30' } });
+    fireEvent.click(screen.getByTestId('installer-download-cancel'));
+
+    const second = await openInstallerDialog('Windows (.msi)', 1);
+    expect(second.value).toBe('8');
+  });
+
+  it('stays open showing progress until the download settles', async () => {
+    let finish!: (r: Response) => void;
+    routeInstallerFetch(
+      [makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 })],
+      () => new Promise<Response>((resolve) => { finish = resolve; }),
+    );
+    render(<EnrollmentKeyManager />);
+
+    await openInstallerDialog('Windows (.msi)');
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    const confirm = await screen.findByTestId('installer-download-confirm');
+    await waitFor(() => expect(confirm.textContent).toBe('Downloading...'));
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+
+    finish(await okInstaller());
+    await waitFor(() => expect(screen.queryByTestId('installer-device-count')).toBeNull());
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a failed download in the page error banner and closes the dialog', async () => {
+    routeInstallerFetch(
+      [makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 })],
+      () => Promise.resolve(jsonRes({ error: 'Enrollment key usage exhausted' }, false, 410)),
+    );
+    render(<EnrollmentKeyManager />);
+
+    await openInstallerDialog('Windows (.msi)');
+    fireEvent.click(screen.getByTestId('installer-download-confirm'));
+
+    expect(await screen.findByText('Enrollment key usage exhausted')).toBeTruthy();
+    expect(screen.queryByTestId('installer-device-count')).toBeNull();
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('Escape closes the dialog without minting an installer', async () => {
+    const calls = routeInstallerFetch([makeRow({ siteId: 's-1', siteName: 'HQ', maxUsage: 55 })]);
+    render(<EnrollmentKeyManager />);
+
+    const input = await openInstallerDialog('Windows (.msi)');
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByTestId('installer-device-count')).toBeNull();
+    expect(installerCalls(calls)).toHaveLength(0);
   });
 });

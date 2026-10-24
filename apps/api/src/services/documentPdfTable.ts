@@ -477,7 +477,16 @@ export function drawDocumentTotals(
     noteH = doc.heightOfString(totals.aside.note, { width: cols.right - cols.colSummaryLabelX }) + NOTE_GAP;
   }
   const asideH = totals.aside ? 2 * ASIDE_PAD + asidePlanned.reduce((a, p) => a + p.height, 0) + noteH : 0;
-  const blockHeight = 14 + planned.reduce((a, p) => a + p.height, 0) + (totals.aside ? ASIDE_GAP + asideH : 0);
+  // The invoice deposit sentence ("Deposit of $540.00 due — ..."), under the rows.
+  const stripW = cols.right - cols.colSummaryLabelX;
+  const stripParts = totals.depositStrip?.parts ?? [];
+  const stripText = stripParts.map((p) => (typeof p === 'string' ? p : p.strong)).join('');
+  let stripH = 0;
+  if (stripParts.length > 0) {
+    doc.font(fonts.body.bold).fontSize(9);
+    stripH = ASIDE_GAP + doc.heightOfString(stripText, { width: stripW }) + 2;
+  }
+  const blockHeight = 14 + planned.reduce((a, p) => a + p.height, 0) + (totals.aside ? ASIDE_GAP + asideH : 0) + stripH;
   const pageBottom = doc.page.height - doc.page.margins.bottom;
   let y = startY;
   if (y > doc.page.margins.top && y + blockHeight > pageBottom) {
@@ -523,6 +532,18 @@ export function drawDocumentTotals(
     doc.font(fonts.body.regular).fontSize(8).fillColor(MUTED)
       .text(totals.aside.note, cols.colSummaryLabelX, y, { width: cols.right - cols.colSummaryLabelX });
     y = doc.y + ASIDE_PAD;
+  }
+  if (stripParts.length > 0) {
+    y += ASIDE_GAP;
+    stripParts.forEach((part, i) => {
+      const t = typeof part === 'string' ? part : part.strong;
+      doc.font(typeof part === 'string' ? fonts.body.regular : fonts.body.bold).fontSize(9)
+        .fillColor(typeof part === 'string' ? MUTED : INK);
+      const more = i < stripParts.length - 1;
+      if (i === 0) doc.text(t, cols.colSummaryLabelX, y, { width: stripW, continued: more });
+      else doc.text(t, { continued: more });
+    });
+    y = doc.y + 2;
   }
   doc.fontSize(10).font(fonts.body.regular).fillColor(INK);
   return y;

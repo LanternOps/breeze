@@ -105,6 +105,13 @@ describe('mcpResourceDomain', () => {
     expect(mcpResourceDomain('breeze://secrets')).toBeUndefined();
     expect(mcpResourceDomain('breeze://devices/../alerts')).toBeUndefined();
   });
+
+  it('B-W05: the fleet-health MCP App URI is devices, by exact match only', () => {
+    expect(mcpResourceDomain('ui://breeze/fleet-health/v1')).toBe('devices');
+    for (const near of ['ui://breeze/fleet-health/v2', 'ui://breeze/fleet-health/v1?x', 'ui://breeze/fleet-health/v1/', 'ui://breeze/other/v1']) {
+      expect(mcpResourceDomain(near), near).toBeUndefined();
+    }
+  });
 });
 
 describe('deprecated aliases (real table)', () => {
@@ -129,6 +136,11 @@ describe('mcpToolDomain', () => {
     expect(MCP_WHOAMI_TOOL_NAME).toBe('whoami');
     expect(mcpToolDomain('whoami')).toBe('core');
     expect(hasCoreAiToolName('whoami')).toBe(true);
+  });
+
+  it('get_action_status and cancel_action are core', () => {
+    expect(mcpToolDomain('get_action_status')).toBe('core');
+    expect(mcpToolDomain('cancel_action')).toBe('core');
   });
 
   it('tenant tools count as integrations; unknown names are unclassified', () => {

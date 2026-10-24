@@ -597,7 +597,55 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     if (!partner) return TARGET_ABSENT;
     return material(JSON.stringify({ name: partner.name, status: partner.status }));
   },
+
+  // confirm_memory / retract_memory (Wisp W03; registry tier 3, FOUR_EYES like
+  // operator_plan). The approver signs off on a block REFERENCE (`blockId`);
+  // pin the block itself so one edited, superseded, retracted or re-owned
+  // between approval and release fails closed. Both tools touch the same row,
+  // so they share one resolver.
+  confirm_memory: (args, database) => resolveMemoryBlockMaterial(args.blockId, database),
+  retract_memory: (args, database) => resolveMemoryBlockMaterial(args.blockId, database),
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** JSON with object keys sorted at every depth, so a jsonb round trip never changes the pin. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.keys(value as Record<string, unknown>).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+async function resolveMemoryBlockMaterial(blockIdArg: unknown, database: Database): Promise<ResolverResult> {
+  const blockId = typeof blockIdArg === 'string' ? blockIdArg : null;
+  if (!blockId) return MISSING_ARG;
+  // A non-uuid would make Postgres throw (22P02); no such block can exist.
+  if (!UUID_RE.test(blockId)) return TARGET_ABSENT;
+  // Loaded on demand: memoryService pulls the db + audit graph. The read lives
+  // there (the single-caller contract), through the caller's database handle.
+  const { readMemoryBlockForEffectDigest } = await import('../wisp/memoryService');
+  const block = await readMemoryBlockForEffectDigest(database, blockId);
+  if (!block) return TARGET_ABSENT;
+  return material(JSON.stringify({
+    v: 1,
+    id: block.id,
+    tenantPartnerId: block.tenantPartnerId,
+    ownerKind: block.ownerKind,
+    ownerUserId: block.ownerUserId,
+    ownerOrgId: block.ownerOrgId,
+    blockType: block.blockType,
+    subjectKey: block.subjectKey,
+    confidence: block.confidence,
+    status: block.status,
+    supersededById: block.supersededById,
+    updatedAt: block.updatedAt.toISOString(),
+    contentSha256: createHash('sha256').update(canonicalJson(block.content)).digest('hex'),
+  }));
+}
 
 async function resolveInvoiceUpdatedAt(
   invoiceIdArg: unknown,
