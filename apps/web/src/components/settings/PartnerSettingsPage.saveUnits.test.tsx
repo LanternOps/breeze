@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -262,11 +262,12 @@ describe('Caller verification and Login page save through the header (W2 Task 20
     expect(showToastMock).toHaveBeenCalledTimes(1);
   });
 
-  it('partial success re-baselines only saved units', async () => {
+  it('partial success re-baselines only saved units; the retry sends only the failed one', async () => {
+    let loginFails = true;
     routeFetch({
       'GET /orgs/partners/me': () => json(partnerWith()),
       'PATCH /orgs/partners/me': () => json(partnerWith()),
-      'PUT /partners/me/login-branding': () => json({ error: 'boom' }, 500),
+      'PUT /partners/me/login-branding': () => (loginFails ? json({ error: 'boom' }, 500) : json({ data: {} })),
     });
     const user = await renderPage('#login-branding');
     await user.type(await screen.findByTestId('login-branding-headline'), 'Hello');
@@ -278,6 +279,22 @@ describe('Caller verification and Login page save through the header (W2 Task 20
     expect(screen.getByRole('link', { name: /^company$/i })).toBeTruthy();
     expect(screen.getByRole('link', { name: /^login branding \(unsaved changes\)$/i })).toBeTruthy();
     expect(saveButton().disabled).toBe(false);
+
+    loginFails = false;
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
+    expect(patchCalls()).toHaveLength(1);
+    expect(loginPuts()).toHaveLength(2);
+  });
+
+  it('drafts do not outlive the page: unmount and remount start clean', async () => {
+    const user = await renderPage('#login-branding');
+    await user.type(await screen.findByTestId('login-branding-headline'), 'Hello');
+    expect(status().getAttribute('data-state')).toBe('dirty');
+    cleanup();
+    await renderPage('#login-branding');
+    expect((await screen.findByTestId('login-branding-headline') as HTMLInputElement).value).toBe('');
+    expect(status().getAttribute('data-state')).toBe('clean');
   });
 
   it('units run sequentially in rail order', async () => {
@@ -321,5 +338,31 @@ describe('AI data policy saves through the header (W2 Task 22)', () => {
     await user.click(saveButton());
     await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
     expect((puts()[0][1] as RequestInit).body).toBe(JSON.stringify({ deviceFileReadLevel: 'off' }));
+  });
+});
+
+describe('review follow-ups', () => {
+  it('a failed reload after a partner switch shows the error, never the previous partner', async () => {
+    let calls = 0;
+    routeFetch({ 'GET /orgs/partners/me': () => (++calls === 1 ? json(partnerWith()) : json({ error: 'down' }, 500)) });
+    const view = render(<PartnerSettingsPage />);
+    await screen.findByTestId('partner-settings-panel-heading');
+    expect((screen.getByLabelText('City') as HTMLInputElement).value).toBe('Springfield');
+    vi.mocked(useOrgStore).mockReturnValue({ currentPartnerId: 'partner-2', isLoading: false } as never);
+    view.rerender(<PartnerSettingsPage />);
+    expect(await screen.findByRole('button', { name: /retry|try again/i })).toBeTruthy();
+    expect(screen.queryByLabelText('City')).toBeNull();
+    expect(screen.queryByTestId('partner-settings-save')).toBeNull();
+  });
+
+  it('Enter in a form that cannot save takes the user to the first invalid field', async () => {
+    const user = await renderPage('#ai-budgets');
+    const input = await screen.findByTestId('partner-ai-budget-thresholds-input');
+    await user.clear(input);
+    await user.type(input, '50,abc');
+    await openTab(user, /^company$/i);
+    await user.type(screen.getByLabelText('City'), '{Enter}');
+    await waitFor(() => expect(document.activeElement?.id).toBe('partner-ai-budget-thresholds'));
+    expect(patchCalls()).toHaveLength(0);
   });
 });

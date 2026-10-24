@@ -103,6 +103,18 @@ describe('PartnerSettingsPage card autosave (#9197)', () => {
       expect((await screen.findByLabelText('Max Concurrent Sessions') as HTMLInputElement).value).toBe('4');
     });
 
+    it('a header Save after an ML autosave sends the Security edit and never re-sends ml', async () => {
+      await editSecurityThenToggleMl();
+      await waitFor(() => expect(screen.getByTestId('partner-ml-anomalies-enabled')).toBeChecked());
+      await userEvent.click(screen.getByTestId('partner-settings-save'));
+      await waitFor(() => expect(screen.getByTestId('partner-settings-status').getAttribute('data-state')).toBe('clean'));
+      const patches = fetchWithAuthMock.mock.calls.filter(([u, i]) => u === '/orgs/partners/me' && i?.method === 'PATCH');
+      expect(patches).toHaveLength(2);
+      const body = JSON.parse((patches[1][1] as RequestInit).body as string);
+      expect(body.settings.security.maxSessions).toBe(4);
+      expect(body.settings).not.toHaveProperty('ml');
+    });
+
     it('autosave success shows "Saved · <time>" when nothing else is dirty', async () => {
       render(<PartnerSettingsPage />);
       await userEvent.click(await screen.findByTestId('partner-settings-tab-aiFeatures'));

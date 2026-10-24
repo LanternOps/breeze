@@ -182,6 +182,18 @@ describe('partnerSettingsDraftStore', () => {
     expect(isSliceDirty(slice)).toBe(false);
   });
 
+  it('a failed reload keeps the draft dirty and the conflict outcome visible', async () => {
+    await store().ensureLoaded('trustCenter', async () => ({ value: { t: 'mine' }, revision: 1 }));
+    store().setDraft('trustCenter', { t: 'edited' });
+    store().markOutcome('trustCenter', { status: 'conflict' });
+    await store().reloadFromServer('trustCenter', async () => { throw new Error('down'); });
+    const slice = store().slices.trustCenter;
+    expect(slice.status).toBe('ready');
+    expect(slice.draft).toEqual({ t: 'edited' });
+    expect(isSliceDirty(slice)).toBe(true);
+    expect(slice.lastOutcome).toEqual({ status: 'conflict' });
+  });
+
   it('invalidate makes the next ensureLoaded refetch', async () => {
     const loader = vi.fn(async () => ({ value: { n: 1 } }));
     await store().ensureLoaded('aiFeatureDefaults', loader);

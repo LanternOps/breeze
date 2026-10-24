@@ -70,6 +70,14 @@ describe('usePartnerSettingsSave', () => {
     expect(successToasts()).toHaveLength(0);
   });
 
+  it('a declined unit beside a saved one still gets the aggregate toast', async () => {
+    const units = [fake('partnersMe', async () => ({ status: 'cancelled' })), fake('loginBranding')];
+    const { result } = renderHook(() => usePartnerSettingsSave(units));
+    await act(async () => { await result.current.save(); });
+    expect(successToasts()).toHaveLength(1);
+    expect(result.current.failedUnits).toEqual([]);
+  });
+
   it('retry sends only the failed unit', async () => {
     const me = fake('partnersMe');
     let fail = true;

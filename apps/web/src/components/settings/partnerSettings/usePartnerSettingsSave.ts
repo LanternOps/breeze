@@ -26,7 +26,9 @@ export function usePartnerSettingsSave(units: readonly SaveUnit[]) {
       setLastOutcomes(outcomes);
       const times = ran.flatMap(o => (o.status === 'saved' ? [o.savedAt] : []));
       if (times.length > 0) setSavedAt(Math.max(...times));
-      if (ran.length > 0 && ran.every(o => o.status === 'saved')) {
+      // A unit the user declined (the allowlist lockout confirm) is not a failure:
+      // the units that did save still get their confirmation.
+      if (ran.some(o => o.status === 'saved') && ran.every(o => o.status === 'saved' || o.status === 'cancelled')) {
         showToast({ type: 'success', message: i18n.t('settings:partnerSettingsPage.saved') });
       }
     } finally {

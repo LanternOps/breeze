@@ -90,7 +90,7 @@ export const usePartnerSettingsDraftStore = create<DraftStore>()((set, get) => {
   const patchSlice = (id: DraftUnitId, patch: Partial<Slice>) =>
     set(s => ({ slices: { ...s.slices, [id]: { ...s.slices[id], ...patch } } }));
 
-  const load = (id: DraftUnitId, loader: Loader<unknown>): Promise<void> => {
+  const load = (id: DraftUnitId, loader: Loader<unknown>, keepOnError?: Partial<Slice>): Promise<void> => {
     lastLoader.set(id, loader);
     const epoch = get().epoch;
     const gen = (loadGen.get(id) ?? 0) + 1;
@@ -105,7 +105,10 @@ export const usePartnerSettingsDraftStore = create<DraftStore>()((set, get) => {
       } catch (err) {
         if (!isCurrent()) return;
         console.error(`[partnerSettings] loading ${id} failed`, err);
-        patchSlice(id, { status: 'error' });
+        // A failed reload must not hide a draft the user still has: keep it,
+        // dirty and saveable, and put back the outcome it had (e.g. the conflict
+        // notice), so they can try again.
+        patchSlice(id, keepOnError ? { status: 'ready', ...keepOnError } : { status: 'error' });
       } finally {
         // A newer load (reload, invalidate) owns the in-flight slot now.
         if (loadGen.get(id) === gen) inflight.delete(id);
@@ -168,8 +171,9 @@ export const usePartnerSettingsDraftStore = create<DraftStore>()((set, get) => {
     reloadFromServer(id, loader) {
       const fn = (loader as Loader<unknown> | undefined) ?? lastLoader.get(id);
       if (!fn) return Promise.resolve();
+      const before = get().slices[id];
       patchSlice(id, { lastOutcome: null });
-      return load(id, fn);
+      return load(id, fn, before.status === 'ready' ? { lastOutcome: before.lastOutcome } : undefined);
     },
 
     invalidate(id) {

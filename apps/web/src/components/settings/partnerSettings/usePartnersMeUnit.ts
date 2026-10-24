@@ -284,7 +284,14 @@ export function usePartnersMeUnit() {
     const isCurrent = () => generation.current === gen;
     // The first load shares the layout islands' concurrent read; a reload (partner
     // switch, retry) must never reuse a read that started before it.
-    if (gen > 1) invalidatePartnersMe();
+    // It also drops the previous answer, so a failed reload after a partner
+    // switch shows the error and Retry rather than the other partner's settings.
+    if (gen > 1) {
+      invalidatePartnersMe();
+      setPartner(null);
+      setState(null);
+      setBaseline(null);
+    }
     try {
       setLoading(true);
       setError(undefined);

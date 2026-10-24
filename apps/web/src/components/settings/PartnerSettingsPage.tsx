@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Building2, Loader2, Save } from 'lucide-react';
 import EmailTemplatesTab from './EmailTemplatesTab';
 import SettingsSectionNav from './SettingsSectionNav';
@@ -169,13 +169,8 @@ export default function PartnerSettingsPage() {
 
   const { save, saving, failedUnits, otherUnitsSaved, savedAt } = usePartnerSettingsSave(units);
   const canSave = canManagePartnerWide && !saving && isDirty && units.every(u => !u.isDirty() || isUnitValid(u));
-  const handleSave = () => { if (canSave) void save(); };
   // The last outcome of an autosave control (ML switches, Modules), for the status line.
   const [autosave, setAutosave] = useState<AutosaveReport | null>(null);
-  const saveApi = useMemo(() => ({
-    submit: handleSave,
-    reportAutosave: (tab: TabKey, outcome: AutosaveReport['outcome']) => setAutosave({ tab, outcome }),
-  }), [handleSave]);
 
   const statusState = deriveStatus({
     units,
@@ -187,6 +182,21 @@ export default function PartnerSettingsPage() {
     savedAt,
     autosave,
   });
+
+  // Stable across renders (the card context would otherwise re-render every
+  // consumer); reads the latest state through a ref.
+  const latest = useRef({ canSave, save, statusState, openTab });
+  latest.current = { canSave, save, statusState, openTab };
+  const handleSave = useCallback(() => {
+    const { canSave: ok, save: run, statusState: s, openTab: open } = latest.current;
+    if (ok) { void run(); return; }
+    // Enter on a form that cannot save: take the user to what blocks it.
+    if (s.kind === 'invalid') open(s.tab, s.fieldId);
+  }, []);
+  const saveApi = useMemo(() => ({
+    submit: handleSave,
+    reportAutosave: (tab: TabKey, outcome: AutosaveReport['outcome']) => setAutosave({ tab, outcome }),
+  }), [handleSave]);
 
   // Show a loading state while the partner context is still resolving, NOT the
   // access-denied state. The partner store starts empty (currentPartnerId null)
