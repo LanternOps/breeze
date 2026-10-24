@@ -109,19 +109,17 @@ export interface NarrativeSubmission {
 
 export const narrativeSubmissionSchema: z.ZodType<NarrativeSubmission> = z.object({
   headline: narrativeText(NARRATIVE_HEADLINE_MAX_CHARS, 'headline'),
-  // Bounded at the exact section count (enforced inside the superRefine below,
-  // NOT via `.max()`: zod >=4.6 skips a refinement once an earlier check has
-  // issued, so an array-level `.max()` would pre-empt the message that names
-  // the repeated key).
+  // Deliberately NO `.max()` here. zod >= 4.6 skips an object-level
+  // superRefine when a child already failed, so an array-length bound would
+  // pre-empt the refine below and a repeated section would surface as an
+  // anonymous "Too big" instead of naming the key. The refine bounds the
+  // count anyway: the key is an enum of NARRATIVE_SECTION_KEYS.length values,
+  // so more entries than that necessarily repeats a key and is rejected.
+  // That bounds what is ACCEPTED, not parse cost (every element is validated
+  // first, as it was under the old `.max()`); the input is the model's tool
+  // call, so its size is capped by the model's output budget.
   sections: z.array(narrativeSectionSubmissionSchema),
 }).strict().superRefine((value, ctx) => {
-  if (value.sections.length > NARRATIVE_SECTION_KEYS.length) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['sections'],
-      message: `narrative has ${value.sections.length} sections; at most ${NARRATIVE_SECTION_KEYS.length} are allowed`,
-    });
-  }
   const seen = new Set<NarrativeSectionKey>();
   const duplicated = new Set<NarrativeSectionKey>();
   for (const section of value.sections) {

@@ -21,7 +21,7 @@
     "mailparser": "^3.9.38",
     "re2-wasm": "^1.0.2",
     "v9u-smb2": "^1.0.6",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@breeze/extension-testkit": "workspace:*",
