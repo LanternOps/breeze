@@ -125,7 +125,7 @@ const namespaceDuplicateBaselines = {
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
-    'pages.json': 11, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
+    'pages.json': 12, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), one settings-card title (Sites), and titles.settingsSites "Sites" (#9794).
     'patches.json': 29,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -177,7 +177,8 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 141,
+    // +1 Sites page (#9794): "Sites" (sites.page.title / siteDetailPage.breadcrumbs.sites) is the pt-BR loanword.
+    'settings.json': 142,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -560,7 +561,8 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) fr-FR: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
     // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
     // +7 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, noLimits is the em-dash placeholder, and source.license "Licence" is the French spelling — identical to English.
-    'settings.json': 193,
+    // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
+    'settings.json': 195,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -765,7 +767,8 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) fr-CA: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
     // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
     // +7 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, noLimits is the em-dash placeholder, and source.license "Licence" is the French spelling — identical to English.
-    'settings.json': 198,
+    // +2 Sites page (#9794): sites.page.title and siteDetailPage.breadcrumbs.sites "Sites" are the identical French word.
+    'settings.json': 200,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

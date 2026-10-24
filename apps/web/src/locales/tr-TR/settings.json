@@ -6004,8 +6004,10 @@
   "siteDetailPage": {
     "loading": "Site yükleniyor...",
     "backToOrganizations": "Kuruluşlara geri dön",
+    "backToSites": "Sitelere geri dön",
     "breadcrumbs": {
       "settings": "Ayarlar",
+      "sites": "Siteler",
       "organizations": "Kuruluşlar"
     },
     "errors": {
@@ -6091,6 +6093,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Birincil kişi"
+  },
+  "sites": {
+    "page": {
+      "title": "Siteler",
+      "description": "Cihazlarınızın bulunduğu konumlar. Ayrıntılarını ve cihazlarını görmek için bir site açın.",
+      "organizationColumn": "Kuruluş",
+      "pickOrg": "Kuruluş",
+      "pickOrgPlaceholder": "Bir kuruluş seçin",
+      "pickOrgRequired": "Bu sitenin ait olduğu kuruluşu seçin.",
+      "fleetAddDescription": "Yeni bir site ekleyin ve ait olduğu kuruluşu seçin.",
+      "empty": "Henüz site yok. Başlamak için bir kuruluşa site ekleyin.",
+      "viewDevicesAt": "{{name}} konumundaki cihazları görüntüle"
+    }
   },
   "siteList": {
     "title": "Siteler",

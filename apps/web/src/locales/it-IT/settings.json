@@ -5999,8 +5999,10 @@
   "siteDetailPage": {
     "loading": "Caricamento sito...",
     "backToOrganizations": "Torna alle organizzazioni",
+    "backToSites": "Torna ai siti",
     "breadcrumbs": {
       "settings": "Impostazioni",
+      "sites": "Siti",
       "organizations": "Organizzazioni"
     },
     "errors": {
@@ -6086,6 +6088,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contatto principale"
+  },
+  "sites": {
+    "page": {
+      "title": "Siti",
+      "description": "Le sedi in cui si trovano i tuoi dispositivi. Apri un sito per vederne i dettagli e i dispositivi.",
+      "organizationColumn": "Organizzazione",
+      "pickOrg": "Organizzazione",
+      "pickOrgPlaceholder": "Scegli un'organizzazione",
+      "pickOrgRequired": "Scegli l'organizzazione a cui appartiene questo sito.",
+      "fleetAddDescription": "Aggiungi un nuovo sito e scegli l'organizzazione a cui appartiene.",
+      "empty": "Nessun sito ancora. Aggiungi un sito a un'organizzazione per iniziare.",
+      "viewDevicesAt": "visualizza i dispositivi di {{name}}"
+    }
   },
   "siteList": {
     "title": "Siti",
