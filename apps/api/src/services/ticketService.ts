@@ -2647,6 +2647,22 @@ export interface AddCommentInput {
 export interface ImportedCommentAuthorship {
   sourceId: string;
   author: { kind: 'staff' | 'requester'; name: string; email?: string | null };
+  /**
+   * #8313 W1 (spec 2026-10-19 §4.3.1): the files of this comment that the
+   * import writer reserved and stored, claimed in this comment's transaction
+   * (the import claim below). Each carries the real metadata that replaces
+   * the reservation's provisional one. No count cap: the live cap of 5 lives
+   * in the upload route's validator, and a historic email keeps every file.
+   */
+  attachments?: ImportedAttachmentClaim[];
+}
+
+/** A reserved import file and its real metadata (sniffed type, size, sha256 hex). */
+export interface ImportedAttachmentClaim {
+  id: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
 }
 
 /**
@@ -2659,6 +2675,13 @@ export interface ImportedCommentAuthorship {
  * resume), and advances updated_at with it, never backwards — as on a live
  * comment, no other comment touches updated_at. Nothing is emitted, queued or
  * audited.
+ *
+ * Import mode claims `input.imported.attachments`, never `attachmentIds`
+ * (#8313 W1, spec 2026-10-19 §4.3.1): the owner predicate is the import's
+ * (no uploader, this window's principal, a source id), so neither mode can
+ * claim the other's rows; attached_at and created_at take the source time,
+ * and the real metadata replaces the provisional one. A shortfall is still
+ * 409 ATTACHMENT_NOT_CLAIMABLE and rolls the comment back.
  */
 export async function addTicketComment(
   ticketId: string,
@@ -2676,6 +2699,11 @@ export async function addTicketComment(
     throw new TicketServiceError('An imported comment needs its source id and original author', 400, 'INVALID_INPUT');
   }
   const attachmentIds = input.attachmentIds ?? [];
+  // #8313 W1: an import claims its reservations, never uploads.
+  if (importMode && attachmentIds.length > 0) {
+    throw new TicketServiceError('An imported comment claims its imported attachments only', 400, 'INVALID_INPUT');
+  }
+  const importedAttachments = importMode ? imported?.attachments ?? [] : [];
 
   // W08 #3902: this used to be four separate writes on the global `db`. The
   // attachment claim must roll back with the comment, so the comment insert,
@@ -2782,6 +2810,51 @@ export async function addTicketComment(
       `);
       claimed = (Array.isArray(result) ? result : []) as typeof claimed;
       if (claimed.length !== attachmentIds.length) {
+        throw new TicketServiceError(
+          'One or more attachments could not be attached to this comment',
+          409,
+          'ATTACHMENT_NOT_CLAIMABLE'
+        );
+      }
+    }
+
+    // #8313 W1 (spec 2026-10-19 §4.3.1): the import claim. The live owner
+    // predicate (uploaded_by_user_id = the human) becomes the import's: no
+    // uploader, this window's principal, a source id. A NULL uploader never
+    // equals a user and a human upload has no origin principal, so neither
+    // claim can take the other's rows. The metadata travels as one JSON
+    // parameter, however many files the comment has.
+    if (importMode && importedAttachments.length > 0) {
+      const at = importMode.at.toISOString();
+      const metadata = JSON.stringify(importedAttachments.map((a) => ({
+        id: a.id, content_type: a.contentType, byte_size: a.byteSize, sha256: a.sha256,
+      })));
+      const result = await tx.execute(sql`
+        UPDATE ticket_attachments AS a
+           SET comment_id = ${row.id}::uuid,
+               attached_at = ${at}::timestamptz,
+               created_at = ${at}::timestamptz,
+               content_type = m.content_type,
+               byte_size = m.byte_size,
+               sha256 = m.sha256,
+               migration_window_id = ${importMode.window.id}::uuid
+          FROM jsonb_to_recordset(${metadata}::jsonb) AS m(id uuid, content_type varchar(64), byte_size integer, sha256 char(64))
+         WHERE a.id = m.id
+           AND a.ticket_id = ${ticketId}::uuid
+           AND a.org_id = ${ticket.orgId}::uuid
+           AND a.comment_id IS NULL
+           AND a.uploaded_by_user_id IS NULL
+           AND a.origin_principal_id = ${importMode.window.principalId}::uuid
+           AND a.import_source_id IS NOT NULL
+        RETURNING a.id,
+                  a.comment_id        AS "commentId",
+                  a.content_type      AS "contentType",
+                  a.byte_size         AS "byteSize",
+                  a.original_filename AS "originalFilename",
+                  a.created_at        AS "createdAt"
+      `);
+      claimed = (Array.isArray(result) ? result : []) as typeof claimed;
+      if (claimed.length !== importedAttachments.length) {
         throw new TicketServiceError(
           'One or more attachments could not be attached to this comment',
           409,

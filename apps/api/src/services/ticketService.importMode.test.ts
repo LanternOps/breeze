@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   selectQueue: [] as unknown[][],
   inserts: [] as Array<{ table: unknown; values: Record<string, unknown> }>,
   updates: [] as Array<{ table: unknown; set: Record<string, unknown> }>,
+  executes: [] as unknown[],
+  executeResults: [] as unknown[][],
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -55,6 +57,10 @@ vi.mock('../db', () => {
       }),
     })),
   };
+  db.execute = vi.fn(async (query: unknown) => {
+    state.executes.push(query);
+    return state.executeResults.shift() ?? [];
+  });
   db.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
   return { db, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
@@ -145,6 +151,8 @@ beforeEach(() => {
   state.selectQueue.length = 0;
   state.inserts.length = 0;
   state.updates.length = 0;
+  state.executes.length = 0;
+  state.executeResults.length = 0;
 });
 
 describe('ticketSideEffects', () => {
@@ -417,5 +425,87 @@ describe('addTicketComment in import mode — SLA response freeze (#8973)', () =
     await addTicketComment(TICKET, { content: 'Fixed it', isPublic: true, imported: staffReply }, actor, at(LATER));
     const [update] = state.updates;
     expect(update!.set).not.toHaveProperty('responseDueAt');
+  });
+});
+
+// #8313 W1 (spec 2026-10-19 §4.3.1): the import claim.
+describe('addTicketComment in import mode — the attachment claim', () => {
+  const imported = { sourceId: 'a-20', author: { kind: 'requester' as const, name: 'Maya', email: 'maya@customer.example' } };
+  const claim = (n: number) => ({
+    id: `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, '0')}`,
+    contentType: n % 2 ? 'image/png' : 'application/octet-stream',
+    byteSize: 1000 + n,
+    sha256: String(n % 10).repeat(64),
+  });
+  const claimedRow = (c: ReturnType<typeof claim>) => ({ id: c.id, commentId: 'row-1', contentType: c.contentType, byteSize: c.byteSize, originalFilename: 'f', createdAt: LATER });
+
+  it("claims the comment's reserved files with the import owner predicate, the source time and the real metadata", async () => {
+    const claims = [claim(1), claim(2)];
+    state.selectQueue.push([storedTicket()]);
+    state.executeResults.push(claims.map(claimedRow));
+    const result = await addTicketComment(TICKET, { content: 'See attached', isPublic: true, imported: { ...imported, attachments: claims } }, actor, at(LATER));
+
+    expect(state.executes).toHaveLength(1);
+    const { sql, params } = render(state.executes[0]);
+    // The owner predicate is the import's: no uploader, this window's principal, a source id.
+    expect(sql).toMatch(/a\.uploaded_by_user_id IS NULL/);
+    expect(sql).toMatch(/a\.origin_principal_id = \$\d+::uuid/);
+    expect(sql).toMatch(/a\.import_source_id IS NOT NULL/);
+    expect(sql).toMatch(/a\.comment_id IS NULL/);
+    expect(sql).not.toMatch(/uploaded_by_user_id = /);
+    // attached_at = created_at = the source time; the metadata replaces the provisional one; the window is stamped.
+    expect(sql).toMatch(/attached_at = \$\d+::timestamptz,\s+created_at = \$\d+::timestamptz/);
+    expect(sql).toMatch(/content_type = m\.content_type,\s+byte_size = m\.byte_size,\s+sha256 = m\.sha256/);
+    expect(sql).toMatch(/migration_window_id = \$\d+::uuid/);
+    expect(params).toEqual(expect.arrayContaining([LATER.toISOString(), PRINCIPAL, WINDOW, TICKET, ORG, 'row-1']));
+    const metadata = JSON.parse(params.find((p) => typeof p === 'string' && p.startsWith('[')) as string);
+    expect(metadata).toEqual(claims.map((c) => ({ id: c.id, content_type: c.contentType, byte_size: c.byteSize, sha256: c.sha256 })));
+    expect(result.attachments).toHaveLength(2);
+    expectNoSideEffects();
+  });
+
+  it('has no per-comment count cap: a historic email keeps all twelve files', async () => {
+    const claims = Array.from({ length: 12 }, (_, i) => claim(i + 1));
+    state.selectQueue.push([storedTicket()]);
+    state.executeResults.push(claims.map(claimedRow));
+    const result = await addTicketComment(TICKET, { content: 'x', isPublic: false, imported: { ...imported, attachments: claims } }, actor, at(LATER));
+    expect(result.attachments).toHaveLength(12);
+  });
+
+  it('a shortfall is still 409 ATTACHMENT_NOT_CLAIMABLE (the chunk rolls back)', async () => {
+    const claims = [claim(1), claim(2)];
+    state.selectQueue.push([storedTicket()]);
+    state.executeResults.push([claimedRow(claims[0]!)]);
+    await expect(addTicketComment(TICKET, { content: 'x', isPublic: false, imported: { ...imported, attachments: claims } }, actor, at(LATER)))
+      .rejects.toMatchObject({ status: 409, code: 'ATTACHMENT_NOT_CLAIMABLE' });
+  });
+
+  it('an import claims its reservations only: attachmentIds are refused before anything is written', async () => {
+    await expect(addTicketComment(TICKET, { content: 'x', isPublic: false, attachmentIds: [claim(1).id], imported }, actor, at(LATER)))
+      .rejects.toMatchObject({ status: 400, code: 'INVALID_INPUT' });
+    expect(state.inserts).toEqual([]);
+    expect(state.executes).toEqual([]);
+  });
+
+  it('an imported comment with no files runs no claim', async () => {
+    state.selectQueue.push([storedTicket()]);
+    await addTicketComment(TICKET, { content: 'x', isPublic: false, imported: { ...imported, attachments: [] } }, actor, at(LATER));
+    expect(state.executes).toEqual([]);
+  });
+
+  it('the live claim is unchanged: the human uploader, attached now, created_at untouched, no import predicate', async () => {
+    const id = claim(1).id;
+    state.selectQueue.push([storedTicket()]);
+    state.executeResults.push([claimedRow(claim(1))]);
+    await addTicketComment(TICKET, { content: 'Photo', isPublic: false, attachmentIds: [id] }, { kind: 'user', userId: AGENT, name: 'Tess' });
+    const { sql, params } = render(state.executes[0]);
+    expect(sql).toMatch(/SET comment_id = \$\d+::uuid, attached_at = now\(\)/);
+    expect(sql).toMatch(/AND uploaded_by_user_id = \$\d+::uuid/);
+    expect(sql).not.toMatch(/origin_principal_id|import_source_id|created_at =/);
+    expect(params).toEqual(expect.arrayContaining([id, AGENT]));
+    // And a machine actor still cannot claim uploads at all.
+    state.selectQueue.push([storedTicket()]);
+    await expect(addTicketComment(TICKET, { content: 'x', isPublic: false, attachmentIds: [id] }, actor))
+      .rejects.toMatchObject({ status: 403, code: 'HUMAN_SESSION_REQUIRED' });
   });
 });
