@@ -143,11 +143,24 @@ describe('parseTaskCheckpointResult over the two-arm union (R1a Task 2)', () => 
     expect(detail.length).toBeLessThanOrEqual(400);
   });
 
-  it('names the closer arm\'s path when only that arm got past its structural checks', () => {
-    // zod 4 reports the single non-aborted arm directly; the identity arm here
-    // fails only on the uuid, so its path is the whole detail.
+  it('names the closer arm\'s path FIRST when only that arm got past its structural checks', () => {
+    // The identity arm here fails only on the uuid: the arm with the fewest
+    // issues leads, so the 400-char cap never cuts its path.
     const r = parseTaskCheckpointResult({ version: 1, recipeInput: { contactId: 'not-a-uuid' } });
-    expect(r).toEqual({ ok: false, detail: 'recipeInput.contactId: Invalid UUID' });
+    expect(r.ok).toBe(false);
+    expect((r as { detail: string }).detail.startsWith('recipeInput.contactId: Invalid UUID; ')).toBe(true);
+  });
+
+  it('a service-recovery row that lost its criterion names criterion, not the identity arm\'s complaints alone', () => {
+    // zod 4.6 reports a union mismatch as the single arm it judges non-aborted
+    // (here the identity arm: unknown keys + its refine), which would drop the
+    // real problem. The detail must not depend on that heuristic.
+    const r = parseTaskCheckpointResult({
+      version: 1,
+      recipeInput: { deviceId: DEVICE, serviceName: 'spooler', triggeringAlertId: null },
+    });
+    expect(r.ok).toBe(false);
+    expect((r as { detail: string }).detail.startsWith('criterion: ')).toBe(true);
   });
 
   it('parses a valid identity row and a valid service-recovery row', () => {

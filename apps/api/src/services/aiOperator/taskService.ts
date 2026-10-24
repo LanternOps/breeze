@@ -845,20 +845,29 @@ export function parseTaskCheckpointResult(
 ): { ok: true; checkpoint: TaskCheckpoint } | { ok: false; detail: string } {
   const parsed = taskCheckpointSchema.safeParse(value);
   if (parsed.success) return { ok: true, checkpoint: parsed.data };
+  // Describe EVERY arm from its own parse, not from the union's error: zod
+  // reports a union mismatch either as one root `invalid_union` or as the
+  // single arm it judges "non-aborted", and that judgement shifts between zod
+  // releases (4.6 picks the identity arm for a service-recovery row missing
+  // its criterion, dropping the real problem). The arm with the fewest issues
+  // leads (ties keep arm order), so the 400-char cap cuts the farther arms.
+  const perArm = taskCheckpointSchema.options
+    .map((arm) => arm.safeParse(value))
+    .map((r) => (r.success ? [] : describeCheckpointIssues(r.error.issues, [])))
+    .filter((lines) => lines.length > 0)
+    .sort((a, b) => a.length - b.length);
   return {
     ok: false,
-    detail: describeCheckpointIssues(parsed.error.issues, [])
-      .join('; ')
-      .slice(0, 400),
+    detail: perArm.flat().join('; ').slice(0, 400),
   };
 }
 
 /**
- * `taskCheckpointSchema` is a union of per-recipe arms (R1a-0). Once it has
- * more than one arm, zod reports a mismatch as a single `invalid_union` issue
- * at the root, which would replace "recipeInput.serviceName: too small" with
- * "(root): Invalid input" — the one forensic trail a terminalized task has.
- * Expand each arm's own issues instead, with their full paths.
+ * `taskCheckpointSchema` is a union of per-recipe arms (R1a-0). A mismatch
+ * reported as a single `invalid_union` issue at the root would replace
+ * "recipeInput.serviceName: too small" with "(root): Invalid input" — the one
+ * forensic trail a terminalized task has. Expand a (nested) union's arms
+ * instead, with their full paths.
  */
 type CheckpointIssue = { path: PropertyKey[]; message: string; code?: string; errors?: CheckpointIssue[][] };
 function describeCheckpointIssues(issues: readonly CheckpointIssue[], prefix: PropertyKey[]): string[] {
