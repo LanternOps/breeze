@@ -42,7 +42,7 @@ still win.
       `…-100110-ai-workspace-execute-permission`, `…-110100-ai-memory-blocks`,
       `…-110200-wisp-threads`, `…-110300-wisp-concerns-watches`,
       `…-110350-ai-agent-runs-assessment-profile`, `…-110400-wisp-nudge-preferences`,
-      and the specialist-lineage migration (`*-wisp-specialist-lineage.sql`,
+      `…-120600-wisp-specialist-lineage` (specialists,
       W07) plus the W08 home migrations once those waves land.
       Confirm with `SELECT filename FROM breeze_migrations WHERE filename LIKE '2027-01-04-%' ORDER BY 1`
       — the list must match `ls apps/api/migrations` at the deployed tag.
