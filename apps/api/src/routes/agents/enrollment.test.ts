@@ -275,7 +275,11 @@ interface TxSpy {
  * tx.update()/tx.insert() and returns `insertedDevice` from the first
  * tx.insert(devices).values().returning().
  */
-function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x'): TxSpy {
+function mockTransaction(
+  insertedDevice: Record<string, unknown>,
+  keyId = 'key-x',
+  opts: { deviceUpdateRows?: Record<string, unknown>[] } = {},
+): TxSpy {
   const spy: TxSpy = {
     update: vi.fn(),
     insert: vi.fn(),
@@ -296,14 +300,16 @@ function mockTransaction(insertedDevice: Record<string, unknown>, keyId = 'key-x
         spy.updatedTables.push(table);
         // The in-place re-enroll UPDATE(devices) returns the device row; the
         // enrollment-key consume returns the claimed key id.
-        const returned = table === devicesTable ? insertedDevice : { id: keyId };
+        const returned = table === devicesTable
+          ? (opts.deviceUpdateRows ?? [insertedDevice])
+          : [{ id: keyId }];
         return {
           set: vi.fn((values: Record<string, unknown>) => {
             if (table === devicesTable) spy.deviceUpdateValues.push(values);
             return {
               where: vi.fn(() => Object.assign(
                 Promise.resolve(undefined) as any,
-                { returning: vi.fn().mockResolvedValue([returned]) },
+                { returning: vi.fn().mockResolvedValue(returned) },
               )),
             };
           }),
@@ -1401,6 +1407,13 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       backupIntegrityProtocolVersion: null,
       backupWriteProtocolVersion: null,
     });
+    // #8318 §6.4 / §5.7: the claims the previous install stamped are cleared
+    // in the same UPDATE (the once-per-install edition-migration claim, and
+    // its uninstall intent), as at a reattach confirm's boundary.
+    expect(tx.deviceUpdateValues[0]).toMatchObject({
+      editionMigrationDispatchedAt: null,
+      uninstallIntentAt: null,
+    });
     expect(disconnectAgentCredentialGenerationMock).toHaveBeenCalledWith(
       'agent-id-before-reenroll',
       [validHash],
@@ -1420,6 +1433,50 @@ describe('POST /agents/enroll — 401 reason disambiguation', () => {
       expect.objectContaining({ deviceId: 'device-inplace', reenrollment: true }),
       'agent-enrollment', { siteId: expect.anything() },
     );
+  });
+
+  it('#8318 §6.4: refuses 409 reenrollment_conflict (audited, counted, no fresh row) when the matched row changed hands before the UPDATE', async () => {
+    const validToken = 'valid-reenroll-token-conflict';
+    const validHash = createHash('sha256').update(validToken).digest('hex');
+    mockKeyLookup({
+      id: 'key-conflict', orgId: 'org-conflict', siteId: 'site-conflict', keySecretHash: null,
+      expiresAt: new Date(Date.now() + 3600_000), maxUsage: 10, usageCount: 0,
+    });
+    mockSelectRows([{ partnerId: 'partner-conflict' }]);
+    mockSelectRows([{
+      id: 'device-conflict', agentId: 'agent-id-matched', status: 'offline', agentTokenHash: validHash,
+      previousTokenHash: null, previousTokenExpiresAt: null, agentTokenSuspendedAt: null,
+    }]);
+    // The UPDATE carries `agent_id = <matched>`; a confirm or another
+    // re-enroll changed it in between, so it matches 0 rows.
+    const tx = mockTransaction({ id: 'device-conflict' }, 'key-conflict', { deviceUpdateRows: [] });
+
+    const resp = await buildApp().request('/agents/enroll', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-agent-reenrollment-token': validToken },
+      body: JSON.stringify(baseEnrollBody),
+    });
+
+    expect(resp.status).toBe(409);
+    expect(await resp.json()).toEqual({
+      error: 'The device row changed during re-enrollment; retry the enrollment',
+      code: 'reenrollment_conflict',
+    });
+    expect(tx.deviceUpdateValues).toHaveLength(1);
+    expect(tx.deviceInsertValues).toHaveLength(0);
+    // The enrollment key is not consumed: the transaction stops at the refusal.
+    expect(tx.updatedTables).not.toContain(enrollmentKeysTable);
+    expect(recordAgentEnrollment).toHaveBeenCalledWith('error', 'partner-conflict');
+    expect(recordAgentEnrollment).not.toHaveBeenCalledWith('success', expect.anything());
+    expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: 'org-conflict',
+      action: 'agent.enroll',
+      resourceType: 'device',
+      resourceId: 'device-conflict',
+      result: 'denied',
+      details: expect.objectContaining({ reason: 'reenrollment_conflict', enrollmentKeyId: 'key-conflict' }),
+    }));
+    expect(publishAgentCredentialRevocationMock).not.toHaveBeenCalled();
   });
 
   it('idempotency: a token matching a LATER colliding row re-enrolls that row instead of stacking another fresh row', async () => {

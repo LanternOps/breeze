@@ -311,14 +311,19 @@ vi.mock('../../services/agentTokenPromotion', () => ({
   PREVIOUS_TOKEN_GRACE_MS: 5 * 60 * 1000,
 }));
 
-vi.mock('../../middleware/agentAuth', () => ({
-  isAgentTokenRotationDue: vi.fn(() => false),
-  // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
-  // it as the fail-closed fallback for `agent.claimTypeAllowlist`, so the mock
-  // must carry the real value or the fallback would silently mean
-  // "unrestricted" in every test.
-  DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
-}));
+vi.mock('../../middleware/agentAuth', async () => {
+  const { HTTPException } = await import('hono/http-exception');
+  return {
+    isAgentTokenRotationDue: vi.fn(() => false),
+    // #3986 — the ONE definition of the drain claim allowlist. heartbeat.ts reads
+    // it as the fail-closed fallback for `agent.claimTypeAllowlist`, so the mock
+    // must carry the real value or the fallback would silently mean
+    // "unrestricted" in every test.
+    DRAIN_CLAIM_TYPE_ALLOWLIST: ['self_uninstall'] as const,
+    // #8318 §6.4 — the stale-caller answer: the opaque token_mismatch 401.
+    staleAgentCredentialRejection: () => new HTTPException(401, { message: 'Invalid agent credentials' }),
+  };
+});
 
 // #7970 — the UniFi collector presence probe. A real (registered, so reset per
 // test) TTL cache; only the SQL probe is a mock.
@@ -444,7 +449,8 @@ vi.mock('../../jobs/deviceGroupJobs', () => ({
 vi.mock('../../services/reliabilityBaselines', () => ({ createReliabilityBaseline: vi.fn() }));
 vi.mock('../../jobs/reliabilityWorker', () => ({ enqueueDeviceReliabilityComputation: vi.fn() }));
 
-import { and, eq, notInArray } from 'drizzle-orm';
+import { and, eq, notInArray, type SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { heartbeatRoutes, normalizeRetainStateProtocolVersion, tccPermissionsMeaningfullyChanged } from './heartbeat';
 import { devices, bareMetalRecoveries } from '../../db/schema';
 import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
@@ -457,11 +463,17 @@ beforeEach(() => { __resetHotPathCachesForTests(); });
 
 // Builds a thenable mock-chain so any `.from().where().limit()` access
 // resolves to the given value.
+// The beat's own-row read is `.limit(1).for('no key update')` (#8318 §6.4,
+// selectOwnDeviceRowForUpdate); every other read awaits `.limit()` directly.
+function lockableResolved(value: unknown) {
+  return Object.assign(Promise.resolve(value), { for: vi.fn(() => Promise.resolve(value)) });
+}
+
 function selectChainResolving(value: unknown) {
   return {
     from: vi.fn(() => ({
       where: vi.fn(() => ({
-        limit: vi.fn().mockResolvedValue(value),
+        limit: vi.fn(() => lockableResolved(value)),
         orderBy: vi.fn(() => ({
           limit: vi.fn().mockResolvedValue(value),
         })),
@@ -487,6 +499,7 @@ function buildApp(agentOverrides: Record<string, unknown> = {}): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -505,6 +518,7 @@ function buildWatchdogApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -524,6 +538,7 @@ function buildDrainingApp(role: 'agent' | 'watchdog' = 'agent'): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -550,6 +565,7 @@ function buildDeviceDrainApp(): Hono {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('agent', {
+      installIncarnation: 1,
       deviceId: 'device-1',
       agentId: 'agent-1',
       orgId: 'org-1',
@@ -6396,7 +6412,7 @@ describe('POST /agents/:id/heartbeat — terminal-status guard (#2230)', () => {
     const firstSet = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
     expect(firstSet.status).toBe('online');
     expect((whereSpy.mock.calls as any[])[0]?.[0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
 
     // Finding #10: a guard-rejected (0-row) write must NOT record a phantom
@@ -7345,7 +7361,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', undefined);
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', undefined);
     const body = (await resp.json()) as { commands: Array<{ id: string }> };
     expect(body.commands.map((cmd) => cmd.id)).toEqual(['cmd-good']);
     expect(releaseClaimedCommandDeliveryMock).toHaveBeenCalledWith('cmd-bad', claimedAt);
@@ -7386,7 +7402,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     ]);
     expect(releaseClaimedCommandDeliveryMock).not.toHaveBeenCalled();
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1', 10, 'agent', undefined,
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', undefined,
       { peripheralPolicyProtocolVersion: 2, rollbackProtocolVersion: 1, pamLifetimeProtocolVersion: 2, pamReconciliationResetProtocolVersion: 1 },
     );
   });
@@ -7422,7 +7438,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
 
     expect(resp.status).toBe(200);
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith(
-      'device-1',
+      { deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 },
       10,
       'agent',
       ['self_uninstall'],
@@ -7570,7 +7586,7 @@ describe('POST /agents/:id/heartbeat — undecryptable claimed commands are rele
     });
 
     expect(resp.status).toBe(200);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'watchdog', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'watchdog', [
       'self_uninstall',
     ]);
   });
@@ -7924,7 +7940,7 @@ describe('POST /agents/:id/heartbeat — device-remove uninstall drain (#3986)',
     await drainBeat();
 
     expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, 'agent', [
+    expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, 'agent', [
       'self_uninstall',
     ]);
   });
@@ -8166,6 +8182,7 @@ describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)
     const app = new Hono();
     app.use('*', async (c, next) => {
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'org-1',
@@ -8235,7 +8252,7 @@ describe('POST /agents/:id/heartbeat implicit pending-rotation promotion (#2773)
     expect(resp.status).toBe(200);
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledTimes(1);
     expect(promotePendingAgentCredentialsMock.mock.calls[0]![0]).toMatchObject({
-      deviceId: 'device-1',
+      agent: expect.objectContaining({ deviceId: 'device-1' }),
       pendingTokenHash: 'presented-hash',
       expectedAgentTokenHash: 'current-hash',
     });
@@ -8534,6 +8551,70 @@ describe('POST /agents/:id/heartbeat — recovery marker check-in', () => {
     expect(refreshReadinessMock).toHaveBeenCalledTimes(1);
   });
 
+  // #8318 §6.4 (review of wave 1b-1): the beat's first read is bound to the
+  // authenticated id + agent_id and locked. A beat the old install sent just
+  // before a reattach confirm (or an in-place re-enroll) finds 0 rows there and
+  // stops BEFORE the check-in, the readiness refresh and any audit — those
+  // would otherwise commit onto the new install's row.
+  it('a stale beat stops at the bound read: 401, no check-in, no readiness refresh, no audit, no device write', async () => {
+    arrange([recoveryRow()]);
+    refreshReadinessMock.mockClear();
+    const boundRead = { where: undefined as unknown, lock: undefined as unknown };
+    selectMock.mockReset();
+    selectMock
+      .mockReturnValueOnce({
+        from: vi.fn(() => ({
+          where: vi.fn((condition: unknown) => {
+            boundRead.where = condition;
+            return {
+              limit: vi.fn(() => ({
+                for: vi.fn((strength: unknown) => {
+                  boundRead.lock = strength;
+                  return Promise.resolve([]);
+                }),
+              })),
+            };
+          }),
+        })),
+      })
+      // ownDeviceRowChangedHands: the row now carries another agent_id.
+      .mockReturnValueOnce(selectChainResolving([{ agentId: 'agent-after-reattach' }]));
+    selectMock.mockReturnValue(selectChainResolving([]));
+    const { writeAuditEvent } = await import('../../services/auditEvents');
+
+    const res = await beat({ ...minimalHeartbeatBody, deviceRole: 'server', recoveryMarker: { recoveryId: RECOVERY_ID, nonce: NONCE } });
+
+    expect(res.status).toBe(401);
+    expect(await res.text()).toBe('Invalid agent credentials');
+    // Bound to the authenticated device id AND agent_id (the predicate's exact
+    // SQL is pinned against the real schema in agentOwnDeviceRow.test.ts; this
+    // file mocks the schema), and locked.
+    const { params } = new PgDialect().sqlToQuery(boundRead.where as SQL);
+    expect(params).toEqual(expect.arrayContaining(['device-1', 'agent-1']));
+    expect(boundRead.lock).toBe('no key update');
+    expect(selectMock).toHaveBeenCalledTimes(2); // the bound read + the one re-read, nothing else
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(deviceSetCalls).toHaveLength(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(insertMock).not.toHaveBeenCalled();
+    expect(refreshReadinessMock).not.toHaveBeenCalled();
+    expect(vi.mocked(writeAuditEvent)).not.toHaveBeenCalled();
+    expect(vi.mocked(createReliabilityBaseline)).not.toHaveBeenCalled();
+  });
+
+  it('a vanished row (bound read and re-read both empty) keeps the 404', async () => {
+    arrange([recoveryRow()]);
+    selectMock.mockReset();
+    selectMock.mockReturnValue(selectChainResolving([]));
+
+    const res = await beatWithMarker();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Device not found' });
+    expect(recoverySetCalls).toHaveLength(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
   it('ignores a marker whose nonce does not match (no ack, no update, audit failure)', async () => {
     refreshReadinessMock.mockClear();
     arrange([recoveryRow({ nonceHash: hashRecoveryNonce('b'.repeat(64)) })]);
@@ -8815,6 +8896,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       c.set('agentTokenRotationRequired', flags.rotationRequired === true);
       c.set('agentPendingTokenPresented', flags.pendingPresented === true);
       c.set('agent', {
+        installIncarnation: 1,
         deviceId: 'device-1',
         agentId: 'agent-1',
         orgId: 'pool-org-1',
@@ -8886,7 +8968,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
       await parkedBeat(role);
 
       expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledTimes(1);
-      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith('device-1', 10, role, ['self_uninstall']);
+      expect(claimPendingCommandsForDeviceMock).toHaveBeenCalledWith({ deviceId: 'device-1', agentId: 'agent-1', installIncarnation: 1 }, 10, role, ['self_uninstall']);
     });
 
     it(`${role}: runs no ingest, config, upgrade, policy or trust resolution`, async () => {
@@ -8970,7 +9052,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(await resp.json()).toEqual({ commands: [], renewCert: true, confirmTokenRotation: true });
     // Promotion was attempted for exactly the staged hash the caller presented.
     expect(promotePendingAgentCredentialsMock).toHaveBeenCalledWith(expect.objectContaining({
-      deviceId: 'device-1',
+      agent: expect.objectContaining({ deviceId: 'device-1' }),
       pendingTokenHash: 'pending-hash',
       expectedAgentTokenHash: 'hash',
     }));
@@ -8997,7 +9079,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     expect(written.agentVersion).toBe('0.70.1');
     expect(written.lastSeenAt).toBeInstanceOf(Date);
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
   });
 
@@ -9010,7 +9092,7 @@ describe('POST /agents/:id/heartbeat — parked (pre-assignment) heartbeat', () 
     const written = setSpy.mock.calls[0]![0] as Record<string, unknown>;
     expect(Object.keys(written).sort()).toEqual(['watchdogLastSeen', 'watchdogStatus', 'watchdogVersion']);
     expect(whereSpy.mock.calls[0]![0]).toEqual(
-      and(eq(devices.id, 'device-1'), notInArray(devices.status, ['decommissioned', 'quarantined'])),
+      and(and(eq(devices.id, 'device-1'), eq(devices.agentId, 'agent-1')), notInArray(devices.status, ['decommissioned', 'quarantined'])),
     );
   });
 

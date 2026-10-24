@@ -205,6 +205,17 @@ describe('dispatchDeviceCommand (#5128 W1)', () => {
     expect(releaseMock).not.toHaveBeenCalled();
   });
 
+  it('pushes to the agent id read in the claim, not the device row read before it (#8318 §6.4)', async () => {
+    selectReturning(deviceRow('online', 'agent-1')); // read before the claim
+    // A reattach / re-enroll committed between that read and the claim.
+    claimMock.mockResolvedValue({ status: 'claimed', id: 'cmd-1', executedAt: new Date(), agentId: 'agent-after-reattach' });
+    sendMock.mockReturnValue(true);
+    const res = await dispatchDeviceCommand({ deviceId: DEVICE, type: 'refresh_inventory' });
+    expect(res.ok && res.delivery).toBe('delivered');
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(sendMock.mock.calls[0]![0]).toBe('agent-after-reattach');
+  });
+
   it('a push the claim cancels is reported as cancelled with its reason, not queued_live', async () => {
     selectReturning(deviceRow('online'));
     claimMock.mockResolvedValue({ status: 'cancelled', id: 'cmd-1', reason: 'device_moved_org' });
