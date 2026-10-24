@@ -401,11 +401,13 @@ function writeReport(reportPath: string, markdown: string): void {
   }
   // ONE open, no check-then-act: O_NOFOLLOW makes the open itself refuse a
   // symlinked report path (ELOOP), so nothing can be swapped in between a
-  // check and the write. Truncates an earlier same-day report for this partner.
+  // check and the write. Opened under the REAL directory just verified, so a
+  // later swap of a lexical parent for a symlink does not redirect it.
+  // Truncates an earlier same-day report for this partner.
   let fd: number;
   try {
     fd = openSync(
-      reportPath,
+      path.join(realDir, path.basename(reportPath)),
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW,
       0o600,
     );
