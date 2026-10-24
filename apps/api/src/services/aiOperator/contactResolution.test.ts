@@ -249,7 +249,7 @@ describe('resolveProviderAccounts', () => {
   });
 
   it('accepts an M365 account whose mail (not UPN) is the address asked for', async () => {
-    h.m365Read.mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'obj-2', userPrincipalName: 'dana_ext@tenant.onmicrosoft.com', mail: 'Dana@customer.example' } });
+    h.m365Read.mockResolvedValue({ ok: true, kind: 'resource', resource: { id: 'obj-2', userPrincipalName: 'dana_ext@tenant.example', mail: 'Dana@customer.example' } });
     h.selectQueue = [[{ id: 'm-conn', profile: 'customer-graph-actions' }]];
     const r = await resolveProviderAccounts(ORG, { contactId: null, email: 'dana@customer.example', label: 'x' });
     expect(r.accounts.find((a) => a.provider === 'm365')).toMatchObject({ externalId: 'obj-2' });

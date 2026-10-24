@@ -239,6 +239,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'BREEZE_AI_SCRIPT_AUTHORING_ENABLED', secret: false },
       { name: 'AI_OPERATOR_TASKS_ENABLED', secret: false },
       { name: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', secret: false },
+      { name: 'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', secret: false },
     ],
     status: {
       kind: 'flags',
