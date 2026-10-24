@@ -445,7 +445,7 @@ export function finalStatusSteps(current: TicketStatus, t: ImportedTicket): Stat
  * ticket has none: a first import, or one whose earlier pass stopped before
  * its final status. Anyone else's row (a technician, an AI agent, automation,
  * the inbound pipeline's requester reopen, another integration) keeps the
- * Breeze status, and `skipped` reports it. All or nothing: a resolve-then-
+ * Breeze status, and `skip` reports it. All or nothing: a resolve-then-
  * close or reopen-then-resolve pair is applied whole or not at all.
  *
  * Ordering by created_at is sound although import rows carry source times: a
