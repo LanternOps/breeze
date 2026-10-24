@@ -94,3 +94,22 @@ CVE-2026-85393
 #
 # Added 2026-10-03 (Trivy DB refresh).
 CVE-2026-93687
+
+# zod 3.25.76 — CVE-2023-54404 is the Trivy-DB id for GHSA-mrhx-c7xc-m3w5,
+# which the npm audit gate already excepts (scripts/security/npm-audit-exceptions.json,
+# added by #9925, tracking #9915): DoS via validation of an attacker-supplied
+# oversized array. It applies to the 3.25.76 copy only; every 4.x copy in the
+# lockfile resolves to 4.6.7 (patched). No fixed release exists in the 3.x major
+# (first patched is 4.6.6) and the copy is pinned exactly by @expo/cli@57.0.27,
+# which uses the zod 3 API, so a 4.x override would break the Expo CLI.
+# Reachable only from build tooling: breeze-mobile → expo → @expo/cli, which
+# validates local app config on dev/EAS build hosts. No other workspace package
+# resolves 3.25.76, and the api, web, portal and m365 executor image deps stages
+# do not install breeze-mobile, so it is not shipped in any server image.
+# NOT verified: the Hermes bundle source-map check used for the node-forge and
+# braces entries has not been run for zod (the JSON exception says the same);
+# run it before renewal.
+# Remove together with that exception; tracking #9915.
+#
+# Added 2026-10-24 (Trivy DB refresh).
+CVE-2023-54404
