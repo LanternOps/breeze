@@ -570,8 +570,7 @@
       "empty": "Nenhum parceiro tem concessões do Wisp ainda",
       "disabled": "O Wisp não está habilitado nesta implantação (BREEZE_WISP_ENABLED).",
       "errors": {
-        "load": "Falha ao carregar a visão geral do Wisp",
-        "generic": "Algo deu errado"
+        "load": "Falha ao carregar a visão geral do Wisp"
       },
       "platformAdmin": {
         "title": "Somente para administradores da plataforma",

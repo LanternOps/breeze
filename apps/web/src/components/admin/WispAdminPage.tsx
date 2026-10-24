@@ -71,12 +71,16 @@ export default function WispAdminPage() {
         setState('disabled');
         return;
       }
-      if (!response.ok) throw new Error(stableT('admin.wisp.errors.load'));
-      const body = (await response.json()) as { partners?: WispPartnerOverviewRow[] };
-      setPartners(body.partners ?? []);
+      if (!response.ok) throw new Error(`overview HTTP ${response.status}`);
+      const body = (await response.json()) as { partners?: unknown };
+      // A 200 without a partners array is contract drift, not "no activity" —
+      // show the error state rather than a misleading empty table.
+      if (!Array.isArray(body.partners)) throw new Error('overview response has no partners array');
+      setPartners(body.partners as WispPartnerOverviewRow[]);
       setState('ready');
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : stableT('admin.wisp.errors.generic'));
+      console.error('[WispAdminPage] overview load failed', err);
+      setErrorMessage(stableT('admin.wisp.errors.load'));
       setState('error');
     }
   }, [stableT]);
@@ -89,13 +93,26 @@ export default function WispAdminPage() {
     setGrantsByPartner((prev) => ({ ...prev, [partnerId]: { loading: true, error: false, grants: [] } }));
     try {
       const response = await fetchWithAuth(`/admin/wisp/grants?partnerId=${encodeURIComponent(partnerId)}`);
-      if (!response.ok) throw new Error(String(response.status));
-      const body = (await response.json()) as { grants?: WispGrantAdminRow[] };
+      // Same meaning as on the overview: platform-admin access or the
+      // deployment flag went away since the page loaded — not a retryable error.
+      if (response.status === 403) {
+        setState('locked');
+        return;
+      }
+      if (response.status === 404) {
+        setState('disabled');
+        return;
+      }
+      if (!response.ok) throw new Error(`grants HTTP ${response.status}`);
+      const body = (await response.json()) as { grants?: unknown };
+      if (!Array.isArray(body.grants)) throw new Error('grants response has no grants array');
+      const list = body.grants as WispGrantAdminRow[];
       setGrantsByPartner((prev) => ({
         ...prev,
-        [partnerId]: { loading: false, error: false, grants: body.grants ?? [] },
+        [partnerId]: { loading: false, error: false, grants: list },
       }));
-    } catch {
+    } catch (err) {
+      console.error('[WispAdminPage] grants load failed', { partnerId, err });
       setGrantsByPartner((prev) => ({ ...prev, [partnerId]: { loading: false, error: true, grants: [] } }));
     }
   }, []);
@@ -158,7 +175,7 @@ export default function WispAdminPage() {
         {header}
         <div
           data-testid="wisp-admin-locked"
-          className="bg-blue-50 border border-blue-200 text-blue-900 px-6 py-8 rounded flex items-start gap-4"
+          className="bg-blue-50 border border-blue-200 text-blue-900 dark:bg-blue-950/30 dark:border-blue-900 dark:text-blue-200 px-6 py-8 rounded flex items-start gap-4"
         >
           <Lock className="w-6 h-6 shrink-0 mt-0.5" />
           <div>
@@ -176,7 +193,7 @@ export default function WispAdminPage() {
         {header}
         <div
           data-testid="wisp-admin-disabled"
-          className="bg-amber-50 border border-amber-200 text-amber-900 px-6 py-6 rounded text-sm"
+          className="bg-amber-50 border border-amber-200 text-amber-900 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-200 px-6 py-6 rounded text-sm"
         >
           {t('admin.wisp.disabled')}
         </div>
@@ -191,12 +208,12 @@ export default function WispAdminPage() {
           <h1 className="text-2xl font-semibold flex items-center gap-2">
             <Sparkles className="w-6 h-6" /> {t('admin.wisp.title')}
           </h1>
-          <p className="text-sm text-gray-600 mt-1 max-w-2xl">{t('admin.wisp.description')}</p>
+          <p className="text-sm text-muted-foreground mt-1 max-w-2xl">{t('admin.wisp.description')}</p>
         </div>
         <button
           data-testid="wisp-admin-refresh"
           onClick={() => void load()}
-          className="px-3 py-2 text-sm border rounded hover:bg-gray-50 flex items-center gap-1"
+          className="px-3 py-2 text-sm border rounded hover:bg-muted flex items-center gap-1"
         >
           <RefreshCw className="w-4 h-4" /> {t('admin.wisp.refresh')}
         </button>
@@ -205,7 +222,7 @@ export default function WispAdminPage() {
       {state === 'error' && (
         <div
           data-testid="wisp-admin-error"
-          className="bg-red-50 text-red-800 px-4 py-3 rounded mb-4 flex items-center justify-between"
+          className="bg-red-50 text-red-800 dark:bg-red-950/30 dark:text-red-200 px-4 py-3 rounded mb-4 flex items-center justify-between"
         >
           <span>{errorMessage}</span>
           <button
@@ -219,13 +236,13 @@ export default function WispAdminPage() {
       )}
 
       {state === 'loading' && (
-        <div data-testid="wisp-admin-loading" className="text-center py-12 text-gray-500">
+        <div data-testid="wisp-admin-loading" className="text-center py-12 text-muted-foreground">
           {t('admin.wisp.loading')}
         </div>
       )}
 
       {state === 'ready' && partners.length === 0 && (
-        <div data-testid="wisp-admin-empty" className="text-center py-12 text-gray-500">
+        <div data-testid="wisp-admin-empty" className="text-center py-12 text-muted-foreground">
           {t('admin.wisp.empty')}
         </div>
       )}
@@ -281,9 +298,13 @@ export default function WispAdminPage() {
                       </td>
                       <td className="px-4 py-3">{p.plan}</td>
                       <td className="px-4 py-3 text-right">{p.activeGrants}</td>
-                      <td className="px-4 py-3 text-right" title={breakdown || undefined}>
+                      <td
+                        className="px-4 py-3 text-right"
+                        title={breakdown || undefined}
+                        data-testid={`wisp-admin-paused-${p.partnerId}`}
+                      >
                         {sumPaused(p.pausedGrants)}
-                        {breakdown && <div className="text-xs text-gray-500">{breakdown}</div>}
+                        {breakdown && <div className="text-xs text-muted-foreground">{breakdown}</div>}
                       </td>
                       <td className="px-4 py-3 text-right">{p.assessmentsToday}</td>
                       <td className="px-4 py-3 text-right">{p.specialistRequestsToday}</td>
@@ -295,10 +316,10 @@ export default function WispAdminPage() {
                         <td colSpan={COLUMN_COUNT} className="bg-muted/20 px-4 py-3">
                           <div data-testid={`wisp-admin-grants-${p.partnerId}`}>
                             {(!g || g.loading) && (
-                              <div className="text-sm text-gray-500">{t('admin.wisp.grants.loading')}</div>
+                              <div className="text-sm text-muted-foreground">{t('admin.wisp.grants.loading')}</div>
                             )}
                             {g?.error && (
-                              <div className="text-sm text-red-700 flex items-center gap-3">
+                              <div className="text-sm text-red-700 dark:text-red-300 flex items-center gap-3">
                                 {t('admin.wisp.grants.error')}
                                 <button
                                   data-testid={`wisp-admin-grants-retry-${p.partnerId}`}
@@ -310,7 +331,7 @@ export default function WispAdminPage() {
                               </div>
                             )}
                             {g && !g.loading && !g.error && g.grants.length === 0 && (
-                              <div className="text-sm text-gray-500">{t('admin.wisp.grants.empty')}</div>
+                              <div className="text-sm text-muted-foreground">{t('admin.wisp.grants.empty')}</div>
                             )}
                             {g && !g.loading && !g.error && g.grants.length > 0 && (
                               <table className="w-full text-left text-sm">

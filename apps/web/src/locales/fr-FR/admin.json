@@ -570,8 +570,7 @@
       "empty": "Aucun partenaire n'a encore d'autorisation Wisp",
       "disabled": "Wisp n'est pas activé sur ce déploiement (BREEZE_WISP_ENABLED).",
       "errors": {
-        "load": "Impossible de charger la vue d'ensemble de Wisp",
-        "generic": "Une erreur s'est produite"
+        "load": "Impossible de charger la vue d'ensemble de Wisp"
       },
       "platformAdmin": {
         "title": "Réservé aux administrateurs de la plateforme",

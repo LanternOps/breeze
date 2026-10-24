@@ -570,8 +570,7 @@
       "empty": "Henüz Wisp yetkisi olan iş ortağı yok",
       "disabled": "Wisp bu dağıtımda etkin değil (BREEZE_WISP_ENABLED).",
       "errors": {
-        "load": "Wisp genel görünümü yüklenemedi",
-        "generic": "Bir şeyler ters gitti"
+        "load": "Wisp genel görünümü yüklenemedi"
       },
       "platformAdmin": {
         "title": "Yalnızca platform yöneticileri",

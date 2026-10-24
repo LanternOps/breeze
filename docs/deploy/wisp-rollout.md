@@ -24,6 +24,9 @@ still win.
 - [ ] `IS_HOSTED=true`
 - [ ] `BREEZE_AI_AGENTS_ENABLED=true`
 - [ ] `BREEZE_WISP_ENABLED=true`
+- [ ] `ENABLE_2FA` left on (unset or true). Production refuses to boot with
+      `BREEZE_WISP_ENABLED=true` and `ENABLE_2FA` off: grants are created and
+      refreshed on a step-up proof.
 - [ ] Only if `analysis` specialists are wanted: `BREEZE_AI_WORKSPACE_ENABLED=true`
       plus the sandbox settings it requires (`AI_WORKSPACE_BACKEND=vercel`, the
       three `VERCEL_*` values, artifact storage). Without it, `analysis`
@@ -45,7 +48,8 @@ still win.
       `…-120600-wisp-specialist-lineage` (specialists,
       W07) plus the W08 home migrations once those waves land.
       Confirm with `SELECT filename FROM breeze_migrations WHERE filename LIKE '2027-01-04-%' ORDER BY 1`
-      — the list must match `ls apps/api/migrations` at the deployed tag.
+      — the result must include every Wisp migration above (the `2027-01-04-*`
+      range also holds unrelated migrations).
 - [ ] `pnpm db:check-drift` is clean against the deployed tag.
 
 ## 3. Entitlements
@@ -86,7 +90,8 @@ SELECT p.id
 ## 5. Kill-switch rehearsal (before announcing)
 
 - [ ] Flip `BREEZE_WISP_ENABLED=false` on API + worker and restart: every
-      `/api/v1/wisp/*` and `/api/v1/admin/wisp/*` route returns 404, the wake
+      authenticated request to `/api/v1/wisp/*` and `/api/v1/admin/wisp/*`
+      returns 404 (unauthenticated requests still get 401 first), the wake
       scheduler admits no assessments, and existing grants are untouched
       (still `active` in `wisp_grants`).
 - [ ] Flip it back on: the next floor tick resumes assessments without any
@@ -95,6 +100,10 @@ SELECT p.id
       Wisp assessments and specialist runs, because both are agent runs.
 
 ## 6. Alerts
+
+The `wisp_*` series below are registered by `apps/api/src/services/wispMetrics.ts`
+(W07a, #9913). Confirm they appear on the API's metrics endpoint at the deployed
+tag before wiring alerts.
 
 - [ ] Alert on `rate(wisp_budget_exhausted_total[1h])` (an exhausted budget
       does **not** pause the grant — assessments are skipped and the grant stays

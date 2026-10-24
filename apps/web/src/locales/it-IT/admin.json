@@ -570,8 +570,7 @@
       "empty": "Nessun partner ha ancora autorizzazioni Wisp",
       "disabled": "Wisp non è abilitato in questa distribuzione (BREEZE_WISP_ENABLED).",
       "errors": {
-        "load": "Impossibile caricare la panoramica di Wisp",
-        "generic": "Qualcosa è andato storto"
+        "load": "Impossibile caricare la panoramica di Wisp"
       },
       "platformAdmin": {
         "title": "Solo per amministratori della piattaforma",

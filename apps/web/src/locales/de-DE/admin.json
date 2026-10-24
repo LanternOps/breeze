@@ -570,8 +570,7 @@
       "empty": "Noch keine Partner mit Wisp-Berechtigungen",
       "disabled": "Wisp ist auf dieser Bereitstellung nicht aktiviert (BREEZE_WISP_ENABLED).",
       "errors": {
-        "load": "Die Wisp-Übersicht konnte nicht geladen werden",
-        "generic": "Etwas ist schiefgelaufen"
+        "load": "Die Wisp-Übersicht konnte nicht geladen werden"
       },
       "platformAdmin": {
         "title": "Nur für Plattformadministratoren",

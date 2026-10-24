@@ -570,8 +570,7 @@
       "empty": "No partners have Wisp grants yet",
       "disabled": "Wisp is not enabled on this deployment (BREEZE_WISP_ENABLED).",
       "errors": {
-        "load": "Failed to load the Wisp overview",
-        "generic": "Something went wrong"
+        "load": "Failed to load the Wisp overview"
       },
       "platformAdmin": {
         "title": "Platform admin only",
