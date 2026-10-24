@@ -5,6 +5,7 @@ import { fetchWithAuth } from './auth';
 import { openAiSession, type AiSessionView } from './aiSessionOpen';
 import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
 import { classifySendRefusal } from './aiSendRefusal';
+import { registerLogoutHook } from './logoutHooks';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '../components/shared/Toast';
@@ -1083,3 +1084,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }
   )
 );
+
+// #9427 W3 (T14): logout drops every tab and stales every in-flight action
+// before evictLocalAuthState removes breeze-workspace.
+registerLogoutHook(() => useWorkspaceStore.getState().resetForLogout());
