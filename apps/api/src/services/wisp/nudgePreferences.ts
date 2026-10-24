@@ -3,7 +3,7 @@
  * A28, A29). The partner's urgent-capable severities (partner-wide state,
  * gated on canManagePartnerWidePolicies) live in ./partnerNudgeSettings.ts.
  *
- * `loadNudgePrefs` / `upsertNudgePrefs` / the urgent-capable pair run in
+ * `loadNudgePrefs` / `upsertNudgePrefs` run in
  * WHATEVER context the caller holds: the routes call them under the caller's
  * own RLS (a user reads/writes only their own row inside their own partner),
  * notifyUser calls them inside its system context. The worker bookkeeping
