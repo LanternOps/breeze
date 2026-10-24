@@ -562,6 +562,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // for the same reason every effect inside it is: the set can destroy a
   // person's access across two providers.
   'operator_plan',
+  // Wisp memory (W03 #9909): human-only (HUMAN_ONLY_TOOLS) and never declared to
+  // chat, Helper or agents — a person confirms/retracts on the memory page. Tier 3
+  // with operator_plan so the external MCP never advertises them; four_eyes is
+  // the conservative classification should any approval path ever reach them.
+  'confirm_memory', 'retract_memory',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -1188,6 +1193,13 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_flows: { resource: 'automations', action: 'read' },
   // #8973 W4: business-hours calendars read with the ticket permission.
   list_business_calendars: { resource: 'tickets', action: 'read' },
+  // Wisp W03 memory (services/wisp/memoryTools.ts): the chat-use permission
+  // (routes/ai.ts), same as the /wisp/memory routes. confirm/retract are
+  // HUMAN_ONLY_TOOLS; mapped so a direct dispatch still carries an RBAC gate.
+  recall: { resource: 'ai_sessions', action: 'use' },
+  remember: { resource: 'ai_sessions', action: 'use' },
+  confirm_memory: { resource: 'ai_sessions', action: 'use' },
+  retract_memory: { resource: 'ai_sessions', action: 'use' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },

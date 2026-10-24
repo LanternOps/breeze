@@ -42,9 +42,9 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, recallShape, rememberShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
-import { aiScriptAuthoringEnabled, flowsEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
@@ -434,6 +434,11 @@ export const TOOL_TIERS = {
   list_remediation_suggestions: 1,
   find_proven_fixes: 1,
   list_incidents: 1,
+  // Wisp W03 memory (services/wisp/memoryTools.ts). Declared to chat only
+  // when wispEnabled() (wispMemoryToolDefinitions). confirm_memory /
+  // retract_memory are HUMAN_ONLY_TOOLS and therefore never tiered here.
+  recall: 1,
+  remember: 2,
   // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
   // Monitoring, analytics and network reads.
   query_analytics: 1,
@@ -1235,6 +1240,34 @@ export function scriptProposalToolDefinitions(
       { proposalId: uuid },
       makeHandler('get_script_proposal', getAuth, onPreToolUse, onPostToolUse),
     ),
+  ];
+}
+
+/**
+ * Wisp W03 memory tools — EXPOSURE gate for `wispEnabled()`, same shape as
+ * `flowToolDefinitions` below. Registration in aiTools and TOOL_TIERS stays
+ * unconditional (registry parity); with Wisp off the model is never told these
+ * exist, so the dark default changes no chat prompt or tool list. Breeze's MCP
+ * server applies the same gate via `isToolEnvGatedOff` (aiToolEnvGates.ts), and
+ * every handler still refuses without `auth.wispGrant`. confirm_memory /
+ * retract_memory are HUMAN_ONLY_TOOLS and are never declared here.
+ */
+export function wispMemoryToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  return [
+    tool('recall', registryDescription('recall'), recallShape, makeHandler('recall', getAuth, onPreToolUse, onPostToolUse)),
+    tool('remember', registryDescription('remember'), rememberShape, makeHandler('remember', getAuth, onPreToolUse, onPostToolUse)),
   ];
 }
 
@@ -4337,6 +4370,8 @@ export function buildBreezeSdkTools(
     ...scriptProposalToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Tool Catalog W03 (#5218) — behind FLOWS_ENABLED (see the factory).
     ...flowToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W03 memory — behind wispEnabled() (see the factory).
+    ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

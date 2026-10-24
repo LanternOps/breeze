@@ -7057,5 +7057,57 @@
     },
     "loadError": "Ihr Tarif konnte nicht geladen werden.",
     "retry": "Erneut versuchen"
+  },
+  "wispMemory": {
+    "title": "Wisp-Gedächtnis",
+    "description": "Prüfen Sie, was Wisp sich für Sie, einen Kunden oder Ihr ganzes Team gemerkt hat, und bestätigen oder widerrufen Sie es.",
+    "tabs": {
+      "mine": "Mein Gedächtnis",
+      "org": "Kunde",
+      "partner": "Alle Kunden",
+      "users": "Techniker"
+    },
+    "empty": "Hier gibt es noch keine Gedächtniseinträge.",
+    "loading": "Gedächtnis wird geladen…",
+    "loadFailed": "Das Gedächtnis konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "columns": {
+      "subject": "Betreff",
+      "type": "Typ",
+      "status": "Status",
+      "confidence": "Konfidenz",
+      "updated": "Aktualisiert",
+      "actions": "Aktionen"
+    },
+    "statusValue": {
+      "unconfirmed": "Unbestätigt",
+      "confirmed": "Bestätigt",
+      "retracted": "Widerrufen"
+    },
+    "type": {
+      "preference": "Präferenz",
+      "standing_instruction": "Dauerhafte Anweisung",
+      "fact": "Fakt",
+      "decision": "Entscheidung",
+      "concern_outcome": "Ergebnis eines Anliegens",
+      "work_summary": "Arbeitszusammenfassung"
+    },
+    "confidenceValue": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch"
+    },
+    "confirm": "Bestätigen",
+    "retract": "Widerrufen",
+    "confirmed": "Eintrag bestätigt.",
+    "retracted": "Eintrag widerrufen.",
+    "confirmFailed": "Der Eintrag konnte nicht bestätigt werden.",
+    "retractFailed": "Der Eintrag konnte nicht widerrufen werden.",
+    "fromConversation": "Aus Unterhaltung",
+    "pickOrg": "Kunden auswählen",
+    "pickUser": "Techniker auswählen",
+    "pickPrompt": "Wählen Sie oben eine Option, um das Gedächtnis zu sehen.",
+    "showContent": "Inhalt anzeigen",
+    "hideContent": "Inhalt ausblenden"
   }
 }

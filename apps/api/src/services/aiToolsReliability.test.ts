@@ -53,6 +53,10 @@ vi.mock('./aiToolsAgentLogs', () => ({
   registerAgentLogTools: vi.fn(),
 }));
 
+vi.mock('./wisp/memoryTools', () => ({
+  registerWispMemoryTools: vi.fn(),
+}));
+
 vi.mock('./aiToolsConfigPolicy', () => ({
   registerConfigPolicyTools: vi.fn(),
 }));

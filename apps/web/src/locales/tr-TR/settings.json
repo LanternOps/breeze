@@ -7057,5 +7057,57 @@
     },
     "loadError": "Planınız yüklenemedi.",
     "retry": "Tekrar dene"
+  },
+  "wispMemory": {
+    "title": "Wisp belleği",
+    "description": "Wisp’in sizin, bir müşteri veya tüm ekibiniz için hatırladıklarını inceleyin; onaylayın veya geri çekin.",
+    "tabs": {
+      "mine": "Belleğim",
+      "org": "Müşteri",
+      "partner": "Tüm müşteriler",
+      "users": "Teknisyenler"
+    },
+    "empty": "Burada henüz bellek bloğu yok.",
+    "loading": "Bellek yükleniyor…",
+    "loadFailed": "Bellek yüklenemedi.",
+    "retry": "Tekrar dene",
+    "columns": {
+      "subject": "Konu",
+      "type": "Tür",
+      "status": "Durum",
+      "confidence": "Güven",
+      "updated": "Güncellendi",
+      "actions": "İşlemler"
+    },
+    "statusValue": {
+      "unconfirmed": "Onaylanmadı",
+      "confirmed": "Onaylandı",
+      "retracted": "Geri çekildi"
+    },
+    "type": {
+      "preference": "Tercih",
+      "standing_instruction": "Kalıcı talimat",
+      "fact": "Bilgi",
+      "decision": "Karar",
+      "concern_outcome": "Endişe sonucu",
+      "work_summary": "Çalışma özeti"
+    },
+    "confidenceValue": {
+      "low": "Düşük",
+      "medium": "Orta",
+      "high": "Yüksek"
+    },
+    "confirm": "Onayla",
+    "retract": "Geri çek",
+    "confirmed": "Bellek onaylandı.",
+    "retracted": "Bellek geri çekildi.",
+    "confirmFailed": "Bellek onaylanamadı.",
+    "retractFailed": "Bellek geri çekilemedi.",
+    "fromConversation": "Görüşmeden",
+    "pickOrg": "Bir müşteri seçin",
+    "pickUser": "Bir teknisyen seçin",
+    "pickPrompt": "Belleği görmek için yukarıdan seçim yapın.",
+    "showContent": "İçeriği göster",
+    "hideContent": "İçeriği gizle"
   }
 }

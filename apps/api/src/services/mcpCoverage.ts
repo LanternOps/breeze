@@ -808,4 +808,5 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
   'webhooks/xero.ts': { exempt: 'inbound_integration' },
   'wisp.ts': { exempt: 'human_only_ai_governance', note: 'Wisp delegation grants (Wisp design §4.2): a human lends their own authority on a fresh step-up proof -- the AI must never mint, widen, resume or reconfigure its own grant.' },
+  'wisp/memory.ts': { tools: ['recall', 'remember'] },
 };

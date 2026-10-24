@@ -213,6 +213,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'read_artifact', description: 'Read a stored tool-result artifact', category: 'AI Governance' },
       { name: 'list_ai_agent_runs', description: 'List AI agent runs', category: 'AI Governance' },
       { name: 'get_ai_agent_run', description: 'Get AI agent run details', category: 'AI Governance' },
+      // Wisp memory (W03 #9909): offered only when Wisp is on, and only under a delegation grant.
+      { name: 'recall', description: 'Recall Wisp memory inside the delegation grant', category: 'AI Governance' },
       // Other
       { name: 'query_custom_fields', description: 'Custom field definitions and values', category: 'Other' },
       { name: 'manage_tags (list)', description: 'List all device tags', category: 'Other' },
@@ -292,6 +294,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_tickets (log_time_entry/start_timer/stop_timer)', description: 'Track time against tickets', category: 'Ticketing' },
       { name: 'manage_tickets (link_device/draft)', description: 'AI ticket triage: link a device or store a reply/resolution-note draft', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (add_item/update_item/delete_item/reorder/apply_template)', description: 'Edit ticket checklist steps (ticking a step done stays human-only)', category: 'Ticketing' },
+      // Wisp memory (W03 #9909): remember writes an unconfirmed block.
+      { name: 'remember', description: 'Propose a Wisp memory block (lands unconfirmed)', category: 'AI Governance' },
     ],
   },
   {
@@ -371,6 +375,9 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       // AI Governance (P2-5, #4192)
       { name: 'manage_ai_agents (authorize_supervised_key)', description: 'Grant an AI agent a pre-authorized action key', category: 'AI Governance' },
       { name: 'operator_plan', description: 'Approve an AI Operator plan: one four-eyes decision over an ordered set of provider effects', category: 'AI Governance' },
+      // Wisp memory (W03 #9909): human-only — a person confirms or retracts on the memory page; never agent-callable.
+      { name: 'confirm_memory', description: 'A person confirms a Wisp memory block', category: 'AI Governance' },
+      { name: 'retract_memory', description: 'A person retracts a Wisp memory block', category: 'AI Governance' },
     ],
   },
   {
@@ -518,6 +525,7 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   // AI Governance
   { toolName: 'manage_ai_agents', tier: 3, permission: 'ai_agents.write', category: 'AI Governance' },
   { toolName: 'operator_plan', tier: 3, permission: 'organizations.write', category: 'AI Governance' },
+  { toolName: 'remember', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)
@@ -749,6 +757,11 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   },
   // AI agent governance
   manage_ai_agents: { authorize_supervised_key: 'ai_agents.write' },
+  // Wisp memory (W03 #9909)
+  recall: 'ai_sessions.use',
+  remember: 'ai_sessions.use',
+  confirm_memory: 'ai_sessions.use',
+  retract_memory: 'ai_sessions.use',
   generate_report: {
     list: 'reports.read',
     generate: 'reports.export',

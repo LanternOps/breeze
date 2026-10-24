@@ -391,6 +391,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   query_psa_status: 'tenancy',
   manage_ai_agents: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS; mapped for completeness, never reachable
   operator_plan: 'tenancy', // AGENT_HUMAN_ONLY_TOOLS (plan approval carrier); mapped for completeness, never reachable
+  // Wisp W03 memory (domain 'ai'). confirm/retract are HUMAN_ONLY_TOOLS
+  // (never tiered, so never agent-reachable); mapped for completeness.
+  recall: 'tenancy',
+  remember: 'tenancy',
+  confirm_memory: 'tenancy',
+  retract_memory: 'tenancy',
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`

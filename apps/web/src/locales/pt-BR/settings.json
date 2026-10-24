@@ -7057,5 +7057,57 @@
     },
     "loadError": "Não foi possível carregar seu plano.",
     "retry": "Tentar novamente"
+  },
+  "wispMemory": {
+    "title": "Memória do Wisp",
+    "description": "Revise o que o Wisp lembrou para você, um cliente ou toda a equipe, e confirme ou retire.",
+    "tabs": {
+      "mine": "Minha memória",
+      "org": "Cliente",
+      "partner": "Todos os clientes",
+      "users": "Técnicos"
+    },
+    "empty": "Ainda não há blocos de memória aqui.",
+    "loading": "Carregando memória…",
+    "loadFailed": "Falha ao carregar a memória.",
+    "retry": "Tentar novamente",
+    "columns": {
+      "subject": "Assunto",
+      "type": "Tipo",
+      "status": "Status",
+      "confidence": "Confiança",
+      "updated": "Atualizado",
+      "actions": "Ações"
+    },
+    "statusValue": {
+      "unconfirmed": "Não confirmado",
+      "confirmed": "Confirmado",
+      "retracted": "Retirado"
+    },
+    "type": {
+      "preference": "Preferência",
+      "standing_instruction": "Instrução permanente",
+      "fact": "Fato",
+      "decision": "Decisão",
+      "concern_outcome": "Resultado de uma preocupação",
+      "work_summary": "Resumo do trabalho"
+    },
+    "confidenceValue": {
+      "low": "Baixa",
+      "medium": "Média",
+      "high": "Alta"
+    },
+    "confirm": "Confirmar",
+    "retract": "Retirar",
+    "confirmed": "Memória confirmada.",
+    "retracted": "Memória retirada.",
+    "confirmFailed": "Falha ao confirmar a memória.",
+    "retractFailed": "Falha ao retirar a memória.",
+    "fromConversation": "Da conversa",
+    "pickOrg": "Selecione um cliente",
+    "pickUser": "Selecione um técnico",
+    "pickPrompt": "Escolha uma opção acima para ver a memória.",
+    "showContent": "Mostrar conteúdo",
+    "hideContent": "Ocultar conteúdo"
   }
 }

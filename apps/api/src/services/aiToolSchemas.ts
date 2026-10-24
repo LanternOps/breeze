@@ -10,6 +10,7 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS } from '@breeze/shared';
 import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
@@ -188,8 +189,55 @@ export const setDeviceContextShape = {
   expiresInDays: z.number().int().positive().max(365).optional(),
 };
 
+/**
+ * Wisp W03 memory tools (services/wisp/memoryTools.ts). The raw shapes are the
+ * source of truth: the MCP `tool()` declarations, `toolInputSchemas` and the
+ * registry `definition.input_schema` are all derived from them. There is no
+ * `sourceSessionId` key on purpose — the handler stamps it from
+ * `auth.wispGrant.sessionId` (w00 A23); a supplied one is stripped.
+ */
+export const recallShape = {
+  ownerKinds: z.array(z.enum(MEMORY_OWNER_KINDS)).min(1).max(3).optional()
+    .describe('Only these owners (default all three): user = your grantor, org = customers in scope, partner = MSP-wide.'),
+  subjectKeyPrefix: z.string().min(1).max(120).optional().describe('Only blocks whose subjectKey starts with this, e.g. "work:" or "printer:"'),
+  blockTypes: z.array(z.enum(MEMORY_BLOCK_TYPES)).min(1).max(MEMORY_BLOCK_TYPES.length).optional(),
+  orgId: uuid.optional().describe('Only this organization\'s blocks (UUID); user and partner blocks still apply'),
+  limit: z.number().int().min(1).max(200).optional().describe('Max blocks (default 50, max 200)'),
+};
+
+export const rememberShape = {
+  ownerKind: z.enum(MEMORY_OWNER_KINDS)
+    .describe("user = the technician's own preferences only; a fact about a customer belongs to that org (org + orgId); partner = MSP-wide practice."),
+  orgId: uuid.optional().describe('Required when ownerKind is org, refused otherwise (UUID)'),
+  blockType: z.enum(MEMORY_BLOCK_TYPES)
+    .describe('work_summary: one per working session on one customer, org-owned, subjectKey work:<yyyy-mm-dd>:<short-slug>.'),
+  subjectKey: z.string().min(1).max(280).describe('Stable key; a new block with the same owner, type and key supersedes the old one'),
+  content: z.record(z.string(), z.unknown())
+    .describe('The memory itself (max 8 KiB as JSON). For work_summary, content.evidence lists the Breeze records touched (ticket, time-entry, audit ids).'),
+  confidence: z.enum(MEMORY_CONFIDENCES).optional().describe('How sure you are (default medium)'),
+};
+
+export const memoryBlockIdShape = {
+  blockId: uuid.describe('Memory block UUID'),
+};
+
+/** ownerKind 'org' ⇔ orgId present. Shared by validateToolInput and the handler's own parse. */
+export const rememberInputSchema = z.object(rememberShape).superRefine((v, ctx) => {
+  if (v.ownerKind === 'org' && !v.orgId) {
+    ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId is required when ownerKind is org' });
+  }
+  if (v.ownerKind !== 'org' && v.orgId) {
+    ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId is only accepted when ownerKind is org' });
+  }
+});
+
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  // Wisp W03 memory (services/wisp/memoryTools.ts).
+  recall: z.object(recallShape),
+  remember: rememberInputSchema,
+  confirm_memory: z.object(memoryBlockIdShape),
+  retract_memory: z.object(memoryBlockIdShape),
   list_time_entries: z.object({
     orgId: uuid.optional(),
     ticketId: uuid.optional(),

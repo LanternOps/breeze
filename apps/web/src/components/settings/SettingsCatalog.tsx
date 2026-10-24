@@ -7,6 +7,7 @@ import { useOrgStore } from '../../stores/orgStore';
 import { useToolSourcesGate } from '../../stores/featuresStore';
 import { getJwtClaims } from '../../lib/authScope';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
+import { useWispEnabled } from '../../lib/wispVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { SETTINGS_CATALOG, SETTINGS_GROUPS } from '../../lib/settingsCatalog';
 
@@ -20,6 +21,7 @@ export default function SettingsCatalog() {
   const permissions = useAuthStore((s) => s.user?.permissions);
   const serviceManagementMode = useOrgStore((s) => s.serviceManagementMode);
   const autopayEnabled = useAutopayEnabled();
+  const wispEnabled = useWispEnabled();
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   const [query, setQuery] = useState('');
 
@@ -31,6 +33,7 @@ export default function SettingsCatalog() {
       autopayEnabled,
       toolSourcesEnabled,
       aiForOfficeEnabled: false,
+      wispEnabled,
       serviceManagementMode,
     };
     const q = query.trim().toLowerCase();
@@ -41,7 +44,7 @@ export default function SettingsCatalog() {
         description: e.descriptionKey ? t(/* i18n-dynamic */ e.descriptionKey, { defaultValue: '' }) : '',
       }))
       .filter((e) => !q || `${e.title} ${e.description}`.toLowerCase().includes(q));
-  }, [isPlatformAdmin, permissions, serviceManagementMode, toolSourcesEnabled, autopayEnabled, query, t]);
+  }, [isPlatformAdmin, permissions, serviceManagementMode, toolSourcesEnabled, autopayEnabled, wispEnabled, query, t]);
 
   return (
     <div className="space-y-6" data-testid="settings-catalog">

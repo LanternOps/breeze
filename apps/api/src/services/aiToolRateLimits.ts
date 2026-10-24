@@ -84,6 +84,8 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   generate_report: { limit: 10, windowSeconds: 300 },
   // Brain device context tools
   set_device_context: { limit: 20, windowSeconds: 300 },
+  // Wisp W03: every remember is a row a human must later review.
+  remember: { limit: 20, windowSeconds: 300 },
   // Diagnostic access: each request pages every eligible approver, and each
   // read is a live endpoint command — bound both.
   request_diagnostic_access: { limit: 5, windowSeconds: 300 },
