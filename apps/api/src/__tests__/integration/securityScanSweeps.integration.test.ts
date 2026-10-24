@@ -34,6 +34,8 @@ import {
 } from '../../services/securityScanSweeps';
 import { cancelDeviceCommands } from '../../services/commandCancelPropagation';
 import { startDeviceScan } from '../../services/securityScanStart';
+import { topSweepRuleHits } from '../../services/securityScanSweepHits';
+import { listVisibleRuleSets } from '../../services/yaraRuleSetAccess';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { executeOrgMerge } from '../../services/orgMerge';
@@ -927,5 +929,60 @@ describe('review: expiry, cancel propagation, caps, MFA, manual-scan fetch, cros
     expect(pump.completed).toBe(0);
     const [sweep] = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.id, w.sweepId));
     expect(sweep!.state).toBe('cancelled');
+  });
+});
+
+// #6268 (W05 PR B): the two new reads behind the AI ioc_hunt tool, over real
+// SQL and RLS — the threat↔scan binding of sweep_status's top rule hits, and
+// list_rule_sets' visible sets with owner kind.
+describe('W05 PR B ioc_hunt reads', () => {
+  it('topSweepRuleHits counts only threats of this sweep\'s scans and pinned sets', async () => {
+    const f = await seedPartnerFleet(2);
+    const partner = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const created = await previewAndCreate(partner, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
+    if (!created.ok) throw new Error(created.code);
+    const orgA = f.orgs[0]!;
+    const sweepA = created.sweeps.find((s) => s.orgId === orgA.id)!;
+    const tdb = getTestDb();
+    const doneAt = new Date('2026-10-24T10:00:00.000Z');
+    await tdb.execute(sql`UPDATE security_scans SET status = 'completed', completed_at = ${doneAt.toISOString()}::timestamp
+      WHERE sweep_id = ${sweepA.id}`);
+    const otherSet = randomUUID();
+    const threat = (deviceId: string, orgId: string, detectedAt: Date, ruleName: string, ruleSetId: string) => ({
+      deviceId, orgId, provider: 'breeze' as const, threatName: ruleName, severity: 'high' as const, status: 'detected' as const,
+      detectedAt, details: { ruleName, ruleSetId },
+    });
+    const { securityThreats } = await import('../../db/schema');
+    await tdb.insert(securityThreats).values([
+      threat(orgA.deviceIds[0]!, orgA.id, doneAt, 'ioc_md5_a', f.setId),
+      threat(orgA.deviceIds[1]!, orgA.id, doneAt, 'ioc_md5_a', f.setId),
+      threat(orgA.deviceIds[1]!, orgA.id, doneAt, 'ioc_domain_b', f.setId),
+      // Same scan, a set the sweep did not pin: not counted.
+      threat(orgA.deviceIds[0]!, orgA.id, doneAt, 'other_rule', otherSet),
+      // Same device, a different scan's result (another timestamp): not counted.
+      threat(orgA.deviceIds[0]!, orgA.id, new Date('2026-10-23T09:00:00.000Z'), 'ioc_md5_a', f.setId),
+      // The other org's device at the same instant: not this sweep's.
+      threat(f.orgs[1]!.deviceIds[0]!, f.orgs[1]!.id, doneAt, 'ioc_md5_a', f.setId),
+    ]);
+
+    const summary = await asAuth(partner, () => getSweep(partner, sweepA.id));
+    const hits = await asAuth(partner, () => topSweepRuleHits(partner, summary!));
+    expect(hits).toEqual([
+      { ruleName: 'ioc_md5_a', ruleSetId: f.setId, hits: 2 },
+      { ruleName: 'ioc_domain_b', ruleSetId: f.setId, hits: 1 },
+    ]);
+  });
+
+  it('listVisibleRuleSets returns the partner-wide set with owner kind, paged, under the caller RLS', async () => {
+    const f = await seedPartnerFleet(1);
+    const orgA = f.orgs[0]!;
+    const orgUser = await orgUserAuth(f.partnerId, orgA.id);
+    const tdb = getTestDb();
+    await tdb.execute(sql`INSERT INTO yara_rule_sets (org_id, name, current_version) VALUES (${orgA.id}, 'Org advisories', 1)`);
+    await tdb.execute(sql`INSERT INTO yara_rule_sets (org_id, name, current_version) VALUES (${f.orgs[1]!.id}, 'Sibling org set', 1)`);
+    const page = await asAuth(orgUser, () => listVisibleRuleSets(orgUser, { orgId: orgA.id, page: 1, limit: 100 }));
+    const mine = page.data.filter((r) => r.name === 'MSP hunt pack' || r.name === 'Org advisories' || r.name === 'Sibling org set');
+    expect(mine.map((r) => [r.name, r.ownerKind]).sort()).toEqual([['MSP hunt pack', 'partner'], ['Org advisories', 'org']]);
+    expect(page.data.every((r) => r.ownerKind !== 'builtin' || r.orgId === null)).toBe(true);
   });
 });
