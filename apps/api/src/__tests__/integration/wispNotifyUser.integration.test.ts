@@ -14,7 +14,7 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   mobileDevices,
@@ -206,6 +206,64 @@ describe('W06 readers — real SQL', () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0]!.threadId).toBe(fx.thread.id);
     expect(candidates[0]!.concerns.map((x) => x.id).sort()).toEqual([c1, c2].sort());
+  });
+
+  runDb('selectDigestCandidates excludes every non-digest-only recipient and every unusable grant', async () => {
+    const fx = await seed();
+    const twice = async (c: string, grantId = fx.grantId) => {
+      await recordNudge(c, grantId, new Date(Date.now() - 3 * 3_600_000));
+      await recordNudge(c, grantId, new Date(Date.now() - 2 * 3_600_000));
+    };
+    const setRecipient = (c: string, set: Partial<typeof wispConcernRecipients.$inferInsert>) => withSystemDbAccessContext(() =>
+      db.update(wispConcernRecipients).set(set)
+        .where(and(eq(wispConcernRecipients.concernId, c), eq(wispConcernRecipients.grantId, fx.grantId))));
+    const [c1, c2] = [await fx.concern(), await fx.concern()];
+    await twice(c1);
+    await twice(c2);
+    const once = await fx.concern();
+    await recordNudge(once, fx.grantId, new Date(Date.now() - 3_600_000));
+    const dismissed = await fx.concern();
+    await twice(dismissed);
+    await setRecipient(dismissed, { dismissedAt: new Date() });
+    const snoozed = await fx.concern();
+    await twice(snoozed);
+    await setRecipient(snoozed, { snoozedUntil: new Date(Date.now() + 3_600_000) });
+    const answered = await fx.concern();
+    await twice(answered);
+    await setRecipient(answered, { answeredAt: new Date(Date.now() - 60_000) });
+    const resolved = await fx.concern();
+    await twice(resolved);
+    await withSystemDbAccessContext(() => db.execute(sql`UPDATE wisp_concerns SET status = 'resolved', resolved_at = now() WHERE id = ${resolved}::uuid`));
+
+    const mine = (await selectDigestCandidates(new Date())).filter((x) => x.grantId === fx.grantId);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.concerns.map((x) => x.id).sort()).toEqual([c1, c2].sort());
+
+    // The same two digest-only concerns under an expired grant / a paused grant: no candidate.
+    await withSystemDbAccessContext(() => db.update(wispGrants).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(wispGrants.id, fx.grantId)));
+    expect((await selectDigestCandidates(new Date())).filter((x) => x.grantId === fx.grantId)).toHaveLength(0);
+    await withSystemDbAccessContext(() => db.update(wispGrants)
+      .set({ expiresAt: new Date(Date.now() + 86_400_000), status: 'paused', pausedReason: 'budget_exhausted', pausedAt: new Date() })
+      .where(eq(wispGrants.id, fx.grantId)));
+    expect((await selectDigestCandidates(new Date())).filter((x) => x.grantId === fx.grantId)).toHaveLength(0);
+  });
+
+  runDb('the morning-brief sweep skips user-paused, revoked and expired grants', async () => {
+    vi.stubEnv('IS_HOSTED', 'true');
+    vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+    vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const users = await Promise.all([0, 1, 2].map((i) => createUser({ partnerId: partner.id, email: `wisp-brief-skip-${i}-${randomUUID()}@wisp.test` })));
+    await seedGrant(partner.id, users[0]!.id, [org.id], { status: 'paused', pausedReason: 'user_paused' });
+    const revoked = await seedGrant(partner.id, users[1]!.id, [org.id]);
+    await withSystemDbAccessContext(() => db.update(wispGrants).set({ status: 'revoked', revokedAt: new Date() }).where(eq(wispGrants.id, revoked)));
+    const expired = await seedGrant(partner.id, users[2]!.id, [org.id], { status: 'paused', pausedReason: 'budget_exhausted' });
+    await withSystemDbAccessContext(() => db.update(wispGrants).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(wispGrants.id, expired)));
+    const now = new Date();
+    now.setUTCHours(23, 0, 0, 0);
+    await runMorningBriefs(now);
+    for (const u of users) expect(await notificationsFor(u.id)).toHaveLength(0);
   });
 
   runDb('the morning-brief sweep sends a system-paused grant its one-line brief, keyed on the local date', async () => {

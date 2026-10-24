@@ -33,6 +33,7 @@ import { wispConcerns } from '../../db/schema/wispConcerns';
 import { wispThreads } from '../../db/schema/wispThreads';
 import { buildWispNudgePush, dispatchPushToTokens, type TaggedPushToken } from '../expoPush';
 import { checkNotificationThrottle } from '../notificationThrottle';
+import { captureException } from '../sentry';
 import { isInQuietHours, type QuietHoursConfig } from '../quietHours';
 import { userPushTargetsQuery } from '../ticketPush';
 import { recipientState, recordNudge } from './concerns';
@@ -249,29 +250,39 @@ export async function notifyUser(p: NudgePayload): Promise<NotifyUserResult> {
       // if nobody has since (that attempt may have died before counting).
       if (p.concernId && state) {
         const again = await recipientState(p.concernId, p.grantId);
-        if (sameInstant(again.nextEligibleNudgeAt, state.nextEligibleNudgeAt)) await recordNudge(p.concernId, p.grantId, now);
+        if (sameInstant(again.nextEligibleNudgeAt, state.nextEligibleNudgeAt)) await countNudge(p.concernId, p.grantId, now);
       }
       return BACKOFF;
     }
   }
 
+  // From here on the in-app row is committed: a later failure must not throw
+  // (a retry would hit the dedupe key and never push), so each step reports
+  // and carries on.
+
   // Phase 3 — count the concern nudge.
-  if (p.concernId) await recordNudge(p.concernId, p.grantId, now);
+  if (p.concernId) await countNudge(p.concernId, p.grantId, now);
 
   // Phase 4 — push, outside every DB context.
   let pushTokens = decision.pushTokens;
   let suppressed = decision.suppressed;
   if (pushTokens.length > 0) {
-    const throttle = await checkNotificationThrottle(WISP_NUDGE_THROTTLE_CHANNEL, `user:${p.userId}`, WISP_NUDGE_THROTTLE_MAX, WISP_NUDGE_THROTTLE_WINDOW_S);
-    if (!throttle.allowed) {
-      console.warn(`[wisp.notifyUser] push throttled user=${p.userId} count=${throttle.currentCount}`);
-      pushTokens = [];
-      suppressed = 'backoff';
+    try {
+      const throttle = await checkNotificationThrottle(WISP_NUDGE_THROTTLE_CHANNEL, `user:${p.userId}`, WISP_NUDGE_THROTTLE_MAX, WISP_NUDGE_THROTTLE_WINDOW_S);
+      if (!throttle.allowed) {
+        console.warn(`[wisp.notifyUser] push throttled user=${p.userId} count=${throttle.currentCount}`);
+        pushTokens = [];
+        suppressed = 'backoff';
+      }
+    } catch (err) {
+      // Fail open, like the throttle itself when Redis is unavailable.
+      reportAfterCommit('throttle', err, p);
     }
   }
   let pushed = 0;
   if (pushTokens.length > 0) {
-    const result = await dispatchPushToTokens(
+    try {
+      const result = await dispatchPushToTokens(
       pushTokens,
       buildWispNudgePush({
         threadId: p.threadId,
@@ -281,10 +292,32 @@ export async function notifyUser(p: NudgePayload): Promise<NotifyUserResult> {
         body: p.body,
         deepLink: p.deepLink,
         approvalIntentId: p.approvalIntentId ?? null,
+        kind: p.kind,
       }),
       WISP_NUDGE_THROTTLE_CHANNEL,
     );
-    pushed = result.dispatched;
+      pushed = result.dispatched;
+    } catch (err) {
+      reportAfterCommit('push', err, p);
+    }
   }
   return { inApp: created, pushed, suppressed };
+}
+
+function reportAfterCommit(op: string, err: unknown, p: NudgePayload): void {
+  console.error(`[wisp.notifyUser] ${op} failed after the in-app row was written`, { grantId: p.grantId, kind: p.kind, err });
+  captureException(err, undefined, { op: `wisp.notifyUser.${op}`, grantId: p.grantId, kind: p.kind });
+}
+
+/**
+ * recordNudge, reported instead of thrown: a lost count is recovered by the
+ * next attempt (its dedupe hit counts it), a thrown one would cost the push.
+ */
+async function countNudge(concernId: string, grantId: string, now: Date): Promise<void> {
+  try {
+    await recordNudge(concernId, grantId, now);
+  } catch (err) {
+    console.error('[wisp.notifyUser] recordNudge failed; the next attempt counts it', { concernId, grantId, err });
+    captureException(err, undefined, { op: 'wisp.notifyUser.recordNudge', concernId, grantId });
+  }
 }

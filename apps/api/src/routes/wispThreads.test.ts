@@ -146,7 +146,7 @@ const thread = (o: Record<string, unknown> = {}) => ({
 const ownRow = (o: Record<string, unknown> = {}) => ({
   ...thread(),
   grantOrgId: null, grantStatus: 'active', grantRevisionId: REV,
-  grantExpiresAt: new Date('2027-04-01T00:00:00Z'), grantBudgetCentsPerDay: 200, grantFloorTickMinutes: 30, ...o,
+  grantExpiresAt: new Date('2027-04-01T00:00:00Z'), grantBudgetCentsPerDay: 200, grantFloorTickMinutes: 30, grantPausedReason: null, ...o,
 });
 const ceiling = {
   grantId: GRANT_ID, revisionId: REV, partnerId: PARTNER, orgIds: new Set([ORG]), status: 'active', scopeOrgId: null,
@@ -267,7 +267,7 @@ describe('GET /wisp/thread', () => {
         id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z',
         currentRevisionId: REV, budgetCentsPerDay: 200, floorTickMinutes: 30,
         // w00 A32 spend meter — field names are the cross-wave contract.
-        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
+        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z', pausedReason: null,
       },
       wideningAvailable: widening,
     });
@@ -654,12 +654,19 @@ describe('GET /wisp/thread/:id (W06 Task 6)', () => {
         grant: {
           id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z', currentRevisionId: REV,
           budgetCentsPerDay: 200, floorTickMinutes: 30, spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
+          pausedReason: null,
         },
         wideningAvailable: false,
       },
     });
     expectOwnershipWhere(h.whereArgs[0]);
     expect(h.spendSummary).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  it('carries pausedReason so a paused thread can say why', async () => {
+    h.dbResults.push([ownRow({ grantStatus: 'paused', grantPausedReason: 'user_paused' })]);
+    const body = await (await buildApp().request(`/wisp/thread/${THREAD_ID}`)).json();
+    expect(body.data.grant).toMatchObject({ status: 'paused', pausedReason: 'user_paused' });
   });
 
   it('is 404 for another user\'s thread, a missing one and a non-uuid id (same body)', async () => {

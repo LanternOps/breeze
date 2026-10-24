@@ -368,7 +368,7 @@ describe('runMorningBriefs', () => {
     expect(payload.kind).toBe('brief');
   });
 
-  it('marks the brief sent only when it was delivered somewhere', async () => {
+  it('stamps the day consumed whenever notifyUser returned (delivered, deduped or suppressed by prefs) — no rebuild every sweep', async () => {
     queueSweep([grantRow(), grantRow({ id: GRANT_2, grantorUserId: USER_2 }), grantRow({ id: GRANT_3, grantorUserId: USER_3 })]);
     h.notifyUser
       .mockResolvedValueOnce({ inApp: false, pushed: 0, suppressed: 'prefs' })
@@ -376,7 +376,7 @@ describe('runMorningBriefs', () => {
       .mockResolvedValueOnce({ inApp: true, pushed: 0, suppressed: null });
     const res = await runMorningBriefs(NOW);
     expect(res).toEqual({ due: 3, sent: 2, suppressed: 1 });
-    expect(h.markBriefSent.mock.calls.map((c) => c[0])).toEqual([USER_2, USER_3]);
+    expect(h.markBriefSent.mock.calls.map((c) => c[0])).toEqual([USER, USER_2, USER_3]);
   });
 
   it('skips a user whose brief is off', async () => {

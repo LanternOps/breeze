@@ -141,10 +141,17 @@ describe('runNudgeDigest', () => {
     expect(h.markDigestSent).toHaveBeenCalledWith('u-g1', 'p1', NOW);
   });
 
-  it('counts a suppressed result and does not stamp', async () => {
+  it('counts a suppressed (or already-delivered) result but still stamps the window, so the next sweep does not redo it', async () => {
     h.results.push(two('g1', 'c1', 'c2'));
     h.notifyUser.mockImplementation(async () => ({ inApp: false, pushed: 0, suppressed: 'prefs' }));
     expect(await runNudgeDigest(NOW)).toEqual({ candidates: 1, sent: 0, suppressed: 1 });
+    expect(h.markDigestSent).toHaveBeenCalledWith('u-g1', 'p1', NOW);
+  });
+
+  it('a throwing notifyUser does not stamp (the next sweep retries)', async () => {
+    h.results.push(two('g1', 'c1', 'c2'));
+    h.notifyUser.mockRejectedValue(new Error('db down'));
+    await runNudgeDigest(NOW);
     expect(h.markDigestSent).not.toHaveBeenCalled();
   });
 

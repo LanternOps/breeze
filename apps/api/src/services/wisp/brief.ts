@@ -278,12 +278,12 @@ export async function runMorningBriefs(now: Date = new Date()): Promise<{ due: n
         briefLocalDate: localDate,
         briefSections: content.sections,
       });
-      if (delivered.inApp || delivered.pushed > 0) {
-        await markBriefSent(grant.grantorUserId, grant.partnerId, now);
-        result.sent += 1;
-      } else {
-        result.suppressed += 1;
-      }
+      // Stamp the day whenever notifyUser returned: delivered, already
+      // delivered (dedupe hit after a failed stamp) or withheld by the user's
+      // channels — otherwise every sweep would rebuild it until midnight.
+      await markBriefSent(grant.grantorUserId, grant.partnerId, now);
+      if (delivered.inApp || delivered.pushed > 0) result.sent += 1;
+      else result.suppressed += 1;
     } catch (error) {
       // A grant that went inactive between the sweep read and the build is a race, not a fault.
       if (error instanceof GrantInactiveError && error.kind !== 'corrupt') {

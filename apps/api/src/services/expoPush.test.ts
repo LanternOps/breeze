@@ -557,6 +557,14 @@ describe('buildWispNudgePush', () => {
   const grantId = '2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e';
   const base = { threadId, concernId, grantId, title: 'Title', body: 'Body', deepLink: 'breeze://wisp/thread' };
 
+  it('a brief and a digest on the same thread never share a collapse id (one would replace the other)', () => {
+    const brief = buildWispNudgePush({ ...base, concernId: null, kind: 'brief' });
+    const digest = buildWispNudgePush({ ...base, concernId: null, kind: 'digest' });
+    expect(brief.collapseId).toBe(`wisp:brief:${threadId}`);
+    expect(digest.collapseId).toBe(`wisp:digest:${threadId}`);
+    expect(Buffer.byteLength(brief.collapseId!)).toBeLessThanOrEqual(64);
+  });
+
   it('builds the data payload with all ids and fixed routing fields', () => {
     const spec = buildWispNudgePush({ ...base, approvalIntentId: 'intent-1' });
     expect(spec.data).toEqual({

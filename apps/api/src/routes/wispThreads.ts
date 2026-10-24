@@ -158,6 +158,7 @@ type OwnThread = {
     expiresAt: Date;
     budgetCentsPerDay: number;
     floorTickMinutes: number;
+    pausedReason: string | null;
   };
 };
 
@@ -185,6 +186,7 @@ async function loadOwnThread(c: Context): Promise<OwnThread | null> {
         grantExpiresAt: wispGrants.expiresAt,
         grantBudgetCentsPerDay: wispGrants.budgetCentsPerDay,
         grantFloorTickMinutes: wispGrants.floorTickMinutes,
+        grantPausedReason: wispGrants.pausedReason,
       })
       .from(wispThreads)
       .innerJoin(wispGrants, and(eq(wispGrants.id, wispThreads.grantId), eq(wispGrants.partnerId, wispThreads.partnerId)))
@@ -216,6 +218,7 @@ async function loadOwnThread(c: Context): Promise<OwnThread | null> {
       expiresAt: row.grantExpiresAt,
       budgetCentsPerDay: row.grantBudgetCentsPerDay,
       floorTickMinutes: row.grantFloorTickMinutes,
+      pausedReason: row.grantPausedReason ?? null,
     },
   };
 }
@@ -277,6 +280,7 @@ type GrantForPayload = {
   currentRevisionId: string | null;
   budgetCentsPerDay: number;
   floorTickMinutes: number;
+  pausedReason: string | null;
 };
 
 /** GET / and GET /:id return the same members. */
@@ -300,6 +304,8 @@ async function threadPayload(partnerId: string, thread: WispThread, grant: Grant
       // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
       spentTodayCents: spend.spentTodayCents,
       budgetResetsAt: spend.budgetResetsAt.toISOString(),
+      // W06b/W06c: a paused thread says why (A29 user pause vs system reasons).
+      pausedReason: grant.pausedReason,
     },
     wideningAvailable: widening,
   };

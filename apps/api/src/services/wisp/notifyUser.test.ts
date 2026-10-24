@@ -225,6 +225,14 @@ describe('notifyUser', () => {
     expect(h.deliverInApp).not.toHaveBeenCalled();
   });
 
+  it('a concern under another partner than the thread throws and writes nothing (tenancy backstop)', async () => {
+    queue([threadRow], [{ ...concernRow, partnerId: 'p2' }]);
+    await expect(notifyUser(payload)).rejects.toThrow(/not found under the thread's partner/);
+    expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.recordNudge).not.toHaveBeenCalled();
+    expect(h.dispatchPushToTokens).not.toHaveBeenCalled();
+  });
+
   it('a grantor other than payload.userId throws and writes nothing', async () => {
     queue([{ ...threadRow, grantorUserId: 'u2' }]);
     await expect(notifyUser(payload)).rejects.toThrow(/grantor/);
@@ -269,6 +277,25 @@ describe('notifyUser', () => {
     expect(h.loadUrgentCapableSeverities).toHaveBeenCalledWith('p1');
   });
 
+  it('a failing recordNudge after the row is written still pushes (the retry counts it via the dedupe path)', async () => {
+    queue([threadRow], [concernRow], deviceRows);
+    h.recordNudge.mockRejectedValue(new Error('db blip'));
+    await expect(notifyUser(payload)).resolves.toEqual({ inApp: true, pushed: 2, suppressed: null });
+    expect(h.dispatchPushToTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing throttle check fails open (the push is not lost after the row is committed)', async () => {
+    queue([threadRow], [concernRow], deviceRows);
+    h.checkNotificationThrottle.mockRejectedValue(new Error('redis down'));
+    await expect(notifyUser(payload)).resolves.toEqual({ inApp: true, pushed: 2, suppressed: null });
+  });
+
+  it('a throwing dispatch after the row is committed reports pushed 0 instead of throwing', async () => {
+    queue([threadRow], [concernRow], deviceRows);
+    h.dispatchPushToTokens.mockRejectedValue(new Error('apns down'));
+    await expect(notifyUser(payload)).resolves.toEqual({ inApp: true, pushed: 0, suppressed: null });
+  });
+
   it('throttle denied → in-app written, push withheld, reported as backoff', async () => {
     queue([threadRow], [concernRow], deviceRows);
     h.checkNotificationThrottle.mockResolvedValue({ allowed: false, currentCount: 13 });
@@ -298,5 +325,6 @@ describe('notifyUser', () => {
     const sections = [{ heading: 'Needs you', lines: ['Approve the patch'] }];
     await notifyUser({ ...payload, kind: 'brief', concernId: null, approvalIntentId: null, deepLink: 'breeze://wisp/thread/t1', briefLocalDate: '2026-10-24', briefSections: sections });
     expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: 'wisp.brief:t1:2026-10-24', brief: sections }));
+    expect(h.dispatchPushToTokens).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ collapseId: 'wisp:brief:t1' }), 'wisp-nudge');
   });
 });

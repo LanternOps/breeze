@@ -165,12 +165,12 @@ export async function runNudgeDigest(now: Date = new Date()): Promise<{ candidat
         deepLink: mobileDeepLink(cand.threadId, null),
         ...buildDigestText(kept),
       });
-      if (out.inApp || out.pushed > 0) {
-        await markDigestSent(cand.userId, cand.partnerId, now);
-        result.sent += 1;
-      } else {
-        result.suppressed += 1;
-      }
+      // Stamp the window whenever notifyUser returned: delivered, already
+      // delivered (dedupe hit after a failed stamp) or withheld by prefs —
+      // otherwise every sweep would redo it until the cadence bucket rolls.
+      await markDigestSent(cand.userId, cand.partnerId, now);
+      if (out.inApp || out.pushed > 0) result.sent += 1;
+      else result.suppressed += 1;
     } catch (err) {
       reportFailure(cand, err);
     }
