@@ -1346,6 +1346,19 @@ const REPOINT_TABLES: readonly string[] = [
   "users",
   "vault_snapshot_inventory",
   "webhooks",
+  // Wisp W05a (#9911). Partner-level rows (org_id NULL) never match the
+  // `WHERE org_id = <loser>` repoint. No unique key is org-scoped in a way a
+  // merge can collide on: a live concern's (partner, org, subject_kind,
+  // subject_id) names a subject that lives in exactly one org, the signature
+  // index is (partner_id, signature), recipients are unique on
+  // (concern_id, grant_id), and watches have no unique beyond the PK. A watch
+  // or recipient of an org-scoped LOSER grant follows the org while the grant
+  // stays behind (leave-for-erasure): the survivor is outside that grant's
+  // ceiling, so the wake path skips it, and erasing the loser shell deletes
+  // the grant and, by ON DELETE CASCADE, those rows.
+  "wisp_concern_recipients",
+  "wisp_concerns",
+  "wisp_watches",
   // #6263 W03a. Plain org XOR partner rule set; its AFTER UPDATE trigger
   // yara_rule_sets_propagate_owner rewrites the child yara_rules owner columns
   // (yara_rules is `derived` in SPECIAL). Built-in rows (org_id NULL) never match.

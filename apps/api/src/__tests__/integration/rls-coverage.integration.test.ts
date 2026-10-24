@@ -668,6 +668,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // connection_health_incidents_org_partner_fk ties org_id to partner_id.
   // Functional forge proof: connectionHealthIncidentsRls.integration.test.ts.
   'connection_health_incidents',
+  // Wisp W05a (#9911, w00 A30): wisp_concerns, wisp_concern_recipients and
+  // wisp_watches copy the connection_health_incidents shape — partner_id
+  // always set, org_id NULL for a partner-level concern / partner-wide watch,
+  // NOT org XOR partner, so absent from XOR_OWNERSHIP_DUAL_AXIS_TABLES and with
+  // no breeze_current_partner_id() read branch (an org token must never see a
+  // partner-level row). Composite FKs *_org_partner_fk tie org_id to
+  // partner_id. Functional forge proof: wispConcernsRls.integration.test.ts.
+  'wisp_concerns',
+  'wisp_concern_recipients',
+  'wisp_watches',
   'deployment_invites',
   'access_reviews',
   // ai_agents (AI operator wave 1): an agent is org-scoped (org_id set) OR

@@ -1092,11 +1092,17 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // Wisp W02 (#9908): an org-scoped delegation grant. No jsonb columns here — the
   // ceiling snapshot and factor proof live on wisp_grant_revisions, which has
   // no org_id and never enters an org export.
-  "wisp_grants": tablePolicy("org_id", {"included":["id","partner_id","org_id","grantor_user_id","grantee","current_revision_id","status","paused_reason","paused_at","revoked_at","revoked_by_user_id","expires_at","budget_cents_per_day","floor_tick_minutes","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "wisp_grants": tablePolicy("org_id", {"included":["id","partner_id","org_id","grantor_user_id","grantee","current_revision_id","status","paused_reason","paused_at","revoked_at","revoked_by_user_id","expires_at","budget_cents_per_day","floor_tick_minutes","last_floor_tick_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // Wisp W05a (#9911). evidence / params are open jsonb (excludedOpen); the
+  // recipient's free-text feedback note is a person's words (reviewedIncluded).
+  // Partner-level rows (org_id NULL) never enter an org export.
+  "wisp_concern_recipients": tablePolicy("org_id", {"included":["id","concern_id","partner_id","org_id","grant_id","nudge_count","last_nudged_at","next_eligible_nudge_at","snoozed_until","dismissed_at","answered_at","feedback","feedback_at","created_at","updated_at"],"reviewedIncluded":["feedback_note"],"excludedSensitive":[],"excludedOpen":[]}),
+  "wisp_concerns": tablePolicy("org_id", {"included":["id","partner_id","org_id","subject_kind","subject_id","summary","severity","status","signature","child_concern_ids","raised_by_grant_id","last_assessed_run_id","outcome","resolved_at","resolved_by_user_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["evidence"]}),
   // Wisp W04 (#9910). Plain identifiers + timestamps; `label` is a bounded
   // varchar (the attachment bytes live in ai_run_artifacts, exported above).
   "wisp_thread_attachments": tablePolicy("org_id", {"included":["id","thread_id","partner_id","org_id","artifact_id","added_by_user_id","label","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "wisp_thread_sessions": tablePolicy("org_id", {"included":["thread_id","session_id","partner_id","org_id","attached_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "wisp_watches": tablePolicy("org_id", {"included":["id","partner_id","org_id","grant_id","owner_user_id","kind","cadence_minutes","status","stopped_reason","last_ran_at","next_due_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["params"]}),
   // #6263 W03a. published_bundle is the served rule bundle (bytea); meta is open jsonb.
   "yara_rule_sets": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","source","is_builtin","enabled","auto_quarantine","current_version","published_version","published_sha256","published_at","published_engine","published_policy","stale","rule_count","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["published_bundle"]}),
   "yara_rules": tablePolicy("org_id", {"included":["id","rule_set_id","org_id","partner_id","is_builtin","name","source","severity","tags","enabled","compile_error","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["meta"]}),

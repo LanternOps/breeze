@@ -1018,3 +1018,4 @@ export * from './restorePoint';
 
 // Wisp memory blocks (#9906 W03)
 export * from './wispMemory';
+export * from './wispConcerns';
