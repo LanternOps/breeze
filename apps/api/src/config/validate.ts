@@ -755,6 +755,10 @@ const envObjectSchema = z
     // format only — the production coupling rule is in the superRefine below.
     BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
     BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: z.string().optional(),
+    // Wisp (Wisp design §10). Hosted-only sub-flag of BREEZE_AI_AGENTS_ENABLED,
+    // read at runtime by wispEnabled() in env.ts. Boolean format + the
+    // production IS_HOSTED coupling are checked in the superRefines below.
+    BREEZE_WISP_ENABLED: z.string().optional(),
     // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
     // (services/workspace/sandboxBackend.ts), which refuses an unset value in
     // production; the superRefine below additionally refuses 'fake' there.
@@ -1603,6 +1607,31 @@ const envSchema = envObjectSchema
           }
         }
       }
+      // Wisp is hosted-only (Wisp design §10): wispEnabled() already reads
+      // false off-hosted, so a self-hosted deploy setting the flag is a
+      // misconfiguration that would silently do nothing — refuse it at boot.
+      const wispFlag = (data.BREEZE_WISP_ENABLED ?? '').trim().toLowerCase();
+      if (wispFlag === 'true' || wispFlag === '1' || wispFlag === 'yes' || wispFlag === 'on') {
+        if ((data.IS_HOSTED ?? '').trim().toLowerCase() !== 'true') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['IS_HOSTED'],
+            message: 'BREEZE_WISP_ENABLED=true requires IS_HOSTED=true — Wisp is hosted-only (Wisp design §10).',
+          });
+        }
+        // A Wisp grant borrows a human's authority on a fresh step-up proof
+        // (Wisp design §4.2). With ENABLE_2FA off no step-up can be minted and
+        // the grant path degrades to "session only", so refuse it in production.
+        // Same falsy rule as envFlag('ENABLE_2FA', true).
+        const enable2fa = (data.ENABLE_2FA ?? '').trim().toLowerCase();
+        if (enable2fa !== '' && !['1', 'true', 'yes', 'on'].includes(enable2fa)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['ENABLE_2FA'],
+            message: 'BREEZE_WISP_ENABLED=true requires ENABLE_2FA to stay on — Wisp grants are created and refreshed on a step-up proof (Wisp design §4.2).',
+          });
+        }
+      }
 
       // The multiplier is the only knob between vendor list price and what an
       // org is charged. computePriceMultiplier() falls back to 1 for anything
@@ -2322,6 +2351,14 @@ const envSchema = envObjectSchema
         code: z.ZodIssueCode.custom,
         path: ['BREEZE_AI_WORKSPACE_ENABLED'],
         message: 'BREEZE_AI_WORKSPACE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the workspace lane and artifact capture are dark).',
+      });
+    }
+    const wispRaw = (data.BREEZE_WISP_ENABLED ?? '').trim().toLowerCase();
+    if (wispRaw && !boolValues.has(wispRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_WISP_ENABLED'],
+        message: 'BREEZE_WISP_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (Wisp is dark).',
       });
     }
     const blobBackendRaw = (data.ARTIFACT_BLOB_BACKEND ?? '').trim().toLowerCase();

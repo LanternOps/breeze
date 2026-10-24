@@ -392,6 +392,7 @@ Permissions are stored as `resource:action` pairs in the `permissions` table. Ro
 | `vulnerabilities` | Vulnerability risk-acceptance governance |
 | `ai_sessions` | Using AI chat (`use`) and cross-user session audit (`read_all`) |
 | `ai_agents` | AI agent configuration and runs |
+| `ai_workspace` | Staging, running and collecting code in AI sandbox workspaces (`execute`) |
 | `approvals` | Deciding pending action-intent approvals |
 
 The authoritative list of assignable permissions is also available at runtime via `GET /permissions/catalog`. The dashboard's role builder consumes this endpoint so the matrix of resources and actions stays in sync with the server whenever new permissions are added.
@@ -430,6 +431,10 @@ There is no `view` or `update` action -- read access is `read`, and a write/crea
 
 <Aside type="note">
   `ai_agents:read` and `ai_agents:write` are deliberately separate from `organizations:write`. Authoring an agent policy is what will eventually authorize autonomous action on customer machines, so it is not bundled into a permission every organisation admin already holds. See [AI Agents](/features/ai-agents/).
+</Aside>
+
+<Aside type="note">
+  `ai_workspace:execute` gates the sandbox workspace tools (`workspace_stage`, `workspace_run`, `workspace_collect`, `workspace_cancel`), which run code. It is granted to no built-in role by name; Partner Admin holds it through `*:*`. Before it existed these tools required only `ai_agents:read`. Autonomous analysis runs are unaffected: an agent run is authorized by its policy, not by role permissions.
 </Aside>
 
 <Aside type="note">
@@ -517,6 +522,7 @@ The following named permission constants (`packages/shared/src/constants/permiss
 | `AI_SESSIONS_USE` | `ai_sessions` | `use` |
 | `AI_AGENTS_READ` | `ai_agents` | `read` |
 | `AI_AGENTS_WRITE` | `ai_agents` | `write` |
+| `AI_WORKSPACE_EXECUTE` | `ai_workspace` | `execute` |
 | `APPROVALS_DECIDE` | `approvals` | `decide` |
 | `PAM_APPROVE` | `pam` | `approve` |
 | `PAM_MANAGE_POLICY` | `pam` | `manage_policy` |

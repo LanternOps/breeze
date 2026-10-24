@@ -363,6 +363,14 @@ export interface RunRow {
   taskStepKey: string | null;
   taskAttemptOrdinal: number | null;
   /**
+   * Wisp W02 — the delegation grant + revision admission pinned (both or
+   * none, `ai_agent_runs_grant_link_chk`). When set, the pre-tool hook checks
+   * EVERY tool call against the live ceiling. Optional so fixtures that
+   * predate W02 stay valid rows.
+   */
+  grantId?: string | null;
+  grantRevisionId?: string | null;
+  /**
    * Execution plane W04 — the admission-frozen inputs of an `analysis` run
    * (`ai_agent_runs.staged_inputs`), `null` for every other profile. jsonb:
    * read DEFENSIVELY.

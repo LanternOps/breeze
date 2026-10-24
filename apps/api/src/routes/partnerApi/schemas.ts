@@ -752,6 +752,10 @@ export const partnerTicketExportRecordSchema = z.object({
   // one. A mirror skips imported rows with it, so an import is never pushed
   // back into its own source.
   migrationWindowId: nullableUuid,
+  // #8972: set when this ticket was merged into another; the record is then a
+  // read-only tombstone. Null on every other ticket.
+  mergedIntoTicketId: nullableUuid,
+  mergedAt: nullableTimestamp,
   // Opaque, monotonic per row: changes whenever the row is written. Compare
   // for equality only; never parse.
   changeVersion: z.string().regex(/^[0-9]{1,20}$/u),
