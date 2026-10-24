@@ -16,14 +16,6 @@ export interface AiConversationListProps {
   error: string | null;
 }
 
-/** The label a row carries when the OTHER surface of this document holds it. */
-const openElsewhereKey = (surface: ConversationSurface, openIn: ConversationRow["openIn"]) =>
-  surface === "panel" && openIn === "workspace"
-    ? "aiConversationMove.openInAssistant"
-    : surface === "workspace" && openIn === "panel"
-      ? "aiConversationMove.openInPanel"
-      : null;
-
 /**
  * #9840 W4 (spec §3.7): the one conversation list, rendered by the side
  * panel's History and by the workspace picker. One search box; each row
@@ -83,7 +75,13 @@ export default function AiConversationList({
         )}
 
         {rows.map((row) => {
-          const elsewhere = openElsewhereKey(surface, row.openIn);
+          // The label a row carries when the OTHER surface of this document holds it.
+          const elsewhere =
+            surface === "panel" && row.openIn === "workspace"
+              ? t("aiConversationMove.openInAssistant")
+              : surface === "workspace" && row.openIn === "panel"
+                ? t("aiConversationMove.openInPanel")
+                : null;
           const current = row.id === currentSessionId;
           return (
             <button
@@ -112,7 +110,7 @@ export default function AiConversationList({
                     className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
                     data-testid="ai-conversation-open-elsewhere"
                   >
-                    {t(elsewhere)}
+                    {elsewhere}
                   </span>
                 )}
               </span>

@@ -10,6 +10,8 @@ import { showToast } from '../shared/Toast';
 import WorkspaceTabBar from './WorkspaceTabBar';
 import WorkspaceChatPanel from './WorkspaceChatPanel';
 import WorkspaceEmptyState from './WorkspaceEmptyState';
+import WorkspaceConversationPicker from './WorkspaceConversationPicker';
+import type { ConversationRow } from '../ai/useAiConversationSource';
 import { parseSessionHash, toastForOpenResult, writeSessionHash } from './sessionHash';
 import { useContinueInPanel } from './useContinueInPanel';
 
@@ -85,6 +87,55 @@ function WorkspaceSessionLink() {
   return null;
 }
 
+/**
+ * #9840 W4 (spec §3.7, D3): "Open a past conversation". A pick closes the
+ * picker at once; one pick at a time (openSession on an id that already has a
+ * tab appends the draft, so a second pick would carry it twice). The row the
+ * side panel holds MOVES: the tab opens first with the panel's draft, and the
+ * panel is released only once openSession resolved 'opened' or 'focused'
+ * (resolved on the tab's attach being ready). Any other result leaves the
+ * panel as it was. Never a DELETE: release is local.
+ */
+function useOpenPastConversation() {
+  const { t } = useTranslation('ai');
+  const openSession = useWorkspaceStore((s) => s.openSession);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const picking = useRef(false);
+
+  const pickPast = useCallback((row: ConversationRow) => {
+    setPickerOpen(false);
+    if (picking.current) return;
+    picking.current = true;
+    const id = row.id;
+    const fromPanel = row.openIn === 'panel';
+    const opening = fromPanel
+      ? openSession(id, { draft: useAiStore.getState().composerDraft })
+      : openSession(id);
+    void opening
+      .catch((err): 'error' => {
+        console.error('[Workspace] Opening a past conversation failed:', err);
+        return 'error';
+      })
+      .then((result) => {
+        if (fromPanel && (result === 'opened' || result === 'focused')) {
+          useAiStore.getState().releaseSession(id);
+        }
+        const toast = toastForOpenResult(result, {
+          t,
+          onOpenInPanel: () => { void useAiStore.getState().adoptSession(id); },
+        });
+        if (toast) showToast(toast);
+      })
+      .finally(() => { picking.current = false; });
+  }, [openSession, t]);
+
+  const openPicker = useCallback(() => setPickerOpen(true), []);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
+
+  const picker = <WorkspaceConversationPicker open={pickerOpen} onClose={closePicker} onPick={pickPast} />;
+  return { openPicker, picker };
+}
+
 export default function WorkspacePage() {
   const {
     tabs,
@@ -110,6 +161,7 @@ export default function WorkspacePage() {
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const { continueInPanel, replaceDialog } = useContinueInPanel();
+  const { openPicker, picker } = useOpenPastConversation();
 
   // Restore messages on mount
   useEffect(() => {
@@ -172,17 +224,19 @@ export default function WorkspacePage() {
             onCloseTab={closeTab}
             onRenameTab={(tabId, title) => void renameTab(tabId, title)}
             onNewTab={() => createTab()}
+            onOpenPast={openPicker}
             onContinueInPanel={continueInPanel}
           />
           {activeTab ? (
             <WorkspaceChatPanel tab={activeTab} onContinueInPanel={() => continueInPanel(activeTab.id)} />
           ) : (
-            <WorkspaceEmptyState onCreateTab={() => createTab()} />
+            <WorkspaceEmptyState onCreateTab={() => createTab()} onOpenPast={openPicker} />
           )}
         </>
       ) : (
-        <WorkspaceEmptyState onCreateTab={() => createTab()} />
+        <WorkspaceEmptyState onCreateTab={() => createTab()} onOpenPast={openPicker} />
       )}
+      {picker}
       {replaceDialog}
     </div>
   );
