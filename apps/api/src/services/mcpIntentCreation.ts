@@ -11,7 +11,7 @@
  * call from the same credential while its intent is live converges on that
  * intent, and a second credential of the same human never does.
  */
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import type { AuthContext } from '../middleware/auth';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -216,6 +216,32 @@ export async function loadOwnedMcpIntent(auth: AuthContext, actionId: unknown): 
     ))
     .limit(1));
   return row ?? null;
+}
+
+/**
+ * B-W06 (#6160, D-B52): the caller origin credential's LIVE `mcp_api` intents
+ * across all orgs — the same predicate (and so the same partial index,
+ * action_intents_live_origin_idx) the creation cap counts under. Read under
+ * system context exactly like that cap: the filter is the caller's own
+ * credential, and only a count leaves the query. 0 when the principal has no
+ * origin ref (it can own no intents).
+ */
+export async function countLiveMcpIntentsForOrigin(auth: AuthContext): Promise<number> {
+  const ref = mcpOriginRef(auth.principal);
+  if (!ref) return 0;
+  const sep = ref.indexOf(':');
+  const kind = ref.slice(0, sep) as 'api_key' | 'oauth_grant';
+  const originId = ref.slice(sep + 1);
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(actionIntents)
+    .where(and(
+      eq(actionIntents.source, 'mcp_api'),
+      eq(actionIntents.originPrincipalKind, kind),
+      eq(actionIntents.originPrincipalId, originId),
+      inArray(actionIntents.status, ['pending_approval', 'approved', 'executing']),
+    ))));
+  return row?.n ?? 0;
 }
 
 export type CancelOwnedMcpIntentOutcome =

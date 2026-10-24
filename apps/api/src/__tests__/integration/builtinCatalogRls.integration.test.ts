@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
 import { softwareCatalog, softwareVersions } from '../../db/schema';
+import { ensurePinnedBuiltinPackage } from '../../services/builtinDeploymentPackages';
 import { createPartner, createOrganization } from './db-utils';
 
 async function seedBuiltin(partnerId: string) {
@@ -91,6 +92,89 @@ describe('built-in software_catalog RLS (partner-scoped) — forge', () => {
           orgId: null,
           partnerId: partnerA.id, // forging partner A's package from partner B's org
           integrationProvider: 'huntress',
+          name: 'forged',
+          isManaged: true,
+        });
+      }),
+    ).rejects.toMatchObject({ cause: { code: '42501' } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6958 PR D: keyed (builtin_package_key) DNS built-ins. Plan decision D1:
+// "No RLS change on the catalog". These pin today's read shape so the
+// deferred follow-up (a software_versions SELECT branch on
+// builtin_package_key, mirroring the 2026-07-02 integration_provider branch)
+// flips them deliberately.
+// ---------------------------------------------------------------------------
+describe('keyed built-in software_catalog RLS (#6958): forge', () => {
+  // What a real org-scoped request carries: breeze.current_partner_id is
+  // populated for EVERY scope (2026-10-11-000200 partner-wide select).
+  const orgScoped = (orgId: string, partnerId: string) => ({
+    scope: 'organization' as const,
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [] as string[],
+    currentPartnerId: partnerId,
+  });
+  const partnerScoped = (partnerId: string) => ({
+    scope: 'partner' as const,
+    orgId: null,
+    accessibleOrgIds: [] as string[],
+    accessiblePartnerIds: [partnerId],
+    currentPartnerId: partnerId,
+  });
+
+  async function readAs(ctx: Parameters<typeof withDbAccessContext>[0], catalogId: string) {
+    return withDbAccessContext(ctx, async () => {
+      const cats = await db.select().from(softwareCatalog).where(eq(softwareCatalog.id, catalogId));
+      const versions = await db.select().from(softwareVersions).where(eq(softwareVersions.catalogId, catalogId));
+      return { cats, versions };
+    });
+  }
+
+  it('partner scope reads its own keyed row and its versions', async () => {
+    const partner = await createPartner();
+    const { catalogId } = await ensurePinnedBuiltinPackage({ key: 'controld_windows', partnerId: partner.id });
+
+    const { cats, versions } = await readAs(partnerScoped(partner.id), catalogId);
+    expect(cats).toHaveLength(1);
+    expect(cats[0]!.builtinPackageKey).toBe('controld_windows');
+    expect(versions).toHaveLength(1);
+  });
+
+  it('PINNED GAP: org scope under the same partner reads the keyed row (partner_wide_select) but ZERO versions', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { catalogId } = await ensurePinnedBuiltinPackage({ key: 'controld_windows', partnerId: partner.id });
+
+    const { cats, versions } = await readAs(orgScoped(org.id, partner.id), catalogId);
+    expect(cats).toHaveLength(1);
+    // Flip deliberately with the follow-up software_versions SELECT branch.
+    expect(versions).toHaveLength(0);
+  });
+
+  it('an org under a different partner reads neither the row nor its versions', async () => {
+    const partnerA = await createPartner();
+    const { catalogId } = await ensurePinnedBuiltinPackage({ key: 'controld_windows', partnerId: partnerA.id });
+    const partnerB = await createPartner();
+    const orgB = await createOrganization({ partnerId: partnerB.id });
+
+    const { cats, versions } = await readAs(orgScoped(orgB.id, partnerB.id), catalogId);
+    expect(cats).toHaveLength(0);
+    expect(versions).toHaveLength(0);
+  });
+
+  it('org scope cannot INSERT a keyed row, even for its own partner', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    await expect(
+      withDbAccessContext(orgScoped(org.id, partner.id), async () => {
+        await db.insert(softwareCatalog).values({
+          orgId: null,
+          partnerId: partner.id,
+          builtinPackageKey: 'controld_windows',
           name: 'forged',
           isManaged: true,
         });

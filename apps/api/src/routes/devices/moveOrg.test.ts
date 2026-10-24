@@ -1658,12 +1658,37 @@ describe('POST /devices/:id/move-org', () => {
       const chatClose = collapseStmt(statements[22]!);
       expect(chatClose).toContain("UPDATE endpoint_conversations SET status = 'closed', close_reason = 'device_moved'");
       expect(chatClose).toContain("status IN ('opening', 'open')");
-      expect(statements[23]).toBe('UPDATE devices');
+      // #6263 W05 — sweep scans detach from their source-org sweep before the
+      // flip (the flip's trigger restamps security_scans.org_id; the sweep row
+      // stays in the source org).
+      expect(collapseStmt(statements[23]!)).toContain('UPDATE security_scans SET');
+      expect(statements[24]).toBe('UPDATE devices');
       expect(pamGuardMock).toHaveBeenCalledWith(expect.anything(), {
         deviceId: DEVICE_ID,
         sourceOrgId: SOURCE_ORG,
         transferEnabled: false,
       });
+    });
+
+    it('#6263 W05: move detaches sweep scans: queued → cancelled, sweep_id NULL, running keeps status with sweep_id NULL; runs before the devices UPDATE', async () => {
+      rigMove();
+      const { statements } = rigTransactionSuccess();
+
+      const response = await postMove();
+
+      expect(response.status).toBe(200);
+      const detachIdx = statements.findIndex((s) => collapseStmt(s).startsWith('UPDATE security_scans SET'));
+      const flipIdx = statements.indexOf('UPDATE devices');
+      expect(detachIdx).toBeGreaterThan(-1);
+      expect(flipIdx).toBeGreaterThan(detachIdx);
+      const detach = collapseStmt(statements[detachIdx]!);
+      // Every sweep scan of the device loses its sweep pointer ...
+      expect(detach).toContain('sweep_id = NULL');
+      expect(detach).toMatch(/WHERE device_id = .* AND sweep_id IS NOT NULL/);
+      // ... and only a still-queued one is cancelled; running keeps its status
+      // (a delivered command's result still ingests in the new org).
+      expect(detach).toContain("status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END");
+      expect(detach).toContain("completed_at = CASE WHEN status = 'queued' THEN now() ELSE completed_at END");
     });
 
     it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {

@@ -18,7 +18,15 @@ _(empty — add the next tag's one-off gates here)_
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
+- **Install scripts (#6958).** Install scripts stored on software versions before this release stay inactive until the version is re-created; the version manager shows a notice.
+- **`software_compliance_status` forced RLS (#10022).** The table now has forced row-level security on databases created from the baseline.
+- **Boot task: pinned built-in package refresh (#6958).** On start the API moves provisioned DNS built-in packages to the code-pinned version. Log line: `[startup] pinned built-in package refresh: refreshed N, failed M`.
+- #6958 adds no new environment variables.
+
 ## Features / API
+
+- **Install scripts, zip packages and built-in DNS packages (#6958).** Software versions can use the `zip` package type (extract-only; a post-install script is required) and carry pre/post-install scripts that run as SYSTEM/root with a 10-minute timeout each. Creating a version with a script requires `devices.execute`. Partner admins can also add two Breeze-pinned DNS filtering clients, Control D and NextDNS CLI for Windows, from Software → Catalog → Built-in packages. Agent 0.125.0 or newer is required for zip packages and scripts; older agents fail the device with `agent_update_required` and nothing is dispatched.
+- **Service compliance (#6958).** New `service_running` detection clause and two new software-policy violation types, `not_running` (high) and `service_unverified` (low, never triggers a reinstall). Allowlist rules derive per-device service watches, shown on the device monitoring tab, and an armed policy restarts a stopped service automatically.
 
 - **PAM: agents report an elevation they cannot act on (#9517).** New agent route `POST /api/v1/agents/:id/pam/elevation-unable` (admission class `protected`). When the agent gives up on the PAM flow (requester session found but not active, helper did not start within the 30-second wait or lacks the PAM scope), it reports the request; uncertain cases (session unresolved, session check failed, session not in the snapshot before or during the helper wait, lease refused, a ready helper not found, no session broker or lifecycle manager yet) stay pending for the stale-request expiry; a still-pending request is closed as `expired` and the server then withdraws its mobile approvals (best-effort; a phone approval of a closed request is refused either way), and the PAM requests list shows that the device could not act under the Expired or All filter. New log lines: agent `pam: reported the elevation as unable to the server` / `pam: could not report the elevation as unable`; the API publishes `elevation.expired` with `cause: device_unable` (best-effort, like the stale-request expirer's: a failed publish is logged and the row stays the record). Older agents keep the previous behavior (the request stays pending until the stale-request expiry).
 

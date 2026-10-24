@@ -10,8 +10,11 @@
  * an unknown method (modern 404 vs legacy 200) and, with
  * MCP_TIER3_INTENTS_ENABLED on, a Tier-3 call by a modern client that declared
  * URL-mode elicitation (input_required vs legacy pending_approval, B-W04
- * #6158 D-B32) — each asserted on its own below. Every CASES fixture declares
- * `clientCapabilities: {}` (no elicitation.url).
+ * #6158 D-B32), and, with MCP_TASKS_ENABLED on too, a Tier-3 call by a
+ * modern client that declared the Tasks extension (task vs legacy
+ * pending_approval, B-W06 #6160 D-B47) — each asserted on its own below.
+ * Every CASES fixture declares `clientCapabilities: {}` (no elicitation.url,
+ * no Tasks extension).
  *
  * Legacy HTTP+SSE's owned-session 202 is out of the comparison by design.
  */
@@ -32,9 +35,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // B-W04 (#6158): the MCP-side intent creation, for the documented exception.
-const intentMocks = vi.hoisted(() => ({ createMcpActionIntent: vi.fn() }));
+// B-W06 (#6160): ownership load + live count for the Tasks documented exception.
+const intentMocks = vi.hoisted(() => ({
+  createMcpActionIntent: vi.fn(),
+  loadOwnedMcpIntent: vi.fn(),
+  countLiveMcpIntentsForOrigin: vi.fn(),
+}));
 vi.mock('../services/mcpIntentCreation', () => ({
   createMcpActionIntent: (...args: unknown[]) => intentMocks.createMcpActionIntent(...args),
+  loadOwnedMcpIntent: (...args: unknown[]) => intentMocks.loadOwnedMcpIntent(...args),
+  countLiveMcpIntentsForOrigin: (...args: unknown[]) => intentMocks.countLiveMcpIntentsForOrigin(...args),
   resolveMcpClientLabel: vi.fn(async () => 'MCP · test'),
 }));
 
@@ -401,6 +411,58 @@ describe('documented exception: Tier-3 call by a URL-elicitation-capable modern 
     });
     expect(url.body.result).not.toHaveProperty('ttlMs');
     expect(JSON.stringify([legacy.body, plain.body, url.body])).not.toContain('"mode":"form"');
+  });
+});
+
+describe('documented exception: Tier-3 call by a Tasks-capable modern client (B-W06)', () => {
+  const ACTION_ID = '77777777-7777-4777-8777-777777777777';
+  const TASK_CAPS = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
+  beforeEach(() => {
+    process.env.MCP_TIER3_INTENTS_ENABLED = 'true';
+    process.env.MCP_TASKS_ENABLED = 'true';
+    current = PRINCIPALS[0]!;
+    intentMocks.createMcpActionIntent.mockReset().mockResolvedValue({
+      kind: 'pending', isNew: true,
+      status: {
+        actionId: ACTION_ID, status: 'pending_approval', toolName: 'reboot_device', approvalScope: 'four_eyes',
+        expiresAt: '2026-10-25T10:00:00.000Z', approvalUrl: `https://app.example.com/approvals#intent-${ACTION_ID}`,
+      },
+    });
+    intentMocks.loadOwnedMcpIntent.mockReset().mockResolvedValue({
+      id: ACTION_ID, status: 'pending_approval', actionName: 'reboot_device', approvalScope: 'four_eyes',
+      createdAt: new Date('2026-10-24T10:00:00.000Z'), expiresAt: new Date('2026-10-25T10:00:00.000Z'),
+      decidedAt: null, executionStartedAt: null, executedAt: null, statusChangedAt: new Date('2026-10-24T10:00:01.000Z'),
+      result: null, errorCode: null,
+    });
+    intentMocks.countLiveMcpIntentsForOrigin.mockReset().mockResolvedValue(1);
+  });
+  afterEach(() => {
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+    delete process.env.MCP_TASKS_ENABLED;
+  });
+
+  it('legacy (even declaring tasks on initialize) and an undeclared modern client get the same pending_approval; a Tasks-declaring one gets a task', async () => {
+    const params = { name: 'reboot_device', arguments: {} };
+    const legacy = await legacyCall('tools/call', params, TASK_CAPS);
+    const plain = await modernCall('tools/call', params);
+    const task = await modernCall('tools/call', params, TASK_CAPS);
+
+    expect(legacy.body.result.structuredContent).toMatchObject({ status: 'pending_approval', actionId: ACTION_ID });
+    expect(stripModernDecoration(plain.body.result)).toEqual(legacy.body.result);
+    expect(omitCorrelation(plain.requestAudit?.details)).toEqual(omitCorrelation(legacy.requestAudit?.details));
+    expect(task.status).toBe(200);
+    expect(task.body.result).toMatchObject({ resultType: 'task', taskId: ACTION_ID, status: 'working', ttlMs: 25 * 3_600_000 });
+    expect(task.body.result).not.toHaveProperty('cacheScope');
+    expect(task.requestAudit?.details.taskResult).toBe(true);
+    expect(plain.requestAudit?.details).not.toHaveProperty('taskResult');
+    expect(legacy.requestAudit?.details).not.toHaveProperty('taskResult');
+  });
+
+  it('every other parity fixture declares no Tasks extension', () => {
+    for (const c of CASES) expect(JSON.stringify(c)).not.toContain('io.modelcontextprotocol/tasks');
+    // CASES run through modernCall with its default `clientCapabilities = {}`,
+    // and no PRINCIPALS fixture carries capabilities of its own.
+    for (const p of PRINCIPALS) expect(JSON.stringify(p)).not.toContain('io.modelcontextprotocol/tasks');
   });
 });
 

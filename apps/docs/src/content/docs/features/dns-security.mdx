@@ -351,6 +351,44 @@ Each entry includes the domain, its threat category, the block count, and the nu
 
 ---
 
+## Deploying DNS filtering clients (Control D, NextDNS)
+
+Besides integrating with a provider's API, Breeze can install a vendor's DNS filtering client on Windows devices. Two Breeze-pinned **built-in packages** are offered: **Control D** (Windows) and **NextDNS CLI** (Windows). Bring your own vendor account; Breeze does not resell or provision either service. Control D for macOS is not yet offered.
+
+| Package | Installs to | Enrolls with |
+|---------|-------------|--------------|
+| Control D (Windows) | `C:\ControlD\ctrld.exe` | A provisioning code |
+| NextDNS CLI (Windows) | `C:\Program Files\nextdns\nextdns.exe` | A profile ID |
+
+The client binaries are vendor GitHub release assets, pinned in Breeze by version and sha256. The agent verifies the sha256 when it downloads the file. Both packages need agent **0.125.0** or newer.
+
+<Steps>
+1. **Add the package to your catalog.** Go to **Software → Catalog → Built-in packages** and choose **Add to catalog** on the card. This needs full partner access (organization access "all"), the `devices.execute` permission and MFA. Organization-scoped users do not see the built-in cards; the partner deploys them.
+2. **Set the tenant variable per organization.** Under **Settings → Variables**, set `controld_provisioning_code` (Control D) or `nextdns_profile_id` (NextDNS) to your `<provisioning-code>` or `<profile-id>`. These variables are non-secret by design, and secret variables are rejected.
+3. **Deploy.** Use a software deployment, or a partner-wide software policy with an allowlist rule so the client is installed and kept in place across organizations.
+</Steps>
+
+Compliance uses the `service_running` signal (the `ctrld` or `nextdns` service), so a stopped client is reported as `not_running`. See [Software Policies](/features/software-policies/#service-compliance).
+
+Built-in rows are managed by Breeze: you cannot edit them, delete them or add versions. When a Breeze update pins a newer client version, provisioned packages move to it automatically on the next API start. This affects new installs only; devices that already have the client keep their version, and the vendor clients update themselves.
+
+<Aside type="caution">
+  NextDNS's terms of service may restrict using one account across multiple customers. As an MSP, check the vendor's terms (an MSP or business plan) before deploying one profile across customer organizations.
+</Aside>
+
+### Uninstalling
+
+Breeze does not uninstall zip-installed clients. Run the vendor's uninstall command on the device:
+
+```powershell
+C:\ControlD\ctrld.exe uninstall
+& "C:\Program Files\nextdns\nextdns.exe" uninstall
+```
+
+Control D endpoints that you delete in the Control D dashboard also uninstall themselves.
+
+---
+
 ## API Reference
 
 ### Integrations

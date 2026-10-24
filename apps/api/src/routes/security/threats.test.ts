@@ -561,7 +561,25 @@ describe('GET /threats/:id/details (#6263 W04-5)', () => {
       sha256: SHA,
       quarantinedTo: '/var/lib/breeze/quarantine/abc',
       quarantineFailed: true,
+      ruleSetVersion: null,
     });
+  });
+
+  it('ruleSetVersion number or null; junk → null (#6263 W05-9)', async () => {
+    for (const [stored, expected] of [
+      [7, 7],
+      [0, null],
+      [-2, null],
+      [1.5, null],
+      ['7', null],
+      [null, null],
+    ] as const) {
+      vi.mocked(db.select).mockReset();
+      mockThreat([threatRow({ ...yaraDetails, ruleSetVersion: stored })]);
+      mockSet([]);
+      const { data } = await (await buildApp().request(`/security/threats/${THREAT_ID}/details`)).json();
+      expect(data.rule.ruleSetVersion).toBe(expected);
+    }
   });
 
   it('data.threat is the exact item GET /threats returns for the same row', async () => {
@@ -588,7 +606,7 @@ describe('GET /threats/:id/details (#6263 W04-5)', () => {
     const { data } = await res.json();
     expect(data.rule).toEqual({
       engine: 'legacy', ruleName: null, ruleId: null, ruleSetId: null, ruleSet: null,
-      tags: [], matchedStrings: [], sha256: null, quarantinedTo: null, quarantineFailed: false,
+      tags: [], matchedStrings: [], sha256: null, quarantinedTo: null, quarantineFailed: false, ruleSetVersion: null,
     });
     expect(db.select).toHaveBeenCalledTimes(1); // no set lookup without a rule set id
   });
@@ -611,6 +629,7 @@ describe('GET /threats/:id/details (#6263 W04-5)', () => {
     expect(data.rule).toEqual({
       engine: 'yara', ruleName: 'r', ruleId: null, ruleSetId: null, ruleSet: null,
       tags: [], matchedStrings: [{ id: '$b', offset: 2, data: 'ok' }], sha256: null, quarantinedTo: null, quarantineFailed: false,
+      ruleSetVersion: null,
     });
     expect(db.select).toHaveBeenCalledTimes(1);
   });

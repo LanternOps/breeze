@@ -712,6 +712,15 @@ const envObjectSchema = z
     // services/mcpAppsConfig.ts mcpAppsEnabled(). Validated here for format only.
     MCP_APPS_ENABLED: z.string().optional(),
 
+    // MCP Tasks extension (B-W06 #6160). Boolean flag read per call by
+    // services/mcpIntentConfig.ts mcpTasksEnabled() (effective only with
+    // MCP_STATELESS_ENABLED); the three knobs are read per call there too.
+    // Validated here for format only.
+    MCP_TASKS_ENABLED: z.string().optional(),
+    MCP_TASK_PENDING_POLL_INTERVAL_MS: z.string().optional(),
+    MCP_TASK_POLL_INTERVAL_MS: z.string().optional(),
+    MCP_TASK_TTL_GRACE_MS: z.string().optional(),
+
     // Signup-abuse detection kill switch / opt-in (services/abuseSignals).
     // Defaults to IS_HOSTED; read at runtime by abuseSignalsEnabled() in
     // env.ts. Validated here for boolean format only, for the same reason as
@@ -2172,12 +2181,26 @@ const envSchema = envObjectSchema
           'Defaults to false (no MCP Apps view is advertised or served).',
       });
     }
+    // MCP_TASKS_ENABLED (B-W06 #6160): boolean typo guard.
+    const mcpTasksRaw = (data.MCP_TASKS_ENABLED ?? '').trim().toLowerCase();
+    if (mcpTasksRaw && !boolValues.has(mcpTasksRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MCP_TASKS_ENABLED'],
+        message:
+          'MCP_TASKS_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. ' +
+          'Defaults to false (Tier-3 calls keep the pending_approval result; no Tasks extension is advertised).',
+      });
+    }
     for (const knob of [
       'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
       'MCP_INTENT_CREATES_PER_HOUR',
       'MCP_INTENT_CREATES_PER_USER_PER_HOUR',
       'MCP_APPROVAL_WAIT_MS',
       'MCP_APPROVAL_WAITS_PER_PRINCIPAL',
+      'MCP_TASK_PENDING_POLL_INTERVAL_MS',
+      'MCP_TASK_POLL_INTERVAL_MS',
+      'MCP_TASK_TTL_GRACE_MS',
     ] as const) {
       const raw = (data[knob] ?? '').trim();
       if (raw && (!/^\d+$/.test(raw) || Number(raw) < 1)) {
@@ -2749,6 +2772,18 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       warnings.push({
         key: 'MCP_UNATTENDED_TIER3_PRINCIPALS',
         message: `ignoring ${malformed.length} malformed entr${malformed.length === 1 ? 'y' : 'ies'} that can never match: ${malformed.join(', ')}. Each entry must be api_key:<api key id>, oauth_client_user:<client_id>/<user id> or partner_sp:<partner service principal id>.`,
+      });
+    }
+  }
+
+  // B-W06 (#6160, D-B55): Tasks exist only in the stateless era, so the flag
+  // without MCP_STATELESS_ENABLED is a silent no-op — say so at boot.
+  {
+    const truthy = (v: string | undefined) => ['1', 'true', 'yes', 'on'].includes((v ?? '').trim().toLowerCase());
+    if (truthy(env.MCP_TASKS_ENABLED) && !truthy(env.MCP_STATELESS_ENABLED)) {
+      warnings.push({
+        key: 'MCP_TASKS_ENABLED',
+        message: 'is on but MCP_STATELESS_ENABLED is off, so the MCP Tasks extension stays inactive (no task handles, nothing advertised). Turn MCP_STATELESS_ENABLED on with it.',
       });
     }
   }

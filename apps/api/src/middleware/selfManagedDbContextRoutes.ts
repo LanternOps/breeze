@@ -33,6 +33,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // pooled connection idle-in-transaction (#1105). The handler reads the set
   // in a short caller-scoped context and audits afterwards.
   { method: 'POST', pattern: /^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test\/?$/i },
+  // IOC sweep create and cancel (#6263 W05-6): the per-user create limiter
+  // is a Redis round-trip that must precede any DB context (#1105); the
+  // service then takes its own caller-scoped transaction (per-org advisory
+  // locks, FOR UPDATE on the sweep) and audits + enqueues the pump only
+  // after it commits. Preview and the reads keep the request's context.
+  { method: 'POST', pattern: /^\/api\/v1\/security\/sweeps\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/security\/sweeps\/[0-9a-f-]{36}\/cancel\/?$/i },
+  { method: 'POST', pattern: /^\/api\/v1\/security\/sweeps\/groups\/[0-9a-f-]{36}\/cancel\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },

@@ -485,4 +485,28 @@ describe('software_catalog.builtin_package_key (#6958)', () => {
     const versions = await getTestDb().select().from(softwareVersions).where(eq(softwareVersions.catalogId, keyed!.id));
     expect(versions).toEqual([]);
   });
+
+  // #6958 PR D decision: org scope does NOT list keyed built-ins (their
+  // versions are RLS-invisible to org scope, so the card would be a dead end).
+  // Flip deliberately with the follow-up that adds a software_versions SELECT
+  // branch on builtin_package_key plus the org branch in GET /catalog.
+  it('PINNED: GET /catalog lists a keyed row for partner scope but not for org scope under the same partner', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [keyed] = await seedKeyed(partner.id, 'controld_windows');
+    await getTestDb().insert(softwareVersions).values({
+      catalogId: keyed!.id, version: '1.5.8', fileType: 'zip', isLatest: true, installScriptsEnabled: true, postInstallScript: 'x',
+    });
+    const app = await buildApp();
+
+    activeAuth = { scope: 'partner', orgId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
+    const asPartner = await app.request(`/software/catalog?orgId=${org.id}&limit=100`, { headers: { Authorization: 'Bearer token' } });
+    expect(asPartner.status).toBe(200);
+    expect(((await asPartner.json()).data as Array<{ id: string }>).map((r) => r.id)).toContain(keyed!.id);
+
+    activeAuth = { scope: 'organization', orgId: org.id, partnerId: partner.id, accessibleOrgIds: [org.id] };
+    const asOrg = await app.request('/software/catalog?limit=100', { headers: { Authorization: 'Bearer token' } });
+    expect(asOrg.status).toBe(200);
+    expect(((await asOrg.json()).data as Array<{ id: string }>).map((r) => r.id)).not.toContain(keyed!.id);
+  });
 });

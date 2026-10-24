@@ -219,6 +219,8 @@ const TARGET_GLOBS = [
   'src/components/dnsSecurity/AddDnsIntegrationModal.tsx',
   'src/components/dnsSecurity/DnsSecurityPoliciesTab.tsx',
   'src/components/dnsSecurity/AddDnsPolicyModal.tsx',
+  // #6958 PR D: provisions Breeze-pinned DNS client packages (POST /software/builtin-packages/:key).
+  'src/components/software/BuiltinPackagesPanel.tsx',
   'src/components/devices/DeviceSoftwareInventory.tsx',
   'src/components/devices/DeviceLinkedProfilesTab.tsx',
   'src/components/devices/DeviceWarrantyCard.tsx',
@@ -999,8 +1001,9 @@ describe('no silent mutations in targeted set', () => {
     // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 265 → 266.
     // Wisp W06b (#9918) adds WispThreadPage/WispGrantPauseControl: 266 → 268;
     // bulk site move (#9796) adds devices/bulkSiteMove.ts (+1 = 269).
-    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 269 → 271.
-    expect(absoluteFiles.length).toBe(271);
+    // #6958 PR D adds software/BuiltinPackagesPanel.tsx: 269 → 270.
+    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 270 → 272.
+    expect(absoluteFiles.length).toBe(272);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -31,6 +31,7 @@ export * from './remoteAccessInlineSettings';
 export * from './warrantyInlineSettings';
 export * from './systemProtectionInlineSettings';
 export * from './securityAgents';
+export * from './securityScanSweep';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';

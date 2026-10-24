@@ -389,6 +389,8 @@ export const SENTRY_EVENT_CODES = [
   'mcp_header_mismatch_rate_high',
   /** A legacy MCP session's negotiated-extension side key could not be written; that session gets no MCP Apps for its lifetime (B-W05 #6159). */
   'mcp_session_ext_write_failed',
+  /** A Tasks-declaring tools/call filed an intent but the owned reload returned nothing; the client got pending_approval (B-W06 #6160). */
+  'mcp_task_reload_missing',
 
   // --- retention --------------------------------------------------------
   /**
