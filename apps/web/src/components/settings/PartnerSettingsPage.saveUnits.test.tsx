@@ -169,3 +169,41 @@ describe('PartnerSettingsPage header status and validity (W2 Task 18)', () => {
     window.removeEventListener('breeze:partner-settings-saved', saved);
   });
 });
+
+describe('PartnerSettingsPage header Save runs the units (W2 Task 19)', () => {
+  it('a failed partners/me save keeps the tabs dirty, says which failed and allows a retry', async () => {
+    let fail = true;
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'PATCH /orgs/partners/me': () => (fail ? json({ error: 'boom' }, 500) : json(partnerWith())),
+    });
+    const user = await renderPage();
+    await user.type(screen.getByLabelText('City'), 'ville');
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('failed'));
+    expect(status().textContent).toBe("Couldn't save Company.");
+    expect(screen.getByRole('link', { name: /^company \(unsaved changes\)$/i })).toBeTruthy();
+    expect(saveButton().disabled).toBe(false);
+    fail = false;
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
+    expect(patchCalls()).toHaveLength(2);
+  });
+
+  it('an edit made while the save is in flight stays dirty afterwards', async () => {
+    let release!: (r: Response) => void;
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'PATCH /orgs/partners/me': () => new Promise<Response>(r => { release = r; }),
+    });
+    const user = await renderPage();
+    const city = screen.getByLabelText('City');
+    await user.type(city, 'A');
+    await user.click(saveButton());
+    expect(status().textContent).toBe('Saving…');
+    await user.type(city, 'B');
+    await act(async () => { release(json(partnerWith())); });
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('dirty'));
+    expect(JSON.parse((patchCalls()[0][1] as RequestInit).body as string).settings.address.city).toBe('SpringfieldA');
+  });
+});

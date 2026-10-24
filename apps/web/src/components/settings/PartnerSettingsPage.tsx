@@ -27,12 +27,12 @@ import PartnerRegionalTab from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import TrustTemplateSettings from '../trustCenter/TrustTemplateSettings';
 import { useTranslation } from 'react-i18next';
-import { showToast } from '../shared/Toast';
 import MfaPolicyOffBanner from '../auth/MfaPolicyOffBanner';
 import { isTabVisible } from './sendingDomains/domainView';
 import { TAB_BY_KEY, tabFromHash, visibleTabGroups, type TabKey } from './partnerSettings/tabRegistry';
 import { usePartnersMeUnit } from './partnerSettings/usePartnersMeUnit';
-import { isUnitValid, runSaveUnits, type SaveUnit } from './partnerSettings/saveUnits';
+import { isUnitValid, type SaveUnit } from './partnerSettings/saveUnits';
+import { usePartnerSettingsSave } from './partnerSettings/usePartnerSettingsSave';
 import PartnerSettingsStatus, { deriveStatus } from './partnerSettings/PartnerSettingsStatus';
 
 // Kept on this module's surface: existing callers and tests import it from here.
@@ -44,7 +44,6 @@ export default function PartnerSettingsPage() {
   const me = usePartnersMeUnit();
   const { partner, state, update, loading, error } = me;
   const [activeTab, setActiveTab] = useState<TabKey>('company');
-  const [saving, setSaving] = useState(false);
   // A status-line link asks for a field to be focused once its tab has rendered.
   const [focusRequest, setFocusRequest] = useState<string | null>(null);
   const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide) !== false;
@@ -147,29 +146,18 @@ export default function PartnerSettingsPage() {
     }
   }, [callerVerificationSettled, callerVerificationVisible, activeTab]);
 
+  const { save, saving, failedUnits, otherUnitsSaved, savedAt } = usePartnerSettingsSave(units);
   const canSave = canManagePartnerWide && !saving && isDirty && units.every(u => !u.isDirty() || isUnitValid(u));
-
-  const handleSave = async () => {
-    if (!canSave) return;
-    setSaving(true);
-    try {
-      const outcomes = Object.values(await runSaveUnits(units));
-      if (outcomes.length > 0 && outcomes.every(o => o?.status === 'saved')) {
-        showToast({ type: 'success', message: t('partnerSettingsPage.saved') });
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
+  const handleSave = () => { if (canSave) void save(); };
 
   const statusState = deriveStatus({
     units,
     dirtyTabs,
     saving,
     readOnly: !canManagePartnerWide,
-    failedUnits: [],
-    otherUnitsSaved: false,
-    savedAt: me.savedAt,
+    failedUnits,
+    otherUnitsSaved,
+    savedAt,
     autosave: null,
   });
 

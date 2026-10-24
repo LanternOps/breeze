@@ -263,7 +263,6 @@ export function usePartnersMeUnit() {
   const [baseline, setBaseline] = useState<PartnersMeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   const [ipStatus, setIpStatus] = useState<IpAllowlistStatus | null>(null);
   const [ipStatusUnavailable, setIpStatusUnavailable] = useState(false);
@@ -375,9 +374,7 @@ export function usePartnersMeUnit() {
       window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // Re-baseline to what was sent: an edit made during the request stays dirty.
       setBaseline(sent);
-      const at = Date.now();
-      setSavedAt(at);
-      return { status: 'saved', savedAt: at };
+      return { status: 'saved', savedAt: Date.now() };
     } catch (err) {
       if (generation.current !== gen) return { status: 'cancelled' };
       if (err instanceof ActionError && err.status === 401) return { status: 'failed' };
@@ -407,7 +404,6 @@ export function usePartnersMeUnit() {
     error,
     load,
     markNoPartner,
-    savedAt,
     dirtyTabs,
     validity,
     unit,
