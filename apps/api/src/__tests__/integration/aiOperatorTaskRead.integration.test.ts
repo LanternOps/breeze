@@ -398,4 +398,25 @@ describe('AI Operator task read — plan (W06 R1b) — real Postgres', () => {
     expect(approvals).toEqual([]);
     expect(effects).toEqual([]);
   });
+
+  runDb('links an effect to the operation the walk keyed to it, reading noop out of the real result jsonb', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const agentId = await insertAgent(env.organization.id, env.user.id);
+    const taskId = await insertTask(env.organization.id, agentId, env.user.id);
+    await seedPlan(env.organization.id, taskId);
+    const { planEffectOperationKey } = await import('../../services/aiOperator/planApproval');
+    const operationKey = planEffectOperationKey({
+      stepKey: 'effects', planRevision: 1, toolName: 'google_suspend_user', targetId: null, ordinal: 0,
+    });
+    await withDbAccessContext(SYSTEM_CTX, () => db.insert(aiOperatorOperations).values({
+      orgId: env.organization.id, taskId, taskStepKey: 'effects', operationKey, argumentDigest: DIGEST,
+      planRevision: 1, resultState: 'succeeded', result: { noop: true, detail: 'already suspended' },
+    }));
+
+    const res = await get(env, `/tasks/${taskId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.plan[0].effects[0]).toMatchObject({ operationState: 'succeeded', noop: true });
+    // The raw result never reaches the wire.
+    expect(JSON.stringify(res.body)).not.toContain('already suspended');
+  });
 });

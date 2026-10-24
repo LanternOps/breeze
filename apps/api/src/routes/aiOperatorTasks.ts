@@ -692,9 +692,12 @@ async function readTaskPlan(taskId: string, orgId: string): Promise<AiOperatorPl
     })
     .from(aiOperatorPlanApprovals)
     .where(and(eq(aiOperatorPlanApprovals.taskId, taskId), eq(aiOperatorPlanApprovals.orgId, orgId)))
-    .orderBy(aiOperatorPlanApprovals.planRevision)
+    // NEWEST first under the cap, so a long re-plan history drops the OLDEST
+    // revisions, never the current one; re-sorted ascending below.
+    .orderBy(desc(aiOperatorPlanApprovals.planRevision))
     .limit(PLAN_READ_LIMIT) as PlanApprovalRow[];
   if (approvals.length === 0) return [];
+  approvals.sort((a, b) => a.planRevision - b.planRevision);
 
   const effects = await db
     .select({
@@ -711,7 +714,8 @@ async function readTaskPlan(taskId: string, orgId: string): Promise<AiOperatorPl
     })
     .from(aiOperatorPlanApprovalEffects)
     .where(and(eq(aiOperatorPlanApprovalEffects.taskId, taskId), eq(aiOperatorPlanApprovalEffects.orgId, orgId)))
-    .orderBy(aiOperatorPlanApprovalEffects.planRevision, aiOperatorPlanApprovalEffects.ordinal)
+    // Same rule: the newest revisions' effects survive the cap.
+    .orderBy(desc(aiOperatorPlanApprovalEffects.planRevision), aiOperatorPlanApprovalEffects.ordinal)
     .limit(PLAN_READ_LIMIT) as PlanEffectRow[];
 
   const approvalById = new Map(approvals.map((a) => [a.id, a]));
@@ -784,7 +788,7 @@ async function readTaskPlan(taskId: string, orgId: string): Promise<AiOperatorPl
     approvedAt: a.approvedAt ? a.approvedAt.toISOString() : null,
     supersededByRevision: a.supersededByRevision,
     createdAt: a.createdAt.toISOString(),
-    effects: effectsByApproval.get(a.id) ?? [],
+    effects: (effectsByApproval.get(a.id) ?? []).sort((x, y) => x.ordinal - y.ordinal),
   }));
 }
 

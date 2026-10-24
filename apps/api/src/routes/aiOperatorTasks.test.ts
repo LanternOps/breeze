@@ -924,4 +924,43 @@ describe('GET /ai/operator/tasks/:id — plan (W06 R1b, G2)', () => {
     expect(data.plan).toHaveLength(1);
     expect(data.plan[0].effects.map((e: { toolName: string }) => e.toolName)).toEqual(['m365_disable_user']);
   });
+
+  it('never links an operation reserved under another step key', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user')],
+      ops: [{ operationKey: keyFor(2, 'm365_disable_user', 0), taskStepKey: 'execute', planRevision: 2, resultState: 'succeeded', noop: true }],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan[0].effects[0]).toMatchObject({ operationState: null, noop: false });
+  });
+
+  it('drops an effect whose revision disagrees with its approval\'s', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user'),
+        effectRow(APPROVAL_R2, 1, 1, 'google_suspend_user'),
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan[0].effects.map((e: { toolName: string }) => e.toolName)).toEqual(['m365_disable_user']);
+  });
+
+  it('reads newest-first under the cap and still returns revisions and effects in ascending order', async () => {
+    script({
+      approvals: [
+        approvalRow(APPROVAL_R2, 2),
+        approvalRow(APPROVAL_R1, 1, { state: 'superseded', supersededByRevision: 2 }),
+      ],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 1, 'm365_disable_user'),
+        effectRow(APPROVAL_R2, 2, 0, 'm365_set_auto_reply'),
+        effectRow(APPROVAL_R1, 1, 0, 'm365_set_auto_reply'),
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan.map((p: { planRevision: number }) => p.planRevision)).toEqual([1, 2]);
+    expect(data.plan[1].effects.map((e: { ordinal: number }) => e.ordinal)).toEqual([0, 1]);
+  });
 });
