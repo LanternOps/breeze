@@ -25,7 +25,6 @@ const h = vi.hoisted(() => ({
     if (q.table === 'tickets' && q.fields.includes('fieldProvenance')) return 'storedTicket';
     if (q.table === 'tickets' && q.lock === 'no key update') return 'statusRow';
     if (q.table === 'tickets' && q.lock === 'update') return 'lockedTicket';
-    if (q.table === 'tickets') return 'importable';
     if (q.table === 'ticket_comments' && q.fields.includes('contentHash')) return 'importedComments';
     if (q.table === 'ticket_comments' && q.fields.includes('kind')) return 'feedRow';
     if (q.table === 'ticket_comments' && q.fields.length === 1 && q.fields[0] === 'sourceId') return 'presentByPrincipal';
@@ -139,7 +138,7 @@ function storedRow(overrides: Record<string, unknown> = {}) {
     subject: 'Printer jams', description: 'Every second page.', priority: 'normal', categoryId: null,
     tags: [], ticketType: 'incident', assignedTo: null, fieldProvenance: {},
     requesterContactId: null, submitterEmail: 'maya@customer.example',
-    mergedIntoTicketId: null, windowPrincipalId: PRINCIPAL, mergedAwayImportId: null,
+    mergedIntoTicketId: null, windowPrincipalId: PRINCIPAL,
     ...overrides,
   };
 }
@@ -157,8 +156,7 @@ beforeEach(() => {
   h.writes.length = 0;
   h.locks = 0;
   // Under the lock the ticket is still an import, not deleted.
-  h.fallback.set('lockedTicket', [{ id: TICKET, deletedAt: null, mergedIntoTicketId: null }]);
-  h.fallback.set('importable', [{ migrationWindowId: 'w-1' }]);
+  h.fallback.set('lockedTicket', [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: null }]);
 });
 
 describe('importTicket — the byte bound, counted in transactions (#8884 review, finding 6)', () => {
@@ -332,7 +330,6 @@ describe('importTicket — the resume report reads nothing extra (spec 2026-10-1
 
 describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, with its survivor', () => {
   const SURVIVOR = '88888888-8888-4888-8888-888888888888';
-  const TOMBSTONE = '77777777-7777-4777-8777-777777777777';
   const closedWithNotes = ticket({
     finalStatus: 'closed', resolvedAt: at(100), closedAt: at(200), subject: 'Changed in the source',
     comments: [comment('a1', 10), comment('a2', 20)],
@@ -343,7 +340,7 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     h.fallback.set('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
   });
 
-  it('writes and charges nothing when the plan finds the ref on a tombstone', async () => {
+  it('writes and charges nothing when the ref is on a tombstone this import created', async () => {
     h.fallback.set('storedTicket', [storedRow({ mergedIntoTicketId: SURVIVOR, status: 'closed' })]);
 
     const result = await run(closedWithNotes);
@@ -361,27 +358,22 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     expect(h.writes).toEqual([]);
   });
 
-  it('answers the same when the merge moved the ref onto a survivor this import did not create', async () => {
-    // A live survivor: the ref moved to it, and this import's tombstone, now
-    // without a ref, points at it.
-    h.fallback.set('storedTicket', [storedRow({ id: SURVIVOR, migrationWindowId: null, windowPrincipalId: null, mergedAwayImportId: TOMBSTONE })]);
-    expect(await run(closedWithNotes)).toMatchObject({
-      ticketId: TOMBSTONE, outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: SURVIVOR },
+  it.each([
+    // The merge moved this import's ref onto a live survivor (the known limit: refused on every pass).
+    ['a live ticket', { migrationWindowId: null, windowPrincipalId: null }, 'live_ticket'],
+    // Checked before the tombstone: a never-imported live ticket that was later merged stays a conflict.
+    ['a live tombstone', { migrationWindowId: null, windowPrincipalId: null, mergedIntoTicketId: SURVIVOR }, 'live_ticket'],
+    // The merge moved this import's ref onto another principal's import, which used to be resumed with this source's data.
+    ["another principal's import", { windowPrincipalId: '45454545-4545-4545-8545-454545454545' }, 'other_principal_ticket'],
+    ["another principal's tombstone", { windowPrincipalId: '45454545-4545-4545-8545-454545454545', mergedIntoTicketId: SURVIVOR }, 'other_principal_ticket'],
+  ])('refuses, never resumes, a ref that resolves to %s', async (_label, row, reason) => {
+    h.fallback.set('storedTicket', [storedRow(row)]);
+    await expect(run(closedWithNotes)).rejects.toMatchObject({
+      code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason, ticketId: TICKET },
     });
+    expect(h.locks).toBe(0);
     expect(h.charges).toEqual([]);
-
-    // A survivor another import principal created: the same.
-    h.fallback.set('ref', [{ ticketId: SURVIVOR, externalNumber: '#41023', externalUrl: null }]);
-    h.fallback.set('storedTicket', [storedRow({ id: SURVIVOR, windowPrincipalId: 'another-principal', mergedAwayImportId: TOMBSTONE })]);
-    expect(await run(closedWithNotes)).toMatchObject({ ticketId: TOMBSTONE, outcome: 'skipped' });
     expect(h.writes).toEqual([]);
-  });
-
-  it('resumes a ticket this import created, whatever is merged into it', async () => {
-    h.fallback.set('storedTicket', [storedRow({ mergedAwayImportId: TOMBSTONE })]);
-    answer('feedRow', [], [ours], [ours]);
-    h.fallback.set('statusRow', [{ status: 'open' }]);
-    expect(await run(closedWithNotes)).toMatchObject({ ticketId: TICKET, outcome: 'resumed', commentsWritten: 2 });
   });
 
   it('stops under the lock when a merge commits between two of its transactions, and writes nothing more', async () => {
@@ -389,7 +381,11 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     answer('feedRow', [], [ours]);
     // The header transaction (the subject changed) commits; the merge lands
     // before the first comment chunk.
-    answer('lockedTicket', [{ id: TICKET, deletedAt: null, mergedIntoTicketId: null }], [{ id: TICKET, deletedAt: null, mergedIntoTicketId: SURVIVOR }]);
+    answer(
+      'lockedTicket',
+      [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: null }],
+      [{ migrationWindowId: 'w-1', deletedAt: null, mergedIntoTicketId: SURVIVOR }],
+    );
 
     const result = await run(closedWithNotes, { chunkSize: 1 });
 
@@ -402,5 +398,9 @@ describe('importTicket — a ticket merged in Breeze (#8972) is skipped, final, 
     // opened, spent): the second chunk never runs.
     expect(h.charges).toEqual([1, 1]);
     expect(h.locks).toBe(2);
+    // Each transaction locks and re-checks the ticket in one statement; the
+    // header transaction then reads the header alone.
+    expect(h.log.filter((k) => k === 'lockedTicket')).toHaveLength(2);
+    expect(h.log.filter((k) => k === 'storedTicket')).toHaveLength(2);
   });
 });

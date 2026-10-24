@@ -26,9 +26,15 @@ related:
 > open for the owner.
 
 > **Revision 4 (2026-10-24): merged tickets (W0, proposed).** Main shipped native ticket merge
-> (#8972) after revision 3. A resumed ticket that a technician merged in Breeze is skipped as
-> `merged_in_breeze`, final like `removed_in_breeze` (§5.5, §5.9, §5.10). Raised in W0's PR as a
-> deviation for the owner to confirm.
+> (#8972) after revision 3. A resumed ticket that this principal imported and a technician merged
+> in Breeze is skipped as `merged_in_breeze`, final like `removed_in_breeze` (§5.5, §5.9, §5.10). A
+> ref that resolves to a ticket this principal did not import is refused, never resumed:
+> `live_ticket`, or `other_principal_ticket` for another principal's import. Known limit: when the
+> survivor had no ref from the same principal, the merge moves the tombstone's ref onto it
+> (`ticketMerge/repoint.ts`), and that source id is then refused on every pass. The exact fix
+> belongs to #8972: the re-point records the origin ticket on a moved `ticket_external_refs` row (a
+> nullable column and its migration), after which the importer answers it as `merged_in_breeze`.
+> Raised in W0's PR as a deviation for the owner to confirm.
 
 > **Revision 3 (2026-10-21): decisions 24 and 25 (#9295).** The owner declined decision 24 and
 > accepted decision 25. Historic owners stay display-only, as #8313 answer 3 and step-1 §8 say: a

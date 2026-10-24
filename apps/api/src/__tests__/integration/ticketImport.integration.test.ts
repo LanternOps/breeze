@@ -24,10 +24,10 @@
  *   - (#8313 W0, spec 2026-10-19 §5.3) a display-only requester may have no
  *     email; a resume reports, and does not apply, a changed requester, org,
  *     edited or flipped comment and a comment deleted in the source;
- *   - (#8313 W0, not in the spec) a ticket merged in Breeze (#8972) is
- *     skipped as merged_in_breeze, whether the merge left its ref on the
- *     tombstone or moved it to a live survivor, and also when the merge
- *     commits mid-ticket.
+ *   - (#8313 W0, not in the spec) a ticket this principal imported and a
+ *     technician merged in Breeze (#8972) is skipped as merged_in_breeze,
+ *     also when the merge commits mid-ticket; a ref the merge moved onto a
+ *     live ticket or another principal's import is refused, never resumed.
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -723,7 +723,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await getTestDb().select().from(tickets).where(inArray(tickets.orgId, [other.orgA.id, fx.orgA.id]))).toEqual([]);
   });
 
-  runDb('a ticket merged in Breeze between two passes is skipped as merged_in_breeze: nothing is written on either ticket, nothing charged', async () => {
+  runDb('a ticket merged in Breeze between two passes is skipped as merged_in_breeze; a ref the merge moved is refused; nothing is written or charged', async () => {
     const fx = await seed();
     const first = await openWindow(fx);
     const open = { assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
@@ -731,31 +731,45 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
       sourceId: uniq(`article-${i}`), createdAt: minutes(10 + i), isPublic: true,
       author: { kind: 'requester' as const, name: 'Maya Customer' }, content: `Article ${i}`,
     });
-    // Pass 1 imports four tickets: A and B, C and D. A live ticket L exists in Breeze.
+    // Pass 1 imports five tickets: A and B, C, D, E. A live ticket L exists
+    // in Breeze, and another import principal brought in X.
     const a = source(fx, { ...open, comments: [article(1)] });
     const b = source(fx, { ...open, comments: [article(2)] });
     const c = source(fx, { ...open, comments: [article(3)] });
     const d = source(fx, { ...open, comments: [article(4)] });
-    const [ra, rb, rc, rd] = [
+    const e = source(fx, { ...open, comments: [article(8)] });
+    const [ra, rb, rc, rd, re] = [
       await importTicket(first.id, a, { partnerId: fx.partner.id }),
       await importTicket(first.id, b, { partnerId: fx.partner.id }),
       await importTicket(first.id, c, { partnerId: fx.partner.id }),
       await importTicket(first.id, d, { partnerId: fx.partner.id }),
+      await importTicket(first.id, e, { partnerId: fx.partner.id }),
     ];
     const tech = { kind: 'user' as const, userId: fx.owner.id, name: 'Owner' };
     const live = await withDbAccessContext(fx.ownerContext(), () => createTicket({ orgId: fx.orgA.id, subject: 'Printer, again', source: 'manual' }, tech));
     await closeWindow(fx, first.id);
+    const [otherPrincipal] = await getTestDb().insert(partnerServicePrincipals).values({
+      partnerId: fx.partner.id, name: uniq('Other import'), scopes: ['tickets:read', 'tickets:write'], createdBy: fx.owner.id, updatedBy: fx.owner.id,
+    }).returning();
+    const otherWindow = await openWindow(fx, { principalId: otherPrincipal!.id });
+    const rx = await importTicket(otherWindow.id, source(fx, { ...open, comments: [article(9)] }), { partnerId: fx.partner.id });
+    await closeWindow(fx, otherWindow.id);
 
-    // Between the passes a technician merges A into B (both imported: A's ref
-    // stays on the tombstone) and C into the live L (the merge moves C's ref
-    // onto L).
+    // Between the passes a technician merges A into B (both this principal's
+    // imports: A's ref stays on the tombstone), C into the live L and E into
+    // the other principal's X (neither survivor has a ref from this
+    // principal, so the merge moves the ref onto it).
     const merge = (src: string, dst: string) => withDbAccessContext(fx.ownerContext(), () => mergeTickets({ sourceTicketId: src, intoTicketId: dst, notifyRequester: false }, tech));
     await merge(ra.ticketId, rb.ticketId);
     await merge(rc.ticketId, live.id);
-    const [cRef] = await getTestDb().select().from(ticketExternalRefs).where(eq(ticketExternalRefs.externalId, c.sourceId));
-    expect(cRef!.ticketId).toBe(live.id);
+    await merge(re.ticketId, rx.ticketId);
+    const refOf = async (sourceId: string) => (await getTestDb().select().from(ticketExternalRefs)
+      .where(and(eq(ticketExternalRefs.partnerServicePrincipalId, fx.principal.id), eq(ticketExternalRefs.externalId, sourceId))))[0]!.ticketId;
+    expect(await refOf(a.sourceId)).toBe(ra.ticketId);
+    expect(await refOf(c.sourceId)).toBe(live.id);
+    expect(await refOf(e.sourceId)).toBe(rx.ticketId);
 
-    const touched = [ra.ticketId, rb.ticketId, rc.ticketId, rd.ticketId, live.id];
+    const touched = [ra.ticketId, rb.ticketId, rc.ticketId, rd.ticketId, re.ticketId, live.id, rx.ticketId];
     const snapshot = async () => ({
       tickets: await getTestDb().select().from(tickets).where(inArray(tickets.id, touched)).orderBy(tickets.id),
       comments: (await getTestDb().select({ id: ticketComments.id, ticketId: ticketComments.ticketId }).from(ticketComments)
@@ -763,20 +777,21 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     });
     const before = await snapshot();
 
-    // Pass 2, in a new window: the source has a new article on A and on C.
+    // Pass 2, in a new window: the source has a new article on A, C and E.
     const second = await openWindow(fx);
     const resumedA = await importTicket(second.id, { ...a, comments: [...a.comments, article(5)] }, { partnerId: fx.partner.id });
-    const resumedC = await importTicket(second.id, { ...c, comments: [...c.comments, article(6)] }, { partnerId: fx.partner.id });
-
     expect(resumedA).toEqual({
       ticketId: ra.ticketId,
       outcome: 'skipped',
       skip: { reason: 'merged_in_breeze', mergedIntoTicketId: rb.ticketId },
       commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED,
     });
-    expect(resumedC).toMatchObject({
-      ticketId: rc.ticketId, outcome: 'skipped', skip: { reason: 'merged_in_breeze', mergedIntoTicketId: live.id }, commentsWritten: 0,
-    });
+    // A moved ref resolves to a ticket this principal did not import: refused,
+    // never resumed onto it (the known limit: on every pass).
+    await expect(importTicket(second.id, { ...c, comments: [...c.comments, article(6)] }, { partnerId: fx.partner.id }))
+      .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'live_ticket', ticketId: live.id } });
+    await expect(importTicket(second.id, { ...e, comments: [...e.comments, article(10)] }, { partnerId: fx.partner.id }))
+      .rejects.toMatchObject({ code: 'MIGRATION_SOURCE_ID_IN_USE', status: 409, details: { reason: 'other_principal_ticket', ticketId: rx.ticketId } });
     expect(await snapshot()).toEqual(before);
     expect(await bucketSize(second.id)).toBe(0);
 
