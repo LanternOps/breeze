@@ -635,7 +635,51 @@
       "attachFailed": "Eklenemedi",
       "attachTooLarge": "Bu dosya 5 MB sınırını aşıyor",
       "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
-      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın."
+      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın.",
+      "paused": "Wisp duraklatıldı",
+      "resumed": "Wisp devam ettirildi",
+      "pauseFailed": "Wisp duraklatılamadı",
+      "resumeFailed": "Wisp devam ettirilemedi"
+    },
+    "spend": {
+      "meter": "Bugün {{budget}}¢ içinden {{spent}}¢",
+      "resets": "{{hours}} saat içinde sıfırlanır",
+      "raise": "Bugünün bütçesini artır",
+      "label": "Bugünkü Wisp harcaması"
+    },
+    "pause": "Wisp'i duraklat",
+    "resume": "Devam et",
+    "paused": {
+      "byYou": "Wisp'i duraklattınız. Siz devam ettirene kadar kontrol yapmaz ve size hatırlatma göndermez."
+    },
+    "live": {
+      "checking": "{{org}} kontrol ediliyor…",
+      "checkingUnnamed": "Bir müşteri kontrol ediliyor…"
+    },
+    "thread": {
+      "title": "Wisp konuşması",
+      "openChat": "Sohbette aç",
+      "openChatInactive": "Bu konuşmada sohbet etmek için Wisp'in etkin olması gerekir.",
+      "notFound": "Bu Wisp konuşması yok ya da size ait değil.",
+      "loadFailed": "Bu Wisp konuşması yüklenemedi.",
+      "retry": "Tekrar dene",
+      "stale": "Bu ileti dizisi yenilenemedi. Gördükleriniz güncel olmayabilir."
+    },
+    "activity": {
+      "title": "Etkinlik",
+      "empty": "Henüz bir şey yok. Wisp'in çalışmaları burada görünür.",
+      "loadFailed": "Etkinlik yüklenemedi",
+      "loadMore": "Daha fazla yükle",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Kontrol",
+        "concern": "Endişe",
+        "specialist": "Uzman",
+        "approval": "Onay",
+        "memory": "Bellek",
+        "nudge": "Hatırlatma",
+        "brief": "Özet"
+      }
     }
   },
   "wispConcerns": {
@@ -677,6 +721,14 @@
       "invoice": "Fatura",
       "contract": "Sözleşme",
       "site": "Konum"
-    }
+    },
+    "reviewApproval": "Onayı incele",
+    "useful": "Yararlı",
+    "notUseful": "Yararlı değil",
+    "feedbackNotePlaceholder": "Ne daha iyi olabilirdi? (isteğe bağlı)",
+    "feedbackSend": "Gönder",
+    "feedbackGivenUseful": "Bunu yararlı olarak işaretlediniz",
+    "feedbackGivenNotUseful": "Bunu yararlı değil olarak işaretlediniz",
+    "feedbackSaved": "Teşekkürler. Wisp bunu hatırlayacak."
   }
 }

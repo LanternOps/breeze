@@ -163,7 +163,16 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/onedrive$/, kind: 'org-or-all' },
   { pattern: /^\/workspace$/, kind: 'org-or-all' },
 
+  // The Sites list and a site's detail (#9794) list/show sites fleet-wide or
+  // in the selected org — not MSP-level settings — so they sit above the
+  // /settings catch-all, which would hide the fleet scope line.
+  { pattern: /^\/settings\/sites(\/[^/]+)?$/, kind: 'org-or-all' },
+
   // --- partner-settings ---
+  // Wisp thread page (W06 #9918): its subject is one grant (partner-wide or one
+  // org), never the switcher's org, so no scope line. Not catalog — its reads
+  // opt out of ambient orgId per request (skipOrgIdInjection) instead.
+  { pattern: /^\/ai\/wisp\/thread\/[^/]+$/, kind: 'partner-settings' },
   { pattern: /^\/settings(\/.*)?$/, kind: 'partner-settings' },
   { pattern: /^\/integrations(\/.*)?$/, kind: 'partner-settings' },
   { pattern: /^\/partner(\/.*)?$/, kind: 'partner-settings' },

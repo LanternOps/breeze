@@ -397,3 +397,24 @@ describe('TicketFeed attachments (W08 #3902)', () => {
     expect(screen.queryByTestId('ticket-attachment-file-a-2')).toBeNull();
   });
 });
+
+describe('TicketFeed — comments moved by a merge (#8972)', () => {
+  it('marks a moved comment "from <number>" using the resolved number', () => {
+    render(
+      <TicketFeed
+        comments={[
+          makeComment({ id: 'moved-1', mergedFromTicketId: 'tk-src' }),
+          makeComment({ id: 'native-1', mergedFromTicketId: null }),
+        ]}
+        mergedFromNumbers={{ 'tk-src': 'T-2026-0007' }}
+      />
+    );
+    expect(screen.getByTestId('ticket-comment-merged-from-moved-1')).toHaveTextContent('from T-2026-0007');
+    expect(screen.queryByTestId('ticket-comment-merged-from-native-1')).toBeNull();
+  });
+
+  it('falls back to "from a merged ticket" while the number is unresolved', () => {
+    render(<TicketFeed comments={[makeComment({ id: 'moved-2', mergedFromTicketId: 'tk-unknown' })]} />);
+    expect(screen.getByTestId('ticket-comment-merged-from-moved-2')).toHaveTextContent('from a merged ticket');
+  });
+});

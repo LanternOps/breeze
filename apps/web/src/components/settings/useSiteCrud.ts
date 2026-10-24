@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { fetchAllSites } from '@/lib/fetchAllSites';
@@ -34,6 +34,16 @@ const str = (value: unknown): string =>
  * `OrganizationsPage` is unaffected: there, `orgId` passed in already IS the
  * organization being managed, so pinning it explicitly is a no-op change in
  * observable behaviour.
+ *
+ * Fleet mode (#9794, `opts.fleet`): with no bound org, `refresh()` lists every
+ * site the caller can reach (`GET /orgs/sites` with no `organizationId`, and
+ * `orgIdOverride: null` so no ambient org is injected) — the server narrows by
+ * org access and `allowedSiteIds`; this hook never widens or re-filters. Every
+ * write targets `writeOrgId`, which is captured when the modal OPENS: the
+ * caller's org for `openAdd(orgId)` (or the bound org), the row's own org for
+ * `openEdit`/`openDelete`. An org switch while the modal is open therefore
+ * cannot retarget the write. With no org to capture, add waits for
+ * `setWriteOrgId` (the Sites page's org picker) and `submit` issues nothing.
  */
 export type SiteModalMode = 'closed' | 'add' | 'edit' | 'delete';
 
@@ -85,7 +95,15 @@ export interface UseSiteCrud {
    *  switching to an org whose sites must not be fetched (an archive-lifecycle
    *  org, or no org selected at all). */
   clear: () => void;
-  openAdd: () => void;
+  /** Opens the add modal, capturing the org the new site belongs to. A
+   *  non-string argument (a click event, when passed straight to `onClick`) is
+   *  ignored and the bound org is used. */
+  openAdd: (orgId?: string) => void;
+  /** The org the open modal writes to, captured at open time; null until an
+   *  org is chosen (fleet view add). */
+  writeOrgId: string | null;
+  /** Sets the add modal's target org — the fleet view's org picker. */
+  setWriteOrgId: (orgId: string | null) => void;
   openEdit: (site: Site) => void;
   openDelete: (site: Site) => void;
   close: () => void;
@@ -97,10 +115,13 @@ export interface UseSiteCrud {
 export interface UseSiteCrudOptions {
   onUnauthorized: () => void;
   t: TFunction;
+  /** With no bound org, list every accessible site instead of nothing (the
+   *  Sites page's fleet view, #9794). */
+  fleet?: boolean;
 }
 
 export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): UseSiteCrud {
-  const { onUnauthorized, t } = opts;
+  const { onUnauthorized, t, fleet = false } = opts;
   const [sites, setSites] = useState<Site[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
   const [sitesFailed, setSitesFailed] = useState(false);
@@ -108,11 +129,18 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
   const [selectedSite, setSelectedSite] = useState<Site | null>(null);
   const [siteSubmitting, setSiteSubmitting] = useState(false);
   const [guidingFirstSite, setGuidingFirstSite] = useState(false);
+  const [writeOrgId, setWriteOrgId] = useState<string | null>(null);
+  // Only the most recent refresh may write list state: an org switch starts a
+  // new listing while the previous (possibly multi-page) one is in flight, and
+  // that older response must not land under the new scope.
+  const refreshSeq = useRef(0);
 
   const refresh = useCallback(
     async (orgIdOverride?: string): Promise<Site[] | null> => {
       const targetOrgId = orgIdOverride ?? orgId;
-      if (!targetOrgId) return null;
+      if (!targetOrgId && !fleet) return null;
+      const seq = ++refreshSeq.current;
+      const isLatest = () => seq === refreshSeq.current;
       setSitesLoading(true);
       setSitesFailed(false);
       try {
@@ -120,48 +148,67 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         // instead of failing closed to `[]`, so the catch below still sets
         // `sitesFailed` and callers keep suppressing the first-site nag rather
         // than treating an unreadable response as a confirmed zero.
-        const siteList = await fetchAllSites<Site>(
-          `/orgs/sites?organizationId=${targetOrgId}`,
-          { orgIdOverride: targetOrgId },
-          { strictShape: true },
-        );
-        setSites(siteList);
+        const siteList = targetOrgId
+          ? await fetchAllSites<Site>(
+              `/orgs/sites?organizationId=${targetOrgId}`,
+              { orgIdOverride: targetOrgId },
+              { strictShape: true },
+            )
+          : await fetchAllSites<Site>('/orgs/sites', { orgIdOverride: null }, { strictShape: true });
+        if (isLatest()) setSites(siteList);
         return siteList;
       } catch (err) {
-        setSites([]);
-        setSitesFailed(true);
-        console.warn('[OrganizationsPage] failed to fetch sites for org', targetOrgId, err);
+        console.warn('[useSiteCrud] failed to fetch sites', targetOrgId ?? '(fleet)', err);
+        if (isLatest()) {
+          setSites([]);
+          setSitesFailed(true);
+        }
         return null;
       } finally {
-        setSitesLoading(false);
+        if (isLatest()) setSitesLoading(false);
       }
     },
-    [orgId],
+    [orgId, fleet],
   );
 
   const clear = useCallback(() => {
+    refreshSeq.current += 1; // an in-flight refresh must not repopulate a cleared list
+    setSitesLoading(false);
     setSites([]);
     setSitesFailed(false);
   }, []);
 
-  const openAdd = useCallback(() => {
-    setSelectedSite(null);
-    setSiteModalMode('add');
-  }, []);
+  const openAdd = useCallback(
+    (targetOrgId?: unknown) => {
+      setWriteOrgId(typeof targetOrgId === 'string' && targetOrgId ? targetOrgId : orgId);
+      setSelectedSite(null);
+      setSiteModalMode('add');
+    },
+    [orgId],
+  );
 
-  const openEdit = useCallback((site: Site) => {
-    setSelectedSite(site);
-    setSiteModalMode('edit');
-  }, []);
+  const openEdit = useCallback(
+    (site: Site) => {
+      setWriteOrgId(site.orgId ?? orgId);
+      setSelectedSite(site);
+      setSiteModalMode('edit');
+    },
+    [orgId],
+  );
 
-  const openDelete = useCallback((site: Site) => {
-    setSelectedSite(site);
-    setSiteModalMode('delete');
-  }, []);
+  const openDelete = useCallback(
+    (site: Site) => {
+      setWriteOrgId(site.orgId ?? orgId);
+      setSelectedSite(site);
+      setSiteModalMode('delete');
+    },
+    [orgId],
+  );
 
   const close = useCallback(() => {
     setSiteModalMode('closed');
     setSelectedSite(null);
+    setWriteOrgId(null);
     setGuidingFirstSite(false);
   }, []);
 
@@ -181,13 +228,26 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     [t],
   );
 
+  const refuseNoOrg = useCallback(() => {
+    console.warn('[useSiteCrud] write refused: no organization resolved for this site');
+    showToast({ message: t('settings:organizationsPage.errors.generic'), type: 'error' });
+  }, [t]);
+
   const submit = useCallback(
     async (values: Record<string, unknown>) => {
-      if (!orgId) return;
+      // The org captured when the modal opened — never the bound org at submit
+      // time, which an org switch may have moved since.
+      const targetOrgId = writeOrgId;
+      if (!targetOrgId) {
+        // Fleet-view add is stopped earlier by the dialog's org picker; this
+        // only trips on a row that carries no org — refuse visibly.
+        refuseNoOrg();
+        return;
+      }
       setSiteSubmitting(true);
       try {
         const payload = {
-          orgId,
+          orgId: targetOrgId,
           name: values.name,
           timezone: values.timezone,
           address: {
@@ -209,7 +269,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         const method = siteModalMode === 'edit' ? 'PATCH' : 'POST';
 
         await runAction({
-          request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload), orgIdOverride: orgId }),
+          request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload), orgIdOverride: targetOrgId }),
           // `organizationsPage.errors.saveSite` interpolates {{status}}, which
           // runAction does not expose when building the fallback — this is the
           // existing status-free sibling, present in all 8 locales.
@@ -225,15 +285,20 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
         setSiteSubmitting(false);
       }
     },
-    [orgId, siteModalMode, selectedSite, refresh, close, onUnauthorized, t, surfaceUnexpectedError],
+    [writeOrgId, siteModalMode, selectedSite, refresh, close, onUnauthorized, t, surfaceUnexpectedError, refuseNoOrg],
   );
 
   const confirmDelete = useCallback(async () => {
-    if (!selectedSite || !orgId) return;
+    const targetOrgId = writeOrgId;
+    if (!selectedSite) return;
+    if (!targetOrgId) {
+      refuseNoOrg();
+      return;
+    }
     setSiteSubmitting(true);
     try {
       await runAction({
-        request: () => fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE', orgIdOverride: orgId }),
+        request: () => fetchWithAuth(`/orgs/sites/${selectedSite.id}`, { method: 'DELETE', orgIdOverride: targetOrgId }),
         errorFallback: t('settings:organizationsPage.errors.deleteSite'),
         onUnauthorized,
       });
@@ -245,7 +310,7 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     } finally {
       setSiteSubmitting(false);
     }
-  }, [selectedSite, orgId, refresh, close, onUnauthorized, t, surfaceUnexpectedError]);
+  }, [selectedSite, writeOrgId, refresh, close, onUnauthorized, t, surfaceUnexpectedError, refuseNoOrg]);
 
   const getSiteFormDefaults = useCallback(
     (site: Site): SiteFormDefaults => ({
@@ -276,6 +341,8 @@ export function useSiteCrud(orgId: string | null, opts: UseSiteCrudOptions): Use
     refresh,
     clear,
     openAdd,
+    writeOrgId,
+    setWriteOrgId,
     openEdit,
     openDelete,
     close,

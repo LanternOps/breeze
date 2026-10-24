@@ -44,9 +44,17 @@ import type { DbExecutor } from './monitors/monitorCompiler';
 import { isQuickSupportOrgType } from './quickSupportOrg';
 import { isUnassignedPoolOrgType } from './unassignedPool/orgType';
 
+/**
+ * `security_agents` and `software_policy` ride the set as LINK PRESENCE ONLY
+ * (#6958 PR E): no settings table is joined for them, so their nested settings
+ * are always null. The derived software-service-watch resolver uses their
+ * presence as an exact, statement-free pre-filter (a device none of whose
+ * applicable policies carries either link can hold no compliance row the
+ * worker wrote for it), keeping a typical beat at zero extra statements.
+ */
 export const POLICY_SET_FEATURE_TYPES = [
   'event_log', 'hardware_monitoring', 'helper', 'monitors', 'onedrive_helper',
-  'pam', 'patch', 'time_sync', 'warranty',
+  'pam', 'patch', 'security_agents', 'software_policy', 'time_sync', 'warranty',
 ] as const;
 export type PolicySetFeatureType = (typeof POLICY_SET_FEATURE_TYPES)[number];
 export type PolicyAssignmentLevel = (typeof configPolicyAssignments.$inferSelect)['level'];

@@ -83,6 +83,8 @@ export default function AiChatSidebar() {
     boundM365ConnectionId,
     loadM365Connections,
     setSelectedM365Connection,
+    composerDraft,
+    setComposerDraft,
     wisp,
   } = useAiStore();
   const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
@@ -448,6 +450,8 @@ export default function AiChatSidebar() {
             {/* Input */}
             <AiChatInput
               onSend={sendMessage}
+              value={composerDraft}
+              onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}

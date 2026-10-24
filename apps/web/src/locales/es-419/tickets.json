@@ -84,7 +84,8 @@
       "low": "Bajo"
     },
     "checklistProgress": "{{done}}/{{total}} pasos",
-    "checklistTitle": "Lista de verificación: {{done}} de {{total}} pasos completados"
+    "checklistTitle": "Lista de verificación: {{done}} de {{total}} pasos completados",
+    "merged": "Fusionado"
   },
   "ticketArchivedList": {
     "emptyTitle": "No hay tickets archivados.",
@@ -176,7 +177,9 @@
       "broken": "No se pudo cargar {{name}}",
       "open": "Abrir adjunto",
       "remove": "Quitar adjunto"
-    }
+    },
+    "mergedFrom": "de {{number}}",
+    "mergedFromUnknown": "de un ticket fusionado"
   },
   "ticketPartsCard": {
     "title": "Partes",
@@ -412,7 +415,8 @@
       "confirm": "Eliminar entradas"
     },
     "filterByType": "Filtrar por tipo",
-    "allTypes": "Todos los tipos"
+    "allTypes": "Todos los tipos",
+    "showMerged": "Mostrar fusionados"
   },
   "ticketWorkbench": {
     "notFound": "No se encontró el ticket. Es posible que se haya eliminado o que usted no tenga acceso.",
@@ -479,6 +483,90 @@
       "blockedCurrency": "Este ticket tiene {{timeCount}} entradas de tiempo sin facturar y {{partCount}} partes sin facturar valoradas en {{sourceCurrency}}, pero {{targetOrg}} factura en {{targetCurrency}}. Factúralas primero o mueve de todos modos: los montos permanecen en {{sourceCurrency}} y solo pueden facturarse en un borrador en {{sourceCurrency}}.",
       "acceptCurrency": "Entiendo que estos montos permanecen en {{sourceCurrency}} y no se convierten.",
       "moveAnyway": "Mover de todos modos"
+    },
+    "merge": {
+      "open": "Fusionar con…",
+      "title": "Fusionar {{number}} con otro ticket",
+      "description": "Los comentarios, el tiempo, las piezas y los vínculos de {{number}} pasan al ticket que elija. Después, {{number}} se cierra y apunta a ese ticket.",
+      "pickerLabel": "Ticket de destino",
+      "searchPlaceholder": "Buscar por número o asunto",
+      "pickerHint": "Solo se muestran los tickets abiertos de esta organización, del más antiguo al más reciente.",
+      "loading": "Cargando tickets…",
+      "candidatesFailed": "No se pudieron cargar los tickets. Cierre el cuadro de diálogo e inténtelo de nuevo.",
+      "noCandidates": "No hay otros tickets abiertos en esta organización.",
+      "previewLoading": "Comprobando la fusión…",
+      "previewFailed": "No se pudo comprobar esta fusión. Vuelva a elegir el ticket para reintentar.",
+      "side": {
+        "source": "Este ticket",
+        "survivor": "El destino",
+        "both": "Ambos tickets"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Un ticket no se puede fusionar consigo mismo.",
+        "MERGE_CROSS_ORG": "Ambos tickets deben pertenecer a la misma organización.",
+        "MERGE_SOURCE_INELIGIBLE": "Este ticket no se puede fusionar (está eliminado o ya fue fusionado).",
+        "MERGE_SURVIVOR_INELIGIBLE": "El destino no puede recibir una fusión (está cerrado, eliminado o ya fue fusionado).",
+        "MERGE_DELIVERABLE_PINNED": "Un ticket vinculado a un entregable de servicio no se puede fusionar.",
+        "MERGE_IMPORT_WINDOW": "Un ticket en una ventana de importación abierta no se puede fusionar.",
+        "MERGE_APPROVAL_STATE": "Los tickets con solicitudes de aprobación o un presupuesto no se pueden fusionar.",
+        "MERGE_WORK_KIND_MISMATCH": "El trabajo de soporte y el de proyecto no se pueden fusionar.",
+        "MERGE_PENDING_INTENTS": "Este ticket tiene acciones de IA pendientes. Espere a que terminen o cancélelas.",
+        "ORG_MERGING": "Esta organización se está fusionando. Inténtelo más tarde.",
+        "MERGE_SCOPE_DENIED": "No tiene acceso a un dispositivo o sitio de uno de estos tickets."
+      },
+      "suggested": "{{number}} es más antiguo; por lo general es el que se conserva.",
+      "movesTo": "Pasa a {{number}}",
+      "nothingMoves": "No se mueve nada más.",
+      "counts": {
+        "ticket_comments": "Comentarios: {{count}}",
+        "time_entries": "Registros de tiempo: {{count}}",
+        "ticket_parts": "Piezas: {{count}}",
+        "ticket_alert_links": "Vínculos de alertas: {{count}}",
+        "ticket_attachments": "Adjuntos: {{count}}",
+        "ticket_email_links": "Vínculos de correo: {{count}}",
+        "ticket_checklist_items": "Elementos de la lista de verificación: {{count}}",
+        "ticket_external_refs": "Referencias externas: {{count}}",
+        "ticket_links": "Vínculos de tickets: {{count}}",
+        "device_vulnerabilities": "Vulnerabilidades: {{count}}",
+        "organization_key_dates": "Recordatorios de fechas clave: {{count}}",
+        "service_deliverable_occurrences": "Ocurrencias de entregables: {{count}}",
+        "ai_operator_task_targets": "Objetivos del operador de IA: {{count}}",
+        "ticket_drafts": "Borradores descartados: {{count}}"
+      },
+      "droppedHeading": "Vínculos que se descartan",
+      "dropped": {
+        "between_pair": "vínculo entre los dos tickets",
+        "pair_unique": "duplicado de un vínculo que el destino ya tiene",
+        "self": "apuntaría a sí mismo",
+        "canonical_duplicate": "duplicado tras reordenar",
+        "cycle": "crearía un ciclo",
+        "limit": "supera el límite de vínculos por ticket"
+      },
+      "retained": "Permanece en {{number}}: {{name}}",
+      "anIntegration": "una integración",
+      "device": {
+        "keeps": "El ticket fusionado conserva {{device}}.",
+        "takes": "El ticket fusionado toma {{device}}.",
+        "unknown": "otro dispositivo"
+      },
+      "requesterAccess": "El solicitante de {{source}} verá el hilo público de {{survivor}} en el portal y podrá responder allí.",
+      "notify": "Enviar un correo al solicitante de {{number}} para avisarle que su solicitud se fusionó",
+      "noRequester": "{{number}} no tiene un solicitante al que enviar correo.",
+      "warning": "Esta acción no se puede deshacer. {{source}} pasa a ser de solo lectura y apunta a {{survivor}}.",
+      "confirm": "Fusionar",
+      "merging": "Fusionando…",
+      "failed": "La fusión falló. Inténtelo de nuevo.",
+      "merged": "Fusionado con {{number}}",
+      "mfaRequired": "Para fusionar tickets se requiere autenticación multifactor. Vuelva a iniciar sesión con MFA y reintente.",
+      "alreadyMerged": "Uno de estos tickets ya fue fusionado. Elija otro destino.",
+      "retry": "Estos tickets cambiaron durante la fusión. Inténtelo de nuevo."
+    },
+    "mergedBanner": {
+      "mergedInto": "Este ticket se fusionó con {{number}} el {{date}}.",
+      "pending": "Este ticket se fusionó con otro ticket el {{date}}.",
+      "deleted": "Este ticket se fusionó el {{date}} con un ticket que se eliminó o que usted no puede ver.",
+      "open": "Abrir {{number}}",
+      "readOnly": "Los tickets fusionados son de solo lectura. Responda en el ticket con el que se fusionó."
     },
     "triage": {
       "title": "Triaje sugerido",

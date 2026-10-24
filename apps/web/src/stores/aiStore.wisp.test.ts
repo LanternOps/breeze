@@ -155,7 +155,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('switching to a history session that is not on the current grant leaves Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', status: 'active', orgId: 'org-a' }, messages: [] });
+      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
       return response({ data: [] });
     });
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
@@ -174,7 +174,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('restoring a Wisp session after a reload (wisp null) rehydrates Wisp mode from its grant', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
       if (url === '/wisp/thread?orgId=org-a') return response({ code: 'no_active_grant' }, 404);
       if (url === '/wisp/thread') return response(threadBody('grant-pw', null));
       return response({ data: [] });
@@ -185,7 +185,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('a Wisp session whose grant is no longer live stays plain (no header for a dead grant)', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', status: 'active', orgId: 'org-a', wispGrantId: 'grant-old' }, messages: [] });
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-old' }, messages: [] });
       if (url.startsWith('/wisp/thread')) return response(threadBody('grant-new', 'org-a'));
       return response({ data: [] });
     });
@@ -198,7 +198,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('loadSession of a plain session leaves Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', status: 'active', orgId: 'org-a' }, messages: [] });
+      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', type: 'general', status: 'active', orgId: 'org-a' }, messages: [] });
       return response({ data: [] });
     });
     useAiStore.setState({ wisp: wisp() });
@@ -232,7 +232,7 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
 
   it('switching to a history session on the same grant keeps Wisp mode', async () => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });
+      if (url === '/ai/sessions/sess-w2') return response({ session: { id: 'sess-w2', type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-1' }, messages: [] });
       return response({ data: [] });
     });
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });

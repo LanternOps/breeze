@@ -82,6 +82,7 @@ export default function TicketFeed({
   onDeleteComment,
   onDeleteAttachment,
   canManageComment,
+  mergedFromNumbers,
 }: {
   /** W08 #3902 — needed to build the authenticated attachment content URL.
    *  Optional so existing callers keep compiling; attachments simply do not
@@ -99,6 +100,9 @@ export default function TicketFeed({
    *  wiring a caller is follow-up work (W08A review). */
   onDeleteAttachment?: (attachmentId: string) => void;
   canManageComment?: (c: TicketComment) => boolean;
+  /** #8972: display numbers of the tombstones comments were moved from, keyed
+   *  by `mergedFromTicketId`. A missing entry renders "from a merged ticket". */
+  mergedFromNumbers?: Record<string, string>;
 }) {
   const { t } = useTranslation('tickets');
   const blocks = useMemo(() => groupFeed(comments), [comments]);
@@ -154,6 +158,13 @@ export default function TicketFeed({
             >
               <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{b.item.authorName ?? (b.item.portalUserId ? t('ticketFeed.requester') : t('ticketFeed.technician'))}</span>
+                {b.item.mergedFromTicketId && (
+                  <span data-testid={`ticket-comment-merged-from-${b.item.id}`}>
+                    {mergedFromNumbers?.[b.item.mergedFromTicketId]
+                      ? t('ticketFeed.mergedFrom', { number: mergedFromNumbers[b.item.mergedFromTicketId] })
+                      : t('ticketFeed.mergedFromUnknown')}
+                  </span>
+                )}
                 {!b.item.isPublic && <span className="font-medium text-warning">{t('ticketFeed.internal')}</span>}
                 {b.item.editedAt && (
                   <span data-testid={`ticket-comment-edited-${b.item.id}`} title={formatDateTime(b.item.editedAt)}>{t('ticketFeed.edited')}</span>

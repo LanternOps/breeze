@@ -5973,8 +5973,10 @@
   "siteDetailPage": {
     "loading": "Seite wird geladen...",
     "backToOrganizations": "Zurück zu Organisationen",
+    "backToSites": "Zurück zu Standorten",
     "breadcrumbs": {
       "settings": "Einstellungen",
+      "sites": "Standorte",
       "organizations": "Organisationen"
     },
     "errors": {
@@ -6060,6 +6062,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Hauptkontakt"
+  },
+  "sites": {
+    "page": {
+      "title": "Standorte",
+      "description": "Orte, an denen Ihre Geräte stehen. Öffnen Sie einen Standort, um Details und Geräte zu sehen.",
+      "organizationColumn": "Organisation",
+      "pickOrg": "Organisation",
+      "pickOrgPlaceholder": "Organisation auswählen",
+      "pickOrgRequired": "Wählen Sie die Organisation, zu der dieser Standort gehört.",
+      "fleetAddDescription": "Fügen Sie einen neuen Standort hinzu und wählen Sie die Organisation, zu der er gehört.",
+      "empty": "Noch keine Standorte. Fügen Sie einer Organisation einen Standort hinzu, um loszulegen.",
+      "viewDevicesAt": "Geräte an {{name}} anzeigen"
+    }
   },
   "siteList": {
     "title": "Standorte",

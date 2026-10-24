@@ -10,6 +10,10 @@ export type Site = {
   name: string;
   timezone: string;
   deviceCount: number;
+  /** Every `GET /orgs/sites` row carries its org; `orgName` rides along on a
+   *  cross-org (no `organizationId`) listing (#9794). */
+  orgId?: string;
+  orgName?: string | null;
   // jsonb on the wire (untyped); every value is checked before display.
   address?: {
     line1?: unknown;
@@ -45,12 +49,35 @@ type SiteListProps = {
   onEdit?: (site: Site) => void;
   onDelete?: (site: Site) => void;
   onSiteClick?: (site: Site) => void;
+  // The options below serve the fleet-wide Sites page (#9794). Each is off by
+  // default, so the organization record's Sites tab renders unchanged.
+  /** Adds an Organization column (and makes search match the org name too). */
+  showOrgColumn?: boolean;
+  /** Links a row's device count; a null href leaves the count as plain text. */
+  deviceCountHref?: (site: Site) => string | null;
+  /** `data-testid` prefix for desktop rows: `<prefix>-<siteId>`. */
+  rowTestIdPrefix?: string;
+  addButtonTestId?: string;
+  emptyMessage?: string;
 };
 
-export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteClick }: SiteListProps) {
+export default function SiteList({
+  sites,
+  onAddSite,
+  onEdit,
+  onDelete,
+  onSiteClick,
+  showOrgColumn = false,
+  deviceCountHref,
+  rowTestIdPrefix = 'site-row',
+  addButtonTestId,
+  emptyMessage,
+}: SiteListProps) {
   const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
   const showSearch = sites.length >= SITE_SEARCH_THRESHOLD;
+  const emptyText = emptyMessage ?? t('siteList.empty');
+  const columnCount = showOrgColumn ? 7 : 6;
 
   const filteredSites = useMemo(() => {
     // A query typed before the list shrank below the threshold must not keep
@@ -61,8 +88,35 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
       return sites;
     }
 
-    return sites.filter(site => site.name.toLowerCase().includes(normalizedQuery));
-  }, [query, sites, showSearch]);
+    return sites.filter(
+      site =>
+        site.name.toLowerCase().includes(normalizedQuery) ||
+        (showOrgColumn && (site.orgName ?? '').toLowerCase().includes(normalizedQuery)),
+    );
+  }, [query, sites, showSearch, showOrgColumn]);
+
+  const renderOrgName = (site: Site) => site.orgName || '—';
+
+  // The count links to the site's devices when the caller can build that href
+  // (R4: an unbuildable one stays plain text, no disabled styling). The click
+  // must not also fire the row's open.
+  const renderDeviceCount = (site: Site) => {
+    const href = deviceCountHref?.(site) ?? null;
+    if (!href) return site.deviceCount;
+    return (
+      <a
+        href={href}
+        data-testid={`sites-device-count-link-${site.id}`}
+        onClick={(event) => event.stopPropagation()}
+        className="rounded-sm text-primary underline underline-offset-2 hover:no-underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {site.deviceCount}
+        {/* The visible number alone is an ambiguous link name; the name still
+            starts with it (label-in-name). */}
+        <span className="sr-only">, {t('sites.page.viewDevicesAt', { name: site.name })}</span>
+      </a>
+    );
+  };
 
   // Row pieces shared by the desktop table and the mobile cards. With
   // `onSiteClick` the whole row opens the site (like the Devices tab's rows)
@@ -162,13 +216,16 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
               className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
             />
           )}
-          <button
-            type="button"
-            onClick={onAddSite}
-            className="flex h-9 w-full items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
-          >
-            {t('siteList.actions.add')}
-          </button>
+          {onAddSite && (
+            <button
+              type="button"
+              onClick={onAddSite}
+              data-testid={addButtonTestId}
+              className="flex h-9 w-full items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
+            >
+              {t('siteList.actions.add')}
+            </button>
+          )}
         </div>
       </div>
 
@@ -180,6 +237,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
             <thead className="bg-muted/40">
               <tr className="text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-3">{t('common:labels.name')}</th>
+                {showOrgColumn && <th className="px-4 py-3">{t('sites.page.organizationColumn')}</th>}
                 <th className="px-4 py-3">{t('siteList.columns.address')}</th>
                 <th className="px-4 py-3">{t('siteList.columns.contact')}</th>
                 <th className="px-4 py-3">{t('siteList.columns.timezone')}</th>
@@ -190,23 +248,24 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
             <tbody className="divide-y">
               {filteredSites.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-muted-foreground">
-                    {t('siteList.empty')}
+                  <td colSpan={columnCount} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    {emptyText}
                   </td>
                 </tr>
               ) : (
                 filteredSites.map(site => (
                   <tr
                     key={site.id}
-                    data-testid={`site-row-${site.id}`}
+                    data-testid={`${rowTestIdPrefix}-${site.id}`}
                     onClick={onSiteClick ? () => onSiteClick(site) : undefined}
                     className={`transition hover:bg-muted/40 ${onSiteClick ? 'cursor-pointer' : ''}`}
                   >
                     <td className="px-4 py-3 text-sm font-medium">{renderSiteName(site)}</td>
+                    {showOrgColumn && <td className="px-4 py-3 text-sm">{renderOrgName(site)}</td>}
                     <td className="px-4 py-3 text-sm">{renderAddress(site)}</td>
                     <td className="px-4 py-3 text-sm">{renderContact(site)}</td>
                     <td className="px-4 py-3 text-sm">{site.timezone}</td>
-                    <td className="px-4 py-3 text-sm tabular-nums">{site.deviceCount}</td>
+                    <td className="px-4 py-3 text-sm tabular-nums">{renderDeviceCount(site)}</td>
                     <td className="px-4 py-3 text-right">{renderActions(site)}</td>
                   </tr>
                 ))
@@ -218,7 +277,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
           filteredSites.length === 0 ? (
             <DataCard>
               <p className="py-2 text-center text-sm text-muted-foreground">
-                {t('siteList.empty')}
+                {emptyText}
               </p>
             </DataCard>
           ) : (
@@ -226,6 +285,11 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
               <DataCard key={site.id} onClick={onSiteClick ? () => onSiteClick(site) : undefined}>
                 <div className="text-sm font-semibold">{renderSiteName(site)}</div>
                 <div className="mt-3 space-y-2 border-t pt-3">
+                  {showOrgColumn && (
+                    <CardField label={t('sites.page.organizationColumn')}>
+                      <span className="text-sm">{renderOrgName(site)}</span>
+                    </CardField>
+                  )}
                   <CardField label={t('siteList.columns.address')}>
                     <span className="text-sm">{renderAddress(site)}</span>
                   </CardField>
@@ -236,7 +300,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
                     <span className="text-sm">{site.timezone}</span>
                   </CardField>
                   <CardField label={t('siteList.columns.devices')}>
-                    <span className="text-sm">{site.deviceCount}</span>
+                    <span className="text-sm">{renderDeviceCount(site)}</span>
                   </CardField>
                 </div>
                 <CardActions>{renderActions(site)}</CardActions>

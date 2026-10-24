@@ -155,6 +155,7 @@
     "settingsProfile": "Profil Ayarları",
     "settingsRoles": "Roller",
     "settingsSitesDetail": "Site Ayarları",
+    "settingsSites": "Siteler",
     "settingsSso": "Tek Oturum Açma (SSO)",
     "settingsUsers": "Kullanıcılar",
     "settingsVariables": "Değişkenler",
@@ -182,7 +183,8 @@
     "endpointMessages": "Uç Nokta Mesajları",
     "securityDetectionRules": "Tespit Kuralları",
     "settingsPlan": "Plan ve özellikler",
-    "settingsWispMemory": "Wisp belleği"
+    "settingsWispMemory": "Wisp belleği",
+    "wispThread": "Wisp konuşması"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

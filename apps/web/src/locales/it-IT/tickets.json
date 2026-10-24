@@ -84,7 +84,8 @@
       "low": "Bassa"
     },
     "checklistProgress": "{{done}}/{{total}} passaggi",
-    "checklistTitle": "Checklist: {{done}} passaggi su {{total}} completati"
+    "checklistTitle": "Checklist: {{done}} passaggi su {{total}} completati",
+    "merged": "Unito"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nessun ticket archiviato.",
@@ -176,7 +177,9 @@
       "broken": "Impossibile caricare {{name}}",
       "open": "Apri allegato",
       "remove": "Rimuovi allegato"
-    }
+    },
+    "mergedFrom": "da {{number}}",
+    "mergedFromUnknown": "da un ticket unito"
   },
   "ticketPartsCard": {
     "title": "Parti",
@@ -412,7 +415,8 @@
       "confirm": "Elimina ticket"
     },
     "filterByType": "Filtra per tipo",
-    "allTypes": "Tutti i tipi"
+    "allTypes": "Tutti i tipi",
+    "showMerged": "Mostra uniti"
   },
   "ticketWorkbench": {
     "notFound": "Ticket non trovato. Potrebbe essere stato eliminato oppure potresti non avere accesso.",
@@ -479,6 +483,90 @@
       "blockedCurrency": "Questo ticket ha {{timeCount}} registrazioni di tempo non fatturate e {{partCount}} parti non fatturate valorizzate in {{sourceCurrency}}, ma {{targetOrg}} fattura in {{targetCurrency}}. Fatturale prima, oppure sposta comunque: gli importi restano in {{sourceCurrency}} e possono essere fatturati solo su una bozza in {{sourceCurrency}}.",
       "acceptCurrency": "Capisco che questi importi restano in {{sourceCurrency}} e non vengono convertiti.",
       "moveAnyway": "Sposta comunque"
+    },
+    "merge": {
+      "open": "Unisci a…",
+      "title": "Unisci {{number}} a un altro ticket",
+      "description": "Commenti, tempo, parti e collegamenti di {{number}} vengono spostati nel ticket scelto. {{number}} viene poi chiuso e rimanda a quel ticket.",
+      "pickerLabel": "Ticket di destinazione",
+      "searchPlaceholder": "Cerca per numero o oggetto",
+      "pickerHint": "Sono elencati solo i ticket aperti di questa organizzazione, dal più vecchio.",
+      "loading": "Caricamento dei ticket…",
+      "candidatesFailed": "Impossibile caricare i ticket. Chiudi la finestra e riprova.",
+      "noCandidates": "Nessun altro ticket aperto in questa organizzazione.",
+      "previewLoading": "Verifica dell’unione…",
+      "previewFailed": "Impossibile verificare questa unione. Seleziona di nuovo il ticket per riprovare.",
+      "side": {
+        "source": "Questo ticket",
+        "survivor": "La destinazione",
+        "both": "Entrambi i ticket"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Un ticket non può essere unito a se stesso.",
+        "MERGE_CROSS_ORG": "Entrambi i ticket devono appartenere alla stessa organizzazione.",
+        "MERGE_SOURCE_INELIGIBLE": "Questo ticket non può essere unito (è eliminato o già unito).",
+        "MERGE_SURVIVOR_INELIGIBLE": "La destinazione non può ricevere un’unione (è chiusa, eliminata o già unita).",
+        "MERGE_DELIVERABLE_PINNED": "Un ticket legato a un deliverable di servizio non può essere unito.",
+        "MERGE_IMPORT_WINDOW": "Un ticket in una finestra di importazione aperta non può essere unito.",
+        "MERGE_APPROVAL_STATE": "I ticket con richieste di approvazione o un budget non possono essere uniti.",
+        "MERGE_WORK_KIND_MISMATCH": "Il lavoro di supporto e quello di progetto non possono essere uniti.",
+        "MERGE_PENDING_INTENTS": "Questo ticket ha azioni IA in sospeso. Attendi che terminino o annullale.",
+        "ORG_MERGING": "Questa organizzazione è in fase di unione. Riprova più tardi.",
+        "MERGE_SCOPE_DENIED": "Non hai accesso a un dispositivo o a un sito di uno di questi ticket."
+      },
+      "suggested": "{{number}} è più vecchio; di solito è quello da mantenere.",
+      "movesTo": "Spostato in {{number}}",
+      "nothingMoves": "Non viene spostato altro.",
+      "counts": {
+        "ticket_comments": "Commenti: {{count}}",
+        "time_entries": "Registrazioni di tempo: {{count}}",
+        "ticket_parts": "Parti: {{count}}",
+        "ticket_alert_links": "Collegamenti agli avvisi: {{count}}",
+        "ticket_attachments": "Allegati: {{count}}",
+        "ticket_email_links": "Collegamenti email: {{count}}",
+        "ticket_checklist_items": "Voci della checklist: {{count}}",
+        "ticket_external_refs": "Riferimenti esterni: {{count}}",
+        "ticket_links": "Collegamenti tra ticket: {{count}}",
+        "device_vulnerabilities": "Vulnerabilità: {{count}}",
+        "organization_key_dates": "Promemoria delle date chiave: {{count}}",
+        "service_deliverable_occurrences": "Occorrenze dei deliverable: {{count}}",
+        "ai_operator_task_targets": "Destinazioni dell’operatore IA: {{count}}",
+        "ticket_drafts": "Bozze scartate: {{count}}"
+      },
+      "droppedHeading": "Collegamenti rimossi",
+      "dropped": {
+        "between_pair": "collegamento tra i due ticket",
+        "pair_unique": "duplicato di un collegamento già presente nella destinazione",
+        "self": "punterebbe a se stesso",
+        "canonical_duplicate": "duplicato dopo il riordino",
+        "cycle": "creerebbe un ciclo",
+        "limit": "oltre il limite di collegamenti per ticket"
+      },
+      "retained": "Rimane su {{number}}: {{name}}",
+      "anIntegration": "un’integrazione",
+      "device": {
+        "keeps": "Il ticket unito mantiene {{device}}.",
+        "takes": "Il ticket unito acquisisce {{device}}.",
+        "unknown": "un altro dispositivo"
+      },
+      "requesterAccess": "Il richiedente di {{source}} vedrà la conversazione pubblica di {{survivor}} nel portale e potrà rispondere lì.",
+      "notify": "Invia un’email al richiedente di {{number}} per avvisarlo che la sua richiesta è stata unita",
+      "noRequester": "{{number}} non ha un richiedente a cui inviare email.",
+      "warning": "Questa operazione non può essere annullata. {{source}} diventa di sola lettura e rimanda a {{survivor}}.",
+      "confirm": "Unisci",
+      "merging": "Unione in corso…",
+      "failed": "Unione non riuscita. Riprova.",
+      "merged": "Unito a {{number}}",
+      "mfaRequired": "Per unire i ticket è richiesta l’autenticazione a più fattori. Accedi di nuovo con MFA e riprova.",
+      "alreadyMerged": "Uno di questi ticket è già stato unito. Scegli un’altra destinazione.",
+      "retry": "Questi ticket sono cambiati durante l’unione. Riprova."
+    },
+    "mergedBanner": {
+      "mergedInto": "Questo ticket è stato unito a {{number}} il {{date}}.",
+      "pending": "Questo ticket è stato unito a un altro ticket il {{date}}.",
+      "deleted": "Questo ticket è stato unito il {{date}} a un ticket che è stato eliminato o che non puoi vedere.",
+      "open": "Apri {{number}}",
+      "readOnly": "I ticket uniti sono di sola lettura. Rispondi nel ticket a cui è stato unito."
     },
     "triage": {
       "title": "Triage suggerito",

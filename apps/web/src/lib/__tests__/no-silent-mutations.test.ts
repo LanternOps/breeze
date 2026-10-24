@@ -87,6 +87,10 @@ const TARGET_GLOBS = [
   // Wisp W05a (#9911): concerns list snooze/dismiss/resolve go through runAction.
   'src/components/ai/WispConcernsPanel.tsx',
   'src/lib/wispConcernsApi.ts',
+  // Wisp W06b (#9918): grant pause/resume go through runAction; the thread page (reads only today) is
+  // listed per the W06 plan so a mutation added there later cannot go silent.
+  'src/components/wisp/WispThreadPage.tsx',
+  'src/components/wisp/WispGrantPauseControl.tsx',
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -987,8 +991,9 @@ describe('no silent mutations in targeted set', () => {
     // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 262 → 263.
     // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 263 → 265.
     // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 265 → 266.
-    // Bulk site move (#9796) adds devices/bulkSiteMove.ts (+1 = 267).
-    expect(absoluteFiles.length).toBe(267);
+    // Wisp W06b (#9918) adds WispThreadPage/WispGrantPauseControl: 266 → 268;
+    // bulk site move (#9796) adds devices/bulkSiteMove.ts (+1 = 269).
+    expect(absoluteFiles.length).toBe(269);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

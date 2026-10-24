@@ -6021,8 +6021,10 @@
   "siteDetailPage": {
     "loading": "Chargement du site...",
     "backToOrganizations": "Retour aux organisations",
+    "backToSites": "Retour aux sites",
     "breadcrumbs": {
       "settings": "Paramètres",
+      "sites": "Sites",
       "organizations": "Organisations"
     },
     "errors": {
@@ -6108,6 +6110,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contact principal"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Les emplacements où se trouvent vos appareils. Ouvrez un site pour voir ses détails et ses appareils.",
+      "organizationColumn": "Organisation",
+      "pickOrg": "Organisation",
+      "pickOrgPlaceholder": "Sélectionnez une organisation",
+      "pickOrgRequired": "Sélectionnez l'organisation à laquelle appartient ce site.",
+      "fleetAddDescription": "Ajoutez un nouveau site et sélectionnez l'organisation à laquelle il appartient.",
+      "empty": "Aucun site pour l'instant. Ajoutez un site à une organisation pour commencer.",
+      "viewDevicesAt": "voir les appareils de {{name}}"
+    }
   },
   "siteList": {
     "title": "Sites",
