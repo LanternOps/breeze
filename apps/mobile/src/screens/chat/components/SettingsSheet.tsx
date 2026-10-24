@@ -6,7 +6,6 @@ import {
   Modal,
   Pressable,
   ScrollView,
-  Switch,
   Text,
   View,
 } from 'react-native';
@@ -21,6 +20,10 @@ import Constants from 'expo-constants';
 import { useApprovalTheme, palette, radii, spacing, type } from '../../../theme';
 import {
   clearNotificationPrefsError,
+  clearWispPrefsError,
+  loadWispNudgePrefs,
+  selectWispNudgePrefsError,
+  selectWispNudgePrefsErrorKind,
   loadTicketPushPrefs,
   saveTicketPushPrefs,
   selectTicketPushPrefs,
@@ -55,6 +58,8 @@ import { useNetworkConnected } from '../../../lib/useNetworkConnected';
 import { ToastOutlet, useToast } from '../../../components/toast/ToastHost';
 import { notificationsRowCopy, type NotificationsRowCopy } from './pushUnavailableCopy';
 import { AiApprovalModeRow } from './AiApprovalModeRow';
+import { SegmentedRow, ToggleRow } from './settingsRows';
+import { WispNudgePreferenceRows } from './WispNudgePreferenceRows';
 import { Avatar } from './Avatar';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
 import { LocationSuggestionsRow } from '../../settings/LocationSuggestionsRow';
@@ -102,6 +107,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
   const pushRegistrationReason = useAppSelector((s) => s.auth.pushRegistrationReason);
   const prefsError = useAppSelector(selectTicketPushPrefsError);
   const prefsErrorKind = useAppSelector(selectTicketPushPrefsErrorKind);
+  const wispPrefsError = useAppSelector(selectWispNudgePrefsError);
+  const wispPrefsErrorKind = useAppSelector(selectWispNudgePrefsErrorKind);
 
   const screenWidth = Dimensions.get('window').width;
   const sheetWidth = Math.min(screenWidth * 0.84, 420);
@@ -138,6 +145,8 @@ export function SettingsSheet({ visible, onCancel }: Props) {
     // have changed them since this sheet last opened. Only worth loading when
     // push actually registered — the controls are hidden otherwise (#4336).
     if (pushRegistration === 'ok') void dispatch(loadTicketPushPrefs());
+    // Wisp in-app nudges do not need push, so this load is not push-gated.
+    void dispatch(loadWispNudgePrefs());
   }, [visible, sheetWidth, dispatch, pushRegistration]);
 
   // A failed preference save has already been rolled back in the slice; without
@@ -155,6 +164,17 @@ export function SettingsSheet({ visible, onCancel }: Props) {
     });
     dispatch(clearNotificationPrefsError());
   }, [prefsError, prefsErrorKind, dispatch]);
+
+  // Same contract for Wisp prefs, but only a failed SAVE is toasted (the
+  // optimistic value has already been rolled back); a load failure just leaves
+  // the defaults showing.
+  useEffect(() => {
+    if (!wispPrefsError) return;
+    if (wispPrefsErrorKind === 'save') {
+      showToast({ kind: 'error', text: 'Could not save Wisp settings.' });
+    }
+    dispatch(clearWispPrefsError());
+  }, [wispPrefsError, wispPrefsErrorKind, dispatch]);
 
   function onRevokeDevice(device: PairedMobileDevice) {
     if (device.isCurrent) {
@@ -478,6 +498,9 @@ function SheetBody({
             nowhere to send what these settings govern (#4336). */}
         {pushRegistered ? <TicketPushPreferenceRows theme={theme} /> : null}
 
+        <SectionHeader label="Wisp" theme={theme} />
+        <WispNudgePreferenceRows theme={theme} pushRegistered={pushRegistered} />
+
         <SectionDivider color={theme.border} />
 
         <SectionHeader label="AI chat" theme={theme} />
@@ -774,50 +797,6 @@ function AppRow({
   );
 }
 
-function ToggleRow({
-  label,
-  description,
-  value,
-  onChange,
-  disabled,
-  theme,
-}: {
-  label: string;
-  description?: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-  theme: ReturnType<typeof useApprovalTheme>;
-}) {
-  return (
-    <View
-      style={{
-        paddingHorizontal: spacing[6],
-        paddingVertical: spacing[3],
-        flexDirection: 'row',
-        alignItems: 'center',
-        opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      <View style={{ flex: 1, marginRight: spacing[3] }}>
-        <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
-        {description ? (
-          <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
-            {description}
-          </Text>
-        ) : null}
-      </View>
-      <Switch
-        value={value}
-        onValueChange={onChange}
-        disabled={disabled}
-        trackColor={{ false: theme.bg3, true: palette.brand.deep }}
-        thumbColor={value ? palette.brand.base : theme.textMd}
-      />
-    </View>
-  );
-}
-
 /**
  * W10 (#4336). The two ticket push categories.
  *
@@ -878,74 +857,6 @@ function TicketPushPreferenceRows({ theme }: { theme: ReturnType<typeof useAppro
         theme={theme}
       />
     </>
-  );
-}
-
-function SegmentedRow<T extends string>({
-  label,
-  description,
-  value,
-  options,
-  onChange,
-  disabled,
-  theme,
-}: {
-  label: string;
-  description?: string;
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-  disabled?: boolean;
-  theme: ReturnType<typeof useApprovalTheme>;
-}) {
-  return (
-    <View
-      style={{
-        paddingHorizontal: spacing[6],
-        paddingVertical: spacing[3],
-        opacity: disabled ? 0.5 : 1,
-      }}
-    >
-      <Text style={[type.bodyMd, { color: theme.textHi }]}>{label}</Text>
-      {description ? (
-        <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[1] }]}>
-          {description}
-        </Text>
-      ) : null}
-      <View
-        style={{
-          flexDirection: 'row',
-          marginTop: spacing[2],
-          borderRadius: radii.md,
-          backgroundColor: theme.bg3,
-          padding: 2,
-        }}
-      >
-        {options.map((option) => {
-          const selected = option.value === value;
-          return (
-            <Pressable
-              key={option.value}
-              accessibilityRole="button"
-              accessibilityState={{ selected, disabled: !!disabled }}
-              disabled={disabled}
-              onPress={() => onChange(option.value)}
-              style={{
-                flex: 1,
-                paddingVertical: spacing[2],
-                alignItems: 'center',
-                borderRadius: radii.sm,
-                backgroundColor: selected ? palette.brand.deep : 'transparent',
-              }}
-            >
-              <Text style={[type.meta, { color: selected ? palette.brand.base : theme.textMd }]}>
-                {option.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </View>
   );
 }
 
