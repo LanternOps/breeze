@@ -165,6 +165,24 @@ describe('registry_operations reads are agent executions, not device reads (§2.
   });
 });
 
+describe('file_operations write/rename require scripts:execute, like file upload/move', () => {
+  // routes/systemTools/fileBrowser.ts requireScriptsExecute.
+  it.each(['write', 'rename'])('%s is denied to devices:execute without scripts:execute', (action) => {
+    expect(allows(parseGrants(['devices:read', 'devices:execute']), 'file_operations', { action })).toBe(false);
+  });
+  it.each(['write', 'rename'])('%s is allowed with devices:execute + scripts:execute', (action) => {
+    expect(allows(parseGrants(['devices:execute', 'scripts:execute']), 'file_operations', { action })).toBe(true);
+  });
+  it.each(['write', 'rename'])('%s stays allowed to every seeded role that already held it', (action) => {
+    expect(allows(ORG_TECHNICIAN, 'file_operations', { action })).toBe(true);
+    expect(allows(grantsOf('Partner Technician'), 'file_operations', { action })).toBe(true);
+    expect(allows(grantsOf('Org Admin'), 'file_operations', { action })).toBe(true);
+  });
+  it.each(['list', 'read', 'delete', 'mkdir'])('%s is not raised to scripts:execute', (action) => {
+    expect(allows(parseGrants(['devices:execute']), 'file_operations', { action })).toBe(true);
+  });
+});
+
 describe('live device inspection requires devices:execute, like every /system-tools route', () => {
   // routes/systemTools/index.ts gates every method on DEVICES_EXECUTE: each of
   // these actions dispatches a live command to the agent. Cached inventory
