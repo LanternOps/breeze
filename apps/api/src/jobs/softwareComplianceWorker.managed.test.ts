@@ -21,7 +21,16 @@ const {
   pruneAllMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
   recordCoverageMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
   repairMock: vi.fn(async () => ({ links: 0, changed: 0, failed: 0 })),
-  dbSelectMock: vi.fn(),
+  // Any read the FIFO below does not prime returns no rows. #6958 PR E added
+  // one such read to every allowlist pass with a catalogId rule (the
+  // software_versions lookup for service_running clauses); [] there means
+  // "no clause", which leaves every assertion in this file unchanged.
+  dbSelectMock: vi.fn(() => ({
+    from: () => ({
+      where: () => Object.assign(Promise.resolve([]), { limit: () => Promise.resolve([]) }),
+      limit: () => Promise.resolve([]),
+    }),
+  })),
   dbUpdateSetMock: vi.fn((_values: Record<string, unknown>) => ({ where: async () => undefined })),
   resolveDeviceIdsMock: vi.fn(async () => ['device-1']),
   upsertMock: vi.fn(async (_inputs: Array<Record<string, unknown>>) => undefined),

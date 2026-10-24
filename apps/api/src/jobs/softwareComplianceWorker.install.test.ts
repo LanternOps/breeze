@@ -14,7 +14,16 @@ const {
   latestPolicyOwnedInstallMock,
 } = vi.hoisted(() => ({
   addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
-  dbSelectMock: vi.fn(),
+  // Any read the FIFO below does not prime returns no rows. #6958 PR E added
+  // one such read to every allowlist pass with a catalogId rule (the
+  // software_versions lookup for service_running clauses); [] there means
+  // "no clause", which leaves every assertion in this file unchanged.
+  dbSelectMock: vi.fn(() => ({
+    from: () => ({
+      where: () => Object.assign(Promise.resolve([]), { limit: () => Promise.resolve([]) }),
+      limit: () => Promise.resolve([]),
+    }),
+  })),
   // Captures the `.set()` payload so the SQL attempt-counter increment is
   // actually assertable. A mock that swallowed it would make
   // `expect(dbUpdateMock).toHaveBeenCalled()` pass against a wrong column, a
