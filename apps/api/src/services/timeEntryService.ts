@@ -17,6 +17,7 @@ import { isRepresentableInCurrency, minorUnitExponent, roundToCurrency, multiply
 import type { CreateTimeEntryInput, UpdateTimeEntryInput, TicketPartInput, BillingStatus, TimeEntrySource } from '@breeze/shared';
 import { emitTicketEvent } from './ticketEvents';
 import { lockTicketForWrite, lockTicketsForWrite } from './ticketRowLock';
+import { assertTicketNotMerged, assertTicketsNotMerged } from './ticketMerge/errors';
 import {
   peekEntry, peekRunningEntry, planGatedWrite, settleGatedWrite, settleRemovedEntry,
   type GatedWritePlan,
@@ -552,6 +553,10 @@ async function lockTicketRow(ticketId: string): Promise<{ id: string; orgId: str
   // (services/ticketRowLock.ts); the 404 shape stays this service's own.
   const row = await lockTicketForWrite(db, ticketId);
   if (!row) throw new TimeEntryServiceError('Ticket not found', 404, 'TICKET_NOT_FOUND');
+  // #8972 W1: no time or part write lands on a merged tombstone (409
+  // TICKET_MERGED), checked under the lock; every time-entry and part lock
+  // in this file funnels through here.
+  assertTicketNotMerged(row);
   return row;
 }
 
@@ -1728,7 +1733,7 @@ export async function approveTimeEntries(ids: string[], approve: boolean, actor:
   if (eligible.length > 0) {
     // #8972 W0: the entries' tickets first, ascending, in one statement. The
     // UPDATE below then never waits on a ticket while holding an entry.
-    await lockTicketsForWrite(db, eligible.map((id) => found.get(id)?.ticketId));
+    assertTicketsNotMerged((await lockTicketsForWrite(db, eligible.map((id) => found.get(id)?.ticketId))).values());
     updated = await db
       .update(timeEntries)
       .set(approve

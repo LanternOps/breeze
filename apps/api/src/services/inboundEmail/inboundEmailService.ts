@@ -37,6 +37,7 @@ function isPolledProvider(p: string): p is PolledMailboxProvider {
 import { stripTicketTokens, findTicketInPartner, findClosedTicketInPartner, type SenderResolver } from './threadMatcher';
 import { claimMessageLink, findLinkByMessageId, normalizeMessageId } from '../ticketEmailLinks';
 import { ownOutboundReason, ticketCreationLoopReason } from './loopPrevention';
+import { TicketMergedError } from '../ticketMerge/errors';
 
 // Synthetic actor for the inbound pipeline. Its userId is only ever written to
 // audit_logs.actor_id (NOT NULL, but no FK to users — same pattern as
@@ -623,6 +624,11 @@ export async function processInboundEmail(
     // (8) 'quarantine' (default) -> review queue for manual handling.
     await logInbound(n, partnerId, 'quarantined', null);
   } catch (err) {
+    // #8972: the matched ticket was merged between the (unlocked) match and the
+    // comment's ticket lock. Not a failure of this message: rethrow so the outer
+    // transaction rolls back and BullMQ retries — the re-run matches through
+    // merged_into_ticket_id and lands the reply on the survivor.
+    if (err instanceof TicketMergedError) throw err;
     // (9) Any guard/error after partner resolution -> failed, logged under the
     // RESOLVED partner. Never a cross-tenant write.
     //

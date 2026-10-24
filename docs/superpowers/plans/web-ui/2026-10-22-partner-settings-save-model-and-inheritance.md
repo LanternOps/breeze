@@ -1,6 +1,8 @@
 ---
-tracking_issue: LanternOps/breeze#9170
+tracking_issue: LanternOps/breeze#9786
+spec_issue: LanternOps/breeze#9170
 waves: [W1, W2, W3, W4]
+status: approved (Gate B) — waves tracked on LanternOps/breeze#9786
 ---
 
 # Partner settings: one save model and inheritance visibility Implementation Plan

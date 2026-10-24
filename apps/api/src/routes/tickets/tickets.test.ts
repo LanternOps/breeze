@@ -193,6 +193,7 @@ vi.mock('../../db/schema', () => ({
     slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
     slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
     deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type',
+    mergedIntoTicketId: 'mergedIntoTicketId',
     // #8973 W3 stored deadlines.
     responseDueAt: 'response_due_at', resolutionDueAt: 'resolution_due_at',
     responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at',
@@ -466,6 +467,30 @@ describe('GET /tickets', () => {
     expect(serialized).toContain(DEVICE_ID);
   });
 
+  it('hides merged tombstones by default (merged_into_ticket_id IS NULL) (#8972)', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(lastWhereArgs[0]!.conditions)).toContain('mergedIntoTicketId');
+  });
+
+  it('showMerged=true includes tombstones (no merged_into_ticket_id predicate) (#8972)', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    const res = await makeApp().request('/tickets?showMerged=true');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(lastWhereArgs[0]!.conditions)).not.toContain('mergedIntoTicketId');
+  });
+
+  it('the breached / at-risk queue filters exclude tombstones even with showMerged=true (#8972)', async () => {
+    dbSelectMock.mockResolvedValue([]);
+    for (const slaState of ['breached', 'at_risk']) {
+      lastWhereArgs.length = 0;
+      const res = await makeApp().request(`/tickets?showMerged=true&slaState=${slaState}`);
+      expect(res.status).toBe(200);
+      expect(JSON.stringify(lastWhereArgs[0]!.conditions)).toContain('mergedIntoTicketId');
+    }
+  });
+
   it('rejects a non-uuid deviceId', async () => {
     const res = await makeApp().request('/tickets?deviceId=not-a-uuid');
     expect(res.status).toBe(400);
@@ -679,6 +704,14 @@ describe('GET /tickets/stats', () => {
     const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
     expect(serialized).toContain('deletedAt');
     expect(serialized).toContain('is null');
+  });
+
+  it('excludes merged tombstones from queue counts (#8972)', async () => {
+    dbGroupByMock.mockResolvedValue([]);
+    dbSelectMock.mockResolvedValue([{ atRisk: 0 }]);
+    const res = await makeApp().request('/tickets/stats');
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(lastWhereArgs[0]!.conditions)).toContain('mergedIntoTicketId');
   });
 
   it('403 when partner scope has null partnerId (broken context)', async () => {
@@ -1112,6 +1145,31 @@ describe('POST /tickets/:id/status', () => {
       body: JSON.stringify({ status: 'pending' })
     });
     expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /tickets/:id/status — merged tombstone (#8972 W1)', () => {
+  beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
+
+  it('handleServiceError maps TicketMergedError to 409 { error, code: TICKET_MERGED, details: { mergedIntoTicketId } }', async () => {
+    dbSelectMock.mockResolvedValueOnce([STUB_TICKET]);
+    const { TicketMergedError } = await import('../../services/ticketMerge/errors');
+    serviceMocks.changeTicketStatus.mockRejectedValue(new TicketMergedError(TICKET_ID, 'surv-1'));
+    // The production app.onError rebuilds an HTTPException's body WITHOUT
+    // `details`, so the route itself must map it: an app whose onError answers
+    // 500 proves the 409 + survivor id come from handleServiceError.
+    const app = makeApp();
+    app.onError((_err, c) => c.json({ error: 'unmapped' }, 500));
+
+    const res = await app.request(`/tickets/${TICKET_ID}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'pending' })
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: expect.any(String), code: 'TICKET_MERGED', details: { mergedIntoTicketId: 'surv-1' },
+    });
   });
 });
 

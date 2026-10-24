@@ -7,6 +7,7 @@ import { createAuditLogAsync } from './auditService';
 import { emitTicketEvent } from './ticketEvents';
 import { lockOrgTicketLinks } from './ticketLinkLock';
 import { lockTicketsForWrite } from './ticketRowLock';
+import { assertTicketsNotMerged } from './ticketMerge/errors';
 import {
   actorAuditIdentity,
   actorAuthorFields,
@@ -210,6 +211,8 @@ async function lockTickets(tx: Tx, ids: readonly [string, string]): Promise<Map<
   // rows FOR UPDATE in ascending id order in one statement, as before — then
   // the display numbers, read under that lock.
   const locked = await lockTicketsForWrite(tx, ids);
+  // #8972 W1: no link is added to or removed from a merged tombstone.
+  assertTicketsNotMerged(locked.values());
   if (locked.size === 0) return new Map();
   const numbers = await tx.execute(sql`
     SELECT id, COALESCE(internal_number, ticket_number) AS number

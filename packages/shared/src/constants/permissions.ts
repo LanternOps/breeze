@@ -230,6 +230,10 @@ export const PERMISSION_GRANTS = {
   // deliberately to the techs who may use premium/fast offerings whose
   // `required_permission` names it. Seeded on NO role.
   AI_MODELS_PREMIUM: { resource: 'ai_models', action: 'premium' },
+  // Wisp W02 (spec §4.6): the execute-class gate on the sandbox workspace
+  // tools (workspace_stage/run/collect/cancel), which run arbitrary code.
+  // Partner Admin holds it through `*:*`; seeded on NO other role.
+  AI_WORKSPACE_EXECUTE: { resource: 'ai_workspace', action: 'execute' },
 
   // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07 §5): manage registrations…
   TOOL_SOURCES_READ: { resource: 'tool_sources', action: 'read' },

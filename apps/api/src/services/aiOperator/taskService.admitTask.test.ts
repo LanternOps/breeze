@@ -207,14 +207,15 @@ describe('admitServiceRecoveryTask — the shipped insert, characterized (R1a Ta
     const values = h.inserts[0]!.values;
     expect(Object.keys(values)).toEqual([
       'id', 'orgId', 'agentId', 'agentKind', 'agentName', 'workflowKey', 'workflowVersion', 'mode', 'originKind',
-      'requesterUserId', 'objective', 'deviceId', 'targetLabel', 'state', 'phase', 'revision', 'leaseEpoch',
+      // Wisp W02 (#9908): the grant pin pair, always written (null without a grant).
+      'requesterUserId', 'grantId', 'grantRevisionId', 'objective', 'deviceId', 'targetLabel', 'state', 'phase', 'revision', 'leaseEpoch',
       'attemptOrdinal', 'currentStepKey', 'checkpoint', 'deadlineAt', 'nextWakeAt', 'accountingRootTaskId',
       'clientIdempotencyKey',
     ]);
     expect({ ...values, id: 'ID' }).toEqual({
       id: 'ID', orgId: ORG, agentId: AGENT, agentKind: 'triage', agentName: 'Triage',
       workflowKey: 'service_recovery', workflowVersion: 1, mode: 'live', originKind: 'alert',
-      requesterUserId: 'user-1', objective: 'Restore the Spooler service on WIN-01',
+      requesterUserId: 'user-1', grantId: null, grantRevisionId: null, objective: 'Restore the Spooler service on WIN-01',
       deviceId: DEVICE, targetLabel: 'WIN-01', state: 'queued', phase: 'investigate', revision: 1,
       leaseEpoch: 0, attemptOrdinal: 0, currentStepKey: 'investigate',
       checkpoint: JSON.parse(SR_GOLDEN_CHECKPOINT),

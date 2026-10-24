@@ -200,6 +200,8 @@ const ticketColumns = {
   createdAt: tickets.createdAt,
   updatedAt: tickets.updatedAt,
   migrationWindowId: tickets.migrationWindowId,
+  mergedIntoTicketId: tickets.mergedIntoTicketId,
+  mergedAt: tickets.mergedAt,
   changeXid: sql<string>`${tickets.partnerFeedXid}::text`,
 };
 
@@ -256,6 +258,9 @@ export function toPartnerTicketRecord(row: TicketRow, ref: TicketExternalRef | n
     createdAt: iso(row.createdAt ?? null)!,
     updatedAt: iso(row.updatedAt ?? null)!,
     migrationWindowId: row.migrationWindowId ?? null,
+    // #8972: set on a merge tombstone (read-only); null on every other ticket.
+    mergedIntoTicketId: row.mergedIntoTicketId ?? null,
+    mergedAt: iso(row.mergedAt ?? null),
     changeVersion: String(row.changeXid),
   };
   return { ...withoutRevision, revision: computePartnerExportRevision(withoutRevision) };
