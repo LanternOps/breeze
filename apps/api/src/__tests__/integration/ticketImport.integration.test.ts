@@ -20,7 +20,9 @@
  *     the same rule, keyed on the latest status_change row;
  *   - a comment already imported under a ticket the window cannot see is
  *     skipped on its unique-index conflict, and the rest of its chunk commits;
- *   - another partner's window is not found, whatever its state.
+ *   - another partner's window is not found, whatever its state;
+ *   - (#8313 W0, spec 2026-10-19 §5.3) a display-only requester may have no
+ *     email.
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -275,6 +277,15 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     await closeWindow(fx, window.id);
     const [closed] = await getTestDb().select().from(migrationWindows).where(eq(migrationWindows.id, window.id));
     expect(closed!.summary).toMatchObject({ ticketsImported: 1, commentsImported: 3 });
+  });
+
+  runDb('a display-only requester with no email is imported with its name and a NULL submitter email', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const result = await importTicket(window.id, source(fx, { requester: { name: 'Walk-in Customer' }, comments: [] }), { partnerId: fx.partner.id });
+    expect(result).toMatchObject({ outcome: 'created' });
+    const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, result.ticketId));
+    expect(row).toMatchObject({ source: 'email', submitterName: 'Walk-in Customer', submitterEmail: null, requesterContactId: null });
   });
 
   runDb('a chunked ticket closed mid-import resumes in the next window', async () => {

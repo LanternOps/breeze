@@ -146,11 +146,15 @@ function normalizedDescription(t: ImportedTicket): string {
   return t.description.trim();
 }
 
-/** The createTicket input for a first import (requester: a contact, or display-only name and email). */
+/**
+ * The createTicket input for a first import (requester: a contact, or a
+ * display-only name with an optional email; with none, submitter_email stays
+ * NULL).
+ */
 function toCreateInput(t: ImportedTicket): CreateTicketInput {
   const requester = 'contactId' in t.requester
     ? { requesterContactId: t.requester.contactId }
-    : { submitterName: t.requester.name, submitterEmail: t.requester.email };
+    : { submitterName: t.requester.name, ...(t.requester.email ? { submitterEmail: t.requester.email } : {}) };
   // A 'portal' ticket from another desk has no Breeze portal login, so it
   // carries no submittedBy; createTicket accepts that at run time.
   return {

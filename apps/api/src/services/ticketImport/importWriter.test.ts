@@ -241,6 +241,10 @@ describe('parseImportedTicket — the whole ticket is checked before anything is
       .toMatchObject({ sourceId: 'zammad-41023' });
   });
 
+  it('accepts a display-only requester with no email (a source customer may have none)', () => {
+    expect(parseImportedTicket(ticket({ requester: { name: 'Maya' } }), NOW).requester).toEqual({ name: 'Maya' });
+  });
+
   it.each([
     ['a time in the future', { updatedAt: new Date('2026-10-15T00:00:00.000Z') }, 'updatedAt'],
     ['a resolved time before the creation', { resolvedAt: at(-1) }, 'resolvedAt'],
@@ -256,7 +260,9 @@ describe('parseImportedTicket — the whole ticket is checked before anything is
     for (const bad of [
       { ...ticket(), extra: 1 },
       { ...ticket(), source: 'ai' },
-      { ...ticket(), requester: { name: 'x' } },
+      { ...ticket(), requester: { name: 'x', email: 'not-an-address' } },
+      { ...ticket(), requester: { email: 'maya@customer.example' } },
+      { ...ticket(), requester: { name: '  ' } },
       // The Partner API's rule for the same column: http(s) only.
       { ...ticket(), sourceUrl: 'javascript:alert(1)' },
     ]) {
