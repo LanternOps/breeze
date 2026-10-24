@@ -637,5 +637,46 @@
       "attachUnsupported": "Seuls les fichiers texte peuvent être joints",
       "threadFailed": "Wisp est activé, mais son fil n’a pas pu être ouvert. Réactivez Wisp pour le rouvrir."
     }
+  },
+  "wispConcerns": {
+    "title": "Préoccupations",
+    "empty": "Rien sur le radar de Wisp pour l'instant.",
+    "snooze": "Reporter",
+    "snoozeOneHour": "1 heure",
+    "snoozeTomorrow": "Jusqu'à demain 9 h",
+    "snoozeWeek": "7 jours",
+    "dismiss": "Ignorer",
+    "resolve": "Résoudre",
+    "resolveOutcomePlaceholder": "Qu'est-il arrivé?",
+    "resolveSubmit": "Marquer comme résolu",
+    "snoozed": "Reporté",
+    "dismissed": "Ignoré",
+    "resolved": "Résolu",
+    "quietUntil": "en sourdine jusqu'à {{when}}",
+    "digestOnly": "résumé seulement",
+    "showAll": "Tout afficher",
+    "showLive": "Afficher les ouvertes",
+    "loadFailed": "Impossible de charger les préoccupations",
+    "actionFailed": "Ça n'a pas fonctionné. Réessayez.",
+    "severity": {
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Information"
+    },
+    "subject": {
+      "ticket": "Billet",
+      "device": "Appareil",
+      "alert": "Alerte",
+      "org": "Client",
+      "integration": "Intégration",
+      "run": "Exécution",
+      "task": "Tâche",
+      "incident": "Événement",
+      "quote": "Soumission",
+      "invoice": "Facture",
+      "contract": "Contrat",
+      "site": "Emplacement"
+    }
   }
 }

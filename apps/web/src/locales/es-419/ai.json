@@ -637,5 +637,46 @@
       "attachUnsupported": "Solo se pueden adjuntar archivos de texto",
       "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a activar Wisp para abrirlo de nuevo."
     }
+  },
+  "wispConcerns": {
+    "title": "Asuntos",
+    "empty": "No hay nada en el radar de Wisp por ahora.",
+    "snooze": "Posponer",
+    "snoozeOneHour": "1 hora",
+    "snoozeTomorrow": "Hasta mañana a las 9:00",
+    "snoozeWeek": "7 días",
+    "dismiss": "Descartar",
+    "resolve": "Resolver",
+    "resolveOutcomePlaceholder": "¿Qué pasó?",
+    "resolveSubmit": "Marcar como resuelto",
+    "snoozed": "Pospuesto",
+    "dismissed": "Descartado",
+    "resolved": "Resuelto",
+    "quietUntil": "en silencio hasta {{when}}",
+    "digestOnly": "solo en el resumen",
+    "showAll": "Mostrar todo",
+    "showLive": "Mostrar abiertos",
+    "loadFailed": "No se pudieron cargar los asuntos",
+    "actionFailed": "Eso no funcionó. Inténtalo de nuevo.",
+    "severity": {
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Baja",
+      "info": "Informativa"
+    },
+    "subject": {
+      "ticket": "Solicitud",
+      "device": "Dispositivo",
+      "alert": "Alerta",
+      "org": "Cliente",
+      "integration": "Integración",
+      "run": "Ejecución",
+      "task": "Tarea",
+      "incident": "Incidente",
+      "quote": "Cotización",
+      "invoice": "Factura",
+      "contract": "Contrato",
+      "site": "Sitio"
+    }
   }
 }

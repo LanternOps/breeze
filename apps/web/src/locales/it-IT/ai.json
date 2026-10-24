@@ -637,5 +637,46 @@
       "attachUnsupported": "È possibile allegare solo file di testo",
       "threadFailed": "Wisp è attivo, ma non è stato possibile aprire il suo thread. Riattiva Wisp per riaprirlo."
     }
+  },
+  "wispConcerns": {
+    "title": "Segnalazioni",
+    "empty": "Al momento non c'è nulla sul radar di Wisp.",
+    "snooze": "Posticipa",
+    "snoozeOneHour": "1 ora",
+    "snoozeTomorrow": "Fino a domani alle 9:00",
+    "snoozeWeek": "7 giorni",
+    "dismiss": "Ignora",
+    "resolve": "Risolvi",
+    "resolveOutcomePlaceholder": "Cosa è successo?",
+    "resolveSubmit": "Segna come risolta",
+    "snoozed": "Posticipata",
+    "dismissed": "Ignorata",
+    "resolved": "Risolta",
+    "quietUntil": "silenzioso fino a {{when}}",
+    "digestOnly": "solo riepilogo",
+    "showAll": "Mostra tutte",
+    "showLive": "Mostra aperte",
+    "loadFailed": "Impossibile caricare le segnalazioni",
+    "actionFailed": "Non ha funzionato. Riprova.",
+    "severity": {
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Bassa",
+      "info": "Informativa"
+    },
+    "subject": {
+      "ticket": "Richiesta",
+      "device": "Dispositivo",
+      "alert": "Avviso",
+      "org": "Cliente",
+      "integration": "Integrazione",
+      "run": "Esecuzione",
+      "task": "Attività",
+      "incident": "Incidente",
+      "quote": "Preventivo",
+      "invoice": "Fattura",
+      "contract": "Contratto",
+      "site": "Sede"
+    }
   }
 }

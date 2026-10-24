@@ -83,6 +83,10 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
   // grant's ceiling (assertWithinCeiling — an org outside it throws CeilingViolationError before
   // any read or write), and both tools refuse outright without auth.wispGrant, which a flow step
   // never carries. Like every other *.orgId here, not a flow-owned asset reference.
+  // The Wisp W05a concern tools (list_concerns / raise_concern / create_watch .orgId,
+  // snooze_concern / resolve_concern .concernId) follow the same rule: grant-required,
+  // assertWithinCeiling on the org, and concern ids resolved through
+  // getConcernForCeiling (existence-neutral) before any write.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -93,6 +97,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "apply_configuration_policy.targetId",
         "cancel_script_execution.executionId",
         "configuration_policy_compliance.policyId",
+        "create_watch.orgId",
         "delete_tenant.tenant_id",
         "detect_log_correlations.orgId",
         "diagnose_connectivity.origin_device_id",
@@ -175,6 +180,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "list_ai_agent_runs.agentId",
         "list_ai_agent_runs.orgId",
         "list_business_calendars.orgId",
+        "list_concerns.orgId",
         "list_contracts.orgId",
         "list_deliverable_templates.orgId",
         "list_deliverables.contractId",
@@ -278,17 +284,20 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "query_backups.configId",
         "query_devices.siteId",
         "query_psa_status.connectionId",
+        "raise_concern.orgId",
         "read_artifact.handle",
         "recall.orgId",
         "remediate_vulnerability.deviceVulnerabilityIds",
         "remember.orgId",
         "remove_configuration_policy_assignment.assignmentId",
         "reset_monitor_escalation.monitorId",
+        "resolve_concern.concernId",
         "resolve_device_context.contextId",
         "run_script.proposalId",
         "s1_isolate_device.orgId",
         "s1_threat_action.orgId",
         "search_logs.siteIds",
+        "snooze_concern.concernId",
         "sync_edr_data.connectionId",
         "sync_edr_data.orgId",
         "sync_huntress_data.integrationId",

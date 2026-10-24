@@ -26,6 +26,7 @@ import BuyCreditsLink from "./BuyCreditsLink";
 import WispToggle from "./WispToggle";
 import WispThreadHeader from "./WispThreadHeader";
 import WispThreadAttachments from "./WispThreadAttachments";
+import { WispConcernsPanel } from "./WispConcernsPanel";
 import { useTranslation } from "react-i18next";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -377,6 +378,7 @@ export default function AiChatSidebar() {
                   orgName={wispScopeOrgName}
                   wideningAvailable={wisp.wideningAvailable}
                 />
+                <WispConcernsPanel key={wisp.grantId} grantId={wisp.grantId} threadId={wisp.threadId} />
                 <div className="border-b px-4 py-1.5">
                   <button
                     type="button"

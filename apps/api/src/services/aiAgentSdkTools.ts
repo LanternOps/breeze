@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, recallShape, rememberShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -483,6 +483,16 @@ export const TOOL_TIERS = {
   // retract_memory are HUMAN_ONLY_TOOLS and therefore never tiered here.
   recall: 1,
   remember: 2,
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts). Declared to
+  // chat only when wispEnabled() (wispConcernToolDefinitions). The W05b
+  // assessment outcome tools (record_concern, update_concern, nudge,
+  // propose_action, request_specialist) must never be tiered here:
+  // createBreezeMcpServer throws on an extra tool that collides with a key.
+  list_concerns: 1,
+  raise_concern: 2,
+  snooze_concern: 2,
+  resolve_concern: 2,
+  create_watch: 2,
   // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
   // Monitoring, analytics and network reads.
   query_analytics: 1,
@@ -1333,6 +1343,31 @@ export function wispMemoryToolDefinitions(
   return [
     tool('recall', registryDescription('recall'), recallShape, makeHandler('recall', getAuth, onPreToolUse, onPostToolUse)),
     tool('remember', registryDescription('remember'), rememberShape, makeHandler('remember', getAuth, onPreToolUse, onPostToolUse)),
+  ];
+}
+
+/**
+ * Wisp W05a concern/watch tools — the same `wispEnabled()` EXPOSURE gate as
+ * `wispMemoryToolDefinitions` (kept separate so W03's declared set stays
+ * exactly recall/remember). Registration in aiTools and TOOL_TIERS stays
+ * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and every
+ * handler still refuses without `auth.wispGrant`.
+ */
+export function wispConcernToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  // Literal `tool('<name>'` calls: aiAgentSdkTools.mcpCoverage.test.ts scans the source for them.
+  const handler = (toolName: string) => makeToolHandler(toolName, getAuth, getActiveSession, onPreToolUse, onPostToolUse);
+  return [
+    tool('list_concerns', registryDescription('list_concerns'), listConcernsShape, handler('list_concerns')),
+    tool('raise_concern', registryDescription('raise_concern'), raiseConcernShape, handler('raise_concern')),
+    tool('snooze_concern', registryDescription('snooze_concern'), snoozeConcernShape, handler('snooze_concern')),
+    tool('resolve_concern', registryDescription('resolve_concern'), resolveConcernShape, handler('resolve_concern')),
+    tool('create_watch', registryDescription('create_watch'), createWatchShape, handler('create_watch')),
   ];
 }
 
@@ -4437,6 +4472,8 @@ export function buildBreezeSdkTools(
     ...flowToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W03 memory — behind wispEnabled() (see the factory).
     ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W05a concerns/watches — behind wispEnabled() (see the factory).
+    ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

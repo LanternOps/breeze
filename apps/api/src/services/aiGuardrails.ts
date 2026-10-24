@@ -1200,6 +1200,13 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   remember: { resource: 'ai_sessions', action: 'use' },
   confirm_memory: { resource: 'ai_sessions', action: 'use' },
   retract_memory: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts), w00 A1: the
+  // chat-use permission, same as the /wisp/concerns and /wisp/watches routes.
+  list_concerns: { resource: 'ai_sessions', action: 'use' },
+  raise_concern: { resource: 'ai_sessions', action: 'use' },
+  snooze_concern: { resource: 'ai_sessions', action: 'use' },
+  resolve_concern: { resource: 'ai_sessions', action: 'use' },
+  create_watch: { resource: 'ai_sessions', action: 'use' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },

@@ -637,5 +637,46 @@
       "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
       "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın."
     }
+  },
+  "wispConcerns": {
+    "title": "Endişeler",
+    "empty": "Şu anda Wisp'in radarında bir şey yok.",
+    "snooze": "Ertele",
+    "snoozeOneHour": "1 saat",
+    "snoozeTomorrow": "Yarın 9:00'a kadar",
+    "snoozeWeek": "7 gün",
+    "dismiss": "Yok say",
+    "resolve": "Çöz",
+    "resolveOutcomePlaceholder": "Ne oldu?",
+    "resolveSubmit": "Çözüldü olarak işaretle",
+    "snoozed": "Ertelendi",
+    "dismissed": "Yok sayıldı",
+    "resolved": "Çözüldü",
+    "quietUntil": "{{when}} tarihine kadar sessiz",
+    "digestOnly": "yalnızca özet",
+    "showAll": "Tümünü göster",
+    "showLive": "Açık olanları göster",
+    "loadFailed": "Endişeler yüklenemedi",
+    "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+    "severity": {
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "subject": {
+      "ticket": "Talep",
+      "device": "Cihaz",
+      "alert": "Uyarı",
+      "org": "Müşteri",
+      "integration": "Entegrasyon",
+      "run": "Çalıştırma",
+      "task": "Görev",
+      "incident": "Olay",
+      "quote": "Teklif",
+      "invoice": "Fatura",
+      "contract": "Sözleşme",
+      "site": "Konum"
+    }
   }
 }

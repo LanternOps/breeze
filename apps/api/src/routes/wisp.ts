@@ -12,8 +12,9 @@
  *   PATCH /grants/:id/settings        { budgetCentsPerDay?, floorTickMinutes? } → WispGrantDto (w00 A6)
  *
  *   /thread/*                       → W04 thread routes (routes/wispThreads.ts)
+ *   /concerns/*, /watches/*         → W05 triage routes (routes/wispConcerns.ts, routes/wispWatches.ts)
  *
- * Gates, in order, on EVERY route including /thread/*: authMiddleware → 404
+ * Gates, in order, on EVERY route including /thread/*, /concerns/*, /watches/*: authMiddleware → 404
  * while !wispEnabled() (read per request; the flag wins over the entitlement)
  * → partner scope → ai_sessions:use → requireEntitlement('wisp') (W04; w00
  * cross-wave reconciliation 1, spec §10 — pinned for every enumerated route by
@@ -45,7 +46,9 @@ import {
   WispGrantError,
   type WispGrant,
 } from '../services/wisp/grants';
+import { wispConcernsRoutes } from './wispConcerns';
 import { wispThreadRoutes } from './wispThreads';
+import { wispWatchesRoutes } from './wispWatches';
 
 /** Field-by-field wire shape: never `{...row}`, never the ceiling snapshot or factor proof. */
 export type WispGrantDto = {
@@ -270,3 +273,6 @@ wispRoutes.patch('/grants/:id/settings', requireMfa(), zValidator('json', settin
 
 // W04: inherits every gate above (registered after the use('*') chain).
 wispRoutes.route('/thread', wispThreadRoutes);
+// W05: same inheritance.
+wispRoutes.route('/concerns', wispConcernsRoutes);
+wispRoutes.route('/watches', wispWatchesRoutes);

@@ -637,5 +637,46 @@
       "attachUnsupported": "Es können nur Textdateien angehängt werden",
       "threadFailed": "Wisp ist aktiv, aber der Thread konnte nicht geöffnet werden. Aktivieren Sie Wisp erneut, um ihn wieder zu öffnen."
     }
+  },
+  "wispConcerns": {
+    "title": "Anliegen",
+    "empty": "Im Moment ist bei Wisp nichts auf dem Radar.",
+    "snooze": "Zurückstellen",
+    "snoozeOneHour": "1 Stunde",
+    "snoozeTomorrow": "Bis morgen 9:00",
+    "snoozeWeek": "7 Tage",
+    "dismiss": "Verwerfen",
+    "resolve": "Lösen",
+    "resolveOutcomePlaceholder": "Was ist passiert?",
+    "resolveSubmit": "Als gelöst markieren",
+    "snoozed": "Zurückgestellt",
+    "dismissed": "Verworfen",
+    "resolved": "Gelöst",
+    "quietUntil": "ruhig bis {{when}}",
+    "digestOnly": "nur Zusammenfassung",
+    "showAll": "Alle anzeigen",
+    "showLive": "Offene anzeigen",
+    "loadFailed": "Anliegen konnten nicht geladen werden",
+    "actionFailed": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+    "severity": {
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Hinweis"
+    },
+    "subject": {
+      "ticket": "Supportanfrage",
+      "device": "Gerät",
+      "alert": "Warnung",
+      "org": "Kunde",
+      "integration": "Anbindung",
+      "run": "Ausführung",
+      "task": "Aufgabe",
+      "incident": "Vorfall",
+      "quote": "Angebot",
+      "invoice": "Rechnung",
+      "contract": "Vertrag",
+      "site": "Standort"
+    }
   }
 }

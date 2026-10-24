@@ -397,6 +397,12 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   remember: 'tenancy',
   confirm_memory: 'tenancy',
   retract_memory: 'tenancy',
+  // Wisp W05a concerns/watches (domain 'ai'), as W03 chose for memory.
+  list_concerns: 'tenancy',
+  raise_concern: 'tenancy',
+  snooze_concern: 'tenancy',
+  resolve_concern: 'tenancy',
+  create_watch: 'tenancy',
   // M365 typed Graph read-query tools (aiToolsM365.ts's registerM365Tools) —
   // headless-registered and in TOOL_TIERS, distinct from the session-only
   // helpdesk M365 tools in `m365ToolTiers`. RBAC resource is `organizations`

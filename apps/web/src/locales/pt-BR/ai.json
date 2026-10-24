@@ -637,5 +637,46 @@
       "attachUnsupported": "Só é possível anexar arquivos de texto",
       "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la."
     }
+  },
+  "wispConcerns": {
+    "title": "Pendências",
+    "empty": "Nada no radar do Wisp no momento.",
+    "snooze": "Adiar",
+    "snoozeOneHour": "1 hora",
+    "snoozeTomorrow": "Até amanhã às 9:00",
+    "snoozeWeek": "7 dias",
+    "dismiss": "Dispensar",
+    "resolve": "Resolver",
+    "resolveOutcomePlaceholder": "O que aconteceu?",
+    "resolveSubmit": "Marcar como resolvida",
+    "snoozed": "Adiada",
+    "dismissed": "Dispensada",
+    "resolved": "Resolvida",
+    "quietUntil": "em silêncio até {{when}}",
+    "digestOnly": "somente no resumo",
+    "showAll": "Mostrar todas",
+    "showLive": "Mostrar abertas",
+    "loadFailed": "Não foi possível carregar as pendências",
+    "actionFailed": "Isso não funcionou. Tente novamente.",
+    "severity": {
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Informativa"
+    },
+    "subject": {
+      "ticket": "Chamado",
+      "device": "Dispositivo",
+      "alert": "Alerta",
+      "org": "Cliente",
+      "integration": "Integração",
+      "run": "Execução",
+      "task": "Tarefa",
+      "incident": "Incidente",
+      "quote": "Orçamento",
+      "invoice": "Fatura",
+      "contract": "Contrato",
+      "site": "Local"
+    }
   }
 }
