@@ -100,9 +100,9 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
         <div>
           <div className="flex items-center gap-2">
             <MonitorPlay className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold">{t('partnerRemoteAccess.title')}</h2>
+            <h3 className="text-sm font-semibold">{t('partnerRemoteAccess.title')}</h3>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 max-w-prose text-sm text-muted-foreground">
             <Trans i18nKey="partnerRemoteAccess.description" t={t} components={{ connect: <span className="font-medium" /> }} />
           </p>
         </div>
@@ -120,6 +120,7 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
           back to Breeze's bundled WebRTC desktop session. Always present so
           users can return to the default once they've added providers. */}
       <div
+        data-list-row
         className={`rounded-lg border p-4 ${!defaultProviderId ? 'border-primary bg-primary/5' : ''}`}
       >
         <label className="flex items-center gap-2 text-sm font-medium">
@@ -149,6 +150,7 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
             return (
               <div
                 key={p.id}
+                data-list-row
                 className={`rounded-lg border p-4 ${isDefault ? 'border-primary bg-primary/5' : ''}`}
               >
                 <div className="mb-3 flex items-center gap-3">
@@ -265,7 +267,7 @@ export default function PartnerRemoteAccessTab({ data, onChange, networkProxy, o
       {/* Network Proxy transport (#8155). Partner-wide by design: it picks how
           every session of this partner is served, so no org overrides it. It
           only takes effect where the region offers a dedicated origin. */}
-      <div className="rounded-lg border p-4">
+      <div className="border-t pt-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">

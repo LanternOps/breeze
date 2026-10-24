@@ -4,6 +4,7 @@ import type { FeatureTabProps } from "./types";
 import { FEATURE_META } from "./types";
 import { useFeatureLink } from "./useFeatureLink";
 import FeatureTabShell from "./FeatureTabShell";
+import RuleSetPicker, { gateRuleSetIds, useRuleSetPolicyOwner } from "./RuleSetPicker";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 import {
@@ -87,15 +88,30 @@ export default function SecurityTab({
   existingLink,
   onLinkChanged,
   parentLink,
+  orgId,
+  partnerId,
 }: FeatureTabProps) {
   useTranslation("policies");
   const dayOfWeekOptions = createDayOfWeekOptions();
-  const { save, remove, saving, error, clearError } = useFeatureLink(policyId);
+  const { save, remove, saving, error, errorDetail, clearError } = useFeatureLink(policyId);
   // #5080: inheritance display — mirrors PamTab.tsx. `effectiveLink` seeds the
   // form from the parent's settings when this policy has no override of its
   // own; FeatureTabShell renders the form read-only (opacity + pointer-events)
   // whenever isInherited is true.
   const isInherited = !!parentLink && !existingLink;
+  // #6267 W04-4: an inherited link whose parent lists a rule set this policy
+  // cannot attach would be stuck (the gate 400s a one-click Override), so
+  // Override then opens a local draft instead; Save creates the link.
+  const [overrideDraft, setOverrideDraft] = useState(false);
+  const [ruleSetsBlocking, setRuleSetsBlocking] = useState(false);
+  const shellInherited = isInherited && !overrideDraft;
+  // The draft ends once the policy has its own link; a later Revert must land
+  // back on the read-only inherited view, not a stale draft.
+  useEffect(() => {
+    if (existingLink) setOverrideDraft(false);
+  }, [existingLink]);
+  const policyOwner = useRuleSetPolicyOwner(orgId, partnerId);
+  const gateHighlightIds = gateRuleSetIds(errorDetail);
   const effectiveLink = existingLink ?? parentLink;
   const [settings, setSettings] = useState<SecurityScanSettings>(() =>
     parseSecurityScanSettings(effectiveLink?.inlineSettings),
@@ -162,12 +178,32 @@ export default function SecurityTab({
       // Feature-level gating shows plain "Remove" in that case instead, which
       // is accurate: there is no parent value to revert to.
       onRemove={!parentLink ? handleRemove : undefined}
-      isInherited={isInherited}
-      onOverride={isInherited ? handleSave : undefined}
+      isInherited={shellInherited}
+      onOverride={
+        shellInherited
+          ? ruleSetsBlocking
+            ? () => setOverrideDraft(true)
+            : handleSave
+          : undefined
+      }
       onRevert={
         !isInherited && !!parentLink && !!existingLink ? handleRevert : undefined
       }
+      // Unavailable rule sets block Save (the gate would 400 it) — but never
+      // the Override button, which must stay clickable to open the draft.
+      saveDisabled={!shellInherited && ruleSetsBlocking}
     >
+      {overrideDraft && isInherited && (
+        <p
+          data-testid="security-override-draft-banner"
+          role="status"
+          className="mb-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+        >
+          {i18n.t(
+            "policies:configurationPolicies.featureTabs.securityTab.ruleSets.overrideDraft",
+          )}
+        </p>
+      )}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Scan settings */}
         <div className="space-y-3">
@@ -283,6 +319,19 @@ export default function SecurityTab({
             </p>
           )}
         </div>
+      </div>
+
+      {/* Detection rule sets (#6267) */}
+      <div className="mt-6">
+        <RuleSetPicker
+          value={settings.ruleSetIds}
+          onChange={(ids) => update("ruleSetIds", ids)}
+          policyOwner={policyOwner}
+          disabled={shellInherited || saving}
+          onBlockingChange={setRuleSetsBlocking}
+          preselectBuiltin={!existingLink && !parentLink}
+          highlightIds={gateHighlightIds}
+        />
       </div>
 
       {/* Scheduled scans */}

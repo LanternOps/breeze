@@ -98,6 +98,16 @@ func handlePamApplyV2(h *Heartbeat, cmd Command) tools.CommandResult {
 		return h.handOffPamReceivedObservation(ctx, cmd.ID, received)
 	})
 	h.refreshPamLifetimeAvailability()
+	switch result.State {
+	case pamlifetime.ResultVerifiedActive:
+		// Only once the elevated process is verified running: before that the
+		// user's own UAC prompt is still their way to finish the elevation
+		// (#8995). A failed or unverified launch leaves it, and its record, alone.
+		h.dismissApprovedPamConsent(payload.RequestID)
+	case pamlifetime.ResultFailed:
+		log.Info("pam: approved launch failed; leaving the user's UAC prompt open",
+			"elevationRequestId", payload.RequestID, "failureCode", result.FailureCode)
+	}
 	commandResult := tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 	commandResult.Result = result
 	return commandResult

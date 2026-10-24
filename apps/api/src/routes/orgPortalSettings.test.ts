@@ -92,6 +92,7 @@ vi.mock('../db/schema', () => ({
     enableHourBlock: 'enableHourBlock',
     enablePatchDetail: 'enablePatchDetail',
     enableVulnerabilityDetail: 'enableVulnerabilityDetail',
+    enablePhysicalPlacement: 'enablePhysicalPlacement',
     enableEdrVisibility: 'enableEdrVisibility',
     enableTrustPageEditing: 'enableTrustPageEditing',
     chromeAccent: 'chromeAccent',
@@ -245,6 +246,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableHourBlock: false,
       enablePatchDetail: false,
       enableVulnerabilityDetail: false,
+      enablePhysicalPlacement: false,
       enableEdrVisibility: false,
       enableTrustPageEditing: false,
       chromeAccent: null,
@@ -433,6 +435,23 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
       .onConflictDoUpdate.mock.results[0]?.value.returning;
     expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableVulnerabilityDetail', 'enableVulnerabilityDetail');
+  });
+
+  it('persists the sensitive physical placement flag without treating it as a visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enablePhysicalPlacement: true }]);
+
+    const res = await patch({ enablePhysicalPlacement: true });
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enablePhysicalPlacement: true });
+
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enablePhysicalPlacement: true });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enablePhysicalPlacement', 'enablePhysicalPlacement');
   });
 
   it('persists the sensitive patch detail flag without treating it as a visibility flag', async () => {

@@ -60,6 +60,10 @@ export type StepUpOperation =
   // operator was shown, so a grant can never be replayed against a different
   // device, destination, or billing acknowledgement.
   | 'device_move_org'
+  // #8729 "Force reboot now": an immediate reboot that force-closes running
+  // apps and discards unsaved work. Bound by resourceDigest to { deviceId }, so
+  // a grant minted for one device can never force-reboot another. Single-use.
+  | 'device_force_reboot'
   // Parked-device assignment: moving a device out of the partner's holding
   // area into a customer org. Single: bound to { deviceId, targetOrgId,
   // targetSiteId }. Bulk: ONE grant bound to the whole sorted batch — a
@@ -245,6 +249,15 @@ export function maintenanceResourceDigest(input: {
     durationHours: input.durationHours,
     reason: input.reason.trim(),
   });
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Canonical digest for a `device_force_reboot` grant (#8729): the device id
+ * alone, so a grant minted for one device can never force-reboot another.
+ */
+export function forceRebootResourceDigest(input: { deviceId: string }): `sha256:${string}` {
+  const canonical = JSON.stringify({ deviceId: input.deviceId });
   return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
 }
 

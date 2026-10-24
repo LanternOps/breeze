@@ -85,6 +85,7 @@ const IDENTITY_TENANT_WRITE_TOOLS = [
   'm365_retire_intune_device',
   'm365_create_user',
   'm365_set_auto_reply',
+  'google_account_wipe_mobile_device',
   'google_add_mail_delegate',
   'google_add_to_group',
   'google_assign_license',

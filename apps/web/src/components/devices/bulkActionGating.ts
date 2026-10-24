@@ -73,6 +73,11 @@ export function isCommandQueueable(status: string): boolean {
  * runBulkAction's switch already routes them through sendBulkCommand, so they are
  * classified up front: wiring a button later must not silently skip the gate.
  *
+ * `force_reboot` (#8729) is deliberately NOT a bulk action and must not become
+ * one: it force-closes apps on the device, so it is one device at a time, behind
+ * a typed-hostname confirmation and a step-up bound to that device. The API
+ * refuses it on POST /devices/bulk/commands as well.
+ *
  * `decommission` (i.e. bulk Remove) is gated here too, but for a DIFFERENT
  * reason than the agent-command actions above — read this before moving it back
  * to INTENTIONALLY_UNGATED_BULK_ACTIONS. `bulkDecommissionDevices` fires one

@@ -92,12 +92,29 @@ function joinZodFlatten(value: unknown, rawPaths = false): string | null {
     }
   }
   if (fieldErrors && typeof fieldErrors === 'object' && !Array.isArray(fieldErrors)) {
+    // Readable mode groups by the humanized label (#9533): every entry of an
+    // array field has its own dotted path (`ids.0`, `ids.1`), and two bad ids
+    // rendered "IDs: Invalid UUID; IDs: Invalid UUID". One label per field,
+    // each distinct message once, in first-seen order.
+    const byLabel = new Map<string, { field: string; messages: string[] }>();
     for (const [field, messages] of Object.entries(fieldErrors as Record<string, unknown>)) {
       if (!Array.isArray(messages)) continue;
       const valid = messages.filter((m): m is string => typeof m === 'string' && m.length > 0);
       if (valid.length === 0) continue;
-      const joined = valid.join('; ');
-      parts.push(rawPaths ? `${field}: ${joined}` : labelFieldMessage(field, joined));
+      if (rawPaths) {
+        parts.push(`${field}: ${valid.join('; ')}`);
+        continue;
+      }
+      const label = humanizeFieldPath(field);
+      const entry = byLabel.get(label);
+      if (!entry) {
+        byLabel.set(label, { field, messages: [...new Set(valid)] });
+        continue;
+      }
+      for (const m of valid) if (!entry.messages.includes(m)) entry.messages.push(m);
+    }
+    for (const { field, messages } of byLabel.values()) {
+      parts.push(labelFieldMessage(field, messages.join('; ')));
     }
   }
   return parts.length > 0 ? parts.join('; ') : null;

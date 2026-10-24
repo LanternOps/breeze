@@ -163,8 +163,13 @@ export default function ConnectionHealthPanel({
                           {inc.detail}
                         </p>
                       ) : null}
+                      {inc.remedy?.kind === "reconnect" ? (
+                        <p className="mt-0.5 break-words text-xs font-medium">
+                          {t("connectionHealthPanel.remedy.reconnect")}
+                        </p>
+                      ) : null}
                     </div>
-                    {isSafeHref(inc.fixHref) ? (
+                    {inc.remedy?.kind === "reconnect" ? null : isSafeHref(inc.fixHref) ? (
                       <a
                         href={inc.fixHref}
                         // Same-page fix links (/integrations#huntress) must fire a

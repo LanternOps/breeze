@@ -306,6 +306,13 @@ export default function AiApprovalDialog({
   const [intentError, setIntentError] = useState<string | null>(null);
 
   const canSelfDecide = Boolean(intentBacked && selfApprovalRequestId);
+  // #9534: whether Approve runs a WebAuthn ceremony up front — the same rule
+  // decideIntentApproval applies. A supervised approve goes proofless (#5600),
+  // so its button must not promise a verification ("Verify & Approve" + a
+  // fingerprint) that never happens. If an enforcing partner policy then
+  // demands a step-up, the OS passkey prompt explains itself.
+  const verifiesOnApprove =
+    approvalScope !== "supervised" || FRESH_APPROVER_FACTOR_TOOLS.has(toolName);
   // The card is only passive (no time signal, nothing to act on) in the
   // four-eyes case. The sole-operator card is actionable and its intent still
   // expires after CHAT_EXPIRY_MS, so it gets the countdown too.
@@ -664,10 +671,18 @@ export default function AiApprovalDialog({
               onClick={() => handleIntentDecision("approve")}
               className="flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-green-500 disabled:opacity-50"
             >
-              <Fingerprint className="h-3.5 w-3.5" />
+              {verifiesOnApprove ? (
+                <Fingerprint className="h-3.5 w-3.5" />
+              ) : (
+                <Check className="h-3.5 w-3.5" />
+              )}
               {intentDecideState === "deciding"
-                ? t("aiApprovalDialog.verifying")
-                : t("aiApprovalDialog.approveVerify")}
+                ? verifiesOnApprove
+                  ? t("aiApprovalDialog.verifying")
+                  : t("aiApprovalDialog.approving")
+                : verifiesOnApprove
+                  ? t("aiApprovalDialog.approveVerify")
+                  : t("aiApprovalDialog.approve")}
             </button>
           )}
           <button

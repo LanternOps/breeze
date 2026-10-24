@@ -15,6 +15,7 @@ import {
 import { listContractDocuments, type ContractDocument } from '../../lib/api/contractDocuments';
 import { StatusPill } from '../billing/shared/StatusPill';
 import { useStableT } from '@/lib/i18n/useStableT';
+import HashLink from '@/components/shared/HashLink';
 import { usePageItemName } from '../layout/usePageItemName';
 import { showToast } from '../shared/Toast';
 
@@ -195,13 +196,13 @@ export default function ContractWorkspace({ contractId }: Props) {
               className={CONTRACT_STATUS_ROLES[contract.status].className}
             />
             {firstAgreement && (
-              <a href="#signed-agreements" data-testid="contract-under-agreement-pill"
+              <HashLink hash="signed-agreements" data-testid="contract-under-agreement-pill"
                  className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70">
                 {t('agreements.contractPill.under', {
                   template: firstAgreement.templateName,
                   n: firstAgreement.templateVersionNumber,
                 })}
-              </a>
+              </HashLink>
             )}
             {sourceQuote && (
               <a href={`/billing/quotes/${sourceQuote.id}`} data-testid="contract-from-quote-pill"

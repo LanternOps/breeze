@@ -57,7 +57,7 @@ vi.mock('./aiAgent', () => ({
 
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: vi.fn(),
-  checkBudget: vi.fn(),
+  checkBudgetDetailed: vi.fn(),
   getRemainingBudgetUsd: vi.fn(),
 }));
 

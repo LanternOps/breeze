@@ -372,7 +372,9 @@ describe('runDigest end to end (real DB, fake email provider)', () => {
     expect(to).toContain(owner.email);
     expect(to).not.toContain(strayOwner.email);
     const msg = sendEmail.mock.calls.find((c) => (c[0] as { to: string }).to === owner.email)![0] as { html: string };
-    expect(msg.html).toContain('https://app.example.test/account/connected-apps');
+    // #9594: grant_revoked_reuse has no repair page, so the owner gets reconnect guidance, not a dead link.
+    expect(msg.html).toContain('Reconnect from the client app');
+    expect(msg.html).not.toContain('/account/connected-apps');
   });
 
   runDb('ledger retention deletes only rows past the cutoff, in batches', async () => {

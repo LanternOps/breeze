@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, desc, eq, gte, inArray, ne, sql, type SQL } from 'drizzle-orm';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 
 import { db } from '../db';
 import {
@@ -169,6 +170,15 @@ const reportQuerySchema = z.object({
   dataType: z.enum(dataTypeValues).optional(),
   deviceId: z.string().guid().optional(),
   scanId: z.string().guid().optional(),
+  orgId: z.string().guid().optional(),
+});
+
+const policyListQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+});
+
+const dashboardQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
 });
 
 const remediationsSchema = z.object({
@@ -210,6 +220,22 @@ function readOrgIdFromAuth(auth: {
     return auth.accessibleOrgIds[0] ?? null;
   }
   return null;
+}
+
+// The header org switcher's selection (?orgId=, injected by fetchWithAuth for
+// partner/system callers) narrows a read to one org (#9681). It is applied on
+// top of auth.orgCondition, so it can only narrow within the caller's
+// accessible orgs; an org the caller cannot reach is denied outright.
+const SELECTED_ORG_DENIED_MESSAGE = 'Access denied to this organization';
+
+function selectedOrgCondition(
+  auth: Pick<AuthContext, 'canAccessOrg'>,
+  requestedOrgId: string | undefined,
+  column: AnyPgColumn
+): { denied: true } | { denied: false; condition?: SQL } {
+  if (!requestedOrgId) return { denied: false };
+  if (!auth.canAccessOrg(requestedOrgId)) return { denied: true };
+  return { denied: false, condition: eq(column, requestedOrgId) };
 }
 
 // Dual-axis access condition (#2131): org-owned rows the caller can reach OR
@@ -465,9 +491,7 @@ sensitiveDataRoutes.get(
     z
       .object({
         limit: z.coerce.number().int().min(1).max(200).optional(),
-        // Frontend always sends ?orgId=<currentOrgId> for partner-scope context;
-        // we accept it so the strict() schema doesn't ZodError. Org scoping is
-        // enforced by `auth.orgCondition(...)` below, not by this field.
+        // The header org switcher's selection; narrows within orgCondition (#9681).
         orgId: z.string().guid().optional(),
       })
       .strict()
@@ -476,10 +500,13 @@ sensitiveDataRoutes.get(
   async (c) => {
     const auth = c.get('auth');
     const limit = Number(c.req.query('limit') ?? 50);
+    const selectedOrg = selectedOrgCondition(auth, c.req.valid('query')?.orgId, sensitiveDataScans.orgId);
+    if (selectedOrg.denied) return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
 
     const conditions: SQL[] = [];
     const orgCondition = auth.orgCondition(sensitiveDataScans.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    if (selectedOrg.condition) conditions.push(selectedOrg.condition);
     const permissions = c.get('permissions') as UserPermissions | undefined;
     if (permissions?.allowedSiteIds) conditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -624,10 +651,13 @@ sensitiveDataRoutes.get(
     const auth = c.get('auth');
     const query = c.req.valid('query');
     const pagination = getPagination(query, 200);
+    const selectedOrg = selectedOrgCondition(auth, query.orgId, sensitiveDataFindings.orgId);
+    if (selectedOrg.denied) return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
 
     const conditions: SQL[] = [];
     const orgCondition = auth.orgCondition(sensitiveDataFindings.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    if (selectedOrg.condition) conditions.push(selectedOrg.condition);
     if (query.status) conditions.push(eq(sensitiveDataFindings.status, query.status));
     if (query.risk) conditions.push(eq(sensitiveDataFindings.risk, query.risk));
     if (query.dataType) conditions.push(eq(sensitiveDataFindings.dataType, query.dataType));
@@ -702,11 +732,16 @@ sensitiveDataRoutes.get(
   '/dashboard',
   requireScope('organization', 'partner', 'system'),
   requireSensitiveDataRead,
+  zValidator('query', dashboardQuerySchema),
   async (c) => {
     const auth = c.get('auth');
+    const selectedOrg = selectedOrgCondition(auth, c.req.valid('query').orgId, sensitiveDataFindings.orgId);
+    if (selectedOrg.denied) return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
+
     const conditions: SQL[] = [];
     const orgCondition = auth.orgCondition(sensitiveDataFindings.orgId);
     if (orgCondition) conditions.push(orgCondition);
+    if (selectedOrg.condition) conditions.push(selectedOrg.condition);
     // Site-axis enforcement: narrow the aggregate to devices in the caller's
     // allowed sites so site-restricted users don't see cross-site PII/PCI/PHI
     // totals (mirrors GET /report).
@@ -720,6 +755,7 @@ sensitiveDataRoutes.get(
         risk: sensitiveDataFindings.risk,
         status: sensitiveDataFindings.status,
         lastSeenAt: sensitiveDataFindings.lastSeenAt,
+        remediatedAt: sensitiveDataFindings.remediatedAt,
       })
       .from(sensitiveDataFindings);
 
@@ -748,7 +784,7 @@ sensitiveDataRoutes.get(
           sumOpenAgeHours += Math.max(0, (now - row.lastSeenAt.getTime()) / (1000 * 60 * 60));
         }
       }
-      if (row.status === 'remediated' && row.lastSeenAt && now - row.lastSeenAt.getTime() <= 24 * 60 * 60 * 1000) {
+      if (row.status === 'remediated' && row.remediatedAt && now - row.remediatedAt.getTime() <= 24 * 60 * 60 * 1000) {
         remediated24h++;
       }
     }
@@ -999,11 +1035,26 @@ sensitiveDataRoutes.get(
   '/policies',
   requireScope('organization', 'partner', 'system'),
   requireSensitiveDataRead,
+  zValidator('query', policyListQuerySchema),
   async (c) => {
     const auth = c.get('auth');
     const conditions: SQL[] = [];
+    const selectedOrgId = c.req.valid('query').orgId;
+    if (selectedOrgId && !auth.canAccessOrg(selectedOrgId)) {
+      return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
+    }
     const accessCondition = sensitivePolicyAccessCondition(auth);
     if (accessCondition) conditions.push(accessCondition);
+    if (selectedOrgId) {
+      // Narrow org-owned rows to the header switcher's org (#9681); the
+      // caller's own partner-wide policies (already bounded by the access
+      // condition above) still apply to that org.
+      conditions.push(
+        auth.scope === 'partner' && auth.partnerId
+          ? sql`(${sensitiveDataPolicies.orgId} = ${selectedOrgId} OR ${sensitiveDataPolicies.orgId} IS NULL)`
+          : eq(sensitiveDataPolicies.orgId, selectedOrgId)
+      );
+    }
 
     const rows = await db
       .select()
@@ -1040,7 +1091,14 @@ sensitiveDataRoutes.post(
       }
       owner = { orgId: null, partnerId: auth.partnerId };
     } else {
-      const orgId = readOrgIdFromAuth(auth, payload.orgId);
+      // The web client sends no body orgId; fetchWithAuth appends the header
+      // switcher's ?orgId=. A body orgId wins; otherwise the query orgId must
+      // be one the caller can reach.
+      const queryOrgId = z.string().guid().safeParse(c.req.query('orgId'));
+      if (!payload.orgId && queryOrgId.success && !auth.canAccessOrg(queryOrgId.data)) {
+        return c.json({ error: SELECTED_ORG_DENIED_MESSAGE }, 403);
+      }
+      const orgId = readOrgIdFromAuth(auth, payload.orgId ?? (queryOrgId.success ? queryOrgId.data : undefined));
       if (!orgId) {
         return c.json({ error: 'Unable to resolve target organization for policy creation' }, 400);
       }

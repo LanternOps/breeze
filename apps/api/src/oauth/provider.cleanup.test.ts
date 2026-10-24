@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   oauthAuthorizationCodes,
@@ -84,10 +86,31 @@ describe('OAuth cleanup helpers', () => {
 
     expect(deleteMock).toHaveBeenCalledWith(oauthClients);
     const predicateSql = collectSqlStrings(staleDelete.where.mock.calls[0]![0]);
-    expect((predicateSql.match(/NOT EXISTS/g) ?? [])).toHaveLength(4);
-    expect((predicateSql.match(/SELECT 1/g) ?? [])).toHaveLength(4);
+    expect((predicateSql.match(/NOT EXISTS/g) ?? [])).toHaveLength(6);
+    expect((predicateSql.match(/SELECT 1/g) ?? [])).toHaveLength(6);
     expect((predicateSql.match(/>=/g) ?? [])).toHaveLength(3);
     expect(predicateSql).toContain('IS NULL');
+  });
+
+  // B-W03 (#6157, D-B20): a stable CIMD URL must not erase its own disable or
+  // org blocks by ageing out and re-materialising, and an approval_requests
+  // reference (FK without ON DELETE) would fail the whole delete.
+  it('cleanup never deletes a disabled client, one with org blocks, or one referenced by an approval request', async () => {
+    const staleDelete = queueDeleteReturning([]);
+    await cleanupStaleOauthClients(new Date('2026-05-02T12:00:00.000Z'));
+    const predicate = staleDelete.where.mock.calls[0]![0];
+    // Render the real SQL so a flipped NOT EXISTS / AND→OR fails here.
+    const rendered = new PgDialect().sqlToQuery(predicate as SQL).sql.replace(/\s+/g, ' ');
+    expect(rendered).toMatch(/^\(.* and .*\)$/);
+    expect(rendered).not.toMatch(/ or "oauth_clients"\."disabled_at"/);
+    expect(rendered).toContain('"oauth_clients"."disabled_at" is null');
+    expect(rendered).toContain(
+      'NOT EXISTS ( SELECT 1 FROM "oauth_client_blocks" WHERE "oauth_client_blocks"."client_id" = "oauth_clients"."id" )',
+    );
+    expect(rendered).toContain(
+      'NOT EXISTS ( SELECT 1 FROM "approval_requests" WHERE "approval_requests"."requesting_client_id" = "oauth_clients"."id" )',
+    );
+    expect(rendered).not.toMatch(/(?<!NOT )EXISTS \( SELECT 1 FROM "(oauth_client_blocks|approval_requests)"/);
   });
 
   // #5610: the age test must accept a client that WAS used once but not since

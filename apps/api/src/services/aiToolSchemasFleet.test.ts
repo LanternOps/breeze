@@ -382,7 +382,7 @@ describe('generate_report schema', () => {
   // because the handler now applies the route gates (msp_staff audience, per-type
   // read permissions, site-restricted refusal) — see
   // aiToolsFleet.reportAudience.test.ts. The schema only closes the enum.
-  it.each(['ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client'])(
+  it.each(['ticket_sla_attainment', 'technician_time_billability', 'ar_aging', 'ai_usage_by_client', 'mrr_renewals', 'quote_win_rate', 'client_profitability'])(
     'accepts business type %s for create, generate and data',
     (reportType) => {
       expect(parse('generate_report', { action: 'create', name: 'Biz', reportType }).success).toBe(true);

@@ -57,25 +57,27 @@ const NOW = new Date('2026-06-10T09:30:00Z');
 const HOSTS = ['America/Denver', 'Asia/Tokyo'] as const;
 
 const keyForNow = () => lastOccurrenceKey(NOW, 'daily', DAILY, TZ);
+/** Saved well before every occurrence these fixtures consider. */
+const SAVED_LONG_AGO = new Date('2026-01-01T00:00:00Z');
 
 describe('isReportOccurrenceDue — last_generated_at on any API host', () => {
   it.each(HOSTS)('does not re-fire an occurrence that already ran, on a %s host', (zone) => {
     withHostTimeZone(zone, () => {
       // Ran at 09:05Z, five minutes AFTER the 09:00 occurrence.
-      expect(isReportOccurrenceDue(new Date('2026-06-10T09:05:00Z'), keyForNow(), TZ)).toBe(false);
+      expect(isReportOccurrenceDue(new Date('2026-06-10T09:05:00Z'), keyForNow(), TZ, SAVED_LONG_AGO)).toBe(false);
     });
   });
 
   it.each(HOSTS)('still fires an occurrence that has not run yet, on a %s host', (zone) => {
     withHostTimeZone(zone, () => {
       // Ran at 08:55Z, five minutes BEFORE the 09:00 occurrence.
-      expect(isReportOccurrenceDue(new Date('2026-06-10T08:55:00Z'), keyForNow(), TZ)).toBe(true);
+      expect(isReportOccurrenceDue(new Date('2026-06-10T08:55:00Z'), keyForNow(), TZ, SAVED_LONG_AGO)).toBe(true);
     });
   });
 
   it.each(HOSTS)('fires when the last run was the previous day, on a %s host', (zone) => {
     withHostTimeZone(zone, () => {
-      expect(isReportOccurrenceDue(new Date('2026-06-09T09:05:00Z'), keyForNow(), TZ)).toBe(true);
+      expect(isReportOccurrenceDue(new Date('2026-06-09T09:05:00Z'), keyForNow(), TZ, SAVED_LONG_AGO)).toBe(true);
     });
   });
 
@@ -91,15 +93,15 @@ describe('isReportOccurrenceDue — last_generated_at on any API host', () => {
         '2026-06-10T23:59:00Z',
       ]) {
         expect(
-          isReportOccurrenceDue(new Date(iso), keyForNow(), TZ),
+          isReportOccurrenceDue(new Date(iso), keyForNow(), TZ, SAVED_LONG_AGO),
           `last run at ${iso}`,
         ).toBe(expectedVerdict(iso));
       }
     });
   });
 
-  it('never ran is always due', () => {
-    expect(isReportOccurrenceDue(null, keyForNow(), TZ)).toBe(true);
+  it('never ran, saved before the occurrence, is due', () => {
+    expect(isReportOccurrenceDue(null, keyForNow(), TZ, SAVED_LONG_AGO)).toBe(true);
   });
 });
 
@@ -148,6 +150,7 @@ describe('findDueReports — partner-owned definitions (#3198 W01)', () => {
         id: 'partner-report-1',
         schedule: 'monthly',
         lastGeneratedAt: null,
+        createdAt: new Date('2026-06-15T00:00:00Z'),
         config: { schedule: { time: '09:00', date: '1' } },
         orgSettings: null,
         partnerTimezone: 'Europe/Berlin',
@@ -220,5 +223,94 @@ describe('findDueReports — multi-org report series (W02)', () => {
     // The pollable prefix still binds exactly three params (one_time + the two
     // worker-excluded types), so the existing complete-scope offsets hold.
     expect(compile(dueQuery!.where).params.slice(0, 3)).toEqual(['one_time', 'ai_org_narrative', 'ai_fleet_design']);
+  });
+});
+
+// ─── #9562: a newly saved recurring report waits for its first occurrence ───
+
+describe('findDueReports — a never-run report waits for its first occurrence after creation (#9562)', () => {
+  beforeEach(() => {
+    selectCalls.length = 0;
+    selectResults.length = 0;
+  });
+
+  /** Monthly, day 1 at 08:00 UTC, saved on the 21st and never generated. */
+  const monthlyRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'monthly-day-1',
+    schedule: 'monthly',
+    lastGeneratedAt: null,
+    createdAt: new Date('2026-10-21T14:00:00Z'),
+    config: { schedule: { time: '08:00', date: '1' } },
+    orgSettings: null,
+    partnerTimezone: null,
+    partnerSettings: null,
+    ...overrides,
+  });
+
+  it('is NOT due on the next scheduler tick after it is saved', async () => {
+    selectResults.push([monthlyRow()], [{ count: 0 }]);
+    // Five minutes after the save. The most recent occurrence (Oct 1 08:00)
+    // predates the report itself, so it is not this report's to send.
+    expect(await findDueReports(new Date('2026-10-21T14:05:00Z'))).toEqual([]);
+  });
+
+  it('is still not due the minute before its first occurrence', async () => {
+    selectResults.push([monthlyRow()], [{ count: 0 }]);
+    expect(await findDueReports(new Date('2026-11-01T07:59:00Z'))).toEqual([]);
+  });
+
+  it('IS due at its first scheduled occurrence after creation', async () => {
+    selectResults.push([monthlyRow()], [{ count: 0 }]);
+    expect(await findDueReports(new Date('2026-11-01T08:00:00Z'))).toEqual([
+      // lastGeneratedAt stays the observed NULL: the occurrence claim CAS
+      // compares against what the due scan read.
+      { id: 'monthly-day-1', occurrenceKey: 202611010800, lastGeneratedAt: null },
+    ]);
+  });
+
+  it('judges creation in the schedule zone, like every other occurrence', async () => {
+    // Created 06:30Z on Nov 1 = 07:30 in Berlin, before the 08:00 Berlin
+    // occurrence; at 07:05Z (08:05 Berlin) that occurrence is due.
+    selectResults.push(
+      [monthlyRow({ createdAt: new Date('2026-11-01T06:30:00Z'), partnerTimezone: 'Europe/Berlin' })],
+      [{ count: 0 }],
+    );
+    expect(await findDueReports(new Date('2026-11-01T07:05:00Z'))).toEqual([
+      { id: 'monthly-day-1', occurrenceKey: 202611010800, lastGeneratedAt: null },
+    ]);
+  });
+
+  it('does not apply creation time once the report has run: lastGeneratedAt governs', async () => {
+    // A manual "Generate now" on Oct 25 stamps lastGeneratedAt; the Nov 1
+    // occurrence is still due on schedule.
+    selectResults.push(
+      [monthlyRow({ lastGeneratedAt: new Date('2026-10-25T10:00:00Z') })],
+      [{ count: 0 }],
+    );
+    const due = await findDueReports(new Date('2026-11-01T08:00:00Z'));
+    expect(due.map((d) => d.id)).toEqual(['monthly-day-1']);
+  });
+
+  it('reads created_at in the due query', async () => {
+    selectResults.push([], [{ count: 0 }]);
+    await findDueReports(new Date('2026-10-21T14:05:00Z'));
+    const [dueQuery] = selectCalls;
+    expect(compile(drizzleSql`${dueQuery!.fields!.createdAt}`).sql).toBe('"reports"."created_at"');
+  });
+});
+
+describe('isReportOccurrenceDue — creation time as the baseline for a never-run report (#9562)', () => {
+  it('a report created after the latest occurrence is not due', () => {
+    expect(isReportOccurrenceDue(null, keyForNow(), TZ, new Date('2026-06-10T09:10:00Z'))).toBe(false);
+  });
+
+  it('a report created before the latest occurrence is due', () => {
+    expect(isReportOccurrenceDue(null, keyForNow(), TZ, new Date('2026-06-10T08:50:00Z'))).toBe(true);
+  });
+
+  it('lastGeneratedAt wins over creation time when both are present', () => {
+    expect(
+      isReportOccurrenceDue(new Date('2026-06-09T09:05:00Z'), keyForNow(), TZ, new Date('2026-06-10T09:10:00Z')),
+    ).toBe(true);
   });
 });

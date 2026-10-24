@@ -10,6 +10,8 @@ export type ConnectionIncident = {
   detail: string | null;
   displayName: string;
   fixHref: string;
+  /** Set when the only remedy is outside Breeze (no repair page to link to). */
+  remedy?: { kind: "reconnect" } | null;
   firstFailedAt: string;
   openedAt: string | null;
   lastObservedAt: string;

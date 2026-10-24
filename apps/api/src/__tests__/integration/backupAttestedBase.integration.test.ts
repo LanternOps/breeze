@@ -201,3 +201,22 @@ runDb('a producer_only snapshot is never a base on a destination the server read
   expect(outcome.baseSnapshotId).toBe('');
   expect(outcome.baseAttestation).toBeNull();
 });
+
+runDb('#8318 §5.4: after a reattach, a snapshot of an earlier install is never the base; the next run is full', async () => {
+  for (const integrity of [1, 0] as const) {
+    const f = await seed(integrity);
+    await withSystemDbAccessContext(() => f.snapshot('old-install', 120, 'verified'));
+    // The boundary advanced the device to its next install 60 minutes ago.
+    await withSystemDbAccessContext(() => db.update(devices)
+      .set({ installIncarnation: 2, incarnationStartedAt: new Date(Date.now() - 60 * 60_000) })
+      .where(eq(devices.id, f.deviceId)));
+
+    const full = await stamp(f);
+    expect(full.baseSnapshotId).toBe('');
+
+    // A snapshot the new install produced is a base again.
+    const fresh = await withSystemDbAccessContext(() => f.snapshot('new-install', 10, 'verified'));
+    const incremental = await stamp(f);
+    expect(incremental.baseSnapshotId).toBe(fresh);
+  }
+});

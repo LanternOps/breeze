@@ -159,6 +159,8 @@ export type StorageSnapshotRow = {
   fileIndexError: string | null;
   /** backup_snapshots.integrity_status (display projection). */
   integrityStatus: string;
+  /** #8318 §5.4: taken before its device's current install incarnation (see backupRestoreIntegrity.ts). */
+  producedBeforeDeviceIncarnation?: boolean | null;
   /** The snapshot's attestation row, or null when it has none. */
   attestation: IntegrityAttestationInput | null;
   metadata: unknown;

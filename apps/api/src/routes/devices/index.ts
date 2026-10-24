@@ -5,6 +5,7 @@ import { metricsRoutes } from './metrics';
 import { processSamplesRoutes } from './processSamples';
 import { softwareRoutes } from './software';
 import { commandsRoutes } from './commands';
+import { forceRebootRoutes } from './forceReboot';
 import { hardwareRoutes } from './hardware';
 import { placementRoutes } from './placement';
 import { alertsRoutes } from './alerts';
@@ -37,6 +38,7 @@ import { actuateElevationRoutes } from './actuateElevation';
 import { pamReconciliationRoutes } from './pamReconciliation';
 import { softwareActionsRoutes } from './softwareActions';
 import { homebrewBootstrapRoutes } from './homebrewBootstrap';
+import { agentRecoveryRoutes } from './agentRecovery';
 import { networkRoutes } from './network';
 import { manualRoutes } from './manual';
 import { customFieldValuesRoutes } from './customFieldValues';
@@ -97,6 +99,8 @@ deviceRoutes.route('/', filesystemRoutes);
 // Mount move-org BEFORE core routes — its POST /:id/move-org would collide
 // with any future :id-prefixed match in core if registered after.
 deviceRoutes.route('/', moveOrgRoutes);
+// #8729: POST /:id/force-reboot, the only (step-up) way to force-reboot a device.
+deviceRoutes.route('/', forceRebootRoutes);
 
 // Mount the network arm of the unified Devices list (#1322) BEFORE core
 // routes — `GET /network` is a static path that must not be eaten by the
@@ -191,6 +195,8 @@ deviceRoutes.route('/', deviceRestorePointAttemptsRoutes);
 deviceRoutes.route('/', actuateElevationRoutes);
 deviceRoutes.route('/', pamReconciliationRoutes);
 deviceRoutes.route('/', homebrewBootstrapRoutes);
+// #9234 step 1: POST /:id/agent-recovery (watchdog restart/start of the agent).
+deviceRoutes.route('/', agentRecoveryRoutes);
 
 // Re-export helpers and schemas for potential use elsewhere
 export * from './helpers';

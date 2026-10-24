@@ -1423,7 +1423,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'pamActuationWorker',
-    placement: 'global',
+    // Immediate delivery uses the canonical command claim, whose cancellation
+    // propagation reaches socket-local command services. Keep that closure on
+    // API processes; the relay still delivers to agents owned by another API.
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/pamActuationWorker');
       return { init: m.initializePamActuationWorker, shutdown: m.shutdownPamActuationWorker };
@@ -1537,6 +1540,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/ticketSlaWorker');
       return { init: m.initializeTicketSlaWorker, shutdown: m.shutdownTicketSlaWorker };
+    },
+  },
+  {
+    // #8973 W4: one-shot holiday recompute of business-calendar SLA deadlines.
+    name: 'businessCalendarRecomputeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/businessCalendarRecomputeWorker');
+      return { init: m.initializeBusinessCalendarRecomputeWorker, shutdown: m.shutdownBusinessCalendarRecomputeWorker };
     },
   },
   {

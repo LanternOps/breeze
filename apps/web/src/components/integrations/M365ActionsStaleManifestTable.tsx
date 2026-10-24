@@ -95,7 +95,7 @@ export default function M365ActionsStaleManifestTable() {
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetchWithAuth(STALE_MANIFEST_PATH);
+        const response = await fetchWithAuth(STALE_MANIFEST_PATH, { skipOrgIdInjection: true });
         if (cancelled) return;
         // 403 means an organization-scoped session: the view does not apply,
         // so it is not an error and shows nothing.

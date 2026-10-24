@@ -38,7 +38,7 @@ const mockNavigateTo = vi.mocked(navigateTo);
 // "loaded + enabled" so the form renders; the disabled path has its own test.
 function setRegistration(enabled: boolean, loaded = true) {
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
     cfAccessLogin: { enabled: false },
     registration: { enabled },
     loaded,
@@ -58,8 +58,58 @@ async function submitValidForm() {
 describe('PartnerRegisterPage — SR2-21 email-first signup', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState({}, '', '/register-partner');
     setRegistration(true);
     authState.isAuthenticated = false;
+  });
+
+  it('shows and submits the 250-device monthly default for a bare registration URL', async () => {
+    mockApiRegisterPartner.mockResolvedValue({ success: true, message: 'Check email' });
+    render(<PartnerRegisterPage />);
+    expect(await screen.findByTestId('register-purchase-selection')).toHaveTextContent('250 managed devices');
+    expect(screen.getByTestId('register-purchase-selection')).toHaveTextContent('$999 USD billed monthly');
+    await submitValidForm();
+    await waitFor(() => expect(mockApiRegisterPartner).toHaveBeenCalledWith('Acme Co', 'jane@acme.test', 'Sup3rSecure!', 'Jane Doe', {
+      catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'monthly',
+    }));
+    expect(await screen.findByRole('link', { name: 'Back to sign in' })).toHaveAttribute('href', '/login?next=%2Fbilling%2Fplans%3Fcatalog%3Dlaunch-2026-10%26capacity%3D250%26billing%3Dmonthly');
+  });
+
+  it('displays the full annual total and sends the selected choice to server-side signup', async () => {
+    window.history.replaceState({}, '', '/register-partner?catalog=launch-2026-10&capacity=250&billing=annual');
+    mockApiRegisterPartner.mockResolvedValue({ success: true, message: 'Check email' });
+    render(<PartnerRegisterPage />);
+    expect(await screen.findByTestId('register-purchase-selection')).toHaveTextContent('250 managed devices');
+    expect(screen.getByTestId('register-purchase-selection')).toHaveTextContent('$10,788 USD billed annually');
+    const signIn = screen.getByRole('link', { name: 'Sign in' });
+    expect(signIn.getAttribute('href')).toBe('/login?next=%2Fbilling%2Fplans%3Fcatalog%3Dlaunch-2026-10%26capacity%3D250%26billing%3Dannual');
+    await submitValidForm();
+    await waitFor(() => expect(mockApiRegisterPartner).toHaveBeenCalledWith('Acme Co', 'jane@acme.test', 'Sup3rSecure!', 'Jane Doe', { catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' }));
+  });
+
+  it('preserves the selected billing destination when registration is disabled', async () => {
+    setRegistration(false);
+    window.history.replaceState({}, '', '/register-partner?catalog=launch-2026-10&capacity=100&billing=monthly');
+    render(<PartnerRegisterPage />);
+    await waitFor(() => expect(mockNavigateTo).toHaveBeenCalledWith('/login?reason=registration-disabled&next=%2Fbilling%2Fplans%3Fcatalog%3Dlaunch-2026-10%26capacity%3D100%26billing%3Dmonthly'));
+  });
+
+  it.each(['capacity=250', 'catalog=launch-2026-10&capacity=250&capacity=500&billing=monthly', 'catalog=launch-2026-10&capacity=150&billing=annual'])('requires explicit recovery for an invalid URL choice instead of applying the default: %s', async (query) => {
+    window.history.replaceState({}, '', `/register-partner?${query}`);
+    render(<PartnerRegisterPage />);
+    expect(await screen.findByTestId('register-purchase-error')).toHaveTextContent('incomplete or unavailable');
+    expect(screen.getByRole('link', { name: 'Continue with the default plan' })).toHaveAttribute('href', '/register-partner');
+    expect(screen.queryByTestId('register-company-name')).toBeNull();
+    expect(mockApiRegisterPartner).not.toHaveBeenCalled();
+  });
+
+  it('hands an authenticated selected visitor to normal billing auth with allowlisted query parameters', async () => {
+    authState.isAuthenticated = true;
+    mockRestoreAccessTokenFromCookieDetailed.mockResolvedValue('restored');
+    window.history.replaceState({}, '', '/register-partner?catalog=launch-2026-10&capacity=500&billing=monthly&next=https://evil.test');
+    render(<PartnerRegisterPage />);
+    await waitFor(() => expect(mockNavigateTo).toHaveBeenCalledWith('/billing/plans?catalog=launch-2026-10&capacity=500&billing=monthly', { replace: true }));
+    expect(mockApiRegisterPartner).not.toHaveBeenCalled();
   });
 
   // Sweep paper cut #1: this bare Astro page is reached by a full-page nav,

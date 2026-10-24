@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useHashTab } from '@/lib/useHashState';
+import { siteDevicesHref } from '../contracts/deviceCoverageLinks';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '@/lib/runAction';
@@ -394,6 +395,9 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
   }
 
   const badge = statusBadge[site.status] ?? statusBadge.active;
+  // Null for a non-uuid org/site: render no link rather than a broader one that
+  // would claim devices the count above does not describe (R2).
+  const viewAllHref = siteDevicesHref(site.orgId, site.id);
 
   const statusLabel = saveState.hasUnsavedChanges
     ? t('siteDetailPage.saveStatus.unsaved')
@@ -775,16 +779,21 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
           {activeTab === 'devices' && (
             <div className="rounded-lg border bg-card p-6 shadow-xs">
               <h3 className="text-base font-semibold">{t('siteDetailPage.devices.title')}</h3>
-              <p className="mt-2 text-3xl font-bold">{site.deviceCount ?? 0}</p>
+              <p className="mt-2 text-3xl font-bold" data-testid="site-detail-device-count">
+                {site.deviceCount ?? 0}
+              </p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {t('siteDetailPage.devices.assigned')}
               </p>
-              <a
-                href="/devices"
-                className="mt-4 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
-              >
-                {t('siteDetailPage.devices.viewAll')}
-              </a>
+              {viewAllHref && (
+                <a
+                  href={viewAllHref}
+                  data-testid="site-detail-devices-view-all-link"
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-sm text-sm text-primary underline underline-offset-2 hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                  {t('siteDetailPage.devices.viewAll')}
+                </a>
+              )}
             </div>
           )}
         </main>

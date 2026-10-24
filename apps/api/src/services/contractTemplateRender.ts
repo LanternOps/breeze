@@ -670,13 +670,32 @@ export async function renderContractBlocksForClient<T extends { id: string; bloc
   locale?: string | null
 ): Promise<T[]> {
   const renderData = await loadContractBlockRenderData(blocks);
-  if (renderData.length === 0) return blocks;
+  const hasContractBlock = blocks.some((b) => b.blockType === 'contract');
+  if (!hasContractBlock) return blocks;
   const byBlockId = new Map(renderData.map((d) => [d.blockId, d]));
   const autoValues = resolveQuoteAutoVariables(quote, { effectiveDate: displayEffectiveDate(quote), locale });
 
   return blocks.map((block) => {
+    if (block.blockType !== 'contract') return block;
     const data = byBlockId.get(block.id);
-    if (!data) return block;
+    if (!data) {
+      // Unparseable stored content (#9452): never pass the raw authoring row
+      // through to a customer surface. Emit the "unavailable" variant (an
+      // authored block with no rendered body — the shared quote builder maps
+      // that to `unavailableText`). Log ids only, never the content.
+      console.warn('[contractTemplateRender] unparseable contract block content; rendering as unavailable', {
+        blockId: block.id,
+        quoteId: quote.id,
+      });
+      const unavailable: ContractClientBlockContent = {
+        templateName: '',
+        versionNumber: 0,
+        sourceType: 'authored',
+        renderedHtml: null,
+        fileUrl: null,
+      };
+      return { ...block, content: unavailable };
+    }
     const content = buildContractClientContent(block, data, autoValues, quote, fileUrlFor);
     return { ...block, content };
   });

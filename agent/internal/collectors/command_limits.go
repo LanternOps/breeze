@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,6 +64,22 @@ func runCollectorOutputWithContext(parent context.Context, timeout time.Duration
 	return output.buf.Bytes(), err
 }
 
+// collectorCommandHook, when non-nil, is called before every collector
+// subprocess starts. Production leaves it nil; tests set it to fail when a
+// code path that must stay in-process spawns a process (#9267).
+// Atomic because collector goroutines may outlive the test that set it.
+var collectorCommandHook atomic.Pointer[func(name string, args []string)]
+
+func notifyCollectorCommand(cmd *exec.Cmd, name string) {
+	if hook := collectorCommandHook.Load(); hook != nil {
+		var args []string
+		if len(cmd.Args) > 1 {
+			args = cmd.Args[1:]
+		}
+		(*hook)(name, args)
+	}
+}
+
 // collectorWaitDelay bounds how long Wait blocks on stdout/stderr pipes after
 // the command itself has exited (a descendant may have inherited them).
 const collectorWaitDelay = 10 * time.Second
@@ -80,6 +97,7 @@ const collectorStderrCaptureLimit = 64 * 1024
 // silently turn a benign orphaned handle into a permanent data gap (see
 // change_tracker.go, which clones the previous snapshot on error).
 func runCollectorCommand(cmd *exec.Cmd, name string) error {
+	notifyCollectorCommand(cmd, name)
 	err := cmd.Run()
 	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		slog.Warn("collector command exited but a descendant kept its output pipe open; output captured, pipe force-closed",
@@ -128,6 +146,7 @@ func runCollectorLimitedOutput(timeout time.Duration, name string, args ...strin
 	if err != nil {
 		return nil, fmt.Errorf("%s pipe failed: %w", name, err)
 	}
+	notifyCollectorCommand(cmd, name)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%s start failed: %w", name, err)
 	}

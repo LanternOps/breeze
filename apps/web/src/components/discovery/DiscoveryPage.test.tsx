@@ -349,6 +349,30 @@ describe('DiscoveryPage', () => {
     expect(await screen.findByText('Changes tab')).toBeInTheDocument();
   });
 
+  it('deletes a profile through a confirm dialog and toasts the outcome', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+    await screen.findAllByText('HQ sweep');
+
+    fireEvent.click(desktop().getByTitle('Delete profile'));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith('/discovery/profiles/profile-1', expect.objectContaining({ method: 'DELETE' }));
+
+    fireEvent.click(await screen.findByTestId('discovery-profile-delete-confirm'));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/discovery/profiles/profile-1', { method: 'DELETE' });
+    });
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith({ message: 'Discovery profile "HQ sweep" deleted', type: 'success' });
+    });
+    confirmSpy.mockRestore();
+  });
+
   it('toasts and shows a per-profile loading state while queuing a scan', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(profilesPayload));
 

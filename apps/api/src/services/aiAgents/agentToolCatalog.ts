@@ -204,6 +204,13 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   remediate_sensitive_data: 'security_response',
   get_security_posture: 'security_response',
   get_trust_page_status: 'security_response', // read-only public trust page status (trust center W2)
+  // Tool Catalog W03 (#5218). draft_flow is agent human-only (unreachable),
+  // mapped anyway because every registered tool carries a capability.
+  draft_flow: 'automations_reports',
+  validate_flow: 'automations_reports',
+  get_flow: 'automations_reports',
+  list_flows: 'automations_reports',
+  list_business_calendars: 'tickets', // #8973 W4: read-only
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',

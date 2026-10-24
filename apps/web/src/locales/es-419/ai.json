@@ -24,6 +24,7 @@
     "reject": "Rechazar",
     "approveVerify": "Verificar y aprobar",
     "verifying": "Esperando la verificación…",
+    "approving": "Aprobando…",
     "deny": "Denegar",
     "verificationFailed": "La verificación falló. Inténtalo de nuevo.",
     "alreadyDecided": "Esta solicitud ya fue decidida.",
@@ -551,5 +552,8 @@
     "created": "Se inició un chat nuevo en {{model}} a partir de un resumen.",
     "failed": "No se pudo iniciar el chat nuevo. Inténtalo de nuevo.",
     "openFailed": "El chat nuevo se creó pero no se pudo abrir. Encuéntralo en tu historial de chats; tu mensaje no se envió."
+  },
+  "buyCredits": {
+    "link": "Comprar créditos"
   }
 }

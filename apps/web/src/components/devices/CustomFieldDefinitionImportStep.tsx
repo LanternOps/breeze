@@ -7,6 +7,7 @@ import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwn
 import { runAction } from '../../lib/runAction';
 import { parseCsv } from '../../lib/csvParse';
 import { showToast } from '../shared/Toast';
+import { generateFieldKey, guessFieldType } from './customFieldImportHelpers';
 
 /**
  * Step 1 of the "Import from another RMM" wizard (#3257 W09): the DEFINITIONS
@@ -75,25 +76,14 @@ function guessDefinitionMapping(
   return mapping;
 }
 
-/**
- * Mirrors `CustomFieldsPage.tsx`'s `generateFieldKey` — duplicated locally
- * rather than imported across an unrelated settings-page boundary — with one
- * addition this importer needs and the single-create form doesn't: the
- * result is guaranteed to satisfy the server's `^[a-z][a-z0-9_]*$` key
- * regex, not just produce something that USUALLY does. The single-create
- * form lets an operator see and fix a bad key before submitting; here the
- * key is generated once for up to 30 rows with no per-row key input, so a
- * source label like "2nd Monitor" (leading digit) or "###" (no letters at
- * all) would otherwise 400 the ENTIRE batch with no in-UI way to fix it.
- */
-function generateFieldKey(name: string): string {
-  const base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_|_$/g, '');
-  if (base === '') return 'f_untitled';
-  if (!/^[a-z]/.test(base)) return `f_${base}`;
-  return base;
+/** Headers that carry the incumbent's field type (#9679). */
+const TYPE_HEADER_GUESSES = ['type', 'fieldtype', 'datatype', 'valuetype'];
+
+function findTypeColumn(headers: string[], claimed: Array<string | undefined>): number {
+  return headers.findIndex(
+    (h) =>
+      !claimed.includes(h) && TYPE_HEADER_GUESSES.includes(h.toLowerCase().replace(/[\s_-]+/g, '')),
+  );
 }
 
 const FIELD_TYPES: CustomFieldType[] = ['text', 'number', 'boolean', 'dropdown', 'date'];
@@ -175,12 +165,14 @@ export default function CustomFieldDefinitionImportStep({
       const mapping = guessDefinitionMapping(source, parsed.headers);
       const slotCol = mapping.sourceLabel ? parsed.headers.indexOf(mapping.sourceLabel) : 0;
       const nameCol = mapping.name ? parsed.headers.indexOf(mapping.name) : -1;
+      const typeCol = findTypeColumn(parsed.headers, [mapping.sourceLabel, mapping.name]);
       const draftRows: DraftDefinitionRow[] = parsed.rows
         .map((raw) => {
           const sourceLabel = (raw[slotCol] ?? '').trim();
           if (!sourceLabel) return null;
           const label = nameCol >= 0 ? (raw[nameCol] ?? '').trim() : '';
-          return { sourceLabel, name: label || sourceLabel, type: 'text' as CustomFieldType };
+          const type: CustomFieldType = typeCol >= 0 ? guessFieldType(raw[typeCol] ?? '') : 'text';
+          return { sourceLabel, name: label || sourceLabel, type };
         })
         .filter((r): r is DraftDefinitionRow => r !== null);
       setFileName(file.name);
@@ -361,7 +353,7 @@ export default function CustomFieldDefinitionImportStep({
                       >
                         {FIELD_TYPES.map((ft) => (
                           <option key={ft} value={ft}>
-                            {ft}
+                            {t(/* i18n-dynamic */ `settings:customFieldsPage.fieldTypes.${ft}.label`)}
                           </option>
                         ))}
                       </select>

@@ -1,0 +1,70 @@
+{
+  "title": "Flux",
+  "subtitle": "Automatisations en plusieurs étapes qui enchaînent des outils.",
+  "previewNotice": "Les flux sont en lecture seule dans cette version. Rédigez-les dans le chat IA ; l’activation et les exécutions arriveront dans une version ultérieure.",
+  "empty": {
+    "title": "Aucun flux pour le moment",
+    "body": "Demandez à l’assistant IA de rédiger un flux, puis examinez-le ici."
+  },
+  "list": {
+    "name": "Nom",
+    "owner": "Propriétaire",
+    "allOrgs": "Toutes les organisations",
+    "status": "Statut",
+    "tier": "Niveau",
+    "trigger": "Déclencheur",
+    "updated": "Mis à jour"
+  },
+  "status": {
+    "draft": "Brouillon",
+    "enabled": "Activé",
+    "paused": "En pause",
+    "disabled": "Désactivé"
+  },
+  "trigger": {
+    "schedule": "Planification",
+    "event": "Événement",
+    "webhook": "Webhook",
+    "manual": "Manuel"
+  },
+  "detail": {
+    "back": "Retour aux flux",
+    "trigger": "Déclencheur",
+    "inputs": "Entrées",
+    "steps": "Étapes",
+    "version": "Version {{version}}",
+    "createdInChat": "Créé dans le chat IA"
+  },
+  "step": {
+    "tool": "Outil",
+    "tier": "Niveau {{tier}}",
+    "approval": "Approbation",
+    "approvalDefault": "Approbation standard",
+    "approvalPreApproved": "Préapprouvé",
+    "when": "S’exécute quand",
+    "forEach": "Pour chaque élément",
+    "onFailure": "En cas d’échec",
+    "timeout": "Délai d’expiration",
+    "input": "Entrée",
+    "source": {
+      "core": "Outil de base",
+      "tenant": "Source d’outils",
+      "builtin": "Intégré"
+    }
+  },
+  "issues": {
+    "title": "Validation",
+    "none": "Aucun problème de validation.",
+    "error": "Erreur",
+    "warning": "Avertissement"
+  },
+  "card": {
+    "title": "Brouillon de flux",
+    "review": "Examiner",
+    "steps": "Étapes : {{count}}"
+  },
+  "errors": {
+    "loadFailed": "Impossible de charger les flux.",
+    "notFound": "Flux introuvable."
+  }
+}

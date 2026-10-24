@@ -70,6 +70,7 @@ import { timeEntriesRoutes } from './routes/timeEntries';
 import { billingProfilesRoutes } from './routes/billingProfiles';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
+import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
@@ -248,6 +249,7 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { toolSourcesRoutes } from './routes/toolSources';
+import { flowsRoutes } from './routes/flows';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -337,8 +339,9 @@ import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/au
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { closeModelGateway } from './services/aiModels/gateway/server';
-import { createCorsOriginResolver } from './services/corsOrigins';
+import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
+import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
@@ -468,10 +471,6 @@ const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({ app });
 // per-route hook for `maxPayload`, so the `ws` library default of 100 MiB
 // would otherwise apply everywhere. Size it per route instead.
 installPerRouteMaxPayload(wss);
-const resolveCorsOrigin = createCorsOriginResolver({
-  configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
-  nodeEnv: process.env.NODE_ENV
-});
 
 // Global middleware
 // FIRST, deliberately: `http_requests_total` / `http_request_duration_seconds`
@@ -556,14 +555,8 @@ app.use('*', prettyJSON());
 app.use(
   '*',
   exceptTunnelHttp(
-    cors({
-      origin: (origin) => resolveCorsOrigin(origin),
-      credentials: true,
-      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
-      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      exposeHeaders: ['Content-Length', 'X-Request-Id'],
-      maxAge: 86400
-    })
+    // Origin resolver + header lists live in services/corsPolicy.ts (B-W03 #6157).
+    cors(CORS_MIDDLEWARE_OPTIONS)
   )
 );
 
@@ -877,6 +870,7 @@ api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
+api.route('/business-calendars', businessCalendarRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
@@ -1166,6 +1160,9 @@ api.route('/extensions', extensionsWebRoutes);
 // Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
 // when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
 api.route('/tool-sources', toolSourcesRoutes);
+// Tool Catalog W03 (#5218) — read-only flows. 404s whole-router when
+// FLOWS_ENABLED is off (routes/flows.ts's first `use('*')`).
+api.route('/flows', flowsRoutes);
 api.route('/topology', topologyRoutes);
 api.route('/circuits', circuitRoutes);
 
@@ -2006,6 +2003,11 @@ async function bootstrap(): Promise<void> {
   server = serve({
     fetch: app.fetch,
     port
+  });
+
+  // #9372: one non-blocking TURN preflight (never rejects, never delays boot).
+  startTurnPreflight(process.env).catch(() => {
+    console.warn('[turn-preflight] preflight failed unexpectedly');
   });
 
   injectWebSocket(server);

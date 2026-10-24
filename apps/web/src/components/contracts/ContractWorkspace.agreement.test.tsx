@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 import '@/lib/i18n';
 
 const api = vi.hoisted(() => ({ getContract: vi.fn(), listContractDocuments: vi.fn() }));
@@ -104,5 +106,33 @@ describe('ContractWorkspace created-from-quote pill', () => {
     render(<ContractWorkspace contractId="ct-1" />);
     await screen.findByTestId('contract-under-agreement-pill');
     expect(screen.queryByTestId('contract-from-quote-pill')).not.toBeInTheDocument();
+  });
+});
+
+async function expectHashLinkClick(testId: string, expected: string) {
+  const router = installAstroClientRouterStandIn();
+  window.location.hash = '';
+  try {
+    const changed = new Promise<void>((resolve) => {
+      window.addEventListener('hashchange', (e) => {
+        if ((e as HashChangeEvent).newURL.endsWith(expected)) resolve();
+      });
+    });
+    await userEvent.click(screen.getByTestId(testId));
+    expect(window.location.hash).toBe(expected);
+    await expect(changed).resolves.toBeUndefined();
+  } finally {
+    router.uninstall();
+    window.location.hash = '';
+  }
+}
+
+describe('ContractWorkspace agreement pill hash link', () => {
+  it('click sets #signed-agreements and fires hashchange under the Astro router', async () => {
+    api.getContract.mockResolvedValue(resp({ data: { contract: { id: 'ct-1', name: 'Acme MSA', status: 'active' } } }));
+    api.listContractDocuments.mockResolvedValue(resp({ data: [doc()] }));
+    render(<ContractWorkspace contractId="ct-1" />);
+    await screen.findByTestId('contract-under-agreement-pill');
+    await expectHashLinkClick('contract-under-agreement-pill', '#signed-agreements');
   });
 });

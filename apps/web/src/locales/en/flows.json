@@ -1,0 +1,70 @@
+{
+  "title": "Flows",
+  "subtitle": "Multi-step automations that chain tools together.",
+  "previewNotice": "Flows are read-only in this release. Draft them in AI chat; enabling and runs arrive in a later release.",
+  "empty": {
+    "title": "No flows yet",
+    "body": "Ask the AI assistant to draft a flow, then review it here."
+  },
+  "list": {
+    "name": "Name",
+    "owner": "Owner",
+    "allOrgs": "All orgs",
+    "status": "Status",
+    "tier": "Tier",
+    "trigger": "Trigger",
+    "updated": "Updated"
+  },
+  "status": {
+    "draft": "Draft",
+    "enabled": "Enabled",
+    "paused": "Paused",
+    "disabled": "Disabled"
+  },
+  "trigger": {
+    "schedule": "Schedule",
+    "event": "Event",
+    "webhook": "Webhook",
+    "manual": "Manual"
+  },
+  "detail": {
+    "back": "Back to flows",
+    "trigger": "Trigger",
+    "inputs": "Inputs",
+    "steps": "Steps",
+    "version": "Version {{version}}",
+    "createdInChat": "Created in AI chat"
+  },
+  "step": {
+    "tool": "Tool",
+    "tier": "Tier {{tier}}",
+    "approval": "Approval",
+    "approvalDefault": "Standard approval",
+    "approvalPreApproved": "Pre-approved",
+    "when": "Runs when",
+    "forEach": "For each",
+    "onFailure": "On failure",
+    "timeout": "Timeout",
+    "input": "Input",
+    "source": {
+      "core": "Core tool",
+      "tenant": "Tool source",
+      "builtin": "Built-in"
+    }
+  },
+  "issues": {
+    "title": "Validation",
+    "none": "No validation issues.",
+    "error": "Error",
+    "warning": "Warning"
+  },
+  "card": {
+    "title": "Flow draft",
+    "review": "Review",
+    "steps": "Steps: {{count}}"
+  },
+  "errors": {
+    "loadFailed": "Could not load flows.",
+    "notFound": "Flow not found."
+  }
+}

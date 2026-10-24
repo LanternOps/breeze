@@ -2,7 +2,7 @@ import { autopayReasonKey } from './autopayReason';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { handleActionError } from '../../lib/runAction';
-import { readAutopay, mutateAutopay, methodLabel, skippedAutopayReason, type AutopayRow } from './autopayClient';
+import { readAutopay, AutopayNotEnabledError, mutateAutopay, methodLabel, skippedAutopayReason, type AutopayRow } from './autopayClient';
 import { autopayButton } from './autopayUi';
 import { PageHeader } from '../shared/PageHeader';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -11,12 +11,12 @@ type Variant = 'row' | 'card';
 export default function AutopayListPage() {
   const { t } = useTranslation('billing');
   const [rows, setRows] = useState<AutopayRow[]>([]); const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false); const [selected, setSelected] = useState<string[]>([]);
+  const [error, setError] = useState(false); const [notEnabled, setNotEnabled] = useState(false); const [selected, setSelected] = useState<string[]>([]);
   const [dismissed, setDismissed] = useState(false); const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ requested: string[]; skipped: { orgId: string; reason: string }[] } | null>(null);
   const load = useCallback(async () => {
-    try { const response = await readAutopay<{ data: AutopayRow[] }>('/billing/autopay'); setRows(response.data); setError(false); }
-    catch { setError(true); } finally { setLoading(false); }
+    try { const response = await readAutopay<{ data: AutopayRow[] }>('/billing/autopay'); setRows(response.data); setError(false); setNotEnabled(false); }
+    catch (e) { if (e instanceof AutopayNotEnabledError) { setNotEnabled(true); setError(false); } else setError(true); } finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
   async function send(ids: string[]) {
@@ -25,6 +25,10 @@ export default function AutopayListPage() {
     catch (e) { handleActionError(e, t('autopay.error')); } finally { setBusy(false); }
   }
   if (loading) return <p>{t('autopay.loading')}</p>;
+  if (notEnabled) return <div data-testid="autopay-not-enabled" className="space-y-2">
+    <PageHeader title={t('autopay.title')} headingTestId="autopay-heading" />
+    <p className="text-sm font-medium">{t('autopay.notEnabled.title')}</p>
+    <p className="text-sm text-muted-foreground">{t('autopay.notEnabled.hint')}</p></div>;
   if (error) return <p data-testid="autopay-list-error" role="alert">{t('autopay.error')}</p>;
   const unasked = rows.filter(row => row.status === 'not_requested');
   // Desktop row and phone card render the same facts and actions; card test ids carry "autopay-card-".

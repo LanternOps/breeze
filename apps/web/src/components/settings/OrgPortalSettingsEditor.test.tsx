@@ -44,6 +44,7 @@ const SETTINGS = {
   enableHourBlock: false,
   enablePatchDetail: false,
   enableVulnerabilityDetail: false,
+  enablePhysicalPlacement: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -172,6 +173,28 @@ describe('OrgPortalSettingsEditor', () => {
     expect(body.enableTickets).toBe(false);
     expect(body.supportEmail).toBeNull();
     expect(body.welcomeMessage).toBe('Welcome!');
+  });
+
+  it('refetches the Customer view preview after a successful save (stale-preview fix)', async () => {
+    mockApi();
+    const base = fetchMock.getMockImplementation()!;
+    const previewCalls = () =>
+      fetchMock.mock.calls.filter(([u]) => String(u).includes('/portal-preview')).length;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/portal-preview')) return makeJsonResponse({ data: { portalUser: null, sections: [], readiness: [] } });
+      if (url.includes('/portal-users')) return makeJsonResponse({ data: [] });
+      return base(input, init);
+    });
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+    await waitFor(() => expect(screen.getByTestId('org-portal-save')).toBeInTheDocument());
+    await waitFor(() => expect(previewCalls()).toBe(1));
+
+    fireEvent.click(screen.getByTestId('org-portal-toggle-enableTickets'));
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    await waitFor(() => expect(previewCalls()).toBe(2));
   });
 
   it('enables available visibility flags in the local draft', async () => {
@@ -397,6 +420,35 @@ describe('OrgPortalSettingsEditor', () => {
         orgPortalSettingsEditor: { visibility: { toggles: Record<string, { label: string; description: string }> } };
       };
       const entry = catalog.orgPortalSettingsEditor.visibility.toggles.enableVulnerabilityDetail;
+      expect(entry?.label.length).toBeGreaterThan(0);
+      expect(entry?.description.length).toBeGreaterThan(0);
+    },
+  );
+
+  it('keeps physical placement (sensitive) off through "Enable all" and saves it when toggled individually', async () => {
+    expect(PORTAL_SENSITIVE_FLAG_KEYS).toContain('enablePhysicalPlacement');
+    mockApi();
+    render(<OrgPortalSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+
+    fireEvent.click(await screen.findByTestId('org-portal-enable-all-visibility'));
+    const toggle = screen.getByTestId('org-portal-toggle-enablePhysicalPlacement') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('org-portal-enable-all-visibility'));
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(screen.getByTestId('org-portal-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patchCall![1]!.body)).enablePhysicalPlacement).toBe(true);
+  });
+
+  it.each(['en', 'de-DE', 'es-419', 'fr-CA', 'fr-FR', 'it-IT', 'pt-BR', 'tr-TR'])(
+    'has a translated physical placement label and description in %s',
+    async (locale) => {
+      const catalog = (await import(`../../locales/${locale}/settings.json`)).default as {
+        orgPortalSettingsEditor: { visibility: { toggles: Record<string, { label: string; description: string }> } };
+      };
+      const entry = catalog.orgPortalSettingsEditor.visibility.toggles.enablePhysicalPlacement;
       expect(entry?.label.length).toBeGreaterThan(0);
       expect(entry?.description.length).toBeGreaterThan(0);
     },

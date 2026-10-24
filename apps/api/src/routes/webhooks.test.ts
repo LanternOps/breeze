@@ -194,7 +194,7 @@ describe('webhook routes', () => {
     const res = await app.request('/webhooks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Device Alerts', url: 'https://example.com/webhooks/device', secret: 'secret-123', events: ['device.created'] }),
+      body: JSON.stringify({ name: 'Device Alerts', url: 'https://example.com/webhooks/device', secret: 'secret-123', events: ['device.online'] }),
     });
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('ORG_PROTECTED');
@@ -210,13 +210,15 @@ describe('webhook routes', () => {
           name: 'Device Alerts',
           url: 'https://example.com/webhooks/device',
           secret: 'secret-123',
-          events: ['device.created'],
+          events: ['device.online'],
           headers: [{ key: 'X-Test', value: '1' }],
           status: 'active',
           createdBy: 'user-123',
           createdAt: new Date('2026-02-07T13:00:00.000Z'),
           updatedAt: new Date('2026-02-07T13:00:00.000Z'),
-          lastDeliveryAt: null
+          lastDeliveryAt: new Date('2026-02-08T10:00:00.000Z'),
+          successCount: 7,
+          failureCount: 2
         }]))
       }))
     } as any);
@@ -228,7 +230,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhooks/device',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [{ key: 'X-Test', value: '1' }]
       })
     });
@@ -238,6 +240,10 @@ describe('webhook routes', () => {
     expect(body.id).toBe(WEBHOOK_ID_1);
     expect(body.hasSecret).toBe(true);
     expect(body.secret).toBeUndefined();
+    // #9656: delivery stats are returned so the list can render them.
+    expect(body.lastDeliveryAt).toBe('2026-02-08T10:00:00.000Z');
+    expect(body.successCount).toBe(7);
+    expect(body.failureCount).toBe(2);
   });
 
   it('encrypts and redacts custom webhook headers', async () => {
@@ -249,7 +255,7 @@ describe('webhook routes', () => {
           name: 'Device Alerts',
           url: 'https://example.com/webhooks/device',
           secret: values.secret,
-          events: ['device.created'],
+          events: ['device.online'],
           headers: values.headers,
           status: 'active',
           createdBy: 'user-123',
@@ -267,7 +273,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhooks/device',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [{ key: 'Authorization', value: 'Bearer token-123' }]
       })
     });
@@ -297,7 +303,7 @@ describe('webhook routes', () => {
           // Echo back what the handler actually persisted (encrypted form).
           url: values.url,
           secret: values.secret,
-          events: ['device.created'],
+          events: ['device.online'],
           headers: [],
           status: 'active',
           createdBy: 'user-123',
@@ -315,7 +321,7 @@ describe('webhook routes', () => {
         name: 'Cred Hook',
         url: credentialUrl,
         secret: 'secret-123',
-        events: ['device.created']
+        events: ['device.online']
       })
     });
 
@@ -345,7 +351,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: encryptedUrl,
         secret: null,
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [],
         status: 'active',
         createdBy: 'user-123',
@@ -403,7 +409,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: encryptedUrl,
         secret: null,
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [],
         status: 'active',
         createdBy: 'user-123',
@@ -421,7 +427,7 @@ describe('webhook routes', () => {
           name: 'Renamed',
           url: encryptedUrl,
           secret: null,
-          events: ['device.created'],
+          events: ['device.online'],
           headers: [],
           status: 'active',
           createdBy: 'user-123',
@@ -461,7 +467,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhook',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [],
         status: 'active',
         createdBy: 'user-123',
@@ -480,7 +486,7 @@ describe('webhook routes', () => {
           name: 'Renamed Again',
           url: 'https://example.com/webhook',
           secret: 'secret-123',
-          events: ['device.created'],
+          events: ['device.online'],
           headers: [],
           status: 'active',
           createdBy: 'user-123',
@@ -514,7 +520,7 @@ describe('webhook routes', () => {
         name: 'Unsafe Hook',
         url: 'http://127.0.0.1/webhook',
         secret: 'secret-123',
-        events: ['device.created']
+        events: ['device.online']
       })
     });
 
@@ -531,7 +537,7 @@ describe('webhook routes', () => {
         name: 'Bad Headers',
         url: 'https://example.com/webhook',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [
           { key: 'Host', value: '169.254.169.254' },
           { key: 'X-Breeze-Event-Type', value: 'forged' },
@@ -559,13 +565,15 @@ describe('webhook routes', () => {
           name: 'First',
           url: 'https://example.com/1',
           secret: 'secret-a',
-          events: ['device.created'],
+          events: ['device.online'],
           headers: [{ key: 'Authorization', value: 'enc:v1:test' }],
           status: 'active',
           createdBy: 'user-123',
           createdAt: new Date(),
           updatedAt: new Date(),
-          lastDeliveryAt: null
+          lastDeliveryAt: new Date('2026-02-08T10:00:00.000Z'),
+          successCount: 5,
+          failureCount: 1
         },
         {
           id: WEBHOOK_ID_2,
@@ -579,7 +587,9 @@ describe('webhook routes', () => {
           createdBy: 'user-123',
           createdAt: new Date(),
           updatedAt: new Date(),
-          lastDeliveryAt: null
+          lastDeliveryAt: null,
+          successCount: null,
+          failureCount: null
         }
       ]) as any);
 
@@ -599,6 +609,9 @@ describe('webhook routes', () => {
       masked: '********'
     });
     expect(body.data[1].status).toBe('paused');
+    // #9656: delivery stats on the list; null counts serialize as 0.
+    expect(body.data[0]).toMatchObject({ lastDeliveryAt: '2026-02-08T10:00:00.000Z', successCount: 5, failureCount: 1 });
+    expect(body.data[1]).toMatchObject({ lastDeliveryAt: null, successCount: 0, failureCount: 0 });
   });
 
   it('queues a test webhook delivery and persists pending delivery row', async () => {
@@ -609,7 +622,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhook',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [{ key: 'X-Test', value: '1' }],
         status: 'active',
         createdBy: 'user-123',
@@ -668,7 +681,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhook',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [],
         status: 'disabled',
         createdBy: 'user-123',
@@ -698,7 +711,7 @@ describe('webhook routes', () => {
           name: 'Device Alerts',
           url: 'https://example.com/webhook',
           secret: 'secret-123',
-          events: ['device.created'],
+          events: ['device.online'],
           headers: [],
           status: 'active',
           createdBy: 'user-123',
@@ -712,7 +725,7 @@ describe('webhook routes', () => {
         {
           id: DELIVERY_ID_1,
           webhookId: WEBHOOK_ID_1,
-          eventType: 'device.created',
+          eventType: 'device.online',
           eventId: 'evt-1',
           payload: {},
           status: 'delivered',
@@ -743,7 +756,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhook',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [],
         status: 'error',
         createdBy: 'user-123',
@@ -773,7 +786,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhooks/device',
         secret: 'secret-123',
-        events: ['device.created']
+        events: ['device.online']
       })
     });
 
@@ -790,7 +803,7 @@ describe('webhook routes', () => {
         name: 'Device Alerts',
         url: 'https://example.com/webhooks/device',
         secret: 'secret-123',
-        events: ['device.created']
+        events: ['device.online']
       })
     });
 
@@ -814,7 +827,7 @@ describe('webhook routes', () => {
     name: 'Foreign Hook',
     url: 'https://attacker:secret@foreign.example.com/hook?token=leak-me',
     secret: 'foreign-secret-should-not-leak',
-    events: ['device.created'],
+    events: ['device.online'],
     headers: [],
     status: 'active',
     createdBy: 'foreign-user',
@@ -889,7 +902,7 @@ describe('webhook routes', () => {
       name: 'Credentialed Hook',
       url: encryptedUrl,
       secret: null,
-      events: ['device.created'],
+      events: ['device.online'],
       headers: encryptWebhookHeaders([{ key: 'Authorization', value: 'Bearer stored' }]),
       status: 'active',
       createdBy: 'user-123',
@@ -919,7 +932,7 @@ describe('webhook routes', () => {
       name: 'Credentialed Hook',
       url: encryptSecret('https://hooks.example.com/deliver') as string,
       secret: null,
-      events: ['device.created'],
+      events: ['device.online'],
       headers: encryptWebhookHeaders([{ key: 'Authorization', value: 'Bearer stored' }]),
       status: 'active',
       createdBy: 'user-123',
@@ -951,7 +964,7 @@ describe('webhook routes', () => {
       name: 'Credentialed Hook',
       url: encryptSecret('https://hooks.example.com/deliver') as string,
       secret: null,
-      events: ['device.created'],
+      events: ['device.online'],
       headers: [],
       status: 'active',
       createdBy: 'user-123',
@@ -991,7 +1004,7 @@ describe('webhook routes', () => {
         name: 'Legacy Hook',
         url: 'https://example.com/legacy',
         secret: null,
-        events: ['device.created'],
+        events: ['device.online'],
         headers: { 'X-Api-Key': encryptSecret('legacy-key-123') as string },
         status: 'active',
         createdBy: 'user-123',
@@ -1045,7 +1058,7 @@ describe('webhook routes', () => {
       name: 'Device Alerts',
       url: 'https://example.com/webhook',
       secret: null,
-      events: ['device.created'],
+      events: ['device.online'],
       headers: [],
       status: 'active',
       createdBy: 'user-123',
@@ -1090,7 +1103,7 @@ describe('webhook routes', () => {
         name: 'Paused hook',
         url: 'https://example.com/webhooks/paused',
         secret: 'secret-123',
-        events: ['device.created'],
+        events: ['device.online'],
         status: 'paused',
       }),
     });
@@ -1130,7 +1143,7 @@ describe('webhook routes', () => {
       name: 'Hook',
       url: 'https://example.com/hook',
       secret: null,
-      events: ['device.created'],
+      events: ['device.online'],
       headers: [],
       status: 'active'
     };
@@ -1187,7 +1200,7 @@ describe('webhook routes', () => {
       const res = await app.request('/webhooks', {
         method: 'POST',
         headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Hook', url: 'https://example.com/hook', events: ['device.created'] })
+        body: JSON.stringify({ name: 'Hook', url: 'https://example.com/hook', events: ['device.online'] })
       });
 
       expect(res.status).toBe(403);
@@ -1203,7 +1216,7 @@ describe('webhook routes', () => {
         name: 'Hook',
         url: 'https://example.com/hook',
         secret: null,
-        events: ['device.created'],
+        events: ['device.online'],
         headers: [],
         status: 'active'
       }]) as any)
@@ -1211,7 +1224,7 @@ describe('webhook routes', () => {
       .mockReturnValueOnce(mockSelectList([{
         id: DELIVERY_ID_1,
         webhookId: WEBHOOK_ID_1,
-        eventType: 'device.created',
+        eventType: 'device.online',
         eventId: 'evt-1',
         payload: { hostname: 'payload-marker' },
         status: 'failed',
@@ -1239,7 +1252,7 @@ describe('webhook routes', () => {
       id: DELIVERY_ID_1,
       webhookId: WEBHOOK_ID_1,
       status: 'failed',
-      event: 'device.created',
+      event: 'device.online',
       responseStatus: 500,
       attempt: 2,
       createdAt: '2026-01-01T00:00:00.000Z'
@@ -1249,5 +1262,125 @@ describe('webhook routes', () => {
     const text = JSON.stringify(body);
     expect(text).not.toContain('payload-marker');
     expect(text).not.toContain('response-body-marker');
+  });
+  // #9651: the form offered `alert.created`, which nothing publishes, so the
+  // subscription saved fine and never fired. The API now rewrites the legacy
+  // name to `alert.triggered` and rejects names that are never published.
+  describe('event names (#9651)', () => {
+    function mockInsertEcho() {
+      const values = vi.fn((row: any) => ({
+        returning: vi.fn(() => Promise.resolve([{
+          id: WEBHOOK_ID_1,
+          orgId: '11111111-1111-1111-1111-111111111111',
+          name: row.name,
+          url: row.url,
+          secret: row.secret,
+          events: row.events,
+          headers: [],
+          status: 'active',
+          createdBy: 'user-123',
+          createdAt: new Date('2026-02-07T13:00:00.000Z'),
+          updatedAt: new Date('2026-02-07T13:00:00.000Z'),
+          lastDeliveryAt: null,
+          approvalGeneration: 1
+        }]))
+      }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values } as any);
+      return values;
+    }
+
+    function createWith(events: unknown) {
+      return app.request('/webhooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Alerts', url: 'https://example.com/hook', secret: 'secret-123', events })
+      });
+    }
+
+    it('stores a legacy alert.created subscription as alert.triggered', async () => {
+      const values = mockInsertEcho();
+      const res = await createWith(['alert.created', 'device.offline']);
+      expect(res.status).toBe(201);
+      expect((values.mock.calls as any[])[0][0].events).toEqual(['alert.triggered', 'device.offline']);
+      expect((await res.json()).events).toEqual(['alert.triggered', 'device.offline']);
+    });
+
+    it('does not store alert.triggered twice when both names are sent', async () => {
+      const values = mockInsertEcho();
+      const res = await createWith(['alert.triggered', 'alert.created']);
+      expect(res.status).toBe(201);
+      expect((values.mock.calls as any[])[0][0].events).toEqual(['alert.triggered']);
+    });
+
+    it('accepts the * wildcard', async () => {
+      const values = mockInsertEcho();
+      const res = await createWith(['*']);
+      expect(res.status).toBe(201);
+      expect((values.mock.calls as any[])[0][0].events).toEqual(['*']);
+    });
+
+    it('rejects an event name that is never published', async () => {
+      const res = await createWith(['device.online', 'device.exploded']);
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(await res.json())).toContain('device.exploded');
+      expect(db.insert).not.toHaveBeenCalled();
+    });
+
+    it('rewrites alert.created on PATCH too', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(mockSelectLimit([{
+        id: WEBHOOK_ID_1,
+        orgId: '11111111-1111-1111-1111-111111111111',
+        name: 'Alerts',
+        url: 'https://example.com/hook',
+        secret: 'secret-123',
+        events: ['device.online'],
+        headers: [],
+        status: 'active',
+        createdBy: 'user-123',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastDeliveryAt: null,
+        approvalGeneration: 1
+      }]) as any);
+      const set = vi.fn((patch: any) => ({
+        where: vi.fn(() => ({
+          returning: vi.fn(() => Promise.resolve([{
+            id: WEBHOOK_ID_1,
+            orgId: '11111111-1111-1111-1111-111111111111',
+            name: 'Alerts',
+            url: 'https://example.com/hook',
+            secret: 'secret-123',
+            events: patch.events,
+            headers: [],
+            status: 'active',
+            createdBy: 'user-123',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            lastDeliveryAt: null,
+            approvalGeneration: 2
+          }]))
+        }))
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set } as any);
+
+      const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ events: ['alert.created'] })
+      });
+
+      expect(res.status).toBe(200);
+      expect((set.mock.calls as any[])[0][0].events).toEqual(['alert.triggered']);
+    });
+
+    it('rejects an unpublished event name on PATCH without writing', async () => {
+      const res = await app.request(`/webhooks/${WEBHOOK_ID_1}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ events: ['ticket.exploded'] })
+      });
+      expect(res.status).toBe(400);
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 });

@@ -109,6 +109,11 @@ describe('getRouteScope', () => {
     expect(isGlobalScopeRoute('/organizations/abc123')).toBe(false);
   });
 
+  it('classifies /flows (Tool Catalog W3) as org-or-all', () => {
+    expect(getRouteScope('/flows')).toBe('org-or-all');
+    expect(getRouteScope('/flows/9f1c0f4e-0000-4000-8000-000000000000')).toBe('org-or-all');
+  });
+
   it('returns null for routes outside the registry', () => {
     expect(getRouteScope('/definitely-not-a-page')).toBeNull();
   });

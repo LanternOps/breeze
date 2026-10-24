@@ -18,7 +18,9 @@ var _ etwlua.PamRunner = (*Heartbeat)(nil)
 const (
 	// pamDialogTimeout bounds the broker round-trip to comfortably under
 	// consent.exe's idle lifetime (~120s default). Timeout → deny+dismiss
-	// (RequestPamApproval already returns that on timeout).
+	// (RequestPamApproval already returns that on timeout). Do not rely on that
+	// idle lifetime anywhere else: on Windows Server 2022 credential prompts
+	// were observed alive 30+ minutes later (#8995).
 	pamDialogTimeout = 90 * time.Second
 	// pamDismissTimeout gives the helper's eight-second dismissal attempt time
 	// to complete and return its correlated IPC result.
@@ -85,11 +87,12 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 		sessionTarget = "requester_session"
 	}
 
-	// Defensive: the PamRunner contract (see etwlua.PamRunner) says the caller
-	// passes a nil runner when the broker is absent. Guard anyway so a wiring
-	// slip can't panic the ETW hot path — every supported flow needs a helper.
+	// No session broker (e.g. an interactive agent with no user-helper, or an
+	// event that beat hb.Start's broker setup): every supported flow needs a
+	// helper. Not reported (#9517): early in startup it is not proof, so the
+	// request is left for the server's stale-request expiry.
 	if h.pamFindSession == nil && h.sessionBroker == nil {
-		log.Warn("pam: no session broker available; skipping elevation flow",
+		log.Warn("pam: no session broker available; skipping elevation flow, request left pending",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
 			"targetWinSession", targetWinSession)
 		return
@@ -101,10 +104,22 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	}
 	session := find(ipc.ScopePam, targetWinSession)
 	if session == nil {
-		log.Warn("pam: no capable SYSTEM helper session; cannot complete elevation flow, consent.exe will time out",
+		// On-demand (RDS) lifecycle: the PAM hold may not have a helper up in
+		// this session yet. Lease and spawn one rather than stranding the
+		// request (#8996). The lease is held until the flow returns.
+		var releaseLease func()
+		var unable *pamUnable
+		session, releaseLease, unable = h.spawnPamHelperOnDemand(ctx, find, outcome.RequestID, targetWinSession)
+		defer releaseLease()
+		if session == nil {
+			// Tell the server, so it closes the request rather than offering
+			// it to a technician (#9517). nil unable = the flow was cancelled.
+			h.reportPamUnable(outcome.RequestID, unable)
+			return
+		}
+		log.Info("pam: on-demand SYSTEM helper ready; continuing elevation flow",
 			"elevationRequestId", outcome.RequestID, "sessionTarget", sessionTarget,
 			"targetWinSession", targetWinSession)
-		return
 	}
 	if outcome.Status == etwlua.ElevationDenied {
 		h.denyConsent(session, outcome.RequestID, "policy_denied", targetWinSession) // policy hard-deny, no dialog
@@ -158,6 +173,9 @@ func (h *Heartbeat) RunPamFlow(ctx context.Context, ev etwlua.Event, outcome etw
 	case sessionbroker.PamActionDeny:
 		h.denyConsent(session, outcome.RequestID, dialog.Reason, targetWinSession)
 	case sessionbroker.PamActionAwaitRemote:
+		// Remember this request's own consent.exe so the approved launch can
+		// close it afterwards (#8995); the launch itself never goes through it.
+		h.recordPendingPamConsent(outcome.RequestID, targetWinSession, ev.Consent)
 		log.Info("pam: awaiting remote technician approval; server will issue actuate_elevation", "elevationRequestId", outcome.RequestID)
 	}
 }

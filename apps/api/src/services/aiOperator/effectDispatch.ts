@@ -33,11 +33,15 @@ import { M365_WRITE_ACTION_IDEMPOTENCY } from '@breeze/shared/m365';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorOperations, type AiOperatorTaskRow } from '../../db/schema/aiOperatorTasks';
 import { actionIntents } from '../../db/schema/actionIntents';
-import { aiOperatorPlanApprovalEffects, type AiOperatorEffectIdempotencyClass } from '../../db/schema/aiOperatorPlanApprovals';
+import {
+  aiOperatorPlanApprovalEffects,
+  aiOperatorPlanApprovals,
+  type AiOperatorEffectIdempotencyClass,
+} from '../../db/schema/aiOperatorPlanApprovals';
 import { aiOperatorTaskTargetAccounts, aiOperatorTaskTargets } from '../../db/schema/aiOperatorTaskGraph';
 import { buildActionLabel } from '../actionIntents/actionLabel';
 import { M365_HEADLESS_ACTIONS } from '../m365ToolsHeadless';
-import { probeEffect, type EffectProbeResult } from './effectProbes';
+import { isStructurallyUnobservable, probeEffect, type EffectProbeResult } from './effectProbes';
 import {
   checkPlanEffectMembershipSystem,
   closePendingPlan,
@@ -49,6 +53,7 @@ import {
   type PlanEffectLabels,
 } from './planApproval';
 import { appendTaskEvent } from './eventService';
+import { loadPlanningFacts } from './planningSnapshot';
 import type { PlannedEffect, RecipeDefinition } from './recipes/types';
 import type { TaskCheckpoint } from '@breeze/shared';
 
@@ -84,7 +89,7 @@ export function classifyEffectIdempotency(toolName: string): AiOperatorEffectIde
 // ---------------------------------------------------------------------------
 
 export type EffectStepDirective =
-  | { action: 'wait'; reason: 'approval' | 'execution'; dependency: { kind: 'intent'; id: string } | null; wakeAfterMs: number; detail: string }
+  | { action: 'wait'; reason: 'approval' | 'execution' | 'maintenance_window'; dependency: { kind: 'intent'; id: string } | null; wakeAfterMs: number; detail: string }
   | { action: 'settle'; event: 'complete' | 'partial' | 'hand_off' | 'fail'; outcome: 'verified_resolved' | 'unresolved' | 'unknown_effect'; detail: string; handoffSummary?: string }
   | { action: 'move'; toStepKey: string; settledDetail: string; resolvedDetail: string };
 
@@ -274,9 +279,16 @@ async function recordNoopOperation(args: {
 
 async function recordVerification(args: {
   orgId: string; taskId: string; stepKey: string; operationId: string; operationKey: string; verified: boolean; detail: string;
+  /** A declared, structurally unobservable effect (R1a-0): recorded, never verified. */
+  unobservable?: { subsumedBy: string };
 }): Promise<void> {
   await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
-    const stamp = JSON.stringify({ verified: { ok: args.verified, detail: args.detail.slice(0, 500), at: new Date().toISOString() } });
+    const stamp = JSON.stringify({
+      verified: {
+        ok: args.verified, detail: args.detail.slice(0, 500), at: new Date().toISOString(),
+        ...(args.unobservable ? { unobservable: true, subsumedBy: args.unobservable.subsumedBy } : {}),
+      },
+    });
     await db
       .update(aiOperatorOperations)
       .set({ result: sql`${aiOperatorOperations.result} || ${stamp}::jsonb`, updatedAt: new Date() })
@@ -284,7 +296,9 @@ async function recordVerification(args: {
     await appendTaskEvent(db, {
       orgId: args.orgId, taskId: args.taskId, eventType: 'verification_recorded', actor: { kind: 'coordinator' },
       stepKey: args.stepKey, targetId: null,
-      detail: `${args.operationKey}: ${args.verified ? 'verified' : 'not verified'} — ${args.detail}`.slice(0, 1000),
+      detail: `${args.operationKey}: ${args.verified ? 'verified'
+        : args.unobservable ? `unobservable; recorded, not verified (confirmable only by ${args.unobservable.subsumedBy} on the same account)`
+          : 'not verified'} — ${args.detail}`.slice(0, 1000),
     });
   }));
 }
@@ -298,6 +312,8 @@ interface EffectProgress {
   resultState: string;
   noop: boolean;
   verified: boolean | null;
+  /** Recorded as a declared unobservable effect on an earlier wake (R1a-0). */
+  unobservable: boolean;
   intentId: string | null;
   intentStatus: string | null;
   dispatchedAt: Date | null;
@@ -332,12 +348,13 @@ async function readEffectProgress(orgId: string, taskId: string, keys: string[])
     }
     const out = new Map<string, EffectProgress>();
     for (const o of ops) {
-      const result = (o.result ?? {}) as { noop?: unknown; verified?: { ok?: unknown } };
+      const result = (o.result ?? {}) as { noop?: unknown; verified?: { ok?: unknown; unobservable?: unknown } };
       out.set(o.operationKey, {
         operationId: o.id,
         resultState: o.resultState,
         noop: result.noop === true,
         verified: typeof result.verified?.ok === 'boolean' ? (result.verified.ok as boolean) : null,
+        unobservable: result.verified?.unobservable === true,
         intentId: o.intentId,
         intentStatus: o.intentId ? statuses.get(o.intentId) ?? null : null,
         dispatchedAt: o.dispatchedAt,
@@ -402,15 +419,121 @@ async function readApprovalIdempotency(orgId: string, approvalId: string): Promi
 // The `effect` step: propose → approval → each effect in order → done
 // ---------------------------------------------------------------------------
 
-function buildRecipePlan(recipe: RecipeDefinition<never>, checkpoint: TaskCheckpoint):
-  { ok: true; effects: PlannedEffect[] } | { ok: false; detail: string } {
+type BuiltPlan =
+  | { ok: true; effects: PlannedEffect[] }
+  | { ok: false; kind: 'build_threw' | 'snapshot'; detail: string };
+
+/**
+ * Re-run the recipe's pure `buildPlan` with the facts it planned from.
+ *
+ * A recipe that declares no `planningSnapshotStepKey` (and a checkpoint that
+ * carries no `planningSnapshot`) gets `buildPlan(recipeInput, {})` — today's
+ * path. A recipe that declares one gets the loaded, digest-verified facts, or
+ * a typed failure: a failed load is NEVER rebuilt with `{}` (A.4). An I/O
+ * error from the loader propagates so the wake retries.
+ */
+async function buildRecipePlan(
+  recipe: RecipeDefinition<never>,
+  checkpoint: TaskCheckpoint,
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId'>,
+): Promise<BuiltPlan> {
+  const loaded = await loadPlanningFacts(task, recipe, checkpoint);
+  if (!loaded.ok) return { ok: false, kind: 'snapshot', detail: `planning snapshot ${loaded.reason}: ${loaded.detail}` };
   try {
-    const effects = recipe.buildPlan(checkpoint.recipeInput as never, {});
+    const effects = recipe.buildPlan(checkpoint.recipeInput as never, loaded.facts);
     return { ok: true, effects: [...effects].sort((a, b) => a.ordinal - b.ordinal) };
   } catch (err) {
-    return { ok: false, detail: `buildPlan threw: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, kind: 'build_threw', detail: `buildPlan threw: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
+
+/**
+ * What a plan-building failure means depends on what may already have run
+ * (A.4). Read with its own narrow query, never `readPlanApprovalAtRevision`:
+ * whether ANY approval row exists at the task's revision, and whether an
+ * operation of `stepKey` (null = any step) is still unsettled — `pending`, or
+ * `unknown` (the reconciler's "may still land" state). Same pair as the
+ * schema's unsettled-operation index.
+ */
+async function readPlanFailureContext(
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision'>,
+  stepKey: string | null,
+): Promise<{ approvalExists: boolean; unsettledOperation: boolean }> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    const approvals = await db
+      .select({ id: aiOperatorPlanApprovals.id })
+      .from(aiOperatorPlanApprovals)
+      .where(and(
+        eq(aiOperatorPlanApprovals.orgId, task.orgId),
+        eq(aiOperatorPlanApprovals.taskId, task.id),
+        eq(aiOperatorPlanApprovals.planRevision, task.revision),
+      ))
+      .limit(1);
+    if (approvals.length === 0) return { approvalExists: false, unsettledOperation: false };
+    const unsettled = await db
+      .select({ id: aiOperatorOperations.id })
+      .from(aiOperatorOperations)
+      .where(and(
+        eq(aiOperatorOperations.orgId, task.orgId),
+        eq(aiOperatorOperations.taskId, task.id),
+        inArray(aiOperatorOperations.resultState, ['pending', 'unknown']),
+        ...(stepKey === null ? [] : [eq(aiOperatorOperations.taskStepKey, stepKey)]),
+      ))
+      .limit(1);
+    return { approvalExists: true, unsettledOperation: unsettled.length > 0 };
+  }));
+}
+
+/**
+ * Fail closed on a plan that cannot be rebuilt (A.4):
+ * - no approval row at the revision → `fail`/`unresolved`: nothing was
+ *   proposed or dispatched, so it is an integrity fault;
+ * - an approval row → `hand_off`, `unknown_effect` if an operation is still
+ *   unsettled, else `unresolved`: a person must look at a task that may have
+ *   run part of its plan.
+ */
+async function planBuildFailure(
+  task: Pick<AiOperatorTaskRow, 'id' | 'orgId' | 'revision'>,
+  stepKey: string | null,
+  built: Extract<BuiltPlan, { ok: false }>,
+): Promise<EffectStepDirective> {
+  const ctx = await readPlanFailureContext(task, stepKey);
+  if (!ctx.approvalExists) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
+  return handOff(ctx.unsettledOperation ? 'unknown_effect' : 'unresolved', built.detail,
+    `Breeze could not rebuild the approved plan for this task (${built.detail}). Nothing further was dispatched. `
+    + `${ctx.unsettledOperation ? 'An earlier step may still be running; check the provider before retrying. ' : ''}`
+    + 'Review what was already done and complete the rest by hand.');
+}
+
+/**
+ * The tool that subsumes `effect`, when the carve-out applies (R1a-0, spec
+ * §6.6): the recipe declares the tool unobservable AND its probe is
+ * STRUCTURALLY unobservable (no provider call, always `unknown`). A declared
+ * tool whose `unknown` came from a failed provider call is not covered.
+ */
+function unobservableSubsumer(recipe: RecipeDefinition<never>, effect: PlannedEffect): string | null {
+  const subsumer = recipe.unobservableEffects?.[effect.toolName];
+  if (!subsumer) return null;
+  return isStructurallyUnobservable(effect.toolName) ? subsumer : null;
+}
+
+/**
+ * Subsumed: a planned effect of the subsuming tool on the SAME non-null
+ * `accountExternalId` was verified or observed already done. A null id never
+ * matches, not even another null.
+ */
+function isSubsumed(
+  recipe: RecipeDefinition<never>, effect: PlannedEffect, done: readonly PlannedEffect[],
+): boolean {
+  const subsumer = recipe.unobservableEffects?.[effect.toolName];
+  if (!subsumer || effect.accountExternalId === null) return false;
+  return done.some((d) => d.toolName === subsumer
+    && d.accountExternalId !== null && d.accountExternalId === effect.accountExternalId);
+}
+
+const PLAN_CHANGED_SUMMARY =
+  'The plan Breeze would run no longer matches the one that was approved. Nothing further was changed. '
+  + 'A new approval is required.';
 
 function remainingSummary(effects: readonly PlannedEffect[], fromOrdinal: number): string {
   const rest = effects.filter((e) => e.ordinal >= fromOrdinal).map((e) => e.toolName);
@@ -426,8 +549,8 @@ export async function planEffectStep(args: {
   const { task, recipe, checkpoint, now } = args;
   const stepKey = task.currentStepKey ?? '';
 
-  const built = buildRecipePlan(recipe, checkpoint);
-  if (!built.ok) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
+  const built = await buildRecipePlan(recipe, checkpoint, task);
+  if (!built.ok) return planBuildFailure(task, stepKey, built);
   const effects = built.effects;
 
   const finish = (detail: string): EffectStepDirective => {
@@ -437,7 +560,13 @@ export async function planEffectStep(args: {
     }
     return { action: 'settle', event: 'complete', outcome: 'verified_resolved', detail };
   };
-  if (effects.length === 0) return finish('the plan produced no effects');
+  if (effects.length === 0) {
+    // An empty plan under an existing approval means the plan changed: it is
+    // the seal-mismatch hand-off, not success (A.4 empty-plan hardening).
+    const ctx = await readPlanFailureContext(task, stepKey);
+    if (ctx.approvalExists) return handOff('unresolved', 'the plan changed under its approval', PLAN_CHANGED_SUMMARY);
+    return finish('the plan produced no effects');
+  }
 
   let approval = await readPlanApprovalAtRevision(task.orgId, task.id, task.revision);
 
@@ -466,9 +595,7 @@ export async function planEffectStep(args: {
   // The approved seal must still describe what buildPlan produces now.
   const sealNow = computeEffectSetDigest({ taskId: task.id, planRevision: task.revision, effects: toDigestProjection(effects) });
   if (sealNow !== approval.effectSetDigest) {
-    return handOff('unresolved', 'the plan changed under its approval',
-      'The plan Breeze would run no longer matches the one that was approved. Nothing further was changed. '
-      + 'A new approval is required.');
+    return handOff('unresolved', 'the plan changed under its approval', PLAN_CHANGED_SUMMARY);
   }
 
   if (approval.state === 'pending') {
@@ -517,6 +644,11 @@ export async function planEffectStep(args: {
   }));
   const progress = await readEffectProgress(task.orgId, task.id, keys);
   const classes = await readApprovalIdempotency(task.orgId, approval.id);
+  const notBefore = checkpoint.dispatchNotBefore ? new Date(checkpoint.dispatchNotBefore) : null;
+  /** Effects verified or observed already done — candidate subsumers. */
+  const done: PlannedEffect[] = [];
+  /** Declared unobservable effects, recorded and walked past. */
+  const unobservable: PlannedEffect[] = [];
 
   for (let i = 0; i < effects.length; i += 1) {
     const effect = effects[i]!;
@@ -524,12 +656,25 @@ export async function planEffectStep(args: {
     const p = progress.get(key);
 
     if (!p) {
+      // Post-approval not-before gate (R1a-0): no NEW dispatch — not even its
+      // pre-probe — before the cutoff. Effects that already have an operation
+      // row are walked before this point, so in-flight work is still observed
+      // and verified while the gate holds; a replay re-reads the same
+      // checkpoint and is held the same way.
+      if (notBefore && notBefore.getTime() > now.getTime()) {
+        return {
+          action: 'wait', reason: 'maintenance_window', dependency: null,
+          wakeAfterMs: notBefore.getTime() - now.getTime(),
+          detail: `plan revision ${task.revision} approved; ${effect.toolName} (ordinal ${effect.ordinal}) `
+            + `is not dispatched before ${notBefore.toISOString()}`,
+        };
+      }
       const { partnerId } = await readPlanLabels(task.orgId, task.id, []);
       const out = await dispatchPlannedEffect({
         task, stepKey, effect, partnerId, now,
         approval: { id: approval.id, planRevision: approval.planRevision, approverUserId: approval.approvedByUserId! },
       });
-      if (out.kind === 'noop') continue; // observed done; move straight on
+      if (out.kind === 'noop') { done.push(effect); continue; } // observed done; move straight on
       if (out.kind === 'dispatching') {
         return {
           action: 'wait', reason: 'execution', dependency: { kind: 'intent', id: out.intentId },
@@ -544,7 +689,10 @@ export async function planEffectStep(args: {
         + remainingSummary(effects, effect.ordinal));
     }
 
-    if (p.noop || p.verified === true) continue;
+    if (p.noop || p.verified === true) { done.push(effect); continue; }
+    // Recorded unobservable on an earlier wake: walked, never re-probed or
+    // re-recorded — as long as the carve-out still applies to it.
+    if (p.unobservable && unobservableSubsumer(recipe, effect)) { unobservable.push(effect); continue; }
 
     if (p.resultState === 'pending') {
       const live = p.intentStatus === 'approved' || p.intentStatus === 'executing' || p.intentStatus === 'pending_approval';
@@ -573,11 +721,17 @@ export async function planEffectStep(args: {
       idempotencyClass: classes.get(effect.ordinal) ?? 'non_idempotent',
       effectRequestedAt: p.dispatchedAt ?? now,
     });
+    // `handoff` is exactly a post-probe `unknown`. For a declared, structurally
+    // unobservable effect that is the expected answer: record it (never as
+    // verified) and walk on to the effect that subsumes it.
+    const subsumedBy = verdict.kind === 'handoff' ? unobservableSubsumer(recipe, effect) : null;
     await recordVerification({
       orgId: task.orgId, taskId: task.id, stepKey, operationId: p.operationId, operationKey: key,
       verified: verdict.kind === 'verified', detail: verdict.detail,
+      ...(subsumedBy ? { unobservable: { subsumedBy } } : {}),
     });
-    if (verdict.kind === 'verified') continue;
+    if (verdict.kind === 'verified') { done.push(effect); continue; }
+    if (subsumedBy) { unobservable.push(effect); continue; }
     if (verdict.kind === 'handoff') {
       return handOff('unknown_effect', verdict.detail, `${verdict.handoffSummary} ${remainingSummary(effects, effect.ordinal + 1)}`);
     }
@@ -586,7 +740,26 @@ export async function planEffectStep(args: {
       + `Breeze did not retry it. ${remainingSummary(effects, effect.ordinal + 1)}`);
   }
 
-  return finish(`all ${effects.length} effect(s) of plan revision ${task.revision} done and observed`);
+  // With a resume step, that step owns the verdict. Without one, an
+  // unobservable effect with no same-account subsumer that verified leaves the
+  // outcome short of verified.
+  const unsubsumed = unobservable.filter((e) => !isSubsumed(recipe, e, done));
+  const resume = checkpoint.resumeStepKey;
+  if (unsubsumed.length > 0 && !(resume && recipe.steps[resume])) {
+    const names = unsubsumed.map((e) => `${e.toolName} (ordinal ${e.ordinal})`).join(', ');
+    return {
+      action: 'settle', event: 'partial', outcome: 'unresolved',
+      detail: `all ${effects.length} effect(s) of plan revision ${task.revision} done; not observable and not subsumed: ${names}`,
+      handoffSummary: `Breeze ran every planned step, but could not confirm ${names}: the provider exposes no way `
+        + 'to observe it, and no later step on the same account confirmed it. Check it by hand.',
+    };
+  }
+  const subsumedCount = unobservable.length - unsubsumed.length;
+  return finish(`all ${effects.length} effect(s) of plan revision ${task.revision} done and observed`
+    + (subsumedCount > 0 ? `; ${subsumedCount} unobservable effect(s) subsumed on the same account` : '')
+    + (unsubsumed.length > 0
+      ? `; not observable and not subsumed, left to '${resume}': ${unsubsumed.map((e) => `${e.toolName} (ordinal ${e.ordinal})`).join(', ')}`
+      : ''));
 }
 
 // ---------------------------------------------------------------------------
@@ -601,16 +774,24 @@ export async function planProbeStep(args: {
 }): Promise<EffectStepDirective> {
   const { task, recipe, checkpoint, now } = args;
   const stepKey = task.currentStepKey ?? '';
-  const built = buildRecipePlan(recipe, checkpoint);
-  if (!built.ok) return { action: 'settle', event: 'fail', outcome: 'unresolved', detail: built.detail };
+  const built = await buildRecipePlan(recipe, checkpoint, task);
+  if (!built.ok) return planBuildFailure(task, null, built);
 
-  const unconfirmed: string[] = [];
+  const observed: Array<{ effect: PlannedEffect; state: EffectProbeResult['state'] }> = [];
   for (const effect of built.effects) {
     const probe = await probeEffect(effect, {
       orgId: task.orgId, taskId: task.id, planRevision: task.revision, effectRequestedAt: now, phase: 'post',
     });
-    if (probe.state !== 'satisfied') unconfirmed.push(`${effect.toolName} (${probe.state})`);
+    observed.push({ effect, state: probe.state });
   }
+  // A declared, structurally unobservable effect whose same-account subsumer
+  // is observed `satisfied` is not unconfirmed (R1a-0); anything else that is
+  // not `satisfied` is.
+  const satisfied = observed.filter((o) => o.state === 'satisfied').map((o) => o.effect);
+  const unconfirmed = observed
+    .filter((o) => o.state !== 'satisfied'
+      && !(o.state === 'unknown' && unobservableSubsumer(recipe, o.effect) && isSubsumed(recipe, o.effect, satisfied)))
+    .map((o) => `${o.effect.toolName} (${o.state})`);
   const detail = unconfirmed.length === 0
     ? `all ${built.effects.length} effect(s) observed in their end state`
     : `unconfirmed: ${unconfirmed.join(', ')}`;

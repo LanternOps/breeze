@@ -543,6 +543,7 @@ export default function DeliverableTemplatesPage() {
                           min={0}
                           max={365}
                           className={inputClass}
+                          data-testid="deliverable-template-item-lead-days"
                           value={itemForm.leadDays}
                           onChange={(e) => setItemForm((f) => ({ ...f, leadDays: e.target.value }))}
                         />
@@ -555,6 +556,7 @@ export default function DeliverableTemplatesPage() {
                           min={0}
                           max={365}
                           className={inputClass}
+                          data-testid="deliverable-template-item-grace-days"
                           value={itemForm.graceDays}
                           onChange={(e) => setItemForm((f) => ({ ...f, graceDays: e.target.value }))}
                         />
@@ -564,6 +566,7 @@ export default function DeliverableTemplatesPage() {
                         <select
                           id={`${uid}-item-mode-${set.id}`}
                           className={inputClass}
+                          data-testid="deliverable-template-item-completion-mode"
                           value={itemForm.completionMode}
                           onChange={(e) => setItemForm((f) => ({ ...f, completionMode: e.target.value as DeliverableCompletionMode }))}
                         >
@@ -576,6 +579,7 @@ export default function DeliverableTemplatesPage() {
                         <input
                           type="checkbox"
                           checked={itemForm.artifactRequired}
+                          data-testid="deliverable-template-item-artifact-required"
                           onChange={(e) => setItemForm((f) => ({ ...f, artifactRequired: e.target.checked }))}
                         />
                         {t('templates.form.artifactRequired')}

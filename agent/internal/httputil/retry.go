@@ -135,11 +135,12 @@ func Do(ctx context.Context, client *http.Client, method, url string, body []byt
 		}
 
 		// Retryable status — check for Retry-After before discarding response.
-		if ra := ParseRetryAfter(resp.Header, time.Now()); ra > 0 {
+		ra := ParseRetryAfter(resp.Header, time.Now())
+		if ra > 0 {
 			nextSleepOverride = ra
 		}
 		resp.Body.Close()
-		lastAnswer = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url}
+		lastAnswer = &RetryableStatusError{StatusCode: resp.StatusCode, URL: url, RetryAfter: ra, AnsweredAt: time.Now()}
 		lastErr = lastAnswer
 	}
 	lastErr = withServerAnswer(lastErr, lastAnswer)
@@ -174,6 +175,13 @@ func withServerAnswer(err error, answer *RetryableStatusError) error {
 type RetryableStatusError struct {
 	StatusCode int
 	URL        string
+	// RetryAfter is the server's Retry-After on that answer (0 if absent),
+	// so a caller that retries on its own schedule can still honor it.
+	RetryAfter time.Duration
+	// AnsweredAt is when that answer arrived. Do may already have spent part
+	// of RetryAfter sleeping before its context ended, so a caller waits
+	// RetryAfter minus the time since AnsweredAt, not RetryAfter again.
+	AnsweredAt time.Time
 }
 
 func (e *RetryableStatusError) Error() string {

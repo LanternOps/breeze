@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { buildFallbackCspDirectives, relaxExistingCsp, resolveLocaleFromCookie, onRequest } from './middleware';
+import { buildFallbackCspDirectives, relaxExistingCsp, resolveLocaleFromCookie, onRequest, tightenCspConnectSrc } from './middleware';
 import { LOCALE_COOKIE_NAME } from './lib/appearance';
 
 type MockLocals = { locale?: string };
@@ -203,5 +203,60 @@ describe('Referrer-Policy is a default, not an override (#8964)', () => {
       (async () => new Response('ok')) as never,
     );
     expect((res as Response).headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+});
+
+// RoboShadow/ZAP "CSP: Wildcard Directive" (SOC 2 header hardening): the
+// build-time Astro CSP carries `connect-src 'self' https: ws: wss:` because
+// the per-deployment API origin is not known at build time. The middleware
+// must narrow it at request time from the runtime environment, and must not
+// leave the empty `;;` directive the Astro styleDirective join emits.
+describe('runtime connect-src tightening (SOC 2 header hardening)', () => {
+  const astroCsp =
+    "default-src 'self';img-src 'self' data: blob: https:;connect-src 'self' https: ws: wss:; script-src 'self' 'sha256-abc'; style-src 'self' 'unsafe-inline' ;; script-src-attr 'none'";
+
+  it('replaces the wildcard connect-src with the resolved directive and drops empty directives', () => {
+    const tightened = tightenCspConnectSrc(astroCsp, "connect-src 'self' https://us.example.app wss://us.example.app");
+
+    expect(tightened).toContain("connect-src 'self' https://us.example.app wss://us.example.app");
+    expect(tightened).not.toMatch(/connect-src[^;]*\bhttps:(\s|;|$)/);
+    expect(tightened).not.toMatch(/connect-src[^;]*\bws:(\s|;|$)/);
+    expect(tightened).not.toMatch(/connect-src[^;]*\bwss:(\s|;|$)/);
+    expect(tightened).not.toMatch(/;\s*;/);
+    // Everything else is untouched.
+    expect(tightened).toContain("img-src 'self' data: blob: https:");
+    expect(tightened).toContain("script-src 'self' 'sha256-abc'");
+    expect(tightened).toContain("script-src-attr 'none'");
+  });
+
+  it('adds connect-src when the incoming policy has none', () => {
+    const tightened = tightenCspConnectSrc("default-src 'self'", "connect-src 'self' wss://x.example");
+    expect(tightened).toBe("default-src 'self'; connect-src 'self' wss://x.example");
+  });
+});
+
+// ZAP "Storable and Cacheable Content" / "Re-examine Cache-control": HTML
+// documents (including /login) carried no Cache-Control at all. Browsers may
+// heuristically cache them; shared caches must never store them.
+describe('HTML documents are never stored by caches (SOC 2 header hardening)', () => {
+  const run = async (upstream: Response): Promise<Response> => {
+    const result = await onRequest(makeContext(undefined) as any, async () => upstream);
+    if (!(result instanceof Response)) throw new Error('middleware returned no Response');
+    return result;
+  };
+
+  it('sets Cache-Control: no-store on an HTML response that chose none', async () => {
+    const res = await run(new Response('<html></html>', { headers: { 'Content-Type': 'text/html; charset=utf-8' } }));
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('keeps a route-chosen Cache-Control on HTML', async () => {
+    const res = await run(new Response('<html></html>', { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'public, max-age=60' } }));
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+  });
+
+  it('leaves non-HTML responses alone', async () => {
+    const res = await run(new Response('{}', { headers: { 'Content-Type': 'application/json' } }));
+    expect(res.headers.get('Cache-Control')).toBeNull();
   });
 });

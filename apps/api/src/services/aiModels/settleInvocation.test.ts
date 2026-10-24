@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   recordFailure: vi.fn(),
   recordRetry: vi.fn(),
   debit: vi.fn(),
+  deliver: vi.fn(),
   getPlatformModelByModelId: vi.fn(),
   readConnectionOfferingRate: vi.fn(),
   attestUnboundRate: vi.fn(),
@@ -20,13 +21,14 @@ vi.mock('../aiBudgetReservations', () => ({
   settleAiBudgetReservationDurably: m.settleDurably,
   attestUnboundRate: m.attestUnboundRate,
   readUnboundRateAttestation: m.readUnboundRateAttestation,
-  recordInvocationsWithRollups: m.recordWithRollups,
+  recordUnreservedInvocations: m.recordWithRollups,
   markCreditsDebited: m.markDebited,
   recordCreditDebitFailure: m.recordFailure,
   recordCreditDebitRetry: m.recordRetry,
   creditDebitIdempotencyKey: (id: string) => `ai-settlement:${id}`,
 }));
 vi.mock('../aiCostTracker', () => ({ debitBillingCredits: m.debit, checkCostAnomalies: m.checkCostAnomalies }));
+vi.mock('../aiCreditDebitOutbox', () => ({ deliverCreditDebit: m.deliver }));
 vi.mock('./platformModels', () => ({ getPlatformModelByModelId: m.getPlatformModelByModelId }));
 vi.mock('../sentry', () => ({ captureMessage: m.captureMessage, captureException: m.captureException }));
 vi.mock('./connectionOfferingRate', () => ({ readConnectionOfferingRate: m.readConnectionOfferingRate }));
@@ -69,6 +71,7 @@ const OK: TurnOutcome = {
 const use = (model: string, over: Partial<BilledUsage> = {}): BilledUsage => ({
   model, tokens: T, webSearchRequests: 0, speedServed: 'standard', providerModel: null, ...over,
 });
+const INTENT = { id: 'd1', orgId: 'o1', source: 'invocation' as const, idempotencyKey: 'ai-invocation:i1', costCents: 300 };
 const base = (over: Partial<SettleInvocationInput> = {}): SettleInvocationInput => ({
   binding: B, orgId: 'o1', userId: null, sessionId: null, agentRunId: null, sourceRef: null,
   usage: [use('claude-sonnet-5-5')], outcome: OK, reservationId: 'r1', ...over,
@@ -80,7 +83,8 @@ beforeEach(() => {
   m.settleDurably.mockResolvedValue({
     kind: 'settled', reservationId: 'r1', actualCostCents: 300, invocationIds: ['i1'], billingSource: 'platform', creditsDebitDue: true,
   });
-  m.recordWithRollups.mockResolvedValue(['i1']);
+  m.recordWithRollups.mockResolvedValue({ invocationIds: ['i1'], debit: INTENT });
+  m.deliver.mockResolvedValue('debited');
   m.debit.mockResolvedValue({ kind: 'debited', replayed: false });
   m.recordRetry.mockResolvedValue({ attempts: 1, exhausted: false });
   m.getPlatformModelByModelId.mockResolvedValue(null);
@@ -282,12 +286,20 @@ describe('settleInvocation', () => {
     });
   });
 
-  it('without a reservation, rows + rollups go through recordInvocationsWithRollups and the debit is keyed by the first ledger row', async () => {
+  it('without a reservation, rows + rollups + the keyed debit intent go through recordUnreservedInvocations, and the intent is delivered', async () => {
     await settleInvocation(base({ reservationId: undefined, sessionId: 's1' }));
     expect(m.settleDurably).not.toHaveBeenCalled();
     expect(m.recordWithRollups).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'o1', sessionId: 's1' }));
-    expect(m.debit).toHaveBeenCalledWith('o1', 300, { idempotencyKey: 'ai-invocation:i1' });
+    // #7717 item 2: durable (outbox) delivery, not a fire-and-forget debit.
+    expect(m.deliver).toHaveBeenCalledWith(INTENT);
+    expect(m.debit).not.toHaveBeenCalled();
     expect(m.markDebited).not.toHaveBeenCalled();
+  });
+
+  it('without a reservation and no debit intent (partner-funded or $0), nothing is delivered', async () => {
+    m.recordWithRollups.mockResolvedValueOnce({ invocationIds: ['i1'], debit: null });
+    await settleInvocation(base({ reservationId: undefined }));
+    expect(m.deliver).not.toHaveBeenCalled();
   });
 });
 
@@ -383,40 +395,16 @@ describe('debitSettledCredits: 4xx terminal, 5xx/network retried under the same 
   it('never throws: a failing stamp is reported (scrubbed) and the sweep retries later', async () => {
     m.markDebited.mockRejectedValue(Object.assign(new Error('Failed query: UPDATE ... params: secret'), { params: ['secret'] }));
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(debitSettledCredits({ orgId: 'o1', reservationId: 'r1', costCents: 300 })).resolves.toBeUndefined();
+    await expect(debitSettledCredits({ orgId: 'o1', reservationId: 'r1', costCents: 300 })).resolves.toBe('bookkeeping_failed');
     const logged = JSON.stringify(error.mock.calls);
     expect(logged).not.toContain('secret');
     error.mockRestore();
   });
 });
 
-describe('unreserved debit reporting (review S4)', () => {
-  it('throttles per (eventCode, org), not globally, and tags the first ledger row so an operator can recover it', async () => {
-    m.debit.mockResolvedValue({ kind: 'rejected', status: 409, code: 'http_409:x' });
-    m.recordWithRollups.mockResolvedValueOnce(['i-o1']).mockResolvedValueOnce(['i-o2']).mockResolvedValueOnce(['i-o1b']);
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await settleInvocation(base({ reservationId: undefined, orgId: 'o1' }));
-    await settleInvocation(base({ reservationId: undefined, orgId: 'o2' }));
-    await settleInvocation(base({ reservationId: undefined, orgId: 'o1' }));   // same org inside the window: log only
-    error.mockRestore();
-    const reports = m.captureMessage.mock.calls.filter(([, o]) => o.eventCode === 'ai_credit_debit_rejected');
-    expect(reports).toHaveLength(2);
-    expect(reports.map(([, o]) => o.tags)).toEqual([
-      expect.objectContaining({ org_id: 'o1', ai_invocation_id: 'i-o1' }),
-      expect.objectContaining({ org_id: 'o2', ai_invocation_id: 'i-o2' }),
-    ]);
-  });
-
-  it('a thrown unreserved debit is reported with the org and first ledger row', async () => {
-    m.debit.mockRejectedValue(new Error('socket hang up'));
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-    await settleInvocation(base({ reservationId: undefined }));
-    error.mockRestore();
-    expect(m.captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
-      org_id: 'o1', ai_invocation_id: 'i1',
-    }));
-  });
-
+describe('debit reporting throttle (review S4)', () => {
+  // The unreserved-debit reporting moved to the outbox with the debit itself
+  // (aiCreditDebitOutbox.test.ts).
   it('the settled-debit rejection throttle is per org too', async () => {
     m.debit.mockResolvedValue({ kind: 'rejected', status: 409, code: 'http_409:x' });
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});

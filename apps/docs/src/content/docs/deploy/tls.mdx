@@ -245,4 +245,4 @@ Both configurations include these security headers:
 |---|---|---|
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | Force HTTPS for 1 year |
 | `X-Content-Type-Options` | `nosniff` | Prevent MIME sniffing |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` | Control referrer information |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Control referrer information. From v0.124.0 the bundled `Caddyfile.prod` sets it as a default only (`?Referrer-Policy`), so the stricter `no-referrer` the application sends on capability URLs (verification pages, public invoices, unsubscribe links) is kept rather than overwritten. If you front Breeze with your own proxy, do not add a `Referrer-Policy` header on those paths. |

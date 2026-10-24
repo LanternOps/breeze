@@ -4,7 +4,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { Context } from 'hono';
 
 import { db } from '../../db';
-import { devices, deviceRecoveryKeys, recoveryKeyAccessEvents } from '../../db/schema';
+import { devices, deviceRecoveryKeys, recoveryKeyAccessEvents, users } from '../../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import type { AuthContext } from '../../middleware/auth';
 import { canAccessSite, getUserPermissions, type UserPermissions } from '../../services/permissions';
@@ -91,10 +91,14 @@ recoveryKeysRoutes.get(
             id: recoveryKeyAccessEvents.id,
             keyId: recoveryKeyAccessEvents.keyId,
             userEmail: recoveryKeyAccessEvents.userEmail,
+            // Display name for the panel; null when the user row is gone or
+            // not visible, in which case the UI falls back to the email.
+            userName: users.name,
             action: recoveryKeyAccessEvents.action,
             createdAt: recoveryKeyAccessEvents.createdAt,
           })
           .from(recoveryKeyAccessEvents)
+          .leftJoin(users, eq(users.id, recoveryKeyAccessEvents.userId))
           .where(inArray(recoveryKeyAccessEvents.keyId, keyIds))
           .orderBy(desc(recoveryKeyAccessEvents.createdAt))
           .limit(25)
@@ -208,7 +212,8 @@ recoveryKeysRoutes.post(
   }
 );
 
-// Rotate: Windows needs nothing (defaults volumeMount C:); macOS needs a
+// Rotate: Windows takes a volumeMount (defaulted only when exactly one volume
+// is escrowed; otherwise required); macOS needs a
 // FileVault user's credentials or the current recovery key (encrypted into
 // the command payload; see sensitiveCommandPayload.ts).
 recoveryKeysRoutes.post(
@@ -226,8 +231,27 @@ recoveryKeysRoutes.post(
 
     const os = (device.osType ?? '').toLowerCase();
     let payload: Record<string, unknown>;
+    let rotatedVolume: string | null = null;
     if (os === 'windows') {
-      payload = { volumeMount: body.volumeMount ?? 'C:' };
+      rotatedVolume = body.volumeMount ?? null;
+      if (!rotatedVolume) {
+        // Only default when the choice is unambiguous: exactly one escrowed
+        // volume. Otherwise a silent C: default would rotate the wrong one.
+        const escrowed = await db
+          .select({ volumeMount: deviceRecoveryKeys.volumeMount })
+          .from(deviceRecoveryKeys)
+          .where(and(eq(deviceRecoveryKeys.deviceId, device.id), eq(deviceRecoveryKeys.status, 'active')));
+        const mounts = [...new Set(escrowed.map((r) => r.volumeMount).filter((m): m is string => !!m))];
+        if (mounts.length !== 1) {
+          return c.json({
+            error: mounts.length === 0
+              ? 'volumeMount is required: no escrowed volume was found for this device'
+              : `volumeMount is required: this device has several escrowed volumes (${mounts.join(', ')})`,
+          }, 400);
+        }
+        rotatedVolume = mounts[0]!;
+      }
+      payload = { volumeMount: rotatedVolume };
     } else if (os === 'macos' || os === 'darwin') {
       const hasCreds = (body.username && body.password) || body.currentRecoveryKey;
       if (!hasCreds) {
@@ -249,7 +273,7 @@ recoveryKeysRoutes.post(
       action: 'device.recovery_key.rotate',
       resourceType: 'device',
       resourceId: deviceId,
-      details: { os, volumeMount: os === 'windows' ? (body.volumeMount ?? 'C:') : null },
+      details: { os, volumeMount: os === 'windows' ? rotatedVolume : null },
     });
 
     return c.json({ data: { commandId: command.id, status: 'queued' } }, 202);

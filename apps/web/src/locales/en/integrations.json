@@ -83,7 +83,9 @@
         "intune_devices": "Intune devices",
         "ca_policies": "Conditional Access",
         "skus": "Licenses",
-        "secure_score": "Secure Score"
+        "secure_score": "Secure Score",
+        "signin_events": "Sign-in events",
+        "unknown": "Unrecognized data type"
       }
     },
     "errors": {
@@ -342,6 +344,9 @@
     "retry": "Retry",
     "since": "since {{time}}",
     "fix": "Fix",
+    "remedy": {
+      "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze."
+    },
     "truncated": "Showing the first {{count}}",
     "recentlyResolved": "Recently resolved ({{count}})",
     "resolution": {
@@ -583,7 +588,7 @@
     "hidePassword": "Hide password",
     "portalLabelToggle": "Show the provider name in the client portal",
     "portalLabelHelp": "Off by default: customers see \"Managed cloud backup\" instead of the vendor name.",
-    "credentialsHelp": "Create a dedicated Cove console user with a read-only role, a unique password and no two-factor authentication. Breeze only reads status; it never changes anything in Cove.",
+    "credentialsHelp": "Create a Cove API user (Management → Users → API Users) under your top-level customer. Enter that customer's name as the partner name, the API user's login name as the username and its token as the password. Breeze only reads status; it never changes anything in Cove.",
     "test": "Test connection",
     "syncNow": "Sync now",
     "reauthRequired": "Credentials rejected",
@@ -716,7 +721,10 @@
     "allApplications": "All applications",
     "searchAllApplicationsFirst2": " (not Owned applications) for an existing Breeze app in this tenant. ",
     "tenantIdGuidPlaceholder": "Tenant ID (GUID), e.g. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain."
+    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain.",
+    "savingRequiresMfa": " Saving requires MFA verification.",
+    "clientSecretPlaceholder": "app client secret",
+    "clientSecretStoredPlaceholder": "•••••••••• (stored, encrypted)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",

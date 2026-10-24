@@ -1,806 +1,81 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { ChevronDown, FileText } from 'lucide-react';
-import { htmlReadMinutes, parseTermsSections, textReadMinutes } from '@breeze/shared';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../../lib/i18n';
-import { useOrgStore } from '../../../stores/orgStore';
-import { quoteImageUrl } from '../../../lib/api/quotes';
-import { catalogItemImagePath } from '../../../lib/api/catalog';
-import { useAuthedImage, useQuotePdfDownload } from './useQuoteImage';
+import { QuoteDocumentView, type DocumentHostComponents } from '@breeze/document-ui';
 import {
-  type QuoteDetail as QuoteDetailData,
-  type QuoteBlock,
-  type QuoteLine,
-  type ContractBlockContent,
-  type QuoteTableContent,
-  type QuoteCalloutContent,
-  STATUS_ROLES,
-  statusLabel,
-  formatDate,
-  formatMoney,
-  formatQuantity,
-  lineTaxAmount,
-  lineTitle,
-  lineBlurb,
-  pctFromFraction,
-  sellerLines,
-} from './quoteTypes';
-import { StatusPill } from '../shared/StatusPill';
+  buildQuoteDocumentModel,
+  documentLabelsFor,
+  type CustomerQuoteDocument,
+  type QuoteDocumentModel,
+} from '@breeze/shared/documents';
+import { fetchWithAuth } from '../../../stores/auth';
+import { useQuotePdfDownload } from './useQuoteImage';
+import type { QuoteDetail as QuoteDetailData } from './quoteTypes';
+import { webQuoteHostComponents } from '../documentHostComponents';
 
-/** Uniform product thumbnail (per-line uploaded image or the catalog item's).
- *  Authed fetch (a bare `img src` would 401 — same pattern as DocImage); renders
- *  nothing on miss so image-less lines don't get an empty placeholder box. */
-function DocLineThumb({ path }: { path: string }) {
-  const { url } = useAuthedImage(path);
-  if (!url) return null;
-  return <img src={url} alt="" className="h-10 w-10 shrink-0 rounded border bg-card object-contain" />;
-}
+type PreviewState =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'ready'; model: QuoteDocumentModel; dto: CustomerQuoteDocument };
 
-/** Quote images require the Bearer header, so a bare <img src> would 401. The
- *  shared useAuthedImage hook fetches the authed bytes → blob → object URL,
- *  revoked on unmount/change. Same loader the editor and detail views use. */
-function DocImage({ quoteId, imageId, caption }: { quoteId: string; imageId: string; caption?: string }) {
-  const { t } = useTranslation('billing');
-  const { url, failed } = useAuthedImage(quoteImageUrl(quoteId, imageId));
-  const [zoomed, setZoomed] = useState(false);
+/** Statuses a customer can still sign from; the Preview shows where the signature goes. */
+const SIGNABLE = new Set(['draft', 'sent', 'viewed']);
 
-  // Escape closes the zoom overlay (parity with clicking the backdrop).
-  useEffect(() => {
-    if (!zoomed) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomed(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [zoomed]);
-
-  if (failed) {
-    return (
-      <div className="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-xs text-muted-foreground">
-        {t('quotes.document.imageUnavailable')}
-      </div>
-    );
-  }
-  if (!url) {
-    return <div className="h-40 animate-pulse rounded-lg bg-muted/60" aria-hidden />;
-  }
-  const alt = caption || t('quotes.document.proposalImageAlt');
-  return (
-    <figure className="space-y-2">
-      {/* Click to view a larger version — a button keeps it keyboard-reachable. */}
-      <button
-        type="button"
-        onClick={() => setZoomed(true)}
-        aria-label={t('quotes.document.imageZoomAria')}
-        data-testid="quote-image-zoom-trigger"
-        className="block w-full cursor-zoom-in rounded-lg focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <img src={url} alt={alt} className="w-full rounded-lg border bg-card object-contain" />
-      </button>
-      {caption && <figcaption className="text-center text-xs text-muted-foreground">{caption}</figcaption>}
-      {zoomed && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={alt}
-          onClick={() => setZoomed(false)}
-          data-testid="quote-image-lightbox"
-          className="fixed inset-0 z-50 flex cursor-zoom-out items-center justify-center bg-black/80 p-4"
-        >
-          <img src={url} alt={alt} className="max-h-full max-w-full rounded-lg object-contain shadow-2xl" />
-        </div>
-      )}
-    </figure>
-  );
-}
-
-/** Uploaded contract PDF requires the Bearer header, so a bare `<iframe src>`
- *  would 401 — reuse useAuthedImage's fetch-as-blob mechanics (it works for any
- *  binary response, not just images) so the preview + download link get an
- *  authed, revoked-on-unmount blob URL, same pattern as DocImage above. */
-function DocContractFile({ fileUrl, templateName }: { fileUrl: string; templateName: string }) {
-  const { t } = useTranslation('billing');
-  const { url, failed } = useAuthedImage(fileUrl);
-  if (failed) {
-    return (
-      <div className="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-xs text-muted-foreground">
-        {t('quotes.document.contract.unavailable')}
-      </div>
-    );
-  }
-  if (!url) {
-    return <div className="h-64 animate-pulse rounded-lg bg-muted/60" aria-hidden />;
-  }
-  return (
-    <div className="space-y-2">
-      <iframe
-        src={url}
-        title={t('quotes.document.contract.previewTitle', { name: templateName })}
-        className="h-[32rem] w-full rounded-lg border"
-      />
-      <a
-        href={url}
-        download
-        data-testid="quote-contract-download"
-        className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
-      >
-        {t('quotes.document.contract.download')}
-      </a>
-    </div>
-  );
-}
-
-function PricingTable({ lines, quoteId, currency, label, taxRate, showTax, showSubtotal }: { lines: QuoteLine[]; quoteId: string; currency: string; label?: string; taxRate: string | null; showTax: boolean; showSubtotal?: boolean }) {
-  const { t } = useTranslation('billing');
-  if (lines.length === 0) return null;
-  const sorted = [...lines].sort((a, b) => a.sortOrder - b.sortOrder);
-  const deviceSetText = (l: QuoteLine): string[] => {
-    if (!l.contractLineType) return [];
-    let set = t('quotes.document.deviceSet.setDevices');
-    if (l.contractLineType === 'per_device_role') set = (l.deviceRoles ?? []).map((role) => t(/* i18n-dynamic */ `quotes.deviceSet.roleNoun.${role}`)).join(', ') || set;
-    else if (l.contractLineType === 'per_device_group') set = t('quotes.document.deviceSet.setGroup', { name: l.deviceGroupName ?? '' });
-    else if (l.contractLineType === 'per_seat') set = t('quotes.document.deviceSet.setSeats');
-    if (l.siteName) set = t('quotes.document.deviceSet.atSite', { set, site: l.siteName });
-    const result = [t('quotes.document.deviceSet.estimate', { set })];
-    if (l.includedQuantity != null && l.overageMode === 'bill' && l.overageUnitPrice != null) {
-      result.push(t('quotes.document.deviceSet.allowanceBill', { included: Number(l.includedQuantity), price: formatMoney(l.overageUnitPrice, currency) }));
-    } else if (l.includedQuantity != null && l.overageMode === 'flag') {
-      result.push(t('quotes.document.deviceSet.allowanceFlag', { included: Number(l.includedQuantity) }));
-    }
-    return result;
-  };
-  // Opt-in per-table subtotal, summed from THIS table's rows and split by
-  // recurrence (a table can mix one-time / monthly / annual). Only non-zero
-  // buckets are shown, joined with " + " — matching the document footer style.
-  const subtotalParts: string[] = [];
-  if (showSubtotal) {
-    const sums = { one_time: 0, monthly: 0, annual: 0 };
-    for (const l of sorted) {
-      // Fold any unrecognized recurrence into one_time so the subtotal always
-      // covers every rendered row (parity with the PDF renderer).
-      const key = l.recurrence === 'monthly' || l.recurrence === 'annual' ? l.recurrence : 'one_time';
-      sums[key] += Number(l.lineTotal);
-    }
-    if (sorted.some((l) => l.recurrence === 'one_time')) subtotalParts.push(formatMoney(sums.one_time, currency));
-    if (sorted.some((l) => l.recurrence === 'monthly')) subtotalParts.push(`${formatMoney(sums.monthly, currency)}${t('billingUi.units.perMonth')}`);
-    if (sorted.some((l) => l.recurrence === 'annual')) subtotalParts.push(`${formatMoney(sums.annual, currency)}${t('billingUi.units.perYear')}`);
-  }
-  return (
-    <div className="overflow-hidden rounded-lg border bg-card">
-      {label && (
-        <div className="border-b bg-muted/40 px-4 py-2.5 text-sm font-semibold text-foreground sm:px-5">{label}</div>
-      )}
-      <div className="overflow-x-auto" role="region" aria-label={t('quotes.document.pricingScrollAria', { label: label || t('quotes.document.pricing') })} tabIndex={0}>
-        <table className="w-full min-w-[30rem] text-sm">
-          <thead>
-            <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
-              <th className="w-full px-4 py-2.5 text-left font-medium sm:px-5">{t('quotes.document.table.description')}</th>
-              <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.qty')}</th>
-              <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.unitPrice')}</th>
-              {showTax && <th className="px-2 py-2.5 text-right font-medium">{t('quotes.document.table.tax')}</th>}
-              <th className="px-4 py-2.5 text-right font-medium sm:px-5">{t('quotes.document.table.amount')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((l) => {
-              const suffix = l.recurrence === 'monthly' ? t('billingUi.units.perMonth') : l.recurrence === 'annual' ? t('billingUi.units.perYear') : '';
-              const tag = l.recurrence === 'monthly' ? t('quotes.document.recurrence.monthly') : l.recurrence === 'annual' ? t('quotes.document.recurrence.annual') : '';
-              const tax = showTax ? lineTaxAmount(l.lineTotal, l.taxable, taxRate) : null;
-              const descriptor = deviceSetText(l);
-              return (
-                <tr key={l.id} className="border-b align-top last:border-0">
-                  <td className="w-full px-4 py-3 text-foreground sm:px-5">
-                    <div className="flex items-start gap-2.5">
-                      {(l.imageId || l.catalogItemId) && (
-                        <DocLineThumb path={l.imageId ? quoteImageUrl(quoteId, l.imageId) : catalogItemImagePath(l.catalogItemId!)} />
-                      )}
-                      <div className="min-w-0">
-                        <span className="font-medium">{lineTitle(l)}</span>
-                        {tag && (
-                          <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70 dark:text-muted-foreground">
-                            {tag}
-                          </span>
-                        )}
-                        {l.contractLineType && (
-                          <span className="ml-2 inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70">
-                            {t('quotes.document.deviceSet.badge')}
-                          </span>
-                        )}
-                        {lineBlurb(l) && (
-                          <p className="mt-0.5 whitespace-pre-line text-xs text-muted-foreground">{lineBlurb(l)}</p>
-                        )}
-                        {descriptor.length > 0 && (
-                          <div className="mt-0.5 space-y-0.5 text-xs text-muted-foreground" data-testid={`quote-line-device-set-${l.id}`}>
-                            {descriptor.map((text, i) => <p key={i}>{text}</p>)}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">{formatQuantity(l.quantity)}</td>
-                  <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
-                    {formatMoney(l.unitPrice, currency)}{suffix && <span className="text-xs">{suffix}</span>}
-                  </td>
-                  {showTax && (
-                    <td className="whitespace-nowrap px-2 py-3 text-right tabular-nums text-muted-foreground">
-                      {tax === null ? '—' : formatMoney(tax, currency)}
-                    </td>
-                  )}
-                  <td className="whitespace-nowrap px-4 py-3 text-right font-medium tabular-nums text-foreground sm:px-5">
-                    {formatMoney(l.lineTotal, currency)}{suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-          {showSubtotal && subtotalParts.length > 0 && (
-            <tfoot>
-              <tr className="border-t-2 bg-muted/20" data-testid="quote-table-subtotal">
-                <td className="px-4 py-2.5 text-right text-sm font-semibold text-foreground sm:px-5" colSpan={showTax ? 4 : 3}>
-                  {t('quotes.document.totals.subtotal')}
-                </td>
-                <td className="whitespace-nowrap px-4 py-2.5 text-right text-sm font-semibold tabular-nums text-foreground sm:px-5">
-                  {subtotalParts.join(' + ')}
-                </td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function DocBlock({ block, lines, quoteId, currency, taxRate, showTax }: { block: QuoteBlock; lines: QuoteLine[]; quoteId: string; currency: string; taxRate: string | null; showTax: boolean }) {
-  const { t } = useTranslation('billing');
-  if (block.blockType === 'heading') {
-    const text = (block.content?.text as string | undefined)?.trim();
-    if (!text) return null;
-    return <h2 className="text-balance text-lg font-semibold text-foreground">{text}</h2>;
-  }
-  if (block.blockType === 'rich_text') {
-    // The API sanitizes every rich_text block's content.html on both write and
-    // read serialization (richTextSanitize.ts's fixed p/br/strong/em/u/h3/h4/
-    // ul/ol/li/a allowlist) before it ever reaches this component, so rendering
-    // it as real HTML here is safe.
-    const html = (block.content?.html as string | undefined) ?? '';
-    if (!html.trim()) return null;
-    return (
-      <div
-        className="quote-rich-text prose prose-sm max-w-prose text-pretty leading-relaxed text-foreground/90 dark:prose-invert"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    );
-  }
-  if (block.blockType === 'image') {
-    const imageId = (block.content?.imageId as string | undefined) ?? '';
-    const caption = (block.content?.caption as string | undefined) ?? '';
-    if (!imageId) return null;
-    return <DocImage quoteId={block.quoteId} imageId={imageId} caption={caption} />;
-  }
-  // Contract blocks are agreements, not body content: DocAgreements renders them
-  // after the totals, collapsed (#7040).
-  if (block.blockType === 'contract') return null;
-  if (block.blockType === 'table') {
-    // Structured JSON, never HTML-parsed — column labels and cell values are
-    // sanitized server-side with the inline-only profile (quoteService's
-    // read-path sanitizer), safe for dangerouslySetInnerHTML per the rich_text
-    // precedent above.
-    const content = block.content as Partial<QuoteTableContent> | undefined;
-    if (!content?.columns?.length || !content?.rows?.length) return null;
-    return (
-      <div className="overflow-x-auto" data-testid="quote-table-block">
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className={content.headerStyle === 'plain' ? 'border-b-2' : 'border-b-2 bg-primary/10'}>
-              {content.columns.map((col, i) => (
-                <th
-                  key={i}
-                  style={{ textAlign: col.align ?? 'left' }}
-                  className="px-3 py-2 font-semibold text-foreground"
-                  dangerouslySetInnerHTML={{ __html: col.label }}
-                />
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {content.rows.map((row, ri) => (
-              <tr key={ri} className={content.zebra && ri % 2 === 1 ? 'bg-muted/30' : undefined}>
-                {row.cells.map((cell, ci) => (
-                  <td
-                    key={ci}
-                    style={{ textAlign: content.columns?.[ci]?.align ?? 'left' }}
-                    className="px-3 py-2 align-top text-foreground/90"
-                    dangerouslySetInnerHTML={{ __html: cell }}
-                  />
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {content.caption && <p className="mt-1 text-xs text-muted-foreground">{content.caption}</p>}
-      </div>
-    );
-  }
-  if (block.blockType === 'callout') {
-    // Same sanitized-HTML precedent as rich_text — server-sanitized on both
-    // write and read before it ever reaches this component.
-    const content = block.content as Partial<QuoteCalloutContent> | undefined;
-    if (!content?.html?.trim()) return null;
-    const tone =
-      content.variant === 'warn'
-        ? 'border-amber-500/40 bg-amber-500/10'
-        : content.variant === 'accent'
-          ? 'border-primary/40 bg-primary/10'
-          : 'border-border bg-muted/40';
-    return (
-      <div className={`rounded-lg border-l-4 p-4 ${tone}`} data-testid="quote-callout-block">
-        {content.title && <p className="mb-1 text-sm font-semibold text-foreground">{content.title}</p>}
-        <div
-          className="quote-rich-text prose prose-sm max-w-prose dark:prose-invert"
-          dangerouslySetInnerHTML={{ __html: content.html }}
-        />
-      </div>
-    );
-  }
-  if (block.blockType === 'line_items') {
-    const label = (block.content?.label as string | undefined)?.trim() || t('quotes.document.pricing');
-    const showSubtotal = block.content?.showSubtotal === true;
-    return <PricingTable lines={lines} quoteId={quoteId} currency={currency} label={label} taxRate={taxRate} showTax={showTax} showSubtotal={showSubtotal} />;
-  }
-  // Unknown/future blockType — staff-facing visible placeholder rather than
-  // silently rendering nothing (spec §4).
-  return (
-    <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground" data-testid="unsupported-block">
-      {t('quotes.document.unsupportedBlock')}
-    </div>
-  );
-}
-
-/** One contract block, read into what an agreement row needs. Server-rendered
- *  content (renderContractBlocksForClient) — never the raw
- *  templateId/templateVersionId/variableValues authoring shape. */
-function contractRow(block: QuoteBlock) {
-  const content = (block.content ?? {}) as Partial<ContractBlockContent>;
-  const templateName = content.templateName?.trim() || '';
-  return {
-    id: block.id,
-    title: content.label?.trim() || templateName,
-    templateName,
-    versionNumber: content.versionNumber ?? 0,
-    sourceType: content.sourceType === 'uploaded' ? ('uploaded' as const) : ('authored' as const),
-    renderedHtml: content.renderedHtml ?? null,
-    fileUrl: content.fileUrl ?? null,
-  };
-}
-
-function DocContractBody({ contract }: { contract: ReturnType<typeof contractRow> }) {
-  const { t } = useTranslation('billing');
-  return (
-    <div className="space-y-3">
-      {contract.sourceType === 'authored' ? (
-        contract.renderedHtml ? (
-          // Server-substituted HTML from an authored contract template — same
-          // sanitizer output + HTML-escaped substitution path as rich_text
-          // blocks, safe to render as-is.
-          <div
-            className="quote-rich-text prose prose-sm max-w-prose text-pretty leading-relaxed text-foreground/90 dark:prose-invert"
-            dangerouslySetInnerHTML={{ __html: contract.renderedHtml }}
-          />
-        ) : (
-          <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
-            {t('quotes.document.contract.unavailable')}
-          </div>
-        )
-      ) : contract.fileUrl ? (
-        <DocContractFile fileUrl={contract.fileUrl} templateName={contract.templateName} />
-      ) : (
-        <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
-          {t('quotes.document.contract.unavailable')}
-        </div>
-      )}
-      <p className="text-xs text-muted-foreground">
-        {t('quotes.document.contract.versionFooter', { name: contract.templateName, version: contract.versionNumber })}
-      </p>
-    </div>
-  );
-}
-
-/** Free-text T&C as readable sections — the same parser and layout as the
- *  customer's portal page, so the Preview shows what they will read. */
-function DocTermsBody({ text, label }: { text: string; label: string }) {
-  const { blocks, sectionCount } = useMemo(() => parseTermsSections(text), [text]);
-  if (sectionCount === 0) {
-    return <p className="max-w-prose whitespace-pre-wrap text-pretty text-xs leading-relaxed text-muted-foreground">{text}</p>;
-  }
-  return (
-    <div className="max-w-prose space-y-2 text-xs leading-relaxed text-muted-foreground">
-      {sectionCount >= 4 && (
-        <nav aria-label={label} className="space-y-1 pb-2">
-          {blocks.map((b) => (b.kind === 'heading' ? <p key={b.id} className="underline underline-offset-2">{b.text}</p> : null))}
-        </nav>
-      )}
-      {blocks.map((b, i) =>
-        b.kind === 'heading'
-          ? <h4 key={b.id} className="pt-2 text-xs font-semibold text-foreground">{b.text}</h4>
-          : <p key={i} className="text-pretty">{b.text}</p>,
-      )}
-    </div>
-  );
-}
-
-interface AgreementRowProps {
-  title: string;
-  meta: string;
-  testId: string;
-  /** Mount the body only while open — an uploaded agreement's viewer fetches
-   *  the whole file, and most previews never open it. */
-  lazy?: boolean;
-  children: ReactNode;
-}
-
-function DocAgreementRow({ title, meta, testId, lazy, children }: AgreementRowProps) {
-  const { t } = useTranslation('billing');
-  const [open, setOpen] = useState(false);
-  return (
-    <details
-      open={open}
-      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
-      className="group"
-      data-testid={testId}
-    >
-      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-foreground">{title}</span>
-          <span className="block text-xs text-muted-foreground">{meta}</span>
-        </span>
-        {/* Visual affordance only — <details> already exposes expanded state. */}
-        <span aria-hidden className="shrink-0 text-xs font-medium" style={{ color: 'var(--doc-accent)' }}>
-          <span className="group-open:hidden">{t('quotes.document.agreements.read')}</span>
-          <span className="hidden group-open:inline">{t('quotes.document.agreements.hide')}</span>
-        </span>
-        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden />
-      </summary>
-      <div className="border-t px-4 py-4 sm:px-5">{lazy && !open ? null : children}</div>
-    </details>
-  );
-}
-
-/** The quote's agreements — contract blocks in block order, then the T&C — as
- *  collapsed rows after the totals. Mirrors the portal's QuoteAgreements and
- *  the PDF's agreement pages, so a long agreement never pushes the price down. */
-function DocAgreements({ blocks, termsAndConditions }: { blocks: QuoteBlock[]; termsAndConditions: string | null }) {
-  const { t } = useTranslation('billing');
-  const contracts = blocks.filter((b) => b.blockType === 'contract').map(contractRow);
-  const terms = termsAndConditions?.trim() || null;
-  const count = contracts.length + (terms ? 1 : 0);
-  if (count === 0) return null;
-  const termsTitle = t('quotes.document.agreements.termsTitle');
-  const termsSections = terms ? parseTermsSections(terms).sectionCount : 0;
-  const termsMinutes = terms ? textReadMinutes(terms) : 0;
-  return (
-    <section className="space-y-3 border-t pt-6" data-testid="quote-document-agreements">
-      {/* A lone row's title already says what it is; the heading names a list. */}
-      {count > 1 && (
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.agreements.heading')}</h3>
-      )}
-      <div className="divide-y overflow-hidden rounded-lg border">
-        {contracts.map((contract) => (
-          <DocAgreementRow
-            key={contract.id}
-            title={contract.title || t('quotes.document.agreements.untitled')}
-            meta={
-              contract.sourceType === 'uploaded'
-                ? t('quotes.document.agreements.pdfDocument')
-                : contract.renderedHtml
-                  ? t('quotes.document.agreements.readTime', { minutes: htmlReadMinutes(contract.renderedHtml) })
-                  : t('quotes.document.agreements.unavailable')
-            }
-            testId="contract-block"
-            lazy={contract.sourceType === 'uploaded'}
-          >
-            <DocContractBody contract={contract} />
-          </DocAgreementRow>
-        ))}
-        {terms && (
-          <DocAgreementRow
-            title={termsTitle}
-            meta={
-              termsSections > 0
-                ? t('quotes.document.agreements.sectionsReadTime', { count: termsSections, minutes: termsMinutes })
-                : t('quotes.document.agreements.readTime', { minutes: termsMinutes })
-            }
-            testId="quote-document-terms-conditions"
-          >
-            <DocTermsBody text={terms} label={termsTitle} />
-          </DocAgreementRow>
-        )}
-      </div>
-    </section>
-  );
-}
-
-interface DocumentProps {
+/** Preview-tab wrapper: renders the CUSTOMER document (`GET /quotes/:id/customer-view`, the
+ *  same assembler the portal and the public link use), so what staff see is what the customer
+ *  sees. The staff `detail` is only the refetch trigger: the workspace hands a new object after
+ *  every `reload()`, and the tab remounts this component on each visit. */
+export default function QuoteDocumentPreview({
+  detail,
+  components,
+}: {
   detail: QuoteDetailData;
-  /** Resolved customer/bill-to name (parent looks it up against the org list). */
-  customerName: string;
-}
-
-/** Pure, presentational customer-facing proposal document. Renders the same
- *  content the customer sees on their portal link, branded with the partner's
- *  logo/accent. Works for drafts (no portal round-trip). */
-export function QuoteDocument({ detail, customerName }: DocumentProps) {
-  const { t } = useTranslation('billing');
-  const { quote, blocks, lines, branding, billTo, presentation } = detail;
-  // Customer billing address lines (resolved server-side from the org's Billing
-  // settings for drafts, or the frozen snapshot once sent). Empty when the org
-  // has saved no billing address — the block then shows just the name.
-  const billToLines = useMemo(() => {
-    const a = billTo?.address;
-    if (!a) return [] as string[];
-    const cityLine = [a.city, a.region, a.postalCode].filter(Boolean).join(', ');
-    return [a.line1, a.line2, cityLine, a.country].filter((s): s is string => !!s && s.trim().length > 0);
-  }, [billTo?.address]);
-  const currency = branding?.currencyCode ?? quote.currencyCode;
-  const seller = branding?.seller ?? quote.sellerSnapshot ?? null;
-  const accent = branding?.primaryColor || 'hsl(var(--primary))';
-  const accentStyle = { ['--doc-accent']: accent } as CSSProperties;
-
-  const sortedBlocks = useMemo(() => [...blocks].sort((a, b) => a.sortOrder - b.sortOrder), [blocks]);
-  const linesForBlock = useCallback(
-    (blockId: string | null) => lines.filter((l) => l.blockId === blockId).sort((a, b) => a.sortOrder - b.sortOrder),
-    [lines],
-  );
-  const looseLines = useMemo(() => linesForBlock(null), [linesForBlock]);
-  const isEmpty = sortedBlocks.length === 0 && looseLines.length === 0;
-
-  const hasRecurring = lines.some((l) => l.recurrence !== 'one_time');
-  const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal;
-  // Only surface the per-line Tax column when this quote actually carries tax —
-  // otherwise it's a column of dashes. Mirrors the header Tax row's visibility.
-  const showTax = Number(quote.taxTotal) > 0;
-  // Deposit summary — mirrors the customer portal (Task 10) so the in-app Preview
-  // matches the proposal link and PDF. `depositDueTotal` null = no deposit.
-  const categoryBreakdown = quote.categoryBreakdown ?? [];
-  const depositDue = quote.depositDueTotal ?? null;
-  // Remaining balance in integer cents so the subtraction never drifts on floats.
-  const remainderCents = depositDue != null
-    ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
-    : 0;
-
-  return (
-    <div
-      style={accentStyle}
-      data-testid="quote-document"
-      data-doc-theme={presentation?.theme ?? 'classic'}
-      className="mx-auto max-w-3xl overflow-hidden rounded-xl border bg-card shadow-xs"
-    >
-      <div className="space-y-10 px-4 py-7 sm:px-12 sm:py-10">
-        {/* ── Header ─────────────────────────────────────────────── */}
-        <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-3">
-            {branding?.logoUrl ? (
-              <img src={branding.logoUrl} alt={branding.partnerName} className="h-11 w-auto max-w-[220px] object-contain" />
-            ) : (
-              <p className="text-xl font-semibold tracking-tight text-foreground" data-testid="quote-document-wordmark">
-                {branding?.partnerName ?? t('quotes.document.proposal')}
-              </p>
-            )}
-            {/* Brand letterhead rule — a short, deliberate accent mark, not a full-bleed stripe. */}
-            <div className="h-0.5 w-10 rounded-full" style={{ backgroundColor: 'var(--doc-accent)' }} aria-hidden />
-            {seller && (
-              <address className="space-y-0.5 text-xs not-italic leading-relaxed text-muted-foreground">
-                {seller.name && <p className="font-medium text-foreground/80">{seller.name}</p>}
-                {sellerLines(seller.address).map((line, i) => <p key={i}>{line}</p>)}
-                {seller.phone && <p>{seller.phone}</p>}
-                {seller.email && <p>{seller.email}</p>}
-                {seller.website && <p>{seller.website}</p>}
-              </address>
-            )}
-          </div>
-
-          <div className="space-y-2 sm:text-right">
-            <p className="text-[1.75rem] font-semibold leading-none tracking-tight text-foreground" data-testid="quote-document-number">
-              {quote.quoteNumber ?? t('quotes.document.draft')}
-            </p>
-            <p className="text-sm font-medium text-muted-foreground">{t('quotes.document.proposal')}</p>
-            <StatusPill
-              role={STATUS_ROLES[quote.status].role}
-              label={statusLabel(quote)}
-              className={STATUS_ROLES[quote.status].className}
-            />
-            <dl className="space-y-0.5 pt-1 text-xs text-muted-foreground sm:flex sm:flex-col sm:items-end">
-              <div className="flex gap-2"><dt>{t('quotes.document.issued')}</dt><dd className="font-medium text-foreground/80">{formatDate(quote.issueDate)}</dd></div>
-              {quote.expiryDate && (
-                <div className="flex gap-2"><dt>{t('quotes.document.validUntil')}</dt><dd className="font-medium text-foreground/80">{formatDate(quote.expiryDate)}</dd></div>
-              )}
-            </dl>
-          </div>
-        </header>
-
-        {/* ── Prepared for + intro ───────────────────────────────── */}
-        <section className="space-y-4">
-          {quote.title?.trim() && (
-            <h1 className="text-xl font-semibold tracking-tight text-foreground" data-testid="quote-document-title">
-              {quote.title}
-            </h1>
-          )}
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('quotes.document.preparedFor')}</p>
-            <p className="mt-1 text-base font-medium text-foreground" data-testid="quote-document-customer">{customerName}</p>
-            {billToLines.length > 0 && (
-              <address className="mt-0.5 not-italic text-sm leading-relaxed text-muted-foreground" data-testid="quote-document-billto-address">
-                {billToLines.map((l, i) => <div key={i}>{l}</div>)}
-              </address>
-            )}
-            {billTo?.taxId?.trim() && (
-              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="quote-document-billto-taxid">
-                {t('quotes.document.taxId', { id: billTo.taxId })}
-              </p>
-            )}
-          </div>
-          {quote.introNotes?.trim() && (
-            <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">
-              {quote.introNotes.trim()}
-            </p>
-          )}
-        </section>
-
-        {/* ── Body blocks ────────────────────────────────────────── */}
-        {isEmpty ? (
-          <div className="rounded-lg border border-dashed bg-muted/30 px-6 py-12 text-center text-sm text-muted-foreground">
-            {t('quotes.document.empty')}
-          </div>
-        ) : (
-          <div className="space-y-6">
-            {sortedBlocks.map((block) => (
-              <DocBlock key={block.id} block={block} lines={linesForBlock(block.id)} quoteId={quote.id} currency={currency} taxRate={quote.taxRate} showTax={showTax} />
-            ))}
-            {looseLines.length > 0 && <PricingTable lines={looseLines} quoteId={quote.id} currency={currency} label={t('quotes.document.additionalItems')} taxRate={quote.taxRate} showTax={showTax} />}
-          </div>
-        )}
-
-        {/* ── Totals ─────────────────────────────────────────────── */}
-        {!isEmpty && (
-          <section className="flex justify-end">
-            <div className="w-full max-w-xs space-y-2.5">
-              <div className="flex justify-between text-sm">
-                {/* `subtotal` sums ALL lines (one-time + first period of each
-                    recurring cadence) — with recurring lines a bare "Subtotal"
-                    never reconciles against the due-on-acceptance figures below,
-                    so the qualifier names the basis. Mirrors both portal views. */}
-                <span className="text-muted-foreground">{hasRecurring ? t('quotes.document.totals.firstPeriodSubtotal') : t('quotes.document.totals.subtotal')}</span>
-                <span className="tabular-nums text-foreground">{formatMoney(quote.subtotal, currency)}</span>
-              </div>
-              {showTax && (
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    {t('quotes.document.totals.tax')}{quote.taxRate ? ` (${pctFromFraction(quote.taxRate)}%)` : ''}
-                  </span>
-                  <span className="tabular-nums text-foreground">{formatMoney(quote.taxTotal, currency)}</span>
-                </div>
-              )}
-              {categoryBreakdown.length > 1 && (
-                <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="quote-document-category-breakdown">
-                  {categoryBreakdown.map((b) => (
-                    <div key={b.category} className="flex justify-between" data-testid={`quote-document-category-${b.category}`}>
-                      <span className="capitalize">{b.category}</span>
-                      <span className="tabular-nums">
-                        {(() => {
-                          const categoryLines = lines.filter((l) => (l.itemType ?? 'other') === b.category);
-                          const cadenceLines = categoryLines;
-                          return [
-                            cadenceLines.some((l) => l.recurrence === 'one_time') ? formatMoney(b.oneTimeTotal, currency) : null,
-                            cadenceLines.some((l) => l.recurrence === 'monthly') ? `${formatMoney(b.monthlyTotal, currency)}/mo` : null,
-                            cadenceLines.some((l) => l.recurrence === 'annual') ? `${formatMoney(b.annualTotal, currency)}/yr` : null,
-                          ].filter(Boolean).join(' + ');
-                        })()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {depositDue != null ? (
-                <>
-                  {/* Anchor row: the deposit stays the hero (it's what's payable
-                      now), but the three figures must visibly sum — due on
-                      acceptance = deposit due now + remaining balance. Same
-                      presentation contract as the portal views and the PDF. */}
-                  <div
-                    className="flex justify-between border-t pt-3 text-sm"
-                    style={{ borderColor: 'var(--doc-accent)' }}
-                    data-testid="quote-document-due"
-                  >
-                    <span className="font-medium text-foreground">{t('quotes.document.totals.dueOnAcceptance')}</span>
-                    <span className="font-medium tabular-nums text-foreground">{formatMoney(dueOnAcceptance, currency)}</span>
-                  </div>
-                  <div className="flex items-baseline justify-between" data-testid="quote-document-deposit-due">
-                    <span className="text-sm font-semibold text-foreground">{t('quotes.document.totals.depositDueNow')}</span>
-                    <span className="text-2xl font-semibold tabular-nums" style={{ color: 'var(--doc-accent)' }}>
-                      {formatMoney(depositDue, currency)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm" data-testid="quote-document-deposit-remainder">
-                    <span className="text-muted-foreground">{t('quotes.document.totals.remainingBalance')}</span>
-                    <span className="tabular-nums text-foreground">{formatMoney(remainderCents / 100, currency)}</span>
-                  </div>
-                </>
-              ) : (
-                <div
-                  className="flex items-baseline justify-between border-t pt-3"
-                  style={{ borderColor: 'var(--doc-accent)' }}
-                >
-                  <span className="text-sm font-semibold text-foreground">{t('quotes.document.totals.dueOnAcceptance')}</span>
-                  <span
-                    className="text-2xl font-semibold tabular-nums"
-                    style={{ color: 'var(--doc-accent)' }}
-                    data-testid="quote-document-due"
-                  >
-                    {formatMoney(dueOnAcceptance, currency)}
-                  </span>
-                </div>
-              )}
-
-              {hasRecurring && (
-                <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
-                  {/* First-period total row (matches both portal views + the PDF):
-                      the recurring-inclusive figure, clearly boxed apart from the
-                      invoiced-now amounts above. */}
-                  <div className="flex justify-between" data-testid="quote-document-first-period">
-                    <span className="text-muted-foreground">{t('quotes.document.totals.firstPeriodTotal')}</span>
-                    <span className="tabular-nums text-foreground">{formatMoney(quote.total, currency)}</span>
-                  </div>
-                  {lines.some((l) => l.recurrence === 'monthly') && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">{t('quotes.document.totals.monthlyRecurring')}</span>
-                      <span className="tabular-nums text-foreground">{formatMoney(quote.monthlyRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
-                    </div>
-                  )}
-                  {lines.some((l) => l.recurrence === 'annual') && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">{t('quotes.document.totals.annualRecurring')}</span>
-                      <span className="tabular-nums text-foreground">{formatMoney(quote.annualRecurringTotal, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>
-                    </div>
-                  )}
-                  <p className="pt-1 text-xs leading-relaxed text-muted-foreground">
-                    {t('quotes.document.totals.recurringNote')}
-                  </p>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-
-        {/* ── Agreements (contract blocks, then T&C), collapsed ──── */}
-        <DocAgreements blocks={sortedBlocks} termsAndConditions={quote.termsAndConditions} />
-
-        {branding?.footer?.trim() && (
-          <footer className="border-t pt-6 text-center text-xs leading-relaxed text-muted-foreground">
-            {branding.footer.trim()}
-          </footer>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Preview-tab wrapper: resolves the customer name from the loaded org list (same
- *  source as QuoteDetail), renders the document, and offers a PDF download. */
-export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailData }) {
+  /** Test seam: parity tests inject deterministic stand-ins. */
+  components?: DocumentHostComponents;
+}) {
   const { t } = useTranslation('billing');
   const { quote } = detail;
-  const organizations = useOrgStore((s) => s.organizations);
-  const { busy, downloadPdf } = useQuotePdfDownload(quote);
+  const [state, setState] = useState<PreviewState>({ status: 'loading' });
+  const [retryNonce, setRetryNonce] = useState(0);
+  const accentRef = useRef<HTMLDivElement>(null);
 
-  const customerName = useMemo(() => {
-    // Server-resolved name wins (billToName override, else the org's name); the
-    // org store is only a backstop for payloads/fixtures without a resolved billTo.
-    const resolvedBillTo = detail.billTo?.name?.trim() || quote.billToName?.trim();
-    if (resolvedBillTo) return resolvedBillTo;
-    const resolved = organizations.find((o) => o.id === quote.orgId)?.name?.trim();
-    // Never leak a raw org UUID fragment onto a customer-facing document — if the
-    // org store hasn't resolved a name yet, show a neutral em-dash instead.
-    return resolved || '—';
-  }, [detail.billTo?.name, quote.billToName, quote.orgId, organizations]);
+  useEffect(() => {
+    // Cleanup flips this, so an older request finishing after a newer one is discarded.
+    let current = true;
+    void (async () => {
+      try {
+        const res = await fetchWithAuth(`/quotes/${quote.id}/customer-view`);
+        if (!res.ok) throw new Error(`customer-view ${res.status}`);
+        const body = (await res.json()) as { data?: CustomerQuoteDocument };
+        const dto = body.data;
+        if (!dto?.quote || !Array.isArray(dto.blocks) || !Array.isArray(dto.lines)) throw new Error('customer-view: malformed body');
+        // Built inside the try: a payload that passes the shape check but breaks the builder
+        // shows the error state instead of throwing in render.
+        const model = buildQuoteDocumentModel(dto, documentLabelsFor(dto.documentLocale));
+        if (current) setState({ status: 'ready', model, dto });
+      } catch (err) {
+        console.error('[QuoteDocumentPreview] customer view failed', quote.id, err instanceof Error ? err.message : err);
+        if (current) setState({ status: 'error' });
+      }
+    })();
+    return () => { current = false; };
+    // `detail` is the refetch trigger (new object per reload()); `quote.id` rides along with it.
+  }, [detail, retryNonce]);
+
+  const ready = state.status === 'ready' ? state : null;
+  const dto = ready?.dto ?? null;
+  const hostComponents = useMemo(() => components ?? (dto ? webQuoteHostComponents(dto) : null), [components, dto]);
+
+  // The accent is host chrome (the package writes no style attribute): the wrapper, not the paper, carries it.
+  const accent = dto?.branding.primaryColor ?? null;
+  useEffect(() => {
+    const el = accentRef.current;
+    if (!el) return;
+    if (accent) el.style.setProperty('--doc-accent', accent);
+    else el.style.removeProperty('--doc-accent');
+  }, [accent, ready]);
+
+  const { busy, downloadPdf } = useQuotePdfDownload(quote);
 
   return (
     <div className="space-y-4" data-testid="quote-preview">
@@ -817,7 +92,43 @@ export default function QuoteDocumentPreview({ detail }: { detail: QuoteDetailDa
         </button>
       </div>
       <div className="rounded-xl bg-muted/30 p-2 sm:p-8">
-        <QuoteDocument detail={detail} customerName={customerName} />
+        {state.status === 'loading' && (
+          <p className="py-12 text-center text-sm text-muted-foreground" data-testid="quote-preview-loading">
+            {t('quotes.document.preview.loading')}
+          </p>
+        )}
+        {state.status === 'error' && (
+          <div className="space-y-3 py-12 text-center text-sm text-muted-foreground" data-testid="quote-preview-error">
+            <p>{t('quotes.document.preview.loadError')}</p>
+            <button
+              type="button"
+              onClick={() => { setState({ status: 'loading' }); setRetryNonce((n) => n + 1); }}
+              data-testid="quote-preview-retry"
+              className="inline-flex items-center justify-center rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            >
+              {t('quotes.document.preview.retry')}
+            </button>
+          </div>
+        )}
+        {ready && hostComponents && (
+          <div ref={accentRef} data-testid="quote-preview-paper" className="mx-auto max-w-3xl">
+            <QuoteDocumentView
+              model={ready.model}
+              components={hostComponents}
+              slots={{
+                // The customer signs on their own link; the Preview only marks the spot.
+                signature: SIGNABLE.has(ready.dto.quote.status) ? (
+                  <div
+                    className="rounded-lg border border-dashed bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground"
+                    data-testid="quote-preview-signature"
+                  >
+                    {t('quotes.document.preview.signatureInert')}
+                  </div>
+                ) : undefined,
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

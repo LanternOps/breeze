@@ -178,6 +178,11 @@ type HelperLifecycleManager struct {
 
 	leases map[HelperKey]*helperLease
 	kickCh chan struct{}
+
+	// pamHold is set while UAC interception is enabled; in on-demand mode it
+	// adds a SYSTEM helper for every signed-in session to the desired set (see
+	// lifecycle_pam_hold.go). Guarded by m.mu.
+	pamHold bool
 }
 
 func newHelperLifecycleManager(broker *Broker, detector SessionDetector, scmCh <-chan SCMSessionEvent, spawner helperSpawner) *HelperLifecycleManager {
@@ -287,7 +292,8 @@ func (m *HelperLifecycleManager) detectedDesired() (map[HelperKey]bool, error) {
 }
 
 // computeDesired is the single desired-set entry point: detector-driven in
-// always-on mode (the historical behavior), lease-driven in on-demand mode.
+// always-on mode (the historical behavior), lease-driven in on-demand mode —
+// plus, while the PAM hold is on, a SYSTEM helper per signed-in session.
 func (m *HelperLifecycleManager) computeDesired() (map[HelperKey]bool, error) {
 	if m.currentMode() != LifecycleModeOnDemand {
 		return m.detectedDesired()
@@ -304,6 +310,9 @@ func (m *HelperLifecycleManager) computeDesired() (map[HelperKey]bool, error) {
 	for _, key := range expired {
 		log.Info("lease expired", "helperKey", key.String())
 		delete(m.leases, key)
+	}
+	if m.pamHold {
+		addPAMHeldKeys(desired, sessions)
 	}
 	m.mu.Unlock()
 	return desired, nil

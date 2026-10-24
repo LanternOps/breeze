@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { flushSync } from 'react-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,10 +49,18 @@ vi.mock('../../lib/authScope', () => ({
 
 // Keep the page test focused on the queue: the workbench fetch/load cycle has its own suite.
 // Extended to accept refreshToken so the pane-refresh assertion can inspect props.
-const capturedWorkbenchProps: Array<{ ticketId: string; refreshToken?: number }> = [];
+type WorkbenchProps = {
+  ticketId: string;
+  refreshToken?: number;
+  onTicketPatched?: (id: string, patch: Partial<TicketSummary>) => void;
+  onChanged?: () => void;
+  onDeleted?: (id: string) => void;
+};
+const capturedWorkbenchProps: WorkbenchProps[] = [];
+const lastWorkbenchProps = () => capturedWorkbenchProps[capturedWorkbenchProps.length - 1];
 vi.mock('./TicketWorkbench', () => ({
-  default: (props: { ticketId: string; refreshToken?: number }) => {
-    capturedWorkbenchProps.push({ ticketId: props.ticketId, refreshToken: props.refreshToken });
+  default: (props: WorkbenchProps) => {
+    capturedWorkbenchProps.push(props);
     return <div data-testid="ticket-workbench-mock" data-refresh={props.refreshToken}>{props.ticketId}</div>;
   }
 }));
@@ -267,17 +275,30 @@ describe('TicketsPage', () => {
     expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk');
   });
 
-  it('auto-selects the first row when the hash matches nothing', async () => {
-    window.location.hash = '#garbage-hash';
-    mockListApi([healthy, atRisk, breached]);
+  it('does not auto-select another ticket when the hash names a ticket absent from the list, and says so', async () => {
+    window.location.hash = '#T-2026-0099';
+    mockListApi((url) => (url.includes('search=') ? [] : [healthy, atRisk, breached]));
     render(<TicketsPage />);
 
     await screen.findByTestId('ticket-row-tk-healthy');
 
+    expect(await screen.findByTestId('tickets-deeplink-absent')).toHaveTextContent('T-2026-0099');
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+    expect(window.location.hash).toBe('#T-2026-0099');
+  });
+
+  it('opens an absent-from-list ticket directly when the lookup by number finds it', async () => {
+    window.location.hash = '#T-2026-0099';
+    const closedOne = makeTicket({ id: 'tk-closed', internalNumber: 'T-2026-0099', status: 'closed', subject: 'Old one' });
+    mockListApi((url) => (url.includes('search=') ? [closedOne] : [healthy, atRisk, breached]));
+    render(<TicketsPage />);
+
     await waitFor(() => {
-      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-closed');
     });
-    expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
   });
 
   it('picking a priority adds priority= to the fetch and re-renders from the result', async () => {
@@ -1040,6 +1061,80 @@ describe('TicketsPage', () => {
       await waitFor(() => {
         expect(row).toHaveTextContent('Open');
       });
+    });
+  });
+
+  // #9564: resolving from an open-only view used to drop the row on the
+  // reconcile, and the auto-select effect then swapped the workbench to the
+  // next ticket — the resolution note the user just wrote vanished.
+  describe('keeps the resolved ticket in the workbench (#9564)', () => {
+    async function resolveSelectedFromOpenView() {
+      window.location.hash = '#T-2026-0001';
+      let resolved = false;
+      mockListApi((url) => (url.includes('statusGroup=closed') ? [{ ...healthy, status: 'resolved' }] : resolved ? [atRisk, breached] : [healthy, atRisk, breached]));
+      render(<TicketsPage />);
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      });
+      const listCallsBefore = ticketFetchUrls().length;
+      resolved = true;
+      act(() => {
+        lastWorkbenchProps().onTicketPatched?.('tk-healthy', { status: 'resolved' });
+        lastWorkbenchProps().onChanged?.();
+      });
+      // The debounced reconcile refetches the list without the resolved row.
+      await waitFor(() => expect(ticketFetchUrls().length).toBeGreaterThan(listCallsBefore));
+      await waitFor(() => expect(screen.queryByTestId('ticket-row-tk-healthy')).toBeNull());
+    }
+
+    it('does not auto-select the next row when the resolved ticket drops out of the list', async () => {
+      await resolveSelectedFromOpenView();
+      // Give the auto-select effect every chance to run.
+      await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      expect(window.location.hash).toBe('#T-2026-0001');
+      expect(screen.getByTestId('ticket-row-tk-risk')).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('shows an inline "now under Closed" note whose link opens the Closed tab on that ticket', async () => {
+      await resolveSelectedFromOpenView();
+      const note = await screen.findByTestId('tickets-moved-to-closed');
+      expect(note).toHaveTextContent(/Resolved/);
+      expect(note).toHaveTextContent(/Closed/);
+      fireEvent.click(screen.getByTestId('tickets-moved-to-closed-view'));
+      await waitFor(() => expect(ticketFetchUrls().some((u) => u.includes('statusGroup=closed'))).toBe(true));
+      await waitFor(() => {
+        expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      });
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
+    });
+
+    it('releases the hold when the held ticket is deleted from the workbench', async () => {
+      await resolveSelectedFromOpenView();
+      act(() => {
+        lastWorkbenchProps().onDeleted?.('tk-healthy');
+        lastWorkbenchProps().onChanged?.();
+      });
+      // The deleted ticket must not linger in the pane; auto-select takes over.
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
+    });
+
+    it('releases the hold after a bulk action', async () => {
+      await resolveSelectedFromOpenView();
+      fireEvent.click(screen.getByTestId('ticket-select-tk-risk'));
+      fireEvent.change(screen.getByTestId('tickets-bulk-status'), { target: { value: 'closed' } });
+      fireEvent.click(screen.getByTestId('tickets-bulk-apply'));
+      await waitFor(() => expect(showToast).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+    });
+
+    it('releases the held ticket once the user selects another row', async () => {
+      await resolveSelectedFromOpenView();
+      fireEvent.click(screen.getByTestId('ticket-row-tk-risk'));
+      await waitFor(() => expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk'));
+      expect(screen.queryByTestId('tickets-moved-to-closed')).toBeNull();
     });
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mirrors commandQueue.test.ts's mocking idiom: a passthrough default so most
 // tests don't have to know the wrapper exists, with individual tests
@@ -481,6 +481,9 @@ describe('renderContractBlocksForClient', () => {
   beforeEach(() => {
     vi.mocked(db.select).mockReset();
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   const authoredVersionRow = {
     id: 'ver-1',
@@ -624,6 +627,59 @@ describe('renderContractBlocksForClient', () => {
       () => '/unused'
     );
     expect((block!.content as Record<string, unknown>).label).toBe('Master Services Agreement');
+  });
+
+  // #9452: a contract block whose stored content does not parse must NEVER be
+  // passed through raw to a customer surface (it would leak the authoring
+  // fields). It renders as the "unavailable" variant instead: the shared quote
+  // builder turns renderedHtml:null on an authored block into `unavailableText`.
+  describe.each([
+    ['non-object content (bad JSON stored as a string)', '{"templateId": "tmpl-1", oops'],
+    ['array content', ['tmpl-1', 'ver-1']],
+    ['null content', null],
+    ['object missing templateVersionId (shape the parser rejects)', { templateId: 'tmpl-1', variableValues: { secret: 'internal-note' }, label: 'Raw label' }],
+    ['object with non-string ids', { templateId: 7, templateVersionId: {}, variableValues: { secret: 'internal-note' } }],
+  ])('unparseable contract content: %s', (_name, content) => {
+    it('renders the unavailable variant, never the raw content, and warns with quote + block id', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const [block] = await renderContractBlocksForClient(
+        [{ id: 'block-bad', blockType: 'contract', content }],
+        fixtureQuote(),
+        () => '/unused'
+      );
+      expect(block!.content).toEqual({
+        templateName: '',
+        versionNumber: 0,
+        sourceType: 'authored',
+        renderedHtml: null,
+        fileUrl: null,
+      });
+      expect(JSON.stringify(block)).not.toContain('internal-note');
+      expect(JSON.stringify(block)).not.toContain('Raw label');
+      expect(warn).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(warn.mock.calls[0]);
+      expect(logged).toContain('quote-1');
+      expect(logged).toContain('block-bad');
+      expect(logged).not.toContain('internal-note');
+      warn.mockRestore();
+    });
+  });
+
+  it('still resolves a parseable sibling when another contract block is unparseable', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectReturning([authoredVersionRow]) as never)
+      .mockReturnValueOnce(selectReturning([templateRow]) as never);
+    const heading = { id: 'block-h', blockType: 'heading', content: { text: 'Intro', level: 2 } };
+    const [bad, good, h] = await renderContractBlocksForClient(
+      [{ id: 'block-bad', blockType: 'contract', content: 'garbage' }, contractBlockFixture(), heading],
+      fixtureQuote(),
+      () => '/unused'
+    );
+    expect((bad!.content as Record<string, unknown>).renderedHtml).toBeNull();
+    expect((good!.content as Record<string, unknown>).templateName).toBe('MSA');
+    // Non-contract siblings must pass through untouched (guards the blockType check).
+    expect(h).toEqual(heading);
   });
 
   it('leaves non-contract blocks unchanged and short-circuits without touching the db', async () => {

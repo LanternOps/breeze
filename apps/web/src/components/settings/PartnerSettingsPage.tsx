@@ -1,30 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  AtSign,
-  Bell,
-  Blocks,
-  Building2,
-  Globe,
-  Activity,
-  Hourglass,
-  KeyRound,
-  Loader2,
-  LogIn,
-  Mail,
-  MonitorSmartphone,
-  Palette,
-  Save,
-  ScrollText,
-  Shield,
-  ShieldCheck,
-  SlidersHorizontal,
-  Ticket,
-  Wallet,
-  type LucideIcon,
-} from 'lucide-react';
+import { Building2, Loader2, Save } from 'lucide-react';
 import EmailTemplatesTab from './EmailTemplatesTab';
 import SettingsSectionNav from './SettingsSectionNav';
 import { fetchWithAuth } from '../../stores/auth';
+import { useCallerVerificationEnabled } from '../../lib/useCallerVerificationEnabled';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import { PartnerCallerVerificationPolicy } from '../callerVerification/CallerVerificationPolicyForm';
 import { getJwtClaims } from '../../lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
@@ -42,18 +22,17 @@ import PartnerAiDataPolicyCard from './PartnerAiDataPolicyCard';
 import PartnerRemoteAccessTab from './PartnerRemoteAccessTab';
 import PartnerSendingDomainTab from './PartnerSendingDomainTab';
 import PartnerCompanyTab from './PartnerCompanyTab';
+import KnownGuestsSettings from './KnownGuestsSettings';
 import PartnerModulesCard, { type TopologyFeatureFlags } from './PartnerModulesCard';
 import type { ServiceManagementMode } from '@/stores/orgStore';
-import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
+import PartnerRegionalTab from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import TrustTemplateSettings from '../trustCenter/TrustTemplateSettings';
 import type {
   PartnerSettings,
   SupportedLocale,
-  BusinessHoursPreset,
   DateFormat,
   TimeFormat,
-  DaySchedule,
   InheritableSecuritySettings,
   InheritableNotificationSettings,
   InheritableEventLogSettings,
@@ -76,11 +55,10 @@ import MfaPolicyOffBanner, { PARTNER_SETTINGS_SAVED_EVENT } from '../auth/MfaPol
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
 import { isTabVisible } from './sendingDomains/domainView';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { TAB_BY_KEY, tabFromHash, visibleTabGroups, type TabKey } from './partnerSettings/tabRegistry';
 
 // Scalar security limits the API unsets when sent as null (see PATCH /partners/me).
 const CLEARABLE_SECURITY_KEYS = ['minLength', 'complexity', 'expirationDays', 'sessionTimeout', 'maxSessions'] as const;
-
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiApprovals' | 'aiProvider' | 'aiFeatures' | 'remoteAccess' | 'ticketing' | 'emailTemplates' | 'sendingDomains' | 'modules' | 'trustCenter';
 
 type Partner = {
   id: string;
@@ -103,94 +81,11 @@ type Partner = {
   createdAt: string;
 };
 
-type TabDef = {
-  key: TabKey;
-  /** Canonical URL fragment (kebab-case). Legacy camelCase keys still resolve. */
-  hash: string;
-  label: string;
-  description: string;
-  icon: LucideIcon;
-  /** Tab persists its own changes; the global Save button does not apply. */
-  selfSaving?: boolean;
-  /** Values set here are enforced across all organizations (inheritance banner). */
-  enforced?: boolean;
-};
-
-const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
-  {
-    label: 'partnerSettingsPage.groups.company',
-    tabs: [
-      { key: 'company', hash: 'company', label: 'partnerSettingsPage.tabs.company.label', description: 'partnerSettingsPage.tabs.company.description', icon: Building2 },
-      { key: 'modules', hash: 'modules', label: 'partnerSettingsPage.tabs.modules.label', description: 'partnerSettingsPage.tabs.modules.description', icon: Blocks, selfSaving: true },
-      { key: 'regional', hash: 'regional', label: 'partnerSettingsPage.tabs.regional.label', description: 'partnerSettingsPage.tabs.regional.description', icon: Globe },
-      { key: 'defaults', hash: 'defaults', label: 'partnerSettingsPage.tabs.defaults.label', description: 'partnerSettingsPage.tabs.defaults.description', icon: SlidersHorizontal, enforced: true },
-    ],
-  },
-  {
-    label: 'partnerSettingsPage.groups.security',
-    tabs: [
-      { key: 'security', hash: 'security', label: 'partnerSettingsPage.tabs.security.label', description: 'partnerSettingsPage.tabs.security.description', icon: Shield, enforced: true },
-      { key: 'remoteAccess', hash: 'remote-access', label: 'partnerSettingsPage.tabs.remoteAccess.label', description: 'partnerSettingsPage.tabs.remoteAccess.description', icon: MonitorSmartphone, enforced: true },
-      { key: 'eventLogs', hash: 'event-logs', label: 'partnerSettingsPage.tabs.eventLogs.label', description: 'partnerSettingsPage.tabs.eventLogs.description', icon: ScrollText, enforced: true },
-    ],
-  },
-  {
-    label: 'partnerSettingsPage.groups.communications',
-    tabs: [
-      { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
-      { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
-      { key: 'emailTemplates', hash: 'email-templates', label: 'partnerSettingsPage.tabs.emailTemplates.label', description: 'partnerSettingsPage.tabs.emailTemplates.description', icon: Mail, selfSaving: true },
-      { key: 'sendingDomains', hash: 'sending-domains', label: 'partnerSettingsPage.tabs.sendingDomains.label', description: 'partnerSettingsPage.tabs.sendingDomains.description', icon: AtSign, selfSaving: true },
-      { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
-      // NOT enforced: this is inherit-with-override (org wins when set), unlike
-      // the aiBudgets tab's partner-locks model — see aiApprovalSettings.ts.
-      { key: 'aiApprovals', hash: 'ai-approvals', label: 'partnerSettingsPage.tabs.aiApprovals.label', description: 'partnerSettingsPage.tabs.aiApprovals.description', icon: Hourglass },
-      { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
-      { key: 'aiFeatures', hash: 'ai-features', label: 'partnerSettingsPage.tabs.aiFeatures.label', description: 'partnerSettingsPage.tabs.aiFeatures.description', icon: Activity, selfSaving: true },
-    ],
-  },
-  {
-    label: 'partnerSettingsPage.groups.branding',
-    tabs: [
-      { key: 'branding', hash: 'branding', label: 'partnerSettingsPage.tabs.branding.label', description: 'partnerSettingsPage.tabs.branding.description', icon: Palette, enforced: true },
-      { key: 'loginBranding', hash: 'login-branding', label: 'partnerSettingsPage.tabs.loginBranding.label', description: 'partnerSettingsPage.tabs.loginBranding.description', icon: LogIn, selfSaving: true },
-      // Trust Center W2 (#8770 W02g): the partner-wide default for customer trust pages (own load/save, MFA).
-      { key: 'trustCenter', hash: 'trust-center', label: 'partnerSettingsPage.tabs.trustCenter.label', description: 'partnerSettingsPage.tabs.trustCenter.description', icon: ShieldCheck, selfSaving: true },
-    ],
-  },
-];
-
-const ALL_TABS: TabDef[] = TAB_GROUPS.flatMap(g => g.tabs);
-const TAB_BY_KEY = Object.fromEntries(ALL_TABS.map(t => [t.key, t])) as Record<TabKey, TabDef>;
-
-// Canonical kebab-case fragments plus the legacy camelCase keys this page used
-// to write (`#eventLogs`, `#remoteAccess`, ...) so old bookmarks keep working.
-const HASH_TO_TAB: Record<string, TabKey> = {};
-for (const t of ALL_TABS) {
-  HASH_TO_TAB[t.hash] = t.key;
-  HASH_TO_TAB[t.key] = t.key;
-}
-HASH_TO_TAB['ai-models'] = 'aiProvider'; // AI Providers & Models (W04 #7602) — canonical stays #ai-provider
-
-/**
- * Map a top-level URL hash to a partner settings tab, honored on first render.
- * Unknown fragments fall back to the default Company tab. `#ticketing` still
- * resolves, but only to the link-out card: ticketing configuration lives on
- * its own `/settings/ticketing` page (M0, #6233), which is a real page and not
- * a redirect here. Until v0.115 that route was a 301 to `#ticketing`, and
- * browsers that cached that 301 loop between the two (#7985).
- */
-function getTabFromHash(): TabKey | null {
-  if (typeof window === 'undefined') return null;
-  const hash = window.location.hash.replace('#', '');
-  return HASH_TO_TAB[hash] ?? null;
-}
-
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
 // tabs (Ticketing, Email templates, Login Branding, AI Provider, Sender
 // Addresses, Modules) persist independently and are never "dirty" from this
 // page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules' | 'trustCenter'>;
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'aiFeatures' | 'sendingDomains' | 'modules' | 'trustCenter' | 'knownGuests' | 'callerVerification'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -221,8 +116,6 @@ export default function PartnerSettingsPage() {
   const [dateFormat, setDateFormat] = useState<DateFormat>('MM/DD/YYYY');
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('12h');
   const [language, setLanguage] = useState<SupportedLocale>('en');
-  const [businessHoursPreset, setBusinessHoursPreset] = useState<BusinessHoursPreset>('business');
-  const [customHours, setCustomHours] = useState<Record<string, DaySchedule>>(DEFAULT_BUSINESS_HOURS);
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
@@ -264,7 +157,7 @@ export default function PartnerSettingsPage() {
   // Drives the disabled-when-clean Save button and the per-tab dots in the nav.
   const currentSnapshot: Snapshot = useMemo(() => ({
     company: JSON.stringify({ companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature }),
-    regional: JSON.stringify({ timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours }),
+    regional: JSON.stringify({ timezone, dateFormat, timeFormat, language }),
     security: JSON.stringify(securityData),
     notifications: JSON.stringify(notificationsData),
     eventLogs: JSON.stringify(eventLogsData),
@@ -275,7 +168,7 @@ export default function PartnerSettingsPage() {
     remoteAccess: JSON.stringify({ remoteAccessData, networkProxyData }),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature,
-    timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
+    timezone, dateFormat, timeFormat, language,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
     aiBudgetsData, aiApprovalsData, remoteAccessData, networkProxyData,
   ]);
@@ -331,10 +224,6 @@ export default function PartnerSettingsPage() {
       setDateFormat(settings.dateFormat || 'MM/DD/YYYY');
       setTimeFormat(settings.timeFormat || '12h');
       setLanguage(normalizeLocale(settings.language) ?? 'en');
-      setBusinessHoursPreset(settings.businessHours?.preset || 'business');
-      if (settings.businessHours?.custom) {
-        setCustomHours({ ...DEFAULT_BUSINESS_HOURS, ...settings.businessHours.custom });
-      }
       setContactName(settings.contact?.name || '');
       setContactEmail(settings.contact?.email || '');
       setContactPhone(settings.contact?.phone || '');
@@ -413,7 +302,7 @@ export default function PartnerSettingsPage() {
   // hash changes (back/forward, in-app links, the nav anchors below).
   useEffect(() => {
     const applyHash = () => {
-      const tab = getTabFromHash();
+      const tab = tabFromHash(window.location.hash);
       if (tab) setActiveTab(tab);
     };
     applyHash();
@@ -431,14 +320,14 @@ export default function PartnerSettingsPage() {
 
   const sendingDomainsVisible = isTabVisible(sendingDomainsCapability);
 
-  // TAB_GROUPS stays a module constant so HASH_TO_TAB keeps resolving
-  // `#sending-domains`; visibility is applied to the rendered nav only.
+  const callerVerificationVisible = useCallerVerificationEnabled();
+  const callerVerificationSettled = useFeaturesStore(s => s.loaded);
+
+  // Registry hash resolution is independent of visibility, so `#sending-domains`
+  // and `#caller-verification` keep resolving; visibility trims the rendered nav.
   const visibleGroups = useMemo(
-    () => TAB_GROUPS.map(group => ({
-      ...group,
-      tabs: group.tabs.filter(tab => tab.key !== 'sendingDomains' || sendingDomainsVisible),
-    })),
-    [sendingDomainsVisible]
+    () => visibleTabGroups({ sendingDomains: sendingDomainsVisible, callerVerification: callerVerificationVisible }),
+    [sendingDomainsVisible, callerVerificationVisible]
   );
 
   // A bookmark to a tab this instance hides falls back to Company — but only
@@ -448,6 +337,14 @@ export default function PartnerSettingsPage() {
       setActiveTab('company');
     }
   }, [sendingDomainsChecked, sendingDomainsVisible, activeTab]);
+
+  // Same for a `#caller-verification` bookmark: wait for the features store to
+  // settle, or a cold load would bounce to Security.
+  useEffect(() => {
+    if (callerVerificationSettled && !callerVerificationVisible && activeTab === 'callerVerification') {
+      setActiveTab('security');
+    }
+  }, [callerVerificationSettled, callerVerificationVisible, activeTab]);
 
   const handleSave = async () => {
     // Block a malformed maintenance window client-side (issue #1963) so the
@@ -472,10 +369,6 @@ export default function PartnerSettingsPage() {
 
     const settings: Record<string, unknown> = {
       timezone, dateFormat, timeFormat, language,
-      businessHours: {
-        preset: businessHoursPreset,
-        ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
-      },
       contact: {
         name: contactName || undefined,
         email: contactEmail || undefined,
@@ -566,10 +459,6 @@ export default function PartnerSettingsPage() {
     }
   };
 
-  const updateCustomHours = (day: string, field: keyof DaySchedule, value: string | boolean) => {
-    setCustomHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
-  };
-
   // Show a loading state while the partner context is still resolving, NOT the
   // access-denied state. The partner store starts empty (currentPartnerId null)
   // and only fills after the store fetch or the JWT-seed effect below runs, so
@@ -631,7 +520,7 @@ export default function PartnerSettingsPage() {
     <div className="mx-auto max-w-6xl space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>
           <p className="text-sm text-muted-foreground">
             {t('partnerSettingsPage.description', { name: partner?.name || t('partnerSettingsPage.yourMsp') })}
           </p>
@@ -678,143 +567,6 @@ export default function PartnerSettingsPage() {
             </div>
           )}
 
-          {/* Company Tab */}
-          {activeTab === 'company' && (
-            <div className="space-y-6">
-              <PartnerCompanyTab
-              name={companyName}
-              address={address}
-              contact={{
-                name: contactName,
-                email: contactEmail,
-                phone: contactPhone,
-                website: contactWebsite,
-              }}
-              emailSignature={emailSignature}
-              onEmailSignatureChange={setEmailSignature}
-              onNameChange={setCompanyName}
-              onAddressChange={setAddress}
-              onContactChange={(c) => {
-                setContactName(c.name || '');
-                setContactEmail(c.email || '');
-                setContactPhone(c.phone || '');
-                setContactWebsite(c.website || '');
-              }}
-            />
-            </div>
-          )}
-
-          {/* Modules Tab (M7) — the service management on/off switch gets its
-              own home instead of living inside Company. */}
-          {activeTab === 'modules' && (
-            <PartnerModulesCard
-              serviceManagementMode={partner?.serviceManagementMode}
-              topologyFeatureFlags={partner?.settings?.topologyFeatureFlags}
-            />
-          )}
-
-          {/* Regional Tab */}
-          {activeTab === 'regional' && (
-            <PartnerRegionalTab
-              timezone={timezone}
-              dateFormat={dateFormat}
-              timeFormat={timeFormat}
-              language={language}
-              businessHoursPreset={businessHoursPreset}
-              customHours={customHours}
-              onTimezoneChange={setTimezone}
-              onDateFormatChange={setDateFormat}
-              onTimeFormatChange={setTimeFormat}
-              onLanguageChange={setLanguage}
-              onBusinessHoursPresetChange={setBusinessHoursPreset}
-              onCustomHoursChange={updateCustomHours}
-            />
-          )}
-
-          {/* Inheritable Settings Tabs */}
-          {activeTab === 'security' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
-            </section>
-          )}
-          {/* Caller verification (#6354): partner baseline, self-saving and
-              hidden unless the server flag is on. */}
-          {activeTab === 'security' && (
-            <div className="mt-4">
-              <PartnerCallerVerificationPolicy />
-            </div>
-          )}
-
-          {activeTab === 'notifications' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerNotificationsTab data={notificationsData} onChange={setNotificationsData} />
-            </section>
-          )}
-
-          {activeTab === 'eventLogs' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerEventLogsTab data={eventLogsData} onChange={setEventLogsData} />
-            </section>
-          )}
-
-          {activeTab === 'defaults' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} pinnableVersions={pinnableVersions} />
-            </section>
-          )}
-
-          {activeTab === 'branding' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerBrandingTab data={brandingData} onChange={setBrandingData} />
-            </section>
-          )}
-
-          {/* Login Branding: self-contained card with its own load/save (the
-              top-level "Save Settings" button does not apply here). */}
-          {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
-
-          {/* Trust Center defaults: self-contained form with its own load/save (MFA, revisioned). */}
-          {activeTab === 'trustCenter' && <TrustTemplateSettings />}
-
-          {activeTab === 'aiBudgets' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
-            </section>
-          )}
-
-          {activeTab === 'aiApprovals' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiApprovalsTab data={aiApprovalsData} onChange={setAiApprovalsData} />
-            </section>
-          )}
-
-          {/* AI Providers & Models: self-contained cards, each with its own load/save
-              (the top-level "Save Settings" button does not apply here). */}
-          {activeTab === 'aiProvider' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiModelsTab />
-            </section>
-          )}
-
-          {/* AI Features: self-contained card with its own autosave switches. */}
-          {activeTab === 'aiFeatures' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerAiDataPolicyCard />
-              <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={(ml) => setPartner((p) => (p ? { ...p, settings: { ...p.settings, ml } } : p))} />
-            </section>
-          )}
-
-          {activeTab === 'remoteAccess' && (
-            <section className="rounded-lg border bg-card p-6 shadow-xs">
-              <PartnerRemoteAccessTab
-                data={remoteAccessData}
-                onChange={setRemoteAccessData}
-                networkProxy={networkProxyData}
-                onNetworkProxyChange={setNetworkProxyData}
-              />
-            </section>
-          )}
-
           {/* Ticketing now has its own standalone page (M0) — this tab links out
               to it rather than embedding the tab group. */}
           {activeTab === 'ticketing' && (
@@ -831,17 +583,161 @@ export default function PartnerSettingsPage() {
             </div>
           )}
 
-          {activeTab === 'emailTemplates' && (
-            <section className="space-y-2" data-testid="partner-email-templates-tab">
-              <EmailTemplatesTab />
+
+          {activeDef.kind === 'panel' && (
+            <section aria-labelledby="partner-settings-panel-heading" className="space-y-6">
+              <div className="space-y-1">
+                <h2 id="partner-settings-panel-heading" data-testid="partner-settings-panel-heading" className="text-lg font-semibold">
+                  {t(/* i18n-dynamic */ activeDef.label)}
+                </h2>
+                <p className="max-w-prose text-sm text-muted-foreground">{t(/* i18n-dynamic */ activeDef.description)}</p>
+              </div>
+            {/* Company Tab */}
+            {activeTab === 'company' && (
+              <div className="space-y-6">
+                <PartnerCompanyTab
+                name={companyName}
+                address={address}
+                contact={{
+                  name: contactName,
+                  email: contactEmail,
+                  phone: contactPhone,
+                  website: contactWebsite,
+                }}
+                emailSignature={emailSignature}
+                onEmailSignatureChange={setEmailSignature}
+                onNameChange={setCompanyName}
+                onAddressChange={setAddress}
+                onContactChange={(c) => {
+                  setContactName(c.name || '');
+                  setContactEmail(c.email || '');
+                  setContactPhone(c.phone || '');
+                  setContactWebsite(c.website || '');
+                }}
+              />
+              </div>
+            )}
+
+            {/* Modules Tab (M7) — the service management on/off switch gets its
+                own home instead of living inside Company. */}
+            {activeTab === 'modules' && (
+              <PartnerModulesCard
+                serviceManagementMode={partner?.serviceManagementMode}
+                topologyFeatureFlags={partner?.settings?.topologyFeatureFlags}
+              />
+            )}
+
+            {/* Regional Tab */}
+            {activeTab === 'regional' && (
+              <PartnerRegionalTab
+                timezone={timezone}
+                dateFormat={dateFormat}
+                timeFormat={timeFormat}
+                language={language}
+                onTimezoneChange={setTimezone}
+                onDateFormatChange={setDateFormat}
+                onTimeFormatChange={setTimeFormat}
+                onLanguageChange={setLanguage}
+              />
+            )}
+
+            {/* Inheritable Settings Tabs */}
+            {activeTab === 'security' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerSecurityTab data={securityData} onChange={setSecurityData} status={ipStatus} statusUnavailable={ipStatusUnavailable} />
+              </section>
+            )}
+            {/* Caller verification (#6354): partner baseline, self-saving; the
+                rail hides the tab (and the form renders nothing) unless the
+                server flag is on. */}
+            {activeTab === 'callerVerification' && <PartnerCallerVerificationPolicy />}
+
+            {/* Known guests: partner-wide MAC whitelist, with its own add/remove. */}
+            {activeTab === 'knownGuests' && <KnownGuestsSettings />}
+
+            {activeTab === 'notifications' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerNotificationsTab data={notificationsData} onChange={setNotificationsData} />
+              </section>
+            )}
+
+            {activeTab === 'eventLogs' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerEventLogsTab data={eventLogsData} onChange={setEventLogsData} />
+              </section>
+            )}
+
+            {activeTab === 'defaults' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerDefaultsTab data={defaultsData} onChange={setDefaultsData} pinnableVersions={pinnableVersions} />
+              </section>
+            )}
+
+            {activeTab === 'branding' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerBrandingTab data={brandingData} onChange={setBrandingData} />
+              </section>
+            )}
+
+            {/* Login Branding: self-contained card with its own load/save (the
+                top-level "Save Settings" button does not apply here). */}
+            {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner?.slug} />}
+
+            {/* Trust Center defaults: self-contained form with its own load/save (MFA, revisioned). */}
+            {activeTab === 'trustCenter' && <TrustTemplateSettings />}
+
+            {activeTab === 'aiBudgets' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} onValidityChange={setAiBudgetsValid} />
+              </section>
+            )}
+
+            {activeTab === 'aiApprovals' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiApprovalsTab data={aiApprovalsData} onChange={setAiApprovalsData} />
+              </section>
+            )}
+
+            {/* AI Providers & Models: self-contained cards, each with its own load/save
+                (the top-level "Save Settings" button does not apply here). */}
+            {activeTab === 'aiProvider' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiModelsTab />
+              </section>
+            )}
+
+            {/* AI Features: self-contained card with its own autosave switches. */}
+            {activeTab === 'aiFeatures' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerAiDataPolicyCard />
+                <PartnerMlFeaturesCard value={partner?.settings?.ml} onSaved={(ml) => setPartner((p) => (p ? { ...p, settings: { ...p.settings, ml } } : p))} />
+              </section>
+            )}
+
+            {activeTab === 'remoteAccess' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                <PartnerRemoteAccessTab
+                  data={remoteAccessData}
+                  onChange={setRemoteAccessData}
+                  networkProxy={networkProxyData}
+                  onNetworkProxyChange={setNetworkProxyData}
+                />
+              </section>
+            )}
+
+            {activeTab === 'emailTemplates' && (
+              <section className="space-y-2" data-testid="partner-email-templates-tab">
+                <EmailTemplatesTab />
+              </section>
+            )}
+
+            {/* Custom sender addresses: partner sending domains, DNS records,
+                per-stream sender identities and the test send. Self-contained
+                with its own load/save, so the top-level "Save Settings" button
+                does not apply here. */}
+            {activeTab === 'sendingDomains' && sendingDomainsVisible && <PartnerSendingDomainTab />}
             </section>
           )}
-
-          {/* Custom sender addresses: partner sending domains, DNS records,
-              per-stream sender identities and the test send. Self-contained
-              with its own load/save, so the top-level "Save Settings" button
-              does not apply here. */}
-          {activeTab === 'sendingDomains' && sendingDomainsVisible && <PartnerSendingDomainTab />}
         </div>
       </div>
     </div>

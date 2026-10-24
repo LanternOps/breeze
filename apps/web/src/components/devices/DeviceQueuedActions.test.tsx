@@ -274,6 +274,19 @@ describe('DeviceQueuedActions', () => {
       );
     });
 
+    // #8729: a force reboot waits behind in-flight work exactly like a reboot
+    // (it is in the server's barrier set), so it gets the same banner and the
+    // same Mark failed way out.
+    it('shows the hold banner for a held force reboot too', async () => {
+      routeFetch({ pending: [queuedCommand({ type: 'force_reboot' })], sent: [sentCommand()] });
+
+      render(<DeviceQueuedActions deviceId={deviceId} />);
+
+      const banner = await screen.findByTestId('power-hold-banner');
+      expect(banner.textContent).toContain('Force Reboot');
+      expect(screen.getByTestId('power-hold-mark-failed')).toBeTruthy();
+    });
+
     it('Mark failed posts through runAction, toasts, and reloads so the banner clears', async () => {
       routeFetch({ pending: [queuedCommand({ type: 'reboot' })], sent: [sentCommand()] });
 

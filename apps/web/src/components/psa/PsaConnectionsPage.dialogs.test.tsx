@@ -96,8 +96,8 @@ describe('PsaConnectionsPage modals are real dialogs (Escape closes)', () => {
     render(<PsaConnectionsPage />);
     await user.click(await screen.findByTestId('psa-connection-delete'));
     const dialog = await screen.findByRole('dialog', { name: 'Delete PSA Connection' });
-    // Active connections keep their "syncing will stop" warning in the confirm.
-    expect(dialog).toHaveTextContent('Ticket syncing will stop immediately.');
+    // Active connections keep their active warning in the confirm.
+    expect(dialog).toHaveTextContent('Deleting it removes the connection immediately.');
     await expectDialogClosesOnEscape('Delete PSA Connection');
     expect(requests.some(r => r.method === 'DELETE')).toBe(false);
   });

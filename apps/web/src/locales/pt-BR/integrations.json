@@ -83,7 +83,9 @@
         "intune_devices": "Dispositivos do Intune",
         "ca_policies": "Acesso Condicional",
         "skus": "Licenças",
-        "secure_score": "Pontuação de segurança"
+        "secure_score": "Pontuação de segurança",
+        "signin_events": "Eventos de entrada",
+        "unknown": "Tipo de dados não reconhecido"
       }
     },
     "errors": {
@@ -342,6 +344,9 @@
     "retry": "Tentar novamente",
     "since": "desde {{time}}",
     "fix": "Corrigir",
+    "remedy": {
+      "reconnect": "Reconecte pelo aplicativo cliente (por exemplo, adicione o servidor MCP novamente). Nenhuma ação no Breeze."
+    },
     "truncated": "Mostrando os primeiros {{count}}",
     "recentlyResolved": "Resolvidos recentemente ({{count}})",
     "resolution": {
@@ -604,7 +609,7 @@
     "hidePassword": "Ocultar a senha",
     "portalLabelToggle": "Mostrar o nome do provedor no portal do cliente",
     "portalLabelHelp": "Desativado por padrão: os clientes veem \"Backup gerenciado em nuvem\" em vez do nome do fabricante.",
-    "credentialsHelp": "Crie um usuário dedicado do console do Cove com função somente leitura, uma senha exclusiva e sem autenticação em duas etapas. O Breeze apenas lê o status e nunca altera nada no Cove.",
+    "credentialsHelp": "Crie um usuário de API do Cove (Management → Users → API Users) no seu cliente de nível superior. Informe o nome desse cliente como nome do parceiro, o nome de login do usuário de API como usuário e o token dele como senha. O Breeze apenas lê o status; nunca altera nada no Cove.",
     "test": "Testar conexão",
     "syncNow": "Sincronizar agora",
     "reauthRequired": "Credenciais recusadas",
@@ -737,7 +742,10 @@
     "allApplications": "Todos os aplicativos",
     "searchAllApplicationsFirst2": " (não em Aplicativos próprios) um aplicativo Breeze já existente neste locatário do Entra. ",
     "tenantIdGuidPlaceholder": "ID do locatário (GUID), por exemplo 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use o ID do diretório (locatário), um GUID, na Visão geral do registro de aplicativo do Entra, não o domínio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Use o ID do diretório (locatário), um GUID, na Visão geral do registro de aplicativo do Entra, não o domínio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Salvar exige verificação de MFA.",
+    "clientSecretPlaceholder": "segredo do cliente do app",
+    "clientSecretStoredPlaceholder": "•••••••••• (armazenado, criptografado)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Integridade do dispositivo",

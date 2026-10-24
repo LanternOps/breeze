@@ -134,6 +134,42 @@ describe('PatchList severity (#3758)', () => {
     expect(screen.queryByText(/will not auto-approve/i)).toBeNull();
   });
 
+  // #9387: a severity the agent derived (Windows Update sent no MSRC rating)
+  // is labelled so nobody mistakes it for a vendor rating.
+  it('marks a derived severity as derived, with an explanation', () => {
+    const patch = makePatch({
+      id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+      title: 'KB5127001',
+      severity: 'important',
+      severitySource: 'derived',
+    });
+
+    render(<PatchList patches={[patch]} />);
+
+    const markers = screen.getAllByTestId(`patch-row-${patch.id}-severity-derived`);
+    expect(markers.length).toBeGreaterThan(0);
+    expect(markers[0]).toHaveTextContent(/derived/i);
+    expect(markers[0]).toHaveAttribute('title', expect.stringMatching(/no rating/i));
+  });
+
+  it('does not mark a vendor-rated or provenance-less severity as derived', () => {
+    const vendor = makePatch({ id: 'aaaaaaaa-1111-1111-1111-111111111111', severity: 'critical', severitySource: 'vendor' });
+    const plain = makePatch({ id: 'bbbbbbbb-1111-1111-1111-111111111111', severity: 'critical' });
+
+    render(<PatchList patches={[vendor, plain]} />);
+
+    expect(screen.queryByTestId(`patch-row-${vendor.id}-severity-derived`)).toBeNull();
+    expect(screen.queryByTestId(`patch-row-${plain.id}-severity-derived`)).toBeNull();
+  });
+
+  it('never marks an unrated patch as derived', () => {
+    const patch = makePatch({ id: 'cccccccc-1111-1111-1111-111111111111', severity: 'unrated', severitySource: 'derived' });
+
+    render(<PatchList patches={[patch]} />);
+
+    expect(screen.queryByTestId(`patch-row-${patch.id}-severity-derived`)).toBeNull();
+  });
+
   it('offers "Unrated" as a severity filter option', () => {
     render(<PatchList patches={[]} />);
 
@@ -650,6 +686,28 @@ describe('PatchList outstanding devices column (#8728)', () => {
     expect(within(popover).getByText('host-2')).toBeTruthy();
   });
 
+  // #9298 follow-up: device status labels come from devices.json
+  // (deviceList.statuses.full), the same wording as the device list.
+  it('labels device status with the device list wording', async () => {
+    render(
+      <PatchList
+        patches={[makePatch({ id: PATCH_ID, outstandingDeviceCount: 3 })]}
+        loadPatchDevices={vi.fn().mockResolvedValue({
+          devices: [device(1), { ...device(2), status: 'decommissioned' }, { ...device(3), status: 'not-a-status' }],
+          total: 3,
+        })}
+      />
+    );
+    fireEvent.click(within(screen.getByTestId('responsive-table-desktop')).getByTestId(`patch-row-${PATCH_ID}-devices`));
+    const popover = await screen.findByTestId('patch-devices-popover');
+    await waitFor(() => expect(within(popover).getByText('host-2')).toBeTruthy());
+    expect(within(popover).getByText('Online')).toBeTruthy();
+    expect(within(popover).getByText('Removed')).toBeTruthy();
+    // An unrecognised status gets the device list's "Unknown", never the raw value.
+    expect(within(popover).getByText('Unknown')).toBeTruthy();
+    expect(within(popover).queryByText('not-a-status')).toBeNull();
+  });
+
   it('closes on Escape', async () => {
     render(
       <PatchList
@@ -661,5 +719,26 @@ describe('PatchList outstanding devices column (#8728)', () => {
     const popover = await screen.findByTestId('patch-devices-popover');
     fireEvent.keyDown(popover, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('patch-devices-popover')).toBeNull());
+  });
+});
+
+// #9533: two catalog entries can share a title (e.g. one update id per OS
+// build). They looked like the same patch listed twice with identical Review
+// buttons; each row now says what tells it apart.
+describe('PatchList same-title rows (#9533)', () => {
+  it('shows version and catalog id on rows whose title repeats, and only on those', () => {
+    render(
+      <PatchList
+        patches={[
+          makePatch({ id: 'a', title: '2026-10 Cumulative Update', externalId: 'kb-a-guid', version: '26100.1' }),
+          makePatch({ id: 'b', title: '2026-10 cumulative update ', externalId: 'kb-b-guid', version: null }),
+          makePatch({ id: 'c', title: 'Google Chrome', externalId: 'Google.Chrome', version: '141.0' }),
+        ]}
+      />,
+    );
+    const desktop = within(screen.getByTestId('responsive-table-desktop'));
+    expect(desktop.getByTestId('patch-row-a-disambiguator')).toHaveTextContent('Package version 26100.1 · Catalog ID kb-a-guid');
+    expect(desktop.getByTestId('patch-row-b-disambiguator')).toHaveTextContent('Catalog ID kb-b-guid');
+    expect(desktop.queryByTestId('patch-row-c-disambiguator')).toBeNull();
   });
 });

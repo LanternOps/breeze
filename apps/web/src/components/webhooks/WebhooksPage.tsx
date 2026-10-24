@@ -8,7 +8,7 @@ import WebhookDeliveryHistory, { normalizeDelivery, type WebhookDelivery } from 
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
-import { formSecretValue, MASKED_SECRET } from '@/lib/redactedSecret';
+import { formSecretValue, isMaskedSecret, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { IntegrationPanelHeader } from '../integrations/IntegrationPanelHeader';
@@ -29,25 +29,14 @@ export interface WebhooksPageProps {
   embedded?: boolean;
 }
 
-type PayloadPreview = {
-  preview: string;
-  error: string;
-};
-
 const defaultEventType = webhookEventOptions[0]?.value ?? 'device.online';
 
-const formatPayloadPreview = (payload: string | null | undefined, t: (key: string) => string): PayloadPreview => {
-  if (!payload?.trim()) {
-    return { preview: '', error: '' };
-  }
-
-  try {
-    return { preview: JSON.stringify(JSON.parse(payload), null, 2), error: '' };
-  } catch {
-    return { preview: payload, error: t('longTail.webhooks.WebhooksPage.errors.invalidPayloadTemplate') };
-  }
-};
-
+// #9652: the API stores bearer auth as an encrypted `Authorization: Bearer
+// <token>` custom header. The form shows it as the Bearer option instead of
+// a custom header row, and writes it back as that header.
+const isAuthorizationHeader = (key: string) => key.trim().toLowerCase() === 'authorization';
+const webhookFormAuthType = (webhook: Webhook): 'hmac' | 'bearer' =>
+  webhook.authType === 'bearer' ? 'bearer' : 'hmac';
 
 // Reading webhooks requires webhooks:read (GET /webhooks and the delivery
 // history). Without it the page shows the permission-denied state and makes no
@@ -151,11 +140,6 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
     [webhooks, activeWebhookId]
   );
 
-  const payloadPreview = useMemo(
-    () => formatPayloadPreview(activeWebhook?.payloadTemplate, t),
-    [activeWebhook?.payloadTemplate, t]
-  );
-
   const labelMap = useMemo(() => {
     const map = new Map<string, string>();
     webhookEventOptions.forEach(option => map.set(option.value, t(/* i18n-dynamic */ option.labelKey)));
@@ -190,8 +174,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
           fetchWithAuth(`/webhooks/${webhook.id}/test`, {
             method: 'POST',
             body: JSON.stringify({
-              event: eventType ?? webhook.events?.[0] ?? defaultEventType,
-              payloadTemplate: webhook.payloadTemplate
+              event: eventType ?? webhook.events?.[0] ?? defaultEventType
             })
           }),
         errorFallback: t('longTail.webhooks.WebhooksPage.errors.testFailed'),
@@ -253,44 +236,60 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
     const status = current && enabled === isWebhookActive(current)
       ? undefined
       : enabled ? 'active' : 'paused';
-    const auth =
-      values.authType === 'bearer'
-        ? { type: 'bearer', token: values.bearerToken }
-        : { type: 'hmac', secret: values.secret };
+    const headers = values.headers?.filter(header => header.key) ?? [];
+    let secret: { secret?: string | null } = { secret: values.secret };
+    if (values.authType === 'bearer') {
+      // A masked token means "keep the stored one": the API resolves a masked
+      // value by exact key, then by position, so send the stored header's own
+      // key spelling back or it may resolve to a different header.
+      const storedKey = current && webhookFormAuthType(current) === 'bearer'
+        ? current.headers?.find(header => isAuthorizationHeader(header.key))?.key
+        : undefined;
+      const token = (values.bearerToken ?? '').trim().replace(/^bearer\s+/i, '');
+      headers.push({
+        key: storedKey ?? 'Authorization',
+        value: isMaskedSecret(token) ? MASKED_SECRET : `Bearer ${token}`,
+      });
+      // Switching an HMAC webhook to bearer clears its signing secret.
+      secret = current && webhookFormAuthType(current) !== 'bearer' ? { secret: null } : {};
+    }
 
     return {
       name: values.name,
       url: values.url,
       events: values.events,
       ...(status ? { status } : {}),
-      auth,
-      secret: values.authType === 'hmac' ? values.secret : undefined,
-      bearerToken: values.authType === 'bearer' ? values.bearerToken : undefined,
-      payloadTemplate: values.payloadTemplate?.trim() || undefined,
-      headers: values.headers?.filter(header => header.key) ?? []
+      ...secret,
+      headers
     };
   };
 
   const transformWebhookToForm = (webhook: Webhook): Partial<WebhookFormValues> => {
-    const authType = webhook.auth?.type ?? (webhook.bearerToken ? 'bearer' : 'hmac');
+    const authType = webhookFormAuthType(webhook);
     // The API never returns the stored secret, only `hasSecret`, and returns
     // each header value as a redaction marker. Pre-fill the masked string the
     // API reads as "keep what is stored"; a blank secret would fail HMAC
     // validation and block every edit until it was re-typed (#4983).
-    const storedSecret = webhook.auth?.secret ?? webhook.secret;
+    const headers = webhook.headers ?? [];
+    const bearerHeader = authType === 'bearer'
+      ? headers.find(header => isAuthorizationHeader(header.key))
+      : undefined;
     return {
       name: webhook.name,
       url: webhook.url,
       authType,
-      secret: storedSecret ?? (webhook.hasSecret ? MASKED_SECRET : ''),
-      bearerToken: webhook.auth?.token ?? webhook.bearerToken ?? '',
+      secret: webhook.hasSecret ? MASKED_SECRET : '',
+      bearerToken: bearerHeader ? formSecretValue(bearerHeader.value) : '',
       events: webhook.events ?? [],
-      headers: (webhook.headers ?? []).map(header => ({
-        key: header.key,
-        value: formSecretValue(header.value),
-      })),
-      enabled: isWebhookActive(webhook),
-      payloadTemplate: webhook.payloadTemplate ?? ''
+      // The bearer Authorization header is edited through the Bearer option,
+      // not as a custom header row.
+      headers: headers
+        .filter(header => header !== bearerHeader)
+        .map(header => ({
+          key: header.key,
+          value: formSecretValue(header.value),
+        })),
+      enabled: isWebhookActive(webhook)
     };
   };
 
@@ -419,12 +418,10 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
     );
   }
 
-  const authSummary = activeWebhook
-    ? activeWebhook.auth?.type ?? (activeWebhook.bearerToken ? 'bearer' : 'hmac')
-    : 'hmac';
+  const authSummary = activeWebhook ? webhookFormAuthType(activeWebhook) : 'hmac';
 
   const authLabel = authSummary === 'bearer' ? t('longTail.webhooks.WebhooksPage.auth.bearerToken') : t('longTail.webhooks.WebhooksPage.auth.hmacSignature');
-  const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Signature: sha256=***';
+  const authHeader = authSummary === 'bearer' ? 'Authorization: Bearer ***' : 'X-Breeze-Signature: sha256=***, X-Breeze-Signature-Timestamp';
 
   const testEventOptions = activeWebhook?.events?.length
     ? activeWebhook.events
@@ -507,7 +504,7 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
               )}
             </div>
 
-            <div className="mt-6 grid gap-6 lg:grid-cols-2">
+            <div className="mt-6">
               <div className="space-y-4">
                 <div>
                   <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.endpoint')}</label>
@@ -544,19 +541,6 @@ function WebhooksPageContent({ embedded }: { embedded: boolean }) {
                     </p>
                   </div>
                 </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">{t('longTail.webhooks.WebhooksPage.details.payloadPreview')}</label>
-                <div className="rounded-md border bg-background p-3 text-xs text-muted-foreground">
-                  {payloadPreview.preview ? (
-                    <pre className="max-h-64 overflow-auto">{payloadPreview.preview}</pre>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">{t('longTail.webhooks.WebhooksPage.details.noPayloadTemplate')}</p>
-                  )}
-                </div>
-                {payloadPreview.error && (
-                  <p className="text-xs text-destructive">{payloadPreview.error}</p>
-                )}
               </div>
             </div>
           </div>

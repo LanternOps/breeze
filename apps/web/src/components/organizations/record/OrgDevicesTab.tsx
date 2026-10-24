@@ -4,6 +4,7 @@ import { i18n } from '@/lib/i18n';
 import DeviceList, { type Device, type DeviceStatus } from '@/components/devices/DeviceList';
 import { ORG_TAB_COLUMN_PRESET } from '@/components/devices/columnVisibility';
 import { navigateTo } from '@/lib/navigation';
+import { fetchAllPages } from '@/lib/fetchAllPages';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { usePermissions } from '@/lib/permissions';
 import { useOrgStore } from '@/stores/orgStore';
@@ -99,10 +100,18 @@ export default function OrgDevicesTab({ orgId, orgName, orgFetch }: OrgDevicesTa
     let cancelled = false;
     void (async () => {
       try {
-        const res = await orgFetch(`/orgs/sites?organizationId=${orgId}&limit=100`);
-        if (!res.ok) throw new Error(`sites load failed: ${res.status}`);
-        const body = await res.json();
-        const rows: SiteOption[] | null = Array.isArray(body?.data) ? body.data : Array.isArray(body) ? body : null;
+        // Every page, not the first 100 (#9791): a device at a site past the
+        // page limit rendered "Unknown Site". `fetchAllPages` is the walk
+        // behind `fetchAllSites`; it is driven here through `orgFetch` so the
+        // org pin holds (fetchAllSites would use the ambient fetch).
+        const rows = await fetchAllPages<SiteOption>(
+          async (page, limit) => {
+            const res = await orgFetch(`/orgs/sites?organizationId=${orgId}&page=${page}&limit=${limit}`);
+            if (!res.ok) throw new Error(`sites load failed: ${res.status}`);
+            return res.json();
+          },
+          { aliasKeys: ['sites'], strictShape: true },
+        );
         if (rows === null) throw new Error('sites load: malformed response body');
         if (!cancelled) setSites(rows.map((s) => ({ id: s.id, name: s.name })));
       } catch (err) {

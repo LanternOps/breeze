@@ -323,6 +323,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_budget_reservations',
   'ai_budgets',
   'ai_cost_usage',
+  // ai_credit_debits (#9451): keyed credit debit outbox, shape 1, NOT NULL
+  // org_id ON DELETE CASCADE. Leaf: no FKs in, and source_id deliberately has
+  // no FK (ai_agent_runs / ai_invocations), so its position is alphabetical.
+  'ai_credit_debits',
   // AI device file read policy: only the org override row cascades; the
   // partner default has org_id NULL and never participates.
   'ai_data_policies',
@@ -489,6 +493,18 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'browser_extensions',
   'browser_policies',
   'browser_policy_violations',
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
+  // partner_id config tables; the three children copy the owner pair. Every
+  // child FK is ON DELETE CASCADE to its parent, and the children sort before
+  // the parent under localeCompare ('business_calendar_…' < 'business_calendars').
+  // tickets.sla_calendar_revision_id and org_ticket_settings.business_calendar_id
+  // are ON DELETE SET NULL back-edges that close no cycle, so the topological
+  // order already deletes those referencing rows first and no
+  // CASCADE_ORDER_SET_NULL_EDGE_BREAKS entry is needed.
+  'business_calendar_holidays',
+  'business_calendar_intervals',
+  'business_calendar_revisions',
+  'business_calendars',
   'c2c_backup_configs',
   'c2c_backup_items',
   'c2c_backup_jobs',
@@ -678,6 +694,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'fleet_findings',
   'fleet_remediation_run_targets',
   'fleet_remediation_runs',
+  // Tool Catalog W03 (#5218): org XOR partner flow documents. Its FKs to
+  // ai_sessions / ai_agents / users are ON DELETE SET NULL, so it imposes no
+  // child-before-parent constraint of its own.
+  'flows',
   'google_workspace_connections',
   'group_membership_log',
   // W03 Task 12 (#6859): org-scoped, no device_id — the retirement recovery

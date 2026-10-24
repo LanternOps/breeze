@@ -1,10 +1,11 @@
 import '@/lib/i18n';
 import { useTranslation } from 'react-i18next';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { Bot, Coins, DollarSign, Flag, MessageSquare, Zap, Loader2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import AiUsageBreakdown from './aiModels/AiUsageBreakdown';
+import BuyCreditsLink from '../ai/BuyCreditsLink';
 import { formatDate, formatDateTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import {
@@ -231,24 +232,24 @@ export default function AiUsagePage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           icon={DollarSign}
-          label="Today's Cost"
+          label={t('aiUsagePage.todaysCost')}
           value={formatCost(usage?.daily.totalCostCents ?? 0)}
           sub={usage?.budget?.dailyBudgetCents ? t('aiUsagePage.ofLimit', { limit: formatCost(usage.budget.dailyBudgetCents) }) : undefined}
         />
         <StatCard
           icon={DollarSign}
-          label="Monthly Cost"
+          label={t('aiUsagePage.monthlyCost')}
           value={formatCost(usage?.monthly.totalCostCents ?? 0)}
           sub={usage?.budget?.monthlyBudgetCents ? t('aiUsagePage.ofLimit', { limit: formatCost(usage.budget.monthlyBudgetCents) }) : undefined}
         />
         <StatCard
           icon={MessageSquare}
-          label="Messages Today"
+          label={t('aiUsagePage.messagesToday')}
           value={String(usage?.daily.messageCount ?? 0)}
         />
         <StatCard
           icon={Zap}
-          label="Tokens This Month"
+          label={t('aiUsagePage.tokensThisMonth')}
           value={formatTokens((usage?.monthly.inputTokens ?? 0) + (usage?.monthly.outputTokens ?? 0))}
           sub={t('aiUsagePage.tokensInOut', {
             input: formatTokens(usage?.monthly.inputTokens ?? 0),
@@ -260,6 +261,7 @@ export default function AiUsagePage() {
             icon={Coins}
             label={t('aiUsagePage.creditsRemaining')}
             value={formatNumber(usage.credits.remaining)}
+            action={<BuyCreditsLink className="mt-1 inline-block text-xs font-medium text-primary underline underline-offset-2 hover:opacity-80" />}
           />
         )}
       </div>
@@ -413,11 +415,13 @@ export default function AiUsagePage() {
   );
 }
 
-function StatCard({ icon: Icon, label, value, sub }: {
+function StatCard({ icon: Icon, label, value, sub, action }: {
   icon: typeof Bot;
   label: string;
   value: string;
   sub?: string;
+  /** Optional trailing control (renders nothing when the node itself does). */
+  action?: ReactNode;
 }) {
   return (
     <div className="rounded-lg border bg-card p-5">
@@ -427,6 +431,7 @@ function StatCard({ icon: Icon, label, value, sub }: {
       </div>
       <p className="mt-2 text-2xl font-bold">{value}</p>
       {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
+      {action}
     </div>
   );
 }

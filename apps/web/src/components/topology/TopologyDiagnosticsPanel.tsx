@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TOPOLOGY_TRACE_LIMITS, topologyCollectorsResponseSchema, topologyDiagnosticRunSchema } from '@breeze/shared/validators/topologyDiagnostics';
 import type { CreateTopologyDiagnosticRequest, TopologyCollectorsResponse, TopologyDiagnosticRun } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
-import { topologyRead } from './topologyApi';
+import { topologyRead, topologyWrite } from './topologyApi';
 import { parseTopologyHash, writeTopologyHash } from './topologyHash';
 import TraceResultPanel from './TraceResultPanel';
 const terminal = (run: TopologyDiagnosticRun) => ['completed', 'failed', 'cancelled', 'expired'].includes(run.state);
@@ -66,7 +65,7 @@ export default function TopologyDiagnosticsPanel({ siteId, subject, graphRevisio
     try {
       for (const requestedFamily of family === 'both' ? ['ipv4', 'ipv6'] as const : [family]) {
         const run = await runAction({
-          request: () => fetchWithAuth(`${base}/diagnostic-runs`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ recipeId, recipeVersion: 1, subject, graphRevision, family: requestedFamily, originDeviceId: selected.origin.deviceId, contextKey: selected.origin.contextKey, ...(tracing ? { trace: { maxHops, probesPerHop } } : {}) }) }),
+          request: () => topologyWrite(`${base}/diagnostic-runs`, { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ recipeId, recipeVersion: 1, subject, graphRevision, family: requestedFamily, originDeviceId: selected.origin.deviceId, contextKey: selected.origin.contextKey, ...(tracing ? { trace: { maxHops, probesPerHop } } : {}) }) }),
           errorFallback: t('diagnosticFailed'), successMessage: t('diagnosticAccepted'), parseSuccess: (data) => topologyDiagnosticRunSchema.parse(data),
         });
         accepted.push(run); if (active.current) remember([...accepted]);
@@ -76,7 +75,7 @@ export default function TopologyDiagnosticsPanel({ siteId, subject, graphRevisio
   };
   const stop = async (run: TopologyDiagnosticRun) => {
     try {
-      const updated = await runAction({ request: () => fetchWithAuth(`${base}/diagnostic-runs/${run.id}/cancel`, { method: 'POST' }), errorFallback: t('stopFailed'), successMessage: t('stopRequested'), parseSuccess: (data) => topologyDiagnosticRunSchema.parse(data) });
+      const updated = await runAction({ request: () => topologyWrite(`${base}/diagnostic-runs/${run.id}/cancel`, { method: 'POST' }), errorFallback: t('stopFailed'), successMessage: t('stopRequested'), parseSuccess: (data) => topologyDiagnosticRunSchema.parse(data) });
       if (active.current) setRuns((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (cause) { handleActionError(cause, t('loadFailed'));  }
   };

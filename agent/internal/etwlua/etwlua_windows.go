@@ -165,18 +165,19 @@ func decodeConsentRequest(raw []byte) (Event, bool) {
 		return Event{}, false
 	}
 
-	user, sessionID, attributionSource := resolveRequesterSession()
-	if user == "" {
+	requester := resolveRequesterSession()
+	if requester.Username == "" {
 		log.Debug("etwlua: dropping consent request with unresolved subject",
-			"attributionSource", attributionSource,
+			"attributionSource", requester.Source,
 			"targetPath", targetPath,
 		)
 		return Event{}, false
 	}
 
 	ev := Event{
-		SubjectUsername:      user,
-		SubjectSessionID:     sessionID,
+		SubjectUsername:      requester.Username,
+		SubjectSessionID:     requester.SessionID,
+		Consent:              requester.Consent,
 		TargetExecutablePath: targetPath,
 		CommandLine:          commandLine,
 		ObservedAt:           time.Now().UTC(),

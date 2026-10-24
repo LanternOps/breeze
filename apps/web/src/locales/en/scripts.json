@@ -720,6 +720,8 @@
       "timeout": "Script execution timed out",
       "pending": "Script is waiting to be executed",
       "queued": "Script is queued for delivery to the device",
+      "queuedAwaitingPickup": "No active agent session has picked this up yet. The script is delivered when the device's agent next checks in.",
+      "deviceOffline": "The device is offline. The script is delivered when it reconnects.",
       "cancelling": "Stop requested — waiting for the device to confirm.",
       "cancelled": "Script was stopped on the device"
     },
@@ -738,6 +740,7 @@
       "timeout": "Timeout",
       "queued": "Queued",
       "queuedOffline": "Queued — device offline",
+      "queuedAwaitingPickup": "Queued — waiting for the device to pick it up",
       "cancelling": "Stopping…",
       "cancelled": "Cancelled",
       "completedCancelTooLate": "Completed — your stop request arrived too late",
@@ -769,6 +772,7 @@
       "timeout": "Timeout",
       "queued": "Queued",
       "queuedOffline": "Queued — device offline",
+      "queuedAwaitingPickup": "Queued — awaiting pickup",
       "cancelling": "Stopping…",
       "cancelled": "Cancelled",
       "completedCancelTooLate": "Completed — your stop request arrived too late",
@@ -969,7 +973,15 @@
       "allAdmitted": "All selected devices were admitted and queued.",
       "partiallyAdmitted": "Some devices were admitted and queued. Review the remaining targets.",
       "rejected": "No devices were admitted. Review the reasons below.",
-      "queued": "Queued"
+      "queued": "Queued",
+      "reasons": {
+        "not_found_or_inaccessible": "Device not found or not accessible",
+        "site_access_denied": "You don't have access to this device's site",
+        "script_org_mismatch": "This script belongs to a different organization than the device",
+        "os_incompatible": "Script is not compatible with this device's operating system",
+        "device_decommissioned": "Device has been decommissioned",
+        "maintenance_suppressed": "Skipped: device is in a maintenance window"
+      }
     },
     "confirm": {
       "title": "Confirm Execution",

@@ -329,6 +329,7 @@
         },
         "approve": "Aprovar",
         "approved": "Solicitação aprovada. O solicitante recebeu um link de download por e-mail.",
+        "approvedNoEmail": "Acesso aprovado. Nenhum serviço de e-mail está configurado, então o solicitante não foi avisado por e-mail.",
         "approveFailed": "Não foi possível aprovar a solicitação.",
         "deny": "Negar",
         "denyTitle": "Negar esta solicitação?",
@@ -345,6 +346,7 @@
         "revokeFailed": "Não foi possível revogar o acesso.",
         "resend": "Reenviar link",
         "resent": "Um novo link de download foi enviado por e-mail. O link anterior deixou de funcionar.",
+        "resentNoEmail": "Novo link de download criado. Nenhum serviço de e-mail está configurado, então ele não foi enviado por e-mail. O link anterior deixou de funcionar.",
         "resendFailed": "Não foi possível reenviar o link.",
         "errors": {
           "mfaRequired": "Aprovar ou reenviar exige autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
@@ -587,6 +589,7 @@
       "title": "Documentos",
       "subtitle": "Runbooks, baselines, políticas e evidências de entrega desta organização.",
       "empty": "Ainda não há documentos. Envie um runbook, uma baseline ou uma política assinada para iniciar a biblioteca.",
+      "emptyPortalHint": "Seu cliente vê os documentos marcados como Visível no portal. Uma proposta ou um contrato assinado e uma baseline de segurança são bons primeiros documentos.",
       "emptyFiltered": "Nenhum documento nesta categoria.",
       "loadFailed": "Não foi possível carregar os documentos.",
       "upload": "Enviar documento",

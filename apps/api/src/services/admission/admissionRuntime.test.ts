@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { metricsRegistry } from '../metricsRegistry';
 import { ADMISSION_DEFAULTS, type AdmissionConfig } from './admissionConfig';
-import type { AdmissionSignals } from './admissionSignals';
+import { createSignalSampler, type AdmissionSignals } from './admissionSignals';
+import { createPoolAdmission } from '../../db/poolAdmission';
 import {
   AdmissionRuntime,
   __setAdmissionRuntimeForTests,
@@ -18,7 +19,7 @@ const LOGS = classifyAgentRequest('POST', `/api/v1/agents/${AGENT}/logs`)!;
 const WS = classifyAgentRequest('GET', `/api/v1/agent-ws/${AGENT}/ws`)!;
 
 const quiet: AdmissionSignals = {
-  lagMs: 20, peakLagMs: 25, dbWaitMs: 2, oldestDbWaitMs: 0, msSinceLastDbTimeout: null, eluRatio: 0.3,
+  lagMs: 20, lagFresh: true, peakLagMs: 25, dbWaitMs: 2, oldestDbWaitMs: 0, msSinceLastDbTimeout: null, eluRatio: 0.3,
   pool: { available: true, inUse: 1, waiting: 0, effectivePermits: 30, oldestWaitMs: 0, grantWaitP95Ms: 2, dbTimeoutsTotal: 0 },
 };
 
@@ -39,12 +40,21 @@ function make(over: Partial<AdmissionConfig> = {}, random: () => number = () => 
     log: (line) => lines.push(line),
   });
   const raiseTo = (level: 1 | 2 | 3) => {
-    signals = { ...quiet, lagMs: [0, 150, 300, 700][level]! };
-    nowMs += 1_000; rt.tick();
-    nowMs += 1_000; rt.tick();
+    signals = { ...quiet, lagMs: [0, 220, 300, 700][level]! };
+    for (let i = 0; i < rt.config.riseTicks; i += 1) { nowMs += 1_000; rt.tick(); }
     expect(rt.level).toBe(level);
   };
-  return { rt, lines, raiseTo, advance: (ms: number) => { nowMs += ms; }, setBroken: (value: boolean) => { broken = value; } };
+  /** One controller tick, 1 s after the previous one, on the given signals. */
+  const tickWith = (over: Partial<AdmissionSignals>) => {
+    signals = { ...quiet, ...over };
+    nowMs += 1_000;
+    return rt.tick();
+  };
+  return {
+    rt, lines, raiseTo, tickWith,
+    advance: (ms: number) => { nowMs += ms; },
+    setBroken: (value: boolean) => { broken = value; },
+  };
 }
 
 async function count(name: string, labels: Record<string, string>): Promise<number> {
@@ -221,5 +231,99 @@ describe('AdmissionRuntime tick failures', () => {
     expect(errors).toHaveBeenCalledTimes(2);        // at most once per 60 s
     rt.stop();
     errors.mockRestore();
+  });
+});
+
+describe('AdmissionRuntime rise gate and level-1 hold (#9353)', () => {
+  const BULK_WOULD_SHED = { class: 'bulk', route: '/api/v1/agents/:id/software', outcome: 'would_shed', reason: 'level' };
+  /** The pre-#9353 controller: level-1 at 100 ms lag / 75 ms DB wait, a 2-tick rise gate, a 15 s level-1 hold. */
+  const PRE_9353: Partial<AdmissionConfig> = { lagMs: [100, 250, 600], dbWaitMs: [75, 200, 600], riseTicks: 2, level1HoldMs: 15_000 };
+
+  it('(a) one 300 ms lag sample at idle leaves the level at 0 and counts the suppressed rise', async () => {
+    const { rt, tickWith } = make({ mode: 'observe' });
+    const suppressedBefore = await count('breeze_admission_rise_suppressed_total', { to: '2', trigger: 'lag' });
+    const shedBefore = await count('breeze_admission_decisions_total', BULK_WOULD_SHED);
+    tickWith({ lagMs: 300 });
+    expect(rt.level).toBe(0);
+    rt.decide(SOFTWARE);
+    tickWith({});
+    expect(rt.level).toBe(0);
+    expect(await count('breeze_admission_rise_suppressed_total', { to: '2', trigger: 'lag' })).toBe(suppressedBefore + 1);
+    expect(await count('breeze_admission_decisions_total', BULK_WOULD_SHED)).toBe(shedBefore);
+  });
+
+  it('(b) three consecutive elevated samples raise the level to 1 and nothing is counted as suppressed', async () => {
+    const { rt, tickWith } = make({ mode: 'observe' });
+    const suppressedBefore = await count('breeze_admission_rise_suppressed_total', {});
+    expect(tickWith({ lagMs: 220 }).level).toBe(0);
+    expect(tickWith({ lagMs: 220 }).level).toBe(0);
+    expect(tickWith({ lagMs: 220 })).toMatchObject({ previous: 0, level: 1, changed: true, trigger: 'lag' });
+    expect(await count('breeze_admission_rise_suppressed_total', {})).toBe(suppressedBefore);
+    const shedBefore = await count('breeze_admission_decisions_total', BULK_WOULD_SHED);
+    expect(rt.decide(SOFTWARE).action).toBe('admit');                 // observe never refuses
+    expect(await count('breeze_admission_decisions_total', BULK_WOULD_SHED)).toBe(shedBefore + 1);
+  });
+
+  it('(c) the emergency path is still immediate', () => {
+    const { rt, tickWith } = make();
+    expect(tickWith({ peakLagMs: 1_500 })).toMatchObject({ previous: 0, level: 3, trigger: 'emergency' });
+    expect(rt.decide(STATUS)).toMatchObject({ action: 'shed', reason: 'level' });
+  });
+
+  it('(d) a level-1 episode decays within the 5 s level-1 hold and bulk is admitted again', () => {
+    const { rt, raiseTo, tickWith } = make();
+    raiseTo(1);
+    expect(rt.decide(SOFTWARE)).toMatchObject({ action: 'shed', reason: 'level' });
+    const levels = Array.from({ length: 6 }, () => tickWith({}).level);
+    expect(levels).toEqual([1, 1, 1, 1, 1, 0]);                      // first quiet tick starts the hold; 5 s later -> 0
+    const admitted = rt.decide(SOFTWARE);
+    expect(admitted).toMatchObject({ action: 'admit' });
+    (admitted as { release: () => void }).release();
+  });
+
+  it('(e) old vs new configuration on the issue trace: the old one sheds bulk for 15 s+, the new one never rises', async () => {
+    // Issue #9353's EU shape: a two-sample median-lag blip at 251 ms, then idle.
+    const trace: Partial<AdmissionSignals>[] = [{ lagMs: 251 }, { lagMs: 251 }, ...Array(20).fill({})];
+    const replay = async (over: Partial<AdmissionConfig>) => {
+      const { rt, tickWith } = make({ mode: 'observe', ...over });
+      const before = await count('breeze_admission_decisions_total', BULK_WOULD_SHED);
+      const levels = trace.map((s) => { const level = tickWith(s).level; rt.decide(SOFTWARE); return level; });
+      return { levels, wouldShed: (await count('breeze_admission_decisions_total', BULK_WOULD_SHED)) - before };
+    };
+    const old = await replay(PRE_9353);
+    expect(Math.max(...old.levels)).toBe(2);
+    expect(old.wouldShed).toBeGreaterThanOrEqual(16);                // one bulk request per tick at level >= 1
+    const now = await replay({});
+    expect(now.levels.every((level) => level === 0)).toBe(true);
+    expect(now.wouldShed).toBe(0);
+  });
+
+  it('a single slow pool grant at idle never raises the level (grant-wait window is 1.5 ticks wide)', async () => {
+    // The issue's other shape: "level 0 -> 1 (trigger=db, dbWait=110ms, dbWaiting=0, dbInUse=0)".
+    // Real gate + real sampler: one 243 ms grant must not be read on three consecutive ticks.
+    let nowMs = 0;
+    const gate = createPoolAdmission({ permits: 1, nestedReserve: 0, now: () => nowMs });
+    const sampler = createSignalSampler({
+      readSamplesSince: () => [],
+      readLatest: () => ({ monitored: true, coversWindow: true, sampledMaxLagMs: 0, inFlightLagMs: 0, worstLagMs: 0, sampleCount: 1 }),
+      readPool: () => {
+        const stats = gate.waitStats();
+        const snapshot = gate.snapshot();
+        return {
+          available: true, inUse: snapshot.inUse, waiting: snapshot.waiting, effectivePermits: 1,
+          oldestWaitMs: stats.oldestWaitMs, grantWaitP95Ms: stats.grantWaitP95Ms, dbTimeoutsTotal: 0,
+        };
+      },
+      now: () => nowMs,
+    });
+    const rt = new AdmissionRuntime({ ...ADMISSION_DEFAULTS, mode: 'enforce' }, { sampler, now: () => nowMs, log: () => {} });
+    rt.tick();                                                         // seeds the sampler
+    const held = await gate.acquire('a');
+    const slow = gate.acquire('b');
+    nowMs += 243;
+    held.release('resolved');
+    (await slow).release('resolved');                                  // granted after 243 ms
+    const seen = Array.from({ length: 5 }, () => { nowMs += 1_000; return rt.tick().level; });
+    expect(seen).toEqual([0, 0, 0, 0, 0]);
   });
 });

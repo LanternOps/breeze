@@ -3,7 +3,7 @@ import { db } from '../db';
 import { aiUsageCharges, timeEntries, ticketParts } from '../db/schema';
 import { computeLineTotal } from './invoiceMath';
 import type { InvoiceLineSourceType } from './invoiceTypes';
-import { roundToCurrency, type BillingStatus } from '@breeze/shared';
+import { billedLaborMinutes, laborHours, roundToCurrency, type BillingStatus } from '@breeze/shared';
 import { hourBlockHoldWindows, isHeldForHourBlock } from './contractHourBlockHolds';
 import { sumEntryHours } from './contractHourBlocks';
 import { toPartnerLocalDate } from './invoiceWorkDate';
@@ -119,8 +119,9 @@ type TimeEntryRow = {
   startedAt?: Date | null;
 };
 
-/** Billed quantity (§3.5): COALESCE(billable_minutes, duration_minutes), hours to 2 dp. */
-const entryHours = (r: TimeEntryRow) => (((r.billableMinutes ?? r.durationMinutes) ?? 0) / 60).toFixed(2);
+/** Billed quantity (§3.5): COALESCE(billable_minutes, duration_minutes), hours to 2 dp —
+ *  the shared labour rule (#9561, `@breeze/shared` laborMath). */
+const entryHours = (r: TimeEntryRow) => laborHours(billedLaborMinutes(r));
 
 /** Base line description — never carries the worked-vs-billed disclosure
  *  (#6467). The §3.5 "when they differ the invoice line says so" note is
