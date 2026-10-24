@@ -412,7 +412,9 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     const other = source(fx, [comment('c9', 30, 'Again.', [file('f1', 'one.png', PNG.length), file('f4', 'four.png', PNG2.length)])]);
     const third = fetcher({ f1: PNG, f4: PNG2 });
     const after = await importTicket(window.id, other, { partnerId: fx.partner.id, fetchAttachment: third });
-    expect(after).toMatchObject({ outcome: 'created', commentsWritten: 1, attachmentsWritten: 1, attachmentsSkipped: [] });
+    expect(after).toMatchObject({ outcome: 'created', commentsWritten: 1, attachmentsWritten: 1, attachmentsSkipped: [{ sourceId: 'f1', reason: 'present_elsewhere' }] });
+    // In Breeze already: not named in the comment's note.
+    expect((await commentsOf(after.ticketId)).find((c) => c.importSourceId === 'c9')!.content).toBe('Again.');
     expect(third.mock.calls.map((c) => c[0])).toEqual(['f4']);
     expect(await bySource(fx.principal.id, 'f1')).toEqual([f1Before]);
     expect((await attachmentsOf(after.ticketId)).map((r) => r.importSourceId)).toEqual(['f4']);
@@ -647,7 +649,7 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     const moved = source(fx, [comment('c9', 20, 'Moved here.', [file('f1', 'one.png', PNG.length), file('f2', 'two.png', PNG2.length)])]);
     const fetchAttachment = fetcher({ f1: PNG, f2: PNG2 });
     const result = await importTicket(window.id, moved, { partnerId: fx.partner.id, fetchAttachment });
-    expect(result).toMatchObject({ outcome: 'created', commentsWritten: 1, attachmentsWritten: 1 });
+    expect(result).toMatchObject({ outcome: 'created', commentsWritten: 1, attachmentsWritten: 1, attachmentsSkipped: [{ sourceId: 'f1', reason: 'present_elsewhere' }] });
     expect(fetchAttachment.mock.calls.map((c) => c[0])).toEqual(['f2']);
     // The reservation outside the window is untouched (the reaper owns it).
     expect(await bySource(fx.principal.id, 'f1')).toEqual([outside]);

@@ -23,6 +23,7 @@ import {
   provisionalByteSize,
   reservationSkip,
   sniffImportedAttachment,
+  stripAttachmentSkipNote,
   withAttachmentSkipNote,
 } from './importAttachments';
 
@@ -168,6 +169,18 @@ describe('the note appended to a comment (§4.4, the inbound shape F8)', () => {
     const note = attachmentSkipNote(skips)!;
     expect(note).toContain('f9.zip (over the 10 MB limit); and 3 more]');
     expect(note).not.toContain('f10.zip');
+  });
+
+  it('never names a file present elsewhere (it is in Breeze)', () => {
+    expect(attachmentSkipNote([{ filename: 'a.png', reason: 'present_elsewhere' }])).toBeNull();
+    expect(attachmentSkipNote([{ filename: 'a.png', reason: 'present_elsewhere' }, { filename: 'b.exe', reason: 'blocked_type' }]))
+      .toBe('[Attachments not imported: b.exe (blocked file type)]');
+  });
+
+  it('strips a trailing note on the JS side exactly as the SQL does on the stored side', () => {
+    expect(stripAttachmentSkipNote('Body\n\n[Attachments not imported: a.zip (over the 10 MB limit)]')).toBe('Body');
+    expect(stripAttachmentSkipNote('[Attachments not imported: a.zip (empty file)]')).toBe('');
+    expect(stripAttachmentSkipNote('Body without a note')).toBe('Body without a note');
   });
 
   it('is null with no skip, and appended on its own line otherwise', () => {

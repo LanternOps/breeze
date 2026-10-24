@@ -104,7 +104,7 @@ describe('prepareChunkAttachments', () => {
     expect(out.files.skippedReservations).toEqual([]);
   });
 
-  it('neither reserves nor stores a file this principal already attached; a pending one is reserved again (reused)', async () => {
+  it('neither reserves nor stores a file this principal already attached (present elsewhere); a pending one is reserved again (reused)', async () => {
     const { input, reserveCalls, costs } = harness([comment('c1', [file('done', 'a.png', 10), file('half', 'b.png', 10), file('new', 'c.png', 10)])], {
       done: 'attached',
       half: 'pending',
@@ -116,7 +116,10 @@ describe('prepareChunkAttachments', () => {
     expect(costs).toEqual([1]);
     expect(store.calls).toEqual(['half', 'new']);
     if (out.merged) throw new Error('unexpected merge');
-    expect(out.files.byComment.get('c1')).toEqual({ claims: [expect.objectContaining({ id: 'id-half' }), expect.objectContaining({ id: 'id-new' })], skips: [] });
+    expect(out.files.byComment.get('c1')).toEqual({
+      claims: [expect.objectContaining({ id: 'id-half' }), expect.objectContaining({ id: 'id-new' })],
+      skips: [{ sourceId: 'done', filename: 'a.png', reason: 'present_elsewhere' }],
+    });
   });
 
   it('claims a reservation an earlier pass stored as it is: no fetch, no byte charge, no unit, no mark', async () => {
@@ -139,20 +142,24 @@ describe('prepareChunkAttachments', () => {
     expect(marked).toEqual(['id-first']);
   });
 
-  it('a file whose reservation is no longer pending when it is marked is not claimed', async () => {
+  it('a file whose reservation is no longer pending when it is marked is not claimed: present elsewhere', async () => {
     const { input } = harness([comment('c1', [file('gone', 'a.png', 10)])]);
     input.markStored = vi.fn(async () => false);
     const out = await prepareChunkAttachments(input);
     if (out.merged) throw new Error('unexpected merge');
-    expect(out.files.byComment.get('c1')?.claims ?? []).toEqual([]);
+    expect(out.files.byComment.get('c1')).toEqual({ claims: [], skips: [{ sourceId: 'gone', filename: 'a.png', reason: 'present_elsewhere' }] });
+    expect(out.files.skippedReservations).toEqual([]);
   });
 
-  it('a file attached under the lock (not returned by the reservation) is neither stored, claimed nor skipped', async () => {
+  it('a file the reservation does not return (attached under the lock, or held where the window cannot see) is present elsewhere', async () => {
     const { input } = harness([comment('c1', [file('raced', 'a.png', 10), file('mine', 'b.png', 10)])], {}, ['raced']);
     const out = await prepareChunkAttachments(input);
     expect(store.calls).toEqual(['mine']);
     if (out.merged) throw new Error('unexpected merge');
-    expect(out.files.byComment.get('c1')).toEqual({ claims: [expect.objectContaining({ id: 'id-mine' })], skips: [] });
+    expect(out.files.byComment.get('c1')).toEqual({
+      claims: [expect.objectContaining({ id: 'id-mine' })],
+      skips: [{ sourceId: 'raced', filename: 'a.png', reason: 'present_elsewhere' }],
+    });
   });
 
   it('reserves at most 100 files per transaction, across comments, each charged its new files', async () => {

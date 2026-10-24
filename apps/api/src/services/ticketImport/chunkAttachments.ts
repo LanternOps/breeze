@@ -21,9 +21,11 @@ import { storeReservedAttachment, type FetchImportAttachment } from './storeAtta
  *
  *   - a file the source declares over the cap or empty, or whose name is
  *     denylisted, is skipped and never reserved;
- *   - a file this principal already attached is neither reserved nor
- *     charged again (a source that reuses an attachment id: the file is not
- *     duplicated, exactly like a comment, F3);
+ *   - a file this principal already holds is neither reserved nor charged
+ *     again, and is reported `present_elsewhere`: attached (a source that
+ *     reuses an attachment id), or held where the window cannot see (a
+ *     source merge moved its article). It is not duplicated, exactly like a
+ *     comment (F3);
  *   - every other file is reserved, in transactions of at most 100 files,
  *     each charged one unit per file that has no row yet (spec §4.3: one unit
  *     per new file; a reused reservation costs nothing);
@@ -103,9 +105,21 @@ export async function prepareChunkAttachments(
   }));
   if (planned.length === 0) return { merged: null, files: NO_CHUNK_FILES };
 
+  const byComment = new Map<string, CommentFiles>();
+  const skippedReservations: string[] = [];
+  const entry = (commentId: string): CommentFiles => {
+    let files = byComment.get(commentId);
+    if (!files) {
+      files = { claims: [], skips: [] };
+      byComment.set(commentId, files);
+    }
+    return files;
+  };
+
   const fetchable = planned.filter((p) => p.skip === null);
   const states = fetchable.length > 0 ? await input.readStates(fetchable.map((p) => p.sourceId)) : new Map();
   const toReserve = fetchable.filter((p) => states.get(p.sourceId) !== 'attached');
+  const elsewhere = (p: Planned) => entry(p.commentId).skips.push({ sourceId: p.sourceId, filename: p.filename, reason: 'present_elsewhere' });
 
   const reserved = new Map<string, ReservedRow>();
   for (let i = 0; i < toReserve.length; i += IMPORT_RESERVATION_BATCH) {
@@ -121,25 +135,19 @@ export async function prepareChunkAttachments(
     for (const row of result.reserved) reserved.set(row.sourceId, row);
   }
 
-  const byComment = new Map<string, CommentFiles>();
-  const skippedReservations: string[] = [];
-  const entry = (commentId: string): CommentFiles => {
-    let files = byComment.get(commentId);
-    if (!files) {
-      files = { claims: [], skips: [] };
-      byComment.set(commentId, files);
-    }
-    return files;
-  };
   // In the source's order, so claims and the note read as the source does.
   for (const p of planned) {
     if (p.skip) {
       entry(p.commentId).skips.push({ sourceId: p.sourceId, filename: p.filename, reason: p.skip });
       continue;
     }
-    // Not reserved: attached already (found by the read, or under the lock).
+    // Not reserved: held already (attached, found by the read or under the
+    // lock, or by a row the window cannot see).
     const row = reserved.get(p.sourceId);
-    if (!row) continue;
+    if (!row) {
+      elsewhere(p);
+      continue;
+    }
     // Stored by an earlier pass: claimed as it is.
     if (row.stored) {
       entry(p.commentId).claims.push(row.stored);
@@ -154,7 +162,10 @@ export async function prepareChunkAttachments(
     });
     if (outcome.kind === 'stored') {
       // Not pending any more (claimed, re-pointed or reaped since): not ours to claim.
-      if (!(await input.markStored(outcome.claim))) continue;
+      if (!(await input.markStored(outcome.claim))) {
+        elsewhere(p);
+        continue;
+      }
       entry(p.commentId).claims.push(outcome.claim);
     } else {
       entry(p.commentId).skips.push({ sourceId: p.sourceId, filename: p.filename, reason: outcome.reason });

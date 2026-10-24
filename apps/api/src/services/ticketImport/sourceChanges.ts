@@ -3,7 +3,7 @@ import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketComments } from '../../db/schema';
 import { normalizeRequesterEmail } from '../ticketRequesterEmail';
-import { ATTACHMENT_SKIP_NOTE_PG_PATTERN } from './importAttachments';
+import { ATTACHMENT_SKIP_NOTE_PG_PATTERN, stripAttachmentSkipNote } from './importAttachments';
 import type { ImportedComment, ImportedTicket } from './importedTicket';
 
 /**
@@ -164,7 +164,8 @@ export function sourceChanges(
   for (const comment of t.comments) {
     const row = bySourceId.get(comment.sourceId);
     if (!row) continue;
-    const contentChanged = !row.edited && row.contentHash !== contentHash(storedCommentContent(comment));
+    // Both sides without a trailing skip note (the SQL strips the stored side).
+    const contentChanged = !row.edited && row.contentHash !== contentHash(stripAttachmentSkipNote(storedCommentContent(comment)));
     const visibility = row.isPublic === comment.isPublic ? null : comment.isPublic ? 'made_public' : 'made_internal';
     if (contentChanged || visibility) commentsChangedInSource.push({ sourceId: comment.sourceId, contentChanged, visibility });
   }

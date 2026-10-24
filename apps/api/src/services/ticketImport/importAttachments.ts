@@ -52,8 +52,19 @@ export function provisionalByteSize(declaredBytes: number | undefined): number {
   return Math.min(IMPORT_ATTACHMENT_MAX_BYTES, Math.max(1, Math.floor(declaredBytes)));
 }
 
-/** Why a file was not imported (§4.4). All four are permanent: a later pass skips the file again. */
-export type ImportAttachmentSkipReason = 'too_large' | 'empty' | 'blocked_type' | 'not_found';
+/**
+ * Why a file was not imported with its comment. The four of §4.4 are
+ * permanent (a later pass skips the file again) and are named in the
+ * comment's note. `present_elsewhere`: this principal's resume key for the
+ * file is already held, by an attached file or by a row the window cannot
+ * see (a source merge moved the article, or its ticket moved out of the
+ * window's orgs); the file is in Breeze, so it is not in the note, but it is
+ * reported, so written + skipped always equals the source's file count.
+ */
+export type ImportAttachmentSkipReason = 'too_large' | 'empty' | 'blocked_type' | 'not_found' | 'present_elsewhere';
+
+/** The skip reasons the comment's note names: the file is not in Breeze. */
+type NotedSkipReason = Exclude<ImportAttachmentSkipReason, 'present_elsewhere'>;
 
 /** A skipped file, as the result and the run report list it. */
 export type ImportAttachmentSkip = { sourceId: string; reason: ImportAttachmentSkipReason };
@@ -161,7 +172,7 @@ export function fetchedBytesSkip(byteLength: number): ImportAttachmentSkipReason
 
 const MAX_NAMED_IN_NOTE = 10;
 
-const SKIP_TEXT: Record<ImportAttachmentSkipReason, string> = {
+const SKIP_TEXT: Record<NotedSkipReason, string> = {
   too_large: `over the ${Math.round(IMPORT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB limit`,
   empty: 'empty file',
   blocked_type: 'blocked file type',
@@ -174,12 +185,14 @@ const NOTE_PREFIX = '[Attachments not imported: ';
  * One line naming each file of a comment that was not imported and why, in
  * the inbound-email note's shape (F8), or null when none was skipped:
  * `[Attachments not imported: a.zip (over the 10 MB limit); b.exe (blocked
- * file type)]`, at most ten names and then `; and N more`.
+ * file type)]`, at most ten names and then `; and N more`. A file present
+ * elsewhere in Breeze is not named.
  */
 export function attachmentSkipNote(skips: ReadonlyArray<{ filename: string; reason: ImportAttachmentSkipReason }>): string | null {
-  if (skips.length === 0) return null;
-  const named = skips.slice(0, MAX_NAMED_IN_NOTE).map((s) => `${s.filename} (${SKIP_TEXT[s.reason]})`);
-  const more = skips.length - named.length;
+  const noted = skips.filter((s): s is { filename: string; reason: NotedSkipReason } => s.reason !== 'present_elsewhere');
+  if (noted.length === 0) return null;
+  const named = noted.slice(0, MAX_NAMED_IN_NOTE).map((s) => `${s.filename} (${SKIP_TEXT[s.reason]})`);
+  const more = noted.length - named.length;
   return `${NOTE_PREFIX}${named.join('; ')}${more > 0 ? `; and ${more} more` : ''}]`;
 }
 
@@ -201,6 +214,17 @@ export function withAttachmentSkipNote(
  * sanitized filename has no line break, so the note is one line.
  */
 export const ATTACHMENT_SKIP_NOTE_PG_PATTERN = '(^|\\n\\n)\\[Attachments not imported: [^\\n]*\\]$';
+
+const ATTACHMENT_SKIP_NOTE_JS = new RegExp(ATTACHMENT_SKIP_NOTE_PG_PATTERN);
+
+/**
+ * `content` without a trailing skip note: the JS side of the resume report's
+ * comparison, the same expression the SQL side applies to the stored
+ * content, so a source body that itself ends in such a line compares equal.
+ */
+export function stripAttachmentSkipNote(content: string): string {
+  return content.replace(ATTACHMENT_SKIP_NOTE_JS, '');
+}
 
 /**
  * What a file's resume key holds for this principal, as far as the window can

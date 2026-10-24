@@ -128,9 +128,12 @@ export type ImportTicketResult = {
   /** Files claimed by the comments this run wrote (spec 2026-10-19 §5.3 item 1). */
   attachmentsWritten: number;
   /**
-   * Files of the comments this run wrote that were not imported, and why
-   * (permanent: a later pass skips them again). Each is also named in the
-   * note appended to its comment. In the source's order.
+   * Files of the comments this run wrote that were not imported with them,
+   * and why, in the source's order: the four permanent reasons (a later pass
+   * skips them again; each is also named in the note appended to its
+   * comment), and `present_elsewhere` (already in Breeze; not in the note).
+   * `attachmentsWritten` + this list's length is the source's file count of
+   * those comments.
    */
   attachmentsSkipped: ImportAttachmentSkip[];
   /** Bytes of the files claimed (`attachmentsWritten`). */
