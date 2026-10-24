@@ -28,6 +28,7 @@ export const PATH_FIELDS: Record<string, Classification> = {
   'analyze_disk_usage.path': SAFE,
   'disk_cleanup.path': SAFE,
   'remediate_sensitive_data.quarantineDir': SAFE,
+  'ioc_hunt.paths': SAFE,
 
   'execute_command.payload.path': {
     kind: 'checkedByToolSchema',

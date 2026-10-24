@@ -21,9 +21,9 @@ import {
   YARA_IOC_VALUE_MAX_CHARS,
   YARA_MAX_RULE_SETS_PER_POLICY,
   YARA_RULE_SEVERITIES,
-  securityScanPathSchema,
   securitySweepScopeSchema,
 } from '@breeze/shared';
+import { IOC_HUNT_ACTIONS } from './iocHuntActions';
 import {
   createWatchInputSchema,
   listConcernsToolSchema,
@@ -107,14 +107,16 @@ const routingPriority = z.enum(['low', 'normal', 'high', 'urgent']);
  * `toolInputSchemas.ioc_hunt`. Shared with the SDK `tool()` declaration so the
  * advertised and enforced shapes cannot drift.
  */
-export const IOC_HUNT_ACTION_VALUES = ['list_rule_sets', 'preview_sweep', 'list_sweeps', 'sweep_status', 'sweep', 'cancel_sweep', 'import_iocs'] as const;
+export const IOC_HUNT_ACTION_VALUES = IOC_HUNT_ACTIONS;
 export const iocHuntShape = {
   action: z.enum(IOC_HUNT_ACTION_VALUES),
   orgId: uuid.optional(),
   ruleSetIds: z.array(uuid).min(1).max(YARA_MAX_RULE_SETS_PER_POLICY).optional(),
   scope: securitySweepScopeSchema.optional(),
   scanType: z.enum(SECURITY_SWEEP_SCAN_TYPES).optional(),
-  paths: z.array(securityScanPathSchema).min(1).max(SECURITY_SWEEP_MAX_PATHS).optional(),
+  // safePath: a scan root goes through the default AI path restriction; the
+  // sweep request schema then bounds each to SECURITY_SCAN_PATH_MAX_CHARS.
+  paths: z.array(safePath).min(1).max(SECURITY_SWEEP_MAX_PATHS).optional(),
   ttlHours: z.number().int().min(1).max(SECURITY_SWEEP_TTL_HOURS_MAX).optional(),
   expectedDeviceCount: z.number().int().min(0).optional(),
   previewDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),

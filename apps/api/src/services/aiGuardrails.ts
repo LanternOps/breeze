@@ -31,6 +31,7 @@ import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceRea
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
 // Env-only operator knob; the module imports nothing but @breeze/shared.
 import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
+import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -368,7 +369,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // #6268: a fleet IOC sweep (detect-only, single org; scope input-aware in
   // resolveApprovalScope) and an IOC rule import (publishes a rule set every
   // policy using it then scans with).
-  ioc_hunt: ['sweep', 'import_iocs'],
+  ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
   manage_groups: ['create', 'update', 'delete'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
@@ -948,12 +949,12 @@ export function resolveApprovalScope(
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
   }
-  if (toolName === 'ioc_hunt' && action === 'sweep') {
+  if (toolName === 'ioc_hunt' && action === IOC_HUNT_RUN_ACTION) {
     // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is
     // supervised up to the four-eyes threshold, four_eyes above it. A count
     // that is missing or not a non-negative integer cannot be trusted to bound
     // the sweep, so it takes the stricter scope. createSweep refuses the
-    // released call (SWEEP_SCOPE_CHANGED) when it would target more devices.
+    // released call as a scope change when it would target more devices.
     const n = input.expectedDeviceCount;
     return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= iocHuntFourEyesDeviceThreshold()
       ? 'supervised'
@@ -3197,7 +3198,7 @@ function iocSweepScopeLabel(scope: unknown): string {
  */
 function iocHuntHeadline(action: string | undefined, input: Record<string, unknown>): string {
   const idPrefix = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v.slice(0, 8) : 'unknown');
-  if (action === 'sweep') {
+  if (action === IOC_HUNT_RUN_ACTION) {
     const sets = Array.isArray(input.ruleSetIds) ? input.ruleSetIds.length : 0;
     const n = input.expectedDeviceCount;
     const reach = typeof n === 'number' && Number.isInteger(n) && n >= 0

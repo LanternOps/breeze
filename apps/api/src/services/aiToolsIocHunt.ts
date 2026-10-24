@@ -42,16 +42,9 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 import { topSweepRuleHits } from './securityScanSweepHits';
 import { importIocsIntoSet } from './yaraIocImportService';
 import { listVisibleRuleSets } from './yaraRuleSetAccess';
+import { IOC_HUNT_ACTIONS } from './iocHuntActions';
 
-export const IOC_HUNT_ACTIONS = [
-  'list_rule_sets',
-  'preview_sweep',
-  'list_sweeps',
-  'sweep_status',
-  'sweep',
-  'cancel_sweep',
-  'import_iocs',
-] as const;
+export { IOC_HUNT_ACTIONS } from './iocHuntActions';
 
 const DEFAULT_PAGE_LIMIT = 25;
 const TOP_RULES = 10;
@@ -351,7 +344,7 @@ export function registerIocHuntTools(aiTools: Map<string, AiTool>): void {
           label: { type: 'string', description: 'import_iocs: short label for the generated rules (e.g. the advisory name)' },
           severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'import_iocs: severity of the generated rules' },
           page: { type: 'number', description: 'Page number for list_rule_sets and list_sweeps (default 1)' },
-          limit: { type: 'number', description: 'Page size for list_rule_sets and list_sweeps (default 25, max 100)' },
+          limit: { type: 'number', description: 'Max rule sets or sweeps per page (default 25, max 100)' },
         },
         required: ['action'],
       },
