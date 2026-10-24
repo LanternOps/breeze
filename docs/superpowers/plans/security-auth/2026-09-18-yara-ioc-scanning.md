@@ -48,7 +48,7 @@ owner-inheritance triggers, and `security_scans.engine` / `rule_set_errors`). Na
 implementation time to sort after the newest committed migration.
 
 **Amended 2026-10-24:** W04 shipped no migration. W05 PR A carries one (`security_scan_sweeps` with its RLS, plus
-`security_scans.sweep_id` / `dispatched_rule_sets`), slot `2027-01-04-140000-security-scan-sweeps.sql`
+`security_scans.sweep_id` / `dispatched_rule_sets` / `command_id`), slot `2027-01-04-140000-security-scan-sweeps.sql`
 (re-checked against the newest committed migration at implementation time).
 
 ## Open Decisions for W02/W03 (2026-10-13)

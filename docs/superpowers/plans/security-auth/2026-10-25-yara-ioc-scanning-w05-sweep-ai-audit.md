@@ -52,12 +52,13 @@ There are three PRs. Each branches from fresh `origin/main` after the previous o
 
 - Every body says `Part of #6263` and `Refs #6268`.
 - Only PR C says `Closes #6268`.
+- **Lifecycle:** before Task A1, run `get_feature_status LanternOps/breeze#6263` and `start_wave` on #6268 (feature-lifecycle). `complete_wave` is the orchestrator's call once PR C merges.
 - No other closing keyword appears anywhere, including negated ones.
 
 ### Migration
 
 PR A has exactly one migration, in slot `apps/api/migrations/2027-01-04-140000-security-scan-sweeps.sql`.
-- On 2026-10-24 the newest file on `main` is `2027-01-04-110000-ticket-merge.sql`. The dispatch brief's in-flight `2027-01-03-150000/160000/160100` slots are already behind it.
+- When this plan was written (2026-10-24, `origin/main` `5a6e24e98b`) the newest file was `2027-01-04-110000-ticket-merge.sql`; the earlier in-flight `2027-01-03-150000/160000/160100` slots sort before it.
 - Re-check `git ls-tree --name-only origin/main apps/api/migrations/ | sort | tail -3` and the open PRs at implementation time. Take the next free `HHMMSS` if this slot is taken or sorts too early, and say so in the PR body.
 - The migration is idempotent and has no `BEGIN`/`COMMIT`.
 - It writes no rows, so it needs no `set_config('breeze.scope','system',true)`. A later backfill would put that line first.
@@ -289,8 +290,8 @@ Each tick, in order:
    - Its `running` scans whose command is still undelivered (`device_commands.status = 'pending'`) are cancelled through `commandCancelPropagation`, and the scan becomes `expired`.
    - One `security.scan_sweep.expire` audit row is written per sweep row.
 2. **Finalize** `running` sweep scans, looking up the command by `security_scans.command_id`, never by payload. The payload is erased on terminalization (`commandCancelPropagation.ts`).
-   - The command terminalized with no agent delivery (`executed_at IS NULL`; verify the column the sent transition stamps) → the scan becomes `expired`.
-   - Otherwise, `started_at < now() − (720 + SECURITY_SWEEP_RUNNING_GRACE_MINUTES) min` with no result → `failed`.
+   - The command is terminal (`status IN ('expired','cancelled','failed')`) and was never delivered (`device_commands.executed_at IS NULL`: the `pending → sent` transition stamps `executed_at`, `services/commandQueue.ts` and `dispatchDeviceCommand.ts`) → the scan becomes `expired`.
+   - Otherwise, `started_at < now() − (720 + SECURITY_SWEEP_RUNNING_GRACE_MINUTES) min` with no result → `failed`. `started_at` here is the **claim** time: the claim UPDATE resets it (W05-3 step 7), so a scan that waited 72 h in `queued` is not failed on arrival.
 3. **Complete.** Every `active` sweep with no `queued`/`running` child becomes `completed`.
 4. **Admit.** Active, unexpired sweeps are taken oldest first, per org. The batch size is `n = min(40 − running(org), 200 − running(partner), SECURITY_SWEEP_PUMP_BATCH)`.
    - Candidates are the sweep's `queued` scans whose device is `online` and unparked (`notParkedDeviceCondition()`).
@@ -299,7 +300,7 @@ Each tick, in order:
 
 **Separate predicates.** Queued sweep scans are not in flight. Two scheduler checks change to exclude `sweep_id IS NOT NULL AND status = 'queued'`, so 10,000 offline sweep targets cannot starve scheduled scans:
 - `getOrgQueuedScans`, the backpressure count;
-- `schedulePolicyScans`' busy select.
+- `schedulePolicyScans`' busy select. The exclusion wraps the **whole** busy predicate `(status IN ('queued','running') OR started_at >= occurrence)`, because sweep rows are inserted with `started_at = now()` and would otherwise block that cron minute.
 
 **Bounds:**
 - Per instance: the existing `SECURITY_SCAN_WORKER_CONCURRENCY`.
@@ -322,14 +323,16 @@ Each tick, in order:
    - For sweeps, `autoQuarantine: false` and `triggerDefender: false`. The builder gains a `triggerDefender` parameter, defaulting to `true` for the existing callers.
    - `autoQuarantineSuppressedReason` stays `null`.
 5. **Refs:**
-   - Sweeps use `resolvePinnedYaraRefs({ deviceId, pins })`. It is a new function in `yaraScanRefs.ts`, using the same ownership rule as `resolveYaraRuleSetRefs`.
+   - Sweeps use `resolvePinnedYaraRefs({ deviceId, agentVersion, pins })`. It is a new function in `yaraScanRefs.ts`, using the same ownership rule as `resolveYaraRuleSetRefs`.
    - It returns refs only when **every** pin is visible-for-device, enabled, and has `publishedVersion === pin.version` and `publishedSha256 === pin.sha256`. It also requires `agentSupportsYaraScan`.
    - Anything else yields errors `rule_set_changed | not_found | disabled | not_published | agent_too_old`. The scan becomes `failed`, `engine = 'legacy'`, with those `rule_set_errors`, and no command is sent.
    - Non-sweep scans keep `planYaraScan`.
 6. **AI-originated sweeps** (`sweep.origin ∈ {ai_chat, mcp}`) run `checkAiRemoteToolsPolicy(deviceId, 'security_scan')`. A deny makes the scan `failed` with `rule_set_errors [{id:'*', code:'ai_policy_denied'}]`. The `aiOrigin` from `sweep.ai_origin` is passed to the command.
 7. **Claim and insert, atomically:**
-   - `UPDATE security_scans SET status='running', engine, rule_set_errors, dispatched_rule_sets, command_id … WHERE id = $1 AND status = 'queued'`.
-   - `queueCommandForExecution(…, { expectedOrgId: sweep?.orgId ?? scan.orgId, offlinePolicy, aiOrigin, deferDelivery: true, commandId })`, inside the same transaction. The command id is reserved up front, so `command_id` is known.
+   - `UPDATE security_scans SET status='running', started_at = now(), engine, rule_set_errors, dispatched_rule_sets, command_id … WHERE id = $1 AND status = 'queued'`.
+   - `dispatchDeviceCommand({ deviceId, type: 'security_scan', payload, commandId, expectedOrgId: sweep?.orgId ?? scan.orgId, offlinePolicy, aiOrigin, deferDelivery: true })` (`services/dispatchDeviceCommand.ts`), inside the same transaction. **Not** `queueCommandForExecution`: that wrapper does not forward `deferDelivery` and returns no `deliver()`. The command id is reserved up front (`randomUUID()`), so `command_id` is known.
+   - After commit, call `deliver()` when it is returned. It is absent when the device is offline, has no `agentId`, or `preferHeartbeat` is set; the row then waits for the next heartbeat poll, which is the normal offline path.
+   - `AUDITED_COMMANDS` is applied in `commandQueue.ts`, above this seam. Task A5 checks whether `dispatchDeviceCommand` writes the per-device command audit row; if it does not, the claim writes the same row `queueCommandForExecution` would (W05-8), so no dispatch path loses it.
    - Sweeps use `offlinePolicy: { kind: 'queue', deliverWithinMs: max(60_000, expiresAt − now) }`.
    - After commit, `deliver()` runs.
 
@@ -343,7 +346,7 @@ Each tick, in order:
 
 ### W05-4 Dedupe and the active cap
 
-**The key.** `dedupe_key = sha256hex(canonicalJson([orgId, pins.map(p => p.id + '@' + p.sha256).sort(), scanType, (paths ?? []).slice().sort()]))`, using the existing canonical serializer in `services/actionIntents/canonicalize.ts`.
+**The key.** `dedupe_key = computeArgumentDigest({ orgId, pins: pins.map(p => p.id + '@' + p.sha256).sort(), scanType, paths: (paths ?? []).slice().sort() })`, using `computeArgumentDigest` / `canonicalizeArguments` from `@breeze/shared/canonicalize` (re-exported by `services/actionIntents/canonicalize.ts`). Arrays are sorted by the caller, because the canonicalizer keeps array order.
 
 Creates are serialized per org: inside the create transaction, `pg_advisory_xact_lock(hashtext('security-sweep-org:' || org_id))` is taken per target org, in sorted order. Then:
 
@@ -381,7 +384,7 @@ For each target org:
 The same ceilings apply to preview, list, progress and cancel (W05-1, W05-6).
 
 **Output:**
-- `previewDigest = sha256hex(canonicalJson({ v: 1, targets: sortedDeviceIds, pins: sortedPins, scanType, paths }))`
+- `previewDigest = computeArgumentDigest({ v: 1, targets: sortedDeviceIds, pins: sortedPins, scanType, paths: sortedPaths })`
 - `byOrg`
 - `pins`
 - `skipped`
@@ -400,7 +403,7 @@ The same ceilings apply to preview, list, progress and cancel (W05-1, W05-6).
 - It re-resolves. A digest mismatch gives 409 `SWEEP_SCOPE_CHANGED` with the fresh preview: devices or pins changed between preview and confirm.
 - If `targeted > 50` and `!hasSatisfiedMfa(auth)`, it returns 403 `MFA_REQUIRED`.
   - This is "MFA as the org's policy requires", which can be the password session when no second factor is enforced. The docs say so.
-  - API keys never satisfy it, so an API-key create above 50 is refused. AI and MCP sweeps are governed by the intent approval instead (W05-7).
+  - `hasSatisfiedMfa` returns `true` for every context when `ENABLE_2FA` is off (`middleware/auth.ts`), so it cannot be the only gate. The rule above 50 is `isInteractiveUserSession(auth) && hasSatisfiedMfa(auth)`: API keys and other machine principals are refused above 50 in **both** `ENABLE_2FA` states. AI and MCP sweeps are governed by the intent approval instead (W05-7).
 - On success it returns 201 `{ data: { groupId, sweeps: SweepSummary[] } }`.
 - `origin` is `web` for a user session and `api` for an API key.
 
@@ -663,7 +666,7 @@ The UI route and AI `scan` share it. Manual scans still bypass the queue caps, a
 - [ ] **Step 3: Implement.**
   - **Migration.** Write it per W05-1. The RLS block copies the org-policy shape of `2026-12-30-230000-yara-rule-sets.sql`: `ENABLE` + `FORCE`, then `DROP POLICY IF EXISTS` and create for `security_scan_sweeps_{select,insert,update,delete}` on `breeze_has_org_access(org_id)`.
   - **Drizzle schema.**
-  - **Cascade.** Add `security_scan_sweeps`. Place it where `tenantCascade*` / `tenantCascadeFkChildren` require: FK children (`security_scans`) come before parents, which wins over alphabetical order if the test says so.
+  - **Cascade.** Add `security_scan_sweeps` to `CORE_ORG_CASCADE_DELETE_ORDER` in strict alphabetical position, immediately **before** `security_scans` (`_` sorts before `s`). The static list is alphabetised (`tenantCascade.integration.test.ts` 'is alphabetised'); FK direction is handled at run time by `topologicalCascadeOrder()`, which deletes `security_scans` (the FK child) first. The `ON DELETE SET NULL` action does not change that ordering.
   - **Merge.** Repoint.
   - **Export.** Per W05-1.
   - **Mover.** Add the detach statement before the `devices` UPDATE. Comment it like the existing `device_function_assessments` sever.
@@ -708,7 +711,7 @@ resolveSweepTargets(auth: AuthContext, input: { ruleSetIds: string[]; scope: Sec
   - `onlyOrgId excludes other orgs`.
 - [ ] **Step 2: Run** `cd apps/api && npx vitest run src/services/securityScanSweepTargets.test.ts`. Expected: FAIL.
 - [ ] **Step 3: Implement.** One device select joined to `organizations`. Sets are loaded once under caller RLS. Groups come from `device_group_memberships`. Permissions are cached per org within the call.
-- [ ] **Step 4: Register** `'services/securityScanSweepTargets.ts': { guards: 1, reason: 'IOC sweep target selection' }`. Then run the test plus `src/__tests__/parkedFanout.contract.test.ts`. Expected: PASS.
+- [ ] **Step 4: Register** the module. Run `src/__tests__/parkedFanout.contract.test.ts` first: it fails naming `services/securityScanSweepTargets.ts` and the guard count it found. Add `'services/securityScanSweepTargets.ts': { guards: <that count>, reason: 'IOC sweep target selection' }`, then re-run it with the target test. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): sweep target resolution with per-org permission ceilings and pinned rule sets (#6268)`.
 
 ### Task A4: Sweep service
@@ -734,7 +737,7 @@ resolveSweepTargets(auth: AuthContext, input: { ruleSetIds: string[]; scope: Sec
     - `expectedDeviceCount given and exceeded → SWEEP_SCOPE_CHANGED`.
   - **MFA:**
     - `> 50 without satisfied MFA (user session) → MFA_REQUIRED`.
-    - `api key > 50 → MFA_REQUIRED`.
+    - `api key > 50 → MFA_REQUIRED with ENABLE_2FA on AND off`.
     - `ai_chat/mcp origin skips the MFA rule`.
   - **Dedupe and caps:**
     - `same key all busy → SWEEP_ALREADY_RUNNING with ids, nothing written`.
@@ -776,7 +779,9 @@ resolveSweepTargets(auth: AuthContext, input: { ruleSetIds: string[]; scope: Sec
   - `partner advisory lock taken before counts`.
   - `two concurrent claims in one org at 39 running → exactly one dispatches` (integration twin in A9).
   - `throttled → moveToDelayed + DelayedError, job retried (regression for the self-reuse defect)`.
-  - `command inserted in the claim tx with deferDelivery and a reserved id stored in command_id; deliver() after commit`.
+  - `command inserted via dispatchDeviceCommand in the claim tx with deferDelivery and a reserved id stored in command_id; deliver() called after commit when returned, skipped when absent (offline)`.
+  - `claim resets started_at to the claim time`.
+  - `per-device command audit row written once on the claim path`.
   - `dispatched_rule_sets stamped for sweep, scheduled and manual-queued scans`.
 
   **Sweep branch:**
@@ -802,16 +807,17 @@ resolveSweepTargets(auth: AuthContext, input: { ruleSetIds: string[]; scope: Sec
   - `admit: only online, unparked, no running scan, no non-sweep queued scan; org cap 40, partner cap 200, batch 100; oldest sweep first; idempotent job ids`.
 
   **Scheduler predicates:**
-  - `queued sweep scans excluded from getOrgQueuedScans and the busy select`.
+  - `queued sweep scans excluded from getOrgQueuedScans and from the whole busy predicate, including the started_at >= occurrence branch`.
 
   **Schemas:**
   - `origin sweep requires sweepId; pump-sweeps strict`.
-- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/jobs/securityScanClaim.test.ts src/jobs/securityScanSweepPump.test.ts src/jobs/securityScanJobs.test.ts src/services/yaraScanRefs.test.ts`. Expected: FAIL.
+  **Integration twins, written red now** in `securityScanSweeps.integration.test.ts` (`describe('races')`): `two concurrent claims at the org cap → one dispatch`, `cancel vs claim never leaves a delivered command for a cancelled sweep`, `command cancelled (payload erased) → finalize via command_id`, `late result after server timeout → completed`, `Redis job lost → next pump re-admits`.
+- [ ] **Step 2: Run** `cd apps/api && npx vitest run src/jobs/securityScanClaim.test.ts src/jobs/securityScanSweepPump.test.ts src/jobs/securityScanJobs.test.ts src/services/yaraScanRefs.test.ts`, then the `races` block on the stack with `npx vitest run --config vitest.integration.config.ts src/__tests__/integration/securityScanSweeps.integration.test.ts -t races`. Expected: FAIL (both).
 - [ ] **Step 3: Implement** per W05-2 and W05-3. Keep `securityScanJobs.ts` around 500 lines or fewer: the claim and the pump live in their own files.
   - Read `commandCancelPropagation.ts` for the cancel helper.
   - Read the `device_commands` transition code for the "delivered" column.
-  - Record in the commit body whether `queueCommandForExecution` writes a per-device audit row (W05-8).
-  - Register `'jobs/securityScanSweepPump.ts': { guards: 1, reason: 'IOC sweep admission' }`.
+  - Read `commandQueue.ts` for where `AUDITED_COMMANDS` writes the per-device row. If `dispatchDeviceCommand` does not, write it from the claim (W05-3 step 7) and say which in the commit body.
+  - Register `jobs/securityScanSweepPump.ts` and update `jobs/securityScanJobs.ts`'s guard count: run `parkedFanout.contract.test.ts` first and copy the counts it reports.
   - Bump `jobs/securityScanJobs.ts`'s pinned guard count if the claim re-check adds a predicate reference.
 - [ ] **Step 4: Run** the four files, plus `src/__tests__/parkedFanout.contract.test.ts`, `src/services/workerRegistry*.test.ts` and `src/services/commandTimeouts*.test.ts`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): locked scan claim with deferred delivery, sweep pump, throttle retry fix (#6268)`.
@@ -830,7 +836,7 @@ resolveSweepTargets(auth: AuthContext, input: { ruleSetIds: string[]; scope: Sec
   - `completed scan → 404`.
   - `other device's scan → 404`.
   - `scan org ≠ device org → 404`.
-  - `dispatched version 3, request version 4 → not authorized by this branch (404 or the existing 409 if policy-attached)`.
+  - `set not policy-attached, dispatched version 3, request version 4 → 404` (the dispatched-ref branch does not match, and the version/409 check runs only for an authorized set).
 
   **Ingest:**
   - `scan resolved by the command's scanRecordId even when the agent reports another`.
@@ -891,7 +897,7 @@ startDeviceScan(auth: AuthContext, input: { deviceId: string; scanType: ScanType
 
 ### Task A9: Integration and race suite, gates, PR A
 
-- [ ] **Step 1: Extend** `securityScanSweeps.integration.test.ts` with real-DB cases.
+- [ ] **Step 1: Extend** `securityScanSweeps.integration.test.ts` with the remaining real-DB cases. The `races` block written red in A5 must now be green. Each new case below is run red first by temporarily disabling, in the working tree, the code path it proves (for example the mover detach), then restored. Record each red run in the PR body.
 
   **Tenancy:**
   - `partner user sweeps a partner-wide set across two orgs → two rows, one groupId`.
@@ -974,7 +980,7 @@ Branch from `main` after PR A merges. First check #9767:
 
 **Files to modify:** `aiToolsIocHunt.ts`, `aiGuardrails.ts`, `actionIntents/effectDigest.ts`, `actionIntents/pinnedEffectPolicy.ts`, `services/aiTools.userOwnedRelease.contract.test.ts`.
 
-**File to create:** `services/aiToolReleaseGuards.ts`. `aiToolsSecurity.ts` and `aiToolsBrowser.ts` then import from it.
+**File to create:** `services/aiToolReleaseGuards.ts`. The three private copies of `approverReleaseMismatch` (`aiToolsSecurity.ts`, `aiToolsBrowser.ts`, `aiToolsCisBenchmark.ts`) are replaced by imports from it.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -1047,7 +1053,7 @@ Branch from `main` after PR A merges. First check #9767:
 
 ## PR C — web, docs, release-notes copy
 
-Branch from `main` after PR B merges. PR C needs only PR A. If B stalls, C may follow A with Todd's say; the docs AI paragraph then waits for B.
+Branch from `main` after PR B merges. PR C needs only PR A's routes, but it carries `Closes #6268`, so it waits for B. If Todd lets C go first, C's body says `Refs #6268` instead, B carries `Closes #6268`, and the docs AI paragraph moves to B.
 
 ### Task C1: Sweep API client and progress formatter
 
@@ -1069,7 +1075,7 @@ Branch from `main` after PR B merges. PR C needs only PR A. If B stalls, C may f
 **Behaviour:**
 - **The button.** `data-testid="rule-set-sweep-now"` on `RuleSetEditor`. It is disabled with a reason when the set is disabled or never published.
 - **The dialog steps:**
-  1. Scope: All reachable devices, Organizations, Sites, Device groups or Devices. Reuse the existing multi-select target picker; check the deployments or patch-job pickers first.
+  1. Scope: All reachable devices, Organizations, Sites, Device groups or Devices. Reuse `apps/web/src/components/filters/DeviceTargetSelector.tsx` for org/site/device selection and `apps/web/src/components/scripts/GroupTargetPicker.tsx` for groups; map their output onto `SecuritySweepScope`.
   2. Scan type, plus paths for custom scans.
   3. Duration: 24 h by default, 1–72 h.
   4. **Preview:** "N devices in M organizations", the rule-set versions, and the skipped reasons with counts and one-line explanations.
@@ -1087,9 +1093,11 @@ Branch from `main` after PR B merges. PR C needs only PR A. If B stalls, C may f
   - `scope changed re-previews`.
   - `already running links`.
   - `detect-only banner`.
-- [ ] **Step 2: Run** the tests. Expected: FAIL.
+
+  Tests live in `apps/web/src/components/security/sweeps/SweepDialog.test.tsx` and `apps/web/src/components/security/detectionRules/RuleSetEditor.test.tsx`.
+- [ ] **Step 2: Run** `cd apps/web && npx vitest run src/components/security/sweeps/SweepDialog.test.tsx src/components/security/detectionRules/RuleSetEditor.test.tsx`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the tests. Expected: PASS.
+- [ ] **Step 4: Run** the same command. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(web): Sweep now on detection rule sets with preview-digest confirmation (#6268)`.
 
 ### Task C3: Sweeps tab, statuses, rule version
@@ -1108,9 +1116,11 @@ Branch from `main` after PR B merges. PR C needs only PR A. If B stalls, C may f
   - `rule_set_changed offers re-sweep`.
   - `cancelled/expired render in history`.
   - `version shown only when present`.
-- [ ] **Step 2: Run** the tests. Expected: FAIL.
+
+  Tests live in `apps/web/src/components/security/sweeps/SweepsPanel.test.tsx`, `SecurityScansPage.test.tsx`, `SecurityScanManager.history.test.tsx` and `ThreatRulePanel.test.tsx` (the last three in `apps/web/src/components/security/`).
+- [ ] **Step 2: Run** `cd apps/web && npx vitest run src/components/security/sweeps/SweepsPanel.test.tsx src/components/security/SecurityScansPage.test.tsx src/components/security/SecurityScanManager.history.test.tsx src/components/security/ThreatRulePanel.test.tsx`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** `src/components/security` and the `no-hash-in-usestate` lint test. Expected: PASS.
+- [ ] **Step 4: Run** `cd apps/web && npx vitest run src/components/security` and the `no-hash-in-usestate` lint test. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(web): Sweeps tab, cancelled/expired scan states, rule version on threats (#6268)`.
 
 ### Task C4: Locales, copy test, docs, release-notes copy
@@ -1193,7 +1203,7 @@ Also add API reference rows for the routes, and "Version N" under Threat Detecti
 
 ## Exit checklist
 
-- [ ] One migration; slot recorded; `db:check-drift` clean; RLS in the same file; four registrations; new `security_scans` columns classified; mover detach.
+- [ ] One migration; slot recorded; `db:check-drift` clean; RLS in the same file; three registrations (cascade, merge, export); new `security_scans` columns classified; mover detach.
 - [ ] `git diff origin/main --stat -- agent/` is empty in all three PRs.
 - [ ] No sweep scan goes out with `autoQuarantine` or `triggerDefender` true, with a partial set, with an unpinned version, or as a legacy scan.
 - [ ] Claim: caps are counted and claimed under the partner lock; the command is inserted in the claim transaction; `command_id` is stored; the throttle retries.
