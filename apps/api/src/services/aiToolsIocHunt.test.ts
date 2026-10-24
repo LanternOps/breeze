@@ -75,7 +75,7 @@ describe('ioc_hunt registration', () => {
     for (const a of IOC_HUNT_ACTIONS) expect(desc).toContain(a);
     expect(desc).not.toMatch(/\b(EDR|antivirus|real-time protection|prevention)\b/i);
     const schema = t.definition.input_schema as { properties: Record<string, { enum?: string[] }>; required: string[] };
-    expect(schema.properties.action.enum).toEqual([...IOC_HUNT_ACTIONS]);
+    expect(schema.properties.action!.enum).toEqual([...IOC_HUNT_ACTIONS]);
     expect(schema.required).toEqual(['action']);
   });
 });

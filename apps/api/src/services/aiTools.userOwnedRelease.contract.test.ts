@@ -180,8 +180,8 @@ const SAFE_WRITE_SITES: ReadonlyMap<string, string> = new Map([
   // (c) — remediate_sensitive_data (both write sites): `updatedBy` sits
   // inside `remediationMetadata`, a `jsonb` column on `sensitive_data_findings`
   // (db/schema/sensitiveData.ts) — no FK constraint exists on a JSON key.
-  ['services/aiToolsSecurity.ts:645', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
-  ['services/aiToolsSecurity.ts:742', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:666', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
+  ['services/aiToolsSecurity.ts:763', 'updatedBy is inside sensitiveDataFindings.remediationMetadata, a jsonb column — no FK'],
   // (c) — assign_security_training: `assignedBy` sits inside
   // `userRiskEvents.details`, a `jsonb` column (db/schema/userRisk.ts) — no
   // FK constraint exists on a JSON key.

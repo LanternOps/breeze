@@ -665,7 +665,7 @@ const EFFECT_DIGEST_RESOLVERS: Record<
         return { kind: String(o.kind ?? ''), value: String(o.value ?? '') };
       })
       .sort((a, b) => a.kind.localeCompare(b.kind) || a.value.localeCompare(b.value));
-    const iocDigest = createHash('sha256').update(canonicalizeArguments(sorted)).digest('hex');
+    const iocDigest = createHash('sha256').update(canonicalizeArguments({ iocs: sorted })).digest('hex');
     return material(canonicalizeArguments({
       v: 1,
       ruleSetId,

@@ -28,7 +28,8 @@ import {
 import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
-import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
+import { aiExecuteCommand, aiQueueCommand, requireAiOrigin } from './aiDispatch';
+import { startDeviceScan } from './securityScanStart';
 import { inToolDbPhase } from './aiToolDbContext';
 // Static, from the pure type module — NOT from './commandQueue', whose lazy
 // import used to be this file's last route to the queue (#5022 W01).
@@ -68,8 +69,9 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
     deviceArgs: ['deviceId'],
     // The device actions wait up to 60 s for the agent, so they must not hold
     // the per-call transaction across it (#7918; `AiTool.selfManagedDbContext`).
-    // `vulnerabilities` only reads the DB and keeps it.
-    selfManagedDbContext: ['scan', 'status', 'quarantine', 'remove', 'restore'],
+    // `vulnerabilities` only reads the DB and keeps it. `scan` queues through
+    // startDeviceScan and does not wait (#6268), so it keeps the context too.
+    selfManagedDbContext: ['status', 'quarantine', 'remove', 'restore'],
     definition: {
       name: 'security_scan',
       description: 'Run security scans on a device, manage detected threats (quarantine, remove, restore), or query vulnerability data. Actions: scan, status, quarantine, remove, restore, vulnerabilities.',
@@ -151,8 +153,27 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      if (input.action === 'scan') {
+        // #6268 (W05-11): the same "Scan now" service the UI route uses — a
+        // tracked security_scans row with its dispatched rule-set refs and
+        // command id, the device's AI remote-tools policy, and aiOrigin on the
+        // command. It queues and returns; it does not wait on the agent.
+        const started = await inToolDbPhase(auth, () => startDeviceScan(auth, {
+          deviceId,
+          scanType: 'quick',
+          mfaSatisfied: false,
+          aiOrigin: requireAiOrigin(auth, 'security_scan'),
+        }));
+        if (!started.ok) return JSON.stringify({ error: started.error, status: started.status });
+        return JSON.stringify({
+          scanId: started.scan.id,
+          status: 'queued',
+          deviceName: started.scan.deviceName,
+          scanType: started.scan.scanType,
+        });
+      }
+
       const actionMap: Record<string, string> = {
-        scan: 'security_scan',
         status: 'security_collect_status',
         quarantine: 'security_threat_quarantine',
         remove: 'security_threat_remove',
