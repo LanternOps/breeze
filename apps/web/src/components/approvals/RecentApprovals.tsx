@@ -66,6 +66,11 @@ const SUCCESS_STATUSES = new Set(['completed', 'approved']);
  * success branch: "we don't know" rendered as a green check is the exact
  * failure mode #6022 is about.
  */
+/** The API's outcome reasons are lowercase clauses (shared with the chat read-back); render them as sentences. */
+function sentenceCase(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 export function outcomeKind(row: RecentApprovalRow): 'success' | 'failure' | 'unknown' {
   const status = row.intentOutcome?.status ?? '';
   if (FAILURE_STATUSES.has(status)) return 'failure';
@@ -189,7 +194,7 @@ export default function RecentApprovals() {
                             className="mt-1 text-xs text-destructive"
                             data-testid={`approvals-recent-reason-${row.id}`}
                           >
-                            {row.intentOutcome.reason}
+                            {sentenceCase(row.intentOutcome.reason)}
                           </p>
                         )}
                         {/* #9658: the deny form promises the reason is "shared with

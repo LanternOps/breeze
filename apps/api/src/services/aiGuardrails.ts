@@ -312,7 +312,7 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   manage_service_monitors: ['list'],
   manage_software_policies: ['list', 'get'],
   manage_ticket_checklist: ['list', 'list_templates', 'get_template'],
-  manage_tickets: ['list', 'get', 'list_work_types', 'list_links'],
+  manage_tickets: ['list', 'get', 'list_work_types', 'list_links', 'merge_preview'],
   manage_update_rings: ['list', 'get'],
   query_agent_versions: ['list_versions', 'check_upgrades'],
   query_analytics: ['sla_compliance', 'capacity_predictions', 'sla_definitions'],
@@ -423,7 +423,7 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   manage_delivery: ['create_routing','update_routing','delete_routing','set_default','create_escalation','update_escalation','delete_escalation'],
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
-  manage_tickets: ['move_org'],
+  manage_tickets: ['move_org', 'merge'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -515,6 +515,8 @@ export const TIER3_FOUR_EYES_ACTIONS: Record<string, string[]> = {
   // resolved by resolveApprovalScope's override hook, not this static table.
   // See TIER3_INPUT_AWARE_ACTIONS.
   manage_organizations: ['create_org'],
+  // #8972: `merge` is Tier 3 (one approver, spec §5.7), not four-eyes: it is
+  // same-org, unlike move_org's re-tenanting.
   manage_tickets: ['move_org'],
   // Grants an AUTHORITY, not a device action: it converts "this agent must ask
   // a human for <opKey>" into "this agent may run <opKey> unattended for this
@@ -560,6 +562,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // for the same reason every effect inside it is: the set can destroy a
   // person's access across two providers.
   'operator_plan',
+  // Wisp memory (W03 #9909): human-only (HUMAN_ONLY_TOOLS) and never declared to
+  // chat, Helper or agents — a person confirms/retracts on the memory page. Tier 3
+  // with operator_plan so the external MCP never advertises them; four_eyes is
+  // the conservative classification should any approval path ever reach them.
+  'confirm_memory', 'retract_memory',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -573,6 +580,7 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   'google_set_forwarding', 'google_disable_forwarding',
   'google_add_mail_delegate', 'google_remove_mail_delegate',
   'google_suspend_user', 'google_offboard_user', 'google_wipe_mobile_device',
+  'google_account_wipe_mobile_device',
   'google_restore_user', 'google_signout', 'google_set_vacation',
   'google_update_user', 'google_share_calendar', 'google_move_ou',
   'google_rename_user', 'google_add_to_group', 'google_remove_from_group',
@@ -599,6 +607,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // Supervised, not four_eyes: same class as a public ticket reply. list/get
   // resolve to Tier 1 (TIER1_ACTIONS) and never reach tier 3.
   send_endpoint_message: ['send'],
+  // #8972: merging two tickets of ONE org (spec §5.7: Tier 3, approval). It is
+  // irreversible, which is why it needs approval at all; it is not tenant-
+  // shaping like move_org (four_eyes), so one approver suffices.
+  manage_tickets: ['merge'],
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
@@ -1013,6 +1025,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     edit_comment: { resource: 'tickets', action: 'write' },
     delete_comment: { resource: 'tickets', action: 'write' },
     move_org: { resource: 'tickets', action: 'write' },
+    // #8972: the staff routes gate both on tickets:write (routes/tickets/merge.ts).
+    merge_preview: { resource: 'tickets', action: 'write' },
+    merge: { resource: 'tickets', action: 'write' },
     log_time_entry: { resource: 'time_entries', action: 'write' },
     start_timer: { resource: 'time_entries', action: 'write' },
     stop_timer: { resource: 'time_entries', action: 'write' },
@@ -1176,6 +1191,22 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   validate_flow: { resource: 'automations', action: 'read' },
   get_flow: { resource: 'automations', action: 'read' },
   list_flows: { resource: 'automations', action: 'read' },
+  // #8973 W4: business-hours calendars read with the ticket permission.
+  list_business_calendars: { resource: 'tickets', action: 'read' },
+  // Wisp W03 memory (services/wisp/memoryTools.ts): the chat-use permission
+  // (routes/ai.ts), same as the /wisp/memory routes. confirm/retract are
+  // HUMAN_ONLY_TOOLS; mapped so a direct dispatch still carries an RBAC gate.
+  recall: { resource: 'ai_sessions', action: 'use' },
+  remember: { resource: 'ai_sessions', action: 'use' },
+  confirm_memory: { resource: 'ai_sessions', action: 'use' },
+  retract_memory: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts), w00 A1: the
+  // chat-use permission, same as the /wisp/concerns and /wisp/watches routes.
+  list_concerns: { resource: 'ai_sessions', action: 'use' },
+  raise_concern: { resource: 'ai_sessions', action: 'use' },
+  snooze_concern: { resource: 'ai_sessions', action: 'use' },
+  resolve_concern: { resource: 'ai_sessions', action: 'use' },
+  create_watch: { resource: 'ai_sessions', action: 'use' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -1374,25 +1405,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // mapping exists so the chat path reports that typed error rather than
   // "No RBAC permission mapping".
   //
-  // LANDMINE (2026-09-17 AI tool ROLE audit §2.7). Flat `ai_agents:read` is a
-  // LOW-BAR grant — seeded Org Admin holds it — and `workspace_run` executes
-  // arbitrary bash / python / node. It is safe ONLY because no chat or MCP
-  // caller can ever reach a workspace: `resolveWorkspace`
-  // (workspace/workspaceTools.ts) derives the run id from the caller identity
-  // alone (`auth.principal.kind === 'ai_agent'` + `runId`), there is no
-  // `runId` tool input, and chat-initiated launch is withdrawn (#6086,
-  // `workspace_launch_analysis` in AGENT_HUMAN_ONLY_TOOLS below). Agent
-  // principals bypass this table entirely, so it is never the control for a
-  // legitimate run.
-  //
-  // RE-ENABLING chat-initiated launch hands a CHAT caller a run-bearing
-  // principal, and at that moment this table becomes the ONLY gate. These four
-  // entries MUST be raised to an execute-class permission in the same change.
-  // Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
-  workspace_stage: { resource: 'ai_agents', action: 'read' },
-  workspace_run: { resource: 'ai_agents', action: 'read' },
-  workspace_collect: { resource: 'ai_agents', action: 'read' },
-  workspace_cancel: { resource: 'ai_agents', action: 'read' },
+  // CLOSED (2026-09-17 AI tool ROLE audit §2.7 landmine): raised to the
+  // execute-class `ai_workspace:execute` by Wisp W02 (spec §4.6) — the old
+  // flat `ai_agents:read` was a low-bar grant seeded Org Admin holds, while
+  // `workspace_run` executes arbitrary bash / python / node. Partner Admin
+  // holds the new key through `*:*`; no other role is seeded with it.
+  // `resolveWorkspace` (workspace/workspaceTools.ts) still answers non-agent
+  // principals with `workspace_requires_run`, and agent principals still
+  // bypass this table. Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
+  workspace_stage: { resource: 'ai_workspace', action: 'execute' },
+  workspace_run: { resource: 'ai_workspace', action: 'execute' },
+  workspace_collect: { resource: 'ai_workspace', action: 'execute' },
+  workspace_cancel: { resource: 'ai_workspace', action: 'execute' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
@@ -1688,6 +1712,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   google_share_calendar: { resource: 'organizations', action: 'write' },
   google_offboard_user: { resource: 'organizations', action: 'write' },
   google_wipe_mobile_device: { resource: 'organizations', action: 'write' },
+  google_account_wipe_mobile_device: { resource: 'organizations', action: 'write' },
   google_security_drift: { resource: 'organizations', action: 'read' },
   google_email_report: { resource: 'organizations', action: 'read' },
   google_list_user_groups: { resource: 'organizations', action: 'read' },
@@ -2844,7 +2869,7 @@ type ToolPermissionResolution =
   | { ok: true; requirements: ToolPermissionRequirement[] }
   | { ok: false; denial: string };
 
-function resolveToolPermissionRequirements(
+export function resolveToolPermissionRequirements(
   toolName: string,
   input: Record<string, unknown>,
 ): ToolPermissionResolution {
@@ -3222,7 +3247,11 @@ export function buildApprovalDescription(
       break;
 
     case 'file_operations':
-      parts.push(`File ${action}: ${input.path}`);
+      // #9853: a permanent delete cannot be restored from the agent trash; the
+      // approver must see that before approving.
+      parts.push(action === 'delete' && input.permanent === true
+        ? `File delete (permanent, cannot be restored): ${input.path}`
+        : `File ${action}: ${input.path}`);
       break;
 
     case 'diagnose_connectivity':

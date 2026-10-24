@@ -4,6 +4,8 @@ import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { useDeviceOptions } from '../../hooks/useDeviceOptions';
+import { DeviceOptionPicker } from '../filters/DeviceOptionPicker';
 import { DETECTION_CLASSES } from './constants';
 
 type Policy = {
@@ -22,7 +24,9 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
   const { t } = useTranslation('security');
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [policyId, setPolicyId] = useState('');
-  const [deviceIds, setDeviceIds] = useState('');
+  const [deviceIds, setDeviceIds] = useState<string[]>([]);
+  const [deviceSearch, setDeviceSearch] = useState('');
+  const deviceOptions = useDeviceOptions({ search: deviceSearch, includeIds: deviceIds });
   const [detectionClasses, setDetectionClasses] = useState<string[]>(['credential']);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
@@ -48,16 +52,26 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
   };
 
   const handleSubmit = async () => {
-    const ids = deviceIds
-      .split(/[\n,;]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const ids = deviceIds;
 
     if (ids.length === 0) {
       setError(
-        t('sensitiveDataCreateScanModal.errors.deviceRequired', {
-          defaultValue: 'Enter at least one device ID',
+        t('sensitiveDataCreateScanModal.errors.devicesRequired', {
+          defaultValue: 'Select at least one device',
         }),
+      );
+      return;
+    }
+    if (!deviceOptions.canSubmit) {
+      // `error` needs the picker's Retry; waiting would never resolve it.
+      setError(
+        deviceOptions.state === 'error'
+          ? t('sensitiveDataCreateScanModal.errors.devicesLoadFailed', {
+              defaultValue: 'The device list could not be loaded. Use Retry in the device list, then try again.',
+            })
+          : t('sensitiveDataCreateScanModal.errors.devicesNotReady', {
+              defaultValue: 'The device list is still loading or incomplete. Wait for it to finish, then try again.',
+            }),
       );
       return;
     }
@@ -137,25 +151,26 @@ export default function CreateScanModal({ onClose, onCreated }: CreateScanModalP
             </select>
           </div>
 
-          {/* Device IDs */}
+          {/* Devices */}
           <div>
             <label className="text-sm font-medium">
-              {t('sensitiveDataCreateScanModal.form.deviceIds', { defaultValue: 'Device IDs' })}
+              {t('sensitiveDataCreateScanModal.form.devices', { defaultValue: 'Devices' })}
             </label>
             <p className="text-xs text-muted-foreground">
-              {t('sensitiveDataCreateScanModal.form.deviceIdsHelp', {
-                defaultValue: 'One UUID per line, or comma-separated.',
+              {t('sensitiveDataCreateScanModal.form.devicesHelp', {
+                defaultValue: 'Choose the devices to scan.',
               })}
             </p>
-            <textarea
-              value={deviceIds}
-              onChange={(e) => setDeviceIds(e.target.value)}
-              rows={4}
-              placeholder={t('sensitiveDataCreateScanModal.form.deviceIdsPlaceholder', {
-                defaultValue: 'device-uuid-1\ndevice-uuid-2',
-              })}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
-            />
+            <div className="mt-2 rounded-md border bg-muted/10 p-2">
+              <DeviceOptionPicker
+                result={deviceOptions}
+                selectedIds={deviceIds}
+                onSelectedIdsChange={setDeviceIds}
+                search={deviceSearch}
+                onSearchChange={setDeviceSearch}
+                showSelectAll
+              />
+            </div>
           </div>
 
           {/* Detection Classes */}

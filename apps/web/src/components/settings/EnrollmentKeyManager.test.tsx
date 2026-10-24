@@ -146,7 +146,7 @@ function routeFetch(list: Row[], sites: StoreSite[] = []) {
 beforeEach(() => {
   fetchWithAuth.mockReset();
   // Reset the store mock to the default single-org shape between tests.
-  seedOrgState({ currentOrgId: 'org-1', currentSiteId: null, sites: [], organizations: [], isLoading: false });
+  seedOrgState({ currentOrgId: 'org-1', currentSiteId: null, sites: [], organizations: [], isLoading: false, enrollmentDefaults: null });
 });
 
 describe('EnrollmentKeyManager — short code column', () => {
@@ -351,7 +351,7 @@ describe('EnrollmentKeyManager — create form site selector', () => {
     expect(screen.queryByText('Expiry must be in the future.')).toBeNull();
   });
 
-  it('leaving the device-limit field blank sends the 50-device default, not a single-use maxUsage (#4126 paper cut #31)', async () => {
+  it('leaving the device-limit field blank never yields a single-use key: placeholder shows 50 and the body omits it so the server resolves the default (#4126 paper cut #31, #9616)', async () => {
     seedOrgState({
       currentOrgId: 'org-1',
       organizations: [makeOrg('org-1', 'Org One')],
@@ -381,7 +381,127 @@ describe('EnrollmentKeyManager — create form site selector', () => {
       expect(calls.some((c) => c.url === '/enrollment-keys' && c.method === 'POST')).toBe(true);
     });
     const post = calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
-    expect(post?.body?.maxUsage).toBe(50);
+    // Defaults not loaded: the form omits the fields so the SERVER resolves the
+    // partner/org default (never a single-use key, never an unvetted client value).
+    expect(post?.body && 'maxUsage' in post.body).toBe(false);
+    expect(post?.body && 'ttlMinutes' in post.body).toBe(false);
+  });
+
+  // #9616 — Create Key must honour the partner/org enrollment defaults the way
+  // Add Device does, and say what a blank field means.
+  describe('partner/org enrollment defaults (#9616)', () => {
+    async function openCreateForm() {
+      render(<EnrollmentKeyManager />);
+      await screen.findByText(EMPTY);
+      fireEvent.click(screen.getByText('Create Key'));
+      fireEvent.change(screen.getByPlaceholderText('e.g., Production servers'), {
+        target: { value: 'CI key' },
+      });
+      const siteSelect = screen.getByTestId('enrollment-key-site-select');
+      await waitFor(() => {
+        expect(siteSelect).toBeEnabled();
+        expect(siteSelect).toHaveValue('site-a');
+      });
+    }
+    const submitForm = () =>
+      fireEvent.click(document.querySelector('form button[type="submit"]') as HTMLButtonElement);
+    const postOf = (calls: ReturnType<typeof routeFetch>) =>
+      calls.find((c) => c.url === '/enrollment-keys' && c.method === 'POST');
+
+    function seedDefaults() {
+      seedOrgState({
+        currentOrgId: 'org-1',
+        organizations: [makeOrg('org-1', 'Org One')],
+        enrollmentDefaults: { ttlMinutes: 10080, deviceCount: 10, maxTtlMinutes: 525600 },
+      });
+    }
+
+    it('shows the resolved device count and expiry as the blank-field meaning', async () => {
+      seedDefaults();
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      await openCreateForm();
+      expect(screen.getByPlaceholderText('10 (org default)')).toBeInTheDocument();
+      expect(screen.getByText('Leave blank for 7 days (org default).')).toBeInTheDocument();
+    });
+
+    // #9876: direct load of /settings/enrollment-keys never runs the org
+    // switcher's fetchSites, so the store's defaults are null.
+    it('fetches the resolved defaults on mount when the store has none', async () => {
+      seedOrgState({
+        currentOrgId: 'org-1',
+        organizations: [makeOrg('org-1', 'Org One')],
+        enrollmentDefaults: null,
+      });
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      const base = fetchWithAuth.getMockImplementation()!;
+      fetchWithAuth.mockImplementation((url: string, opts?: RequestInit) => {
+        if (url.startsWith('/orgs/sites?') && url.includes('includeEnrollmentDefaults=1')) {
+          return Promise.resolve(
+            jsonRes({
+              data: [],
+              enrollmentDefaults: { ttlMinutes: 1440, deviceCount: 7, maxTtlMinutes: 525600 },
+            }),
+          );
+        }
+        return base(url, opts);
+      });
+      render(<EnrollmentKeyManager />);
+      await screen.findByText(EMPTY);
+      fireEvent.click(screen.getByText('Create Key'));
+      expect(await screen.findByPlaceholderText('7 (org default)')).toBeInTheDocument();
+      expect(screen.getByText('Leave blank for 1 day (org default).')).toBeInTheDocument();
+    });
+
+    it('sends the resolved device count and ttlMinutes (not expiresAt) when both are blank', async () => {
+      seedDefaults();
+      const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      await openCreateForm();
+      submitForm();
+      await waitFor(() => expect(postOf(calls)).toBeTruthy());
+      expect(postOf(calls)?.body?.maxUsage).toBe(10);
+      expect(postOf(calls)?.body?.ttlMinutes).toBe(10080);
+      expect(postOf(calls)?.body?.expiresAt).toBeUndefined();
+    });
+
+    it('an explicit expiry wins over the default and is sent as expiresAt only', async () => {
+      seedDefaults();
+      const calls = routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      await openCreateForm();
+      fireEvent.change(screen.getByTestId('enrollment-key-expires-at'), {
+        target: { value: '2999-01-01T00:00' },
+      });
+      submitForm();
+      await waitFor(() => expect(postOf(calls)).toBeTruthy());
+      expect(typeof postOf(calls)?.body?.expiresAt).toBe('string');
+      expect(postOf(calls)?.body?.ttlMinutes).toBeUndefined();
+    });
+
+    it('hints in the Usage column when the count came from the default', async () => {
+      seedDefaults();
+      routeFetch([], [makeSite({ id: 'site-a', name: 'Site A' })]);
+      const base = fetchWithAuth.getMockImplementation()!;
+      let created = false;
+      fetchWithAuth.mockImplementation((rawUrl: unknown, opts?: { method?: string; body?: string }) => {
+        const url = String(rawUrl ?? '');
+        if (url === '/enrollment-keys' && opts?.method === 'POST') {
+          created = true;
+          return Promise.resolve(jsonRes({ key: 'NEWKEY-123', id: 'k-new' }));
+        }
+        if (created && url.startsWith('/enrollment-keys?')) {
+          return Promise.resolve(
+            jsonRes({
+              data: [makeRow({ id: 'k-new', maxUsage: 10 }), makeRow({ id: 'k-old', maxUsage: 10 })],
+              pagination: { page: 1, limit: 50, total: 2 },
+            }),
+          );
+        }
+        return base(rawUrl, opts);
+      });
+      await openCreateForm();
+      submitForm();
+      expect(await screen.findByTestId('key-usage-default-k-new')).toHaveTextContent('default');
+      expect(screen.queryByTestId('key-usage-default-k-old')).toBeNull();
+    });
   });
 
   it('blocks submit and hides the site dropdown when the org has no sites', async () => {

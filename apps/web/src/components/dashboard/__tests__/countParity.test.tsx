@@ -23,6 +23,8 @@ import { decodeFilterFromHash } from '../../devices/filterUrl';
 import { readDeviceClassFromHash } from '../../devices/deviceClassFilter';
 import { siteDevicesHref } from '../../contracts/deviceCoverageLinks';
 import { DASHBOARD_METRICS, metricHref, type MetricKey } from '../dashboardLinks';
+import { ALERTS_PARITY, THREATS_PARITY, VULNS_PARITY } from './parityFixtures.alertsVulns';
+import { PATCHES_PARITY } from './parityFixtures.patches';
 import {
   DEVICES_PARITY,
   ORG_A,
@@ -240,7 +242,9 @@ describe('registry coverage', () => {
     const counts = (Object.keys(DASHBOARD_METRICS) as MetricKey[]).filter(
       (k) => DASHBOARD_METRICS[k].kind === 'count',
     );
-    const uncovered = counts.filter((k) => !(k in DEVICES_PARITY) && !(k in OTHER_FAMILIES));
+    // Alerts / vulnerabilities / threats are mounted in countParity.alertsVulns.test.tsx.
+    const inOtherFile = (k: string) => k in ALERTS_PARITY || k in VULNS_PARITY || k in THREATS_PARITY || k in PATCHES_PARITY;
+    const uncovered = counts.filter((k) => !(k in DEVICES_PARITY) && !(k in OTHER_FAMILIES) && !inOtherFile(k));
     expect(uncovered).toEqual([]);
     for (const k of Object.keys(DEVICES_PARITY)) expect(counts).toContain(k);
     for (const reason of Object.values(OTHER_FAMILIES)) expect(reason.length).toBeGreaterThan(10);

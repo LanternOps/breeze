@@ -1950,6 +1950,7 @@
     "title": "Active Network Connections"
   },
   "devicePatchStatusTab": {
+    "released": "Released {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compliant",
       "description": "Pending vs installed updates",
@@ -2573,7 +2574,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
-    "importFromRmm": "Import from another RMM",
+    "importFromRmm": "Import custom fields from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",

@@ -58,7 +58,17 @@ vi.mock('../db', () => {
   db.transaction = vi.fn(async (fn: (tx: unknown) => unknown) => fn(db));
   return { db, runOutsideDbContext: (fn: () => unknown) => fn(), withSystemDbAccessContext: (fn: () => unknown) => fn() };
 });
+// #8972 W0: writers lock the ticket row first; the helper has its own tests, so here it
+// echoes the ticket back (same org as the fixtures) and records the id.
+const lockMock = vi.hoisted(() => vi.fn(async (_tx: unknown, id: string) => ({
+  id, orgId: '22222222-2222-4222-8222-222222222222', partnerId: 'p-1', status: 'open', deletedAt: null, workKind: 'support',
+})));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockMock, lockTicketsForWrite: vi.fn(async () => new Map()) }));
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: mocks.emit }));
+// #8973 W4: a live create resolves the org's business calendar (none here, 24×7).
+vi.mock('./businessCalendars/resolve', () => ({
+  resolveBusinessCalendar: vi.fn(async () => ({ revisionId: null, calendarId: null, source: 'none' })),
+}));
 vi.mock('./auditService', () => ({ createAuditLogAsync: mocks.audit }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: mocks.triage }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: mocks.allocate }));
@@ -246,7 +256,7 @@ describe('assignTicket in import mode', () => {
 
 describe('changeTicketStatus in import mode', () => {
   it('resolves without a note, at the source time, with no event, outbox, audit or triage feedback', async () => {
-    state.selectQueue.push([storedTicket({ status: 'open' })]);
+    state.selectQueue.push([storedTicket({ status: 'open' })], [storedTicket({ status: 'open' })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'resolved' }, {}, actor, at(LATER));
     const [update] = state.updates;
     expect(update!.set).toMatchObject({ status: 'resolved', resolvedAt: LATER });
@@ -261,23 +271,23 @@ describe('changeTicketStatus in import mode', () => {
 
   it('resolved then closed keeps both source times', async () => {
     const closedAt = new Date('2021-03-10T08:00:00.000Z');
-    state.selectQueue.push([storedTicket({ status: 'resolved', resolvedAt: LATER })]);
+    state.selectQueue.push([storedTicket({ status: 'resolved', resolvedAt: LATER })], [storedTicket({ status: 'resolved', resolvedAt: LATER })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'closed' }, {}, actor, at(closedAt));
     expect(state.updates[0]!.set).toMatchObject({ status: 'closed', closedAt, resolvedAt: LATER, closedBy: null });
     // Closing straight from open stamps resolved_at at the close time, as live does with now.
     state.updates.length = 0;
-    state.selectQueue.push([storedTicket({ status: 'open' })]);
+    state.selectQueue.push([storedTicket({ status: 'open' })], [storedTicket({ status: 'open' })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'closed' }, {}, actor, at(closedAt));
     expect(state.updates[0]!.set).toMatchObject({ closedAt, resolvedAt: closedAt });
     expectNoSideEffects();
   });
 
   it('skips the SLA pause bookkeeping: an imported ticket has no targets to pause', async () => {
-    state.selectQueue.push([storedTicket({ status: 'open' })]);
+    state.selectQueue.push([storedTicket({ status: 'open' })], [storedTicket({ status: 'open' })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'pending' }, {}, actor, at(LATER));
     expect(state.updates[0]!.set).not.toHaveProperty('slaPausedAt');
     state.updates.length = 0;
-    state.selectQueue.push([storedTicket({ status: 'pending', slaPausedAt: CREATED })]);
+    state.selectQueue.push([storedTicket({ status: 'pending', slaPausedAt: CREATED })], [storedTicket({ status: 'pending', slaPausedAt: CREATED })]); // pre-read, then the re-read under the ticket lock
     await changeTicketStatus(TICKET, { status: 'open' }, {}, actor, at(LATER));
     expect(state.updates[0]!.set).not.toHaveProperty('slaPausedMinutes');
   });
@@ -293,6 +303,7 @@ describe('updateTicketFields in import mode', () => {
     state.selectQueue.push([storedTicket({ status: 'open' })]);
     await updateTicketFields(TICKET, { priority: 'urgent', tags: ['vip'] }, actor, at(LATER));
     expect(mocks.orgSla).not.toHaveBeenCalled();
+    expect(lockMock).toHaveBeenCalledWith(expect.anything(), TICKET); // #8972 W0: ticket locked first
     const [update] = state.updates;
     expect(update!.set).toMatchObject({ priority: 'urgent', tags: ['vip'] });
     expect(update!.set).not.toHaveProperty('responseSlaMinutes');
@@ -311,7 +322,7 @@ describe('updateTicketFields in import mode', () => {
   });
 
   it('a live priority change on an open ticket still restamps (unchanged)', async () => {
-    state.selectQueue.push([storedTicket({ status: 'open', responseSlaMinutes: 120, resolutionSlaMinutes: 960 })]);
+    state.selectQueue.push([storedTicket({ status: 'open', responseSlaMinutes: 120, resolutionSlaMinutes: 960 })], [storedTicket({ status: 'open', responseSlaMinutes: 120, resolutionSlaMinutes: 960 })]); // pre-read, then the re-read under the ticket lock
     await updateTicketFields(TICKET, { priority: 'urgent' }, { kind: 'user', userId: AGENT });
     expect(mocks.orgSla).toHaveBeenCalled();
     expect(state.updates[0]!.set).toMatchObject({ responseSlaMinutes: 60, resolutionSlaMinutes: 480 });

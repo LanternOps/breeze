@@ -426,4 +426,16 @@ describe('ProfilePage — SSO re-auth grant survives a remount (#8862)', () => {
       expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
     });
   });
+
+  it('ignores a non-UUID #ssoReauthGrant fragment: no request, fragment stripped', async () => {
+    routeFetch();
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=not-a-uuid');
+
+    await mountPage();
+
+    expect(callTo('/auth/mfa/setup')).toHaveLength(0);
+    expect(screen.queryByText(/Invalid UUID/i)).toBeNull();
+    expect(window.location.hash).toBe('');
+    expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+  });
 });

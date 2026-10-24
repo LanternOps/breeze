@@ -96,6 +96,7 @@
       "statusFilterLabel": "Filtrar por estado de cumplimiento",
       "pendingPatches": "Parches pendientes ({{count}})",
       "critical": "Crítico ({{count}})",
+      "failed": "Instalaciones fallidas ({{count}})",
       "pendingReboot": "Reinicio pendiente ({{count}})",
       "thirdPartyPending": "Pendiente de terceros ({{count}})",
       "compliant": "Cumple ({{count}})"
@@ -160,6 +161,11 @@
       "messageOne": "{{action}} en el dispositivo {{count}} en {{org}}?",
       "messageMany": "{{action}} en dispositivos {{count}} en {{org}}?",
       "messageMultiOrg": "¿{{action}} en dispositivos {{count}} en organizaciones {{orgCount}} ({{orgNames}})?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} de {{total}}",
+      "previous": "Página anterior",
+      "next": "Página siguiente"
     }
   },
   "patchInstallHistory": {
@@ -335,6 +341,11 @@
       "showing": "Mostrando {{shown}} de {{total}}",
       "loadMore": "Cargar más",
       "lastChecked": "Última comprobación: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Versión del paquete {{version}}",
+      "id": "ID de catálogo {{id}}",
+      "title": "Otra entrada del catálogo tiene el mismo título. Cada una se aprueba por separado."
     }
   },
   "patchesPage": {

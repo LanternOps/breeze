@@ -158,7 +158,6 @@ describe('PartnerSettingsPage language control', () => {
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
           language,
-          businessHours: { preset: 'business' },
           contact: {}
         }
       })
@@ -176,6 +175,14 @@ describe('PartnerSettingsPage language control', () => {
     window.location.hash = '';
     await act(async () => { await i18n.changeLanguage('en'); });
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('uses the full content width, not a centred max-width column', async () => {
+    await renderPartner();
+    const heading = screen.getByRole('heading', { name: /Partner Settings/i });
+    const root = heading.closest('header')!.parentElement!;
+    expect(root.className).not.toMatch(/\bmax-w-/);
+    expect(root.className).not.toMatch(/\bmx-auto\b/);
   });
 
   it('renders an active selector with exactly the supported locales', async () => {
@@ -206,6 +213,24 @@ describe('PartnerSettingsPage language control', () => {
     expect(patchCall).toBeDefined();
     const body = JSON.parse((patchCall![1] as RequestInit).body as string);
     expect(body.settings.language).toBe('en');
+  });
+
+  it('regional tab keeps tz/date/time/language controls and the save payload carries no businessHours (#8973)', async () => {
+    const user = await renderPartner('en');
+    expect(screen.getByTestId('partner-timezone-trigger')).toBeTruthy();
+    expect(screen.getByLabelText('Language')).toBeTruthy();
+    expect(document.getElementById('partner-date-format')).toBeTruthy();
+    expect(document.querySelector('input[name="timeFormat"]')).toBeTruthy();
+    expect(document.querySelector('input[name="businessHoursPreset"]')).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('Language'), 'de-DE');
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+    const patchCall = fetchWithAuthMock.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'
+    );
+    expect(patchCall).toBeDefined();
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
+    expect(body.settings).not.toHaveProperty('businessHours');
   });
 
   it.each(['es-419', 'fr-FR', 'fr-CA', 'de-DE', 'it-IT', 'tr-TR'] as const)(
@@ -249,7 +274,6 @@ describe('PartnerSettingsPage language control', () => {
     // The panel's own h2 (from the shell) now carries the tab label; the card keeps only its description.
     expect(screen.getByTestId('partner-settings-panel-heading').textContent).toBe(i18n.t('partnerSettingsPage.tabs.regional.label', { ns: 'settings' }));
     expect(screen.getByLabelText('Fuso horário')).not.toBeNull();
-    expect(screen.getAllByText('Horário comercial')).toHaveLength(2);
     expect(screen.getByText('Idioma padrão das configurações do parceiro.')).not.toBeNull();
   });
 });
@@ -270,7 +294,7 @@ describe('PartnerSettingsPage security clear (#8976)', () => {
         createdAt: '2026-02-09T00:00:00.000Z',
         settings: {
           timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
-          businessHours: { preset: 'business' }, contact: {},
+          contact: {},
           security: { sessionTimeout: 720, maxSessions: 3 },
         },
       })
@@ -317,7 +341,6 @@ describe('PartnerSettingsPage Company tab', () => {
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
           language: 'en',
-          businessHours: { preset: 'business' },
           contact: { name: 'Jane' },
           address: { city: 'Denver', country: 'US' },
         },
@@ -349,7 +372,6 @@ describe('PartnerSettingsPage Company tab', () => {
           dateFormat: 'MM/DD/YYYY',
           timeFormat: '12h',
           language: 'en',
-          businessHours: { preset: 'business' },
           contact: {},
           address: {},
         },
@@ -429,7 +451,7 @@ describe('PartnerSettingsPage Company tab', () => {
         createdAt: '2026-02-09T00:00:00.000Z',
         settings: {
           timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en',
-          businessHours: { preset: 'business' }, contact: {}, address: {},
+          contact: {}, address: {},
         },
       });
 
@@ -487,7 +509,6 @@ describe('PartnerSettingsPage Company tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -563,7 +584,6 @@ describe('PartnerSettingsPage Ticketing tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -624,7 +644,6 @@ describe('PartnerSettingsPage Email templates tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -691,7 +710,6 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
       ...extraSettings,
@@ -763,7 +781,6 @@ describe('PartnerSettingsPage sidebar nav & save contract', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -848,7 +865,6 @@ describe('PartnerSettingsPage access gate (no flash-of-access-denied)', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
     },
@@ -959,7 +975,6 @@ describe('PartnerSettingsPage AI Budgets tab', () => {
       dateFormat: 'MM/DD/YYYY',
       timeFormat: '12h',
       language: 'en',
-      businessHours: { preset: 'business' },
       contact: {},
       address: {},
       aiBudgets: { enabled: true, monthlyBudgetCents: 5000, alertThresholdPercents: [50, 80] },

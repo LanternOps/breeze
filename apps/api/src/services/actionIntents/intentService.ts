@@ -15,6 +15,7 @@ import {
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
+import { publishEvent } from '../eventBus';
 import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
 import { subjectMatchesArguments } from './intentTargetScope';
 import {
@@ -3488,17 +3489,70 @@ export async function transitionIntent(
         : sql`COALESCE(${actionIntents.approvalExpiresAt}, ${actionIntents.expiresAt}) > now()`;
   }
 
-  return withSystemDbAccessContext(async () => {
+  const decided = await withSystemDbAccessContext(async () => {
     const conditions = [eq(actionIntents.id, intentId), inArray(actionIntents.status, fromList)];
     if (deadlineCondition) conditions.push(deadlineCondition);
     const rows = await db
       .update(actionIntents)
       .set({ status: to, ...patch })
       .where(and(...conditions))
-      .returning({ id: actionIntents.id });
-    return rows.length > 0;
+      .returning({
+        id: actionIntents.id,
+        orgId: actionIntents.orgId,
+        toolName: actionIntents.actionName,
+        requestingAgentRunId: actionIntents.requestingAgentRunId,
+      });
+    const row = rows[0];
+    if (!row) return null;
+    // Wisp W05: the grant is reachable through the run that minted the intent
+    // (action_intents carries no grant column). Only decision transitions
+    // publish, so only they pay for the extra read.
+    let grantId: string | null = null;
+    if (DECISION_STATUSES.has(to) && row.requestingAgentRunId) {
+      const [run] = await db
+        .select({ grantId: aiAgentRuns.grantId })
+        .from(aiAgentRuns)
+        .where(eq(aiAgentRuns.id, row.requestingAgentRunId))
+        .limit(1);
+      grantId = run?.grantId ?? null;
+    }
+    return { row, grantId };
   });
+  if (!decided) return false;
+
+  // Wisp W05: `ai.intent.decided` wakes the triage engine. Published AFTER the
+  // system block has returned (never inside an open DB context, #1105) and
+  // never awaited: a bus outage must not fail or delay the CAS the caller won.
+  if (DECISION_STATUSES.has(to)) {
+    const { row, grantId } = decided;
+    // publishEvent is `async`, so in production it only ever rejects; the
+    // outer catch covers a non-async stand-in (test doubles) that throws.
+    try {
+      void publishEvent('ai.intent.decided', row.orgId, {
+        intentId: row.id,
+        orgId: row.orgId,
+        toolName: row.toolName,
+        decision: to,
+        requestingAgentRunId: row.requestingAgentRunId ?? null,
+        grantId,
+      }, 'action-intents').catch(reportIntentDecidedPublishFailure);
+    } catch (err) {
+      reportIntentDecidedPublishFailure(err);
+    }
+  }
+  return true;
 }
+
+/** A lost `ai.intent.decided` is a lost Wisp wake: report it, never fail the caller. */
+function reportIntentDecidedPublishFailure(err: unknown): void {
+  console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'actionIntents', op: 'publish_intent_decided' });
+}
+
+/** Statuses that are decisions (not execution progress) — they emit `ai.intent.decided`. */
+const DECISION_STATUSES: ReadonlySet<ActionIntentStatus> = new Set<ActionIntentStatus>([
+  'approved', 'rejected', 'expired', 'cancelled',
+]);
 
 // ---------------------------------------------------------------------------
 // waitForIntentDecision — chat SDK's blocking poll (spec §6.1)

@@ -5,6 +5,7 @@ export const EMAIL_TEMPLATE_IDS = [
   'ticket_comment_notification',
   'ticket_autoresponse',
   'ticket_resolved',
+  'ticket_merged',
   'quote_send',
   'invoice_send',
   'invoice_autopay',
@@ -57,7 +58,8 @@ export type EmailTemplateVarKey =
   | 'amount_paid' | 'total_charged' | 'paid_on' | 'balance_remaining'
   | 'failure_text' | 'action_link' | 'action_label'
   | 'charge_total' | 'attempted_amount'
-  | 'approval_ask' | 'approval_snapshot' | 'approval_expires' | 'approval_status';
+  | 'approval_ask' | 'approval_snapshot' | 'approval_expires' | 'approval_status'
+  | 'merged_into_number';
 
 const COMMENT_NOTIFICATION_VARS = [
   'ticket_number',
@@ -131,6 +133,7 @@ const VARS_BY_ID: Record<EmailTemplateId, readonly EmailTemplateVarKey[]> = {
   ticket_comment_notification: COMMENT_NOTIFICATION_VARS,
   ticket_autoresponse: AUTORESPONSE_VARS,
   ticket_resolved: [...COMMENT_NOTIFICATION_VARS, 'resolution_note'],
+  ticket_merged: [...COMMENT_NOTIFICATION_VARS, 'merged_into_number'],
   quote_send: QUOTE_SEND_VARS,
   invoice_send: INVOICE_SEND_VARS,
   invoice_autopay: ['org_name', 'partner_name', 'invoice_number', 'amount_due', 'due_date',
@@ -158,6 +161,7 @@ const LABEL_BY_ID: Record<EmailTemplateId, string> = {
   ticket_comment_notification: 'Public reply notice',
   ticket_autoresponse: 'Ticket received acknowledgement',
   ticket_resolved: 'Ticket resolved',
+  ticket_merged: 'Ticket merged',
   quote_send: 'Quote / proposal',
   invoice_send: 'Invoice',
   invoice_autopay: 'Invoice with automatic payment notice',
@@ -182,6 +186,7 @@ const HAS_CTA_BY_ID: Record<EmailTemplateId, boolean> = {
   ticket_comment_notification: true,
   ticket_autoresponse: false,
   ticket_resolved: true,
+  ticket_merged: true,
   quote_send: true,
   invoice_send: true,
   invoice_autopay: true,
@@ -249,6 +254,16 @@ const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> 
     html:
       `<p>Your ticket has been resolved.</p>
 <p>{{resolution_note}}</p>
+<p>{{email_only_hint}}</p>
+<p>{{cta_button}}</p>`,
+  },
+  ticket_merged: {
+    subject: '[{{ticket_number}}] Merged into {{merged_into_number}}: {{ticket_subject}}',
+    heading: 'Your request was merged',
+    buttonLabel: 'View ticket',
+    html:
+      `<p>Your request <strong>{{ticket_number}}</strong> was merged into <strong>{{merged_into_number}}</strong>, where our team is handling it.</p>
+<p>Reply to this email to add more detail; it goes to {{merged_into_number}}.</p>
 <p>{{email_only_hint}}</p>
 <p>{{cta_button}}</p>`,
   },

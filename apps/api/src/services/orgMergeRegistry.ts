@@ -341,6 +341,9 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // already has (or none, falling back to the baseline). Partner baseline
   // rows have org_id NULL and are never touched by an org merge at all.
   ai_agent_schedules: { kind: 'leave-for-erasure', note: 'org override rows tighten a partner baseline for the LOSER org only; the survivor keeps its own overrides. Partner rows have org_id NULL and are not merge participants.' },
+  // Wisp W02 (#9908): an org-scoped delegation grant borrowed its grantor's
+  // authority for one org; org_id is trigger-immutable (wisp_grants_update_guard).
+  wisp_grants: { kind: 'leave-for-erasure', note: 'an org-scoped grant borrowed the grantor\'s authority for the LOSER org and its pinned revision names that org; it never follows a merge — the grantor turns Wisp on for the survivor again. Partner-wide grants have org_id NULL and are not merge participants.' },
   // ai_agent_fix_watches (Wave 6 PR 2, #3828): a fix-held watch is per-run
   // HISTORY tied to a specific ai_agent_runs row that itself never follows
   // an org merge (see ai_agent_runs above) — repointing the watch while its
@@ -363,6 +366,8 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // org — same "history stays put" decision as ai_agent_fix_watches /
   // ai_agent_runs above, not a separate call.
   ai_agent_op_evidence: { kind: 'leave-for-erasure', note: 'evidence rows are historical copies of outcomes tied to runs/watches that stay with the source org (ai_agent_runs disposition); rows die with the loser shell' },
+  // ai_memory_blocks: deliberately absent — no `org_id` column (owner_org_id); owner rows cascade by FK; see migration 2027-01-04-110100-ai-memory-blocks.sql header (Wisp W03, w00 A9). A survivor repoint of
+  // org-owned blocks is a possible later enhancement; today the loser's blocks die with the loser shell.
   // AI Suggested Fixes W1. fix_outcomes: each row is one historical attempt in
   // the org it ran in; restamping would double-count or re-attribute proof.
   // fix_memory: derived; org rows are recomputed from fix_outcomes, partner
@@ -588,6 +593,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // are in one window, the loser's row collides with the survivor's and is
   // dropped; the survivor stays in the window either way.
   migration_window_orgs: { kind: 'repoint-dedupe', key: ['window_id'] },
+  // Wisp W04 (#9910): wisp_thread_sessions links a session to its thread; the
+  // row's org_id is the session's org (composite (session_id, org_id) FK to
+  // ai_sessions, which is itself repointed), so it follows the session. The
+  // key is the PK (thread_id, session_id); session_id is globally unique, so a
+  // collision cannot happen and the dedupe half always drops nothing.
+  wisp_thread_sessions: { kind: 'repoint-dedupe', key: ['thread_id', 'session_id'] },
+  // wisp_thread_attachments' org_id is its artifact's org (composite
+  // (artifact_id, org_id) FK to ai_run_artifacts). Attachment artifacts are
+  // session-anchored or unanchored (run_id NULL), which moveAiRunArtifacts
+  // re-points, so the pair stays consistent under SET CONSTRAINTS ALL
+  // DEFERRED; (thread_id, artifact_id) is unique and unaffected by org_id.
+  // wisp_threads (focus_org_id) has no org_id column and is not a merge
+  // participant: a loser focus is cleared by its FK when the shell is erased.
+  wisp_thread_attachments: { kind: 'repoint' },
   // #6592: Gmail mailbox connections carry org_id; repoint them to the survivor
   // instead of letting the FK cascade delete them with the loser org. Plain
   // repoint (no dedupe): the only unique is (partner_id, mailbox_address), which
@@ -646,6 +665,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // child may repoint in separate statements under SET CONSTRAINTS ALL
   // DEFERRED.
   ticket_checklist_template_items: { kind: 'repoint' },
+  // Business-hours calendars (#8973 W4): org-owned calendars follow their org
+  // (spec §8.2). No org-axis unique exists (business_calendars_partner_name_uq
+  // is partner rows only), so a plain repoint cannot collide. The children copy
+  // the owner pair; their owner guards are DEFERRABLE INITIALLY IMMEDIATE, and
+  // the revision/interval immutability triggers allow an org_id-only restamp
+  // (Gate B15), so tickets that snapshotted a loser revision keep a valid one.
+  business_calendars: { kind: 'repoint' },
+  business_calendar_revisions: { kind: 'repoint' },
+  business_calendar_intervals: { kind: 'repoint' },
+  business_calendar_holidays: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
@@ -1317,6 +1346,19 @@ const REPOINT_TABLES: readonly string[] = [
   "users",
   "vault_snapshot_inventory",
   "webhooks",
+  // Wisp W05a (#9911). Partner-level rows (org_id NULL) never match the
+  // `WHERE org_id = <loser>` repoint. No unique key is org-scoped in a way a
+  // merge can collide on: a live concern's (partner, org, subject_kind,
+  // subject_id) names a subject that lives in exactly one org, the signature
+  // index is (partner_id, signature), recipients are unique on
+  // (concern_id, grant_id), and watches have no unique beyond the PK. A watch
+  // or recipient of an org-scoped LOSER grant follows the org while the grant
+  // stays behind (leave-for-erasure): the survivor is outside that grant's
+  // ceiling, so the wake path skips it, and erasing the loser shell deletes
+  // the grant and, by ON DELETE CASCADE, those rows.
+  "wisp_concern_recipients",
+  "wisp_concerns",
+  "wisp_watches",
   // #6263 W03a. Plain org XOR partner rule set; its AFTER UPDATE trigger
   // yara_rule_sets_propagate_owner rewrites the child yara_rules owner columns
   // (yara_rules is `derived` in SPECIAL). Built-in rows (org_id NULL) never match.

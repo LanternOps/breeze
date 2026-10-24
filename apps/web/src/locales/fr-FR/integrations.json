@@ -301,7 +301,10 @@
     "connectAWorkspaceWithOAuthAndPostAlerts": "Connectez un espace de travail avec OAuth et publiez des alertes sur les canaux. ",
     "workspace": "Espace de travail",
     "workspaceID": "Espace de travail ID : {{id}}",
-    "connectWorkspace": "Espace de travail Connect ",
+    "connectWorkspace": "Connecter l’espace de travail",
+    "notConnected": "Non connecté",
+    "pendingConnection": "Connexion en attente",
+    "turnOnSlackToConnectWorkspace": "Activez les notifications Slack pour connecter un espace de travail.",
     "oauthRedirectStartsWhenYouConnectASlack": "OAuth redirection commence lorsque vous connectez un espace de travail Slack. ",
     "defaultChannel": "Canal par défaut",
     "microsoftTeams": "Microsoft Teams",
@@ -336,11 +339,14 @@
   "connectionHealthPanel": {
     "title": "État des connexions",
     "allHealthy": "Toutes les connexions sont opérationnelles",
+    "allHealthyDetail": "Les intégrations connectées sont vérifiées automatiquement. Les problèmes s’affichent ici et à côté de l’intégration dans la liste.",
     "loadError": "Impossible de charger l'état des connexions.",
     "retry": "Réessayer",
     "since": "depuis {{time}}",
     "fix": "Corriger",
-    "remedy": { "reconnect": "Reconnectez-vous depuis l’application cliente (p. ex. ajoutez de nouveau le serveur MCP). Aucune action dans Breeze." },
+    "remedy": {
+      "reconnect": "Reconnectez-vous depuis l’application cliente (p. ex. ajoutez de nouveau le serveur MCP). Aucune action dans Breeze."
+    },
     "truncated": "Affichage des {{count}} premiers",
     "recentlyResolved": "Résolus récemment ({{count}})",
     "resolution": {
@@ -548,6 +554,14 @@
     "pageOf": "Page {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "À l’échelle du partenaire",
+      "partnerWideDetail": "S’applique à toutes les organisations que vous gérez."
+    },
+    "nav": {
+      "select": "Choisir une intégration",
+      "openProblems": "Problèmes ouverts : {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Configuration des intégrations pour",
       "thisOrganization": "cette organisation",
@@ -566,16 +580,16 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "Tarification TD SYNNEX",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
     "payments": "Paiements",
     "integrations": "Intégrations",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Gérez toutes les connexions et maintenez les flux de travail automatisés en bonne santé. ",
-    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Les intégrations distributeur (Pax8 et TD SYNNEX) sont disponibles uniquement pour les comptes partenaires. ",
-    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Les intégrations comptables sont disponibles uniquement pour les comptes partenaires. ",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "L’intégration du réseau UniFi est disponible uniquement pour les comptes partenaires. ",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Connectez Breeze aux outils de votre MSP et voyez quelles connexions demandent votre attention.",
+    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Les intégrations distributeur (Pax8 et TD SYNNEX) sont disponibles uniquement pour les comptes partenaires.",
+    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Les intégrations comptables sont disponibles uniquement pour les comptes partenaires.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "L’intégration du réseau UniFi est disponible uniquement pour les comptes partenaires.",
     "psa": "Annonce principale",
     "viewNameDocumentation": "Voir la documentation {{name}}",
-    "tdSYNNEXPriceFile": "Fichier tarifaire TD SYNNEX",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "backup": "Sauvegarde",
     "edrProviders": "Fournisseurs EDR"
   },
@@ -728,7 +742,10 @@
     "allApplications": "Toutes les applications",
     "searchAllApplicationsFirst2": " (et non « Applications que je possède ») une application Breeze existante dans ce locataire Entra. ",
     "tenantIdGuidPlaceholder": "ID de locataire (GUID), p. ex. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " L'enregistrement nécessite une vérification MFA.",
+    "clientSecretPlaceholder": "secret client de l'application",
+    "clientSecretStoredPlaceholder": "•••••••••• (stocké, chiffré)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Santé des dispositifs",

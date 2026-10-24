@@ -339,6 +339,9 @@
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
         "ai_usage_by_client": "Utilisation de l'IA par client",
+        "mrr_renewals": "MRR et renouvellements",
+        "quote_win_rate": "Taux de réussite des soumissions",
+        "client_profitability": "Rentabilité client",
         "backup_status": "État des sauvegardes"
       },
       "threatDetection": {
@@ -442,6 +445,9 @@
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
         "ai_usage_by_client": "Utilisation de l'IA par client",
+        "mrr_renewals": "MRR et renouvellements",
+        "quote_win_rate": "Taux de réussite des soumissions",
+        "client_profitability": "Rentabilité client",
         "backup_status": "État des sauvegardes"
       },
       "runsTable": {
@@ -991,6 +997,9 @@
         "technician_time_billability": "Temps et facturabilité des techniciens",
         "ar_aging": "Balance âgée des comptes clients",
         "ai_usage_by_client": "Utilisation de l'IA par client",
+        "mrr_renewals": "MRR et renouvellements",
+        "quote_win_rate": "Taux de réussite des soumissions",
+        "client_profitability": "Rentabilité client",
         "backup_status": "État des sauvegardes"
       },
       "schedules": {
@@ -1063,6 +1072,18 @@
         "ai_usage_by_client": {
           "name": "Utilisation de l'IA par client",
           "description": "Utilisation de l'IA de la plateforme par client sur la période : requêtes, jetons, coût Breeze, montant à facturer selon le profil de facturation du client et ce qui a déjà été facturé. L'utilisation incluse et les modèles sans tarif sont présentés séparément, jamais mélangés."
+        },
+        "mrr_renewals": {
+          "name": "MRR et renouvellements",
+          "description": "Revenus récurrents mensuels et annuels des contrats actifs, mesurés le jour où le rapport est exécuté, avec les contrats qui se renouvellent dans l'horizon choisi et ce qui a réellement été facturé comme récurrent. Un jeu de totaux par devise, sans conversion."
+        },
+        "quote_win_rate": {
+          "name": "Taux de réussite des soumissions",
+          "description": "La proportion des soumissions envoyées qui ont été gagnées, comptée par occasion d'affaires, de sorte qu'une soumission révisée et renvoyée ne compte qu'une fois. Le taux principal ne couvre que les occasions réglées, avec le nombre de celles encore ouvertes à côté. Les valeurs sont avant taxes, un ensemble par devise, sans conversion."
+        },
+        "client_profitability": {
+          "name": "Rentabilité client",
+          "description": "Revenus facturés par client sur la période, par origine (récurrent, main-d'œuvre, produits, IA, autre), avec les heures saisies correspondantes et une estimation facultative du coût de main-d'œuvre à partir d'un taux horaire unique. Les chiffres qui utilisent ce taux sont signalés comme des estimations. Un jeu de totaux par devise, jamais converti."
         },
         "backup_status": {
           "name": "Rapport d’état des sauvegardes",
@@ -1186,6 +1207,46 @@
       },
       "periodNote": "Les frais sont facturés par mois civil UTC. Une période définie dans un autre fuseau horaire peut différer de la facture pour l'utilisation à cheval sur deux mois.",
       "unpricedNote": "L'utilisation d'un modèle sans tarif dans le profil de facturation du client est comptée comme non tarifée. Elle n'est jamais considérée comme gratuite.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Ce rapport est toujours mesuré le jour où il est exécuté. Il n'y a ni période ni date de référence à définir.",
+      "groupBy": "Regrouper par",
+      "groupByValues": {
+        "organization": "Organisation",
+        "contract": "Contrat"
+      },
+      "renewalHorizon": "Horizon de renouvellement",
+      "renewalHorizonOption": "{{days}} prochains jours",
+      "renewalHorizonHelp": "Les contrats dont l'échéance tombe dans cette fenêtre sont listés comme renouvellements.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Regrouper par",
+      "groupByAutomatic": "Automatique : par organisation pour toutes les organisations, par auteur pour une organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "author": "Auteur",
+        "currency": "Devise"
+      },
+      "periodNote": "La période s'applique à la date du premier envoi de la soumission. Une soumission révisée et renvoyée ne compte qu'une fois, comme une seule occasion d'affaires.",
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Regrouper par",
+      "groupByDefault": "Par défaut selon la portée du rapport",
+      "groupByValues": {
+        "organization": "Organisation",
+        "source": "Origine"
+      },
+      "groupByHelp": "Par défaut, le regroupement se fait par organisation pour un rapport de toutes les organisations et par origine pour une seule organisation.",
+      "laborEnabled": "Estimer le coût de main-d'œuvre",
+      "laborAmount": "Coût de main-d'œuvre par heure",
+      "laborCurrency": "Devise",
+      "laborHelp": "Un taux unique pour tous les techniciens. Les chiffres qui l’utilisent sont signalés comme des estimations.",
       "cancel": "Annuler",
       "createReport": "Créer le rapport"
     },

@@ -9,6 +9,7 @@ import { alertInSiteScope, deviceInSiteScope, ticketSiteScopeCondition } from '.
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../../services/permissions';
 import { ticketSearchCondition } from '../../services/ticketSearch';
 import { checklistCountsForTickets } from '../../services/ticketChecklistService';
+import { withBusinessMinutesRemaining } from '../../services/businessCalendars/remaining';
 import {
   createTicketSchema, updateTicketSchema, changeTicketStatusSchema,
   assignTicketSchema, addTicketCommentSchema, listTicketsQuerySchema,
@@ -23,6 +24,7 @@ import {
   softDeleteTicket, restoreTicket,
   TicketServiceError
 } from '../../services/ticketService';
+import { ticketMergedResponse } from '../../services/ticketMerge/errors';
 import {
   evaluateTicketTriage,
   getTicketTriageSuggestion,
@@ -74,9 +76,11 @@ const PRIORITY_ORDER = sql`CASE ${tickets.priority}
 // #8973 W3 (spec §4.3 reader 2): at-risk compares now() with the STORED 80%
 // point of each unfrozen arm (services/ticketSlaDeadlines.ts writes it).
 // SLA_BREACHED is unchanged. A stamped breach on either arm leaves at-risk.
-const SLA_BREACHED = sql`${tickets.slaBreachedAt} IS NOT NULL`;
+// #8972: merged tombstones never count as breached / at-risk (spec §3.6).
+const SLA_BREACHED = sql`(${tickets.slaBreachedAt} IS NOT NULL AND ${tickets.mergedIntoTicketId} IS NULL)`;
 export const SLA_AT_RISK = sql`(
-  ${tickets.slaBreachedAt} IS NULL
+  ${tickets.mergedIntoTicketId} IS NULL
+  AND ${tickets.slaBreachedAt} IS NULL
   AND ${tickets.status} IN ('new', 'open')
   AND ${tickets.slaPausedAt} IS NULL
   AND (
@@ -94,6 +98,9 @@ export function actorFrom(c: { get: (k: 'auth') => AuthContext }): Extract<Ticke
 }
 
 export function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // #8972 W1: a write reached a merged tombstone → 409 with the survivor id.
+  const merged = ticketMergedResponse(c, err);
+  if (merged) return merged;
   if (err instanceof TicketServiceError) {
     // `code` is optional on the error; include it when present so callers can
     // branch on a stable token instead of the message (W08 #3902 relies on
@@ -220,6 +227,7 @@ ticketsRoutes.get(
     const siteCondition = ticketSiteScopeCondition(auth);
     if (siteCondition) conditions.push(siteCondition);
     conditions.push(isNull(tickets.deletedAt)); // soft-deleted tickets never count toward queue tabs
+    conditions.push(isNull(tickets.mergedIntoTicketId)); // #8972: merged tombstones never count
     const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
 
     const rows = await db
@@ -340,6 +348,8 @@ ticketsRoutes.get(
     } else {
       conditions.push(isNull(tickets.deletedAt));
     }
+    // #8972: merged tombstones are hidden (list, search, closed filter) unless asked for.
+    if (!q.showMerged) conditions.push(isNull(tickets.mergedIntoTicketId));
     if (q.status) conditions.push(eq(tickets.status, q.status));
     else if (q.statusGroup === 'open') conditions.push(inArray(tickets.status, [...OPEN_STATUSES]));
     else if (q.statusGroup === 'closed') conditions.push(inArray(tickets.status, [...CLOSED_STATUSES]));
@@ -398,6 +408,8 @@ ticketsRoutes.get(
         resolutionDueAt: tickets.resolutionDueAt,
         responseWarnAt: tickets.responseWarnAt,
         resolutionWarnAt: tickets.resolutionWarnAt,
+        // #8973 W4: the business-calendar snapshot (null = 24×7).
+        slaCalendarRevisionId: tickets.slaCalendarRevisionId,
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
         deletedAt: tickets.deletedAt,
@@ -415,9 +427,9 @@ ticketsRoutes.get(
       .orderBy(...orderBy)
       .limit(q.limit)
       .offset(offset);
-    // #8973: business minutes remaining is computed server-side once a
-    // calendar applies (W4); with no calendar the client counts wall-clock.
-    const data = rows.map((row) => ({ ...row, slaBusinessMinutesRemaining: null }));
+    // #8973 W4: business minutes remaining, server-side, only for rows on a
+    // calendar (one batch load per page); with none the client counts wall-clock.
+    const data = await withBusinessMinutesRemaining(db, rows);
 
     const countRows = await db
       .select({ count: sql<number>`count(*)` })
@@ -572,8 +584,9 @@ ticketsRoutes.get(
       .leftJoin(alerts, eq(ticketAlertLinks.alertId, alerts.id))
       .where(eq(ticketAlertLinks.ticketId, id));
 
-    // #8973: slaBusinessMinutesRemaining is null until W4 applies a calendar.
-    return c.json({ data: { ...ticket, slaBusinessMinutesRemaining: null, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
+    // #8973 W4: non-null only when the ticket carries a calendar revision.
+    const [withRemaining] = await withBusinessMinutesRemaining(db, [ticket]);
+    return c.json({ data: { ...ticket, slaBusinessMinutesRemaining: withRemaining!.slaBusinessMinutesRemaining, orgName, deviceHostname, assigneeName, statusName, statusColor, comments, alertLinks } });
   }
 );
 

@@ -14,6 +14,10 @@
 import type { FilterCondition } from '@breeze/shared';
 import { encodeFilterToHash } from '../devices/filterUrl';
 import { encodeDeviceClassToHash } from '../devices/deviceClassFilter';
+import { encodeAlertsHash } from '../alerts/alertsHash';
+import { encodeVulnHash, type VulnHashInput } from '../vulnerabilities/vulnHash';
+import { encodeThreatsHash } from '../security/threatsHash';
+import { encodePatchesHash, type ComplianceStatusFilter } from '../patches/patchesHash';
 import { canOpenDestination, type NavDestinationGate, type NavViewer } from '../../lib/navVisibility';
 import type { DeviceStats } from './types';
 
@@ -87,6 +91,24 @@ function otherStatuses(d: DashboardData): string[] {
 
 const DEVICES_GATE = gatedBy('/devices');
 
+/** Alerts page: the same active critical+high / medium sets the KPI numbers
+ *  count (`/alerts/summary` bySeverity counts active alerts only). */
+const alertsCriticalHref = (): string =>
+  `/alerts${encodeAlertsHash({ status: ['active'], severity: ['critical', 'high'] })}`;
+const alertsWarningHref = (): string =>
+  `/alerts${encodeAlertsHash({ status: ['active'], severity: ['medium'] })}`;
+
+/** Vulnerabilities page, CVE tab, over open findings. */
+const vulnCvesHref = (filters: Omit<VulnHashInput, 'tab' | 'status'>): string =>
+  `/vulnerabilities${encodeVulnHash({ tab: 'cves', status: 'open', ...filters })}`;
+
+const alertsGate = gatedBy('/alerts');
+const vulnGate = gatedBy('/vulnerabilities');
+
+/** Patches page, compliance tab, optionally filtered to one device status. */
+const patchesHref = (status?: ComplianceStatusFilter): string => `/patches${encodePatchesHash({ status })}`;
+const patchesGate = gatedBy('/patches');
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -103,16 +125,14 @@ export const DASHBOARD_METRICS = {
     visible: DEVICES_GATE,
   },
   'kpi.critical': {
-    kind: 'section',
-    href: () => '/alerts',
-    visible: gatedBy('/alerts'),
-    reason: 'Opens the alerts page; the severity/status filter destination lands with the alerts wave.',
+    kind: 'count',
+    href: alertsCriticalHref,
+    visible: alertsGate,
   },
   'kpi.warnings': {
-    kind: 'section',
-    href: () => '/alerts',
-    visible: gatedBy('/alerts'),
-    reason: 'Opens the alerts page; the severity/status filter destination lands with the alerts wave.',
+    kind: 'count',
+    href: alertsWarningHref,
+    visible: alertsGate,
   },
   'kpi.tickets': {
     kind: 'count',
@@ -124,20 +144,25 @@ export const DASHBOARD_METRICS = {
     reason: 'Sub-line inside a whole-tile link; a tile never contains a second interactive element.',
   },
   'kpi.patchCompliance': {
-    kind: 'section',
-    href: () => '/patches',
-    visible: gatedBy('/patches'),
-    reason: 'Percentage has no matching list until the patch-compliance metric is unified.',
+    // The tile and the /patches headline are the same devicePercent from the
+    // same GET /patches/compliance (#9791 C, Decision 4).
+    kind: 'count',
+    href: () => patchesHref(),
+    visible: patchesGate,
   },
 
   // --- Alerts feed header --------------------------------------------------
   'alerts.criticalCount': {
-    kind: 'exempt',
-    reason: 'Linked once the alerts page reads a status/severity hash (alerts wave).',
+    kind: 'count',
+    href: alertsCriticalHref,
+    visible: alertsGate,
+    testId: 'dashboard-alerts-critical-count-link',
   },
   'alerts.warningCount': {
-    kind: 'exempt',
-    reason: 'Linked once the alerts page reads a status/severity hash (alerts wave).',
+    kind: 'count',
+    href: alertsWarningHref,
+    visible: alertsGate,
+    testId: 'dashboard-alerts-warning-count-link',
   },
 
   // --- Fleet card ----------------------------------------------------------
@@ -187,36 +212,53 @@ export const DASHBOARD_METRICS = {
     testId: 'dashboard-security-title-link',
   },
   'security.score': {
-    kind: 'exempt',
-    reason: 'A score is not an entity count; linked after security scope parity is fixed (security wave).',
+    kind: 'section',
+    href: () => '/security/score',
+    visible: gatedBy('/security'),
+    testId: 'dashboard-security-score-link',
+    reason: 'A score is not an entity count; opens the score breakdown page.',
   },
   'security.trendCaption': {
-    kind: 'exempt',
-    reason: 'Sparkline samples are not entities; caption linked after security scope parity is fixed.',
+    kind: 'section',
+    href: () => '/security/trends',
+    visible: gatedBy('/security'),
+    testId: 'dashboard-security-trend-link',
+    reason: 'Sparkline samples are not entities; the caption opens the trends page. The sparkline itself stays plain.',
   },
   'security.atRisk': {
     kind: 'exempt',
-    reason: 'No list computes at-risk the same way /security/dashboard does (Gate B #6); exempt unless an equality test proves one.',
+    reason:
+      'Gate B #6: "at risk" is posture riskLevel medium|high; no web list reproduces it (the /devices/posture report partitions by management-product freshness). Pinned by apps/api security/dashboard.atRisk.test.ts.',
   },
   'security.threats': {
-    kind: 'exempt',
-    reason: 'Linked once the threats list reads a #status= hash (security wave).',
+    kind: 'count',
+    href: () => `/security/vulnerabilities${encodeThreatsHash({ status: 'active' })}`,
+    visible: gatedBy('/security'),
+    testId: 'dashboard-security-threats-link',
   },
 
   // --- Patch card ----------------------------------------------------------
   'patch.title': {
     kind: 'section',
     href: () => '/patches',
-    visible: gatedBy('/patches'),
+    visible: patchesGate,
     testId: 'dashboard-patch-title-link',
   },
   'patch.headline': {
     kind: 'exempt',
-    reason: 'Same metric as the KPI tile, which carries the section link.',
+    reason: 'Same devicePercent as the KPI tile, which carries the count link to /patches.',
   },
   'patch.devicesCompliant': {
-    kind: 'exempt',
-    reason: 'Needs the compliance list to take its split from the API (patch wave).',
+    kind: 'count',
+    href: () => patchesHref('compliant'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-compliant-link',
+  },
+  'patch.devicesNonCompliant': {
+    kind: 'count',
+    href: () => patchesHref('needs-patches'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-noncompliant-link',
   },
   'patch.installed': {
     kind: 'exempt',
@@ -224,15 +266,33 @@ export const DASHBOARD_METRICS = {
   },
   'patch.pending': {
     kind: 'exempt',
-    reason: 'Affected link "View devices" lands with the patch wave.',
+    reason: 'Counts device×patch rows; the affected link "View devices with pending patches" carries the destination.',
+  },
+  'patch.viewPendingDevices': {
+    kind: 'affected',
+    href: () => patchesHref('needs-patches'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-pending-devices-link',
   },
   'patch.failed': {
     kind: 'exempt',
-    reason: 'Affected link "View devices with failed patches" lands with the patch wave.',
+    reason: 'Counts device×patch rows; the affected link "View devices with failed patches" carries the destination.',
+  },
+  'patch.viewFailedDevices': {
+    kind: 'affected',
+    href: () => patchesHref('failed'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-failed-devices-link',
   },
   'patch.criticalPending': {
     kind: 'exempt',
-    reason: 'Affected link "View devices" lands with the patch wave.',
+    reason: 'Counts pending critical patches; the affected link "View devices with critical patches" carries the destination.',
+  },
+  'patch.viewCriticalDevices': {
+    kind: 'affected',
+    href: () => patchesHref('critical'),
+    visible: patchesGate,
+    testId: 'dashboard-patch-critical-devices-link',
   },
   'patch.unratedPending': {
     kind: 'exempt',
@@ -252,15 +312,29 @@ export const DASHBOARD_METRICS = {
   },
   'vuln.openFindings': {
     kind: 'exempt',
-    reason: 'Header counts every status today (bug); linked after it is fixed to open findings (vulnerabilities wave).',
+    reason: 'Counts findings, but the CVE list groups them; the affected link "View open CVEs" carries the destination.',
+  },
+  'vuln.viewOpen': {
+    kind: 'affected',
+    href: () => vulnCvesHref({}),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-open-link',
   },
   'vuln.criticalOpen': {
     kind: 'exempt',
-    reason: 'Counts findings; affected link "View critical CVEs" lands with the vulnerabilities wave.',
+    reason: 'Counts findings, but the CVE list groups them; the affected link "View critical CVEs" carries the destination.',
+  },
+  'vuln.viewCritical': {
+    kind: 'affected',
+    href: () => vulnCvesHref({ severity: 'critical' }),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-critical-link',
   },
   'vuln.kevCves': {
-    kind: 'exempt',
-    reason: 'Distinct-CVE count link lands with the vulnerabilities wave.',
+    kind: 'count',
+    href: () => vulnCvesHref({ kev: true }),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-kev-link',
   },
   'vuln.kevDevices': {
     kind: 'exempt',
@@ -268,7 +342,15 @@ export const DASHBOARD_METRICS = {
   },
   'vuln.patchReady': {
     kind: 'exempt',
-    reason: 'Counts findings; affected link lands with the vulnerabilities wave.',
+    reason: 'Counts findings, but the CVE list groups them; the affected link "View patch-ready CVEs" carries the destination.',
+  },
+  // PENDING #9576 (unifies "is there a patch?"): `patchAvailable=1` resolves against today's main
+  // definition. Re-run the `vuln.viewPatchReady` parity case in countParity.alertsVulns.test.tsx when it lands.
+  'vuln.viewPatchReady': {
+    kind: 'affected',
+    href: () => vulnCvesHref({ patchAvailable: true }),
+    visible: vulnGate,
+    testId: 'dashboard-vuln-patch-ready-link',
   },
 } as const satisfies Record<string, MetricDef>;
 

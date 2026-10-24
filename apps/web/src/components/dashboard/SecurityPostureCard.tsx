@@ -102,7 +102,9 @@ export default function SecurityPostureCard({
       {trendPoints.length >= 2 && (
         <div className="mt-3">
           <Sparkline points={trendPoints} color={band.color} min={0} max={100} />
-          <p className="mt-1 text-[11px] text-muted-foreground/70">{t('dashboard.security.trendLabel')}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground/70">
+            <DashboardMetric metric="security.trendCaption">{t('dashboard.security.trendLabel')}</DashboardMetric>
+          </p>
         </div>
       )}
 

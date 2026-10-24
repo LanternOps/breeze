@@ -275,17 +275,30 @@ describe('TicketsPage', () => {
     expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-risk');
   });
 
-  it('auto-selects the first row when the hash matches nothing', async () => {
-    window.location.hash = '#garbage-hash';
-    mockListApi([healthy, atRisk, breached]);
+  it('does not auto-select another ticket when the hash names a ticket absent from the list, and says so', async () => {
+    window.location.hash = '#T-2026-0099';
+    mockListApi((url) => (url.includes('search=') ? [] : [healthy, atRisk, breached]));
     render(<TicketsPage />);
 
     await screen.findByTestId('ticket-row-tk-healthy');
 
+    expect(await screen.findByTestId('tickets-deeplink-absent')).toHaveTextContent('T-2026-0099');
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.queryByTestId('ticket-workbench-mock')).toBeNull();
+    expect(window.location.hash).toBe('#T-2026-0099');
+  });
+
+  it('opens an absent-from-list ticket directly when the lookup by number finds it', async () => {
+    window.location.hash = '#T-2026-0099';
+    const closedOne = makeTicket({ id: 'tk-closed', internalNumber: 'T-2026-0099', status: 'closed', subject: 'Old one' });
+    mockListApi((url) => (url.includes('search=') ? [closedOne] : [healthy, atRisk, breached]));
+    render(<TicketsPage />);
+
     await waitFor(() => {
-      expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-closed');
     });
-    expect(screen.getByTestId('ticket-workbench-mock')).toHaveTextContent('tk-healthy');
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+    expect(screen.getByTestId('ticket-row-tk-healthy')).toHaveAttribute('aria-selected', 'false');
   });
 
   it('picking a priority adds priority= to the fetch and re-renders from the result', async () => {

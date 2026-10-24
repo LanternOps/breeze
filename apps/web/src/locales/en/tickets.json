@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} selected",
     "clearSelection": "Clear",
     "noSelection": "Select a ticket. Use j/k to move, Enter to expand.",
+    "ticketNotInView": "Ticket {{number}} is not in this view.",
     "movedToClosed": {
       "message": "{{status}} — now under {{tab}}",
       "view": "View in {{tab}}"
@@ -418,6 +419,7 @@
     "loadFailed": "Ticket failed to load.",
     "backToQueue": "Back to queue",
     "ticketSubject": "Ticket subject",
+    "subjectEditButton": "Edit subject",
     "openFullPage": "Open full page",
     "priorityLabel": "Priority",
     "categoryLabel": "Category",

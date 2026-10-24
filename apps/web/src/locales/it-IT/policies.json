@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Applicata a tutte le organizzazioni. Deseleziona “Tutte le organizzazioni” per scegliere un sottoinsieme.",
       "polite": "polite",
       "loading": "Caricamento…",
-      "loadMoreOrganizations": "Carica altre organizzazioni"
+      "loadMoreOrganizations": "Carica altre organizzazioni",
+      "appliedToAllOrgs": "Il criterio ora si applica a tutte le organizzazioni",
+      "removedFromAllOrgs": "Il criterio non si applica più a tutte le organizzazioni"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Scansione completa",
         "maxFileSizeMb": "Dimensione massima file (MB)",
         "scanTimeoutMinutes": "Timeout scansione (minuti)",
-        "scanRunsServerSideDescription": "Breeze avvia questa scansione dal server — il dispositivo non necessita di una pianificazione locale."
+        "scanRunsServerSideDescription": "Breeze avvia questa scansione dal server — il dispositivo non necessita di una pianificazione locale.",
+        "ruleSets": {
+          "title": "Set di regole di rilevamento",
+          "description": "Set di regole usati dalle scansioni IOC di questo criterio.",
+          "manageLink": "Gestisci regole di rilevamento",
+          "loading": "Caricamento dei set di regole…",
+          "loadError": "Impossibile caricare i set di regole. Il criterio mantiene i set attuali; puoi comunque salvare le altre impostazioni.",
+          "none": "Nessun set di regole disponibile per questo criterio.",
+          "legacyNote": "Nessun set di regole: le scansioni usano solo le firme legacy integrate.",
+          "cap": "Un criterio può usare al massimo {{max}} set di regole.",
+          "unavailable": "Set di regole non disponibile",
+          "blocking": "Questo criterio non può usare i set di regole non disponibili (eliminati, spostati o di un'altra organizzazione). Rimuovili prima di salvare.",
+          "overrideDraft": "Le impostazioni ereditate includono set di regole che questo criterio non può usare. Rimuovi i set non disponibili, poi salva.",
+          "errors": {
+            "tooMany": "Un criterio può usare al massimo {{max}} set di regole.",
+            "invalidIds": "L'elenco dei set di regole non è valido. Ricarica la pagina e riprova.",
+            "notAttachable": "Questo criterio non può usare alcuni dei set di regole selezionati. Sono evidenziati qui sotto."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credenziali",
@@ -1337,9 +1357,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Nessun criterio software trovato. Creane uno per iniziare.",
       "recentViolations": "Violazioni recenti",
       "noCurrentSoftwareViolations": "Nessuna violazione software corrente.",
-      "violationS": "violazione/i",
-      "remediation": "Correzione:",
-      "checked": "Controllato:",
+      "remediation": "Correzione: {{value}}",
+      "checked": "Controllato: {{date}}",
       "deactivatePolicy": "Disattiva criterio",
       "areYouSureYouWantToDeactivate": "Vuoi davvero disattivare",
       "thePolicyWillBeMarkedInactiveAnd": "? Il criterio verrà contrassegnato come inattivo e i dati di conformità saranno cancellati.",
@@ -1375,7 +1394,10 @@
       "coverageVendor": "Fornitore",
       "coverageReason": "Motivo",
       "vendorOnlyAgent": "Agent noto solo al fornitore",
-      "coverageRowsNote": "Visualizzati {{shown}} di {{total}}"
+      "coverageRowsNote": "Visualizzati {{shown}} di {{total}}",
+      "violationCount": "{{count}} violazione",
+      "violationCount_one": "{{count}} violazione",
+      "violationCount_other": "{{count}} violazioni"
     },
     "deploymentList": {
       "running": "In esecuzione",
@@ -1591,20 +1613,21 @@
       "registry": "registry",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Servizio in esecuzione",
+      "readOnlyHint": "Creata tramite API. Non modificabile qui; viene mantenuta invariata al salvataggio."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossibile recuperare i dispositivi",
-      "devicesWith": "Dispositivi con",
-      "by": "di",
+      "devicesWith": "Dispositivi con {{name}}",
+      "by": "di {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Nessun dispositivo trovato con questo software.",
       "hostname": "Nome host",
       "oS": "OS",
       "version": "Versione",
       "lastSeen": "Ultimo rilevamento",
-      "device": "device",
-      "total": "totale",
-      "s": "s"
+      "deviceTotal_one": "{{count}} dispositivo in totale",
+      "deviceTotal_other": "{{count}} dispositivi in totale"
     },
     "policyForm": {
       "dryRunUnassigned": "0 dispositivi — di solito perché questa policy non è ancora assegnata ad alcun dispositivo, ma anche una flotta interamente conforme o un elenco di siti vuoto dà 0",

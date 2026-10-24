@@ -275,7 +275,7 @@ scheduled → running → completed / failed / cancelled
 
 ## System Restore checkpoints
 
-Patch installs on Windows can be set up to request a System Restore checkpoint first. Patch installs keep their existing best-effort checkpoint behavior; the new **System Protection** policy setting makes it configurable, and each patch install records the outcome (or **Awaiting the device**) as a badge in the patch history. Agent-side checkpoint creation and reporting roll out with a future agent release. See [System Protection](/features/configuration-policies/#system-protection) for the toggles, the status reference and the support matrix. System Restore is not a backup, and this is separate from the patch rollback described below.
+Patch installs on Windows can be set up to request a System Restore checkpoint first. Patch installs keep their existing best-effort checkpoint behavior; the **System Protection** policy setting makes it configurable, and each patch install records the outcome as a badge in the patch history. From **agent 0.124.0** the device takes one restore point per patch run, just before the first install, and reports what happened; a run that installs nothing spends none. A device on an older agent keeps reading **Awaiting the device**. A restore point that cannot be created never stops the run. See [System Protection](/features/configuration-policies/#system-protection) for the toggles, the badge reference and the support matrix. System Restore is not a backup, and this is separate from the patch rollback described below.
 
 ## Rollback
 
@@ -391,6 +391,8 @@ GET /patches/compliance
 ```
 
 This returns `compliancePercent` (a value from 0 to 100) and aggregated counts broken down by device patch status. Results are computed in real time from the current state of the fleet and are not cached.
+
+The response also includes `devicePercent` (the share of devices with nothing outstanding; `0` when there are no devices), which is the figure the dashboard and the Patches page show, and `failedDevices` (devices with an outstanding patch whose latest install failed), plus a paginated `devices` list selected by `status` (`all`, `compliant`, `needs-patches`, `failed`, `critical`, `reboot` or `third-party`), `search`, `limit` (up to 200, default 50) and `offset`. `compliancePercent` counts individual patches and is unchanged.
 
 The response also carries an `unratedSummary` breakdown (`total`, `patched`, `pending`) so you can see how much of the backlog carries no severity rating. The dashboard's patch compliance card surfaces the same number as **"N unrated patches pending (won't auto-approve)"** — a prompt to review them by hand, because nothing will approve them for you unless a ring opts in.
 

@@ -614,12 +614,18 @@ const patchSourceValueSchema = z.enum([
  */
 const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
 
+// Length in UTF-16 code units (an astral char counts twice). zod <=4.5 measured
+// `.max()` this way; zod >=4.6 counts code points. The ring app-rules backfill
+// migration (2026-12-26-230000) emulates the UTF-16 rule in SQL, so it is
+// pinned explicitly rather than left to the zod version.
+const utf16Max = (max: number) => (v: string) => v.length <= max;
+
 export const policyAppRuleSchema = z.object({
   source: z.enum(['third_party', 'custom']),
-  packageId: z.string().min(1).max(256),
-  displayName: z.string().max(255).optional(),
+  packageId: z.string().min(1).refine(utf16Max(256), { message: 'Too long: expected <=256 characters' }),
+  displayName: z.string().refine(utf16Max(255), { message: 'Too long: expected <=255 characters' }).optional(),
   action: z.enum(['block', 'pin']),
-  pinnedVersion: z.string().min(1).max(64).optional(),
+  pinnedVersion: z.string().min(1).refine(utf16Max(64), { message: 'Too long: expected <=64 characters' }).optional(),
 }).superRefine((data, ctx) => {
   if (data.action === 'pin' && !data.pinnedVersion) {
     ctx.addIssue({
@@ -1054,6 +1060,7 @@ export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
+export * from './aiOperatorIdentity';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
@@ -1406,6 +1413,7 @@ export * from './aiModelChoice';
 export * from './aiModelRegistryApi';
 export * from './autopay';
 export * from './flows';
+export * from './businessCalendars';
 export * from './trustCenter';
 export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';
@@ -1413,3 +1421,4 @@ export * from './trustCenterContent';
 export * from './trustCenterTemplate';
 export * from './trustCenterEmbed';
 export * from './launchPurchaseSelection';
+export * from './wispConcerns';

@@ -81,6 +81,7 @@ curl -X POST https://breeze.yourdomain.com/api/v1/auth/refresh \
 | `POST` | `/devices/:id/move-org` | Relocate a device to a different organization within the same partner. Requires an interactive user session (API keys are refused), an MFA-assured session, and — when two-factor authentication is enabled — a single-use step-up grant for operation `device_move_org` (`POST /auth/mfa/step-up`) bound to the exact device, destination and currency acknowledgement; otherwise `403 STEP_UP_REQUIRED`. See [Moving a Device to Another Organization](/features/devices/#moving-a-device-to-another-organization). |
 | `POST` | `/devices/:id/commands` | Send command to device. Rejects a duplicate `refresh_inventory` with `409 ALREADY_PENDING`. |
 | `POST` | `/devices/bulk/commands` | Send the same command to many devices. Returns `commands`, `skipped`, and `failed` arrays. |
+| `GET` | `/devices/attention-counts?ids=…` | Open alert and ticket counts for up to 100 devices at once (the devices list's **Attention** column). Comma-separated ids; more than 100 is refused. |
 | `GET` | `/devices/:id/billing` | Which contract line, if any, bills this device. Requires **partner or system scope** plus both `devices:read` and `contracts:read`. Returns the covering contract and line with how it matched (organization-wide, site, role, or group), or a reason the device is not billable. A device-group evaluation failure is reported as an error rather than as "not covered". |
 | `DELETE` | `/devices/:id` | Decommission device |
 | `GET` | `/devices/:id/placement` | Physical placement (room, rack, rack unit, height in U). Requires `devices:read` |
@@ -244,7 +245,7 @@ Each route requires the listed scope on the principal.
 | `GET` | `/partner-api/alerts` | `alerts:read` | Latest-state alert feed with signed cursor and checkpoint |
 | `GET` | `/partner-api/tickets` | `tickets:read` | Latest-state ticket feed with signed cursor and checkpoint; soft-deletes arrive as tombstones. Filters: `orgId`, `status`, `priority`, `assigneeId`, `externalId` (this principal's ref). |
 | `GET` | `/partner-api/tickets/ids` | `tickets:read` | Reconciliation list of live ticket ids + `changeVersion` in the accessible set, keyset-paged. |
-| `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). |
+| `GET` | `/partner-api/tickets/:id` | `tickets:read` | Read one ticket (404 outside the principal's partner/organizations, or when soft-deleted). Every ticket record, here and in the feed, carries `mergedIntoTicketId` and `mergedAt`: both are set when this ticket was merged into another, and the record is then read-only; both are `null` otherwise. |
 | `GET` | `/partner-api/tickets/:id/comments` | `tickets:read` | The ticket's comments and feed entries in creation order, keyset-paged; edits change `revision`, deletes are tombstones. Includes every internal note on the ticket (`isPublic: false`), whoever wrote it; forward only `isPublic: true` comments to end customers. |
 | `GET` | `/partner-api/device-status` | `device-status:read` | Live device status, last-seen time and agent version, keyset-paged with a signed cursor. No `updatedSince` or checkpoint; poll the full list |
 | `POST` | `/partner-api/organizations` | `organizations:write` | Create an organization under the principal's partner. Enforces the partner's `maxOrganizations` cap (409 when reached). Body: `name`, `slug`, `type?`, `status?` (`active`/`trial`). |
@@ -295,6 +296,13 @@ Every export response carries a `schemaVersion` (currently `"1"`). Within one
 - **Bumps `schemaVersion`:** removing or renaming a field, changing its type,
   making a nullable field non-null or a non-null field nullable, or changing what
   an existing field means.
+
+One exception within schema `"1"`: from v0.124.0, patch feature settings in the
+configuration export no longer carry `autoApprove`, `autoApproveSeverities`,
+`autoApproveDeferralDays` or `apps`, because policy-level patch auto-approve was
+retired (it lives only on the Update Ring, whose `appRules` carries the per-app
+rules). The keys are absent, not empty, so every exported patch policy's
+revision changes once after the upgrade.
 
 **Consumers must ignore keys they do not recognize.** A client that rejects a
 whole page on an unknown key breaks on the next Breeze release that adds a field.
@@ -754,6 +762,8 @@ Endpoints for the next-generation, per-site logical topology map (site coverage,
 | `POST` | `/remote/sessions/:id/ice` | ICE candidate exchange |
 | `POST` | `/remote/sessions/:id/end` | End session |
 | `GET` | `/remote/devices/:deviceId/active-sessions` | Who is connected to one device right now: every user's live Desktop or Terminal session and live VNC tunnel on it (the "Who's connected" banner). Returns no session or user ids; colleagues' emails only to callers with `users:read`. Requires `remote:access` |
+| `GET` | `/desktop-ws/:id/viewer/session` | The viewer's view of a desktop session. Since v0.124.0 it also returns `agentIceCandidates`, the ICE candidates the agent has trickled so far, so a session that can only connect through a relay no longer depends on the candidate arriving with the answer. |
+| `POST` | `/desktop-ws/:id/viewer/ice` | Trickle a viewer ICE candidate to the agent (new in v0.124.0). Needs the 0.124.0 agent and viewer; an older agent ignores it. |
 
 ### Network Proxy
 
@@ -1400,8 +1410,12 @@ The API behind **Partner Settings → AI Providers & Models** (v0.121.0+). Conne
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/mcp/sse` | API key | SSE transport for MCP |
-| `POST` | `/mcp/message` | API key | Send MCP message |
+| `GET` | `/mcp/sse` | API key or OAuth bearer | Legacy SSE transport for MCP |
+| `POST` | `/mcp/message` | API key or OAuth bearer | Send an MCP message on the SSE transport |
+| `POST` | `/mcp/sse` | API key or OAuth bearer | Streamable HTTP transport: JSON-RPC requests, with `Mcp-Session-Id` after `initialize` |
+| `DELETE` | `/mcp/sse` | API key or OAuth bearer | Streamable HTTP session end. The server is stateless, so it answers `204` |
+
+An unauthenticated request answers `401` with a `WWW-Authenticate` challenge that points at the OAuth metadata, and a grant limited to tool areas refuses tools outside them; see [MCP Server](/features/mcp-server/) and [API Keys](/reference/api-keys/).
 
 Over the transport, the server speaks JSON-RPC 2.0. Alongside `tools/*` and `resources/*`, it advertises an `instructions` string on `initialize` and a **prompts** capability with five guided MSP workflows, exposed via the `prompts/list` and `prompts/get` methods. See [MCP Server → Guided prompts](/features/mcp-server/#guided-prompts).
 
@@ -1459,6 +1473,7 @@ A few mounted route groups are documented on their feature pages rather than rep
 | `/s1`, `/huntress` | SentinelOne and Huntress EDR integration endpoints (credentials, mappings, webhooks, sync). See [EDR Integrations](/features/edr-integrations/). |
 | `/edr` | Provider-framework EDR integrations (Bitdefender GravityZone first): connections, company-to-organization mappings, and synced endpoints with their device links and open detection counts. API only in v0.122.1. See [EDR Integrations](/features/edr-integrations/). |
 | `/m365`, `/onedrive`, `/office-addin` | Microsoft 365 tenant connection, Graph sync, OneDrive helper, and Office add-in endpoints. See [Cloud Tenant Integrations (M365)](/features/identity-integrations/) and [OneDrive Helper](/features/onedrive-helper/). |
+| `/trust`, `/trust/access`, `/trust/attestation` | Public Trust Center endpoints: the published page payload, document access requests, and the signed attestation (`/trust/attestation/jwks.json`, `/trust/attestation/:partnerSlug[/:orgSlug]`). Unauthenticated. See [Trust Center](/security/trust-center/) and [Trust Center attestation](/security/trust-center-attestation/). |
 
 ## Search
 

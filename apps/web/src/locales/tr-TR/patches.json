@@ -96,6 +96,7 @@
       "statusFilterLabel": "Uyumluluk durumuna göre filtrele",
       "pendingPatches": "Bekleyen Yamalar ({{count}})",
       "critical": "Kritik ({{count}})",
+      "failed": "Başarısız Kurulumlar ({{count}})",
       "pendingReboot": "Yeniden Başlatma Bekleniyor ({{count}})",
       "thirdPartyPending": "3. Taraf Beklemede ({{count}})",
       "compliant": "Uyumlu ({{count}})"
@@ -160,6 +161,11 @@
       "messageOne": "{{action}}?\n{{org}} içindeki {{count}} cihazlarda ",
       "messageMany": "{{action}}?\n{{org}} kuruluşlardaki {{count}} cihazlarda ",
       "messageMultiOrg": "{{action}}, {{orgNames}} dahil {{orgCount}} kuruluşta bulunan {{count}} cihazda uygulansın mı?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} / {{total}}",
+      "previous": "Önceki sayfa",
+      "next": "Sonraki sayfa"
     }
   },
   "patchInstallHistory": {
@@ -335,6 +341,11 @@
       "showing": "{{total}} cihazdan {{shown}} tanesi gösteriliyor",
       "loadMore": "Daha fazla yükle",
       "lastChecked": "Son denetim: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Paket sürümü {{version}}",
+      "id": "Katalog kimliği {{id}}",
+      "title": "Başka bir katalog girdisi aynı başlığa sahip. Her biri ayrı ayrı onaylanır."
     }
   },
   "patchesPage": {

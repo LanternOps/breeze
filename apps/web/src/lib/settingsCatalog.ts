@@ -1,4 +1,5 @@
 import {
+  BadgeCheck,
   Bell,
   Bot,
   Braces,
@@ -80,6 +81,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     icon: CreditCard, group: 'billing', partnerScopeOnly: true,
     requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'billing', name: 'Billing', labelKey: 'nav.billing', descriptionKey: card('billing', 'description'), href: '/settings/billing', icon: CreditCard, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'write' } },
+  { id: 'plan', name: 'Plan & features', labelKey: 'nav.planAndFeatures', descriptionKey: card('plan', 'description'), href: '/settings/plan', icon: BadgeCheck, group: 'billing', partnerScopeOnly: true },
   { id: 'ticketing', name: 'Ticketing', labelKey: 'nav.ticketing', descriptionKey: card('ticketing', 'description'), href: '/settings/ticketing', icon: Ticket, group: 'billing', partnerScopeOnly: true },
   { id: 'ticket-checklist-templates', name: 'Ticket checklist templates', labelKey: card('ticketChecklistTemplates', 'title'), descriptionKey: card('ticketChecklistTemplates', 'description'), href: '/settings/ticketing#templates', icon: ClipboardList, group: 'billing', partnerScopeOnly: true },
   { id: 'catalog', name: 'Product Catalog', labelKey: 'nav.productCatalog', descriptionKey: card('catalog', 'description'), href: '/settings/catalog', icon: Tags, group: 'billing', partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
@@ -99,6 +101,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'ai-usage', name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, group: 'ai', partnerScopeOnly: true },
   { id: 'ai-models', name: 'AI Providers & Models', labelKey: 'nav.aiProvidersModels', href: '/settings/partner#ai-provider', icon: Cpu, group: 'ai', partnerScopeOnly: true, requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'ai-script-authoring', name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+  { id: 'wisp-memory', name: 'Wisp memory', labelKey: card('wispMemory', 'title'), descriptionKey: card('wispMemory', 'description'), href: '/settings/wisp-memory', icon: BrainCircuit, group: 'ai', requiresWisp: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
   { id: 'tool-sources', name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, group: 'ai', requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
 
   // Integrations

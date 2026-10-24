@@ -50,11 +50,27 @@ describe('bulk move from the table (#9302)', () => {
     fireEvent.click(screen.getByTestId('deliverables-move-open'));
     const target = (await screen.findByTestId('move-to-target')) as HTMLSelectElement;
     await waitFor(() => expect(target).not.toBeDisabled());
-    expect(Array.from(target.options).map((o) => o.value)).toEqual(['', 'ct-1', 'ct-2']); // cancelled excluded
+    expect(Array.from(target.options).map((o) => o.value)).toEqual(['', 'ct-2']); // cancelled + the shared source contract excluded
     fireEvent.change(target, { target: { value: 'ct-2' } });
     fireEvent.click(screen.getByTestId('move-to-confirm'));
     await waitFor(() => expect(moveCalls(fetcher)).toHaveLength(1));
     expect(JSON.parse(String(moveCalls(fetcher)[0][1]?.body))).toEqual({ deliverableIds: ['d-1', 'd-2'], contractId: 'ct-2' });
+  });
+
+  it('still offers the source contract when the selection spans several contracts', async () => {
+    const fetcher = makeFetcher();
+    const mixed = [row({ id: 'd-1', name: 'Backups' }), row({ id: 'd-3', name: 'Audit', contractId: 'ct-2' })];
+    fetcher.mockImplementation(async (path: string) => {
+      if (path.startsWith('/contracts')) return jsonResp(200, { data: CONTRACTS });
+      return jsonResp(200, { data: mixed });
+    });
+    render(<DeliverableTable fetcher={fetcher} orgId="org-1" groupByContract selectable />);
+    fireEvent.click(await screen.findByTestId('deliverable-select-d-1'));
+    fireEvent.click(screen.getByTestId('deliverable-select-d-3'));
+    fireEvent.click(screen.getByTestId('deliverables-move-open'));
+    const target = (await screen.findByTestId('move-to-target')) as HTMLSelectElement;
+    await waitFor(() => expect(target).not.toBeDisabled());
+    expect(Array.from(target.options).map((o) => o.value)).toEqual(['', 'ct-1', 'ct-2']);
   });
 
   it('names the colliding deliverables when the batch is refused with 409', async () => {

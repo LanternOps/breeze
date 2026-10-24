@@ -1950,6 +1950,7 @@
     "title": "Connessioni di rete attive"
   },
   "devicePatchStatusTab": {
+    "released": "Rilasciato il {{date}}",
     "compliance": {
       "compliant": "{{percent}}% conforme",
       "description": "Aggiornamenti in sospeso rispetto a quelli installati",
@@ -2701,7 +2702,7 @@
     "unknownOrg": "Organizzazione sconosciuta",
     "unknownSite": "Sito sconosciuto",
     "viewInstallationGuide": "Visualizza la guida di installazione",
-    "importFromRmm": "Importa da un altro RMM",
+    "importFromRmm": "Importa campi personalizzati da un altro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} nascosti — {{fields}} si applica solo ai dispositivi con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivi di rete",

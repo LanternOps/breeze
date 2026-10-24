@@ -11,7 +11,10 @@ import { runAction, ActionError } from '../../lib/runAction';
 import { Trans, useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { formatDate } from '@/lib/dateTimeFormat';
-import { PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT } from '@breeze/shared';
+import {
+  PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT,
+  PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES,
+} from '@breeze/shared';
 import { useStableT } from '@/lib/i18n/useStableT';
 import InstallerDownloadDialog, {
   type InstallerDownloadTarget,
@@ -91,10 +94,43 @@ interface CreateFormValues {
 
 type ModalMode = 'closed' | 'create' | 'delete';
 
+/** "7 days" / "12 hours" / "90 minutes" in the user's locale. */
+function formatDefaultDuration(minutes: number, locale: string): string {
+  const [value, unit] =
+    minutes % 1440 === 0
+      ? [minutes / 1440, 'day']
+      : minutes % 60 === 0
+        ? [minutes / 60, 'hour']
+        : [minutes, 'minute'];
+  try {
+    return new Intl.NumberFormat(locale, { style: 'unit', unit: unit as string, unitDisplay: 'long' }).format(value as number);
+  } catch {
+    return `${value} ${unit}${value === 1 ? '' : 's'}`;
+  }
+}
+
 export default function EnrollmentKeyManager() {
-  const { t } = useTranslation('settings');
+  const { t, i18n } = useTranslation('settings');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { currentOrgId, organizations } = useOrgStore();
+  const { currentOrgId, organizations, enrollmentDefaults: storeDefaults } = useOrgStore();
+  // #9876: the store only fills `enrollmentDefaults` on an org-switcher
+  // fetchSites, so a direct page load sees null. Fetch them here in that case.
+  const [fetchedDefaults, setFetchedDefaults] = useState<{
+    orgId: string;
+    defaults: NonNullable<typeof storeDefaults>;
+  } | null>(null);
+  const enrollmentDefaults =
+    storeDefaults ?? (fetchedDefaults?.orgId === currentOrgId ? fetchedDefaults.defaults : null);
+  // #9616: the partner->org resolved enrollment defaults ride on the sites
+  // response (same source as Add Device). Until they load, or if the API
+  // soft-failed the read, fall back to the product defaults.
+  const defaultDeviceCount =
+    enrollmentDefaults?.deviceCount ?? PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT;
+  const defaultTtlMinutes =
+    enrollmentDefaults?.ttlMinutes ?? PRODUCT_DEFAULT_ENROLLMENT_TTL_MINUTES;
+  // Keys created this session whose device limit came from the default (the
+  // API doesn't record provenance, so the hint can't outlive the page).
+  const [defaultedKeyIds, setDefaultedKeyIds] = useState<Set<string>>(() => new Set());
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -170,6 +206,29 @@ export default function EnrollmentKeyManager() {
   useEffect(() => {
     fetchKeys();
   }, [fetchKeys]);
+
+  useEffect(() => {
+    if (storeDefaults || !currentOrgId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth(
+          `/orgs/sites?organizationId=${currentOrgId}&includeEnrollmentDefaults=1&page=1&limit=1`,
+        );
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled && body?.enrollmentDefaults) {
+          setFetchedDefaults({ orgId: currentOrgId, defaults: body.enrollmentDefaults });
+        }
+      } catch {
+        // Soft-fail: the form falls back to product defaults and omits the
+        // fields so the server resolves them.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeDefaults, currentOrgId]);
 
   useEffect(() => {
     if (!downloadDropdownId) return;
@@ -291,11 +350,29 @@ export default function EnrollmentKeyManager() {
       // such bootstrap token, so an unset field here IS the enrollment budget,
       // and the "Unlimited"-styled placeholder must resolve to the product
       // default device count (#4126), not a single-use key.
-      body.maxUsage = formMaxUsage
-        ? parseInt(formMaxUsage, 10)
-        : PRODUCT_DEFAULT_ENROLLMENT_DEVICE_COUNT;
+      // #9616: blank resolves to the partner/org default (what the field's
+      // placeholder says), falling back to the product default.
+      // When the resolved defaults haven't loaded (or the read soft-failed) the
+      // fields are OMITTED so the server resolves them: posting product values
+      // would be treated as an explicit choice (and 400 against a lower
+      // partner TTL cap) and would ignore the real partner/org defaults.
+      // The store's defaults belong to the org switcher's org; a partner admin
+      // can aim the form at another org, whose defaults we don't have: omit and
+      // let the server resolve for the right org.
+      const defaultsApply =
+        enrollmentDefaults != null && (!body.orgId || body.orgId === currentOrgId);
+      const usedDefaultCount = !formMaxUsage;
+      if (formMaxUsage) {
+        body.maxUsage = parseInt(formMaxUsage, 10);
+      } else if (defaultsApply) {
+        body.maxUsage = defaultDeviceCount;
+      }
       if (formExpiresAt) {
         body.expiresAt = new Date(formExpiresAt).toISOString();
+      } else if (defaultsApply) {
+        // ttlMinutes, not a computed expiresAt: the server does the time math
+        // and applies the partner cap to it.
+        body.ttlMinutes = defaultTtlMinutes;
       }
 
       const created = await runAction<Record<string, unknown> | null>({
@@ -309,6 +386,10 @@ export default function EnrollmentKeyManager() {
       });
       if (created && typeof created.key === 'string' && created.key.length > 0) {
         setNewlyCreatedKey(created.key);
+      }
+      if (usedDefaultCount && created && typeof created.id === 'string') {
+        const createdId = created.id;
+        setDefaultedKeyIds((prev) => new Set(prev).add(createdId));
       }
 
       await fetchKeys(currentPage);
@@ -727,6 +808,15 @@ export default function EnrollmentKeyManager() {
                         <div data-testid={`key-usage-${key.id}`}>
                           {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
                         </div>
+                        {defaultedKeyIds.has(key.id) && (
+                          <div
+                            data-testid={`key-usage-default-${key.id}`}
+                            className="text-xs text-muted-foreground"
+                            title={t('enrollmentKeys.usageFromDefaultTitle')}
+                          >
+                            {t('enrollmentKeys.usageFromDefault')}
+                          </div>
+                        )}
                         {/*
                           #2992 — device slots across the installers minted from
                           this key. A second line rather than a replacement for
@@ -979,7 +1069,7 @@ export default function EnrollmentKeyManager() {
                   type="number"
                   value={formMaxUsage}
                   onChange={(e) => setFormMaxUsage(e.target.value)}
-                  placeholder={t('enrollmentKeys.defaultDeviceLimit')}
+                  placeholder={t('enrollmentKeys.defaultDeviceLimit', { count: defaultDeviceCount })}
                   min={1}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
@@ -998,6 +1088,11 @@ export default function EnrollmentKeyManager() {
                   onChange={(e) => setFormExpiresAt(e.target.value)}
                   className="mt-1 w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-primary"
                 />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t('enrollmentKeys.expiresAtHelp', {
+                    duration: formatDefaultDuration(defaultTtlMinutes, i18n.language),
+                  })}
+                </p>
                 {expiryInPast && (
                   <p role="alert" className="mt-1 text-xs text-destructive">
                     {t('enrollmentKeys.expiresAtPast')}

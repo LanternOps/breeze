@@ -69,6 +69,10 @@ vi.mock('../services/ticketApproval/decisions', () => ({
 
 import { sweepTicketSlaBreaches, healMissingDeadlines, initializeTicketSlaWorker, shutdownTicketSlaWorker } from './ticketSlaWorker';
 import { captureException } from '../services/sentry';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import { tickets } from '../db/schema';
 
 /**
  * Flattens a drizzle sql`` object to its static SQL text (StringChunks and
@@ -178,6 +182,18 @@ describe('ticketSlaWorker', () => {
       expect(resolutionSql).toContain('ORDER BY resolution_due_at ASC');
       expect(resolutionSql).not.toContain('created_at');
     });
+
+    // #8972 spec §3.6: merged tombstones are excluded from the sweep.
+    it('sweep SQL excludes merged tombstones in both passes', async () => {
+      executeMock
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await sweepTicketSlaBreaches();
+
+      expect(sqlText(executeMock.mock.calls[0]?.[0])).toContain('merged_into_ticket_id IS NULL');
+      expect(sqlText(executeMock.mock.calls[1]?.[0])).toContain('merged_into_ticket_id IS NULL');
+    });
   });
 
   // Gate B12: a pre-W3 API instance still serving during a rolling deploy
@@ -202,6 +218,48 @@ describe('ticketSlaWorker', () => {
       expect(healSql).toContain('LIMIT 500');
       expect(healSql).toContain('FOR UPDATE SKIP LOCKED');
       expect(healSql).toContain('ORDER BY created_at ASC');
+    });
+
+    it('heal pass skips merged tombstones (#8972)', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+      await healMissingDeadlines();
+      expect(sqlText(executeMock.mock.calls[0]?.[0])).toContain('merged_into_ticket_id IS NULL');
+    });
+
+    // #8973 W4 hand-off: on a calendar, sla_paused_business_minutes legitimately
+    // differs from sla_paused_minutes, so the wall-clock heal must never select
+    // a ticket that carries a calendar revision — on ANY of its three branches.
+    it('heal leaves a calendar ticket whose business minutes differ from sla_paused_minutes untouched', async () => {
+      executeMock.mockResolvedValueOnce({ rows: [] });
+
+      expect(await healMissingDeadlines()).toBe(0);
+
+      const healSql = sqlText(executeMock.mock.calls[0]?.[0]).replace(/\s+/g, ' ');
+      const cteWhere = /WITH missing AS \( SELECT id FROM tickets WHERE (.*?) ORDER BY created_at ASC/.exec(healSql)?.[1]?.trim();
+      // #8972 ANDs `merged_into_ticket_id IS NULL` (tombstones are never healed)
+      // in front of the index predicate; that only narrows it, so the partial
+      // index below still applies.
+      const MERGED_PREFIX = 'merged_into_ticket_id IS NULL AND ';
+      expect(cteWhere?.startsWith(MERGED_PREFIX)).toBe(true);
+      const indexWhere = cteWhere?.slice(MERGED_PREFIX.length);
+      expect(indexWhere).toBe(
+        'sla_calendar_revision_id IS NULL AND ((response_sla_minutes IS NOT NULL AND response_due_at IS NULL) '
+          + 'OR (resolution_sla_minutes IS NOT NULL AND resolution_due_at IS NULL) '
+          + 'OR sla_paused_business_minutes < COALESCE(sla_paused_minutes, 0))',
+      );
+
+      // The partial index tickets_sla_deadlines_missing_idx (2027-01-03-160100)
+      // only serves the heal while the Drizzle declaration, the migration and
+      // this CTE carry the identical predicate.
+      const index = getTableConfig(tickets).indexes.find((i) => i.config.name === 'tickets_sla_deadlines_missing_idx');
+      expect(sqlText(index?.config.where).replace(/\s+/g, ' ').trim()).toBe(indexWhere);
+      const migration = readFileSync(
+        fileURLToPath(new URL('../../migrations/2027-01-03-160100-ticket-sla-calendar-revision.sql', import.meta.url)),
+        'utf8',
+      );
+      const migrationWhere = /CREATE INDEX CONCURRENTLY IF NOT EXISTS tickets_sla_deadlines_missing_idx\s+ON public\.tickets \(created_at\)\s+WHERE ([^;]+);/
+        .exec(migration)?.[1]?.replace(/\s+/g, ' ').replace(/\( \(/g, '((').trim();
+      expect(migrationWhere).toBe(indexWhere);
     });
   });
 

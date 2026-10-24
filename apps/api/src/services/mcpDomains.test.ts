@@ -105,6 +105,13 @@ describe('mcpResourceDomain', () => {
     expect(mcpResourceDomain('breeze://secrets')).toBeUndefined();
     expect(mcpResourceDomain('breeze://devices/../alerts')).toBeUndefined();
   });
+
+  it('B-W05: the fleet-health MCP App URI is devices, by exact match only', () => {
+    expect(mcpResourceDomain('ui://breeze/fleet-health/v1')).toBe('devices');
+    for (const near of ['ui://breeze/fleet-health/v2', 'ui://breeze/fleet-health/v1?x', 'ui://breeze/fleet-health/v1/', 'ui://breeze/other/v1']) {
+      expect(mcpResourceDomain(near), near).toBeUndefined();
+    }
+  });
 });
 
 describe('deprecated aliases (real table)', () => {

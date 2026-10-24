@@ -116,7 +116,9 @@
     "ticketsServiceRequests": "Richieste di servizio",
     "ticketsProblems": "Problemi",
     "ticketsChanges": "Modifiche",
-    "endpointMessages": "Messaggi"
+    "endpointMessages": "Messaggi",
+    "securityDetectionRules": "Regole di rilevamento",
+    "planAndFeatures": "Piano e funzionalità"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -427,13 +429,21 @@
       "unratedPending_other": "{{count}} patch non valutate in sospeso (non verranno approvate automaticamente)",
       "empty": "Nessun dato sulle patch ancora",
       "imagesNotChecked_one": "{{count}} immagine container non verificata",
-      "imagesNotChecked_other": "{{count}} immagini container non verificate"
+      "imagesNotChecked_other": "{{count}} immagini container non verificate",
+      "devicesNeedPatches_one": "{{count}} dispositivo necessita di patch",
+      "devicesNeedPatches_other": "{{count}} dispositivi necessitano di patch",
+      "viewPendingDevices": "Visualizza i dispositivi con patch in sospeso",
+      "viewFailedDevices": "Visualizza i dispositivi con patch non riuscite",
+      "viewCriticalDevices": "Visualizza i dispositivi con patch critiche"
     },
     "vuln": {
       "title": "Vulnerabilità",
       "criticalOpen": "Critiche aperte",
       "kev": "Sfruttamento noto",
       "patchReady": "Patch disponibile",
+      "viewCritical": "Mostra CVE critiche",
+      "viewPatchReady": "Mostra CVE con patch pronta",
+      "viewOpen": "Mostra CVE aperte",
       "totalOpen": "{{count}} rilevamenti aperti",
       "totalOpen_one": "{{count}} rilevamento aperto",
       "totalOpen_other": "{{count}} rilevamenti aperti",
@@ -1404,7 +1414,7 @@
           "name": "Webhook di produzione",
           "signingSecret": "Inserisci un segreto per la firma"
         },
-        "subtitle": "Imposta il comportamento di consegna, autenticazione e payload.",
+        "subtitle": "Imposta destinazione, eventi, autenticazione e intestazioni.",
         "title": "Configurazione del webhook",
         "validation": {
           "eventRequired": "Seleziona almeno un evento",
@@ -1466,7 +1476,7 @@
           "noPayloadTemplate": "Nessun modello di payload ancora salvato.",
           "payloadPreview": "Anteprima del modello di carico utile",
           "testEvent": "Evento di prova",
-          "testEventHelp": "I test utilizzano l'evento selezionato e il modello di payload.",
+          "testEventHelp": "Invia a questo endpoint un payload di esempio per l'evento selezionato.",
           "title": "Dettagli del webhook"
         },
         "emptySelection": "Seleziona un webhook per visualizzare la cronologia di consegna e gli strumenti di test.",
@@ -2774,5 +2784,9 @@
     "title": "Questa sezione si è bloccata",
     "description": "Un errore di rendering ha impedito la visualizzazione di questa pagina. Riprova e, se il problema persiste, includi il messaggio qui sotto nella segnalazione.",
     "retry": "Riprova"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloccato",
+    "upgrade": "Vedi i piani"
   }
 }

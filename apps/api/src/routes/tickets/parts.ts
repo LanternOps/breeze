@@ -16,6 +16,7 @@ import {
 } from '../../services/timeEntryService';
 import { getScopedTicketOr404 } from './tickets';
 import { timeActorFrom } from '../timeEntries/timeEntries';
+import { ticketMergedResponse } from '../../services/ticketMerge/errors';
 
 // Internal-only (spec D4): parts + per-ticket time data never reach org scope.
 export const ticketPartsRoutes = new Hono();
@@ -25,6 +26,9 @@ const readPerm = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSION
 const writePerm = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // #8972 W1: a write reached a merged tombstone → 409 with the survivor id.
+  const merged = ticketMergedResponse(c, err);
+  if (merged) return merged;
   if (err instanceof TimeEntryServiceError) {
     return c.json({ error: err.message, code: err.code }, err.status);
   }

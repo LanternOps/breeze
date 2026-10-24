@@ -678,6 +678,33 @@ describe('discovery routes', () => {
       });
     });
 
+    it('projects a normalized osFingerprint in the asset list response', async () => {
+      const now = new Date();
+      const mk = (id: string, osFingerprint: unknown) => ({
+        asset: {
+          id, orgId: '00000000-0000-0000-0000-000000000000', assetType: 'workstation',
+          approvalStatus: 'pending', isOnline: true, hostname: id, label: null,
+          ipAddress: '10.0.2.9', macAddress: null, manufacturer: null, model: null,
+          openPorts: [], snmpData: null, responseTimeMs: 2, linkedDeviceId: null,
+          osFingerprint, discoveryMethods: ['ping'], notes: null, tags: [],
+          firstSeenAt: now, lastSeenAt: now, createdAt: now, updatedAt: now,
+        },
+        snmpMonitoringEnabled: false, networkMonitoringEnabled: false,
+        linkedDeviceHostname: null, linkedDeviceDisplayName: null,
+        profileId: null, profileName: null, profileSubnets: null,
+      });
+      (db.select as any).mockReturnValueOnce({
+        from: () => ({ leftJoin: () => ({ leftJoin: () => ({ leftJoin: () => ({
+          where: () => ({ orderBy: () => Promise.resolve([mk('a-obj', { os: 'Windows 11' }), mk('a-null', null)]) }),
+        }) }) }) }),
+      });
+      const res = await app.request('/discovery/assets', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].osFingerprint).toBe('Windows 11');
+      expect(body.data[1].osFingerprint).toBeNull();
+    });
+
     // Regression guard: the list serializer must forward typeSource and
     // detectedAssetType so the frontend can show the override badge without
     // fetching individual asset detail pages.

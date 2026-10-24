@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Postulé à toutes les organisations. Décochez « Toutes les organisations » pour choisir un sous-ensemble.",
       "polite": "poli",
       "loading": "Chargement...",
-      "loadMoreOrganizations": "Chargez plus d’organisations"
+      "loadMoreOrganizations": "Chargez plus d’organisations",
+      "appliedToAllOrgs": "La politique s’applique maintenant à toutes les organisations",
+      "removedFromAllOrgs": "La politique ne s’applique plus à toutes les organisations"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Balayage complet",
         "maxFileSizeMb": "Taille maximale de fichier (Mo)",
         "scanTimeoutMinutes": "Délai d'expiration du balayage (minutes)",
-        "scanRunsServerSideDescription": "Breeze envoie ce balayage depuis le serveur — l'appareil n'a pas besoin d'un horaire local."
+        "scanRunsServerSideDescription": "Breeze envoie ce balayage depuis le serveur — l'appareil n'a pas besoin d'un horaire local.",
+        "ruleSets": {
+          "title": "Ensembles de règles de détection",
+          "description": "Ensembles de règles qu’utilisent les balayages IOC de cette politique.",
+          "manageLink": "Gérer les règles de détection",
+          "loading": "Chargement des ensembles de règles…",
+          "loadError": "Impossible de charger les ensembles de règles. La politique conserve ses ensembles actuels; vous pouvez quand même enregistrer les autres paramètres.",
+          "none": "Aucun ensemble de règles n’est offert pour cette politique.",
+          "legacyNote": "Aucun ensemble de règles : les balayages utilisent seulement les anciennes signatures intégrées.",
+          "cap": "Une politique peut utiliser au plus {{max}} ensembles de règles.",
+          "unavailable": "Ensemble de règles non disponible",
+          "blocking": "Cette politique ne peut pas utiliser les ensembles de règles non disponibles (supprimés, déplacés ou appartenant à une autre organisation). Retirez-les avant d’enregistrer.",
+          "overrideDraft": "Les paramètres hérités comprennent des ensembles de règles que cette politique ne peut pas utiliser. Retirez les ensembles non disponibles, puis enregistrez.",
+          "errors": {
+            "tooMany": "Une politique peut utiliser au plus {{max}} ensembles de règles.",
+            "invalidIds": "La liste des ensembles de règles n’est pas valide. Rechargez la page et réessayez.",
+            "notAttachable": "Cette politique ne peut pas utiliser certains des ensembles de règles choisis. Ils sont mis en évidence ci-dessous."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Diplômes",
@@ -1337,9 +1357,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Aucune politique logicielle trouvée. Créez-en un pour commencer.",
       "recentViolations": "Violations récentes",
       "noCurrentSoftwareViolations": "Aucune violation logicielle actuelle.",
-      "violationS": "Violation",
-      "remediation": "Assainissement :",
-      "checked": "Vérifié :",
+      "remediation": "Assainissement : {{value}}",
+      "checked": "Vérifié : {{date}}",
       "deactivatePolicy": "Politique de désactivation",
       "areYouSureYouWantToDeactivate": "Êtes-vous sûr de vouloir désactiver ?",
       "thePolicyWillBeMarkedInactiveAnd": "? La politique sera marquée comme inactive et les données de conformité seront effacées.",
@@ -1375,7 +1394,10 @@
       "coverageVendor": "Fournisseur",
       "coverageReason": "Motif",
       "vendorOnlyAgent": "Agent connu du fournisseur seulement",
-      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}"
+      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}",
+      "violationCount": "{{count}} violation",
+      "violationCount_one": "{{count}} violation",
+      "violationCount_other": "{{count}} violations"
     },
     "deploymentList": {
       "running": "En cours",
@@ -1591,20 +1613,21 @@
       "registry": "Registre",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Service en cours d’exécution",
+      "readOnlyHint": "Créée par l’API. Non modifiable ici; elle est conservée telle quelle à l’enregistrement."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossible de récupérer les appareils",
-      "devicesWith": "Dispositifs avec",
-      "by": "par",
+      "devicesWith": "Appareils avec {{name}}",
+      "by": "par {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Aucun appareil trouvé avec ce logiciel.",
       "hostname": "Nom d’hôte",
       "oS": "OS",
       "version": "Version",
       "lastSeen": "Dernière apparition",
-      "device": "Dispositif",
-      "total": "Total",
-      "s": "s"
+      "deviceTotal_one": "{{count}} appareil au total",
+      "deviceTotal_other": "{{count}} appareils au total"
     },
     "policyForm": {
       "dryRunUnassigned": "0 appareil — généralement parce que cette stratégie n’est encore affectée à aucun appareil, mais un parc entièrement conforme ou une liste de sites vide donne aussi 0",

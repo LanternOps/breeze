@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",
     "huntressIncidents": "Huntress Incidents",
     "sentineloneThreats": "SentinelOne Threats",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Threats and incidents across your fleet from SentinelOne and Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Threats and incidents across your fleet from SentinelOne and Huntress.",
+    "iocScansLink": "Looking for Breeze IOC scans? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Other EDR",
@@ -425,6 +426,8 @@
     "osFilterLabel": "Operating system"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Could not update the recommendation.",
+    "affectsOrgs": "Affects {{count}} organizations",
     "adminAccounts": "Admin Accounts",
     "allCategories": "All categories",
     "allPriorities": "All priorities",
@@ -433,15 +436,15 @@
     "completed": "Completed",
     "critical": "Critical",
     "criticalHigh": "Critical + High",
-    "devices": "Devices:",
+    "devices": "Devices: {{value}}",
     "dismiss": "Dismiss",
     "dismissed": "Dismissed",
-    "effort": "Effort:",
+    "effort": "Effort: {{value}}",
     "encryption": "Encryption",
     "firewall": "Firewall",
     "hideSteps": "Hide steps",
     "high": "High",
-    "impact": "Impact:",
+    "impact": "Impact: {{value}}",
     "invalidResponseFromServer": "Invalid response from server",
     "low": "Low",
     "markComplete": "Mark Complete",
@@ -460,10 +463,13 @@
     "vulnMgmt": "Vuln. Mgmt",
     "priorityFilterLabel": "Priority",
     "categoryFilterLabel": "Category",
-    "statusFilterLabel": "Status"
+    "statusFilterLabel": "Status",
+    "remediationSteps_one": "{{count}} remediation step",
+    "remediationSteps_other": "{{count}} remediation steps"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "A new BitLocker recovery password will be generated and escrowed; the old one is removed after the new key is in place.",
+    "accessRevealed": "revealed the key",
     "bitlocker": "BitLocker",
     "cancel": "Cancel",
     "collectNow": "Collect now",
@@ -489,6 +495,7 @@
     "rotate": "Rotate",
     "rotateKey": "Rotate key",
     "rotateRecoveryKey": "Rotate recovery key",
+    "rotateVolume": "Volume",
     "thisAccessHasBeenRecordedInThe": "This access has been recorded in the audit trail."
   },
   "securityS1ThreatList": {
@@ -552,7 +559,8 @@
   },
   "securitySecurityDashboard": {
     "acrossAllAssets": "Across all assets",
-    "actionsPrioritized": "{{count}} actions prioritized",
+    "actionsPrioritized_one": "{{countLabel}} action prioritized",
+    "actionsPrioritized_other": "{{countLabel}} actions prioritized",
     "adminAccountAudit": "Admin Account Audit",
     "antivirusCoverage": "Antivirus Coverage",
     "bitlockerEnabled": "BitLocker enabled",
@@ -563,7 +571,8 @@
     "defaultAdmins": "Default admins",
     "devicesAudited": "{{count}} devices audited",
     "devicesFlagged": "{{count}} devices flagged",
-    "devicesReviewed": "{{count}} devices reviewed",
+    "devicesReviewed_one": "{{countLabel}} device reviewed",
+    "devicesReviewed_other": "{{countLabel}} devices reviewed",
     "devicesTracked": "{{count}} devices tracked",
     "disabled": "Disabled",
     "diskProtection": "Disk protection",
@@ -583,7 +592,8 @@
     "noDevicesReportingYet": "No devices reporting yet",
     "noRecommendationsRightNowKeepMonitoringFor": "No recommendations right now. Keep monitoring for new guidance.",
     "noWeakAdminAccountsDetected": "No weak admin accounts detected.",
-    "openItems": "{{count}} open items",
+    "openItems_one": "{{countLabel}} open item",
+    "openItems_other": "{{countLabel}} open items",
     "overallPosture": "Overall posture",
     "passwordPolicy": "Password Policy",
     "policyAdherence": "Policy adherence",
@@ -611,7 +621,10 @@
     "viewDetails": "View details",
     "vulnerabilities": "Vulnerabilities",
     "weakAdmins": "Weak admins",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "bitlockerPartial": "BitLocker partial",
+    "filevaultPartial": "FileVault partial",
+    "refreshTooltip": "Reloads the latest security snapshot. Scores are recomputed on a schedule, not on click."
   },
   "securitySecurityPageHeader": {
     "refresh": "Refresh",
@@ -684,12 +697,21 @@
     "noActiveScans": "No active scans.",
     "noScanHistoryYet": "No scan history yet.",
     "quickScan": "Quick scan",
+    "scanClean": "Clean",
     "scanHistory": "Scan history",
     "scanHistoryPartiallyUnavailable": "Scan history for {{failed}} of {{total}} devices couldn't be loaded — this list is incomplete.",
     "scanHistoryUnavailable": "Scan history couldn't be loaded.",
+    "scanRequestFailed": "Scan request failed",
+    "scanThreatsFound_one": "{{count}} threat found",
+    "scanThreatsFound_other": "{{count}} threats found",
+    "scanTimedOut": "Timed out",
+    "scanTimedOutWithCount": "Timed out ({{count}} found)",
     "scanType": "Scan type",
     "scanTypeLabel": "{{type}} scan",
     "scansAreQueuedImmediatelyOnSelectedDevices": "Scans are queued immediately on selected devices.",
+    "scansQueuedCount": "{{count}} scan queued",
+    "scansQueuedCount_one": "{{count}} scan queued",
+    "scansQueuedCount_other": "{{count}} scans queued",
     "securityScanManager": "Security Scan Manager",
     "singleSelect": "Single select",
     "someScanRequestsFailed": "{{failed}} of {{total}} scan requests failed",
@@ -700,14 +722,10 @@
     "startedColumn": "Started",
     "status": "Status: {{status}}",
     "status2": "Status",
-    "type": "Type",
-    "scanRequestFailed": "Scan request failed",
-    "scansQueuedCount": "{{count}} scan queued",
-    "scansQueuedCount_one": "{{count}} scan queued",
-    "scansQueuedCount_other": "{{count}} scans queued"
+    "type": "Type"
   },
   "securityThreatDetail": {
-    "analystReview": "Analyst review",
+    "actionFailed": "Action failed",
     "detected": "Detected",
     "device": "Device",
     "deviceInfo": "Device Info",
@@ -718,11 +736,14 @@
     "noThreatSelected": "No threat selected.",
     "otherDetectionsOnThisDevice": "Other detections on this device.",
     "provider": "Provider",
+    "providerUnknown": "Unknown",
     "quarantine": "Quarantine",
+    "quarantineQueued": "Quarantine queued. The device will report back.",
     "relatedThreats": "Related Threats",
     "remove": "Remove",
+    "removeQueued": "Removal queued. The device will report back.",
     "restore": "Restore",
-    "reviewRemediationCompletenessAndEndpointHealth": "Review remediation completeness and endpoint health.",
+    "restoreQueued": "Restore queued. The device will report back.",
     "severity": "Severity",
     "status": "Status",
     "threatDetail": "Threat Detail",
@@ -737,7 +758,23 @@
     "actionFailed": "Action failed",
     "quarantineSucceeded": "Threat quarantined",
     "restoreSucceeded": "Threat restored",
-    "removeSucceeded": "Threat removed"
+    "removeSucceeded": "Threat removed",
+    "notFound": "This threat was not found. It may have been deleted, or you may not have access to its device.",
+    "relatedLoadFailed": "Related threats could not be loaded.",
+    "rule": {
+      "title": "Detection rule",
+      "legacy": "Built-in signature (legacy scan)",
+      "ruleName": "Rule",
+      "ruleSet": "Rule set",
+      "ruleSetMissing": "Rule set no longer available",
+      "tags": "Tags",
+      "matchedStrings": "Matched strings",
+      "noMatchedStrings": "No matched strings were reported.",
+      "sha256": "File SHA-256",
+      "copy": "Copy SHA-256",
+      "quarantinedTo": "Quarantined to (at scan time)",
+      "quarantineFailed": "Auto-quarantine failed"
+    }
   },
   "securityThreatList": {
     "active": "Active",
@@ -1332,17 +1369,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Enter at least one device ID",
-      "createScan": "Failed to create scan"
+      "createScan": "Failed to create scan",
+      "devicesRequired": "Select at least one device",
+      "devicesNotReady": "The device list is still loading or incomplete. Wait for it to finish, then try again.",
+      "devicesLoadFailed": "The device list could not be loaded. Use Retry in the device list, then try again."
     },
     "title": "Create Scan",
     "form": {
       "policyOptional": "Policy (optional)",
       "noPolicy": "No policy (manual config)",
-      "deviceIds": "Device IDs",
-      "deviceIdsHelp": "One UUID per line, or comma-separated.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Detection Classes"
+      "detectionClasses": "Detection Classes",
+      "devices": "Devices",
+      "devicesHelp": "Choose the devices to scan."
     },
     "actions": {
       "creating": "Creating...",
@@ -1407,6 +1445,10 @@
       "showingSearch": "Showing {{visible}} of {{pageCount}} on this page ({{total}} total)",
       "showingTotal": "Showing {{visible}} of {{total}} findings",
       "pageOf": "Page {{page}} of {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risk accepted",
+      "markedFalsePositive": "Marked as false positive"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1487,18 @@
       "detectionClasses": "Detection Classes",
       "scheduleType": "Schedule Type",
       "intervalMinutes": "Interval (minutes)",
-      "cronExpression": "Cron Expression",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Cron Expression (UTC)",
+      "cronNextRun": "Next run (your local time): {{time}}",
+      "cronExpressionZone": "Cron Expression ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Interval",
       "cron": "Cron",
-      "everyMinutes": "Every {{minutes}}m"
+      "everyMinutes": "Every {{minutes}}m",
+      "paused": "Paused",
+      "pausedTitle": "Scheduling is turned off for this policy, so it will not run automatically"
     },
     "table": {
       "name": "Name",
@@ -1777,7 +1823,7 @@
     "unknown": "unknown"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "CIS Hardening",
+    "title": "CIS Benchmarks",
     "description": "Configuration baselines, compliance scoring, and remediation tracking.",
     "messages": {
       "loadFailed": "Failed to load CIS data"
@@ -1870,6 +1916,11 @@
     "badges": {
       "allOrgs": "All orgs",
       "partnerWideTitle": "Partner-wide baseline — applies to devices in every organization"
+    },
+    "scanAll": {
+      "title": "Scan all organizations?",
+      "message": "“{{name}}” is a partner-wide baseline. With no organization selected it scans all {{orgCount}} organizations. Select an organization first to scan only its devices.",
+      "confirm": "Scan all"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +2023,17 @@
       "queueFailed": "The approval was recorded but the remediation could not be queued. It is back to pending approval; try again.",
       "mfaRequired": "Approving or rejecting a remediation requires a session signed in with multi-factor authentication. Sign out and sign in again with MFA.",
       "ownRequest": "You requested this remediation, so another user must approve it."
+    },
+    "detail": {
+      "toggle": "Toggle details",
+      "approvedBy": "Approved by",
+      "approvedAt": "Approved at",
+      "note": "Approval note",
+      "beforeState": "Before",
+      "afterState": "After",
+      "rollbackHint": "Rollback hint",
+      "noEvidence": "No evidence recorded for this remediation yet.",
+      "unknownApprover": "Unknown user"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2344,193 @@
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
     }
+  },
+  "detectionRules": {
+    "title": "Detection Rules",
+    "subtitle": "Rule sets for IOC scans and threat hunting. Every change is checked on the server before devices receive it.",
+    "listHelp": "Attach rule sets to a Configuration Policy's Security tab to use them in IOC scans.",
+    "newRuleSet": "New rule set",
+    "back": "Back to rule sets",
+    "loadFailed": "Rule sets could not be loaded.",
+    "empty": "No rule sets yet.",
+    "rulesLabel": "Rules: {{total}}",
+    "publishedVersion": "v{{version}}",
+    "created": "Rule set created",
+    "deleted": "Rule set deleted",
+    "columns": {
+      "name": "Name",
+      "owner": "Owner",
+      "rules": "Rules",
+      "published": "Published"
+    },
+    "owner": {
+      "builtin": "Breeze (built-in)",
+      "allOrgs": "All organizations",
+      "organization": "Organization"
+    },
+    "badges": {
+      "builtin": "Built-in",
+      "allOrgs": "All orgs",
+      "errors": "Has errors",
+      "unpublished": "Not published",
+      "disabled": "Disabled"
+    },
+    "create": {
+      "title": "New rule set",
+      "name": "Name",
+      "description": "Description (optional)",
+      "owner": "Owner",
+      "ownerAllOrgs": "All organizations (partner-wide)",
+      "ownerOrganization": "One organization",
+      "organization": "Organization",
+      "selectOrganization": "Select an organization",
+      "submit": "Create rule set"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Turning on auto-quarantine needs the devices:execute permission, because it moves files on every device that scans with this set.",
+      "iocBatchAlreadyImported": "These IOCs were already imported into this set.",
+      "iocRuleNameTaken": "A rule with the same generated name already exists in this set with different content. Rename or delete it, then import again.",
+      "iocTooManyRules": "This import would take the set past {{max}} rules. Import into another set.",
+      "iocInvalid": "Some IOCs are not valid. Fix the marked lines and try again."
+    },
+    "test": {
+      "requestFailed": "The test did not finish. Check your connection and try again.",
+      "privacy": "The file is scanned on the Breeze server, in a sandbox, against this set's current rules, including changes that are not published yet. The file is not stored. Only its SHA-256, size and match count are recorded in the audit log.",
+      "sandboxUnavailable": "File tests are not available on this server",
+      "sandboxUnavailableHelp": "The server cannot isolate the scan, so it does not run uploaded files. Rule editing, IOC import and device scans are not affected.",
+      "file": "File to test",
+      "filepath": "Path on device (optional)",
+      "filepathHelp": "Where the file would sit on a device. Rules that match on the path use it; it defaults to the file name.",
+      "run": "Run test",
+      "running": "Testing…",
+      "testedVersion": "Tested version {{version}}",
+      "unpublishedChanges": "Testing your unpublished changes.",
+      "noMatches": "No rules matched.",
+      "errors": {
+        "tooLarge": "The file is larger than {{max}} MB. Choose a smaller file.",
+        "busy": "Another test is running. Try again in a few seconds.",
+        "rateLimited": "You have run too many tests in the last few minutes. Try again later.",
+        "unavailable": "The rule checker is unavailable. Try again later.",
+        "noRules": "This set has no enabled rules to test.",
+        "compileFailed": "This set does not compile with its current rules, so nothing was scanned:",
+        "bodyTimeout": "The upload took too long. Try again.",
+        "unexpected": "The test could not be completed. Try again."
+      }
+    },
+    "severity": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "critical": "Critical"
+    },
+    "publish": {
+      "saved": "Saved",
+      "autoQuarantineOnly": "Auto-quarantine is off on devices now. Your other changes are not live yet.",
+      "published": "Saved and published as version {{version}}",
+      "savedDisabled": "Saved. The set is disabled, so devices do not use it.",
+      "checkerUnavailable": "Saved, not published: the rule checker is unavailable. {{devices}}",
+      "compileErrors_one": "Saved, not published: {{count}} rule has errors. {{devices}}",
+      "compileErrors_other": "Saved, not published: {{count}} rules have errors. {{devices}}",
+      "setErrors": "Saved, not published: {{message}}. {{devices}}",
+      "noEnabledRules": "No enabled rules: devices no longer scan with this set.",
+      "unknown": "Saved, but the publish result could not be read. Reload the set to see which version devices use.",
+      "devicesKeep": "Devices keep version {{version}}.",
+      "neverPublished": "This set has not been published yet, so devices do not use it.",
+      "setDisabled": "The set is disabled, so devices do not use it.",
+      "staleBanner": "Not published: fix the errors below. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Rules",
+        "import": "Import IOCs",
+        "test": "Test a file"
+      },
+      "rename": "Rename rule set",
+      "enabled": "Enabled",
+      "autoQuarantine": "Auto-quarantine",
+      "autoQuarantineHelp": "Move matching files to quarantine on every device that scans with this set.",
+      "deleteSet": "Delete",
+      "deleteSetTitle": "Delete this rule set?",
+      "deleteSetMessage": "Its rules are deleted too. Policies that still list it record it as not found on their next scan.",
+      "deleteRuleTitle": "Delete this rule?",
+      "deleteRuleMessage": "The set is checked and republished without it.",
+      "addRule": "Add rule",
+      "noRules": "No rules in this set yet.",
+      "columns": {
+        "name": "Rule",
+        "severity": "Severity",
+        "tags": "Tags",
+        "state": "State"
+      },
+      "viewSource": "View source",
+      "hideSource": "Hide source",
+      "editRule": "Edit rule",
+      "deleteRule": "Delete rule",
+      "errorLine": "Line {{line}}:",
+      "publishedVersion": "Published version {{version}}",
+      "readOnlyBuiltin": "The built-in rule set is read-only. Its rules update with Breeze releases.",
+      "refreshFailed": "The change was sent, but the rule set could not be reloaded. What you see may be out of date."
+    },
+    "dialog": {
+      "titleAdd": "Add rule",
+      "titleEdit": "Edit rule",
+      "name": "Rule name",
+      "nameHelp": "Letters, digits and underscores, starting with a letter or underscore (max 128).",
+      "severity": "Severity",
+      "tags": "Tags",
+      "tagsHelp": "Comma-separated, e.g. ransomware, advisory-42",
+      "enabled": "Enabled",
+      "source": "YARA source",
+      "sourceTooLarge": "The rule source is larger than {{max}} KB.",
+      "checkedOnSave": "The set is checked with the same compiler devices use when you save. Rules with errors are not published."
+    },
+    "ioc": {
+      "help": {
+        "title": "How the importer works",
+        "format": "One IOC per line (# starts a comment), or a JSON array. Prefix a line with its kind, such as sha256: or domain:, to set the kind yourself.",
+        "exactMatch": "Exact match only: no wildcards or patterns.",
+        "contentNotTraffic": "Domains and IP addresses match text inside scanned files, not network traffic.",
+        "partialOverlap": "Importing the same IOCs again is detected. A batch that only partly overlaps an earlier import is not deduplicated."
+      },
+      "label": "Label",
+      "labelPlaceholder": "For example: Vendor advisory 2026-10",
+      "labelRequired": "Enter a label to preview the generated rules.",
+      "paste": "Paste IOCs",
+      "textTooLong": "The pasted text is larger than {{max}} KB. Split it into smaller imports.",
+      "skippedLines": "These lines are skipped:",
+      "lineError": "Line {{line}}: {{error}}",
+      "validCount": "{{valid}} of {{total}} IOCs ready to import",
+      "kind": "Kind",
+      "value": "Value",
+      "kinds": {
+        "md5": "MD5 hash",
+        "sha1": "SHA-1 hash",
+        "sha256": "SHA-256 hash",
+        "filename": "File name",
+        "filepath": "File path",
+        "domain": "Domain",
+        "ip": "IP address",
+        "string": "Text string"
+      },
+      "errors": {
+        "empty": "Empty value",
+        "unknown_kind": "Unknown kind",
+        "bad_hash": "Not a valid hash for this kind",
+        "too_short": "Text must be at least 4 bytes",
+        "too_long": "Too long",
+        "bad_path": "Not a valid path for this kind",
+        "bad_ip": "Not a valid IP address",
+        "bad_domain": "Not a valid domain",
+        "duplicate": "Duplicate of an earlier line"
+      },
+      "overCap": "At most {{max}} IOCs per import. Split the list into smaller imports.",
+      "hashNote": "Hash IOCs make devices hash every scanned file in full, so full scans take longer.",
+      "generateFailed": "Rules could not be generated from these IOCs.",
+      "generatedTitle": "Rules that will be saved: {{total}}",
+      "import": "Import {{total}} IOCs"
+    }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "You don't have access to this organization"
   }
 }

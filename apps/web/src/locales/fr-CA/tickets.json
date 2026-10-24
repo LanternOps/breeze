@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} sélectionnés",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un billet. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le billet {{number}} n’est pas dans cette vue.",
     "movedToClosed": {
       "message": "{{status}} — maintenant sous {{tab}}",
       "view": "Voir dans {{tab}}"
@@ -418,6 +419,7 @@
     "loadFailed": "Impossible de charger le billet.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du billet",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",

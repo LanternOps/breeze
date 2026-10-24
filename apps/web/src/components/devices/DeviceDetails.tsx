@@ -321,14 +321,18 @@ type LinkedNetworkAsset = { id: string; label: string };
 // Task 4). Renders nothing while loading or when there are zero matches —
 // most devices were never seen by network discovery, and a permanent empty
 // row would just be noise.
-function NetworkAssetRow({ deviceId }: { deviceId: string }) {
+function NetworkAssetRow({ deviceId, orgId }: { deviceId: string; orgId?: string }) {
   const { t } = useTranslation("devices");
   const [assets, setAssets] = useState<LinkedNetworkAsset[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setAssets(null);
-    fetchWithAuth(`/discovery/assets?linkedDeviceId=${deviceId}`)
+    // The endpoint 400s ("orgId is required") for partner/all-orgs sessions
+    // unless told which org owns the device.
+    const params = new URLSearchParams({ linkedDeviceId: deviceId });
+    if (orgId) params.set("orgId", orgId);
+    fetchWithAuth(`/discovery/assets?${params.toString()}`)
       .then(async (res) => {
         if (!res.ok) return [];
         const data = await res.json();
@@ -345,7 +349,7 @@ function NetworkAssetRow({ deviceId }: { deviceId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [deviceId]);
+  }, [deviceId, orgId]);
 
   if (!assets || assets.length === 0) return null;
 
@@ -1132,7 +1136,7 @@ export default function DeviceDetails({
 
             <DeviceBillingCard deviceId={device.id} />
 
-            <NetworkAssetRow deviceId={device.id} />
+            <NetworkAssetRow deviceId={device.id} orgId={device.orgId || undefined} />
           </div>
 
           {/* #9030: the rail collapses instantly — animating `width` reflowed

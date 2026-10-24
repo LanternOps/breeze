@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} selecionados",
     "clearSelection": "Limpar",
     "noSelection": "Selecione um chamado. Use j/k para mover, Enter para expandir.",
+    "ticketNotInView": "O chamado {{number}} não está nesta visualização.",
     "movedToClosed": {
       "message": "{{status}} — agora em {{tab}}",
       "view": "Ver em {{tab}}"
@@ -418,6 +419,7 @@
     "loadFailed": "Falha ao carregar chamado.",
     "backToQueue": "Voltar à fila",
     "ticketSubject": "Assunto do chamado",
+    "subjectEditButton": "Editar assunto",
     "openFullPage": "Abrir página completa",
     "priorityLabel": "Prioridade",
     "categoryLabel": "Categoria",

@@ -347,11 +347,17 @@ Removes all notifications for the current user.
 
 Breeze checks every 15 minutes whether its connections still work, and opens a
 connection health incident when one breaks. Incidents appear in the
-**Connection Health** panel on **Integrations**, as in-app notices, and in the
-daily digest below. They clear on their own once the connection works again.
+**Connection health** panel on **Integrations** -- each with a **Fix** link to
+the connection that needs attention, and a **Recently resolved** list
+underneath -- as in-app notices, and in the daily digest below. They clear on
+their own once the connection works again.
 
 Most integrations record their own failures (a failed sync, a revoked
-authorization). Breeze also watches for connections that fail without saying so:
+authorization): Huntress, SentinelOne, Pax8, UniFi, backup providers, EDR,
+accounting, DNS filtering, Microsoft 365 connections and tenant sync, and ticket
+mailboxes all report into the same panel, alongside the outbound webhook and
+Google Workspace checks below. Breeze also watches for connections that fail
+without saying so:
 
 - **Outbound webhooks.** A webhook opens an incident when a delivery uses up all
   its retries and no later delivery has succeeded. Deliveries that were dropped
@@ -384,13 +390,18 @@ last run of the daily digest, and each check's last success.
 ## Connection Health Digest Email
 
 When an integration, sync or OAuth grant breaks, the people who can fix it get an
-in-app notice. They also get a **daily digest email** at 08:00 in the partner's
-timezone. The digest lists the connections that are still broken, grouped by
+in-app notice. They also get a **daily digest email** between 08:00 and 11:59
+in the partner's timezone (an hourly job sends it at its first run inside that
+window). The digest lists the connections that are still broken, grouped by
 organization with partner-wide connections first. It also lists the ones that
 recovered since that person's last digest.
 
 - **One email a day at most**, however many organizations are affected. If there
   is nothing to report, no email is sent.
+- **The first digest after upgrading to v0.124.0 covers what is already
+  broken.** Incidents that were open before the upgrade, including ones opened
+  under v0.123.0, are included once, so expect a one-time burst of emails to
+  everyone who can fix them.
 - **Long-running problems fade.** A connection appears every day for its first
   seven days broken, and after that only in the Monday digest.
 - **Recipients are checked when the email is sent.** Someone who has lost the
@@ -420,12 +431,16 @@ My Account, and the next digest carries a fresh link.
 Notices and the digest go to MSP staff only by default. Staff who can fix a broken connection are always notified. You can also let the admins of your customer organizations hear about their own organization's connections.
 
 - **Off by default.** Nothing changes for customers until you turn it on.
-- **Where to set it.** Open the **Integrations** page and use the **Health notifications** card. Set a partner default (this needs full partner access, `orgAccess` set to all) and, if you want, a per-organization override of **Inherit**, **On** or **Off** for the organization selected in the organization switcher.
-- **Who is notified.** When the setting is on, users in the customer organization whose organization role grants the permission to repair the connection (typically `organizations:write`) receive the in-app notice and the daily digest for their own organization's connections.
+- **Where to set it.** Open the **Integrations** page and use the **Health notifications** card. Set a partner default (this needs a partner admin with access to all organizations) and, if you want, a per-organization override of **Inherit**, **On** or **Off** for the organization selected in the organization switcher.
+- **Who is notified.** When the setting is on, admins in the customer organization who can edit the organization receive the in-app notice and the daily digest for their own organization's connections.
 - **Partner-wide connections stay private.** Partner-wide connections never reach customer admins.
 - **Sender.** Customer digests are sent from the partner's sending identity (the partner email lane), not from the platform sender.
 - **Customers cannot change it.** Customer admins cannot turn the setting on or off themselves.
 - **Changes apply going forward.** A change takes effect on the next notice or digest. Notices already delivered are not retracted.
+
+<Aside type="caution" title="Known gap in v0.124.0">
+  A customer admin who holds only the built-in **Org Admin** role does not receive every kind of incident notice -- some kinds reach only roles that can edit the organization. Tracked as #9268.
+</Aside>
 
 ---
 

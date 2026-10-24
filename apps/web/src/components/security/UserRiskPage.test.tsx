@@ -237,6 +237,28 @@ describe('UserRiskPage', () => {
     expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
   });
 
+  it('keeps the table mounted when the header Refresh button is clicked', async () => {
+    routeFetch({ save: 'ok' });
+    const routed = fetchWithAuthMock.getMockImplementation()!;
+    let scoreCalls = 0;
+    fetchWithAuthMock.mockImplementation((url: string, ...rest: unknown[]) => {
+      if (typeof url === 'string' && url.includes('/user-risk/scores')) {
+        scoreCalls += 1;
+        if (scoreCalls >= 2) return new Promise<Response>(() => {});
+      }
+      return (routed as (...a: unknown[]) => Promise<Response>)(url, ...rest);
+    });
+
+    render(<UserRiskPage />);
+    await screen.findAllByText('Alice Admin');
+
+    fireEvent.click(screen.getByRole('button', { name: /^refresh$/i }));
+
+    await screen.findByTestId('user-risk-refreshing');
+    expect(screen.queryByTestId('user-risk-loading')).toBeNull();
+    expect(screen.getAllByText('Alice Admin')).toHaveLength(2);
+  });
+
   it('keeps the list on screen and toasts when the post-save refresh fails (#9684)', async () => {
     routeFetch({ save: 'ok' });
     const routed = fetchWithAuthMock.getMockImplementation()!;

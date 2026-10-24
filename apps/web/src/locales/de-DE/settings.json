@@ -254,41 +254,7 @@
       "twelveHour": "12 Stunden",
       "twentyFourHour": "24 Stunden",
       "language": "Sprache",
-      "languageDescription": "Standardsprache für Partnereinstellungen.",
-      "businessHours": {
-        "title": "Geschäftszeiten",
-        "description": "Legen Sie Ihre Standardbetriebszeiten für Support und Benachrichtigungen fest.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Immer verfügbar"
-          },
-          "business": {
-            "label": "Geschäftszeiten",
-            "description": "Mo-Fr 9-17 Uhr"
-          },
-          "extended": {
-            "label": "Erweiterte Öffnungszeiten",
-            "description": "Mo-Fr 7-19 Uhr, Sa 9-13 Uhr"
-          },
-          "custom": {
-            "label": "Benutzerdefiniert",
-            "description": "Legen Sie Ihren eigenen Zeitplan fest"
-          }
-        },
-        "customSchedule": "Benutzerdefinierter Zeitplan",
-        "open": "Offen",
-        "to": "zu"
-      },
-      "days": {
-        "mon": "Montag",
-        "tue": "Dienstag",
-        "wed": "Mittwoch",
-        "thu": "Donnerstag",
-        "fri": "Freitag",
-        "sat": "Samstag",
-        "sun": "Sonntag"
-      }
+      "languageDescription": "Standardsprache für Partnereinstellungen."
     }
   },
   "partnerAiBudgets": {
@@ -1422,7 +1388,10 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "defaultDeviceLimit": "50 (Standard)",
+    "defaultDeviceLimit": "{{count}} (Organisationsstandard)",
+    "expiresAtHelp": "Leer lassen für {{duration}} (Organisationsstandard).",
+    "usageFromDefault": "Standard",
+    "usageFromDefaultTitle": "Das Geräte-Limit stammt aus dem Organisationsstandard.",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
@@ -1506,7 +1475,8 @@
       "approval_ask": "Freigabeanfrage",
       "approval_snapshot": "Freigabe-Kennzahlen",
       "approval_expires": "Freigabefrist",
-      "approval_status": "Freigabestatus"
+      "approval_status": "Freigabestatus",
+      "merged_into_number": "Nummer des Ziel-Tickets"
     },
     "billingPayments": "Abrechnung und Zahlungen",
     "supportPortal": "Support und Portal",
@@ -1521,7 +1491,8 @@
       "payment_failed": "Zahlung konnte nicht abgeschlossen werden",
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
       "ticket_approval_requested_notify": "Freigabeanfrage für Arbeiten (zur Information)",
-      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe"
+      "ticket_approval_decided": "Entscheidung zur Arbeitsfreigabe",
+      "ticket_merged": "Ticket zusammengeführt"
     }
   },
   "inboundEmail": {
@@ -4516,6 +4487,9 @@
     "notEnabledBody": "MCP OAuth ist auf diesem Server deaktiviert. Setzen Sie MCP_OAUTH_ENABLED=true und starten Sie die API neu, um verbundene Apps zuzulassen.",
     "revokeConfirm": "Zugriff für {{name}} entziehen? Ihr Zugriffstoken wird innerhalb von 10 Minuten nicht mehr funktionieren.",
     "revokeFailed": "Widerruf fehlgeschlagen ({{status}})",
+    "revokeTitle": "Verbundene App widerrufen",
+    "revokeSuccess": "Zugriff für {{name}} wurde widerrufen",
+    "revokeFailedGeneric": "Widerruf fehlgeschlagen",
     "networkError": "Netzwerkfehler",
     "networkErrorDuringRevoke": "Netzwerkfehler beim Widerrufen",
     "revoking": "Widerrufen…",
@@ -5743,6 +5717,20 @@
       "sourceOrg": "Überschreibung der Organisation",
       "sourcePartner": "Partner-Standard",
       "sourceDefault": "Integrierter Standard"
+    },
+    "businessCalendar": {
+      "title": "Geschäftszeiten",
+      "description": "Der Kalender, nach dem die SLA-Uhren dieser Organisation laufen. Bei „Erben“ gilt der Partner-Standard.",
+      "label": "Geschäftskalender",
+      "inherit": "Erben",
+      "inheritedDefault": "Geerbt: {{name}} (Partner-Standard)",
+      "inheritedNone": "Geerbt: 24×7 (kein Partner-Standard)",
+      "partnerWideOption": "{{name}} (alle Orgs)",
+      "archivedOverride": "Archivierter Kalender (gilt nicht mehr)",
+      "loadFailed": "Der Geschäftskalender konnte nicht geladen werden.",
+      "errors": {
+        "save": "Der Geschäftskalender konnte nicht gespeichert werden. Bitte erneut versuchen."
+      }
     }
   },
   "organizationForm": {
@@ -6920,5 +6908,208 @@
     "enabledToast": "Einzeltasten-Kürzel aktiviert",
     "disabledToast": "Einzeltasten-Kürzel deaktiviert",
     "saveFailed": "Einzeltasten-Kürzel konnten nicht gespeichert werden."
+  },
+  "businessHoursCard": {
+    "title": "Geschäftszeiten",
+    "description": "Kalender, nach denen die SLA-Uhren für Reaktion und Lösung laufen. Ein Ticket nutzt den Kalender seiner Organisation oder Ihren Standardkalender; ist keiner festgelegt, läuft die Uhr rund um die Uhr.",
+    "newTicketsOnly": "Änderungen an Zeiten oder Zeitzone gelten nur für neue Tickets. Mit „Auf offene Tickets anwenden“ aktualisieren Sie bereits offene Tickets.",
+    "create": "Neuer Kalender",
+    "loading": "Geschäftszeiten werden geladen…",
+    "loadError": "Geschäftszeiten konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Noch keine Geschäftszeiten-Kalender. Tickets laufen rund um die Uhr (24×7), bis Sie einen Kalender anlegen und als Standard festlegen.",
+    "allOrgs": "Alle Orgs",
+    "default": "Standard",
+    "archived": "Archiviert",
+    "edit": "Bearbeiten",
+    "setDefault": "Als Standard festlegen",
+    "clearDefault": "Standard aufheben",
+    "applyOpen": "Auf offene Tickets anwenden",
+    "archive": "Archivieren",
+    "unarchive": "Wiederherstellen",
+    "delete": "Löschen",
+    "deleteTitle": "{{name}} löschen?",
+    "deleteMessage": "Dadurch werden der Kalender und seine Feiertage endgültig gelöscht. Ein Kalender, den Tickets oder Organisationen noch verwenden, kann nicht gelöscht werden; archivieren Sie ihn stattdessen.",
+    "name": "Kalendername",
+    "timezone": "Zeitzone",
+    "appliesTo": "Gilt für",
+    "ownerPartner": "Alle Organisationen (partnerweit)",
+    "ownerOrg": "Eine Organisation",
+    "organization": "Organisation",
+    "chooseOrg": "Organisation auswählen",
+    "weeklyHours": "Wöchentliche Zeiten",
+    "closed": "Geschlossen",
+    "to": "bis",
+    "addInterval": "Zeiten hinzufügen",
+    "intervalStart": "{{day}} öffnet um",
+    "intervalEnd": "{{day}} schließt um",
+    "removeInterval": "Zeiten für {{day}} entfernen",
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "cancel": "Abbrechen",
+    "holidays": "Feiertage",
+    "holidayHint": "Feiertage mit heutigem oder früherem Datum ändern offene Tickets nicht.",
+    "noHolidays": "Keine Feiertage.",
+    "holidayDate": "Datum",
+    "holidayName": "Feiertagsname",
+    "holidayAdd": "Feiertag hinzufügen",
+    "holidayRemove": "Feiertag {{name}} entfernen",
+    "weekdays": {
+      "0": "Sonntag",
+      "1": "Montag",
+      "2": "Dienstag",
+      "3": "Mittwoch",
+      "4": "Donnerstag",
+      "5": "Freitag",
+      "6": "Samstag"
+    },
+    "errors": {
+      "nameRequired": "Geben Sie einen Namen ein.",
+      "orgRequired": "Wählen Sie eine Organisation aus.",
+      "invalidTime": "Geben Sie Zeiten als HH:MM ein (z. B. 09:00); das Ende kann 24:00 sein.",
+      "order": "Jedes Intervall muss nach seinem Beginn enden.",
+      "overlap": "Intervalle am selben Tag dürfen sich nicht überschneiden.",
+      "empty": "Fügen Sie mindestens ein Öffnungsintervall hinzu.",
+      "timezone": "Wählen Sie eine gültige Zeitzone.",
+      "save": "Der Kalender konnte nicht gespeichert werden. Bitte erneut versuchen.",
+      "holidayInvalid": "Geben Sie ein gültiges Datum und einen Namen für den Feiertag ein.",
+      "holidayAdd": "Der Feiertag konnte nicht hinzugefügt werden. Bitte erneut versuchen.",
+      "holidayRemove": "Der Feiertag konnte nicht entfernt werden. Bitte erneut versuchen.",
+      "inUse": "Dieser Kalender wird von Tickets oder Organisationen verwendet und kann nicht gelöscht werden. Archivieren Sie ihn stattdessen.",
+      "isDefault": "Dieser Kalender ist der Standard. Heben Sie den Standard auf, bevor Sie ihn löschen.",
+      "default": "Der Standardkalender konnte nicht geändert werden. Bitte erneut versuchen.",
+      "archive": "Der Archivstatus konnte nicht geändert werden. Bitte erneut versuchen.",
+      "delete": "Der Kalender konnte nicht gelöscht werden. Bitte erneut versuchen.",
+      "apply": "Der Kalender konnte nicht auf offene Tickets angewendet werden. Bitte erneut versuchen."
+    },
+    "toasts": {
+      "created": "Kalender erstellt",
+      "updated": "Kalender aktualisiert",
+      "defaultSet": "Standardkalender festgelegt",
+      "defaultCleared": "Standard aufgehoben; Tickets ohne Überschreibung laufen 24×7",
+      "archived": "Kalender archiviert",
+      "unarchived": "Kalender wiederhergestellt",
+      "deleted": "Kalender gelöscht",
+      "holidayAdded": "Feiertag hinzugefügt",
+      "holidayRemoved": "Feiertag entfernt",
+      "recompute": "Die Fristen offener Tickets werden aktualisiert.",
+      "applied": "Auf offene Tickets angewendet: {{count}} aktualisiert",
+      "appliedPartial": "{{skipped}} Tickets wurden gerade bearbeitet und behalten ihre bisherigen Zeiten. Wenden Sie die Änderung erneut an, um sie nachzuholen."
+    },
+    "apply": {
+      "title": "{{name}} auf offene Tickets anwenden",
+      "explanation": "Offene Tickets, die nie pausiert wurden, wechseln zu den aktuellen Zeiten und ihre Fristen werden neu berechnet. Tickets mit Pausenverlauf bleiben unverändert.",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Vorschau konnte nicht geladen werden.",
+      "revisionChanged": "Die Zeiten haben sich seit dieser Vorschau geändert. Prüfen Sie die aktualisierten Zahlen, bevor Sie anwenden.",
+      "eligible": "Tickets, die aktualisiert werden: {{count}}",
+      "breached": "Davon würden sofort überfällig: {{count}}",
+      "paused": "Übersprungen, weil sie pausiert waren: {{count}}",
+      "confirm": "Auf offene Tickets anwenden"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Tarif & Funktionen",
+    "description": "Was Ihr Tarif umfasst. Gesperrte Funktionen bleiben sichtbar, damit Sie sehen, was ein Upgrade hinzufügt.",
+    "currentPlan": "Aktueller Tarif",
+    "plans": {
+      "free": "Kostenlos",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unbegrenzt"
+    },
+    "columns": {
+      "feature": "Funktion",
+      "state": "Zustand",
+      "source": "Quelle",
+      "expires": "Läuft ab",
+      "limits": "Grenzwerte"
+    },
+    "state": {
+      "enabled": "Enthalten",
+      "disabled": "Gesperrt"
+    },
+    "source": {
+      "plan": "Tarifstandard",
+      "billing": "Abrechnung",
+      "license": "Lizenz",
+      "manual": "Manuell"
+    },
+    "graceWarning": "Abgelaufen am {{expiresAt}} — Kulanzfrist bis {{graceUntil}}",
+    "noExpiry": "Nie",
+    "noLimits": "—",
+    "reason": "Grund: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding-Supervisor",
+        "why": "Ein KI-Supervisor, der Fehler beim Zero-Touch-Onboarding diagnostiziert und behebt."
+      },
+      "verified_library": {
+        "label": "Verifizierte Softwarebibliothek",
+        "why": "Kuratierte, verifizierte Pakete, die Sie bedenkenlos bereitstellen können."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp sichtet Ihre Geräteflotte fortlaufend und benachrichtigt die richtige Person; verfügbar ab Pro."
+      }
+    },
+    "loadError": "Ihr Tarif konnte nicht geladen werden.",
+    "retry": "Erneut versuchen"
+  },
+  "wispMemory": {
+    "title": "Wisp-Gedächtnis",
+    "description": "Prüfen Sie, was Wisp sich für Sie, einen Kunden oder Ihr ganzes Team gemerkt hat, und bestätigen oder widerrufen Sie es.",
+    "tabs": {
+      "mine": "Mein Gedächtnis",
+      "org": "Kunde",
+      "partner": "Alle Kunden",
+      "users": "Techniker"
+    },
+    "empty": "Hier gibt es noch keine Gedächtniseinträge.",
+    "loading": "Gedächtnis wird geladen…",
+    "loadFailed": "Das Gedächtnis konnte nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "columns": {
+      "subject": "Betreff",
+      "type": "Typ",
+      "status": "Status",
+      "confidence": "Konfidenz",
+      "updated": "Aktualisiert",
+      "actions": "Aktionen"
+    },
+    "statusValue": {
+      "unconfirmed": "Unbestätigt",
+      "confirmed": "Bestätigt",
+      "retracted": "Widerrufen"
+    },
+    "type": {
+      "preference": "Präferenz",
+      "standing_instruction": "Dauerhafte Anweisung",
+      "fact": "Fakt",
+      "decision": "Entscheidung",
+      "concern_outcome": "Ergebnis eines Anliegens",
+      "work_summary": "Arbeitszusammenfassung"
+    },
+    "confidenceValue": {
+      "low": "Niedrig",
+      "medium": "Mittel",
+      "high": "Hoch"
+    },
+    "confirm": "Bestätigen",
+    "retract": "Widerrufen",
+    "confirmed": "Eintrag bestätigt.",
+    "retracted": "Eintrag widerrufen.",
+    "confirmFailed": "Der Eintrag konnte nicht bestätigt werden.",
+    "retractFailed": "Der Eintrag konnte nicht widerrufen werden.",
+    "fromConversation": "Aus Unterhaltung",
+    "pickOrg": "Kunden auswählen",
+    "pickUser": "Techniker auswählen",
+    "pickPrompt": "Wählen Sie oben eine Option, um das Gedächtnis zu sehen.",
+    "showContent": "Inhalt anzeigen",
+    "hideContent": "Inhalt ausblenden",
+    "conversationUnavailable": "Diese Unterhaltung ist nicht mehr verfügbar.",
+    "usersLoadFailed": "Techniker konnten nicht geladen werden."
   }
 }

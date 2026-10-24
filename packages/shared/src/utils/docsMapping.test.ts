@@ -219,7 +219,8 @@ describe('getDocsForPath', () => {
     it('/alerts/rules matches Alert Rules, not generic Alerts', () => {
       const result = getDocsForPath('/alerts/rules');
       expect(result.label).toBe('Alert Rules');
-      expect(result.url).toContain('/features/alert-templates/');
+      // alert-templates.mdx was folded into monitors.mdx (v0.124.0 sweep)
+      expect(result.url).toContain('/features/monitors/');
     });
   });
 
@@ -479,6 +480,74 @@ describe('getDocsForPath', () => {
       const result = getDocsForPath('/operator');
       expect(result.label).toBe('AI Operator');
       expect(result.url).toContain('/features/ai-agents/#ai-operator-preview');
+    });
+  });
+
+  describe('v0.124.0 mappings', () => {
+    it('/settings/ticket-checklist-templates beats the generic /settings entry', () => {
+      const result = getDocsForPath('/settings/ticket-checklist-templates');
+      expect(result.label).toBe('Checklist Templates');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ticketing/`);
+    });
+
+    it('/settings/tool-sources maps to the Tool Sources doc', () => {
+      const result = getDocsForPath('/settings/tool-sources/abc-123');
+      expect(result.label).toBe('Tool Sources');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/tool-sources/`);
+    });
+
+    it('/agreements maps to the Agreements doc', () => {
+      const result = getDocsForPath('/agreements/signed');
+      expect(result.label).toBe('Agreements');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/agreements/`);
+    });
+
+    it('/settings/partner#trust-center opens the partner defaults section of the Trust Center doc', () => {
+      const result = getDocsForPath('/settings/partner', '#trust-center');
+      expect(result.label).toBe('Trust Center');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/security/trust-center/#partner-defaults`);
+    });
+
+    it('/settings/partner#ai-features opens the AI doc', () => {
+      const result = getDocsForPath('/settings/partner', '#ai-features');
+      expect(result.label).toBe('AI Features');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai/`);
+    });
+
+    it('/settings/organization#ai opens the AI doc', () => {
+      const result = getDocsForPath('/settings/organization', '#ai');
+      expect(result.label).toBe('AI');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/ai/`);
+    });
+
+    it('/organizations/:id#trust opens the Trust Center doc', () => {
+      const result = getDocsForPath('/organizations/9f1c0c8e-0000-4000-8000-000000000000', '#trust');
+      expect(result.label).toBe('Trust Center');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/security/trust-center/`);
+    });
+
+    it('/organizations/:id without a hash still opens the record page section', () => {
+      const result = getDocsForPath('/organizations/9f1c0c8e-0000-4000-8000-000000000000');
+      expect(result.label).toBe('Organization Record');
+    });
+
+    it('/devices/:id#system-restore opens the System Restore tab section', () => {
+      const result = getDocsForPath('/devices/9f1c0c8e-0000-4000-8000-000000000000', '#system-restore');
+      expect(result.label).toBe('System Restore');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/devices/#system-restore-tab`);
+    });
+
+    it('/configuration-policies/:id#security_agents opens the Security Agents section', () => {
+      const result = getDocsForPath('/configuration-policies/9f1c0c8e-0000-4000-8000-000000000000', '#security_agents');
+      expect(result.label).toBe('Security Agents');
+      expect(result.url).toBe(`${DOCS_BASE_URL}/features/configuration-policies/#security-agents`);
+    });
+
+    it('retired docs: alert-templates and service-monitoring targets now point at /features/monitors/', () => {
+      expect(getDocsForPath('/settings/alert-templates').url).toBe(`${DOCS_BASE_URL}/features/monitors/`);
+      expect(getDocsForPath('/alerts/rules').url).toBe(`${DOCS_BASE_URL}/features/monitors/`);
+      expect(getDocsForPath('/devices/abc', '#monitoring').url).toBe(`${DOCS_BASE_URL}/features/monitors/`);
+      expect(getDocsForPath('/configuration-policies/abc', '#monitoring').url).toBe(`${DOCS_BASE_URL}/features/monitors/`);
     });
   });
 });

@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Applied to all organizations. Uncheck “All organizations” to pick a subset.",
       "polite": "polite",
       "loading": "Loading…",
-      "loadMoreOrganizations": "Load more organizations"
+      "loadMoreOrganizations": "Load more organizations",
+      "appliedToAllOrgs": "Policy now applies to all organizations",
+      "removedFromAllOrgs": "Policy no longer applies to all organizations"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Full scan",
         "maxFileSizeMb": "Max file size (MB)",
         "scanTimeoutMinutes": "Scan timeout (minutes)",
-        "scanRunsServerSideDescription": "Breeze dispatches this scan from the server — the device does not need a local schedule."
+        "scanRunsServerSideDescription": "Breeze dispatches this scan from the server — the device does not need a local schedule.",
+        "ruleSets": {
+          "title": "Detection rule sets",
+          "description": "Rule sets this policy's IOC scans use.",
+          "manageLink": "Manage detection rules",
+          "loading": "Loading rule sets…",
+          "loadError": "Rule sets could not be loaded. The policy keeps its current rule sets; you can still save the other settings.",
+          "none": "No rule sets are available for this policy.",
+          "legacyNote": "No rule sets: scans use the built-in legacy signatures only.",
+          "cap": "A policy can use at most {{max}} rule sets.",
+          "unavailable": "Unavailable rule set",
+          "blocking": "This policy cannot use the unavailable rule sets (deleted, moved, or owned by another organization). Remove them before saving.",
+          "overrideDraft": "The inherited settings list rule sets this policy cannot use. Remove the unavailable rule sets, then Save.",
+          "errors": {
+            "tooMany": "A policy can use at most {{max}} rule sets.",
+            "invalidIds": "The rule set list is not valid. Reload the page and try again.",
+            "notAttachable": "This policy cannot use some of the selected rule sets. They are highlighted below."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credentials",
@@ -1337,9 +1357,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "No software policies found. Create one to get started.",
       "recentViolations": "Recent Violations",
       "noCurrentSoftwareViolations": "No current software violations.",
-      "violationS": "violation(s)",
-      "remediation": "Remediation:",
-      "checked": "Checked:",
+      "remediation": "Remediation: {{value}}",
+      "checked": "Checked: {{date}}",
       "deactivatePolicy": "Deactivate Policy",
       "areYouSureYouWantToDeactivate": "Are you sure you want to deactivate",
       "thePolicyWillBeMarkedInactiveAnd": "? The policy will be marked inactive and compliance data will be cleared.",
@@ -1375,14 +1394,17 @@
       "coverageVendor": "Vendor",
       "coverageReason": "Reason",
       "vendorOnlyAgent": "Vendor-only agent",
-      "coverageRowsNote": "Showing {{shown}} of {{total}}"
+      "coverageRowsNote": "Showing {{shown}} of {{total}}",
+      "violationCount": "{{count}} violation",
+      "violationCount_one": "{{count}} violation",
+      "violationCount_other": "{{count}} violations"
     },
     "deploymentList": {
       "running": "Running",
       "completed": "Completed",
       "failed": "Failed",
       "paused": "Paused",
-      "canceled": "Canceled",
+      "canceled": "Cancelled",
       "deployments": "Deployments",
       "monitorProgressAndManageDeploymentWorkflows": "Monitor progress and manage deployment workflows.",
       "allStatuses": "All statuses",
@@ -1390,7 +1412,7 @@
       "completed2": "Completed",
       "failed2": "Failed",
       "paused2": "Paused",
-      "canceled2": "Canceled",
+      "canceled2": "Cancelled",
       "allTypes": "All types",
       "manual": "Manual",
       "scheduled": "Scheduled",
@@ -1591,20 +1613,21 @@
       "registry": "registry",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Service running",
+      "readOnlyHint": "Created via the API. Not editable here; it is kept unchanged when you save."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Failed to fetch devices",
-      "devicesWith": "Devices with",
-      "by": "by",
+      "devicesWith": "Devices with {{name}}",
+      "by": "by {{vendor}}",
       "noDevicesFoundWithThisSoftware": "No devices found with this software.",
       "hostname": "Hostname",
       "oS": "OS",
       "version": "Version",
       "lastSeen": "Last Seen",
-      "device": "device",
-      "total": "total",
-      "s": "s"
+      "deviceTotal_one": "{{count}} device total",
+      "deviceTotal_other": "{{count}} devices total"
     },
     "policyForm": {
       "dryRunUnassigned": "0 devices — usually because this policy is not assigned to any device yet, but a fully compliant fleet or an empty site allowlist also reads as 0",

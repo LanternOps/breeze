@@ -1950,6 +1950,7 @@
     "title": "Aktif Ağ Bağlantıları"
   },
   "devicePatchStatusTab": {
+    "released": "Yayın tarihi: {{date}}",
     "compliance": {
       "compliant": "{{percent}}% uyumlu",
       "description": "Bekleyen ve yüklü güncellemeler",
@@ -2701,7 +2702,7 @@
     "unknownOrg": "Bilinmeyen Kuruluş",
     "unknownSite": "Bilinmeyen Site",
     "viewInstallationGuide": "Kurulum kılavuzunu görüntüleyin",
-    "importFromRmm": "Başka bir RMM'den içe aktar",
+    "importFromRmm": "Başka bir RMM'den özel alanları içe aktar",
     "hiddenNonAgentNotice": "{{count}} {{class}} gizlendi — {{fields}} yalnızca aracılı cihazlar için geçerlidir.",
     "hiddenNonAgentClassLabel": {
       "network": "ağ cihazı",

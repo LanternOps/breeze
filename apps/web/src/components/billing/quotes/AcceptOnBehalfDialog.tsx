@@ -128,6 +128,8 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
   const currency = quote.currencyCode ?? 'USD';
   const invoiceAmount = formatMoney(quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal, currency);
   const hasRecurring = lines.some((l) => l.recurrence !== 'one_time');
+  // No one-time lines: the accept leaves the invoice as an unnumbered draft.
+  const recurringOnly = lines.length > 0 && !lines.some((l) => l.recurrence === 'one_time');
   const ready = reference.trim().length > 0 && signerName.trim().length > 0 && !evidenceError;
 
   const onEvidenceChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -180,6 +182,11 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
         // rather than printing a blank where a number belongs.
         successMessage: (data) => {
           if (!data.invoiceNumber) return t('quotes.actions.acceptOnBehalf.successDraftInvoice');
+          // Auto-email is on but the server has no email transport: say that,
+          // not "no recipient" (a recipient on file would not help).
+          if (autoEmail && emailConfigured === false) {
+            return t('quotes.actions.acceptOnBehalf.successNoEmailService', { number: data.invoiceNumber });
+          }
           // Auto-email is on but nobody is on record to receive it: be honest
           // that the customer may not have the invoice.
           if (autoEmail && !hasRecipients) {
@@ -380,7 +387,9 @@ export default function AcceptOnBehalfDialog({ open, onClose, quote, lines, reci
           this is the dialog's reason to exist, not a detail behind a toggle. */}
       <ul className="mt-4 space-y-1 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground" data-testid="accept-on-behalf-consequences">
         <li data-testid="accept-on-behalf-consequence-invoice">
-          {t('quotes.actions.acceptOnBehalf.consequenceInvoice', { amount: invoiceAmount })}
+          {recurringOnly
+            ? t('quotes.actions.acceptOnBehalf.consequenceInvoiceDraft')
+            : t('quotes.actions.acceptOnBehalf.consequenceInvoice', { amount: invoiceAmount })}
         </li>
         {hasRecurring && (
           <li data-testid="accept-on-behalf-consequence-contracts">

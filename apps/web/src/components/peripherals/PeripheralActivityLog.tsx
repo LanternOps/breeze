@@ -258,7 +258,9 @@ export default function PeripheralActivityLog({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {event.peripheralType}
+                      {t(/* i18n-dynamic */ `peripheralPoliciesList.classes.${event.peripheralType}`, {
+                        defaultValue: event.peripheralType,
+                      })}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
                       {event.vendor ?? "—"}

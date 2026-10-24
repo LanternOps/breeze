@@ -179,7 +179,10 @@
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
     "billingAutopay": "Automatische Zahlungen",
-    "endpointMessages": "Endpunkt-Nachrichten"
+    "endpointMessages": "Endpunkt-Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln",
+    "settingsPlan": "Tarif & Funktionen",
+    "settingsWispMemory": "Wisp-Gedächtnis"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -262,6 +265,14 @@
       },
       "alertTemplates": {
         "title": "Alarmvorlagen"
+      },
+      "plan": {
+        "title": "Tarif & Funktionen",
+        "description": "Ihr Tarif, welche Funktionen er umfasst und woher jede einzelne stammt."
+      },
+      "wispMemory": {
+        "title": "Wisp-Gedächtnis",
+        "description": "Prüfen, bestätigen und widerrufen, was Wisp sich merkt."
       }
     },
     "groups": {

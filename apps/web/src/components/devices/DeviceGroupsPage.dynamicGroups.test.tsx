@@ -159,6 +159,29 @@ describe('DeviceGroupsPage dynamic groups', () => {
     expect(screen.getByText(exactText('Matches 1 device'))).toBeInTheDocument();
   });
 
+  it('resolves a scalar site/group id in the card chips to its name, not the UUID', async () => {
+    serveGroups([
+      {
+        id: 'group-1',
+        name: 'HQ Machines',
+        type: 'dynamic',
+        filterConditions: {
+          operator: 'AND',
+          conditions: [{ field: 'siteId', operator: 'equals', value: 'site-1' }],
+        },
+      },
+      { id: 'group-2', name: 'Other', type: 'static' },
+    ]);
+
+    render(<DeviceGroupsPage />);
+
+    await screen.findByText('HQ Machines');
+    await waitFor(() => {
+      expect(screen.getByText((_c, el) => el?.tagName === 'SPAN' && /Site .*HQ$/.test(el.textContent?.trim() ?? ''))).toBeInTheDocument();
+    });
+    expect(screen.queryByText((_c, el) => el?.tagName === 'SPAN' && /site-1/.test(el.textContent ?? ''))).not.toBeInTheDocument();
+  });
+
   it('shows the configured filter conditions instead of a stale legacy rules stub', async () => {
     serveGroups([
       {

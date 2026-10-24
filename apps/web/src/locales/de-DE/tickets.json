@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} ausgewählt",
     "clearSelection": "Auswahl aufheben",
     "noSelection": "Wählen Sie ein Ticket aus. Verwenden Sie j/k zum Verschieben, Enter zum Erweitern.",
+    "ticketNotInView": "Ticket {{number}} ist nicht in dieser Ansicht.",
     "movedToClosed": {
       "message": "{{status}} — jetzt unter {{tab}}",
       "view": "In {{tab}} anzeigen"
@@ -418,6 +419,7 @@
     "loadFailed": "Das Laden des Tickets ist fehlgeschlagen.",
     "backToQueue": "Zurück zur Warteschlange",
     "ticketSubject": "Betreff des Tickets",
+    "subjectEditButton": "Betreff bearbeiten",
     "openFullPage": "Ganze Seite öffnen",
     "priorityLabel": "Priorität",
     "categoryLabel": "Kategorie",

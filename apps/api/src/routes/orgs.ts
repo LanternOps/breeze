@@ -27,6 +27,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { markPermissionGate } from '../middleware/permissionGate';
+import { wispEnabled } from '../config/env';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import {
@@ -86,6 +87,7 @@ import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isV
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
 import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
+import { partnerSettingsInheritanceRoutes } from './partnerSettingsInheritance';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -120,6 +122,7 @@ import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 
 import { notHiddenOrgType, notInHiddenOrgCondition } from '../services/unassignedPool/visibility';
+import { partnerVisibleOrgConditions } from '../services/partnerVisibleOrgs';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -497,6 +500,9 @@ orgRoutes.use('*', authMiddleware);
 
 // Mounted after authMiddleware so the pin route inherits authentication.
 orgRoutes.route('/', siteLocationRoutes);
+// Partner settings inheritance read model (#9170): after authMiddleware, before
+// /partners/:id. Its middleware is per endpoint, never a wildcard.
+orgRoutes.route('/', partnerSettingsInheritanceRoutes);
 
 // GET / - List organizations accessible to the current user
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
@@ -701,12 +707,6 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
 // NOTE: all /partners/me handlers (GET, PATCH) must stay above /partners/:id in this file
 // so Hono's router matches the static segment "me" before the dynamic :id handler.
 
-const dayScheduleSchema = z.object({
-  start: z.string(),
-  end: z.string(),
-  closed: z.boolean().optional()
-});
-
 const supportedLocales = SUPPORTED_LOCALES;
 
 /*
@@ -753,10 +753,10 @@ const partnerSettingsSchema = z.object({
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
   language: z.enum(supportedLocales).optional(),
-  businessHours: z.object({
-    preset: z.enum(['24/7', 'business', 'extended', 'custom']),
-    custom: z.record(z.string(), dayScheduleSchema).optional()
-  }).optional(),
+  // businessHours retired (#8973 W4, Gate B5): business hours are business
+  // calendars now (routes/businessCalendars.ts). Zod strips the key, so a stale
+  // client's value never reaches the shallow merge below and the stored blob
+  // (imported into a calendar by 2027-01-03-160000) is left untouched.
   contact: z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
@@ -1058,7 +1058,13 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   }
 
   // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
-  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
+  // wispEnabled (Wisp W03): computed per request, not a column — the web nav gate
+  // for the Wisp memory page, sat beside the platform-granted aiForOfficeEnabled.
+  return c.json(withMaskedSettings({
+    ...partner,
+    settings: clampSessionTimeoutInSettings(partner.settings),
+    wispEnabled: wispEnabled(),
+  }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like
@@ -1817,7 +1823,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     // would select the whole table. Fail closed even in dead code.
     conditions = noLiveOrgs
       ? sql`false`
-      : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+      // Shared with the partner settings inheritance counts (#9170).
+      : and(...partnerVisibleOrgConditions(orgIds), searchCondition);
   } else {
     // #4166 — system scope short-circuits every RLS predicate and this branch
     // carries NO status filter, so archive-lifecycle orgs already come back

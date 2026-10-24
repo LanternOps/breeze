@@ -93,6 +93,18 @@ beforeEach(() => {
 });
 
 describe('SecurityDashboard', () => {
+  it('uses singular forms when the count is 1', async () => {
+    routeSecurity(
+      { ...overviewPayload, encryption: { bitlockerEnabled: 1, filevaultEnabled: 0, total: 1 } },
+      { openBySeverity: { critical: 1, high: 0, medium: 0, low: 0 }, totalFindings: 1 }
+    );
+    render(<SecurityDashboard />);
+
+    expect(await screen.findByText('1 open item')).toBeInTheDocument();
+    expect(screen.queryByText('1 open items')).toBeNull();
+    expect(screen.queryByText('1 devices reviewed')).toBeNull();
+  });
+
   it('renders score, interpolated captions, and deep links on the happy path', async () => {
     routeSecurity(overviewPayload, threatsPayload);
     render(<SecurityDashboard />);
@@ -123,6 +135,35 @@ describe('SecurityDashboard', () => {
       'href',
       '/security/admin-audit'
     );
+  });
+
+  it('says Refresh reloads the latest snapshot, and shows partial encryption separately (#9643)', async () => {
+    routeSecurity(
+      {
+        ...overviewPayload,
+        encryption: {
+          bitlockerEnabled: 20,
+          bitlockerPartial: 4,
+          filevaultEnabled: 10,
+          filevaultPartial: 0,
+          total: 43
+        }
+      },
+      threatsPayload
+    );
+    render(<SecurityDashboard />);
+    await screen.findByText('62');
+
+    expect(screen.getByRole('button', { name: /Refresh/ })).toHaveAttribute(
+      'title',
+      expect.stringMatching(/latest security snapshot/i)
+    );
+    const card = screen.getByTestId('security-overview-encryption-card');
+    expect(card).toHaveTextContent(/BitLocker partial\s*4/);
+    // No partial FileVault machines -> no FileVault partial row.
+    expect(card).not.toHaveTextContent(/FileVault partial/);
+    expect(screen.getByTestId('security-overview-score-card')).toBeInTheDocument();
+    expect(screen.getByTestId('security-overview-recommendations-card')).toBeInTheDocument();
   });
 
   it('feeds the Vulnerabilities card from CVE findings by severity, never /security/threats (#9640)', async () => {

@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Endpoint Detection & Response",
     "huntressIncidents": "Incidenti Huntress",
     "sentineloneThreats": "Minacce SentinelOne",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Minacce e incidenti nella tua flotta da SentinelOne e Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Minacce e incidenti nella tua flotta da SentinelOne e Huntress.",
+    "iocScansLink": "Cerchi le scansioni IOC di Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Altri EDR",
@@ -425,6 +426,8 @@
     "osFilterLabel": "Sistema operativo"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Impossibile aggiornare la raccomandazione.",
+    "affectsOrgs": "Interessa {{count}} organizzazioni",
     "adminAccounts": "Account amministratori",
     "allCategories": "Tutte le categorie",
     "allPriorities": "Tutte le priorità",
@@ -433,15 +436,15 @@
     "completed": "Completato",
     "critical": "Critico",
     "criticalHigh": "Critico + Alto",
-    "devices": "Dispositivi:",
+    "devices": "Dispositivi: {{value}}",
     "dismiss": "Ignora",
     "dismissed": "Ignorato",
-    "effort": "Impegno:",
+    "effort": "Impegno: {{value}}",
     "encryption": "Crittografia",
     "firewall": "Firewall",
     "hideSteps": "Nascondi passaggi",
     "high": "Alto",
-    "impact": "Impatto:",
+    "impact": "Impatto: {{value}}",
     "invalidResponseFromServer": "Risposta del server non valida",
     "low": "Basso",
     "markComplete": "Segna come completato",
@@ -460,10 +463,13 @@
     "vulnMgmt": "Gest. vuln.",
     "priorityFilterLabel": "Priorità",
     "categoryFilterLabel": "Categoria",
-    "statusFilterLabel": "Stato del suggerimento"
+    "statusFilterLabel": "Stato del suggerimento",
+    "remediationSteps_one": "{{count}} passaggio di correzione",
+    "remediationSteps_other": "{{count}} passaggi di correzione"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Verrà generata e depositata una nuova password di ripristino BitLocker; quella precedente verrà rimossa dopo l'attivazione della nuova chiave.",
+    "accessRevealed": "ha mostrato la chiave",
     "bitlocker": "BitLocker",
     "cancel": "Annulla",
     "collectNow": "Raccogli ora",
@@ -489,6 +495,7 @@
     "rotate": "Ruota",
     "rotateKey": "Ruota chiave",
     "rotateRecoveryKey": "Ruota chiave di ripristino",
+    "rotateVolume": "Volume da ruotare",
     "thisAccessHasBeenRecordedInThe": "Questo accesso è stato registrato nel registro di controllo."
   },
   "securityS1ThreatList": {
@@ -552,7 +559,8 @@
   },
   "securitySecurityDashboard": {
     "acrossAllAssets": "Su tutti gli asset",
-    "actionsPrioritized": "{{count}} azioni prioritarie",
+    "actionsPrioritized_one": "{{countLabel}} azione prioritaria",
+    "actionsPrioritized_other": "{{countLabel}} azioni prioritarie",
     "adminAccountAudit": "Audit account amministratori",
     "antivirusCoverage": "Copertura antivirus",
     "bitlockerEnabled": "BitLocker abilitato",
@@ -563,7 +571,8 @@
     "defaultAdmins": "Admin predefiniti",
     "devicesAudited": "{{count}} dispositivi sottoposti ad audit",
     "devicesFlagged": "{{count}} dispositivi segnalati",
-    "devicesReviewed": "{{count}} dispositivi revisionati",
+    "devicesReviewed_one": "{{countLabel}} dispositivo revisionato",
+    "devicesReviewed_other": "{{countLabel}} dispositivi revisionati",
     "devicesTracked": "{{count}} dispositivi monitorati",
     "disabled": "Disabilitato",
     "diskProtection": "Protezione disco",
@@ -583,7 +592,8 @@
     "noDevicesReportingYet": "Nessun dispositivo sta ancora segnalando dati",
     "noRecommendationsRightNowKeepMonitoringFor": "Nessuna raccomandazione al momento. Continua a monitorare per nuove indicazioni.",
     "noWeakAdminAccountsDetected": "Nessun account amministratore debole rilevato.",
-    "openItems": "{{count}} elementi aperti",
+    "openItems_one": "{{countLabel}} elemento aperto",
+    "openItems_other": "{{countLabel}} elementi aperti",
     "overallPosture": "Postura complessiva",
     "passwordPolicy": "Criterio password",
     "policyAdherence": "Aderenza ai criteri",
@@ -611,7 +621,10 @@
     "viewDetails": "Visualizza dettagli",
     "vulnerabilities": "Vulnerabilità",
     "weakAdmins": "Admin deboli",
-    "unknown": "Sconosciuto"
+    "unknown": "Sconosciuto",
+    "bitlockerPartial": "BitLocker parziale",
+    "filevaultPartial": "FileVault parziale",
+    "refreshTooltip": "Ricarica l'ultimo snapshot di sicurezza. I punteggi vengono ricalcolati a intervalli pianificati, non al clic."
   },
   "securitySecurityPageHeader": {
     "refresh": "Aggiorna",
@@ -684,12 +697,21 @@
     "noActiveScans": "Nessuna scansione attiva.",
     "noScanHistoryYet": "Nessuna cronologia scansioni ancora.",
     "quickScan": "Scansione rapida",
+    "scanClean": "Pulito",
     "scanHistory": "Cronologia scansioni",
     "scanHistoryPartiallyUnavailable": "Impossibile caricare la cronologia scansioni per {{failed}} di {{total}} dispositivi: l'elenco è incompleto.",
     "scanHistoryUnavailable": "Impossibile caricare la cronologia scansioni.",
+    "scanRequestFailed": "Richiesta di scansione non riuscita",
+    "scanThreatsFound_one": "{{count}} minaccia rilevata",
+    "scanThreatsFound_other": "{{count}} minacce rilevate",
+    "scanTimedOut": "Timeout",
+    "scanTimedOutWithCount": "Timeout ({{count}} rilevate)",
     "scanType": "Tipo di scansione",
     "scanTypeLabel": "Scansione {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "Le scansioni vengono accodate immediatamente sui dispositivi selezionati.",
+    "scansQueuedCount": "{{count}} scansione in coda",
+    "scansQueuedCount_one": "{{count}} scansione in coda",
+    "scansQueuedCount_other": "{{count}} scansioni in coda",
     "securityScanManager": "Gestore scansioni di sicurezza",
     "singleSelect": "Selezione singola",
     "someScanRequestsFailed": "{{failed}} di {{total}} richieste di scansione sono fallite",
@@ -700,14 +722,10 @@
     "startedColumn": "Avviata",
     "status": "Stato: {{status}}",
     "status2": "Stato",
-    "type": "Tipo",
-    "scanRequestFailed": "Richiesta di scansione non riuscita",
-    "scansQueuedCount": "{{count}} scansione in coda",
-    "scansQueuedCount_one": "{{count}} scansione in coda",
-    "scansQueuedCount_other": "{{count}} scansioni in coda"
+    "type": "Tipo"
   },
   "securityThreatDetail": {
-    "analystReview": "Revisione analista",
+    "actionFailed": "Azione non riuscita",
     "detected": "Rilevata",
     "device": "Dispositivo",
     "deviceInfo": "Info dispositivo",
@@ -718,11 +736,14 @@
     "noThreatSelected": "Nessuna minaccia selezionata.",
     "otherDetectionsOnThisDevice": "Altri rilevamenti su questo dispositivo.",
     "provider": "Provider",
+    "providerUnknown": "Sconosciuto",
     "quarantine": "Quarantena",
+    "quarantineQueued": "Quarantena in coda. Il dispositivo riporterà l'esito.",
     "relatedThreats": "Minacce correlate",
     "remove": "Rimuovi",
+    "removeQueued": "Rimozione in coda. Il dispositivo riporterà l'esito.",
     "restore": "Ripristina",
-    "reviewRemediationCompletenessAndEndpointHealth": "Verifica completezza della remediation e salute dell'endpoint.",
+    "restoreQueued": "Ripristino in coda. Il dispositivo riporterà l'esito.",
     "severity": "Gravità",
     "status": "Stato",
     "threatDetail": "Dettaglio minaccia",
@@ -737,7 +758,23 @@
     "actionFailed": "Azione non riuscita",
     "quarantineSucceeded": "Minaccia messa in quarantena",
     "restoreSucceeded": "Minaccia ripristinata",
-    "removeSucceeded": "Minaccia rimossa"
+    "removeSucceeded": "Minaccia rimossa",
+    "notFound": "Minaccia non trovata. Potrebbe essere stata eliminata, oppure non hai accesso al suo dispositivo.",
+    "relatedLoadFailed": "Impossibile caricare le minacce correlate.",
+    "rule": {
+      "title": "Regola di rilevamento",
+      "legacy": "Firma integrata (scansione legacy)",
+      "ruleName": "Regola",
+      "ruleSet": "Set di regole",
+      "ruleSetMissing": "Set di regole non più disponibile",
+      "tags": "Etichette",
+      "matchedStrings": "Stringhe corrispondenti",
+      "noMatchedStrings": "Non è stata segnalata alcuna stringa corrispondente.",
+      "sha256": "SHA-256 del file",
+      "copy": "Copia SHA-256",
+      "quarantinedTo": "Messo in quarantena in (al momento della scansione)",
+      "quarantineFailed": "Quarantena automatica non riuscita"
+    }
   },
   "securityThreatList": {
     "active": "Attiva",
@@ -1332,17 +1369,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Inserisci almeno un ID dispositivo",
-      "createScan": "Impossibile creare la scansione"
+      "createScan": "Impossibile creare la scansione",
+      "devicesRequired": "Seleziona almeno un dispositivo",
+      "devicesNotReady": "L'elenco dei dispositivi è ancora in caricamento o incompleto. Attendi il completamento e riprova.",
+      "devicesLoadFailed": "Impossibile caricare l'elenco dei dispositivi. Usa Riprova nell'elenco dei dispositivi, poi riprova."
     },
     "title": "Crea scansione",
     "form": {
       "policyOptional": "Criterio (facoltativo)",
       "noPolicy": "Nessun criterio (configurazione manuale)",
-      "deviceIds": "ID dispositivi",
-      "deviceIdsHelp": "Un UUID per riga, oppure separati da virgole.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Classi di rilevamento"
+      "detectionClasses": "Classi di rilevamento",
+      "devices": "Dispositivi",
+      "devicesHelp": "Scegli i dispositivi da analizzare."
     },
     "actions": {
       "creating": "Creazione...",
@@ -1407,6 +1445,10 @@
       "showingSearch": "Visualizzati {{visible}} di {{pageCount}} in questa pagina ({{total}} totali)",
       "showingTotal": "Visualizzati {{visible}} di {{total}} rilevamenti",
       "pageOf": "Pagina {{page}} di {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Rischio accettato",
+      "markedFalsePositive": "Contrassegnato come falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1487,18 @@
       "detectionClasses": "Classi di rilevamento",
       "scheduleType": "Tipo pianificazione",
       "intervalMinutes": "Intervallo (minuti)",
-      "cronExpression": "Espressione Cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Espressione cron (UTC)",
+      "cronNextRun": "Prossima esecuzione (ora locale): {{time}}",
+      "cronExpressionZone": "Espressione cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manuale",
       "interval": "Intervallo",
       "cron": "Cron",
-      "everyMinutes": "Ogni {{minutes}}m"
+      "everyMinutes": "Ogni {{minutes}}m",
+      "paused": "In pausa",
+      "pausedTitle": "La pianificazione è disattivata per questa policy, quindi non verrà eseguita automaticamente"
     },
     "table": {
       "name": "Nome",
@@ -1777,7 +1823,7 @@
     "unknown": "sconosciuto"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "Hardening CIS",
+    "title": "CIS Benchmarks",
     "description": "Baseline di configurazione, punteggio di conformità e monitoraggio della remediation.",
     "messages": {
       "loadFailed": "Impossibile caricare i dati CIS"
@@ -1870,6 +1916,11 @@
     "badges": {
       "allOrgs": "Tutte le org",
       "partnerWideTitle": "Baseline a livello di Partner: si applica ai dispositivi di ogni organizzazione"
+    },
+    "scanAll": {
+      "title": "Scansionare tutte le organizzazioni?",
+      "message": "«{{name}}» è una baseline a livello di partner. Senza un’organizzazione selezionata, scansiona tutte le {{orgCount}} organizzazioni. Seleziona prima un’organizzazione per scansionare solo i suoi dispositivi.",
+      "confirm": "Scansiona tutte"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +2023,17 @@
       "queueFailed": "L'approvazione è stata registrata, ma non è stato possibile mettere in coda la correzione. È di nuovo in attesa di approvazione; riprova.",
       "mfaRequired": "Per approvare o rifiutare una correzione serve una sessione avviata con l'autenticazione a più fattori. Esci e accedi di nuovo con l'MFA.",
       "ownRequest": "Hai richiesto tu questa correzione, quindi deve approvarla un altro utente."
+    },
+    "detail": {
+      "toggle": "Mostra/nascondi dettagli",
+      "approvedBy": "Approvato da",
+      "approvedAt": "Approvato il",
+      "note": "Nota di approvazione",
+      "beforeState": "Prima",
+      "afterState": "Dopo",
+      "rollbackHint": "Suggerimento di rollback",
+      "noEvidence": "Nessuna evidenza registrata finora per questa remediation.",
+      "unknownApprover": "Utente sconosciuto"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2344,193 @@
       "awaitingEvaluation": "In attesa di valutazione",
       "vendorOrgMismatch": "Il fornitore segnala un'altra organizzazione"
     }
+  },
+  "detectionRules": {
+    "title": "Regole di rilevamento",
+    "subtitle": "Set di regole per le scansioni IOC e il threat hunting. Ogni modifica viene verificata sul server prima che i dispositivi la ricevano.",
+    "listHelp": "Collega i set di regole nella scheda Sicurezza di un criterio di configurazione per usarli nelle scansioni IOC.",
+    "newRuleSet": "Nuovo set di regole",
+    "back": "Torna ai set di regole",
+    "loadFailed": "Impossibile caricare i set di regole.",
+    "empty": "Nessun set di regole.",
+    "rulesLabel": "Regole: {{total}}",
+    "publishedVersion": "versione {{version}}",
+    "created": "Set di regole creato",
+    "deleted": "Set di regole eliminato",
+    "columns": {
+      "name": "Nome",
+      "owner": "Proprietario",
+      "rules": "Regole",
+      "published": "Pubblicato"
+    },
+    "owner": {
+      "builtin": "Breeze (integrato)",
+      "allOrgs": "Tutte le organizzazioni",
+      "organization": "Organizzazione"
+    },
+    "badges": {
+      "builtin": "Integrato",
+      "allOrgs": "Tutte le organizzazioni",
+      "errors": "Con errori",
+      "unpublished": "Non pubblicato",
+      "disabled": "Disattivato"
+    },
+    "create": {
+      "title": "Nuovo set di regole",
+      "name": "Nome",
+      "description": "Descrizione (facoltativa)",
+      "owner": "Proprietario",
+      "ownerAllOrgs": "Tutte le organizzazioni (a livello di partner)",
+      "ownerOrganization": "Una sola organizzazione",
+      "organization": "Organizzazione",
+      "selectOrganization": "Seleziona un'organizzazione",
+      "submit": "Crea set di regole"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Per attivare la quarantena automatica serve l'autorizzazione devices:execute, perché sposta i file su ogni dispositivo che esegue la scansione con questo set.",
+      "iocBatchAlreadyImported": "Questi IOC sono già stati importati in questo set.",
+      "iocRuleNameTaken": "In questo set esiste già una regola con lo stesso nome generato ma con contenuto diverso. Rinominala o eliminala, poi ripeti l'importazione.",
+      "iocTooManyRules": "Con questa importazione il set supererebbe le {{max}} regole. Importa in un altro set.",
+      "iocInvalid": "Alcuni IOC non sono validi. Correggi le righe segnalate e riprova."
+    },
+    "test": {
+      "requestFailed": "Il test non è stato completato. Controlla la connessione e riprova.",
+      "privacy": "Il file viene analizzato sul server Breeze, in una sandbox, con le regole attuali di questo set, comprese le modifiche non ancora pubblicate. Il file non viene conservato. Nel registro di controllo vengono registrati solo il suo SHA-256, la dimensione e il numero di corrispondenze.",
+      "sandboxUnavailable": "I test dei file non sono disponibili su questo server",
+      "sandboxUnavailableHelp": "Il server non può isolare la scansione, quindi non elabora i file caricati. La modifica delle regole, l'importazione di IOC e le scansioni dei dispositivi non sono interessate.",
+      "file": "File da provare",
+      "filepath": "Percorso sul dispositivo (facoltativo)",
+      "filepathHelp": "Dove si troverebbe il file su un dispositivo. Lo usano le regole che verificano il percorso; per impostazione predefinita è il nome del file.",
+      "run": "Avvia test",
+      "running": "Test in corso…",
+      "testedVersion": "Versione testata {{version}}",
+      "unpublishedChanges": "Stai testando le modifiche non pubblicate.",
+      "noMatches": "Nessuna regola corrisponde.",
+      "errors": {
+        "tooLarge": "Il file supera i {{max}} MB. Scegli un file più piccolo.",
+        "busy": "È in corso un altro test. Riprova tra qualche secondo.",
+        "rateLimited": "Hai eseguito troppi test negli ultimi minuti. Riprova più tardi.",
+        "unavailable": "Il controllo delle regole non è disponibile. Riprova più tardi.",
+        "noRules": "Questo set non ha regole attive da testare.",
+        "compileFailed": "Questo set non si compila con le regole attuali, quindi non è stato analizzato nulla:",
+        "bodyTimeout": "Il caricamento ha richiesto troppo tempo. Riprova.",
+        "unexpected": "Non è stato possibile completare il test. Riprova."
+      }
+    },
+    "severity": {
+      "low": "Bassa",
+      "medium": "Media",
+      "high": "Alta",
+      "critical": "Critica"
+    },
+    "publish": {
+      "saved": "Salvato",
+      "autoQuarantineOnly": "La quarantena automatica ora è disattivata sui dispositivi. Le altre modifiche non sono ancora attive.",
+      "published": "Salvato e pubblicato come versione {{version}}",
+      "savedDisabled": "Salvato. Il set è disattivato, quindi i dispositivi non lo usano.",
+      "checkerUnavailable": "Salvato, non pubblicato: il controllo delle regole non è disponibile. {{devices}}",
+      "compileErrors_one": "Salvato, non pubblicato: {{count}} regola contiene errori. {{devices}}",
+      "compileErrors_other": "Salvato, non pubblicato: {{count}} regole contengono errori. {{devices}}",
+      "setErrors": "Salvato, non pubblicato: {{message}}. {{devices}}",
+      "noEnabledRules": "Nessuna regola attiva: i dispositivi non eseguono più scansioni con questo set.",
+      "unknown": "Salvato, ma non è stato possibile leggere l'esito della pubblicazione. Ricarica il set per vedere quale versione usano i dispositivi.",
+      "devicesKeep": "I dispositivi mantengono la versione {{version}}.",
+      "neverPublished": "Questo set non è ancora stato pubblicato, quindi i dispositivi non lo usano.",
+      "setDisabled": "Il set è disattivato, quindi i dispositivi non lo usano.",
+      "staleBanner": "Non pubblicato: correggi gli errori qui sotto. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regole",
+        "import": "Importa IOC",
+        "test": "Prova un file"
+      },
+      "rename": "Rinomina set di regole",
+      "enabled": "Attivo",
+      "autoQuarantine": "Quarantena automatica",
+      "autoQuarantineHelp": "Sposta in quarantena i file corrispondenti su ogni dispositivo che esegue la scansione con questo set.",
+      "deleteSet": "Elimina",
+      "deleteSetTitle": "Eliminare questo set di regole?",
+      "deleteSetMessage": "Vengono eliminate anche le sue regole. I criteri che lo includono ancora lo segnaleranno come non trovato alla prossima scansione.",
+      "deleteRuleTitle": "Eliminare questa regola?",
+      "deleteRuleMessage": "Il set viene verificato e ripubblicato senza di essa.",
+      "addRule": "Aggiungi regola",
+      "noRules": "Questo set non contiene ancora regole.",
+      "columns": {
+        "name": "Regola",
+        "severity": "Gravità",
+        "tags": "Tag",
+        "state": "Stato"
+      },
+      "viewSource": "Mostra sorgente",
+      "hideSource": "Nascondi sorgente",
+      "editRule": "Modifica regola",
+      "deleteRule": "Elimina regola",
+      "errorLine": "Riga {{line}}:",
+      "publishedVersion": "Versione pubblicata {{version}}",
+      "readOnlyBuiltin": "Il set di regole integrato è di sola lettura. Le sue regole si aggiornano con le versioni di Breeze.",
+      "refreshFailed": "La modifica è stata inviata, ma non è stato possibile ricaricare il set di regole. Ciò che vedi potrebbe non essere aggiornato."
+    },
+    "dialog": {
+      "titleAdd": "Aggiungi regola",
+      "titleEdit": "Modifica regola",
+      "name": "Nome della regola",
+      "nameHelp": "Lettere, cifre e trattini bassi; deve iniziare con una lettera o un trattino basso (max 128).",
+      "severity": "Gravità",
+      "tags": "Etichette",
+      "tagsHelp": "Separati da virgole, ad es. ransomware, advisory-42",
+      "enabled": "Attiva",
+      "source": "Sorgente YARA",
+      "sourceTooLarge": "Il sorgente della regola supera i {{max}} KB.",
+      "checkedOnSave": "Al salvataggio il set viene verificato con lo stesso compilatore usato dai dispositivi. Le regole con errori non vengono pubblicate."
+    },
+    "ioc": {
+      "help": {
+        "title": "Come funziona l'importazione",
+        "format": "Un IOC per riga (# inizia un commento) oppure un array JSON. Anteponi a una riga il suo tipo, ad esempio sha256: o domain:, per impostare il tipo tu stesso.",
+        "exactMatch": "Solo corrispondenza esatta: niente caratteri jolly o modelli.",
+        "contentNotTraffic": "Domini e indirizzi IP corrispondono al testo nei file analizzati, non al traffico di rete.",
+        "partialOverlap": "La reimportazione degli stessi IOC viene rilevata. Un lotto che si sovrappone solo in parte a un'importazione precedente non viene deduplicato."
+      },
+      "label": "Etichetta",
+      "labelPlaceholder": "Ad esempio: Bollettino del fornitore 2026-10",
+      "labelRequired": "Inserisci un'etichetta per vedere l'anteprima delle regole generate.",
+      "paste": "Incolla IOC",
+      "textTooLong": "Il testo incollato supera i {{max}} KB. Suddividilo in importazioni più piccole.",
+      "skippedLines": "Queste righe vengono ignorate:",
+      "lineError": "Riga {{line}}: {{error}}",
+      "validCount": "{{valid}} IOC su {{total}} pronti per l'importazione",
+      "kind": "Tipo",
+      "value": "Valore",
+      "kinds": {
+        "md5": "Hash MD5",
+        "sha1": "Hash SHA-1",
+        "sha256": "Hash SHA-256",
+        "filename": "Nome file",
+        "filepath": "Percorso file",
+        "domain": "Dominio",
+        "ip": "Indirizzo IP",
+        "string": "Stringa di testo"
+      },
+      "errors": {
+        "empty": "Valore vuoto",
+        "unknown_kind": "Tipo sconosciuto",
+        "bad_hash": "Hash non valido per questo tipo",
+        "too_short": "Il testo deve essere di almeno 4 byte",
+        "too_long": "Troppo lungo",
+        "bad_path": "Percorso non valido per questo tipo",
+        "bad_ip": "Indirizzo IP non valido",
+        "bad_domain": "Dominio non valido",
+        "duplicate": "Duplicato di una riga precedente"
+      },
+      "overCap": "Al massimo {{max}} IOC per importazione. Suddividi l'elenco in importazioni più piccole.",
+      "hashNote": "Gli IOC hash fanno calcolare ai dispositivi l'hash completo di ogni file analizzato, quindi le scansioni complete richiedono più tempo.",
+      "generateFailed": "Impossibile generare regole da questi IOC.",
+      "generatedTitle": "Regole che verranno salvate: {{total}}",
+      "import": "Importa {{total}} IOC"
+    }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Non hai accesso a questa organizzazione"
   }
 }

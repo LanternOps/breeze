@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { Drawer } from '../shared/Drawer';
 import '../../lib/i18n';
+import { formatDateOnly, parseDateOnly } from '../../lib/dateOnly';
 import type { Patch } from './PatchList';
 import type { UpdateRingItem } from './UpdateRingList';
 
@@ -51,14 +52,14 @@ export function projectRingAutoApproval(patch: Patch, ring: UpdateRingItem): Rin
 
   const usesFirstSeen = patch.source === 'linux' || THIRD_PARTY_SOURCES.includes(patch.source);
   const anchorRaw = patch.releaseDate || (usesFirstSeen ? patch.firstSeenAt : undefined);
-  const anchor = anchorRaw ? new Date(anchorRaw) : null;
+  const anchor = anchorRaw ? parseDateOnly(anchorRaw) : null;
   if (!anchor || Number.isNaN(anchor.getTime())) return { kind: 'needsDate', days };
   return { kind: 'date', at: new Date(anchor.getTime() + days * DAY_MS), days };
 }
 
 function formatDate(value: string | Date): string {
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString();
+  if (typeof value === 'string') return formatDateOnly(value);
+  return Number.isNaN(value.getTime()) ? String(value) : value.toLocaleDateString();
 }
 
 type Props = {
@@ -86,7 +87,7 @@ export default function PatchDetailsDrawer({ patch, rings, onClose }: Props) {
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Fact label={t('patchDetails.source')} testId="patch-details-source">{patch.source}</Fact>
-          <Fact label={t('patchDetails.packageId')} testId="patch-details-package-id">{patch.packageId || unknown}</Fact>
+          <Fact label={t('patchDetails.packageId')} testId="patch-details-package-id">{patch.packageId || patch.externalId || unknown}</Fact>
           <Fact label={t('patchDetails.severity')} testId="patch-details-severity">
             {t(/* i18n-dynamic */ (SEVERITY_KEYS[patch.severity] ?? SEVERITY_KEYS.unrated))}
             {patch.severity !== 'unrated' && patch.severitySource === 'derived' && (

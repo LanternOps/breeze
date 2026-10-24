@@ -74,6 +74,7 @@ vi.mock('../services/vulnerabilityRemediation', () => ({
 vi.mock('../services/vulnerabilityFleetQueries', () => ({
   fetchFleetFindingRows: vi.fn(async () => []),
   fetchCveCatalogRecord: vi.fn(async () => null),
+  resolveReadyFindingIds: vi.fn(async () => new Set<string>()),
 }));
 // The fleet list / drawer / stats aggregate in SQL (#2262); their real-DB
 // behavior is covered by vulnerabilitiesSoftwareRollup.integration.test.ts.
@@ -97,7 +98,7 @@ vi.mock('../jobs/vulnerabilityJobs', () => ({
 }));
 
 import { vulnerabilityRoutes, vulnerabilitySyncRoutes } from './vulnerabilities';
-import { fetchFleetFindingRows, fetchCveCatalogRecord } from '../services/vulnerabilityFleetQueries';
+import { fetchFleetFindingRows, fetchCveCatalogRecord, resolveReadyFindingIds } from '../services/vulnerabilityFleetQueries';
 import {
   aggregateFleetStats,
   getSoftwareGroupDetail,
@@ -352,6 +353,60 @@ describe('GET /vulnerabilities — kevOnly/patchAvailable params', () => {
     expect(JSON.stringify(where.mock.calls[0]?.[0])).toContain(ORG_OK);
     expect((await app().request(`/vulnerabilities?orgId=${ORG_DENIED}`)).status).toBe(403);
     expect((await app().request('/vulnerabilities?orgId=acme')).status).toBe(400);
+  });
+});
+
+describe('GET /vulnerabilities — By-CVE "Ready" uses the Remediate resolver (#9533)', () => {
+  const V1 = 'v-ready';
+  const V2 = 'v-vendor-only';
+  const V3 = 'v-none';
+  const detectedAt = new Date('2026-06-01T00:00:00.000Z');
+  const deviceRows = [
+    { id: 'dv-1', deviceId: 'dev-1', vulnerabilityId: V1, softwareInventoryId: 'sw-1', status: 'open', riskScore: '90', detectedAt },
+    { id: 'dv-2', deviceId: 'dev-2', vulnerabilityId: V1, softwareInventoryId: 'sw-2', status: 'open', riskScore: '90', detectedAt },
+    { id: 'dv-3', deviceId: 'dev-1', vulnerabilityId: V2, softwareInventoryId: 'sw-1', status: 'open', riskScore: '80', detectedAt },
+    { id: 'dv-4', deviceId: 'dev-1', vulnerabilityId: V3, softwareInventoryId: 'sw-1', status: 'open', riskScore: '70', detectedAt },
+  ];
+  const catalog = (id: string, cveId: string, patchAvailable: boolean) => ({
+    id, cveId, cvssScore: '9.0', cvssVector: null, severity: 'critical', knownExploited: false, epssScore: null, patchAvailable,
+  });
+  const catalogRows = [
+    catalog(V1, 'CVE-2026-1001', true),
+    catalog(V2, 'CVE-2026-1002', true),
+    catalog(V3, 'CVE-2026-1003', false),
+  ];
+
+  beforeEach(() => {
+    granted.clear();
+    delete permissionsState.allowedSiteIds;
+    granted.add('devices:read');
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select)
+      .mockReturnValueOnce({ from: () => ({ where: () => Promise.resolve(deviceRows) }) } as never)
+      .mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => Promise.resolve(catalogRows) }) }) } as never);
+    // Only dv-1 has a pending, partner-approved patch.
+    vi.mocked(resolveReadyFindingIds).mockReset().mockResolvedValue(new Set(['dv-1']));
+  });
+
+  it('reports Ready devices per CVE from the resolver, keeping the catalog flag as the vendor-fix signal', async () => {
+    const res = await app().request('/vulnerabilities');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const byCve = Object.fromEntries(body.items.map((r: any) => [r.cveId, r]));
+    expect(byCve['CVE-2026-1001']).toMatchObject({ patchAvailable: true, patchReadyDeviceCount: 1, deviceCount: 2 });
+    // Vendor fix exists but no managed patch is Ready → not Ready.
+    expect(byCve['CVE-2026-1002']).toMatchObject({ patchAvailable: true, patchReadyDeviceCount: 0 });
+    expect(byCve['CVE-2026-1003']).toMatchObject({ patchAvailable: false, patchReadyDeviceCount: 0 });
+    // The resolver sees every merged finding (it applies the open + catalog pre-filter itself).
+    const seen = vi.mocked(resolveReadyFindingIds).mock.calls[0]?.[0].map((f: { id: string }) => f.id);
+    expect(seen).toEqual(expect.arrayContaining(['dv-1', 'dv-2', 'dv-3', 'dv-4']));
+  });
+
+  it('patchAvailable=true narrows to CVEs with a Ready finding — the same set the "Patch ready" tile counts', async () => {
+    const res = await app().request('/vulnerabilities?patchAvailable=true');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.items.map((r: any) => r.cveId)).toEqual(['CVE-2026-1001']);
   });
 });
 
@@ -963,6 +1018,7 @@ describe('POST /vulnerabilities/remediate — all-skipped surfacing', () => {
     granted.add('devices:execute');
     vi.mocked(remediateVulnerabilities).mockResolvedValue({
       scheduled: 0,
+      installs: 0,
       alreadyQueued: [],
       skipped: [
         { id: DV1, reason: 'no_available_patch' },
@@ -984,6 +1040,7 @@ describe('POST /vulnerabilities/remediate — all-skipped surfacing', () => {
 describe('GET /vulnerabilities/stats', () => {
   const STATS = {
     criticalOpen: 1,
+    openFindings: 1,
     openBySeverity: { critical: 1, high: 0, medium: 0, low: 0 },
     kevCveCount: 1,
     kevDeviceCount: 1,

@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} seçildi",
     "clearSelection": "Temizle",
     "noSelection": "Bir bilet seçin. Taşımak için j/k'yi, genişletmek için Enter'ı kullanın.",
+    "ticketNotInView": "{{number}} numaralı bilet bu görünümde değil.",
     "movedToClosed": {
       "message": "{{status}} — artık {{tab}} altında",
       "view": "{{tab}} içinde görüntüle"
@@ -418,6 +419,7 @@
     "loadFailed": "Bilet yüklenemedi.",
     "backToQueue": "Sıraya geri dön",
     "ticketSubject": "Bilet konusu",
+    "subjectEditButton": "Konuyu düzenle",
     "openFullPage": "Tam sayfayı aç",
     "priorityLabel": "Öncelik",
     "categoryLabel": "Kategori",

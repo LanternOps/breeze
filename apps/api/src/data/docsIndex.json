@@ -830,6 +830,25 @@
     "section": "deploy"
   },
   {
+    "path": "/deploy/network-proxy-tunnel-origin/",
+    "title": "Network Proxy Dedicated Origin",
+    "description": "Serve Network Proxy device UIs from their own origin per tunnel (host mode) - second domain, wildcard DNS and certificate, Caddy and API settings, boot-time validation, Cloudflare rules, and the Public Suffix List caveat.",
+    "headings": [
+      "What host mode changes",
+      "Requirements",
+      "Configuration",
+      "Behind Cloudflare Tunnel (TLS at the edge)",
+      "Caddy terminates TLS (Origin CA or your own certificate)",
+      "Trusted proxies and `FORCE_HTTPS`",
+      "Per-partner opt-in",
+      "Validation errors",
+      "Cloudflare",
+      "Without a second domain",
+      "Public Suffix List"
+    ],
+    "section": "deploy"
+  },
+  {
     "path": "/deploy/production/",
     "title": "Production Deployment",
     "description": "Deploy Breeze RMM to production with Docker Compose. Covers Caddy automatic TLS, API, dashboard, customer portal, PostgreSQL, Redis, and monitoring.",
@@ -951,6 +970,7 @@
       "Check what an upgrade retires",
       "In the web UI",
       "Compose file changes",
+      "v0.124.0 — caller verification on by default, AI retention and sweeper settings, web security contacts, Caddy tunnel host",
       "v0.123.0 — ECH and retain-state switches, admission control, 25 newly passed API settings",
       "v0.122.1 — installer token default, 63 newly passed API settings, Partner API ticket settings",
       "v0.121.0 — new optional AI and enrollment settings; production Compose catches up",
@@ -961,6 +981,7 @@
       "v0.118.0 — coturn peer restrictions and API stop grace",
       "v0.95.0 — stable Caddy address and proxy trust",
       "Version-specific notes",
+      "v0.124.0 — Trust Center, connection health, security agents from policy, verified M365 actions",
       "v0.123.0 — agent ECH, ticket types, customer work approval, Update Ring app rules",
       "v0.122.1 — remote desktop clipboard v2, diagnostic file access, Partner API tickets, restore integrity",
       "v0.121.0 — AI model registry, BYO OpenAI-compatible models, encrypted backup credentials",
@@ -1074,6 +1095,7 @@
       "Versions",
       "Variables",
       "Signed agreements",
+      "Record signed agreement",
       "Permissions",
       "Related"
     ],
@@ -1237,6 +1259,7 @@
       "Catalog and distributor lookup",
       "Accounts",
       "Integrations",
+      "Microsoft 365 identity actions",
       "Administration",
       "AI agents"
     ],
@@ -1295,6 +1318,10 @@
       "Budget alerts",
       "Configuring thresholds",
       "AI Input Sanitization",
+      "AI data & privacy",
+      "AI device file reads",
+      "Keep AI tool outputs for (days)",
+      "Device-originated text is untrusted",
       "Backup AI Tools",
       "Incident Response AI Tools",
       "Security, Compliance & Operations AI Tools",
@@ -1679,6 +1706,7 @@
       "Backup",
       "Security, Monitoring, Automation",
       "Vulnerability Scanning",
+      "Security Agents",
       "System Protection",
       "Assigning a policy",
       "Partner library policy",
@@ -1840,6 +1868,7 @@
       "Columns",
       "Agent Version Colouring",
       "Filters",
+      "Bulk power and lock actions",
       "Manual Assets",
       "Discovered asset vs. manual asset",
       "Adding a manual asset",
@@ -1856,6 +1885,7 @@
       "Billing Coverage",
       "VPN Presence",
       "Connected vs. disconnected",
+      "Clients without a tunnel adapter",
       "Naming tunnels on macOS",
       "On the device list",
       "On the device Info tab",
@@ -2022,6 +2052,7 @@
       "Huntress",
       "SentinelOne",
       "Automating EDR deployment",
+      "Deploy from a configuration policy",
       "Syncing",
       "Manual Sync",
       "Sync Status",
@@ -2235,6 +2266,7 @@
     "description": "Connect Breeze to PSA ticketing platforms, communication channels, and monitoring endpoints, with per-organization or partner-wide scoping.",
     "headings": [
       "Integration Types",
+      "Connection Health",
       "Communication Integrations",
       "Setting Up a Provider",
       "Retrieving Communication Settings",
@@ -2480,6 +2512,13 @@
       "Scope-based access control",
       "How scope filtering works",
       "RBAC permission checks",
+      "Limit a connection to tool areas",
+      "What the limit covers",
+      "When a call is refused",
+      "OAuth connections",
+      "API keys",
+      "The `whoami` tool",
+      "Authentication challenges",
       "Rate limiting",
       "Transport-level limits",
       "Per-tool rate limits",
@@ -2823,6 +2862,9 @@
       "Getting the unread count",
       "Marking notifications as read or unread",
       "Deleting notifications",
+      "Connection Health Checks",
+      "Connection Health Digest Email",
+      "Customer organization admins",
       "Mobile Push Notifications",
       "Notification Routing",
       "Preview delivery",
@@ -2896,6 +2938,7 @@
       "Operational notes",
       "Exporting the audit trail for compliance",
       "Running alongside other RMM or security agents",
+      "Moving a device or merging its organisation",
       "Platform support"
     ],
     "section": "features"
@@ -3361,6 +3404,7 @@
       "Running without FUSE",
       "WebRTC needs webkit2gtk built with the GStreamer plugins",
       "Viewer launches but no window appears",
+      "Gray window with no controls on NVIDIA",
       "Troubleshooting"
     ],
     "section": "features"
@@ -3755,6 +3799,7 @@
       "Remediation Flow",
       "On-Demand Remediation",
       "Remediation Status Values",
+      "Managed security agent policies",
       "System Restore checkpoints",
       "Winget Integration",
       "How Winget IPC Works",
@@ -3900,6 +3945,8 @@
       "Public-reply email notice",
       "Attachments",
       "Editing and deleting your replies",
+      "Checklists",
+      "Checklist templates",
       "Canned Responses",
       "Managing templates",
       "Inserting a canned response",
@@ -3960,7 +4007,7 @@
   {
     "path": "/features/tool-sources/",
     "title": "Tool Sources",
-    "description": "Connect your own MCP servers so their tools become available to the AI assistant, with per-tool risk tiers, approvals and per-source credentials.",
+    "description": "Connect your own MCP servers or OpenAPI (REST) APIs so their tools become available to the AI assistant, with per-tool risk tiers, approvals and per-source credentials.",
     "headings": [
       "What a tool source is",
       "Adding a source",
@@ -3968,6 +4015,12 @@
       "Tiers and what they mean for approvals",
       "Enabling tools",
       "Testing a tool",
+      "OpenAPI sources",
+      "Two URLs, on purpose",
+      "Tiers",
+      "What gets skipped",
+      "Supported documents and limits",
+      "Refreshing",
       "Troubleshooting"
     ],
     "section": "features"
@@ -4156,6 +4209,7 @@
       "Patch Events",
       "Ticket Events",
       "Migration Window Events",
+      "Integration Events",
       "Other Events",
       "Delivery Mechanism",
       "Payload Format",
@@ -4401,6 +4455,7 @@
       "Key Format",
       "Creating an API Key",
       "Scopes",
+      "MCP tool areas (`mcpDomains`)",
       "Authentication Flow",
       "Where API Keys Work",
       "Dual Authentication",
@@ -4937,6 +4992,19 @@
     "section": "security"
   },
   {
+    "path": "/security/caller-verification/",
+    "title": "Caller verification",
+    "description": "Verify a caller before resetting a Microsoft 365 password or disabling an account.",
+    "headings": [
+      "Verify a caller",
+      "Disable an account without contacting its owner",
+      "When an action is refused",
+      "Rejection and failures",
+      "Rollout"
+    ],
+    "section": "security"
+  },
+  {
     "path": "/security/error-tracking/",
     "title": "Error Tracking & Privacy",
     "description": "Optional Sentry integration for the Breeze API and web app: what data is sent, how to enable or disable it, and how to customize PII scrubbing.",
@@ -5064,6 +5132,8 @@
       "Signer trust: CN matching vs. thumbprint pinning",
       "Offline rule enforcement and staleness",
       "Audit guarantees",
+      "Ownership changes",
+      "Evidence retention after a merge",
       "Windows Event Log",
       "What PAM does and does not protect against",
       "Platform-evolution and liability notes"
@@ -5098,6 +5168,66 @@
     "section": "security"
   },
   {
+    "path": "/security/trust-center-attestation/",
+    "title": "Trust Center attestation",
+    "description": "Verify a published Trust Center page as a signed, machine-readable JWT, and rotate the keys that sign it.",
+    "headings": [
+      "What it proves, and what it does not",
+      "Endpoints",
+      "The token",
+      "Verify a token",
+      "Node.js (`jose`)",
+      "Python (`PyJWT`)",
+      ".NET (`Microsoft.IdentityModel.JsonWebTokens`)",
+      "Archived tokens",
+      "Self-hosting",
+      "Rotating the signing key"
+    ],
+    "section": "security"
+  },
+  {
+    "path": "/security/trust-center-embed/",
+    "title": "Embed a Trust Center card",
+    "description": "Show a compact, live security posture card from a published Trust Center page inside an iframe on websites you allow.",
+    "headings": [
+      "What the embed shows",
+      "Turn it on",
+      "Rules for allowed websites",
+      "When changes take effect",
+      "Nested frames",
+      "The full page is never framable",
+      "Behind your own reverse proxy"
+    ],
+    "section": "security"
+  },
+  {
+    "path": "/security/trust-center-portal-editing/",
+    "title": "Customer editing of the trust page",
+    "description": "Let a customer's admin contacts edit part of their trust page draft from the customer portal, preview it and withdraw it. You still publish.",
+    "headings": [
+      "Turn it on",
+      "Who can edit",
+      "What a customer admin can change",
+      "What stays with you",
+      "Withdrawal",
+      "Audit"
+    ],
+    "section": "security"
+  },
+  {
+    "path": "/security/trust-center-questionnaire/",
+    "title": "Trust Center questionnaire export",
+    "description": "Download your published Trust Center page as questionnaire answers in CSV or JSON, for security questionnaires and insurer forms.",
+    "headings": [
+      "Published page only",
+      "Columns",
+      "Answer mapping",
+      "JSON",
+      "Spreadsheet safety"
+    ],
+    "section": "security"
+  },
+  {
     "path": "/security/trust-center/",
     "title": "Trust Center",
     "description": "Publish a public, telemetry-backed security page for each customer organization, with controls evaluated from live Breeze data.",
@@ -5105,9 +5235,19 @@
       "What the page shows",
       "What it never shows",
       "How controls are evaluated",
+      "The Microsoft 365 MFA control",
       "Who can publish",
       "Customer authorization",
       "Framework references",
+      "Declared controls",
+      "Documents available on request",
+      "Non-disclosure terms",
+      "Privacy and retention",
+      "Framework view",
+      "Hardening safeguards",
+      "Subprocessors, FAQ and history",
+      "Partner defaults",
+      "Languages",
       "Badge",
       "Self-hosting"
     ],

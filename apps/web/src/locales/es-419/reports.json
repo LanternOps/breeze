@@ -339,6 +339,9 @@
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR y renovaciones",
+        "quote_win_rate": "Tasa de éxito de cotizaciones",
+        "client_profitability": "Rentabilidad por cliente",
         "backup_status": "Estado de respaldo"
       },
       "threatDetection": {
@@ -442,6 +445,9 @@
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR y renovaciones",
+        "quote_win_rate": "Tasa de éxito de cotizaciones",
+        "client_profitability": "Rentabilidad por cliente",
         "backup_status": "Estado de respaldo"
       },
       "runsTable": {
@@ -991,6 +997,9 @@
         "technician_time_billability": "Tiempo y facturabilidad del técnico",
         "ar_aging": "Antigüedad de cuentas por cobrar",
         "ai_usage_by_client": "Uso de IA por cliente",
+        "mrr_renewals": "MRR y renovaciones",
+        "quote_win_rate": "Tasa de éxito de cotizaciones",
+        "client_profitability": "Rentabilidad por cliente",
         "backup_status": "Estado de respaldo"
       },
       "schedules": {
@@ -1063,6 +1072,18 @@
         "ai_usage_by_client": {
           "name": "Uso de IA por cliente",
           "description": "Uso de IA de la plataforma por cliente en el período: solicitudes, tokens, costo de Breeze, el monto a cobrar según el perfil de facturación del cliente y lo que ya se facturó. El uso incluido y los modelos sin precio se muestran por separado, nunca mezclados."
+        },
+        "mrr_renewals": {
+          "name": "MRR y renovaciones",
+          "description": "Ingresos recurrentes mensuales y anuales de los contratos activos, medidos el día en que se ejecuta el informe, con los contratos que se renuevan dentro del horizonte elegido y lo que realmente se ha facturado como recurrente. Un conjunto de totales por moneda, sin conversión."
+        },
+        "quote_win_rate": {
+          "name": "Tasa de éxito de cotizaciones",
+          "description": "La proporción de cotizaciones enviadas que se ganaron, contada por oportunidad, de modo que una cotización revisada y reenviada cuenta una sola vez. La tasa principal incluye solo las oportunidades resueltas, con la cantidad aún abierta al lado. Los valores son antes de impuestos, un conjunto por moneda, sin conversión."
+        },
+        "client_profitability": {
+          "name": "Rentabilidad por cliente",
+          "description": "Ingresos facturados por cliente en el período, por fuente (recurrentes, mano de obra, productos, IA, otros), con las horas registradas y una estimación opcional del costo laboral a partir de una tarifa por hora única. Las cifras que usan esa tarifa se rotulan como estimaciones. Un conjunto de totales por moneda, nunca convertido."
         },
         "backup_status": {
           "name": "Informe de estado de respaldo",
@@ -1186,6 +1207,46 @@
       },
       "periodNote": "Los cargos se facturan por mes calendario UTC. Un período definido en otra zona horaria puede diferir de la factura para el uso cercano a los límites del mes.",
       "unpricedNote": "El uso de un modelo sin tarifa en el perfil de facturación del cliente se cuenta como sin precio. Nunca se trata como gratuito.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Este informe siempre se mide el día en que se ejecuta. No tiene período ni fecha de corte que configurar.",
+      "groupBy": "Agrupar por",
+      "groupByValues": {
+        "organization": "Organización",
+        "contract": "Contrato"
+      },
+      "renewalHorizon": "Horizonte de renovación",
+      "renewalHorizonOption": "Próximos {{days}} días",
+      "renewalHorizonHelp": "Los contratos cuyo plazo termina dentro de esta ventana se listan como renovaciones.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Agrupar por",
+      "groupByAutomatic": "Automático: por organización para todas las organizaciones, por autor para una organización",
+      "groupByValues": {
+        "organization": "Organización",
+        "author": "Autor",
+        "currency": "Moneda"
+      },
+      "periodNote": "El período se aplica a la fecha en que se envió la cotización por primera vez. Una cotización revisada y reenviada cuenta una sola vez, como una oportunidad.",
+      "cancel": "Cancelar",
+      "createReport": "Crear informe"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Agrupar por",
+      "groupByDefault": "Predeterminado según el alcance del informe",
+      "groupByValues": {
+        "organization": "Organización",
+        "source": "Fuente"
+      },
+      "groupByHelp": "Por defecto se agrupa por organización en un informe de todas las organizaciones y por fuente en una sola organización.",
+      "laborEnabled": "Estimar el costo laboral",
+      "laborAmount": "Costo laboral por hora",
+      "laborCurrency": "Moneda",
+      "laborHelp": "Una tarifa única para todos los técnicos. Las cifras que la usan se rotulan como estimaciones.",
       "cancel": "Cancelar",
       "createReport": "Crear informe"
     },

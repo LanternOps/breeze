@@ -339,6 +339,9 @@
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
         "ar_aging": "Alacak Yaşlandırması (AR Aging)",
         "ai_usage_by_client": "Müşteri Bazında Yapay Zekâ Kullanımı",
+        "mrr_renewals": "MRR ve Yenilemeler",
+        "quote_win_rate": "Teklif kazanma oranı",
+        "client_profitability": "Müşteri karlılığı",
         "backup_status": "Yedekleme Durumu"
       },
       "threatDetection": {
@@ -442,6 +445,9 @@
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
         "ar_aging": "Alacak Yaşlandırması (AR Aging)",
         "ai_usage_by_client": "Müşteri Bazında Yapay Zekâ Kullanımı",
+        "mrr_renewals": "MRR ve Yenilemeler",
+        "quote_win_rate": "Teklif kazanma oranı",
+        "client_profitability": "Müşteri karlılığı",
         "backup_status": "Yedekleme Durumu"
       },
       "runsTable": {
@@ -991,6 +997,9 @@
         "technician_time_billability": "Teknisyen Zamanı ve Faturalandırılabilirlik",
         "ar_aging": "Alacak Yaşlandırması (AR Aging)",
         "ai_usage_by_client": "Müşteri Bazında Yapay Zekâ Kullanımı",
+        "mrr_renewals": "MRR ve Yenilemeler",
+        "quote_win_rate": "Teklif kazanma oranı",
+        "client_profitability": "Müşteri karlılığı",
         "backup_status": "Yedekleme Durumu"
       },
       "schedules": {
@@ -1063,6 +1072,18 @@
         "ai_usage_by_client": {
           "name": "Müşteri Bazında Yapay Zekâ Kullanımı",
           "description": "Dönem için müşteri başına platform yapay zekâ kullanımı: istek sayısı, token, Breeze maliyeti, müşterinin faturalandırma profiline göre tahsil edilecek tutar ve halihazırda faturalanan kısım. Kapsama dahil kullanım ve fiyatı olmayan modeller ayrı gösterilir, asla karıştırılmaz."
+        },
+        "mrr_renewals": {
+          "name": "MRR ve Yenilemeler",
+          "description": "Aktif sözleşmelerden aylık ve yıllık yinelenen gelir; rapor çalıştırıldığı gün ölçülür. Seçilen ufuk içinde yenilenen sözleşmeler ve yinelenen olarak gerçekten faturalanan tutar da yer alır. Para birimi başına bir toplam kümesi, dönüştürme yapılmaz."
+        },
+        "quote_win_rate": {
+          "name": "Teklif kazanma oranı",
+          "description": "Gönderilen tekliflerin ne kadarının kazanıldığı; fırsat başına sayılır, bu yüzden revize edilip yeniden gönderilen bir teklif yalnızca bir kez sayılır. Ana oran yalnızca sonuçlanmış fırsatları kapsar, yanında hâlâ açık olanların sayısı gösterilir. Değerler vergiden önceki tutarlardır, para birimi başına bir küme halindedir ve dönüştürülmez."
+        },
+        "client_profitability": {
+          "name": "Müşteri karlılığı",
+          "description": "Dönem için müşteri başına faturalanan gelir; kaynağa göre (yinelenen, iş gücü, ürünler, yapay zekâ, diğer), bunlara karşılık kaydedilen saatler ve tek bir ortak saatlik ücretten isteğe bağlı iş gücü maliyeti tahmini ile. Bu ücreti kullanan rakamlar tahmin olarak etiketlenir. Para birimi başına bir toplam kümesi, asla dönüştürülmez."
         },
         "backup_status": {
           "name": "Yedekleme Durumu Raporu",
@@ -1186,6 +1207,46 @@
       },
       "periodNote": "Ücretler UTC takvim ayına göre faturalandırılır. Başka bir saat diliminde ayarlanan bir dönem, ay sınırlarına yakın kullanım için faturadan farklı olabilir.",
       "unpricedNote": "Müşterinin faturalandırma profilinde fiyatı olmayan bir modelin kullanımı fiyatsız olarak sayılır. Asla ücretsiz kabul edilmez.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Bu rapor her zaman çalıştırıldığı gün ölçülür. Ayarlanacak bir dönem ya da referans tarihi yoktur.",
+      "groupBy": "Gruplandırma",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "contract": "Sözleşme"
+      },
+      "renewalHorizon": "Yenileme ufku",
+      "renewalHorizonOption": "Sonraki {{days}} gün",
+      "renewalHorizonHelp": "Süresi bu aralıkta sona eren sözleşmeler yenileme olarak listelenir.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Gruplandırma",
+      "groupByAutomatic": "Otomatik: tüm kuruluşlar için kuruluşa göre, tek bir kuruluş için yazara göre",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "author": "Yazar",
+        "currency": "Para birimi"
+      },
+      "periodNote": "Dönem, teklifin ilk gönderildiği tarihe uygulanır. Revize edilip yeniden gönderilen bir teklif tek bir fırsat olarak yalnızca bir kez sayılır.",
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Gruplandırma",
+      "groupByDefault": "Raporun kapsamına göre varsayılan",
+      "groupByValues": {
+        "organization": "Kuruluş",
+        "source": "Kaynak"
+      },
+      "groupByHelp": "Varsayılan olarak tüm kuruluşları kapsayan raporda kuruluşa göre, tek kuruluşta ise kaynağa göre gruplanır.",
+      "laborEnabled": "İş gücü maliyetini tahmin et",
+      "laborAmount": "Saatlik iş gücü maliyeti",
+      "laborCurrency": "Para birimi",
+      "laborHelp": "Tüm teknisyenler için tek bir ortak ücret. Bu ücreti kullanan rakamlar tahmin olarak etiketlenir.",
       "cancel": "İptal",
       "createReport": "Rapor oluştur"
     },

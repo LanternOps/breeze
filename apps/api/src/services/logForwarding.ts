@@ -7,7 +7,7 @@ import { decryptForColumn } from './secretCrypto';
 import { captureException } from './sentry';
 import { safeFetch, SsrfBlockedError } from './urlSafety';
 
-interface LogForwardingConfig {
+export interface LogForwardingConfig {
   enabled: boolean;
   // Field names are retained from the original Elasticsearch-only design to
   // avoid a settings-JSONB migration. The transport below speaks the plain
@@ -64,26 +64,49 @@ export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardi
 
   const settings = (org.settings as Record<string, unknown>) ?? {};
   const partnerSettings = (partner?.settings as Record<string, unknown>) ?? {};
-  const partnerForwarding = partnerSettings.eventLogs as Partial<LogForwardingConfig> | undefined;
-  // Only an enabled partner destination with an endpoint overrides the org.
-  // Otherwise, the org configures its own destination.
-  // Keep destinations atomic: never send org credentials to a partner URL.
+  const { source, config } = resolveForwardingDestination(partnerSettings.eventLogs, settings.logForwarding);
+  if (!config) return null;
+  const table = source === 'partner' ? 'partners' : 'organizations';
+  return {
+    ...config,
+    // AAD must match the settings column that owns the selected credentials.
+    elasticsearchApiKey: decryptForColumn(table, 'settings', config.elasticsearchApiKey) ?? undefined,
+    elasticsearchPassword: decryptForColumn(table, 'settings', config.elasticsearchPassword) ?? undefined,
+  };
+}
+
+export type ForwardingDestinationSource = 'partner' | 'org' | 'none';
+
+/**
+ * Pure core of {@link getOrgForwardingConfig}: which destination an org's
+ * event logs go to. Only an enabled partner destination with an endpoint
+ * overrides the org; otherwise the org's own `settings.logForwarding` applies,
+ * and only when it is enabled with an endpoint. Destinations are atomic: org
+ * credentials are never combined with a partner URL.
+ *
+ * Credentials in the returned config are still sealed; the caller opens them
+ * with the AAD of the column that owns them (`source`).
+ */
+export function resolveForwardingDestination(
+  partnerEventLogs: unknown,
+  orgLogForwarding: unknown,
+): { source: ForwardingDestinationSource; config: LogForwardingConfig | null } {
+  const partnerForwarding = partnerEventLogs as Partial<LogForwardingConfig> | null | undefined;
   const usePartner = partnerForwarding?.enabled === true && !!partnerForwarding?.elasticsearchUrl;
   const forwarding = usePartner
     ? partnerForwarding
-    : settings.logForwarding as LogForwardingConfig | undefined;
-  const table = usePartner ? 'partners' : 'organizations';
+    : orgLogForwarding as Partial<LogForwardingConfig> | null | undefined;
 
-  if (!forwarding?.enabled || !forwarding.elasticsearchUrl) return null;
+  if (!forwarding?.enabled || !forwarding.elasticsearchUrl) return { source: 'none', config: null };
   return {
-    ...forwarding,
-    enabled: true,
-    elasticsearchUrl: forwarding.elasticsearchUrl,
-    indexPrefix: forwarding.indexPrefix || 'breeze-logs',
-    // AAD must match the settings column that owns the selected credentials.
-    elasticsearchApiKey: decryptForColumn(table, 'settings', forwarding.elasticsearchApiKey) ?? undefined,
-    elasticsearchPassword: decryptForColumn(table, 'settings', forwarding.elasticsearchPassword) ?? undefined,
-    sharedAcrossOrgs: usePartner,
+    source: usePartner ? 'partner' : 'org',
+    config: {
+      ...forwarding,
+      enabled: true,
+      elasticsearchUrl: forwarding.elasticsearchUrl,
+      indexPrefix: forwarding.indexPrefix || 'breeze-logs',
+      sharedAcrossOrgs: usePartner,
+    },
   };
 }
 

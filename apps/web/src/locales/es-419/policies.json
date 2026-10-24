@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Aplicado a todas las organizaciones. Desmarque \"Todas las organizaciones\" para elegir un subconjunto.",
       "polite": "educado",
       "loading": "Cargando…",
-      "loadMoreOrganizations": "Cargar más organizaciones"
+      "loadMoreOrganizations": "Cargar más organizaciones",
+      "appliedToAllOrgs": "La política ahora se aplica a todas las organizaciones",
+      "removedFromAllOrgs": "La política ya no se aplica a todas las organizaciones"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Escaneo completo",
         "maxFileSizeMb": "Tamaño máximo de archivo (MB)",
         "scanTimeoutMinutes": "Tiempo de espera del escaneo (minutos)",
-        "scanRunsServerSideDescription": "Breeze envía este escaneo desde el servidor — el dispositivo no necesita un horario local."
+        "scanRunsServerSideDescription": "Breeze envía este escaneo desde el servidor — el dispositivo no necesita un horario local.",
+        "ruleSets": {
+          "title": "Conjuntos de reglas de detección",
+          "description": "Conjuntos de reglas que usan los escaneos de IOC de esta política.",
+          "manageLink": "Administrar reglas de detección",
+          "loading": "Cargando conjuntos de reglas…",
+          "loadError": "No se pudieron cargar los conjuntos de reglas. La política conserva sus conjuntos actuales; igual puede guardar las demás opciones.",
+          "none": "No hay conjuntos de reglas disponibles para esta política.",
+          "legacyNote": "Sin conjuntos de reglas: los escaneos usan solo las firmas heredadas integradas.",
+          "cap": "Una política puede usar como máximo {{max}} conjuntos de reglas.",
+          "unavailable": "Conjunto de reglas no disponible",
+          "blocking": "Esta política no puede usar los conjuntos de reglas no disponibles (eliminados, movidos o de otra organización). Quítelos antes de guardar.",
+          "overrideDraft": "La configuración heredada incluye conjuntos de reglas que esta política no puede usar. Quite los conjuntos no disponibles y luego guarde.",
+          "errors": {
+            "tooMany": "Una política puede usar como máximo {{max}} conjuntos de reglas.",
+            "invalidIds": "La lista de conjuntos de reglas no es válida. Vuelva a cargar la página e inténtelo de nuevo.",
+            "notAttachable": "Esta política no puede usar algunos de los conjuntos de reglas seleccionados. Están resaltados abajo."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credenciales",
@@ -1337,9 +1357,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "No se encontraron políticas de software. Cree uno para comenzar.",
       "recentViolations": "Violaciones recientes",
       "noCurrentSoftwareViolations": "No hay violaciones de software actuales.",
-      "violationS": "violaciones",
-      "remediation": "Remediación:",
-      "checked": "Comprobado:",
+      "remediation": "Remediación: {{value}}",
+      "checked": "Comprobado: {{date}}",
       "deactivatePolicy": "Desactivar política",
       "areYouSureYouWantToDeactivate": "¿Está seguro de que desea desactivar?",
       "thePolicyWillBeMarkedInactiveAnd": "? La política se marcará como inactiva y se borrarán los datos de cumplimiento.",
@@ -1375,7 +1394,10 @@
       "coverageVendor": "Proveedor",
       "coverageReason": "Motivo",
       "vendorOnlyAgent": "Agente solo del proveedor",
-      "coverageRowsNote": "Mostrando {{shown}} de {{total}}"
+      "coverageRowsNote": "Mostrando {{shown}} de {{total}}",
+      "violationCount": "{{count}} violación",
+      "violationCount_one": "{{count}} violación",
+      "violationCount_other": "{{count}} violaciones"
     },
     "deploymentList": {
       "running": "En ejecución",
@@ -1591,20 +1613,21 @@
       "registry": "registro",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Servicio en ejecución",
+      "readOnlyHint": "Creada mediante la API. No se puede editar aquí; se conserva sin cambios al guardar."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "No se pudieron recuperar los dispositivos",
-      "devicesWith": "Dispositivos con",
-      "by": "por",
+      "devicesWith": "Dispositivos con {{name}}",
+      "by": "por {{vendor}}",
       "noDevicesFoundWithThisSoftware": "No se encontraron dispositivos con este software.",
       "hostname": "Nombre de host",
       "oS": "OS",
       "version": "Versión",
       "lastSeen": "Visto por última vez",
-      "device": "dispositivo",
-      "total": "total",
-      "s": "s"
+      "deviceTotal_one": "{{count}} dispositivo en total",
+      "deviceTotal_other": "{{count}} dispositivos en total"
     },
     "policyForm": {
       "dryRunUnassigned": "0 dispositivos — normalmente porque esta política aún no está asignada a ningún dispositivo, aunque una flota totalmente conforme o una lista de sitios vacía también da 0",

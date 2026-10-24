@@ -381,6 +381,8 @@ x-api-env: &api-env
   # Large-tool-result capture + read_artifact (#6732). Independent of the
   # workspace flag above; default false. Requires an artifact blob store.
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
+  # Wisp (hosted only; wispEnabled() in config/env.ts). Default false.
+  BREEZE_WISP_ENABLED: ${BREEZE_WISP_ENABLED:-false}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
@@ -524,6 +526,8 @@ x-api-env: &api-env
   # the job runs with the 400-day default TTL.
   PAM_EVIDENCE_RETENTION_ENABLED: ${PAM_EVIDENCE_RETENTION_ENABLED:-}
   PAM_EVIDENCE_RETENTION_DAYS: ${PAM_EVIDENCE_RETENTION_DAYS:-}
+  PAM_OWNERSHIP_EPOCH_TRANSFER: ${PAM_OWNERSHIP_EPOCH_TRANSFER:-}
+  BREEZE_YARA_BUILTIN_PACK_DISABLED: ${BREEZE_YARA_BUILTIN_PACK_DISABLED:-}
   # Outbox / anomaly-incident retention (#4210). Read by the three daily
   # prune jobs (jobs/*Retention.ts), which are `global` placement and so run
   # in the worker role — the worker service inherits this same *api-env
@@ -543,6 +547,7 @@ x-api-env: &api-env
 
   # #7640: mapped verbatim from docker-compose.yml (same lines already ship on
   # the self-host stack) so setting them in .env takes effect on prod too.
+  AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED: ${AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED:-false}
   AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
   AI_OPERATOR_TASKS_ENABLED: ${AI_OPERATOR_TASKS_ENABLED:-false}
   AI_TOOL_SEARCH: ${AI_TOOL_SEARCH:-}
@@ -598,6 +603,7 @@ x-api-env: &api-env
   MCP_INTENT_CREATES_PER_USER_PER_HOUR: ${MCP_INTENT_CREATES_PER_USER_PER_HOUR:-}
   MCP_APPROVAL_WAIT_MS: ${MCP_APPROVAL_WAIT_MS:-}
   MCP_APPROVAL_WAITS_PER_PRINCIPAL: ${MCP_APPROVAL_WAITS_PER_PRINCIPAL:-}
+  MCP_APPS_ENABLED: ${MCP_APPS_ENABLED:-}
   METRICS_INCLUDE_ORG_ID: ${METRICS_INCLUDE_ORG_ID:-}
   METRICS_SCRAPE_IP_ALLOWLIST: ${METRICS_SCRAPE_IP_ALLOWLIST:-}
   OAUTH_CONSENT_URL_BASE: ${OAUTH_CONSENT_URL_BASE:-}

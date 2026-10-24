@@ -555,5 +555,128 @@
   },
   "buyCredits": {
     "link": "Comprar créditos"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Ativar o Wisp",
+      "turningOn": "Ativando o Wisp…"
+    },
+    "locked": {
+      "why": "O Wisp está disponível nos planos Pro e superiores."
+    },
+    "modal": {
+      "title": "Ativar o Wisp",
+      "refreshTitle": "Renovar permissão do Wisp",
+      "scopeLabel": "O Wisp pode atuar em",
+      "scopeOrg": "Esta organização",
+      "scopePartner": "Todas as organizações",
+      "explain": "O Wisp atua dentro do que você tem permissão para fazer. Confirme que é você para continuar.",
+      "code": "Código do autenticador",
+      "passkey": "Você confirmará com sua passkey.",
+      "noFactor": "O Wisp precisa de uma passkey ou de um app autenticador. Configure um primeiro no seu perfil.",
+      "noOrg": "Selecione primeiro uma organização no cabeçalho.",
+      "confirm": "Confirmar",
+      "cancel": "Cancelar",
+      "stepUpUnavailable": "Não foi possível verificar seu fator. Tente novamente.",
+      "reverify": "Seu acesso mudou durante a confirmação. Digite um novo código para continuar.",
+      "invalidCode": "Esse código não foi aceito. Tente novamente."
+    },
+    "header": {
+      "scopeAll": "Todas as organizações",
+      "status": {
+        "active": "Ativo",
+        "paused": "Pausado",
+        "revoked": "Revogado",
+        "expired": "Expirado"
+      },
+      "refresh": "Renovar permissão",
+      "revoke": "Desativar o Wisp",
+      "revokeConfirm": "Desativar o Wisp para este escopo? As conversas abertas continuam legíveis.",
+      "widening": "Você pode fazer mais do que esta permissão autoriza; renove-a para o Wisp acompanhar."
+    },
+    "settings": {
+      "title": "Orçamento e verificação periódica",
+      "budget": "Orçamento diário (¢)",
+      "tick": "Verificar a cada (minutos)",
+      "save": "Salvar"
+    },
+    "focus": {
+      "label": "Atuando em",
+      "none": "Nenhum cliente em foco",
+      "pick": "Focar em um cliente…",
+      "clear": "Limpar foco"
+    },
+    "attachments": {
+      "title": "Anexado a esta conversa",
+      "drop": "Solte aqui uma conversa de e-mail, um arquivo .eml ou CSV, ou cole um texto",
+      "paste": "Colar texto",
+      "label": "Rótulo",
+      "add": "Anexar",
+      "empty": "Nada anexado ainda",
+      "expires": "Expira em {{date}}",
+      "limits": "Até 20 arquivos, 5 MB cada, somente texto",
+      "focusRequired": "Escolha um cliente em foco antes de anexar",
+      "loadFailed": "Não foi possível carregar os anexos"
+    },
+    "toast": {
+      "on": "O Wisp está ativado",
+      "onFailed": "Não foi possível ativar o Wisp",
+      "off": "O Wisp está desativado",
+      "offFailed": "Não foi possível desativar o Wisp",
+      "refreshed": "Permissão renovada",
+      "refreshFailed": "Não foi possível renovar a permissão",
+      "settingsSaved": "Configurações do Wisp salvas",
+      "settingsFailed": "Não foi possível salvar as configurações do Wisp",
+      "focusSet": "O Wisp agora está atuando em {{org}}",
+      "focusCleared": "Foco no cliente removido",
+      "focusFailed": "Não foi possível alterar o foco",
+      "attached": "Anexado à conversa",
+      "attachFailed": "Não foi possível anexar",
+      "attachTooLarge": "Esse arquivo tem mais de 5 MB",
+      "attachUnsupported": "Só é possível anexar arquivos de texto",
+      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la."
+    }
+  },
+  "wispConcerns": {
+    "title": "Pendências",
+    "empty": "Nada no radar do Wisp no momento.",
+    "snooze": "Adiar",
+    "snoozeOneHour": "1 hora",
+    "snoozeTomorrow": "Até amanhã às 9:00",
+    "snoozeWeek": "7 dias",
+    "dismiss": "Dispensar",
+    "resolve": "Resolver",
+    "resolveOutcomePlaceholder": "O que aconteceu?",
+    "resolveSubmit": "Marcar como resolvida",
+    "snoozed": "Adiada",
+    "dismissed": "Dispensada",
+    "resolved": "Resolvida",
+    "quietUntil": "em silêncio até {{when}}",
+    "digestOnly": "somente no resumo",
+    "showAll": "Mostrar todas",
+    "showLive": "Mostrar abertas",
+    "loadFailed": "Não foi possível carregar as pendências",
+    "actionFailed": "Isso não funcionou. Tente novamente.",
+    "severity": {
+      "high": "Alta",
+      "medium": "Média",
+      "low": "Baixa",
+      "info": "Informativa"
+    },
+    "subject": {
+      "ticket": "Chamado",
+      "device": "Dispositivo",
+      "alert": "Alerta",
+      "org": "Cliente",
+      "integration": "Integração",
+      "run": "Execução",
+      "task": "Tarefa",
+      "incident": "Incidente",
+      "quote": "Orçamento",
+      "invoice": "Fatura",
+      "contract": "Contrato",
+      "site": "Local"
+    }
   }
 }

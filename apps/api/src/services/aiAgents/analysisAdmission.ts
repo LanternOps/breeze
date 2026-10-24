@@ -132,6 +132,15 @@ export const SKIP_REASON_REFUSALS = {
   // AI Suggested Fixes W3 — only the automation ai_triage lane supplies the
   // probe that yields this, so it is unreachable from an analysis admission.
   proven_fix_available: 'analysis_not_available',
+  // Wisp W02 — only a grant-bearing admission (Wisp's own coordinator) can
+  // yield these; admitAnalysisRun never passes a grant.
+  grant_inactive: 'analysis_not_available',
+  grant_org_out_of_ceiling: 'analysis_not_available',
+  // Wisp W05b — the assessment profile's volume guards and its grant
+  // precondition; unreachable (an analysis admission is never an assessment).
+  max_concurrent_assessment_runs: 'max_concurrent_analysis_runs',
+  assessment_rate: 'analysis_rate',
+  assessment_requires_grant: 'analysis_not_available',
 } satisfies Record<AgentRunSkipReason, AnalysisAdmissionRefusal>;
 
 /** Extra sentence for the reasons whose refusal alone would mislead. */

@@ -64,6 +64,10 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./portal/ticketOwnership', () => ({
   portalTicketOwnership: vi.fn((u: { id: string }) => ({ ownership: u.id })),
 }));
+// #8972: the dashboard's ticket set (own + survivors of merged tickets) — same sentinel shape.
+vi.mock('./portal/ticketReadAccess', () => ({
+  portalDashboardTicketScope: vi.fn((u: { id: string }) => ({ ownership: u.id })),
+}));
 
 import { authMiddleware } from '../middleware/auth';
 import { PORTAL_SECTION_GATES } from './portal/featureFlags';

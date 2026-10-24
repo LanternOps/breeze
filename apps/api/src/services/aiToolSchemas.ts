@@ -10,6 +10,14 @@ import { AI_AGENT_RUN_STATUSES } from '@breeze/shared';
 import { fleetTimeFiltersSchema } from './timeSync/fleetFilters';
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS } from '@breeze/shared';
+import {
+  createWatchInputSchema,
+  listConcernsToolSchema,
+  raiseConcernChatSchema,
+  resolveConcernToolSchema,
+  snoozeConcernToolSchema,
+} from '@breeze/shared';
 import { WORKLOAD_RUNTIMES, WORKLOAD_STATES, ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, QUOTE_ACCEPT_ON_BEHALF_METHODS, currencyCodeSchema, monitorKindSchema, ticketLinkTypeSchema, ticketTypeSchema } from '@breeze/shared';
 import {
   backupProfileSelectionsSchema,
@@ -188,8 +196,119 @@ export const setDeviceContextShape = {
   expiresInDays: z.number().int().positive().max(365).optional(),
 };
 
+/**
+ * Wisp W03 memory tools (services/wisp/memoryTools.ts). The raw shapes are the
+ * source of truth: the MCP `tool()` declarations, `toolInputSchemas` and the
+ * registry `definition.input_schema` are all derived from them. There is no
+ * `sourceSessionId` key on purpose — the handler stamps it from
+ * `auth.wispGrant.sessionId` (w00 A23); a supplied one is stripped.
+ */
+export const recallShape = {
+  ownerKinds: z.array(z.enum(MEMORY_OWNER_KINDS)).min(1).max(3).optional()
+    .describe('Only these owners (default all three): user = your grantor, org = customers in scope, partner = MSP-wide.'),
+  subjectKeyPrefix: z.string().min(1).max(120).optional().describe('Only blocks whose subjectKey starts with this, e.g. "work:" or "printer:"'),
+  blockTypes: z.array(z.enum(MEMORY_BLOCK_TYPES)).min(1).max(MEMORY_BLOCK_TYPES.length).optional(),
+  orgId: uuid.optional().describe('Only this organization\'s blocks (UUID); user and partner blocks still apply'),
+  limit: z.number().int().min(1).max(200).optional().describe('Max blocks (default 50, max 200)'),
+};
+
+export const rememberShape = {
+  ownerKind: z.enum(MEMORY_OWNER_KINDS)
+    .describe("user = the technician's own preferences only; a fact about a customer belongs to that org (org + orgId); partner = MSP-wide practice."),
+  orgId: uuid.optional().describe('Required when ownerKind is org, refused otherwise (UUID)'),
+  blockType: z.enum(MEMORY_BLOCK_TYPES)
+    .describe('work_summary: one per working session on one customer, org-owned, subjectKey work:<yyyy-mm-dd>:<short-slug>.'),
+  subjectKey: z.string().min(1).max(280).describe('Stable key; a new block with the same owner, type and key supersedes the old one'),
+  content: z.record(z.string(), z.unknown())
+    .describe('The memory itself (max 8 KiB as JSON). For work_summary, content.evidence lists the Breeze records touched (ticket, time-entry, audit ids).'),
+  confidence: z.enum(MEMORY_CONFIDENCES).optional().describe('How sure you are (default medium)'),
+};
+
+export const memoryBlockIdShape = {
+  blockId: uuid.describe('Memory block UUID'),
+};
+
+/** ownerKind 'org' ⇔ orgId present. Shared by validateToolInput and the handler's own parse. */
+export const rememberInputSchema = z.object(rememberShape).superRefine((v, ctx) => {
+  if (v.ownerKind === 'org' && !v.orgId) {
+    ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId is required when ownerKind is org' });
+  }
+  if (v.ownerKind !== 'org' && v.orgId) {
+    ctx.addIssue({ code: 'custom', path: ['orgId'], message: 'orgId is only accepted when ownerKind is org' });
+  }
+});
+
+/**
+ * Wisp W05a concern/watch chat tools (services/wisp/concernTools.ts). The
+ * shared validators (packages/shared/src/validators/wispConcerns.ts) are the
+ * source of truth: `toolInputSchemas` uses them as-is and these raw shapes,
+ * for the MCP `tool()` declarations and the registry `input_schema`, are their
+ * `.shape` with model-facing descriptions layered on (`.describe` clones a
+ * field and keeps its checks). concernTools.test.ts pins the key parity.
+ */
+/**
+ * `list_concerns` = the shared filter plus the tool-only output budget (A-W05:
+ * every Tier-1 list read takes a `limit`). Max 200 = the service's own cap
+ * (`LIST_LIMIT` in services/wisp/concerns.ts); the handler slices to it.
+ */
+export const LIST_CONCERNS_DEFAULT_LIMIT = 50;
+export const listConcernsInputSchema = listConcernsToolSchema.extend({
+  limit: z.number().int().min(1).max(200).optional(),
+});
+const lc = listConcernsInputSchema.shape;
+export const listConcernsShape = {
+  ...lc,
+  status: lc.status.describe('Only these statuses (default: the live ones, open and snoozed)'),
+  orgId: lc.orgId.describe("Only this organization's concerns (UUID)"),
+  limit: lc.limit.describe(`Max concerns (default ${LIST_CONCERNS_DEFAULT_LIMIT}, max 200)`),
+};
+
+const rc = raiseConcernChatSchema.shape;
+export const raiseConcernShape = {
+  ...rc,
+  orgId: rc.orgId.describe('The customer organization this loose end belongs to (UUID)'),
+  subject: rc.subject.describe('What it is about: the org itself (id = orgId) or one of its tickets, quotes, invoices, contracts or devices'),
+  summary: rc.summary.describe('One line a technician can act on, e.g. "Waiting on the customer to send the license key"'),
+  severity: rc.severity.describe('info | low | medium | high — how much it matters if it slips'),
+  evidence: rc.evidence.describe('Optional small object (max 20 keys) of supporting ids or facts'),
+};
+
+const sc = snoozeConcernToolSchema.shape;
+export const snoozeConcernShape = {
+  ...sc,
+  concernId: sc.concernId.describe('Concern UUID (from list_concerns)'),
+  until: sc.until.describe('ISO 8601 datetime with offset; in the future and at most 30 days ahead'),
+};
+
+const rv = resolveConcernToolSchema.shape;
+export const resolveConcernShape = {
+  ...rv,
+  concernId: rv.concernId.describe('Concern UUID (from list_concerns)'),
+  outcome: rv.outcome.describe('What happened, in one or two sentences; Wisp remembers it for next time'),
+};
+
+const cw = createWatchInputSchema.shape;
+export const createWatchShape = {
+  ...cw,
+  orgId: cw.orgId.describe('Organization to watch (UUID), or null for every customer in scope (partner-wide grants only)'),
+  kind: cw.kind.describe('What to watch'),
+  params: cw.params.describe('Kind-specific parameters (max 20 keys), e.g. { "ticketId": "<uuid>" } for ticket_waiting'),
+  cadenceMinutes: cw.cadenceMinutes.describe('How often to check, in minutes (15 to 10080)'),
+};
+
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  // Wisp W03 memory (services/wisp/memoryTools.ts).
+  recall: z.object(recallShape),
+  remember: rememberInputSchema,
+  confirm_memory: z.object(memoryBlockIdShape),
+  retract_memory: z.object(memoryBlockIdShape),
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts).
+  list_concerns: listConcernsInputSchema,
+  raise_concern: raiseConcernChatSchema,
+  snooze_concern: snoozeConcernToolSchema,
+  resolve_concern: resolveConcernToolSchema,
+  create_watch: createWatchInputSchema,
   list_time_entries: z.object({
     orgId: uuid.optional(),
     ticketId: uuid.optional(),
@@ -1318,6 +1437,9 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     path: safePath,
     content: z.string().max(1_000_000).optional(),
     newPath: safePath.optional(),
+    // #9853: delete only — bypass the agent trash. The handler refuses it on
+    // any other action and on agents below the cleanupGuard version gate.
+    permanent: z.boolean().optional(),
   }),
 
   analyze_disk_usage: z.object({
@@ -1688,6 +1810,12 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
   list_flows: z.object({
     orgId: uuid.optional(),
     status: z.enum(['draft', 'enabled', 'paused', 'disabled']).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  // #8973 W4: read-only business-hours calendars (spec §5.7).
+  list_business_calendars: z.object({
+    orgId: uuid.optional(),
+    includeArchived: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
 

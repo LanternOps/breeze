@@ -96,6 +96,7 @@
       "statusFilterLabel": "Compliance status filter",
       "pendingPatches": "Pending Patches ({{count}})",
       "critical": "Critical ({{count}})",
+      "failed": "Failed Installs ({{count}})",
       "pendingReboot": "Pending Reboot ({{count}})",
       "thirdPartyPending": "3rd-Party Pending ({{count}})",
       "compliant": "Compliant ({{count}})"
@@ -160,6 +161,11 @@
       "messageOne": "{{action}} on {{count}} device in {{org}}?",
       "messageMany": "{{action}} on {{count}} devices in {{org}}?",
       "messageMultiOrg": "{{action}} on {{count}} devices across {{orgCount}} organizations ({{orgNames}})?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} of {{total}}",
+      "previous": "Previous page",
+      "next": "Next page"
     }
   },
   "patchInstallHistory": {
@@ -335,6 +341,11 @@
       "showing": "Showing {{shown}} of {{total}}",
       "loadMore": "Load more",
       "lastChecked": "Last checked: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Package version {{version}}",
+      "id": "Catalog ID {{id}}",
+      "title": "Another catalog entry has the same title. Each is approved separately."
     }
   },
   "patchesPage": {

@@ -96,6 +96,7 @@
       "statusFilterLabel": "Compliance-Status filtern",
       "pendingPatches": "Ausstehende Patches ({{count}})",
       "critical": "Kritisch ({{count}})",
+      "failed": "Fehlgeschlagene Installationen ({{count}})",
       "pendingReboot": "Ausstehender Neustart ({{count}})",
       "thirdPartyPending": "Ausstehende Drittanbieter-Patches ({{count}})",
       "compliant": "Konform ({{count}})"
@@ -160,6 +161,11 @@
       "messageOne": "Aktion „{{action}}“ auf {{count}} Gerät in {{org}} ausführen?",
       "messageMany": "Aktion „{{action}}“ auf {{count}} Geräten in {{org}} ausführen?",
       "messageMultiOrg": "Aktion „{{action}}“ auf {{count}} Geräten in {{orgCount}} Organisationen ({{orgNames}}) ausführen?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} von {{total}}",
+      "previous": "Vorherige Seite",
+      "next": "Nächste Seite"
     }
   },
   "patchInstallHistory": {
@@ -335,6 +341,11 @@
       "showing": "{{shown}} von {{total}} angezeigt",
       "loadMore": "Mehr laden",
       "lastChecked": "Zuletzt geprüft: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Paketversion {{version}}",
+      "id": "Katalog-ID {{id}}",
+      "title": "Ein anderer Katalogeintrag hat denselben Titel. Jeder wird separat freigegeben."
     }
   },
   "patchesPage": {

@@ -254,41 +254,7 @@
       "twelveHour": "12 saat",
       "twentyFourHour": "24 saat",
       "language": "Dil",
-      "languageDescription": "İş ortağı ayarları için varsayılan dil.",
-      "businessHours": {
-        "title": "Çalışma Saatleri",
-        "description": "Destek ve uyarılar için standart çalışma saatlerinizi ayarlayın.",
-        "presets": {
-          "always": {
-            "label": "7/24",
-            "description": "Her zaman ulaşılabilir"
-          },
-          "business": {
-            "label": "Çalışma Saatleri",
-            "description": "Pazartesi-Cum 9:00-17:00"
-          },
-          "extended": {
-            "label": "Uzatılmış Çalışma Saatleri",
-            "description": "Pazartesi-Cum 07:00-19:00, Cumartesi 09:00-13:00"
-          },
-          "custom": {
-            "label": "Özel",
-            "description": "Kendi programınızı belirleyin"
-          }
-        },
-        "customSchedule": "Özel Program",
-        "open": "Aç",
-        "to": "'ye"
-      },
-      "days": {
-        "mon": "Pazartesi",
-        "tue": "Salı",
-        "wed": "Çarşamba",
-        "thu": "Perşembe",
-        "fri": "Cuma",
-        "sat": "Cumartesi",
-        "sun": "Pazar"
-      }
+      "languageDescription": "İş ortağı ayarları için varsayılan dil."
     }
   },
   "partnerAiBudgets": {
@@ -1422,7 +1388,10 @@
     "retrySites": "Tekrar dene",
     "createASite": "Bir site oluşturun",
     "maxUsage": "Maksimum Kullanım (isteğe bağlı)",
-    "defaultDeviceLimit": "50 (varsayılan)",
+    "defaultDeviceLimit": "{{count}} (kuruluş varsayılanı)",
+    "expiresAtHelp": "{{duration}} için boş bırakın (kuruluş varsayılanı).",
+    "usageFromDefault": "varsayılan",
+    "usageFromDefaultTitle": "Cihaz sınırı kuruluş varsayılanından geldi.",
     "maxUsageHelp": "Bu anahtarla kaydolabilecek maksimum temsilci sayısı.",
     "expiresAt": "Sona Erme Tarihi (isteğe bağlı)",
     "creating": "Oluşturuluyor...",
@@ -1506,7 +1475,8 @@
       "approval_ask": "Onay talebi",
       "approval_snapshot": "Onay rakamları",
       "approval_expires": "Onay son tarihi",
-      "approval_status": "Onay durumu"
+      "approval_status": "Onay durumu",
+      "merged_into_number": "Hedef bilet numarası"
     },
     "billingPayments": "Faturalandırma ve ödemeler",
     "supportPortal": "Destek ve portal",
@@ -1521,7 +1491,8 @@
       "payment_failed": "Ödeme tamamlanamadı",
       "ticket_approval_requested_approver": "İş onayı talebi (onaylayan)",
       "ticket_approval_requested_notify": "İş onayı talebi (bilgi amaçlı)",
-      "ticket_approval_decided": "İş onayı kararı"
+      "ticket_approval_decided": "İş onayı kararı",
+      "ticket_merged": "Bilet birleştirildi"
     }
   },
   "inboundEmail": {
@@ -4516,6 +4487,9 @@
     "notEnabledBody": "MCP OAuth bu sunucuda devre dışı. Bağlı uygulamalara izin vermek için MCP_OAUTH_ENABLED=true ayarlayın ve API'yi yeniden başlatın.",
     "revokeConfirm": "{{name}} erişimi iptal edilsin mi? Erişim jetonları 10 dakika içinde çalışmayı durduracaktır.",
     "revokeFailed": "İptal başarısız oldu ({{status}})",
+    "revokeTitle": "Bağlı uygulamayı iptal et",
+    "revokeSuccess": "{{name}} erişimi iptal edildi",
+    "revokeFailedGeneric": "İptal başarısız oldu",
     "networkError": "Ağ hatası",
     "networkErrorDuringRevoke": "İptal sırasında ağ hatası",
     "revoking": "İptal ediliyor…",
@@ -5796,6 +5770,20 @@
       "sourceOrg": "Kuruluş geçersiz kılması",
       "sourcePartner": "İş ortağı varsayılanı",
       "sourceDefault": "Yerleşik varsayılan"
+    },
+    "businessCalendar": {
+      "title": "Çalışma saatleri",
+      "description": "Bu kuruluşun SLA sürelerinin sayıldığı takvim. İş ortağı varsayılanını izlemek için Devral seçeneğinde bırakın.",
+      "label": "Çalışma takvimi",
+      "inherit": "Devral",
+      "inheritedDefault": "Devralınan: {{name}} (iş ortağı varsayılanı)",
+      "inheritedNone": "Devralınan: 24×7 (iş ortağı varsayılanı yok)",
+      "partnerWideOption": "{{name}} (tüm kuruluşlar)",
+      "archivedOverride": "Arşivlenmiş takvim (artık geçerli değil)",
+      "loadFailed": "Çalışma takvimi yüklenemedi.",
+      "errors": {
+        "save": "Çalışma takvimi kaydedilemedi. Yeniden deneyin."
+      }
     }
   },
   "organizationForm": {
@@ -6920,5 +6908,208 @@
     "enabledToast": "Tek tuşlu kısayollar açıldı",
     "disabledToast": "Tek tuşlu kısayollar kapatıldı",
     "saveFailed": "Tek tuşlu kısayollar kaydedilemedi."
+  },
+  "businessHoursCard": {
+    "title": "Çalışma saatleri",
+    "description": "Yanıt ve çözüm SLA sürelerinin sayıldığı takvimler. Bir talep, kuruluşunun takvimini ya da varsayılan takviminizi kullanır; hiçbiri yoksa süre günün 24 saati işler.",
+    "newTicketsOnly": "Saatleri veya saat dilimini düzenlemek yalnızca yeni taleplere uygulanır. Zaten açık olan talepleri güncellemek için \"Açık taleplere uygula\" seçeneğini kullanın.",
+    "create": "Yeni takvim",
+    "loading": "Çalışma saatleri yükleniyor…",
+    "loadError": "Çalışma saatleri yüklenemedi.",
+    "retry": "Yeniden dene",
+    "empty": "Henüz çalışma saatleri takvimi yok. Bir takvim oluşturup varsayılan yapana kadar talepler günün 24 saati (24×7) işler.",
+    "allOrgs": "Tüm kuruluşlar",
+    "default": "Varsayılan",
+    "archived": "Arşivlendi",
+    "edit": "Düzenle",
+    "setDefault": "Varsayılan yap",
+    "clearDefault": "Varsayılanı kaldır",
+    "applyOpen": "Açık taleplere uygula",
+    "archive": "Arşivle",
+    "unarchive": "Arşivden çıkar",
+    "delete": "Sil",
+    "deleteTitle": "{{name}} silinsin mi?",
+    "deleteMessage": "Bu işlem takvimi ve tatillerini kalıcı olarak siler. Talepler veya kuruluşlar tarafından hâlâ kullanılan bir takvim silinemez; bunun yerine arşivleyin.",
+    "name": "Ad",
+    "timezone": "Saat dilimi",
+    "appliesTo": "Geçerli olduğu yer",
+    "ownerPartner": "Tüm kuruluşlar (iş ortağı geneli)",
+    "ownerOrg": "Tek bir kuruluş",
+    "organization": "Kuruluş",
+    "chooseOrg": "Bir kuruluş seçin",
+    "weeklyHours": "Haftalık saatler",
+    "closed": "Kapalı",
+    "to": "ile",
+    "addInterval": "Saat ekle",
+    "intervalStart": "{{day}} açılış saati",
+    "intervalEnd": "{{day}} kapanış saati",
+    "removeInterval": "{{day}} saatlerini kaldır",
+    "save": "Kaydet",
+    "saving": "Kaydediliyor…",
+    "cancel": "İptal",
+    "holidays": "Tatiller",
+    "holidayHint": "Bugünün veya daha eski bir tarihin tatilleri açık talepleri değiştirmez.",
+    "noHolidays": "Tatil yok.",
+    "holidayDate": "Tarih",
+    "holidayName": "Ad",
+    "holidayAdd": "Tatil ekle",
+    "holidayRemove": "{{name}} tatilini kaldır",
+    "weekdays": {
+      "0": "Pazar",
+      "1": "Pazartesi",
+      "2": "Salı",
+      "3": "Çarşamba",
+      "4": "Perşembe",
+      "5": "Cuma",
+      "6": "Cumartesi"
+    },
+    "errors": {
+      "nameRequired": "Bir ad girin.",
+      "orgRequired": "Bir kuruluş seçin.",
+      "invalidTime": "Saatleri SS:DD biçiminde girin (örneğin 09:00); bitiş 24:00 olabilir.",
+      "order": "Her aralık başladıktan sonra bitmelidir.",
+      "overlap": "Aynı gündeki aralıklar çakışmamalıdır.",
+      "empty": "En az bir açık aralık ekleyin.",
+      "timezone": "Geçerli bir saat dilimi seçin.",
+      "save": "Takvim kaydedilemedi. Yeniden deneyin.",
+      "holidayInvalid": "Tatil için geçerli bir tarih ve ad girin.",
+      "holidayAdd": "Tatil eklenemedi. Yeniden deneyin.",
+      "holidayRemove": "Tatil kaldırılamadı. Yeniden deneyin.",
+      "inUse": "Bu takvim taleplerce veya kuruluşlarca kullanılıyor ve silinemez. Bunun yerine arşivleyin.",
+      "isDefault": "Bu takvim varsayılandır. Silmeden önce varsayılanı kaldırın.",
+      "default": "Varsayılan takvim değiştirilemedi. Yeniden deneyin.",
+      "archive": "Arşiv durumu değiştirilemedi. Yeniden deneyin.",
+      "delete": "Takvim silinemedi. Yeniden deneyin.",
+      "apply": "Takvim açık taleplere uygulanamadı. Yeniden deneyin."
+    },
+    "toasts": {
+      "created": "Takvim oluşturuldu",
+      "updated": "Takvim güncellendi",
+      "defaultSet": "Varsayılan takvim ayarlandı",
+      "defaultCleared": "Varsayılan kaldırıldı; geçersiz kılması olmayan talepler 24×7 işler",
+      "archived": "Takvim arşivlendi",
+      "unarchived": "Takvim arşivden çıkarıldı",
+      "deleted": "Takvim silindi",
+      "holidayAdded": "Tatil eklendi",
+      "holidayRemoved": "Tatil kaldırıldı",
+      "recompute": "Açık taleplerin son tarihleri güncelleniyor.",
+      "applied": "Açık taleplere uygulandı: {{count}} güncellendi",
+      "appliedPartial": "{{skipped}} talep düzenleniyordu ve eski çalışma saatlerini korudu. Yeniden denemek için tekrar uygulayın."
+    },
+    "apply": {
+      "title": "{{name}} takvimini açık taleplere uygula",
+      "explanation": "Hiç duraklatılmamış açık talepler geçerli saatlere geçer ve son tarihleri yeniden hesaplanır. Duraklatma geçmişi olan talepler olduğu gibi kalır.",
+      "loading": "Önizleme yükleniyor…",
+      "loadFailed": "Önizleme yüklenemedi.",
+      "revisionChanged": "Saatler bu önizlemeden sonra değişti. Uygulamadan önce güncellenen sayıları gözden geçirin.",
+      "eligible": "Güncellenecek talepler: {{count}}",
+      "breached": "Bunlardan hemen süresi aşılacaklar: {{count}}",
+      "paused": "Duraklatıldıkları için atlananlar: {{count}}",
+      "confirm": "Açık taleplere uygula"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plan ve özellikler",
+    "description": "Planınızın içerdikleri. Kilitli özellikler görünür kalır; böylece bir yükseltmenin neler kattığını görebilirsiniz.",
+    "currentPlan": "Mevcut plan",
+    "plans": {
+      "free": "Ücretsiz",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Sınırsız"
+    },
+    "columns": {
+      "feature": "Özellik",
+      "state": "Durum",
+      "source": "Kaynak",
+      "expires": "Bitiş",
+      "limits": "Sınırlar"
+    },
+    "state": {
+      "enabled": "Dahil",
+      "disabled": "Kilitli"
+    },
+    "source": {
+      "plan": "Plan varsayılanı",
+      "billing": "Faturalandırma",
+      "license": "Lisans",
+      "manual": "Manuel"
+    },
+    "graceWarning": "{{expiresAt}} tarihinde sona erdi — ek süre {{graceUntil}} tarihine kadar",
+    "noExpiry": "Hiçbir zaman",
+    "noLimits": "—",
+    "reason": "Neden: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Kurulum denetçisi",
+        "why": "Sıfır dokunuşlu kurulum hatalarını teşhis edip onaran bir yapay zekâ denetçisi."
+      },
+      "verified_library": {
+        "label": "Doğrulanmış yazılım kitaplığı",
+        "why": "Güvenle dağıtabileceğiniz, seçilmiş ve doğrulanmış paketler."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp filonuzu sürekli olarak önceliklendirir ve doğru kişiyi uyarır; Pro ve üzeri planlarda kullanılabilir."
+      }
+    },
+    "loadError": "Planınız yüklenemedi.",
+    "retry": "Tekrar dene"
+  },
+  "wispMemory": {
+    "title": "Wisp belleği",
+    "description": "Wisp’in sizin, bir müşteri veya tüm ekibiniz için hatırladıklarını inceleyin; onaylayın veya geri çekin.",
+    "tabs": {
+      "mine": "Belleğim",
+      "org": "Müşteri",
+      "partner": "Tüm müşteriler",
+      "users": "Teknisyenler"
+    },
+    "empty": "Burada henüz bellek bloğu yok.",
+    "loading": "Bellek yükleniyor…",
+    "loadFailed": "Bellek yüklenemedi.",
+    "retry": "Tekrar dene",
+    "columns": {
+      "subject": "Konu",
+      "type": "Tür",
+      "status": "Durum",
+      "confidence": "Güven",
+      "updated": "Güncellendi",
+      "actions": "İşlemler"
+    },
+    "statusValue": {
+      "unconfirmed": "Onaylanmadı",
+      "confirmed": "Onaylandı",
+      "retracted": "Geri çekildi"
+    },
+    "type": {
+      "preference": "Tercih",
+      "standing_instruction": "Kalıcı talimat",
+      "fact": "Bilgi",
+      "decision": "Karar",
+      "concern_outcome": "Endişe sonucu",
+      "work_summary": "Çalışma özeti"
+    },
+    "confidenceValue": {
+      "low": "Düşük",
+      "medium": "Orta",
+      "high": "Yüksek"
+    },
+    "confirm": "Onayla",
+    "retract": "Geri çek",
+    "confirmed": "Bellek onaylandı.",
+    "retracted": "Bellek geri çekildi.",
+    "confirmFailed": "Bellek onaylanamadı.",
+    "retractFailed": "Bellek geri çekilemedi.",
+    "fromConversation": "Görüşmeden",
+    "pickOrg": "Bir müşteri seçin",
+    "pickUser": "Bir teknisyen seçin",
+    "pickPrompt": "Belleği görmek için yukarıdan seçim yapın.",
+    "showContent": "İçeriği göster",
+    "hideContent": "İçeriği gizle",
+    "conversationUnavailable": "Bu konuşma artık kullanılamıyor.",
+    "usersLoadFailed": "Teknisyenler yüklenemedi."
   }
 }

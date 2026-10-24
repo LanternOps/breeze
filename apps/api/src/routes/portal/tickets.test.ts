@@ -25,6 +25,13 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ── service mocks ─────────────────────────────────────────────────────────────
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('../../services/ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 const { createTicketMock, portalCommentMutableMock, editTicketCommentMock, deleteTicketCommentMock } = vi.hoisted(() => ({
   createTicketMock: vi.fn(),
   portalCommentMutableMock: vi.fn(),
@@ -57,8 +64,10 @@ vi.mock('../../services/portal/supportUsage', () => ({
 
 // ── DB mock ───────────────────────────────────────────────────────────────────
 
-const { dbSelectMock } = vi.hoisted(() => ({
-  dbSelectMock: vi.fn()
+const { dbSelectMock, withDbAccessContextMock, dbContextState } = vi.hoisted(() => ({
+  dbSelectMock: vi.fn(),
+  withDbAccessContextMock: vi.fn(),
+  dbContextState: { open: null as null | Record<string, unknown> },
 }));
 
 vi.mock('../../db', () => ({
@@ -66,6 +75,9 @@ vi.mock('../../db', () => ({
     select: dbSelectMock,
     insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(() => Promise.resolve([])) })) }))
   },
+  // #8973 W4: the enable_tickets gate opens its own org context on a
+  // self-managed route (POST /api/v1/portal/tickets).
+  withDbAccessContext: withDbAccessContextMock,
   // GET /tickets/forms resolves the session org's partnerId under a system
   // context (mirrors routes/portal/quotes.ts:70) — pass-through no-ops here,
   // same convention as routes/portal/quotes.test.ts.
@@ -866,6 +878,31 @@ describe('POST /tickets/:id/comments', () => {
     expect(body.comment).toHaveProperty('authorType', 'portal');
   });
 
+  // #8972 W0: the ticket row is locked first, and a ticket soft-deleted under
+  // the lock answers 404 without inserting.
+  it('locks the ticket row before inserting the comment', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+    expect(res.status).toBe(201);
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), TICKET_ID);
+  });
+
+  it('404s without inserting when the locked ticket is soft-deleted', async () => {
+    lockTicketForWriteMock.mockResolvedValueOnce({
+      id: TICKET_ID, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: new Date(), workKind: 'support',
+    });
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'x' }),
+    });
+    expect(res.status).toBe(404);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
   /**
    * author_type alone cannot tell a customer's emailed reply from a
    * technician's own reply linked through the Outlook add-in — both are stored
@@ -1277,6 +1314,73 @@ describe('portalTicketsEnabledMiddleware — enable_tickets gate (#2345)', () =>
       headers: { Authorization: 'Bearer portal-token' }
     });
     expect(res.status).toBe(200);
+  });
+
+  // #8973 W4 Gate B1: POST /tickets is a self-managed DB-context route — portal
+  // auth opens no request transaction for it — so the gate itself must open the
+  // org context (with currentPartnerId, for the partner-wide SELECT branch the
+  // calendar resolver reads through) BEFORE its branding read. A contextless
+  // read sees no portal_branding row and would fail OPEN.
+  describe('self-managed portal create (no ambient DB context)', () => {
+    // Mounted at the real prefix: the gate keys on the registry's full path.
+    function buildSelfManagedApp(partnerId: string | null = 'p-1') {
+      const portal = new Hono();
+      portal.use('/tickets/*', async (c, next) => {
+        c.set('portalAuth' as never, { user: PORTAL_USER, partnerId, token: 'tok-1', authMethod: 'bearer', timezone: 'UTC' });
+        await next();
+      });
+      portal.use('/tickets/*', portalTicketsEnabledMiddleware);
+      portal.route('/', ticketRoutes);
+      return new Hono().route('/api/v1/portal', portal);
+    }
+
+    beforeEach(() => {
+      dbContextState.open = null;
+      withDbAccessContextMock.mockImplementation(async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
+        dbContextState.open = ctx;
+        try {
+          return await fn();
+        } finally {
+          dbContextState.open = null;
+        }
+      });
+    });
+    const createBody = JSON.stringify({ subject: 'Printer broken', description: 'It makes a loud clicking noise now', priority: 'normal' });
+
+    it('opens the org context with currentPartnerId before the branding read, and creates inside it', async () => {
+      const seenAtBrandingRead: Array<Record<string, unknown> | null> = [];
+      let seenAtCreate: Record<string, unknown> | null = null;
+      dbSelectMock.mockImplementation(() => {
+        seenAtBrandingRead.push(dbContextState.open);
+        return { from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })) })) };
+      });
+      createTicketMock.mockImplementation(async () => {
+        seenAtCreate = dbContextState.open;
+        return { id: 't-1', ticketNumber: 'T-1', subject: 'Printer broken', description: null, status: 'new', priority: 'normal', ticketType: 'incident', createdAt: new Date(), updatedAt: new Date() };
+      });
+      const res = await buildSelfManagedApp().request('/api/v1/portal/tickets', { method: 'POST', headers: portalJsonHeaders, body: createBody });
+      expect(res.status).toBe(201);
+      const expected = { scope: 'organization', orgId: 'o-1', accessibleOrgIds: ['o-1'], accessiblePartnerIds: [], userId: null, currentPartnerId: 'p-1' };
+      expect(seenAtBrandingRead[0]).toEqual(expected);
+      expect(seenAtCreate).toEqual(expected);
+      expect(withDbAccessContextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('ticketing disabled still refuses a self-managed portal create', async () => {
+      setupBrandingMock([{ enableTickets: false }]);
+      const res = await buildSelfManagedApp().request('/api/v1/portal/tickets', { method: 'POST', headers: portalJsonHeaders, body: createBody });
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('PORTAL_TICKETS_DISABLED');
+      expect(createTicketMock).not.toHaveBeenCalled();
+    });
+
+    it('a portal session with no owning partner is refused (never a context without the partner)', async () => {
+      setupBrandingMock([]);
+      const res = await buildSelfManagedApp(null).request('/api/v1/portal/tickets', { method: 'POST', headers: portalJsonHeaders, body: createBody });
+      expect(res.status).toBe(403);
+      expect(withDbAccessContextMock).not.toHaveBeenCalled();
+      expect(createTicketMock).not.toHaveBeenCalled();
+    });
   });
 
   it('mounted without portalAuth (misordered use()) → explicit 401, not a TypeError 500', async () => {

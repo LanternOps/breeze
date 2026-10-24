@@ -18,6 +18,12 @@ import {
   OUTSTANDING_DEVICE_PATCH_STATUSES
 } from '../../db/schema';
 import { complianceSchema, complianceReportSchema } from './schemas';
+import {
+  buildComplianceDeviceRows,
+  complianceDeviceListFields,
+  type ComplianceDeviceDetail,
+  type NeedingDevice,
+} from './complianceDevices';
 import { EFFECTIVE_PATCH_SEVERITY_SQL } from '../../services/patchSeverityOverlay';
 import { resolvePatchReportOrgId, resolvePartnerIdForOrg } from './helpers';
 import {
@@ -125,15 +131,28 @@ complianceRoutes.get(
             criticalSummary: { total: 0, patched: 0, pending: 0 },
             importantSummary: { total: 0, patched: 0, pending: 0 },
             unratedSummary: { total: 0, patched: 0, pending: 0 },
-            devicesNeedingPatches: []
+            devicesNeedingPatches: [],
+            ...complianceDeviceListFields([], 0, query)
           }
         });
       }
       deviceConditions.push(inArray(devices.siteId, perms.allowedSiteIds));
     }
 
-    const orgDevices = await db
-      .select({ id: devices.id })
+    // The counted population doubles as the device list source (#9791 C), so
+    // the row columns the Patches page renders are selected here. orgId is
+    // load-bearing: the page derives bulk-action confirmation scope from it.
+    const orgDevices: ComplianceDeviceDetail[] = await db
+      .select({
+        id: devices.id,
+        hostname: devices.hostname,
+        displayName: devices.displayName,
+        osType: devices.osType,
+        lastSeenAt: devices.lastSeenAt,
+        status: devices.status,
+        orgId: devices.orgId,
+        pendingReboot: devices.pendingReboot
+      })
       .from(devices)
       .where(deviceConditions.length > 0 ? and(...deviceConditions) : undefined);
 
@@ -149,7 +168,8 @@ complianceRoutes.get(
           criticalSummary: { total: 0, patched: 0, pending: 0 },
           importantSummary: { total: 0, patched: 0, pending: 0 },
           unratedSummary: { total: 0, patched: 0, pending: 0 },
-          devicesNeedingPatches: []
+          devicesNeedingPatches: [],
+          ...complianceDeviceListFields([], 0, query)
         }
       });
     }
@@ -229,7 +249,12 @@ complianceRoutes.get(
             importantSummary: { total: 0, patched: 0, pending: 0 },
             unratedSummary: { total: 0, patched: 0, pending: 0 },
             devicesNeedingPatches: [],
-            ringId: query.ringId ?? null
+            ringId: query.ringId ?? null,
+            ...complianceDeviceListFields(
+              buildComplianceDeviceRows(orgDevices, new Map()),
+              deviceIds.length,
+              query
+            )
           }
         });
       }
@@ -377,7 +402,7 @@ complianceRoutes.get(
       const terms = imageTermsByDevice.get(deviceId);
       return terms ? { staleImages: terms.stale, unknownImages: terms.unknown } : {};
     };
-    const devicesNeedingPatches: Array<Record<string, unknown> & { id: string }> = deviceBreakdown.map(row => ({
+    const devicesNeedingPatches: NeedingDevice[] = deviceBreakdown.map(row => ({
       id: row.deviceId,
       name: row.hostname,
       os: row.osType,
@@ -404,15 +429,14 @@ complianceRoutes.get(
       .filter(([id, terms]) => terms.stale > 0 && !listed.has(id))
       .map(([id]) => id);
     if (staleOnlyIds.length > 0) {
-      const staleOnly = await db
-        .select({ id: devices.id, hostname: devices.hostname, osType: devices.osType, lastSeenAt: devices.lastSeenAt })
-        .from(devices)
-        .where(inArray(devices.id, staleOnlyIds));
-      for (const d of staleOnly.sort((a, b) => a.hostname.localeCompare(b.hostname))) {
+      // Already loaded with the counted population above; no second query.
+      const staleOnlySet = new Set(staleOnlyIds);
+      const staleOnly = orgDevices.filter(d => staleOnlySet.has(d.id));
+      for (const d of staleOnly.sort((a, b) => (a.hostname ?? '').localeCompare(b.hostname ?? ''))) {
         devicesNeedingPatches.push({
           id: d.id,
-          name: d.hostname,
-          os: d.osType,
+          name: d.hostname ?? '',
+          os: d.osType ?? 'unknown',
           missingCount: 0,
           approvedMissing: 0,
           unapprovedMissing: 0,
@@ -482,7 +506,13 @@ complianceRoutes.get(
           severity: query.severity ?? null,
           ringId: query.ringId ?? null
         },
-        ...(imageTerms ? { containerImages: imageTerms } : {})
+        ...(imageTerms ? { containerImages: imageTerms } : {}),
+        // #9791 C: device %, per-status device counts and the paginated list.
+        ...complianceDeviceListFields(
+          buildComplianceDeviceRows(orgDevices, new Map(devicesNeedingPatches.map(d => [d.id, d]))),
+          compliantDeviceCount,
+          query
+        )
       }
     });
   }

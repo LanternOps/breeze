@@ -743,7 +743,8 @@ peripheralControlRoutes.post(
           targetType: targeting.targetType,
           priority: payload.priority ?? existing.priority,
           targetIds: targeting.targetIds,
-          exceptions: payload.exceptions ?? [],
+          // undefined = unchanged; an explicit [] clears
+          ...(payload.exceptions !== undefined ? { exceptions: payload.exceptions } : {}),
           isActive: payload.isActive ?? existing.isActive,
           updatedAt: now
         })

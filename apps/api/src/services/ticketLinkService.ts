@@ -6,6 +6,8 @@ import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { createAuditLogAsync } from './auditService';
 import { emitTicketEvent } from './ticketEvents';
 import { lockOrgTicketLinks } from './ticketLinkLock';
+import { lockTicketsForWrite } from './ticketRowLock';
+import { assertTicketsNotMerged } from './ticketMerge/errors';
 import {
   actorAuditIdentity,
   actorAuthorFields,
@@ -205,13 +207,21 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 interface LockedTicket { id: string; orgId: string; partnerId: string | null; deleted: boolean; number: string }
 
 async function lockTickets(tx: Tx, ids: readonly [string, string]): Promise<Map<string, LockedTicket>> {
-  const rows = await tx.execute(sql`
-    SELECT id, org_id, partner_id, deleted_at IS NOT NULL AS deleted, COALESCE(internal_number, ticket_number) AS number
+  // #8972 W0: the shared ticket row lock (services/ticketRowLock.ts) — both
+  // rows FOR UPDATE in ascending id order in one statement, as before — then
+  // the display numbers, read under that lock.
+  const locked = await lockTicketsForWrite(tx, ids);
+  // #8972 W1: no link is added to or removed from a merged tombstone.
+  assertTicketsNotMerged(locked.values());
+  if (locked.size === 0) return new Map();
+  const numbers = await tx.execute(sql`
+    SELECT id, COALESCE(internal_number, ticket_number) AS number
       FROM tickets
-     WHERE id IN (${ids[0]}::uuid, ${ids[1]}::uuid)
-     ORDER BY id
-       FOR UPDATE`) as unknown as Array<{ id: string; org_id: string; partner_id: string | null; deleted: boolean; number: string }>;
-  return new Map(rows.map((r) => [r.id, { id: r.id, orgId: r.org_id, partnerId: r.partner_id, deleted: r.deleted, number: r.number }]));
+     WHERE id IN (${ids[0]}::uuid, ${ids[1]}::uuid)`) as unknown as Array<{ id: string; number: string }>;
+  const numberById = new Map(numbers.map((r) => [r.id, r.number]));
+  return new Map([...locked.values()].map((r) => [r.id, {
+    id: r.id, orgId: r.orgId, partnerId: r.partnerId, deleted: r.deletedAt !== null, number: numberById.get(r.id) ?? '',
+  }]));
 }
 
 async function wouldCloseCycle(tx: Tx, sourceId: string, targetId: string, linkType: TicketLinkType): Promise<boolean> {

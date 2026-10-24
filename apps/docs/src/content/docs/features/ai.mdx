@@ -299,7 +299,7 @@ When you are on the Fleet Orchestration page, the AI assistant gains access to n
 | `manage_maintenance_windows` | Schedule maintenance windows with timezone support |
 | `manage_automations` | Create and update automation rules and event triggers |
 | `manage_alert_rules` | Configure alerting templates per device or site |
-| `generate_report` | Generate inventory, compliance, performance, and executive summary reports |
+| `generate_report` | Generate inventory, compliance, performance, and executive summary reports, plus (v0.124.0+) the business reports — ticket SLA attainment, technician time and billability, AR aging, and AI usage by client — which are for MSP staff only and refused for site-restricted callers |
 
 ### Quick actions
 
@@ -518,6 +518,34 @@ All rejected inputs are logged in the security event trail accessible via the Ri
 
 ---
 
+## AI data & privacy
+
+What the AI may read from a customer's devices, and how long the outputs of its tool calls are kept, is set by an **AI data & privacy** policy (v0.124.0+). The partner default lives under **Partner Settings → AI Features**; each organization can override it on its own **AI** tab. An override can only **tighten** the partner default, never loosen it — the stricter choices are simply not offered. A blank value inherits, and each card says where the value in force comes from: this organization, the partner default, or the Breeze default.
+
+### AI device file reads
+
+| Level | What the AI can do |
+|---|---|
+| **Off** | Cannot read file contents or browse folders on devices, and diagnostic access requests are refused. Disk-usage summaries and your own library scripts stay available. |
+| **Excludes user profile folders** (default) | System and application paths, with approval. Documents, Desktop and home folders — `C:\Users\*`, `/home/*`, `/Users/*` and `/root` — are refused unless an administrator approves a time-boxed diagnostic grant. |
+| **Any path, with approval** | Every read still needs a technician's approval and is audited; credential stores stay blocked. |
+
+The level is enforced wherever the AI reads device files: the chat assistant, AI agent runs, the MCP server, the Helper and the script builder. A partner that has never saved a policy gets **Excludes user profile folders**.
+
+### Keep AI tool outputs for (days)
+
+Tool outputs — the text a tool returned to the model — are kept for **30 days** by default. A partner can choose **Keep forever** instead of a number of days; an organization can shorten the partner's window but not lengthen it. A nightly job replaces outputs older than the window with an **Output expired** marker. A chat whose outputs have expired keeps its visible transcript but loses its resumable model context, so continuing it starts from what is still on screen.
+
+<Aside type="caution" title="First nightly run after upgrading to v0.124.0">
+  The setting ships together with the retention job, so a partner that has never saved an AI data policy gets the 30-day default at the first nightly run, which expires older outputs in existing chats. To keep history, set **Keep AI tool outputs for (days)** to **Keep forever** before that run. Self-hosters can also move the run time — see [Environment Variables](/deploy/environment/).
+</Aside>
+
+### Device-originated text is untrusted
+
+Device file contents, command output and registry values reach the model as fenced, untrusted text. Instructions found inside them are treated as data the model is reading, not as directions to the assistant.
+
+---
+
 ## Backup AI Tools
 
 The AI assistant can query, manage, and operate backups across your fleet. These tools are available in any AI chat session.
@@ -597,6 +625,10 @@ Read-only tools wired into chat and headless AI agents in #6755 (W01), covering 
 | `get_script_details` | 1 | Script content, versions, and execution stats |
 | `list_script_templates` | 1 | List built-in script templates |
 | `get_script_execution_history` | 1 | Past execution results for a script |
+| `list_device_restore_point_attempts` | 1 | A device's Windows System Restore checkpoint attempts — taken, skipped or failed before each patch run, script or install (v0.124.0+) |
+| `get_trust_page_status` | 1 | Whether an organization's public trust page exists and is published, its public path and freshness, controls met, current and expiring declarations, and pending document access requests; never edits the page (v0.124.0+) |
+
+`sync_edr_data` (Tier 2, v0.124.0+) queues an immediate EDR sync — endpoints and detections — for one connection, the connections serving one organization, or every connection of the partner. Results arrive over the following minutes. It is limited to three calls per ten minutes.
 
 Three of these (user risk scores and detail, plus C2C item search from the backup table above) are available in chat but never to autonomous AI agents — see `AGENT_DENIED_READ_TOOLS` in the codebase for the current denylist, which also covers `query_c2c_jobs`, `get_sensitive_data_overview` and two M365 identity reads.
 
@@ -681,6 +713,8 @@ When your partner allows it, the chat composer has a model menu. It lists the mo
 Your choice applies from your next message. While the model reasons, the chat shows **Thinking…**. Under each answer, the chat shows the model and options that actually answered. A model can decline a request and hand it to another, and Fast can be unavailable for a moment, so this can differ from what you picked.
 
 Administrators can lock a feature to one model under **Partner Settings → AI Providers & Models → Defaults by feature** (turn off **Users may choose**). The menu is then hidden for that feature.
+
+From v0.124.0 a partner can hold more than one Anthropic connection under **AI Providers & Models**. Only the first takes over the features that used the platform key, and models found on a later connection arrive disabled until an administrator enables them. See [Bring your own LLM key](/features/bring-your-own-llm-key/).
 
 ## Switching models mid-conversation
 

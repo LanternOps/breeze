@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Detecção e resposta de endpoint",
     "huntressIncidents": "Incidentes do Huntress",
     "sentineloneThreats": "Ameaças do SentinelOne",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em sua frota vindos do SentinelOne e do Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Ameaças e incidentes em sua frota vindos do SentinelOne e do Huntress.",
+    "iocScansLink": "Procurando as varreduras de IOC do Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Outro EDR",
@@ -425,6 +426,8 @@
     "osFilterLabel": "Sistema operacional"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Não foi possível atualizar a recomendação.",
+    "affectsOrgs": "Afeta {{count}} organizações",
     "adminAccounts": "Contas de administrador",
     "allCategories": "Todas as categorias",
     "allPriorities": "Todas as prioridades",
@@ -433,15 +436,15 @@
     "completed": "Concluído",
     "critical": "Crítica",
     "criticalHigh": "Crítica + Alta",
-    "devices": "Dispositivos:",
+    "devices": "Dispositivos: {{value}}",
     "dismiss": "Descartar",
     "dismissed": "Descartado",
-    "effort": "Esforço:",
+    "effort": "Esforço: {{value}}",
     "encryption": "Criptografia",
     "firewall": "Firewall",
     "hideSteps": "Ocultar etapas",
     "high": "Alta",
-    "impact": "Impacto:",
+    "impact": "Impacto: {{value}}",
     "invalidResponseFromServer": "Resposta inválida do servidor",
     "low": "Baixa",
     "markComplete": "Marcar como concluída",
@@ -460,10 +463,13 @@
     "vulnMgmt": "Gestão de vulnerabilidades",
     "priorityFilterLabel": "Prioridade",
     "categoryFilterLabel": "Categoria",
-    "statusFilterLabel": "Status da recomendação"
+    "statusFilterLabel": "Status da recomendação",
+    "remediationSteps_one": "{{count}} etapa de correção",
+    "remediationSteps_other": "{{count}} etapas de correção"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Uma nova senha de recuperação do BitLocker será gerada e colocada em custódia; a antiga será removida depois que a nova chave estiver ativa.",
+    "accessRevealed": "revelou a chave",
     "bitlocker": "BitLocker",
     "cancel": "Cancelar",
     "collectNow": "Coletar agora",
@@ -489,6 +495,7 @@
     "rotate": "Girar",
     "rotateKey": "Girar chave",
     "rotateRecoveryKey": "Girar chave de recuperação",
+    "rotateVolume": "Volume a rotacionar",
     "thisAccessHasBeenRecordedInThe": "Este acesso foi registrado na trilha de auditoria."
   },
   "securityS1ThreatList": {
@@ -552,7 +559,8 @@
   },
   "securitySecurityDashboard": {
     "acrossAllAssets": "Em todos os ativos",
-    "actionsPrioritized": "{{count}} ações priorizadas",
+    "actionsPrioritized_one": "{{countLabel}} ação priorizada",
+    "actionsPrioritized_other": "{{countLabel}} ações priorizadas",
     "adminAccountAudit": "Auditoria de contas de administrador",
     "antivirusCoverage": "Cobertura de antivírus",
     "bitlockerEnabled": "BitLocker habilitado",
@@ -563,7 +571,8 @@
     "defaultAdmins": "Administradores padrão",
     "devicesAudited": "{{count}} dispositivos auditados",
     "devicesFlagged": "{{count}} dispositivos sinalizados",
-    "devicesReviewed": "{{count}} dispositivos revisados",
+    "devicesReviewed_one": "{{countLabel}} dispositivo revisado",
+    "devicesReviewed_other": "{{countLabel}} dispositivos revisados",
     "devicesTracked": "{{count}} dispositivos monitorados",
     "disabled": "Desabilitado",
     "diskProtection": "Proteção de disco",
@@ -583,7 +592,8 @@
     "noDevicesReportingYet": "Nenhum dispositivo reportando ainda",
     "noRecommendationsRightNowKeepMonitoringFor": "Nenhuma recomendação no momento. Continue monitorando novas orientações.",
     "noWeakAdminAccountsDetected": "Nenhuma conta de administrador fraca detectada.",
-    "openItems": "{{count}} itens abertos",
+    "openItems_one": "{{countLabel}} item aberto",
+    "openItems_other": "{{countLabel}} itens abertos",
     "overallPosture": "Postura geral",
     "passwordPolicy": "Política de senha",
     "policyAdherence": "Aderência à política",
@@ -611,7 +621,10 @@
     "viewDetails": "Ver detalhes",
     "vulnerabilities": "Vulnerabilidades",
     "weakAdmins": "Administradores fracos",
-    "unknown": "Desconhecido"
+    "unknown": "Desconhecido",
+    "bitlockerPartial": "BitLocker parcial",
+    "filevaultPartial": "FileVault parcial",
+    "refreshTooltip": "Recarrega o último instantâneo de segurança. As pontuações são recalculadas em intervalos agendados, não ao clicar."
   },
   "securitySecurityPageHeader": {
     "refresh": "Atualizar",
@@ -684,12 +697,21 @@
     "noActiveScans": "Nenhuma varredura ativa.",
     "noScanHistoryYet": "Ainda não ha histórico de varreduras.",
     "quickScan": "Varredura rápida",
+    "scanClean": "Limpo",
     "scanHistory": "Histórico de varreduras",
     "scanHistoryPartiallyUnavailable": "Não foi possível carregar o histórico de varreduras de {{failed}} de {{total}} dispositivos — esta lista está incompleta.",
     "scanHistoryUnavailable": "Não foi possível carregar o histórico de varreduras.",
+    "scanRequestFailed": "Falha na solicitação de varredura",
+    "scanThreatsFound_one": "{{count}} ameaça encontrada",
+    "scanThreatsFound_other": "{{count}} ameaças encontradas",
+    "scanTimedOut": "Tempo esgotado",
+    "scanTimedOutWithCount": "Tempo esgotado ({{count}} encontradas)",
     "scanType": "Tipo de varredura",
     "scanTypeLabel": "verificação {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "As varreduras são enfileiradas imediatamente nos dispositivos selecionados.",
+    "scansQueuedCount": "{{count}} varredura enfileirada",
+    "scansQueuedCount_one": "{{count}} varredura enfileirada",
+    "scansQueuedCount_other": "{{count}} varreduras enfileiradas",
     "securityScanManager": "Gerenciador de varreduras de segurança",
     "singleSelect": "Seleção única",
     "someScanRequestsFailed": "{{failed}} de {{total}} solicitações de varredura falharam",
@@ -700,14 +722,10 @@
     "startedColumn": "Iniciado",
     "status": "Status: {{status}}",
     "status2": "Status",
-    "type": "Tipo",
-    "scanRequestFailed": "Falha na solicitação de varredura",
-    "scansQueuedCount": "{{count}} varredura enfileirada",
-    "scansQueuedCount_one": "{{count}} varredura enfileirada",
-    "scansQueuedCount_other": "{{count}} varreduras enfileiradas"
+    "type": "Tipo"
   },
   "securityThreatDetail": {
-    "analystReview": "Revisão do analista",
+    "actionFailed": "Falha na ação",
     "detected": "Detectado",
     "device": "Dispositivo",
     "deviceInfo": "Informações do dispositivo",
@@ -718,11 +736,14 @@
     "noThreatSelected": "Nenhuma ameaca selecionada.",
     "otherDetectionsOnThisDevice": "Outras detecções neste dispositivo.",
     "provider": "Provedor",
+    "providerUnknown": "Desconhecido",
     "quarantine": "Quarentena",
+    "quarantineQueued": "Quarentena na fila. O dispositivo informará o resultado.",
     "relatedThreats": "Ameaças relacionadas",
     "remove": "Remover",
+    "removeQueued": "Remoção na fila. O dispositivo informará o resultado.",
     "restore": "Restaurar",
-    "reviewRemediationCompletenessAndEndpointHealth": "Revise a conclusão da remediação e a integridade do endpoint.",
+    "restoreQueued": "Restauração na fila. O dispositivo informará o resultado.",
     "severity": "Severidade",
     "status": "Status",
     "threatDetail": "Detalhes da ameaça",
@@ -737,7 +758,23 @@
     "actionFailed": "Falha na ação",
     "quarantineSucceeded": "Ameaça colocada em quarentena",
     "restoreSucceeded": "Ameaça restaurada",
-    "removeSucceeded": "Ameaça removida"
+    "removeSucceeded": "Ameaça removida",
+    "notFound": "Esta ameaça não foi encontrada. Ela pode ter sido excluída ou você pode não ter acesso ao dispositivo dela.",
+    "relatedLoadFailed": "Não foi possível carregar as ameaças relacionadas.",
+    "rule": {
+      "title": "Regra de detecção",
+      "legacy": "Assinatura integrada (varredura legada)",
+      "ruleName": "Regra",
+      "ruleSet": "Conjunto de regras",
+      "ruleSetMissing": "Conjunto de regras não está mais disponível",
+      "tags": "Marcadores",
+      "matchedStrings": "Cadeias correspondentes",
+      "noMatchedStrings": "Nenhuma cadeia correspondente foi informada.",
+      "sha256": "SHA-256 do arquivo",
+      "copy": "Copiar SHA-256",
+      "quarantinedTo": "Em quarentena em (no momento da varredura)",
+      "quarantineFailed": "A quarentena automática falhou"
+    }
   },
   "securityThreatList": {
     "active": "Ativo",
@@ -1332,17 +1369,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Informe pelo menos um ID de dispositivo",
-      "createScan": "Falha ao criar varredura"
+      "createScan": "Falha ao criar varredura",
+      "devicesRequired": "Selecione pelo menos um dispositivo",
+      "devicesNotReady": "A lista de dispositivos ainda está carregando ou está incompleta. Aguarde a conclusão e tente novamente.",
+      "devicesLoadFailed": "Não foi possível carregar a lista de dispositivos. Use Tentar novamente na lista de dispositivos e tente de novo."
     },
     "title": "Criar varredura",
     "form": {
       "policyOptional": "Política (opcional)",
       "noPolicy": "Sem política (configuração manual)",
-      "deviceIds": "IDs de dispositivos",
-      "deviceIdsHelp": "Um UUID por linha ou separados por vírgula.",
-      "deviceIdsPlaceholder": "uuid-dispositivo-1\nuuid-dispositivo-2",
-      "detectionClasses": "Classes de detecção"
+      "detectionClasses": "Classes de detecção",
+      "devices": "Dispositivos",
+      "devicesHelp": "Escolha os dispositivos a serem verificados."
     },
     "actions": {
       "creating": "Criando...",
@@ -1407,6 +1445,10 @@
       "showingSearch": "Mostrando {{visible}} de {{pageCount}} nesta página ({{total}} no total)",
       "showingTotal": "Mostrando {{visible}} de {{total}} achados",
       "pageOf": "Página {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risco aceito",
+      "markedFalsePositive": "Marcado como falso positivo"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1487,18 @@
       "detectionClasses": "Classes de detecção",
       "scheduleType": "Tipo de agendamento",
       "intervalMinutes": "Intervalo (minutos)",
-      "cronExpression": "Expressão cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expressão cron (UTC)",
+      "cronNextRun": "Próxima execução (seu horário local): {{time}}",
+      "cronExpressionZone": "Expressão cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manual",
       "interval": "Intervalo",
       "cron": "Cron",
-      "everyMinutes": "A cada {{minutes}}m"
+      "everyMinutes": "A cada {{minutes}}m",
+      "paused": "Pausado",
+      "pausedTitle": "O agendamento está desativado para esta política, então ela não será executada automaticamente"
     },
     "table": {
       "name": "Nome",
@@ -1777,7 +1823,7 @@
     "unknown": "desconhecido"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "Hardening CIS",
+    "title": "Referenciais CIS",
     "description": "Linhas de base de configuração, pontuação de conformidade e acompanhamento de remediação.",
     "messages": {
       "loadFailed": "Falha ao carregar dados CIS"
@@ -1870,6 +1916,11 @@
     "badges": {
       "allOrgs": "Todas as orgs",
       "partnerWideTitle": "Linha de base para todo o parceiro — aplica-se a dispositivos em todas as organizações"
+    },
+    "scanAll": {
+      "title": "Escanear todas as organizações?",
+      "message": "“{{name}}” é uma linha de base de todo o parceiro. Sem uma organização selecionada, ela escaneia todas as {{orgCount}} organizações. Selecione uma organização primeiro para escanear apenas os dispositivos dela.",
+      "confirm": "Escanear todas"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +2023,17 @@
       "queueFailed": "A aprovação foi registrada, mas a correção não pôde ser colocada na fila. Ela voltou a aguardar aprovação; tente novamente.",
       "mfaRequired": "Aprovar ou rejeitar uma correção exige uma sessão iniciada com autenticação multifator. Saia e entre novamente com MFA.",
       "ownRequest": "Você solicitou esta correção, então outro usuário precisa aprová-la."
+    },
+    "detail": {
+      "toggle": "Alternar detalhes",
+      "approvedBy": "Aprovado por",
+      "approvedAt": "Aprovado em",
+      "note": "Nota de aprovação",
+      "beforeState": "Antes",
+      "afterState": "Depois",
+      "rollbackHint": "Dica de reversão",
+      "noEvidence": "Ainda não há evidência registrada para esta remediação.",
+      "unknownApprover": "Usuário desconhecido"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2344,193 @@
       "awaitingEvaluation": "Aguardando avaliação",
       "vendorOrgMismatch": "O fornecedor informa outra organização"
     }
+  },
+  "detectionRules": {
+    "title": "Regras de detecção",
+    "subtitle": "Conjuntos de regras para varreduras de IOC e caça a ameaças. Cada alteração é verificada no servidor antes de chegar aos dispositivos.",
+    "listHelp": "Anexe conjuntos de regras na aba Segurança de uma política de configuração para usá-los nas varreduras de IOC.",
+    "newRuleSet": "Novo conjunto de regras",
+    "back": "Voltar aos conjuntos de regras",
+    "loadFailed": "Não foi possível carregar os conjuntos de regras.",
+    "empty": "Ainda não há conjuntos de regras.",
+    "rulesLabel": "Regras: {{total}}",
+    "publishedVersion": "versão {{version}}",
+    "created": "Conjunto de regras criado",
+    "deleted": "Conjunto de regras excluído",
+    "columns": {
+      "name": "Nome",
+      "owner": "Proprietário",
+      "rules": "Regras",
+      "published": "Publicado"
+    },
+    "owner": {
+      "builtin": "Breeze (integrado)",
+      "allOrgs": "Todas as organizações",
+      "organization": "Organização"
+    },
+    "badges": {
+      "builtin": "Integrado",
+      "allOrgs": "Todas as organizações",
+      "errors": "Com erros",
+      "unpublished": "Não publicado",
+      "disabled": "Desativado"
+    },
+    "create": {
+      "title": "Novo conjunto de regras",
+      "name": "Nome",
+      "description": "Descrição (opcional)",
+      "owner": "Proprietário",
+      "ownerAllOrgs": "Todas as organizações (em todo o parceiro)",
+      "ownerOrganization": "Uma organização",
+      "organization": "Organização",
+      "selectOrganization": "Selecione uma organização",
+      "submit": "Criar conjunto de regras"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Ativar a quarentena automática exige a permissão devices:execute, porque ela move arquivos em todo dispositivo que faz varredura com este conjunto.",
+      "iocBatchAlreadyImported": "Esses IOCs já foram importados para este conjunto.",
+      "iocRuleNameTaken": "Já existe neste conjunto uma regra com o mesmo nome gerado e conteúdo diferente. Renomeie ou exclua essa regra e importe novamente.",
+      "iocTooManyRules": "Esta importação deixaria o conjunto com mais de {{max}} regras. Importe para outro conjunto.",
+      "iocInvalid": "Alguns IOCs não são válidos. Corrija as linhas marcadas e tente novamente."
+    },
+    "test": {
+      "requestFailed": "O teste não terminou. Verifique sua conexão e tente novamente.",
+      "privacy": "O arquivo é verificado no servidor do Breeze, em uma sandbox, com as regras atuais deste conjunto, incluindo alterações ainda não publicadas. O arquivo não é armazenado. Apenas o SHA-256, o tamanho e o número de correspondências ficam registrados no log de auditoria.",
+      "sandboxUnavailable": "Os testes de arquivo não estão disponíveis neste servidor",
+      "sandboxUnavailableHelp": "O servidor não consegue isolar a verificação, então não processa arquivos enviados. A edição de regras, a importação de IOCs e as varreduras dos dispositivos não são afetadas.",
+      "file": "Arquivo para testar",
+      "filepath": "Caminho no dispositivo (opcional)",
+      "filepathHelp": "Onde o arquivo ficaria em um dispositivo. As regras que comparam o caminho o usam; por padrão, é o nome do arquivo.",
+      "run": "Executar teste",
+      "running": "Testando…",
+      "testedVersion": "Versão testada {{version}}",
+      "unpublishedChanges": "Testando suas alterações não publicadas.",
+      "noMatches": "Nenhuma regra correspondeu.",
+      "errors": {
+        "tooLarge": "O arquivo tem mais de {{max}} MB. Escolha um arquivo menor.",
+        "busy": "Outro teste está em andamento. Tente novamente em alguns segundos.",
+        "rateLimited": "Você executou testes demais nos últimos minutos. Tente novamente mais tarde.",
+        "unavailable": "O verificador de regras está indisponível. Tente novamente mais tarde.",
+        "noRules": "Este conjunto não tem regras ativadas para testar.",
+        "compileFailed": "Este conjunto não compila com as regras atuais, então nada foi verificado:",
+        "bodyTimeout": "O envio demorou demais. Tente novamente.",
+        "unexpected": "Não foi possível concluir o teste. Tente novamente."
+      }
+    },
+    "severity": {
+      "low": "Baixa",
+      "medium": "Média",
+      "high": "Alta",
+      "critical": "Crítica"
+    },
+    "publish": {
+      "saved": "Salvo",
+      "autoQuarantineOnly": "A quarentena automática agora está desativada nos dispositivos. Suas outras alterações ainda não estão ativas.",
+      "published": "Salvo e publicado como versão {{version}}",
+      "savedDisabled": "Salvo. O conjunto está desativado, então os dispositivos não o usam.",
+      "checkerUnavailable": "Salvo, não publicado: o verificador de regras está indisponível. {{devices}}",
+      "compileErrors_one": "Salvo, não publicado: {{count}} regra tem erros. {{devices}}",
+      "compileErrors_other": "Salvo, não publicado: {{count}} regras têm erros. {{devices}}",
+      "setErrors": "Salvo, não publicado: {{message}}. {{devices}}",
+      "noEnabledRules": "Nenhuma regra ativada: os dispositivos não fazem mais varredura com este conjunto.",
+      "unknown": "Salvo, mas não foi possível ler o resultado da publicação. Recarregue o conjunto para ver qual versão os dispositivos usam.",
+      "devicesKeep": "Os dispositivos mantêm a versão {{version}}.",
+      "neverPublished": "Este conjunto ainda não foi publicado, então os dispositivos não o usam.",
+      "setDisabled": "O conjunto está desativado, então os dispositivos não o usam.",
+      "staleBanner": "Não publicado: corrija os erros abaixo. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Regras",
+        "import": "Importar IOCs",
+        "test": "Testar um arquivo"
+      },
+      "rename": "Renomear conjunto de regras",
+      "enabled": "Ativado",
+      "autoQuarantine": "Quarentena automática",
+      "autoQuarantineHelp": "Mover para a quarentena os arquivos correspondentes em todo dispositivo que faz varredura com este conjunto.",
+      "deleteSet": "Excluir",
+      "deleteSetTitle": "Excluir este conjunto de regras?",
+      "deleteSetMessage": "As regras dele também são excluídas. As políticas que ainda o listam vão registrá-lo como não encontrado na próxima varredura.",
+      "deleteRuleTitle": "Excluir esta regra?",
+      "deleteRuleMessage": "O conjunto é verificado e publicado novamente sem ela.",
+      "addRule": "Adicionar regra",
+      "noRules": "Este conjunto ainda não tem regras.",
+      "columns": {
+        "name": "Regra",
+        "severity": "Gravidade",
+        "tags": "Marcadores",
+        "state": "Estado"
+      },
+      "viewSource": "Ver código-fonte",
+      "hideSource": "Ocultar código-fonte",
+      "editRule": "Editar regra",
+      "deleteRule": "Excluir regra",
+      "errorLine": "Linha {{line}}:",
+      "publishedVersion": "Versão publicada {{version}}",
+      "readOnlyBuiltin": "O conjunto de regras integrado é somente leitura. As regras dele são atualizadas com as versões do Breeze.",
+      "refreshFailed": "A alteração foi enviada, mas não foi possível recarregar o conjunto de regras. O que você vê pode estar desatualizado."
+    },
+    "dialog": {
+      "titleAdd": "Adicionar regra",
+      "titleEdit": "Editar regra",
+      "name": "Nome da regra",
+      "nameHelp": "Letras, dígitos e sublinhados, começando com uma letra ou sublinhado (máx. 128).",
+      "severity": "Gravidade",
+      "tags": "Marcadores",
+      "tagsHelp": "Separados por vírgulas, por exemplo ransomware, advisory-42",
+      "enabled": "Ativada",
+      "source": "Código-fonte YARA",
+      "sourceTooLarge": "O código-fonte da regra tem mais de {{max}} KB.",
+      "checkedOnSave": "Ao salvar, o conjunto é verificado com o mesmo compilador que os dispositivos usam. Regras com erros não são publicadas."
+    },
+    "ioc": {
+      "help": {
+        "title": "Como o importador funciona",
+        "format": "Um IOC por linha (# inicia um comentário) ou uma matriz JSON. Coloque o tipo antes da linha, como sha256: ou domain:, para definir o tipo você mesmo.",
+        "exactMatch": "Somente correspondência exata: sem curingas nem padrões.",
+        "contentNotTraffic": "Domínios e endereços IP correspondem a texto dentro dos arquivos verificados, não ao tráfego de rede.",
+        "partialOverlap": "Importar os mesmos IOCs novamente é detectado. Um lote que só se sobrepõe em parte a uma importação anterior não é desduplicado."
+      },
+      "label": "Rótulo",
+      "labelPlaceholder": "Por exemplo: Comunicado do fornecedor 2026-10",
+      "labelRequired": "Informe um rótulo para visualizar as regras geradas.",
+      "paste": "Colar IOCs",
+      "textTooLong": "O texto colado tem mais de {{max}} KB. Divida-o em importações menores.",
+      "skippedLines": "Estas linhas são ignoradas:",
+      "lineError": "Linha {{line}}: {{error}}",
+      "validCount": "{{valid}} de {{total}} IOCs prontos para importar",
+      "kind": "Tipo",
+      "value": "Valor",
+      "kinds": {
+        "md5": "Hash MD5",
+        "sha1": "Hash SHA-1",
+        "sha256": "Hash SHA-256",
+        "filename": "Nome de arquivo",
+        "filepath": "Caminho de arquivo",
+        "domain": "Domínio",
+        "ip": "Endereço IP",
+        "string": "Cadeia de texto"
+      },
+      "errors": {
+        "empty": "Valor vazio",
+        "unknown_kind": "Tipo desconhecido",
+        "bad_hash": "Não é um hash válido para este tipo",
+        "too_short": "O texto deve ter pelo menos 4 bytes",
+        "too_long": "Longo demais",
+        "bad_path": "Não é um caminho válido para este tipo",
+        "bad_ip": "Não é um endereço IP válido",
+        "bad_domain": "Não é um domínio válido",
+        "duplicate": "Duplicata de uma linha anterior"
+      },
+      "overCap": "No máximo {{max}} IOCs por importação. Divida a lista em importações menores.",
+      "hashNote": "IOCs de hash fazem os dispositivos calcular o hash completo de cada arquivo verificado, então as varreduras completas demoram mais.",
+      "generateFailed": "Não foi possível gerar regras a partir destes IOCs.",
+      "generatedTitle": "Regras que serão salvas: {{total}}",
+      "import": "Importar {{total}} IOCs"
+    }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Você não tem acesso a esta organização"
   }
 }

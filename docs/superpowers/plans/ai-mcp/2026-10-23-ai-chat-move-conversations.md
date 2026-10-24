@@ -1,7 +1,8 @@
 ---
-tracking_issue: LanternOps/breeze#9427
+tracking_issue: LanternOps/breeze#9840
+spec_issue: LanternOps/breeze#9427
 spec: docs/superpowers/specs/ai-mcp/2026-10-21-ai-chat-move-conversations-spec.md
-status: draft — awaiting Gate B
+status: approved (Gate B) — waves tracked on LanternOps/breeze#9840
 date: 2026-10-23
 ---
 

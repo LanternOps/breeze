@@ -254,41 +254,7 @@
       "twelveHour": "12 horas",
       "twentyFourHour": "24 horas",
       "language": "Idioma",
-      "languageDescription": "Idioma padrão das configurações do parceiro.",
-      "businessHours": {
-        "title": "Horário comercial",
-        "description": "Defina seu horário padrão de operação para suporte e alertas.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Sempre disponível"
-          },
-          "business": {
-            "label": "Horário comercial",
-            "description": "Seg-Sex, das 9h às 17h"
-          },
-          "extended": {
-            "label": "Horário estendido",
-            "description": "Seg-Sex, das 7h às 19h; Sáb, das 9h às 13h"
-          },
-          "custom": {
-            "label": "Personalizado",
-            "description": "Defina seu próprio horário"
-          }
-        },
-        "customSchedule": "Horário personalizado",
-        "open": "Aberto",
-        "to": "até"
-      },
-      "days": {
-        "mon": "Segunda-feira",
-        "tue": "Terça-feira",
-        "wed": "Quarta-feira",
-        "thu": "Quinta-feira",
-        "fri": "Sexta-feira",
-        "sat": "Sábado",
-        "sun": "Domingo"
-      }
+      "languageDescription": "Idioma padrão das configurações do parceiro."
     }
   },
   "partnerAiBudgets": {
@@ -1422,7 +1388,10 @@
     "retrySites": "Tentar novamente",
     "createASite": "Criar um local",
     "maxUsage": "Uso máximo (opcional)",
-    "defaultDeviceLimit": "50 (padrão)",
+    "defaultDeviceLimit": "{{count}} (padrão da organização)",
+    "expiresAtHelp": "Deixe em branco para {{duration}} (padrão da organização).",
+    "usageFromDefault": "padrão",
+    "usageFromDefaultTitle": "O limite de dispositivos veio do padrão da organização.",
     "maxUsageHelp": "Número máximo de agentes que podem se registrar com esta chave.",
     "expiresAt": "Expira em (opcional)",
     "creating": "Criando...",
@@ -1506,7 +1475,8 @@
       "approval_ask": "Solicitação de aprovação",
       "approval_snapshot": "Números da aprovação",
       "approval_expires": "Prazo da aprovação",
-      "approval_status": "Status da aprovação"
+      "approval_status": "Status da aprovação",
+      "merged_into_number": "Número do chamado de destino"
     },
     "billingPayments": "Faturamento e pagamentos",
     "supportPortal": "Suporte e portal",
@@ -1521,7 +1491,8 @@
       "payment_failed": "Não foi possível concluir o pagamento",
       "ticket_approval_requested_approver": "Solicitação de aprovação de trabalho (aprovador)",
       "ticket_approval_requested_notify": "Solicitação de aprovação de trabalho (para conhecimento)",
-      "ticket_approval_decided": "Decisão sobre a aprovação de trabalho"
+      "ticket_approval_decided": "Decisão sobre a aprovação de trabalho",
+      "ticket_merged": "Chamado mesclado"
     }
   },
   "inboundEmail": {
@@ -4516,6 +4487,9 @@
     "notEnabledBody": "O MCP OAuth está desativado neste servidor. Defina MCP_OAUTH_ENABLED=true e reinicie a API para permitir apps conectados.",
     "revokeConfirm": "Revogar acesso para {{name}}? O token de acesso deixará de funcionar em 10 minutos.",
     "revokeFailed": "Falha na revogação ({{status}})",
+    "revokeTitle": "Revogar aplicativo conectado",
+    "revokeSuccess": "Acesso de {{name}} revogado",
+    "revokeFailedGeneric": "Falha na revogação",
     "networkError": "Erro de rede",
     "networkErrorDuringRevoke": "Erro de rede durante a revogação",
     "revoking": "Revogando…",
@@ -5796,6 +5770,20 @@
       "sourceOrg": "Substituição da organização",
       "sourcePartner": "Padrão do parceiro",
       "sourceDefault": "Padrão integrado"
+    },
+    "businessCalendar": {
+      "title": "Horário comercial",
+      "description": "O calendário no qual os relógios de SLA desta organização são contados. Deixe em Herdar para seguir o padrão do parceiro.",
+      "label": "Calendário comercial",
+      "inherit": "Herdar",
+      "inheritedDefault": "Herdado: {{name}} (padrão do parceiro)",
+      "inheritedNone": "Herdado: 24×7 (sem padrão do parceiro)",
+      "partnerWideOption": "{{name}} (todas as orgs)",
+      "archivedOverride": "Calendário arquivado (não se aplica mais)",
+      "loadFailed": "Não foi possível carregar o calendário comercial.",
+      "errors": {
+        "save": "Não foi possível salvar o calendário comercial. Tente novamente."
+      }
     }
   },
   "organizationForm": {
@@ -6920,5 +6908,208 @@
     "enabledToast": "Atalhos de tecla única ativados",
     "disabledToast": "Atalhos de tecla única desativados",
     "saveFailed": "Não foi possível salvar os atalhos de tecla única."
+  },
+  "businessHoursCard": {
+    "title": "Horário comercial",
+    "description": "Calendários nos quais os relógios de SLA de resposta e resolução são contados. Um ticket usa o calendário da sua organização ou o calendário padrão; sem nenhum, o relógio corre 24 horas por dia.",
+    "newTicketsOnly": "Editar os horários ou o fuso horário vale apenas para tickets novos. Use \"Aplicar a tickets abertos\" para atualizar os tickets que já estão abertos.",
+    "create": "Novo calendário",
+    "loading": "Carregando horário comercial…",
+    "loadError": "Não foi possível carregar o horário comercial.",
+    "retry": "Tentar novamente",
+    "empty": "Ainda não há calendários de horário comercial. Os tickets correm 24 horas (24×7) até você criar um e defini-lo como padrão.",
+    "allOrgs": "Todas as orgs",
+    "default": "Padrão",
+    "archived": "Arquivado",
+    "edit": "Editar",
+    "setDefault": "Definir como padrão",
+    "clearDefault": "Remover padrão",
+    "applyOpen": "Aplicar a tickets abertos",
+    "archive": "Arquivar",
+    "unarchive": "Restaurar",
+    "delete": "Excluir",
+    "deleteTitle": "Excluir {{name}}?",
+    "deleteMessage": "Isso exclui permanentemente o calendário e seus feriados. Um calendário que ainda é usado por tickets ou organizações não pode ser excluído; arquive-o em vez disso.",
+    "name": "Nome",
+    "timezone": "Fuso horário",
+    "appliesTo": "Aplica-se a",
+    "ownerPartner": "Todas as organizações (em todo o parceiro)",
+    "ownerOrg": "Uma organização",
+    "organization": "Organização",
+    "chooseOrg": "Escolha uma organização",
+    "weeklyHours": "Horário semanal",
+    "closed": "Fechado",
+    "to": "até",
+    "addInterval": "Adicionar horário",
+    "intervalStart": "{{day}} abre às",
+    "intervalEnd": "{{day}} fecha às",
+    "removeInterval": "Remover o horário de {{day}}",
+    "save": "Salvar",
+    "saving": "Salvando…",
+    "cancel": "Cancelar",
+    "holidays": "Feriados",
+    "holidayHint": "Feriados com data de hoje ou anterior não alteram os tickets abertos.",
+    "noHolidays": "Nenhum feriado.",
+    "holidayDate": "Data",
+    "holidayName": "Nome",
+    "holidayAdd": "Adicionar feriado",
+    "holidayRemove": "Remover o feriado {{name}}",
+    "weekdays": {
+      "0": "Domingo",
+      "1": "Segunda-feira",
+      "2": "Terça-feira",
+      "3": "Quarta-feira",
+      "4": "Quinta-feira",
+      "5": "Sexta-feira",
+      "6": "Sábado"
+    },
+    "errors": {
+      "nameRequired": "Informe um nome.",
+      "orgRequired": "Escolha uma organização.",
+      "invalidTime": "Informe os horários como HH:MM (por exemplo 09:00); o fim pode ser 24:00.",
+      "order": "Cada intervalo deve terminar depois de começar.",
+      "overlap": "Os intervalos do mesmo dia não podem se sobrepor.",
+      "empty": "Adicione pelo menos um intervalo de funcionamento.",
+      "timezone": "Escolha um fuso horário válido.",
+      "save": "Não foi possível salvar o calendário. Tente novamente.",
+      "holidayInvalid": "Informe uma data válida e um nome para o feriado.",
+      "holidayAdd": "Não foi possível adicionar o feriado. Tente novamente.",
+      "holidayRemove": "Não foi possível remover o feriado. Tente novamente.",
+      "inUse": "Este calendário é usado por tickets ou organizações e não pode ser excluído. Arquive-o em vez disso.",
+      "isDefault": "Este calendário é o padrão. Remova o padrão antes de excluí-lo.",
+      "default": "Não foi possível alterar o calendário padrão. Tente novamente.",
+      "archive": "Não foi possível alterar o estado de arquivamento. Tente novamente.",
+      "delete": "Não foi possível excluir o calendário. Tente novamente.",
+      "apply": "Não foi possível aplicar o calendário aos tickets abertos. Tente novamente."
+    },
+    "toasts": {
+      "created": "Calendário criado",
+      "updated": "Calendário atualizado",
+      "defaultSet": "Calendário padrão definido",
+      "defaultCleared": "Padrão removido; tickets sem exceção correm 24×7",
+      "archived": "Calendário arquivado",
+      "unarchived": "Calendário restaurado",
+      "deleted": "Calendário excluído",
+      "holidayAdded": "Feriado adicionado",
+      "holidayRemoved": "Feriado removido",
+      "recompute": "Os prazos dos tickets abertos estão sendo atualizados.",
+      "applied": "Aplicado aos tickets abertos: {{count}} atualizados",
+      "appliedPartial": "{{skipped}} tickets estavam sendo editados e mantiveram o horário anterior. Aplique novamente para tentar de novo."
+    },
+    "apply": {
+      "title": "Aplicar {{name}} aos tickets abertos",
+      "explanation": "Os tickets abertos que nunca foram pausados passarão ao horário atual e terão os prazos recalculados. Tickets com histórico de pausa não são alterados.",
+      "loading": "Carregando prévia…",
+      "loadFailed": "Não foi possível carregar a prévia.",
+      "revisionChanged": "O horário mudou desde esta prévia. Revise as contagens atualizadas antes de aplicar.",
+      "eligible": "Tickets que serão atualizados: {{count}}",
+      "breached": "Destes, ficariam em violação imediatamente: {{count}}",
+      "paused": "Ignorados por terem sido pausados: {{count}}",
+      "confirm": "Aplicar a tickets abertos"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plano e recursos",
+    "description": "O que seu plano inclui. Recursos bloqueados continuam visíveis para que você veja o que um upgrade acrescenta.",
+    "currentPlan": "Plano atual",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Ilimitado"
+    },
+    "columns": {
+      "feature": "Recurso",
+      "state": "Situação",
+      "source": "Origem",
+      "expires": "Expira em",
+      "limits": "Limites"
+    },
+    "state": {
+      "enabled": "Incluído",
+      "disabled": "Bloqueado"
+    },
+    "source": {
+      "plan": "Padrão do plano",
+      "billing": "Faturamento",
+      "license": "Licença",
+      "manual": "Atribuição manual"
+    },
+    "graceWarning": "Expirou em {{expiresAt}} — carência até {{graceUntil}}",
+    "noExpiry": "Nunca",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisor de integração",
+        "why": "Um supervisor de IA que diagnostica e corrige falhas de integração sem intervenção."
+      },
+      "verified_library": {
+        "label": "Biblioteca de software verificada",
+        "why": "Pacotes selecionados e verificados que você pode implantar com confiança."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "O Wisp faz a triagem contínua da sua frota e avisa a pessoa certa; disponível a partir do Pro."
+      }
+    },
+    "loadError": "Não foi possível carregar seu plano.",
+    "retry": "Tentar novamente"
+  },
+  "wispMemory": {
+    "title": "Memória do Wisp",
+    "description": "Revise o que o Wisp lembrou para você, um cliente ou toda a equipe, e confirme ou retire.",
+    "tabs": {
+      "mine": "Minha memória",
+      "org": "Cliente",
+      "partner": "Todos os clientes",
+      "users": "Técnicos"
+    },
+    "empty": "Ainda não há blocos de memória aqui.",
+    "loading": "Carregando memória…",
+    "loadFailed": "Falha ao carregar a memória.",
+    "retry": "Tentar novamente",
+    "columns": {
+      "subject": "Assunto",
+      "type": "Tipo",
+      "status": "Status",
+      "confidence": "Confiança",
+      "updated": "Atualizado",
+      "actions": "Ações"
+    },
+    "statusValue": {
+      "unconfirmed": "Não confirmado",
+      "confirmed": "Confirmado",
+      "retracted": "Retirado"
+    },
+    "type": {
+      "preference": "Preferência",
+      "standing_instruction": "Instrução permanente",
+      "fact": "Fato",
+      "decision": "Decisão",
+      "concern_outcome": "Resultado de uma preocupação",
+      "work_summary": "Resumo do trabalho"
+    },
+    "confidenceValue": {
+      "low": "Baixa",
+      "medium": "Média",
+      "high": "Alta"
+    },
+    "confirm": "Confirmar",
+    "retract": "Retirar",
+    "confirmed": "Memória confirmada.",
+    "retracted": "Memória retirada.",
+    "confirmFailed": "Falha ao confirmar a memória.",
+    "retractFailed": "Falha ao retirar a memória.",
+    "fromConversation": "Da conversa",
+    "pickOrg": "Selecione um cliente",
+    "pickUser": "Selecione um técnico",
+    "pickPrompt": "Escolha uma opção acima para ver a memória.",
+    "showContent": "Mostrar conteúdo",
+    "hideContent": "Ocultar conteúdo",
+    "conversationUnavailable": "Esta conversa não está mais disponível.",
+    "usersLoadFailed": "Não foi possível carregar os técnicos."
   }
 }

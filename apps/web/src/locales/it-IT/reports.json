@@ -339,6 +339,9 @@
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
+        "mrr_renewals": "MRR e rinnovi",
+        "quote_win_rate": "Tasso di successo dei preventivi",
+        "client_profitability": "Redditività per cliente",
         "backup_status": "Stato dei backup"
       },
       "threatDetection": {
@@ -442,6 +445,9 @@
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
+        "mrr_renewals": "MRR e rinnovi",
+        "quote_win_rate": "Tasso di successo dei preventivi",
+        "client_profitability": "Redditività per cliente",
         "backup_status": "Stato dei backup"
       },
       "runsTable": {
@@ -991,6 +997,9 @@
         "technician_time_billability": "Tempo e fatturabilità dei tecnici",
         "ar_aging": "Analisi anzianità crediti (AR aging)",
         "ai_usage_by_client": "Utilizzo dell'IA per cliente",
+        "mrr_renewals": "MRR e rinnovi",
+        "quote_win_rate": "Tasso di successo dei preventivi",
+        "client_profitability": "Redditività per cliente",
         "backup_status": "Stato dei backup"
       },
       "schedules": {
@@ -1063,6 +1072,18 @@
         "ai_usage_by_client": {
           "name": "Utilizzo dell'IA per cliente",
           "description": "Utilizzo dell'IA della piattaforma per cliente nel periodo: richieste, token, costo Breeze, importo da addebitare in base al profilo di fatturazione del cliente e quanto è già stato fatturato. L'utilizzo incluso e i modelli senza prezzo sono mostrati separatamente, mai sommati."
+        },
+        "mrr_renewals": {
+          "name": "MRR e rinnovi",
+          "description": "Ricavi ricorrenti mensili e annuali dei contratti attivi, misurati il giorno in cui il report viene eseguito, con i contratti in rinnovo entro l'orizzonte scelto e ciò che è stato effettivamente fatturato come ricorrente. Un set di totali per valuta, senza conversione."
+        },
+        "quote_win_rate": {
+          "name": "Tasso di successo dei preventivi",
+          "description": "La quota di preventivi inviati che sono stati vinti, contata per opportunità, così un preventivo rivisto e reinviato conta una sola volta. Il tasso principale riguarda solo le opportunità concluse, con il numero di quelle ancora aperte accanto. I valori sono al netto delle imposte, un insieme per valuta, senza conversione."
+        },
+        "client_profitability": {
+          "name": "Redditività per cliente",
+          "description": "Ricavi fatturati per cliente nel periodo, per fonte (ricorrenti, manodopera, prodotti, IA, altro), con le ore registrate e una stima facoltativa del costo del lavoro basata su un'unica tariffa oraria. I valori che usano quella tariffa sono indicati come stime. Un insieme di totali per valuta, mai convertito."
         },
         "backup_status": {
           "name": "Report sullo stato dei backup",
@@ -1186,6 +1207,46 @@
       },
       "periodNote": "Gli addebiti sono fatturati per mese di calendario UTC. Un periodo impostato in un altro fuso orario può differire dalla fattura per l'utilizzo vicino ai confini del mese.",
       "unpricedNote": "L'utilizzo di un modello senza tariffa nel profilo di fatturazione del cliente viene conteggiato come senza prezzo. Non è mai considerato gratuito.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Questo report è sempre misurato il giorno in cui viene eseguito. Non ci sono periodi o date di riferimento da impostare.",
+      "groupBy": "Raggruppa per",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "contract": "Contratto"
+      },
+      "renewalHorizon": "Orizzonte di rinnovo",
+      "renewalHorizonOption": "Prossimi {{days}} giorni",
+      "renewalHorizonHelp": "I contratti la cui scadenza cade in questa finestra sono elencati come rinnovi.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Raggruppa per",
+      "groupByAutomatic": "Automatico: per organizzazione per tutte le organizzazioni, per autore per una singola organizzazione",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "author": "Autore",
+        "currency": "Valuta"
+      },
+      "periodNote": "Il periodo si riferisce alla data del primo invio del preventivo. Un preventivo rivisto e reinviato conta una sola volta, come una singola opportunità.",
+      "cancel": "Annulla",
+      "createReport": "Crea report"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Raggruppa per",
+      "groupByDefault": "Predefinito per l'ambito del report",
+      "groupByValues": {
+        "organization": "Organizzazione",
+        "source": "Fonte"
+      },
+      "groupByHelp": "Per impostazione predefinita si raggruppa per organizzazione in un report di tutte le organizzazioni e per fonte per una singola organizzazione.",
+      "laborEnabled": "Stima il costo del lavoro",
+      "laborAmount": "Costo del lavoro per ora",
+      "laborCurrency": "Valuta",
+      "laborHelp": "Un’unica tariffa per tutti i tecnici. I valori che la usano sono indicati come stime.",
       "cancel": "Annulla",
       "createReport": "Crea report"
     },

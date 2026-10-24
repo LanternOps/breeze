@@ -302,6 +302,9 @@
     "workspace": "Workspace",
     "workspaceID": "Workspace ID: {{id}}",
     "connectWorkspace": "Connetti workspace ",
+    "notConnected": "Non connesso",
+    "pendingConnection": "Connessione in sospeso",
+    "turnOnSlackToConnectWorkspace": "Attiva le notifiche Slack per collegare un workspace.",
     "oauthRedirectStartsWhenYouConnectASlack": "Il redirect OAuth parte quando connetti un workspace Slack. ",
     "defaultChannel": "Canale predefinito",
     "microsoftTeams": "Microsoft Teams",
@@ -336,11 +339,14 @@
   "connectionHealthPanel": {
     "title": "Stato delle connessioni",
     "allHealthy": "Tutte le connessioni funzionano correttamente",
+    "allHealthyDetail": "Le integrazioni collegate vengono verificate automaticamente. I problemi compaiono qui e accanto all’integrazione nell’elenco.",
     "loadError": "Impossibile caricare lo stato delle connessioni.",
     "retry": "Riprova",
     "since": "da {{time}}",
     "fix": "Risolvi",
-    "remedy": { "reconnect": "Riconnettiti dall’app client (ad es. aggiungi di nuovo il server MCP). Nessuna azione in Breeze." },
+    "remedy": {
+      "reconnect": "Riconnettiti dall’app client (ad es. aggiungi di nuovo il server MCP). Nessuna azione in Breeze."
+    },
     "truncated": "Vengono mostrati i primi {{count}}",
     "recentlyResolved": "Risolti di recente ({{count}})",
     "resolution": {
@@ -548,6 +554,14 @@
     "pageOf": "Pagina {{current}} di {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "A livello di partner",
+      "partnerWideDetail": "Si applica a tutte le organizzazioni che gestisci."
+    },
+    "nav": {
+      "select": "Scegli un’integrazione",
+      "openProblems": "Problemi aperti: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Configurazione delle integrazioni per",
       "thisOrganization": "questa organizzazione",
@@ -566,14 +580,14 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Pricing",
-    "tdSYNNEXPriceFile": "TD SYNNEX Price File",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "payments": "Pagamenti",
     "integrations": "Integrazioni",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Gestisci tutte le connessioni e mantieni integri i workflow di automazione. ",
-    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Le integrazioni con distributori (Pax8 e TD SYNNEX) sono disponibili solo per account partner. ",
-    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Le integrazioni contabili sono disponibili solo per account partner. ",
-    "theUniFiNetworkIntegrationIsAvailableToPartner": "L'integrazione di rete UniFi è disponibile solo per account partner. ",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Collega Breeze agli strumenti su cui lavora il tuo MSP e scopri quali connessioni richiedono attenzione.",
+    "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Le integrazioni con distributori (Pax8 e TD SYNNEX) sono disponibili solo per account partner.",
+    "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Le integrazioni contabili sono disponibili solo per account partner.",
+    "theUniFiNetworkIntegrationIsAvailableToPartner": "L'integrazione di rete UniFi è disponibile solo per account partner.",
     "psa": "PSA",
     "viewNameDocumentation": "Visualizza documentazione {{name}}",
     "backup": "Backup",
@@ -728,7 +742,10 @@
     "allApplications": "Tutte le applicazioni",
     "searchAllApplicationsFirst2": " (non in Applicazioni di proprietà) un’app Breeze già esistente in questo tenant. ",
     "tenantIdGuidPlaceholder": "ID tenant (GUID), ad es. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Usa l’ID directory (tenant), un GUID, dalla panoramica della registrazione app Entra, non il dominio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Usa l’ID directory (tenant), un GUID, dalla panoramica della registrazione app Entra, non il dominio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Il salvataggio richiede la verifica MFA.",
+    "clientSecretPlaceholder": "segreto client dell'app",
+    "clientSecretStoredPlaceholder": "•••••••••• (memorizzato, crittografato)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Stato dei dispositivi",

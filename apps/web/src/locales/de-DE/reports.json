@@ -339,6 +339,9 @@
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
+        "mrr_renewals": "MRR und Verlängerungen",
+        "quote_win_rate": "Angebots-Gewinnquote",
+        "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
       "threatDetection": {
@@ -442,6 +445,9 @@
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
+        "mrr_renewals": "MRR und Verlängerungen",
+        "quote_win_rate": "Angebots-Gewinnquote",
+        "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
       "runsTable": {
@@ -991,6 +997,9 @@
         "technician_time_billability": "Techniker-Zeit & Abrechenbarkeit",
         "ar_aging": "Offene Forderungen (Fälligkeitsanalyse)",
         "ai_usage_by_client": "KI-Nutzung nach Kunde",
+        "mrr_renewals": "MRR und Verlängerungen",
+        "quote_win_rate": "Angebots-Gewinnquote",
+        "client_profitability": "Kundenrentabilität",
         "backup_status": "Sicherungsstatus"
       },
       "schedules": {
@@ -1063,6 +1072,18 @@
         "ai_usage_by_client": {
           "name": "KI-Nutzung nach Kunde",
           "description": "KI-Nutzung der Plattform pro Kunde im Zeitraum: Anfragen, Token, Breeze-Kosten, der laut Abrechnungsprofil des Kunden zu berechnende Betrag und was bereits in Rechnung gestellt wurde. Inkludierte Nutzung und Modelle ohne Preis werden getrennt ausgewiesen, nie eingerechnet."
+        },
+        "mrr_renewals": {
+          "name": "MRR und Verlängerungen",
+          "description": "Monatlich und jährlich wiederkehrender Umsatz aus aktiven Verträgen, gemessen an dem Tag, an dem der Bericht läuft, mit den Verträgen, die innerhalb des gewählten Zeitraums verlängert werden, und dem tatsächlich als wiederkehrend abgerechneten Betrag. Pro Währung eine Summe, ohne Umrechnung."
+        },
+        "quote_win_rate": {
+          "name": "Angebots-Gewinnquote",
+          "description": "Der Anteil der versendeten Angebote, die gewonnen wurden, gezählt pro Geschäftschance, sodass ein überarbeitetes und erneut versendetes Angebot nur einmal zählt. Die Kennzahl berücksichtigt nur entschiedene Chancen, daneben steht die Zahl der noch offenen. Werte sind netto, pro Währung eine Summe, ohne Umrechnung."
+        },
+        "client_profitability": {
+          "name": "Kundenrentabilität",
+          "description": "Abgerechneter Umsatz pro Kunde für den Zeitraum nach Quelle (wiederkehrend, Arbeit, Produkte, KI, Sonstiges), mit den dazu erfassten Stunden und einer optionalen Schätzung der Arbeitskosten aus einem einheitlichen Stundensatz. Zahlen, die diesen Satz verwenden, sind als Schätzungen gekennzeichnet. Je Währung eine Summe, nie umgerechnet."
         },
         "backup_status": {
           "name": "Sicherungsstatusbericht",
@@ -1186,6 +1207,46 @@
       },
       "periodNote": "Die Abrechnung erfolgt nach UTC-Kalendermonat. Ein Zeitraum in einer anderen Zeitzone kann bei Nutzung nahe der Monatsgrenzen von der Rechnung abweichen.",
       "unpricedNote": "Nutzung eines Modells ohne Preis im Abrechnungsprofil des Kunden wird als „ohne Preis“ gezählt. Sie gilt nie als kostenlos.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "Dieser Bericht wird immer an dem Tag gemessen, an dem er läuft. Es gibt keinen Zeitraum und kein Stichtagsdatum einzustellen.",
+      "groupBy": "Gruppieren nach",
+      "groupByValues": {
+        "organization": "Organisation",
+        "contract": "Vertrag"
+      },
+      "renewalHorizon": "Verlängerungszeitraum",
+      "renewalHorizonOption": "Nächste {{days}} Tage",
+      "renewalHorizonHelp": "Verträge, deren Laufzeit innerhalb dieses Zeitraums endet, werden als Verlängerungen aufgeführt.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Gruppieren nach",
+      "groupByAutomatic": "Automatisch: nach Organisation für alle Organisationen, nach Autor für eine Organisation",
+      "groupByValues": {
+        "organization": "Organisation",
+        "author": "Autor",
+        "currency": "Währung"
+      },
+      "periodNote": "Der Zeitraum bezieht sich auf das Datum, an dem das Angebot erstmals versendet wurde. Ein überarbeitetes und erneut versendetes Angebot zählt nur einmal, als eine Geschäftschance.",
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Gruppieren nach",
+      "groupByDefault": "Standard für den Berichtsumfang",
+      "groupByValues": {
+        "organization": "Organisation",
+        "source": "Quelle"
+      },
+      "groupByHelp": "Standardmäßig wird bei einem Bericht über alle Organisationen nach Organisation und bei einer einzelnen Organisation nach Quelle gruppiert.",
+      "laborEnabled": "Arbeitskosten schätzen",
+      "laborAmount": "Arbeitskosten pro Stunde",
+      "laborCurrency": "Währung",
+      "laborHelp": "Ein einheitlicher Satz für alle Techniker. Zahlen, die ihn verwenden, sind als Schätzungen gekennzeichnet.",
       "cancel": "Abbrechen",
       "createReport": "Bericht erstellen"
     },

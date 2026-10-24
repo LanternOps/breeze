@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Détection et réponse sur les terminaux",
     "huntressIncidents": "Incidents Huntress",
     "sentineloneThreats": "SentinelOne Menaces",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Menaces et incidents dans votre flotte, de SentinelOne et Huntress."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Menaces et incidents dans votre flotte, de SentinelOne et Huntress.",
+    "iocScansLink": "Vous cherchez les balayages IOC de Breeze? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Autre EDR",
@@ -425,6 +426,8 @@
     "osFilterLabel": "Système d'exploitation"
   },
   "securityRecommendationsPage": {
+    "actionFailed": "Impossible de mettre à jour la recommandation.",
+    "affectsOrgs": "Touche {{count}} organisations",
     "adminAccounts": "Comptes administratifs",
     "allCategories": "Toutes les catégories",
     "allPriorities": "Toutes les priorités",
@@ -433,15 +436,15 @@
     "completed": "Terminées",
     "critical": "Critique",
     "criticalHigh": "Critique + Haut",
-    "devices": "Appareils :",
+    "devices": "Appareils : {{value}}",
     "dismiss": "Ignorer",
     "dismissed": "Ignoré",
-    "effort": "Effort :",
+    "effort": "Effort : {{value}}",
     "encryption": "Chiffrement",
     "firewall": "Pare-feu",
     "hideSteps": "Cacher les marches",
     "high": "Élevée",
-    "impact": "Impact :",
+    "impact": "Impact : {{value}}",
     "invalidResponseFromServer": "Réponse invalide du serveur",
     "low": "Faible",
     "markComplete": "Marque Complète",
@@ -460,10 +463,13 @@
     "vulnMgmt": "Vuln. Direction",
     "priorityFilterLabel": "Priorité",
     "categoryFilterLabel": "Catégorie",
-    "statusFilterLabel": "État de la recommandation"
+    "statusFilterLabel": "État de la recommandation",
+    "remediationSteps_one": "{{count}} étape de correction",
+    "remediationSteps_other": "{{count}} étapes de correction"
   },
   "securityRecoveryKeysPanel": {
     "aNewBitLockerRecoveryPasswordWillBe": "Un nouveau mot de passe de récupération BitLocker sera généré et mis en séquestre ; l’ancienne est retirée une fois la nouvelle clé en place.",
+    "accessRevealed": "a révélé la clé",
     "bitlocker": "BitLocker",
     "cancel": "Annuler",
     "collectNow": "Collectez maintenant",
@@ -489,6 +495,7 @@
     "rotate": "Renouveler",
     "rotateKey": "Renouveler la clé",
     "rotateRecoveryKey": "Renouveler la clé de récupération",
+    "rotateVolume": "Volume concerné",
     "thisAccessHasBeenRecordedInThe": "Cet accès a été enregistré dans la piste d’audit."
   },
   "securityS1ThreatList": {
@@ -552,7 +559,8 @@
   },
   "securitySecurityDashboard": {
     "acrossAllAssets": "Sur tous les actifs",
-    "actionsPrioritized": "{{count}} actions prioritaires",
+    "actionsPrioritized_one": "{{countLabel}} action prioritaire",
+    "actionsPrioritized_other": "{{countLabel}} actions prioritaires",
     "adminAccountAudit": "Audit du compte administrateur",
     "antivirusCoverage": "Couverture antivirus",
     "bitlockerEnabled": "BitLocker activé",
@@ -563,7 +571,8 @@
     "defaultAdmins": "Administrateurs par défaut",
     "devicesAudited": "{{count}} dispositifs audités",
     "devicesFlagged": "{{count}} appareils signalés",
-    "devicesReviewed": "{{count}} appareils testés",
+    "devicesReviewed_one": "{{countLabel}} appareil testé",
+    "devicesReviewed_other": "{{countLabel}} appareils testés",
     "devicesTracked": "{{count}} appareils suivis",
     "disabled": "Désactivé",
     "diskProtection": "Protection du disque",
@@ -583,7 +592,8 @@
     "noDevicesReportingYet": "Aucun appareil ne signale encore",
     "noRecommendationsRightNowKeepMonitoringFor": "Aucune recommandation pour le moment. Continuez à surveiller les nouvelles directives.",
     "noWeakAdminAccountsDetected": "Aucun compte administrateur faible détecté.",
-    "openItems": "{{count}} articles ouverts",
+    "openItems_one": "{{countLabel}} article ouvert",
+    "openItems_other": "{{countLabel}} articles ouverts",
     "overallPosture": "Posture générale",
     "passwordPolicy": "Politique des mots de passe",
     "policyAdherence": "Respect des politiques",
@@ -611,7 +621,10 @@
     "weakAdmins": "Administrateurs faibles",
     "accessDeniedMessage": "Vous n'avez pas l'autorisation de consulter les données de sécurité de cette organisation.",
     "someSecurityDataPermissionDenied": "Certaines données de sécurité ne vous sont pas visibles. Demandez à un administrateur si vous avez besoin d'un accès.",
-    "unknown": "Inconnu"
+    "unknown": "Inconnu",
+    "bitlockerPartial": "BitLocker partiel",
+    "filevaultPartial": "FileVault partiel",
+    "refreshTooltip": "Recharge le dernier instantané de sécurité. Les scores sont recalculés selon un horaire, pas au clic."
   },
   "securitySecurityPageHeader": {
     "refresh": "Actualiser",
@@ -684,10 +697,21 @@
     "noActiveScans": "Aucun scanner actif.",
     "noScanHistoryYet": "Pas encore d’historique de scan.",
     "quickScan": "Analyse rapide",
+    "scanClean": "Aucune menace",
     "scanHistory": "Historique des numérisations",
+    "scanHistoryPartiallyUnavailable": "L'historique des analyses de {{failed}} des {{total}} appareils n'a pas pu être chargé — cette liste est incomplète.",
+    "scanHistoryUnavailable": "Impossible de charger l'historique des analyses.",
+    "scanRequestFailed": "Échec de la demande de balayage",
+    "scanThreatsFound_one": "{{count}} menace détectée",
+    "scanThreatsFound_other": "{{count}} menaces détectées",
+    "scanTimedOut": "Délai dépassé",
+    "scanTimedOutWithCount": "Délai dépassé ({{count}} détectée(s))",
     "scanType": "Type de balayage",
     "scanTypeLabel": "Analyse {{type}}",
     "scansAreQueuedImmediatelyOnSelectedDevices": "Les scans sont immédiatement mis en file d’attente sur certains appareils.",
+    "scansQueuedCount": "{{count}} balayage mis en file",
+    "scansQueuedCount_one": "{{count}} balayage mis en file",
+    "scansQueuedCount_other": "{{count}} balayages mis en file",
     "securityScanManager": "Gestionnaire de balayage de sécurité",
     "singleSelect": "Sélection simple",
     "someScanRequestsFailed": "{{failed}} demandes d’analyse sur {{total}} ont échoué",
@@ -698,16 +722,10 @@
     "startedColumn": "Démarré",
     "status": "Statut : {{status}}",
     "status2": "Statut",
-    "type": "Type",
-    "scanHistoryPartiallyUnavailable": "L'historique des analyses de {{failed}} des {{total}} appareils n'a pas pu être chargé — cette liste est incomplète.",
-    "scanHistoryUnavailable": "Impossible de charger l'historique des analyses.",
-    "scanRequestFailed": "Échec de la demande de balayage",
-    "scansQueuedCount": "{{count}} balayage mis en file",
-    "scansQueuedCount_one": "{{count}} balayage mis en file",
-    "scansQueuedCount_other": "{{count}} balayages mis en file"
+    "type": "Type"
   },
   "securityThreatDetail": {
-    "analystReview": "Revue des analystes",
+    "actionFailed": "Échec de l'action",
     "detected": "Détecté",
     "device": "Dispositif",
     "deviceInfo": "Informations sur l’appareil",
@@ -718,11 +736,14 @@
     "noThreatSelected": "Aucune menace sélectionnée.",
     "otherDetectionsOnThisDevice": "D’autres détections sur cet appareil.",
     "provider": "Fournisseur",
+    "providerUnknown": "Inconnu",
     "quarantine": "Mettre en quarantaine",
+    "quarantineQueued": "Mise en quarantaine en file. L'appareil confirmera le résultat.",
     "relatedThreats": "Menaces connexes",
     "remove": "Retirer",
+    "removeQueued": "Suppression en file. L'appareil confirmera le résultat.",
     "restore": "Restaurer",
-    "reviewRemediationCompletenessAndEndpointHealth": "Examinez la complétude de la remédiation et la santé des points de démarche.",
+    "restoreQueued": "Restauration en file. L'appareil confirmera le résultat.",
     "severity": "Gravité",
     "status": "Statut",
     "threatDetail": "Équipe de la menace",
@@ -737,7 +758,23 @@
     "actionFailed": "Échec de l'action",
     "quarantineSucceeded": "Menace mise en quarantaine",
     "restoreSucceeded": "Menace restaurée",
-    "removeSucceeded": "Menace supprimée"
+    "removeSucceeded": "Menace supprimée",
+    "notFound": "Cette menace est introuvable. Elle a peut-être été supprimée, ou vous n’avez pas accès à son appareil.",
+    "relatedLoadFailed": "Impossible de charger les menaces associées.",
+    "rule": {
+      "title": "Règle de détection",
+      "legacy": "Signature intégrée (ancien balayage)",
+      "ruleName": "Règle",
+      "ruleSet": "Ensemble de règles",
+      "ruleSetMissing": "Ensemble de règles qui n’est plus disponible",
+      "tags": "Étiquettes",
+      "matchedStrings": "Chaînes correspondantes",
+      "noMatchedStrings": "Aucune chaîne correspondante n’a été signalée.",
+      "sha256": "SHA-256 du fichier",
+      "copy": "Copier le SHA-256",
+      "quarantinedTo": "Mis en quarantaine dans (au moment du balayage)",
+      "quarantineFailed": "Échec de la quarantaine automatique"
+    }
   },
   "securityThreatList": {
     "active": "Actives",
@@ -1332,17 +1369,18 @@
   },
   "sensitiveDataCreateScanModal": {
     "errors": {
-      "deviceRequired": "Entrez au moins un appareil ID",
-      "createScan": "Impossible de créer un scan"
+      "createScan": "Impossible de créer un scan",
+      "devicesRequired": "Sélectionnez au moins un appareil",
+      "devicesNotReady": "La liste des appareils est encore en cours de chargement ou est incomplète. Attendez la fin du chargement, puis réessayez.",
+      "devicesLoadFailed": "La liste des appareils n'a pas pu être chargée. Utilisez Réessayer dans la liste des appareils, puis réessayez."
     },
     "title": "Créer un balayage",
     "form": {
       "policyOptional": "Politique (optionnelle)",
       "noPolicy": "Pas de politique (configuration manuelle)",
-      "deviceIds": "IDs des appareils",
-      "deviceIdsHelp": "Un UUID par ligne, ou séparé par virgule.",
-      "deviceIdsPlaceholder": "device-uuid-1\ndevice-uuid-2",
-      "detectionClasses": "Classes de détection"
+      "detectionClasses": "Classes de détection",
+      "devices": "Appareils",
+      "devicesHelp": "Choisissez les appareils à analyser."
     },
     "actions": {
       "creating": "Création…",
@@ -1407,6 +1445,10 @@
       "showingSearch": "Affichage de {{visible}} sur {{pageCount}} sur cette page ({{total}} au total)",
       "showingTotal": "Affichage de {{visible}} résultats sur {{total}}",
       "pageOf": "Page {{page}} de {{totalPages}}"
+    },
+    "toasts": {
+      "riskAccepted": "Risque accepté",
+      "markedFalsePositive": "Marqué comme faux positif"
     }
   },
   "sensitiveDataPoliciesTab": {
@@ -1445,14 +1487,18 @@
       "detectionClasses": "Classes de détection",
       "scheduleType": "Type de calendrier",
       "intervalMinutes": "Intervalle (minutes)",
-      "cronExpression": "Expression cron",
-      "cronPlaceholder": "0 2 * * *"
+      "cronPlaceholder": "0 2 * * *",
+      "cronExpressionUtc": "Expression cron (UTC)",
+      "cronNextRun": "Prochaine exécution (votre heure locale) : {{time}}",
+      "cronExpressionZone": "Expression cron ({{zone}})"
     },
     "schedule": {
       "manual": "Manuel",
       "interval": "Intervalle",
       "cron": "Cron",
-      "everyMinutes": "Chaque {{minutes}}m"
+      "everyMinutes": "Chaque {{minutes}}m",
+      "paused": "En pause",
+      "pausedTitle": "La planification est désactivée pour cette politique; elle ne s'exécutera pas automatiquement"
     },
     "table": {
       "name": "Nom",
@@ -1777,7 +1823,7 @@
     "unknown": "Inconnu"
   },
   "cisHardeningCisHardeningPage": {
-    "title": "Durcissement CIS",
+    "title": "CIS Benchmarks",
     "description": "Bases de configuration, évaluation de la conformité et suivi de la remédiation.",
     "messages": {
       "loadFailed": "Impossible de charger les données CIS"
@@ -1870,6 +1916,11 @@
     "badges": {
       "allOrgs": "Toutes les orgs",
       "partnerWideTitle": "Base de référence à l’échelle du partenaire — s’applique aux appareils de chaque organisation"
+    },
+    "scanAll": {
+      "title": "Analyser toutes les organisations?",
+      "message": "« {{name}} » est une base de référence à l’échelle du partenaire. Sans organisation sélectionnée, elle analyse les {{orgCount}} organisations. Sélectionnez d’abord une organisation pour n’analyser que ses appareils.",
+      "confirm": "Tout analyser"
     }
   },
   "cisHardeningCisBaselineForm": {
@@ -1972,6 +2023,17 @@
       "queueFailed": "L'approbation a été enregistrée, mais la correction n'a pas pu être mise en file. Elle est de nouveau en attente d'approbation; réessayez.",
       "mfaRequired": "Approuver ou refuser une correction nécessite une session ouverte avec l'authentification multifacteur. Déconnectez-vous puis reconnectez-vous avec l'AMF.",
       "ownRequest": "Vous avez demandé cette correction : un autre utilisateur doit l'approuver."
+    },
+    "detail": {
+      "toggle": "Afficher/masquer les détails",
+      "approvedBy": "Approuvé par",
+      "approvedAt": "Approuvé le",
+      "note": "Note d’approbation",
+      "beforeState": "Avant",
+      "afterState": "Après",
+      "rollbackHint": "Conseil de restauration",
+      "noEvidence": "Aucune preuve n’est encore enregistrée pour cette remédiation.",
+      "unknownApprover": "Utilisateur inconnu"
     }
   },
   "auditBaselinesAuditBaselinesPage": {
@@ -2282,5 +2344,193 @@
       "awaitingEvaluation": "En attente d'évaluation",
       "vendorOrgMismatch": "Le fournisseur signale une autre organisation"
     }
+  },
+  "detectionRules": {
+    "title": "Règles de détection",
+    "subtitle": "Ensembles de règles pour les balayages IOC et la chasse aux menaces. Chaque modification est vérifiée sur le serveur avant d’être envoyée aux appareils.",
+    "listHelp": "Associez des ensembles de règles dans l’onglet Sécurité d’une politique de configuration pour les utiliser dans les balayages IOC.",
+    "newRuleSet": "Nouvel ensemble de règles",
+    "back": "Retour aux ensembles de règles",
+    "loadFailed": "Impossible de charger les ensembles de règles.",
+    "empty": "Aucun ensemble de règles pour l’instant.",
+    "rulesLabel": "Règles : {{total}}",
+    "publishedVersion": "version {{version}}",
+    "created": "Ensemble de règles créé",
+    "deleted": "Ensemble de règles supprimé",
+    "columns": {
+      "name": "Nom",
+      "owner": "Propriétaire",
+      "rules": "Règles",
+      "published": "Publié"
+    },
+    "owner": {
+      "builtin": "Breeze (intégré)",
+      "allOrgs": "Toutes les organisations",
+      "organization": "Organisation"
+    },
+    "badges": {
+      "builtin": "Intégré",
+      "allOrgs": "Toutes les organisations",
+      "errors": "Contient des erreurs",
+      "unpublished": "Non publié",
+      "disabled": "Désactivé"
+    },
+    "create": {
+      "title": "Nouvel ensemble de règles",
+      "name": "Nom",
+      "description": "Description (facultative)",
+      "owner": "Propriétaire",
+      "ownerAllOrgs": "Toutes les organisations (à l’échelle du partenaire)",
+      "ownerOrganization": "Une seule organisation",
+      "organization": "Organisation",
+      "selectOrganization": "Sélectionnez une organisation",
+      "submit": "Créer l’ensemble de règles"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "L’activation de la quarantaine automatique exige la permission devices:execute, car elle déplace des fichiers sur chaque appareil qui balaie avec cet ensemble.",
+      "iocBatchAlreadyImported": "Ces IOC ont déjà été importés dans cet ensemble.",
+      "iocRuleNameTaken": "Une règle portant le même nom généré mais un contenu différent existe déjà dans cet ensemble. Renommez-la ou supprimez-la, puis importez de nouveau.",
+      "iocTooManyRules": "Cette importation porterait l’ensemble au-delà de {{max}} règles. Importez dans un autre ensemble.",
+      "iocInvalid": "Certains IOC ne sont pas valides. Corrigez les lignes signalées et réessayez."
+    },
+    "test": {
+      "requestFailed": "Le test ne s’est pas terminé. Vérifiez votre connexion et réessayez.",
+      "privacy": "Le fichier est balayé sur le serveur Breeze, dans un bac à sable, avec les règles actuelles de cet ensemble, y compris les modifications pas encore publiées. Le fichier n’est pas conservé. Seuls son SHA-256, sa taille et le nombre de correspondances sont consignés dans le journal d’audit.",
+      "sandboxUnavailable": "Les tests de fichiers ne sont pas offerts sur ce serveur",
+      "sandboxUnavailableHelp": "Le serveur ne peut pas isoler le balayage, donc il ne traite pas les fichiers téléversés. La modification des règles, l’importation d’IOC et les balayages des appareils ne sont pas touchés.",
+      "file": "Fichier à tester",
+      "filepath": "Chemin sur l’appareil (facultatif)",
+      "filepathHelp": "L’emplacement du fichier sur un appareil. Les règles qui portent sur le chemin l’utilisent; par défaut, c’est le nom du fichier.",
+      "run": "Lancer le test",
+      "running": "Test en cours…",
+      "testedVersion": "Version testée {{version}}",
+      "unpublishedChanges": "Vos modifications non publiées sont testées.",
+      "noMatches": "Aucune règle n’a correspondu.",
+      "errors": {
+        "tooLarge": "Le fichier dépasse {{max}} Mo. Choisissez un fichier plus petit.",
+        "busy": "Un autre test est en cours. Réessayez dans quelques secondes.",
+        "rateLimited": "Vous avez lancé trop de tests au cours des dernières minutes. Réessayez plus tard.",
+        "unavailable": "Le vérificateur de règles n’est pas disponible. Réessayez plus tard.",
+        "noRules": "Cet ensemble n’a aucune règle activée à tester.",
+        "compileFailed": "Cet ensemble ne compile pas avec ses règles actuelles, donc rien n’a été balayé :",
+        "bodyTimeout": "Le téléversement a pris trop de temps. Réessayez.",
+        "unexpected": "Le test n’a pas pu être effectué. Réessayez."
+      }
+    },
+    "severity": {
+      "low": "Faible",
+      "medium": "Moyenne",
+      "high": "Élevée",
+      "critical": "Critique"
+    },
+    "publish": {
+      "saved": "Enregistré",
+      "autoQuarantineOnly": "La quarantaine automatique est maintenant désactivée sur les appareils. Vos autres modifications ne sont pas encore en vigueur.",
+      "published": "Enregistré et publié comme version {{version}}",
+      "savedDisabled": "Enregistré. L’ensemble est désactivé, donc les appareils ne l’utilisent pas.",
+      "checkerUnavailable": "Enregistré, non publié : le vérificateur de règles n’est pas disponible. {{devices}}",
+      "compileErrors_one": "Enregistré, non publié : {{count}} règle contient des erreurs. {{devices}}",
+      "compileErrors_other": "Enregistré, non publié : {{count}} règles contiennent des erreurs. {{devices}}",
+      "setErrors": "Enregistré, non publié : {{message}}. {{devices}}",
+      "noEnabledRules": "Aucune règle activée : les appareils ne balaient plus avec cet ensemble.",
+      "unknown": "Enregistré, mais le résultat de la publication est illisible. Rechargez l’ensemble pour voir quelle version les appareils utilisent.",
+      "devicesKeep": "Les appareils conservent la version {{version}}.",
+      "neverPublished": "Cet ensemble n’a pas encore été publié, donc les appareils ne l’utilisent pas.",
+      "setDisabled": "L’ensemble est désactivé, donc les appareils ne l’utilisent pas.",
+      "staleBanner": "Non publié : corrigez les erreurs ci-dessous. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Règles",
+        "import": "Importer des IOC",
+        "test": "Tester un fichier"
+      },
+      "rename": "Renommer l’ensemble de règles",
+      "enabled": "Activé",
+      "autoQuarantine": "Quarantaine automatique",
+      "autoQuarantineHelp": "Déplacer en quarantaine les fichiers correspondants sur chaque appareil qui balaie avec cet ensemble.",
+      "deleteSet": "Supprimer",
+      "deleteSetTitle": "Supprimer cet ensemble de règles?",
+      "deleteSetMessage": "Ses règles sont aussi supprimées. Les politiques qui l’indiquent encore le signaleront comme introuvable à leur prochain balayage.",
+      "deleteRuleTitle": "Supprimer cette règle?",
+      "deleteRuleMessage": "L’ensemble est vérifié puis republié sans elle.",
+      "addRule": "Ajouter une règle",
+      "noRules": "Cet ensemble ne contient encore aucune règle.",
+      "columns": {
+        "name": "Règle",
+        "severity": "Gravité",
+        "tags": "Étiquettes",
+        "state": "État"
+      },
+      "viewSource": "Afficher la source",
+      "hideSource": "Masquer la source",
+      "editRule": "Modifier la règle",
+      "deleteRule": "Supprimer la règle",
+      "errorLine": "Ligne {{line}} :",
+      "publishedVersion": "Version publiée {{version}}",
+      "readOnlyBuiltin": "L’ensemble de règles intégré est en lecture seule. Ses règles sont mises à jour avec les versions de Breeze.",
+      "refreshFailed": "La modification a été envoyée, mais l’ensemble de règles n’a pas pu être rechargé. L’affichage n’est peut-être pas à jour."
+    },
+    "dialog": {
+      "titleAdd": "Ajouter une règle",
+      "titleEdit": "Modifier la règle",
+      "name": "Nom de la règle",
+      "nameHelp": "Lettres, chiffres et traits de soulignement; commence par une lettre ou un trait de soulignement (128 max.).",
+      "severity": "Gravité",
+      "tags": "Étiquettes",
+      "tagsHelp": "Séparées par des virgules, p. ex. ransomware, advisory-42",
+      "enabled": "Activée",
+      "source": "Source YARA",
+      "sourceTooLarge": "La source de la règle dépasse {{max}} Ko.",
+      "checkedOnSave": "À l’enregistrement, l’ensemble est vérifié avec le même compilateur que les appareils. Les règles qui contiennent des erreurs ne sont pas publiées."
+    },
+    "ioc": {
+      "help": {
+        "title": "Fonctionnement de l’importation",
+        "format": "Un IOC par ligne (# commence un commentaire) ou un tableau JSON. Faites précéder une ligne de son type, comme sha256: ou domain:, pour choisir le type vous-même.",
+        "exactMatch": "Correspondance exacte seulement : aucun caractère générique ni motif.",
+        "contentNotTraffic": "Les domaines et adresses IP correspondent à du texte dans les fichiers balayés, pas au trafic réseau.",
+        "partialOverlap": "Une nouvelle importation des mêmes IOC est détectée. Un lot qui recoupe seulement en partie une importation précédente n’est pas dédoublonné."
+      },
+      "label": "Libellé",
+      "labelPlaceholder": "Par exemple : Avis du fournisseur 2026-10",
+      "labelRequired": "Saisissez un libellé pour prévisualiser les règles générées.",
+      "paste": "Coller des IOC",
+      "textTooLong": "Le texte collé dépasse {{max}} Ko. Divisez-le en plus petites importations.",
+      "skippedLines": "Ces lignes sont ignorées :",
+      "lineError": "Ligne {{line}} : {{error}}",
+      "validCount": "{{valid}} IOC sur {{total}} prêts à importer",
+      "kind": "Type",
+      "value": "Valeur",
+      "kinds": {
+        "md5": "Hachage MD5",
+        "sha1": "Hachage SHA-1",
+        "sha256": "Hachage SHA-256",
+        "filename": "Nom de fichier",
+        "filepath": "Chemin de fichier",
+        "domain": "Domaine",
+        "ip": "Adresse IP",
+        "string": "Chaîne de texte"
+      },
+      "errors": {
+        "empty": "Valeur vide",
+        "unknown_kind": "Type inconnu",
+        "bad_hash": "Hachage non valide pour ce type",
+        "too_short": "Le texte doit compter au moins 4 octets",
+        "too_long": "Trop long",
+        "bad_path": "Chemin non valide pour ce type",
+        "bad_ip": "Adresse IP non valide",
+        "bad_domain": "Domaine non valide",
+        "duplicate": "Doublon d’une ligne précédente"
+      },
+      "overCap": "Au plus {{max}} IOC par importation. Divisez la liste en plus petites importations.",
+      "hashNote": "Les IOC de hachage obligent les appareils à hacher chaque fichier balayé au complet, donc les balayages complets prennent plus de temps.",
+      "generateFailed": "Impossible de générer des règles à partir de ces IOC.",
+      "generatedTitle": "Règles qui seront enregistrées : {{total}}",
+      "import": "Importer {{total}} IOC"
+    }
+  },
+  "sensitiveDataAccess": {
+    "noOrgAccess": "Vous n'avez pas accès à cette organisation"
   }
 }

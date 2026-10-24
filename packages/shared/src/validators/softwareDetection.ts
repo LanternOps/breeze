@@ -98,7 +98,14 @@ export const fileVersionDetectionRuleSchema = z.object({
 // (display-name fallback), macOS launchd label, or Linux systemd unit. No
 // control characters and no leading '-' (it is handed to OS tooling); spaces
 // are allowed because display names like "NextDNS Service" are valid.
-const SERVICE_NAME_REGEX = /^[^\x00-\x1f\x7f-][^\x00-\x1f\x7f]*$/;
+// "Control characters" is C0 + DEL + C1 (U+0080–U+009F, incl. NEL U+0085) plus
+// the Unicode line/paragraph separators U+2028/U+2029. The agent refuses the
+// same set and bounds the name at 256 UTF-8 bytes
+// (agent/internal/remote/tools/software_detection_service.go validServiceName);
+// a name it refuses is an unevaluable clause, so both sides must agree.
+const SERVICE_NAME_REGEX =
+  /^[^\x00-\x1f\x7f-\x9f\u2028\u2029-][^\x00-\x1f\x7f-\x9f\u2028\u2029]*$/;
+const SERVICE_NAME_MAX_BYTES = 256;
 
 export const serviceRunningDetectionRuleSchema = z
   .object({
@@ -108,7 +115,11 @@ export const serviceRunningDetectionRuleSchema = z
       .min(1)
       .max(256)
       .regex(SERVICE_NAME_REGEX, 'No control characters and no leading "-"')
-      .refine((s) => s.trim().length > 0, 'Must not be blank'),
+      .refine((s) => s.trim().length > 0, 'Must not be blank')
+      .refine(
+        (s) => new TextEncoder().encode(s).length <= SERVICE_NAME_MAX_BYTES,
+        `Must be at most ${SERVICE_NAME_MAX_BYTES} bytes (UTF-8)`,
+      ),
   })
   .strict();
 

@@ -316,6 +316,15 @@ describe('ticket validators', () => {
   });
 });
 
+describe('listTicketsQuerySchema showMerged (#8972)', () => {
+  it('parses showMerged true/false strings and leaves it undefined when omitted', () => {
+    expect(listTicketsQuerySchema.parse({ showMerged: 'true' }).showMerged).toBe(true);
+    expect(listTicketsQuerySchema.parse({ showMerged: 'false' }).showMerged).toBe(false);
+    expect(listTicketsQuerySchema.parse({}).showMerged).toBeUndefined();
+    expect(listTicketsQuerySchema.safeParse({ showMerged: 'maybe' }).success).toBe(false);
+  });
+});
+
 describe('createTicketFromChatSchema', () => {
   const base = { subject: 'Outlook would not open', description: 'Sarah could not open Outlook.', status: 'open' as const, timeMinutes: 15, billable: true };
 

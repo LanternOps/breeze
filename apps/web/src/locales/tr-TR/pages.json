@@ -179,7 +179,10 @@
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
     "billingAutopay": "Otomatik ödemeler",
-    "endpointMessages": "Uç Nokta Mesajları"
+    "endpointMessages": "Uç Nokta Mesajları",
+    "securityDetectionRules": "Tespit Kuralları",
+    "settingsPlan": "Plan ve özellikler",
+    "settingsWispMemory": "Wisp belleği"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -262,6 +265,14 @@
       },
       "alertTemplates": {
         "title": "Uyarı şablonları"
+      },
+      "plan": {
+        "title": "Plan ve özellikler",
+        "description": "Planınız, hangi özellikleri içerdiği ve her birinin nereden geldiği."
+      },
+      "wispMemory": {
+        "title": "Wisp belleği",
+        "description": "Wisp’in hatırladıklarını inceleyin, onaylayın ve geri çekin."
       }
     },
     "groups": {

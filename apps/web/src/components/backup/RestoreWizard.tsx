@@ -17,7 +17,8 @@ import {
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
-import { fetchWithAuth } from '../../stores/auth';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import AlphaBadge from '../shared/AlphaBadge';
 import RestoreResultNotices from './RestoreResultNotices';
 import { showToast } from '../shared/Toast';
@@ -30,7 +31,12 @@ import {
   useUnattestedRestoreStepUp,
   type UnattestedRestoreExtras,
 } from './useUnattestedRestoreStepUp';
-import SnapshotIntegrityBadge from './SnapshotIntegrityBadge';
+import SnapshotIntegrityBadge, { isUnverifiedSnapshotStatus } from './SnapshotIntegrityBadge';
+import {
+  LARGE_FOLDER_SELECTION_THRESHOLD,
+  folderCheckState,
+  selectedFolderFileTotal,
+} from './folderSelection';
 import RestoreSnapshotStep, {
   groupSnapshotsByDevice,
   snapshotDeviceKey,
@@ -82,6 +88,8 @@ type SnapshotTreeItem = {
   type: 'file' | 'directory';
   sizeBytes?: number;
   modifiedAt?: string;
+  /** Directories: indexed files beneath it (#9628). */
+  fileCount?: number;
 };
 
 const ROOT_DIR = '/';
@@ -338,11 +346,62 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
     });
   };
 
+  // Selecting a folder stores its tree path; the API expands it to the indexed
+  // files beneath it (#9628). Counts are remembered to gate very large picks.
+  const folderCounts = useRef(new Map<string, number>());
+  const [pendingFolder, setPendingFolder] = useState<{ item: SnapshotTreeItem; total: number } | null>(null);
+  const applyFolderToggle = (item: SnapshotTreeItem) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(item.path)) next.delete(item.path);
+      else next.add(item.path);
+      return next;
+    });
+  };
+  const toggleFolder = (item: SnapshotTreeItem) => {
+    const count = item.fileCount ?? 0;
+    folderCounts.current.set(item.path, count);
+    const state = folderCheckState(item.path, selectedFiles);
+    // Covered by a selected ancestor folder: uncheck that one instead.
+    if (state === 'checked' && !selectedFiles.has(item.path)) return;
+    if (state !== 'checked' && count > 0) {
+      const total = selectedFolderFileTotal(selectedFiles, folderCounts.current, count);
+      if (total > LARGE_FOLDER_SELECTION_THRESHOLD) {
+        setPendingFolder({ item, total });
+        return;
+      }
+    }
+    applyFolderToggle(item);
+  };
+
+  // Folder paths are remembered in folderCounts when toggled; everything else
+  // in the selection is a file. Count them separately so a folder isn't "1 file".
+  const selectedFolderCount = Array.from(selectedFiles).filter((path) => folderCounts.current.has(path)).length;
+  const selectedFileCount = selectedFiles.size - selectedFolderCount;
+  const selectionSummary =
+    selectedFolderCount === 0
+      ? t('restoreWizard.filesSelected', { count: selectedFileCount, formatted: formatNumber(selectedFileCount) })
+      : [
+          selectedFileCount > 0
+            ? t('restoreWizard.selectionFiles', { count: selectedFileCount, formatted: formatNumber(selectedFileCount) })
+            : null,
+          t('restoreWizard.selectionFolders', { count: selectedFolderCount, formatted: formatNumber(selectedFolderCount) }),
+        ].filter(Boolean).join(', ');
+
   const restoreKindLabel = (job: RestoreJob): string => {
     if (job.restoreMode === 'vm') return t('restoreWizard.kindVm');
     if (job.restoreMode === 'instant_boot') return t('restoreWizard.kindInstantBoot');
     if (job.restoreMode === 'rebuild') return t('restoreWizard.kindRebuild');
     return job.restoreType === 'selective' ? t('restoreWizard.kindSelective') : t('restoreWizard.kindFull');
+  };
+
+  const copyCommandId = async (commandId: string) => {
+    try {
+      await navigator.clipboard.writeText(commandId);
+      showToast({ type: 'success', message: t('restoreWizard.commandIdCopied') });
+    } catch {
+      showToast({ type: 'error', message: t('restoreWizard.commandIdCopyFailed') });
+    }
   };
 
   const currentPage = dirs[browseDir];
@@ -381,6 +440,9 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
   // A backup without an integrity attestation is restored only after the
   // operator confirms it (two-factor when enabled); the server asks for it.
   const unattestedStepUp = useUnattestedRestoreStepUp();
+  // Presentational hint only (#9629): the server gate stays the one authority.
+  const secondFactorMissing = useAuthStore((state) => state.user?.mfaEnabled === false);
+  const selectedNeedsConfirmation = isUnverifiedSnapshotStatus(selectedSnapshot?.integrityStatus);
 
   const submitRestore = useCallback(async (extras: UnattestedRestoreExtras): Promise<boolean> => {
     try {
@@ -560,6 +622,7 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
               onSnapshotChange={setPickedSnapshotId}
               formatBytes={formatBytes}
               carriedSnapshotMissing={carriedSnapshotMissing && chosenDeviceKey === null}
+              secondFactorMissing={secondFactorMissing}
             />
           )}
 
@@ -633,14 +696,35 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                   ) : (
                     currentItems.map((item) => (
                       item.type === 'directory' ? (
-                        <button
+                        <div
                           key={`d:${item.path}`}
-                          type="button"
-                          onClick={() => openDir(item.path)}
-                          className="flex w-full items-center gap-2 rounded-md border bg-muted/20 px-4 py-3 text-left text-sm font-medium text-foreground hover:bg-muted/40"
+                          className="flex w-full items-center gap-2 rounded-md border bg-muted/20 px-4 py-3 text-sm hover:bg-muted/40"
                         >
-                          {item.name}/
-                        </button>
+                          <input
+                            type="checkbox"
+                            aria-label={t('restoreWizard.selectFolder', { name: item.name })}
+                            checked={folderCheckState(item.path, selectedFiles) === 'checked'}
+                            ref={(el) => {
+                              if (el) el.indeterminate = folderCheckState(item.path, selectedFiles) === 'partial';
+                            }}
+                            // Covered by a selected parent folder: uncheck that one instead.
+                            disabled={folderCheckState(item.path, selectedFiles) === 'checked' && !selectedFiles.has(item.path)}
+                            onChange={() => toggleFolder(item)}
+                            className="h-4 w-4"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => openDir(item.path)}
+                            className="flex-1 text-left font-medium text-foreground"
+                          >
+                            {item.name}/
+                          </button>
+                          {typeof item.fileCount === 'number' && (
+                            <span className="text-xs text-muted-foreground">
+                              {t('restoreWizard.folderFileCount', { count: item.fileCount, formatted: formatNumber(item.fileCount) })}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <label
                           key={`f:${item.path}`}
@@ -757,13 +841,35 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     {selectedSnapshot?.label ?? 'No snapshot selected'}
                     <SnapshotIntegrityBadge status={selectedSnapshot?.integrityStatus} />
                   </p>
+                  {selectedNeedsConfirmation ? (
+                    <p
+                      data-testid="restore-review-second-factor-note"
+                      data-tone={secondFactorMissing ? 'warning' : 'info'}
+                      className={cn(
+                        'mt-2 rounded-md border px-2 py-1.5 text-xs',
+                        secondFactorMissing
+                          ? 'border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                          : 'border-muted bg-muted/40 text-muted-foreground'
+                      )}
+                    >
+                      {secondFactorMissing
+                        ? t('restoreWizard.secondFactorNoteNotEnrolled')
+                        : t('restoreWizard.secondFactorNote')}
+                      {secondFactorMissing ? (
+                        <>
+                          {' '}
+                          <a href="/settings/profile" className="font-medium underline">{t('restoreWizard.secondFactorSetUp')}</a>
+                        </>
+                      ) : null}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
                   <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                     <Server className="h-4 w-4 text-primary" />
                     {t('restoreWizard.restoreType')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {restoreType === 'full' ? 'Full restore' : 'Selective restore'}
+                    {restoreType === 'full' ? t('restoreWizard.kindFull') : t('restoreWizard.kindSelective')}
                   </p>
                 </div>
                 <div className="rounded-md border border-dashed bg-muted/30 p-4">
@@ -782,8 +888,8 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                     {t('restoreWizard.files')} </div>
                   <p className="mt-2 text-xs text-muted-foreground">
                     {restoreType === 'full'
-                      ? 'All files from snapshot'
-                      : t('restoreWizard.filesSelected', { count: selectedFiles.size })}
+                      ? t('restoreWizard.allFilesFromSnapshot')
+                      : selectionSummary}
                   </p>
                 </div>
               </div>
@@ -913,9 +1019,26 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
                 <div className="grid gap-3">
                   <div className="rounded-md border border-dashed bg-muted/20 p-4">
                     <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('restoreWizard.commandTarget')}</p>
-                    <p className="mt-2 text-xs text-foreground">{t('restoreWizard.command')} {latestKnownRestore.commandId ?? '--'}</p>
+                    <p data-testid="restore-job-summary" className="mt-2 text-sm font-semibold text-foreground">
+                      {latestKnownRestore.deviceName ?? t('restoreWizard.unknownDevice')} · {restoreKindLabel(latestKnownRestore)}
+                    </p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.targetPath')} {latestKnownRestore.targetPath ?? t('restoreWizard.stagingFolder')}</p>
                     <p className="mt-1 text-xs text-foreground">{t('restoreWizard.completed')} {formatTimestamp(latestKnownRestore.completedAt)}</p>
+                    {latestKnownRestore.commandId ? (
+                      <details className="mt-2 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">{t('restoreWizard.commandDetails')}</summary>
+                        <div className="mt-1 flex items-center gap-2">
+                          <code className="break-all">{latestKnownRestore.commandId}</code>
+                          <button
+                            type="button"
+                            onClick={() => void copyCommandId(latestKnownRestore.commandId as string)}
+                            className="rounded border px-2 py-0.5 text-xs font-medium text-foreground hover:bg-muted"
+                          >
+                            {t('restoreWizard.copyCommandId')}
+                          </button>
+                        </div>
+                      </details>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -979,6 +1102,24 @@ export default function RestoreWizard({ initialSnapshotId, initialSelectedPaths 
           </div>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={pendingFolder !== null}
+        onClose={() => setPendingFolder(null)}
+        onConfirm={() => {
+          if (!pendingFolder) return;
+          const { item } = pendingFolder;
+          setPendingFolder(null);
+          applyFolderToggle(item);
+        }}
+        title={t('restoreWizard.largeFolderSelectionTitle')}
+        message={t('restoreWizard.confirmLargeFolderSelection', {
+          count: pendingFolder?.total ?? 0,
+          formatted: formatNumber(pendingFolder?.total ?? 0),
+        })}
+        variant="warning"
+        dialogTestId="restore-large-folder-dialog"
+        confirmTestId="restore-large-folder-confirm"
+      />
     </div>
   );
 }

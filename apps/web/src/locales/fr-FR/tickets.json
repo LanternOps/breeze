@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} sélectionné",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un ticket. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le ticket {{number}} n’est pas dans cette vue.",
     "movedToClosed": {
       "message": "{{status}} — désormais sous {{tab}}",
       "view": "Voir dans {{tab}}"
@@ -418,6 +419,7 @@
     "loadFailed": "Le ticket n’a pas fonctionné.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du ticket",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",

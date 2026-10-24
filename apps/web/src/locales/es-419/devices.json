@@ -1950,6 +1950,7 @@
     "title": "Conexiones de red activas"
   },
   "devicePatchStatusTab": {
+    "released": "Publicado el {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compatible",
       "description": "Actualizaciones pendientes vs instaladas",
@@ -2701,7 +2702,7 @@
       "message_one": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con {{count}} dispositivo restante? Los que estén sin conexión lo ejecutarán en su próximo registro.",
       "message_other": "{{skipped}} de {{total}} dispositivos seleccionados están quitados y se omitirán: ya no tienen un agente administrado. ¿Continuar con los {{count}} dispositivos restantes? Los que estén sin conexión lo ejecutarán en su próximo registro."
     },
-    "importFromRmm": "Importar desde otro RMM",
+    "importFromRmm": "Importar campos personalizados desde otro RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} ocultos — {{fields}} solo se aplica a dispositivos con agente.",
     "hiddenNonAgentClassLabel": {
       "network": "dispositivos de red",

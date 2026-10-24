@@ -179,7 +179,10 @@
     "devicesTime": "Sincronizzazione dell’ora",
     "adminAiModels": "Modelli di IA",
     "billingAutopay": "Pagamenti automatici",
-    "endpointMessages": "Messaggi agli endpoint"
+    "endpointMessages": "Messaggi agli endpoint",
+    "securityDetectionRules": "Regole di rilevamento",
+    "settingsPlan": "Piano e funzionalità",
+    "settingsWispMemory": "Memoria di Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoraggio e gestione remota",
@@ -262,6 +265,14 @@
       },
       "alertTemplates": {
         "title": "Modelli di avviso"
+      },
+      "plan": {
+        "title": "Piano e funzionalità",
+        "description": "Il tuo piano, quali funzionalità include e da dove proviene ciascuna."
+      },
+      "wispMemory": {
+        "title": "Memoria di Wisp",
+        "description": "Controlla, conferma e ritira ciò che Wisp ricorda."
       }
     },
     "groups": {

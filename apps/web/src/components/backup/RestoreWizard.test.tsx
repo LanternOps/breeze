@@ -1,13 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import RestoreWizard from './RestoreWizard';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 
+const authState = vi.hoisted(() => ({ user: { mfaEnabled: true } as { mfaEnabled?: boolean } | null }));
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   restoreAccessTokenFromCookie: vi.fn(async () => true),
+  useAuthStore: (selector: (state: typeof authState) => unknown) => selector(authState),
 }));
 const showToastMock = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (input: unknown) => showToastMock(input) }));
@@ -25,6 +27,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('RestoreWizard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authState.user = { mfaEnabled: true };
   });
 
   it('shows restore history and renders the latest restore job after creation', async () => {
@@ -287,6 +290,118 @@ describe('RestoreWizard', () => {
     expect(screen.getByTestId('restore-review-snapshot').textContent).toContain('Not verified');
   });
 
+  const goToReview = async (integrityStatus?: string) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', integrityStatus }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+    for (let index = 0; index < 4; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+  };
+
+  it('tells a user with a second factor, on the Review step, that an unverified restore will ask for it (#9629)', async () => {
+    await goToReview('unattested');
+    const note = screen.getByTestId('restore-review-second-factor-note');
+    expect(note.textContent).toContain('This restore point is not verified');
+    expect(note.textContent).toContain('confirm with your second factor');
+    expect(note.getAttribute('data-tone')).toBe('info');
+    expect(screen.queryByRole('link', { name: /set up/i })).toBeNull();
+  });
+
+  it('warns a user without a second factor, with a set-up link, before Start (#9629)', async () => {
+    authState.user = { mfaEnabled: false };
+    await goToReview('unattested_legacy');
+    const note = screen.getByTestId('restore-review-second-factor-note');
+    expect(note.getAttribute('data-tone')).toBe('warning');
+    const link = within(note).getByRole('link');
+    expect(link.getAttribute('href')).toBe('/settings/profile');
+  });
+
+  it.each(['attested', 'producer_only', 'pending', 'attestation_failed', 'something_new', undefined])('shows no second-factor note for a %s snapshot (#9629)', async (status) => {
+    authState.user = { mfaEnabled: false };
+    await goToReview(status);
+    expect(screen.queryByTestId('restore-review-second-factor-note')).toBeNull();
+  });
+
+  it('puts a short "needs second factor" hint on an unverified snapshot card only when none is enrolled (#9629)', async () => {
+    authState.user = { mfaEnabled: false };
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [
+          { id: 'snap-1', label: 'Server snapshot', integrityStatus: 'unattested' },
+          { id: 'snap-2', label: 'Newer snapshot', integrityStatus: 'attested' },
+        ] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Server snapshot');
+    const hints = screen.getAllByTestId('snapshot-second-factor-hint');
+    expect(hints).toHaveLength(1);
+    expect(hints[0].textContent).toBe('Needs second factor');
+  });
+
+  it('leads the Latest restore job panel with device and restore type; the command id is behind a copy control (#9626)', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', deviceName: 'DC01',
+          restoreType: 'selective', status: 'completed', targetPath: null,
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z',
+          completedAt: '2026-03-31T11:05:00.000Z', commandId: 'cmd-9f3a', errorSummary: null,
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    const summary = screen.getByTestId('restore-job-summary');
+    expect(summary.textContent).toContain('DC01');
+    expect(summary.textContent).toContain('Selective');
+    expect(summary.textContent).not.toContain('cmd-9f3a');
+    fireEvent.click(screen.getByRole('button', { name: /copy command id/i }));
+    expect(writeText).toHaveBeenCalledWith('cmd-9f3a');
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'success', message: 'Command ID copied' }));
+  });
+
+  it('toasts an error when the command id cannot be copied (#9626)', async () => {
+    const writeText = vi.fn(async () => { throw new Error('denied'); });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot' }] });
+      if (url === '/backup/restore?limit=6') {
+        return makeJsonResponse({ data: [{
+          id: 'restore-1', snapshotId: 'snap-1', deviceId: 'device-1', restoreType: 'full', status: 'completed',
+          createdAt: '2026-03-31T11:00:00.000Z', updatedAt: '2026-03-31T11:05:00.000Z', commandId: 'cmd-9f3a',
+        }] });
+      }
+      return makeJsonResponse({ data: [] });
+    });
+    render(<RestoreWizard />);
+    await screen.findByText('Latest restore job');
+    fireEvent.click(screen.getByRole('button', { name: /copy command id/i }));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Could not copy the command ID' }));
+  });
+
+  it.each([null, {}])('treats an unknown second-factor state (%j) as informational, not a set-up warning (#9629)', async (user) => {
+    authState.user = user as { mfaEnabled?: boolean } | null;
+    await goToReview('unattested');
+    expect(screen.getByTestId('restore-review-second-factor-note').getAttribute('data-tone')).toBe('info');
+    expect(screen.queryByTestId('snapshot-second-factor-hint')).toBeNull();
+  });
+
   it('cancels a queued restore from the Latest restore job panel', async () => {
     const pendingJob = {
       id: 'restore-2',
@@ -505,7 +620,7 @@ describe('RestoreWizard', () => {
 
     await screen.findByText('Latest restore job');
     expect(screen.getAllByText('running').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Command: cmd-history-1/i)).toBeTruthy();
+    expect(screen.getByText('cmd-history-1')).toBeTruthy();
     expect(screen.getByText(/Target path: \/restore-target/i)).toBeTruthy();
   });
 
@@ -932,8 +1047,8 @@ describe('RestoreWizard', () => {
       ]);
       render(<RestoreWizard />);
       await screen.findByText('Restore Wizard');
-      expect(await screen.findByText(/Restore as VM/i)).toBeTruthy();
-      expect(screen.getByText(/Instant boot/i)).toBeTruthy();
+      expect((await screen.findAllByText(/Restore as VM/i)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Instant boot/i).length).toBeGreaterThan(0);
     });
 
     it('does not dump the raw result payload JSON', async () => {
@@ -1164,5 +1279,86 @@ describe('RestoreWizard', () => {
       expect(screen.getByRole('button', { name: /FS newest/i }).className).not.toContain('border-primary');
       expect(screen.queryByRole('button', { name: /DC nightly/i })).toBeNull();
     });
+  });
+});
+
+describe('RestoreWizard folder selection (#9628)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const mockTree = (fileCount: number) => {
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/backup/snapshots') {
+        return makeJsonResponse({ data: [{ id: 'snap-1', label: 'Server snapshot', status: 'Ready', size: '4 GB' }] });
+      }
+      if (url === '/backup/snapshots/snap-1/browse') {
+        return makeJsonResponse({
+          data: [{ name: 'Finance', path: '/Finance', type: 'directory', fileCount }],
+        });
+      }
+      if (url === '/backup/restore?limit=6') return makeJsonResponse({ data: [] });
+      return makeJsonResponse({}, false, 404);
+    });
+  };
+
+  const openSelectStep = async (initialSelectedPaths?: string[]) => {
+    render(<RestoreWizard initialSnapshotId="snap-1" initialSelectedPaths={initialSelectedPaths} />);
+    await screen.findByText('Restore Wizard');
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    if (!initialSelectedPaths) fireEvent.click(screen.getByRole('button', { name: /Selective Restore/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    return screen.findByRole('checkbox', { name: /Select folder Finance/i });
+  };
+
+  it('renders a checkbox with the file count on a directory row and selects it', async () => {
+    mockTree(12);
+    const checkbox = (await openSelectStep()) as HTMLInputElement;
+    expect(screen.getByText('12 files')).toBeTruthy();
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it('shows the folder as indeterminate when only some of its files are selected', async () => {
+    mockTree(12);
+    const checkbox = (await openSelectStep(['/Finance/q3.xlsx'])) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(checkbox.indeterminate).toBe(true);
+  });
+
+  it('asks (in-app dialog, not window.confirm) before selecting a folder past 1,000 files, and respects a refusal', async () => {
+    mockTree(5000);
+    const nativeConfirm = vi.spyOn(window, 'confirm');
+    const checkbox = (await openSelectStep()) as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(screen.getByTestId('restore-large-folder-dialog').textContent).toContain('5,000');
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    expect(screen.queryByTestId('restore-large-folder-dialog')).toBeNull();
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByTestId('restore-large-folder-confirm'));
+    expect(checkbox.checked).toBe(true);
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    nativeConfirm.mockRestore();
+  });
+
+  it('summarises a selected folder as a folder, not "1 file", and formats large counts', async () => {
+    mockTree(10001);
+    const checkbox = (await openSelectStep(['/Finance/q3.xlsx'])) as HTMLInputElement;
+    expect(screen.getByText((10001).toLocaleString() + ' files')).toBeTruthy();
+    fireEvent.click(checkbox);
+    expect(screen.getByTestId('restore-large-folder-dialog').textContent).toContain((10001).toLocaleString());
+    fireEvent.click(screen.getByTestId('restore-large-folder-confirm'));
+    for (let index = 0; index < 2; index += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    expect(screen.getByText('1 file, 1 folder')).toBeTruthy();
+    expect(screen.queryByText('2 files selected')).toBeNull();
   });
 });

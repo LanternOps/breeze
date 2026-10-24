@@ -161,8 +161,12 @@ export type ToolExecutionContext = {
    * site in `aiTools.ts`. Absent for a call with no attributable org/run/
    * session (an unauthenticated or system-scope caller), which is what makes
    * "no anchor" a safe, typed refusal rather than an unscoped lookup.
+   *
+   * `wispThreadId` (Wisp W04, w00 A24) is present only when the chat session
+   * is attached to a Wisp thread; it lets the read also match that thread's
+   * attachments (see `ArtifactCallerAnchor.wispThreadId`).
    */
-  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null };
+  captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate
    * (`topology/aiToolGate.ts`) issued for THIS call — the pinned site of a

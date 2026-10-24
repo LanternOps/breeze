@@ -88,7 +88,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
   });
 
   it('renders the localized expiry copy when /auth/mfa/setup rejects the grant as expired', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') return makeJsonResponse(EXPIRED_GRANT_BODY, false, 400);
@@ -104,7 +104,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
   });
 
   it('renders the localized expiry copy when the terminal /auth/mfa/enable write rejects the grant', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -142,7 +142,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
    * code replaced.
    */
   it('drops the dead grant so the enrollment panel offers the IdP retry button, not a replay of the rejected grant', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -169,7 +169,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
   });
 
   it('renders the localized expiry copy and the IdP retry button when passkey register/options rejects the grant', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -191,7 +191,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
   });
 
   it('renders the localized expiry copy when passkey register/verify rejects the grant', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -217,7 +217,7 @@ describe('ProfilePage — expired enrollment grant (#4050)', () => {
   });
 
   it('still renders the server message verbatim for any OTHER rejection code', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {

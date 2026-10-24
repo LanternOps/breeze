@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Tüm kuruluşlara uygulanır. Bir alt küme seçmek için \"Tüm kuruluşlar\" seçeneğinin işaretini kaldırın.",
       "polite": "kibar",
       "loading": "Yükleniyor…",
-      "loadMoreOrganizations": "Daha fazla kuruluş yükle"
+      "loadMoreOrganizations": "Daha fazla kuruluş yükle",
+      "appliedToAllOrgs": "Politika artık tüm kuruluşlara uygulanıyor",
+      "removedFromAllOrgs": "Politika artık tüm kuruluşlara uygulanmıyor"
     },
     "featureTabs": {
       "automationTab": {
@@ -1020,7 +1022,25 @@
         "fullScan": "Tam tarama",
         "maxFileSizeMb": "Maksimum dosya boyutu (MB)",
         "scanTimeoutMinutes": "Tarama zaman aşımı (dakika)",
-        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur."
+        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur.",
+        "ruleSets": {
+          "title": "Tespit kural kümeleri",
+          "description": "Bu ilkenin IOC taramalarının kullandığı kural kümeleri.",
+          "manageLink": "Tespit kurallarını yönet",
+          "loading": "Kural kümeleri yükleniyor…",
+          "loadError": "Kural kümeleri yüklenemedi. İlke mevcut kural kümelerini korur; diğer ayarları yine de kaydedebilirsiniz.",
+          "none": "Bu ilke için kullanılabilir kural kümesi yok.",
+          "legacyNote": "Kural kümesi yok: taramalar yalnızca yerleşik eski imzaları kullanır.",
+          "cap": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+          "unavailable": "Kullanılamayan kural kümesi",
+          "blocking": "Bu ilke kullanılamayan kural kümelerini (silinmiş, taşınmış veya başka bir kuruluşa ait) kullanamaz. Kaydetmeden önce bunları kaldırın.",
+          "overrideDraft": "Devralınan ayarlar bu ilkenin kullanamayacağı kural kümeleri içeriyor. Kullanılamayan kural kümelerini kaldırın, ardından kaydedin.",
+          "errors": {
+            "tooMany": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+            "invalidIds": "Kural kümesi listesi geçerli değil. Sayfayı yeniden yükleyip tekrar deneyin.",
+            "notAttachable": "Bu ilke seçilen kural kümelerinden bazılarını kullanamaz. Aşağıda vurgulanmıştır."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Kimlik Bilgileri",
@@ -1337,9 +1357,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Hiçbir yazılım ilkesi bulunamadı. Başlamak için bir tane oluşturun.",
       "recentViolations": "Son İhlaller",
       "noCurrentSoftwareViolations": "Mevcut yazılım ihlali yok.",
-      "violationS": "ihlalleri",
-      "remediation": "Düzeltme:",
-      "checked": "Kontrol edildi:",
+      "remediation": "Düzeltme: {{value}}",
+      "checked": "Kontrol edildi: {{date}}",
       "deactivatePolicy": "Politikayı Devre Dışı Bırak",
       "areYouSureYouWantToDeactivate": "Devre dışı bırakmak istediğinizden emin misiniz?",
       "thePolicyWillBeMarkedInactiveAnd": "? Politika etkin değil olarak işaretlenecek ve uyumluluk verileri temizlenecek.",
@@ -1375,7 +1394,10 @@
       "coverageVendor": "Sağlayıcı",
       "coverageReason": "Neden",
       "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı",
-      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor"
+      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "violationCount": "{{count}} ihlal",
+      "violationCount_one": "{{count}} ihlal",
+      "violationCount_other": "{{count}} ihlal"
     },
     "deploymentList": {
       "running": "Koşuyor",
@@ -1591,20 +1613,21 @@
       "registry": "kayıt defteri",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Hizmet çalışıyor",
+      "readOnlyHint": "API ile oluşturuldu. Burada düzenlenemez; kaydettiğinizde olduğu gibi korunur."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Cihazlar getirilemedi",
-      "devicesWith": "Cihazlar",
-      "by": "yazan",
+      "devicesWith": "{{name}} yüklü cihazlar",
+      "by": "yayıncı: {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Bu yazılıma sahip cihaz bulunamadı.",
       "hostname": "Ana Bilgisayar Adı",
       "oS": "İşletim Sistemi",
       "version": "Sürüm",
       "lastSeen": "Son Görülme",
-      "device": "cihaz",
-      "total": "toplam",
-      "s": "s"
+      "deviceTotal_one": "toplam {{count}} cihaz",
+      "deviceTotal_other": "toplam {{count}} cihaz"
     },
     "policyForm": {
       "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",

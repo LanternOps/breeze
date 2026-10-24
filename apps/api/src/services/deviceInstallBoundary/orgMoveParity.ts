@@ -52,6 +52,8 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'call:assertNoHourBlockDrawnTime': { moveOnly: TICKET_CHAIN },
   'call:assertTicketMoveCurrencyCompatible': { moveOnly: TICKET_CHAIN },
   'call:revalidateTicketAssignee': { moveOnly: TICKET_CHAIN },
+  // #8973 W4: moved tickets re-resolve their business calendar for the new org.
+  'call:reresolveMovedTicketCalendars': { moveOnly: TICKET_CHAIN },
   'call:removedTicketLinksFromRows': { moveOnly: TICKET_CHAIN },
   'call:dissolveLinkGroupIfBelowMinimum': { moveOnly: 'link groups are per org; a reattach keeps the org and the group' },
 
@@ -59,6 +61,8 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'table:devices': { moveOnly: 'the org/site flip (the boundary advances the incarnation instead)' },
   'call:getDeviceOrgDenormalizedTables': { moveOnly: 'org_id re-stamp of device children' },
   'call:getDeviceOrgMoveDeleteTables': { moveOnly: 'derived rows that point at source-org rows' },
+  // #8972 W1: merged tombstones follow their survivor ticket (spec §3.9).
+  'call:carryMergedTombstonesInTx': { moveOnly: TICKET_CHAIN },
   'call:rewriteDeviceSiteDenormalizedTables': { moveOnly: 'site_id re-stamp of device children' },
   'sqlfn:breeze_rehome_device_custom_field_values': { moveOnly: 'custom-field values re-pointed to the target org (§5.1: they survive a reattach)' },
   'table:device_group_memberships': { moveOnly: 'groups are per org; membership survives a reattach (§5.1)' },

@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Wer zugestimmt hat",
         "signerEmailLabel": "E-Mail-Adresse (optional)",
         "consequenceInvoice": "Eine Rechnung über {{amount}} wird jetzt erstellt und nummeriert.",
+        "consequenceInvoiceDraft": "Es wird eine Rechnung als Entwurf erstellt. Sie wird noch nicht ausgestellt oder nummeriert.",
         "consequenceContracts": "Wiederkehrende Positionen werden zu Vertragsentwürfen, die Sie später aktivieren.",
         "consequenceEmail": "Die Rechnung wird per E-Mail an {{recipients}} gesendet.",
         "consequenceEmailNotConfigured": "Es ist kein E-Mail-Dienst konfiguriert; die Rechnung wird nicht per E-Mail gesendet. Teilen Sie sie über die Rechnungsseite.",
@@ -1368,6 +1369,7 @@
         "evidenceError": "Die Annahme wurde erfasst, aber die Nachweisdatei konnte nicht angehängt werden. Hängen Sie sie von der Angebotsseite aus an.",
         "consequenceEmailNoRecipient": "Für dieses Angebot ist kein Empfänger hinterlegt, daher wird die Rechnung möglicherweise nicht per E-Mail versendet. Senden Sie sie bei Bedarf selbst an den Kunden.",
         "successNoRecipient": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde möglicherweise nicht per E-Mail versendet — für dieses Angebot ist kein Empfänger hinterlegt.",
+        "successNoEmailService": "Angebot angenommen. Rechnung {{number}} ausgestellt. Sie wurde nicht per E-Mail versendet — es ist kein E-Mail-Dienst konfiguriert. Geben Sie sie über die Rechnungsseite weiter.",
         "overlap": {
           "title": "Diese Organisation hat bereits einen Vertrag im gleichen Rhythmus",
           "body": "Die Annahme hat einen neuen Vertragsentwurf erstellt. Wenn er zusätzlich zum bestehenden aktiviert wird, zahlt der Kunde für beide. Prüfen Sie beide, bevor Sie einen davon aktivieren.",

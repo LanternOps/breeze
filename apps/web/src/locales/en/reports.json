@@ -339,6 +339,9 @@
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
+        "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
+        "client_profitability": "Client profitability",
         "backup_status": "Backup Status"
       },
       "threatDetection": {
@@ -442,6 +445,9 @@
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
+        "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
+        "client_profitability": "Client profitability",
         "backup_status": "Backup Status"
       },
       "runsTable": {
@@ -991,6 +997,9 @@
         "technician_time_billability": "Technician time & billability",
         "ar_aging": "AR aging",
         "ai_usage_by_client": "AI usage by client",
+        "mrr_renewals": "MRR & renewals",
+        "quote_win_rate": "Quote win rate",
+        "client_profitability": "Client profitability",
         "backup_status": "Backup Status"
       },
       "schedules": {
@@ -1063,6 +1072,18 @@
         "ai_usage_by_client": {
           "name": "AI usage by client",
           "description": "Platform AI usage per client for the period: requests, tokens, Breeze cost, the amount to charge from the client's billing profile, and what has already been invoiced. Included usage and unpriced models are shown separately, never blended in."
+        },
+        "mrr_renewals": {
+          "name": "MRR & renewals",
+          "description": "Monthly and annual recurring revenue from active contracts, measured on the day the report runs, with the contracts renewing inside the chosen horizon and what has actually been billed as recurring. One set of totals per currency, never converted."
+        },
+        "quote_win_rate": {
+          "name": "Quote win rate",
+          "description": "The share of sent quotes that were won, counted per opportunity so a revised and re-sent quote counts once. The headline rate covers decided opportunities only, with the still-open count beside it. Values are pre-tax, one set per currency, never converted."
+        },
+        "client_profitability": {
+          "name": "Client profitability",
+          "description": "Billed revenue per client for the period by source (recurring, labor, product, AI, other), with the hours logged against it and an optional labor-cost estimate from one blended hourly rate. Figures using that rate are labelled as estimates. One set of totals per currency, never converted."
         },
         "backup_status": {
           "name": "Backup Status Report",
@@ -1186,6 +1207,46 @@
       },
       "periodNote": "Charges bill by UTC calendar month. A period set in another timezone can differ from the invoice for usage near month boundaries.",
       "unpricedNote": "Usage on a model with no rate on the client's billing profile is counted as unpriced. It is never treated as free.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "mrrRenewalsOptions": {
+      "runTimeNote": "This report is always measured on the day the report runs. It has no period or as-of date to set.",
+      "groupBy": "Group by",
+      "groupByValues": {
+        "organization": "Organization",
+        "contract": "Contract"
+      },
+      "renewalHorizon": "Renewal horizon",
+      "renewalHorizonOption": "Next {{days}} days",
+      "renewalHorizonHelp": "Contracts whose term ends within this window are listed as renewals.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "quoteWinRateOptions": {
+      "groupBy": "Group by",
+      "groupByAutomatic": "Automatic: by organization for all organizations, by author for one organization",
+      "groupByValues": {
+        "organization": "Organization",
+        "author": "Author",
+        "currency": "Currency"
+      },
+      "periodNote": "The period applies to the date each quote was first sent. A quote that is revised and re-sent counts once, as one opportunity.",
+      "cancel": "Cancel",
+      "createReport": "Create report"
+    },
+    "clientProfitabilityOptions": {
+      "groupBy": "Group by",
+      "groupByDefault": "Default for the report's scope",
+      "groupByValues": {
+        "organization": "Organization",
+        "source": "Source"
+      },
+      "groupByHelp": "The default groups by organization for an all-organizations report and by source for a single organization.",
+      "laborEnabled": "Estimate labor cost",
+      "laborAmount": "Labor cost per hour",
+      "laborCurrency": "Currency",
+      "laborHelp": "One blended rate for every technician. Figures using it are labelled as estimates.",
       "cancel": "Cancel",
       "createReport": "Create report"
     },

@@ -59,16 +59,24 @@ vi.mock('../middleware/auth', () => ({
 }));
 
 // Multi-currency wave 7 (#3779): the dashboard's per-currency MRR comes from
-// contractService. This file mocks `../db` wholesale, so mock the service
+// contractMrr (#9828). This file mocks `../db` wholesale, so mock the service
 // rather than extending the db.select mock queue with its two reads.
-vi.mock('../services/contractService', () => ({
+vi.mock('../services/contractMrr', () => ({
   summarizeActiveContractMrrByOrg: vi.fn(async () => new Map([
     ['org-123', [{ currencyCode: 'EUR', amount: '410.00' }, { currencyCode: 'USD', amount: '1230.00' }]],
   ])),
 }));
 
+// GET /partner/me/entitlements (#9907) reads through the resolver; its own
+// real-Postgres contract lives in partnerEntitlementsRls.integration.test.ts.
+const entitlementsMock = vi.hoisted(() => {
+  class EntitlementResolutionError extends Error {}
+  return { getEntitlements: vi.fn(), EntitlementResolutionError };
+});
+vi.mock('../services/entitlements', () => entitlementsMock);
+
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { partnerRoutes } from './partner';
 
 describe('partner routes', () => {
@@ -288,5 +296,113 @@ describe('partner routes', () => {
     const body = await res.json();
     expect(body.data[0].mrrByCurrency).toEqual([]);
     expect(body.data[0].mrr).toBe(0);
+  });
+});
+
+describe('GET /partner/me/entitlements', () => {
+  let app: Hono;
+  const expires = new Date('2026-11-01T00:00:00.000Z');
+  const grace = new Date('2026-11-15T00:00:00.000Z');
+  const resolved = {
+    plan: 'pro',
+    entitlements: {
+      // Deliberately out of registry order: the response must follow ENTITLEMENT_KEYS.
+      wisp: {
+        key: 'wisp', state: 'enabled', source: 'billing',
+        limits: { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 },
+        expiresAt: expires, graceUntil: grace, reason: null,
+      },
+      onboarding_supervisor: {
+        key: 'onboarding_supervisor', state: 'disabled', source: 'manual', limits: null,
+        expiresAt: null, graceUntil: null, reason: 'held during pilot',
+      },
+      verified_library: {
+        key: 'verified_library', state: 'enabled', source: 'plan', limits: { maxVerifiedPackages: null },
+        expiresAt: null, graceUntil: null, reason: null,
+      },
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentAuth.value = {
+      user: { id: 'user-123', email: 'partner@example.com', name: 'Partner User' },
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'partner-123',
+      accessibleOrgIds: ['org-123'],
+      canAccessOrg: (orgId: string) => orgId === 'org-123',
+    };
+    app = new Hono();
+    app.route('/partner', partnerRoutes);
+  });
+
+  it('returns plan + one entry per registry key in ENTITLEMENT_KEYS order with ISO dates', async () => {
+    entitlementsMock.getEntitlements.mockResolvedValue(resolved);
+    const res = await app.request('/partner/me/entitlements');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(entitlementsMock.getEntitlements).toHaveBeenCalledWith('partner-123');
+    expect(body.plan).toBe('pro');
+    expect(body.entitlements.map((e: { key: string }) => e.key)).toEqual(['onboarding_supervisor', 'verified_library', 'wisp']);
+    expect(body.entitlements[2]).toEqual({
+      key: 'wisp',
+      label: 'Wisp',
+      why: 'Wisp triages your fleet continuously and nudges the right person; available on Pro and above.',
+      state: 'enabled',
+      source: 'billing',
+      limits: { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 },
+      expiresAt: '2026-11-01T00:00:00.000Z',
+      graceUntil: '2026-11-15T00:00:00.000Z',
+      reason: null,
+    });
+    expect(body.entitlements[0]).toMatchObject({ key: 'onboarding_supervisor', state: 'disabled', source: 'manual', reason: 'held during pilot', expiresAt: null });
+  });
+
+  it('serves an ORGANIZATION-scoped caller (partnerId from the JWT)', async () => {
+    currentAuth.value = { ...currentAuth.value, scope: 'organization', orgId: 'org-123', partnerId: 'partner-123' };
+    entitlementsMock.getEntitlements.mockResolvedValue(resolved);
+    const res = await app.request('/partner/me/entitlements');
+    expect(res.status).toBe(200);
+    expect(entitlementsMock.getEntitlements).toHaveBeenCalledWith('partner-123');
+    expect(db.select).not.toHaveBeenCalled();
+    // The free-text operator reason is MSP-internal: never shown to an
+    // org-scoped caller (which can be a customer org's own user).
+    const body = await res.json();
+    expect(body.entitlements[0]).toMatchObject({ key: 'onboarding_supervisor', source: 'manual', reason: null });
+  });
+
+  it('resolves the partner from partner_users when the JWT has none', async () => {
+    currentAuth.value = { ...currentAuth.value, scope: 'system', partnerId: null };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-777' }]) }),
+      }),
+    } as any);
+    entitlementsMock.getEntitlements.mockResolvedValue(resolved);
+    const res = await app.request('/partner/me/entitlements');
+    expect(res.status).toBe(200);
+    expect(entitlementsMock.getEntitlements).toHaveBeenCalledWith('partner-777');
+  });
+
+  it('404 No partner association when neither JWT nor partner_users yields a partner', async () => {
+    currentAuth.value = { ...currentAuth.value, scope: 'system', partnerId: null };
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+    const res = await app.request('/partner/me/entitlements');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No partner association' });
+    expect(entitlementsMock.getEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('503 entitlement_check_failed with Retry-After when the resolver throws EntitlementResolutionError', async () => {
+    entitlementsMock.getEntitlements.mockRejectedValue(new entitlementsMock.EntitlementResolutionError('db down'));
+    const res = await app.request('/partner/me/entitlements');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect(await res.json()).toEqual({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable' });
   });
 });

@@ -302,6 +302,9 @@
     "workspace": "Espacio de trabajo",
     "workspaceID": "Espacio de trabajo ID: {{id}}",
     "connectWorkspace": "Conectar espacio de trabajo",
+    "notConnected": "No conectado",
+    "pendingConnection": "Conexión pendiente",
+    "turnOnSlackToConnectWorkspace": "Activa las notificaciones de Slack para conectar un espacio de trabajo.",
     "oauthRedirectStartsWhenYouConnectASlack": "La redirección OAuth comienza cuando conecta un espacio de trabajo Slack.",
     "defaultChannel": "Canal predeterminado",
     "microsoftTeams": "Microsoft Teams",
@@ -336,11 +339,14 @@
   "connectionHealthPanel": {
     "title": "Estado de las conexiones",
     "allHealthy": "Todas las conexiones funcionan correctamente",
+    "allHealthyDetail": "Las integraciones conectadas se verifican automáticamente. Los problemas aparecen aquí y junto a la integración en la lista.",
     "loadError": "No se pudo cargar el estado de las conexiones.",
     "retry": "Reintentar",
     "since": "desde {{time}}",
     "fix": "Corregir",
-    "remedy": { "reconnect": "Vuelva a conectarse desde la aplicación cliente (p. ej., agregue de nuevo el servidor MCP). No requiere acción en Breeze." },
+    "remedy": {
+      "reconnect": "Vuelva a conectarse desde la aplicación cliente (p. ej., agregue de nuevo el servidor MCP). No requiere acción en Breeze."
+    },
     "truncated": "Se muestran los primeros {{count}}",
     "recentlyResolved": "Resueltas recientemente ({{count}})",
     "resolution": {
@@ -548,6 +554,14 @@
     "pageOf": "Página {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scope": {
+      "partnerWide": "En todo el socio",
+      "partnerWideDetail": "Se aplica a todas las organizaciones que administra."
+    },
+    "nav": {
+      "select": "Elija una integración",
+      "openProblems": "Problemas abiertos: {{count}}"
+    },
     "scopeBar": {
       "configuringFor": "Configurando integraciones para",
       "thisOrganization": "esta organización",
@@ -566,16 +580,16 @@
     "googleWorkspace": "Google Workspace",
     "microsoft365": "Microsoft 365",
     "pax8": "Pax8",
-    "tdSYNNEXPricing": "TD SYNNEX Precios",
+    "tdSYNNEXPricing": "TD SYNNEX EC Express",
     "payments": "Pagos",
     "integrations": "Integraciones",
-    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Administre todas las conexiones y mantenga saludables los flujos de trabajo de automatización.",
+    "manageAllConnectionsAndKeepAutomationWorkflowsHealthy": "Conecte Breeze con las herramientas con las que trabaja su MSP y vea qué conexiones requieren atención.",
     "distributorIntegrationsPax8AndTDSYNNEXAreAvailable": "Las integraciones de distribuidores (Pax8 y TD SYNNEX) están disponibles solo para cuentas de socios.",
     "accountingIntegrationsAreAvailableToPartnerAccountsOnly": "Las integraciones contables solo están disponibles para cuentas de socios.",
     "theUniFiNetworkIntegrationIsAvailableToPartner": "La integración de la red UniFi está disponible solo para cuentas de socios.",
     "psa": "PSA",
     "viewNameDocumentation": "Ver documentación de {{name}}",
-    "tdSYNNEXPriceFile": "Archivo de precios TD SYNNEX",
+    "tdSYNNEXPriceFile": "TD SYNNEX SFTP",
     "backup": "Copia de seguridad",
     "edrProviders": "Proveedores de EDR"
   },
@@ -728,7 +742,10 @@
     "allApplications": "Todas las aplicaciones",
     "searchAllApplicationsFirst2": " (no en Aplicaciones propias) si ya existe una aplicación de Breeze en este tenant. ",
     "tenantIdGuidPlaceholder": "ID de tenant (GUID), p. ej. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com."
+    "tenantIdGuidHint": "Use el ID de directorio (tenant), un GUID, de la página Información general del registro de aplicación de Entra, no el dominio contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " Para guardar se requiere verificación MFA.",
+    "clientSecretPlaceholder": "secreto de cliente de la app",
+    "clientSecretStoredPlaceholder": "•••••••••• (almacenado, cifrado)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Estado del dispositivo",

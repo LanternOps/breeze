@@ -81,9 +81,20 @@ import {
   isNeverAgentTool,
   checkGuardrails,
   isReadOnlyResolution,
+  requiredPermissionsForTool,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import {
+  assertToolCallWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from '../wisp/grantAuthority';
+
+/** Wisp W02 — how long one run frame reuses a resolved delegation ceiling. */
+const GRANT_CEILING_MEMO_MS = 15_000;
 import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { prepareSdkChild, sdkModelOptions, type SdkChildDispatch } from '../aiModels/connectionFactory';
@@ -193,6 +204,10 @@ import { loadResearchContext, ResearchContextUnavailableError } from './research
 import { loadProvenFixesForRun, profileConsultsFixMemory } from '../fixMemory/runMemory';
 import type { ResearchToolRefs } from './researchSubmission';
 import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { assessmentLimits, assessmentToolAllowlist, isAssessmentProfile } from './assessmentProfile';
+import { loadAssessmentContext } from '../wisp/assessment';
+import { watchPromptLines } from '../wisp/watches';
+import type { AgentRunAssessmentPromptContext } from './assessmentPrompt';
 import { isToolAllowlisted } from './toolAllowlist';
 import { aiTools } from '../aiToolNames';
 import { toolActionEnum } from '../aiToolActions';
@@ -204,6 +219,7 @@ import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
 import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
+  finalizeAssessment,
   finalizeFleetDesign,
   finalizePatchPlan,
   finalizeResearch,
@@ -319,7 +335,7 @@ async function safePublish(
 }
 
 async function loadRunContext(runId: string): Promise<RunContext | null> {
-  return inSystemDbContext(async () => {
+  const ctx = await inSystemDbContext(async (): Promise<RunContext | null> => {
     const [run] = await db
       .select({
         id: aiAgentRuns.id,
@@ -344,6 +360,10 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         taskId: aiAgentRuns.taskId,
         taskStepKey: aiAgentRuns.taskStepKey,
         taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
+        // Wisp W02 — the pinned delegation grant; the pre-tool hook checks the
+        // ceiling on every call when set.
+        grantId: aiAgentRuns.grantId,
+        grantRevisionId: aiAgentRuns.grantRevisionId,
         // Execution plane W04 — the frozen inputs and the compute reservation.
         stagedInputs: aiAgentRuns.stagedInputs,
         computeReservedCents: aiAgentRuns.computeReservedCents,
@@ -675,10 +695,28 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       patch,
       research,
       provenFixes,
+      // Wisp W05b — loaded below, AFTER this system context is released.
+      assessment: null,
       sessionId: null,
       workspace: null,
     };
   });
+
+  // Wisp W05b — an assessment run's grant-scoped context. Loaded OUTSIDE the
+  // system block above (its loader opens its own contexts — ceiling, thread,
+  // concerns, digest — and must not nest inside this one's connection). A
+  // null result means the grant is no longer active: `executeAgentRun` then
+  // skips the run with `grant_inactive` before any model call.
+  if (ctx && isAssessmentProfile(ctx.run)) {
+    ctx.assessment = await loadAssessmentContext({
+      id: ctx.run.id,
+      orgId: ctx.run.orgId,
+      grantId: ctx.run.grantId ?? null,
+      grantRevisionId: ctx.run.grantRevisionId ?? null,
+      triggerRef: ctx.run.triggerRef ?? {},
+    });
+  }
+  return ctx;
 }
 
 function readToolAction(toolName: string, input: Record<string, unknown>): string | undefined {
@@ -797,7 +835,7 @@ export function createAgentRunPreToolUse(args: {
   // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
   // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
   // Tier-3 proposal reserves under.
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId'>>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId' | 'grantId' | 'grantRevisionId'>>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -876,6 +914,64 @@ export function createAgentRunPreToolUse(args: {
    * Null on a non-task run.
    */
   let taskFence: TaskFence | null = null;
+
+  /**
+   * Wisp W02 — the live delegation ceiling of the run's PINNED grant revision,
+   * memoised for GRANT_CEILING_MEMO_MS inside this run frame so a burst of
+   * tool calls costs one evaluation. Only a successful resolve is memoised: an
+   * inactive grant is re-read on every call. Tightening therefore reaches a
+   * live run within the memo window; release re-checks independently.
+   */
+  let grantCeilingMemo: { ceiling: GrantCeiling; at: number } | null = null;
+  async function resolvePinnedCeiling(opts: { fresh?: boolean } = {}): Promise<
+    { ok: true; ceiling: GrantCeiling } | { ok: false; reason: string; error: string }
+  > {
+    if (!run.grantId || !run.grantRevisionId) {
+      const reason = 'delegation ceiling could not be verified';
+      return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
+    }
+    if (!opts.fresh && grantCeilingMemo && Date.now() - grantCeilingMemo.at < GRANT_CEILING_MEMO_MS) {
+      return { ok: true, ceiling: grantCeilingMemo.ceiling };
+    }
+    try {
+      const ceiling = await resolveGrantCeiling(run.grantId, run.grantRevisionId);
+      grantCeilingMemo = { ceiling, at: Date.now() };
+      return { ok: true, ceiling };
+    } catch (error) {
+      grantCeilingMemo = null;
+      // Same deny shape as the task fence: there is no run-level stop flag, so
+      // the model is told to stop and release makes any further effect impossible.
+      const reason = error instanceof GrantInactiveError
+        ? 'delegation grant is no longer active'
+        : 'delegation ceiling could not be verified';
+      if (!(error instanceof GrantInactiveError) || error.kind === 'corrupt') {
+        console.error('[aiAgentRunLoop] delegation ceiling read failed; denying', { runId: run.id, grantId: run.grantId, error });
+        captureException(error, undefined, { grantId: run.grantId ?? '', runId: run.id, stage: 'run_loop' });
+      }
+      return { ok: false, reason, error: `${reason}. Stop and do not retry.` };
+    }
+  }
+
+  /**
+   * Every ceiling term for this tool call; the first violation's reason, or
+   * null. A tool with no resolvable human permission (no TOOL_PERMISSIONS
+   * mapping, unknown action) cannot be shown to sit inside the grantor's
+   * authority, so it FAILS CLOSED as a permission violation. Outcome tools
+   * never reach here (their branch returns earlier).
+   */
+  function delegationCeilingDenial(ceiling: GrantCeiling, toolName: string, input: Record<string, unknown>): string | null {
+    try {
+      assertToolCallWithinCeiling(
+        ceiling,
+        { toolName, orgId: run.orgId, siteId: guardrailPolicy.deviceSiteId ?? null },
+        requiredPermissionsForTool(toolName, input),
+      );
+      return null;
+    } catch (error) {
+      if (error instanceof CeilingViolationError) return `outside the delegation ceiling (${error.code})`;
+      throw error;
+    }
+  }
 
   /** Shared by the ordinary 'propose' disposition AND an act-mode downgrade
    *  (drift/cap-exhaustion) — both record the SAME shape and, for a tier-3
@@ -1053,6 +1149,21 @@ export function createAgentRunPreToolUse(args: {
       taskFence = fence;
     }
 
+    // Wisp W02 (Wisp design §4.3) — a run admitted under a delegation grant.
+    // The grant must still be usable on EVERY call, outcome tools included:
+    // nothing is recorded under a paused, revoked or expired grant. The
+    // per-term ceiling check runs below, just ahead of the guardrail, so it
+    // covers Tier-1 reads (which bypass agent allowlists).
+    let grantCeiling: GrantCeiling | null = null;
+    if (run.grantId) {
+      const pinned = await resolvePinnedCeiling();
+      if (!pinned.ok) {
+        outcome.deniedActions.push({ tool: toolName, reason: pinned.reason });
+        return { allowed: false, error: pinned.error };
+      }
+      grantCeiling = pinned.ceiling;
+    }
+
     // Outcome tools (Phase 2 wave P2-1, spec §9): checked FIRST, before
     // `checkAgentGuardrails` below, because that guardrail has no allowlist
     // entry for an outcome tool — it isn't in `aiTools`/`TOOL_TIERS` at all —
@@ -1124,6 +1235,14 @@ export function createAgentRunPreToolUse(args: {
       return { allowed: false, error: reason };
     }
 
+    if (grantCeiling) {
+      const ceilingDenial = delegationCeilingDenial(grantCeiling, toolName, input);
+      if (ceilingDenial) {
+        outcome.deniedActions.push({ tool: toolName, reason: ceilingDenial });
+        return { allowed: false, error: ceilingDenial };
+      }
+    }
+
     const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
     const check = checkAgentGuardrails(toolName, input, guardrailPolicy, guardrailContext);
 
@@ -1181,7 +1300,9 @@ export function createAgentRunPreToolUse(args: {
     // output channel is `submit_fleet_design`, handled above this branch.
     if (
       (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
-        || isDesignProfile(run) || isPatchProfile(run) || isResearchProfile(run))
+        || isDesignProfile(run) || isPatchProfile(run) || isResearchProfile(run)
+        // Wisp W05b: an assessment's only effect channel is its outcome tools.
+        || isAssessmentProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -1194,6 +1315,17 @@ export function createAgentRunPreToolUse(args: {
     }
 
     if (check.disposition === 'act') {
+      // Wisp W02: an act-mode effect runs straight from this hook and never
+      // reaches release, so it re-resolves the ceiling FRESH (no memo): a
+      // grant revoked a second ago must not execute an effect.
+      if (run.grantId) {
+        const fresh = await resolvePinnedCeiling({ fresh: true });
+        const denial = fresh.ok ? delegationCeilingDenial(fresh.ceiling, toolName, input) : fresh.reason;
+        if (denial) {
+          outcome.deniedActions.push({ tool: toolName, reason: denial });
+          return { allowed: false, error: fresh.ok ? denial : fresh.error };
+        }
+      }
       // Same pure resolver `checkAgentGuardrails` already called to reach
       // 'act' — deterministic on the same (toolName, input), so this can
       // only be non-null. The null branch below is defense in depth, never
@@ -1330,6 +1462,14 @@ export function createAgentRunPreToolUse(args: {
   };
 }
 
+/** Wisp W05b — the run's assessment call lists, created on the first captured call. */
+function assessmentOutcome(outcome: AgentRunOutcome): NonNullable<AgentRunOutcome['assessment']> {
+  outcome.assessment ??= {
+    concernsRaised: [], concernsUpdated: [], nudges: [], proposedActions: [], specialistRequests: [],
+  };
+  return outcome.assessment;
+}
+
 /**
  * The post-tool-use hook. `makeHandler` fires postToolUse for REFUSED calls too
  * (with `isError: true`), so the call state the pre hook recorded in `pairing`
@@ -1442,6 +1582,25 @@ export function createAgentRunPostToolUse(args: {
             // finalizeResearch persists; nothing here executes.
             if (!research) throw new Error('[aiAgentRunLoop] submit_suggestions captured with no research refs');
             outcome.research = validateOutcomeToolInput(toolName, input, research);
+            break;
+          // Wisp W05b — the assessment tools may be called many times per
+          // run, so each call APPENDS (never replaces). `finalizeAssessment`
+          // applies them after the run; nothing here touches the DB.
+          case 'record_concern':
+            assessmentOutcome(outcome).concernsRaised.push(validateOutcomeToolInput(toolName, input));
+            break;
+          case 'update_concern':
+            assessmentOutcome(outcome).concernsUpdated.push(validateOutcomeToolInput(toolName, input));
+            break;
+          case 'nudge':
+            assessmentOutcome(outcome).nudges.push(validateOutcomeToolInput(toolName, input));
+            break;
+          case 'propose_action':
+            assessmentOutcome(outcome).proposedActions.push(validateOutcomeToolInput(toolName, input));
+            break;
+          // Recorded even though the tool refuses (W07 audits these).
+          case 'request_specialist':
+            assessmentOutcome(outcome).specialistRequests.push(validateOutcomeToolInput(toolName, input));
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1756,6 +1915,40 @@ function researchOutcomeRefs(ctx: RunContext): ResearchToolRefs | undefined {
   return ctx.research?.refs;
 }
 
+/**
+ * Wisp W05b — the `AuthContext.wispGrant` of a run admitted under a grant
+ * (both ids pinned, `ai_agent_runs_grant_link_chk`), else undefined.
+ * `sessionId` is null: `ai_agent_runs.session_id` is the run's own
+ * execution-ledger session, not a conversation, so there is no chat session
+ * for W03's `remember` to stamp as `source_session_id` (w00 A27).
+ */
+export function agentRunWispGrant(
+  run: Pick<RunRow, 'grantId' | 'grantRevisionId'>,
+): NonNullable<AuthContext['wispGrant']> | undefined {
+  if (!run.grantId || !run.grantRevisionId) return undefined;
+  return { grantId: run.grantId, grantRevisionId: run.grantRevisionId, sessionId: null };
+}
+
+/**
+ * Wisp W05b — named-field projection of `RunContext.assessment`, like
+ * `narrativePromptContext`. The watch is rendered HERE (`watchPromptLines`),
+ * so the prompt module never imports the DB-bound watches service.
+ */
+function assessmentPromptContext(
+  a: NonNullable<RunContext['assessment']>,
+): AgentRunAssessmentPromptContext {
+  return {
+    reason: a.reason,
+    threadSummary: a.threadSummary,
+    openConcerns: a.openConcerns,
+    changedSince: a.changedSince,
+    digest: a.digest,
+    watchLines: a.watch ? watchPromptLines(a.watch) : null,
+    readiness: a.readiness,
+    nudgeFeedback: a.nudgeFeedback,
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     analysis: ctx.run.profile === 'analysis'
@@ -1786,6 +1979,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
       : null,
     research: ctx.research ?? null,
     provenFixes: ctx.provenFixes ?? null,
+    assessment: ctx.assessment ? assessmentPromptContext(ctx.assessment) : null,
   };
 }
 
@@ -1903,6 +2097,7 @@ export function resolveRunProfileLimits(run: RunProfileRef, limits: AiAgentLimit
   if (isPatchProfile(run)) return patchLimits(limits);
   if (isResearchProfile(run)) return researchLimits(limits, researchDepthOf(run.triggerRef));
   if (isAnalysisProfile(run)) return analysisLimits(limits);
+  if (isAssessmentProfile(run)) return assessmentLimits(limits);
   return limits;
 }
 
@@ -1920,6 +2115,7 @@ export function resolveRunProfileToolAllowlist(run: RunProfileRef, agentAllowlis
   if (isPatchProfile(run)) return patchToolAllowlist(agentAllowlist);
   if (isResearchProfile(run)) return researchToolAllowlist(agentAllowlist);
   if (isAnalysisProfile(run)) return analysisToolAllowlist(agentAllowlist);
+  if (isAssessmentProfile(run)) return assessmentToolAllowlist(agentAllowlist);
   return null;
 }
 
@@ -2236,6 +2432,10 @@ async function driveSdkLoop(
     },
     { id: run.orgId, partnerId: ctx.orgPartnerId },
   );
+  // Wisp W05b (w00 A2/A23/A27) — a grant-bearing run tells grant-aware tools
+  // (W03's `recall`/`remember`) which grant it runs under. Plain runs get none.
+  const wispGrant = agentRunWispGrant(run);
+  if (wispGrant) agentAuth.wispGrant = wispGrant;
 
   // Execution plane W04 — the workspace is constructed eagerly and the
   // SANDBOX lazily: `new WorkspaceService(...)` costs nothing, and `ensure()`
@@ -2997,6 +3197,21 @@ export async function executeAgentRun(runId: string): Promise<void> {
     return;
   }
 
+  // Wisp W05b — an assessment whose grant is no longer active (paused,
+  // revoked, expired, grantor lost standing) never reaches the model:
+  // `loadAssessmentContext` returned null. Same `skipped` terminal as the
+  // stop-gate above; no spend, and the watermark (last COMPLETED assessment)
+  // does not move.
+  if (isAssessmentProfile(run) && !ctx.assessment) {
+    await transitionRunStatus(runId, 'running', 'skipped', {
+      errorCode: 'grant_inactive',
+      summary: 'grant_inactive',
+      finishedAt: new Date(),
+    });
+    await safePublish('ai.agent.run.skipped', run.orgId, { runId, agentId: run.agentId, reason: 'grant_inactive' });
+    return;
+  }
+
   const effective = run.policySnapshot.effective;
 
   // Tracks what to log the ledger session as closing under (see
@@ -3083,6 +3298,10 @@ export async function executeAgentRun(runId: string): Promise<void> {
     const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
     // AI Suggested Fixes W2 — seventh: persist the accepted research items.
     const researchErrorCode = await finalizeResearch(ctx, result);
+    // Wisp W05b — eighth: apply the assessment's concerns, nudges and
+    // proposals. Before the awaiting_approval decision for the same reason as
+    // triage: a proposal it turns into a pending intent must be counted.
+    const assessmentErrorCode = await finalizeAssessment(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -3146,6 +3365,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       || outcome.analysis !== undefined
       // AI Suggested Fixes W2 — same rule for a research run's ONE job.
       || outcome.research !== undefined
+      // Wisp W05b — an assessment that recorded any outcome-tool call.
+      || outcome.assessment !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -3177,7 +3398,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
       verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
-        ?? patchPlanErrorCode ?? researchErrorCode,
+        ?? patchPlanErrorCode ?? researchErrorCode ?? assessmentErrorCode,
       result,
     );
   } catch (error) {
@@ -3505,7 +3726,9 @@ async function finishRun(
   // AI Suggested Fixes W2: a research run has no recipients (its agent is
   // system-provisioned) and its result is the suggestion rows, so it neither
   // notifies nor watches.
-  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run);
+  // Wisp W05b: an assessment runs on every wake-up and talks to its person
+  // only through nudges (spec §7.4 discipline) — never a run-finished notice.
+  const notifies = !isVerdictProfile(ctx.run) && !isResearchProfile(ctx.run) && !isAssessmentProfile(ctx.run);
   // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
   // reasoning as sweep/narrative/triage — a design run executes nothing (its
   // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),
@@ -3517,7 +3740,9 @@ async function finishRun(
     // AI patch agent W01: a patch run executes nothing, so there is no fix
     // whose regression a fix-watch could watch for.
     && !isPatchProfile(ctx.run)
-    && !isResearchProfile(ctx.run);
+    && !isResearchProfile(ctx.run)
+    // Wisp W05b: an assessment executes nothing either.
+    && !isAssessmentProfile(ctx.run);
 
   if (notifies) {
     try {

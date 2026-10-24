@@ -112,6 +112,10 @@
     "reason": "Sebep",
     "expiresAt": "Sona erer (yerel saatiniz)",
     "updatePolicy": "Güncelleme Politikası",
-    "createPolicy": "Politika Oluştur"
+    "createPolicy": "Politika Oluştur",
+    "saved": {
+      "created": "Politika oluşturuldu",
+      "updated": "Politika güncellendi"
+    }
   }
 }

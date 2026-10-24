@@ -354,6 +354,7 @@ x-api-env: &api-env
   # deployment and `GET /config` reports it disabled with no error anywhere.
   AI_OPERATOR_TASKS_ENABLED: ${AI_OPERATOR_TASKS_ENABLED:-false}
   AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
+  AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED: ${AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
   # AI sweeps act mode (#5755 W04) — sub-flag on top of POLICY_DECIDE; default OFF.
@@ -369,6 +370,8 @@ x-api-env: &api-env
   # Large-tool-result capture + read_artifact (#6732). Independent of the
   # workspace flag above; default false. Requires an artifact blob store.
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
+  # Wisp (hosted only; wispEnabled() in config/env.ts). Default false.
+  BREEZE_WISP_ENABLED: ${BREEZE_WISP_ENABLED:-false}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
@@ -524,6 +527,8 @@ x-api-env: &api-env
   # the job runs with the 400-day default TTL.
   PAM_EVIDENCE_RETENTION_ENABLED: ${PAM_EVIDENCE_RETENTION_ENABLED:-}
   PAM_EVIDENCE_RETENTION_DAYS: ${PAM_EVIDENCE_RETENTION_DAYS:-}
+  PAM_OWNERSHIP_EPOCH_TRANSFER: ${PAM_OWNERSHIP_EPOCH_TRANSFER:-}
+  BREEZE_YARA_BUILTIN_PACK_DISABLED: ${BREEZE_YARA_BUILTIN_PACK_DISABLED:-}
   # Email — SMTP extras + Mailgun provider
   SMTP_FROM: ${SMTP_FROM:-}
   SMTP_SECURE: ${SMTP_SECURE:-}
@@ -629,6 +634,7 @@ x-api-env: &api-env
   MCP_INTENT_CREATES_PER_USER_PER_HOUR: ${MCP_INTENT_CREATES_PER_USER_PER_HOUR:-}
   MCP_APPROVAL_WAIT_MS: ${MCP_APPROVAL_WAIT_MS:-}
   MCP_APPROVAL_WAITS_PER_PRINCIPAL: ${MCP_APPROVAL_WAITS_PER_PRINCIPAL:-}
+  MCP_APPS_ENABLED: ${MCP_APPS_ENABLED:-}
   MCP_SSE_RATE_LIMIT_PER_MINUTE: ${MCP_SSE_RATE_LIMIT_PER_MINUTE:-}
   MCP_MESSAGE_RATE_LIMIT_PER_MINUTE: ${MCP_MESSAGE_RATE_LIMIT_PER_MINUTE:-}
   MCP_MAX_SSE_SESSIONS_PER_KEY: ${MCP_MAX_SSE_SESSIONS_PER_KEY:-}

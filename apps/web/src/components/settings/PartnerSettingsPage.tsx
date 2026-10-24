@@ -25,16 +25,14 @@ import PartnerCompanyTab from './PartnerCompanyTab';
 import KnownGuestsSettings from './KnownGuestsSettings';
 import PartnerModulesCard, { type TopologyFeatureFlags } from './PartnerModulesCard';
 import type { ServiceManagementMode } from '@/stores/orgStore';
-import PartnerRegionalTab, { DEFAULT_BUSINESS_HOURS } from './PartnerRegionalTab';
+import PartnerRegionalTab from './PartnerRegionalTab';
 import LoginBrandingCard from './LoginBrandingCard';
 import TrustTemplateSettings from '../trustCenter/TrustTemplateSettings';
 import type {
   PartnerSettings,
   SupportedLocale,
-  BusinessHoursPreset,
   DateFormat,
   TimeFormat,
-  DaySchedule,
   InheritableSecuritySettings,
   InheritableNotificationSettings,
   InheritableEventLogSettings,
@@ -118,8 +116,6 @@ export default function PartnerSettingsPage() {
   const [dateFormat, setDateFormat] = useState<DateFormat>('MM/DD/YYYY');
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('12h');
   const [language, setLanguage] = useState<SupportedLocale>('en');
-  const [businessHoursPreset, setBusinessHoursPreset] = useState<BusinessHoursPreset>('business');
-  const [customHours, setCustomHours] = useState<Record<string, DaySchedule>>(DEFAULT_BUSINESS_HOURS);
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
@@ -161,7 +157,7 @@ export default function PartnerSettingsPage() {
   // Drives the disabled-when-clean Save button and the per-tab dots in the nav.
   const currentSnapshot: Snapshot = useMemo(() => ({
     company: JSON.stringify({ companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature }),
-    regional: JSON.stringify({ timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours }),
+    regional: JSON.stringify({ timezone, dateFormat, timeFormat, language }),
     security: JSON.stringify(securityData),
     notifications: JSON.stringify(notificationsData),
     eventLogs: JSON.stringify(eventLogsData),
@@ -172,7 +168,7 @@ export default function PartnerSettingsPage() {
     remoteAccess: JSON.stringify({ remoteAccessData, networkProxyData }),
   }), [
     companyName, address, contactName, contactEmail, contactPhone, contactWebsite, emailSignature,
-    timezone, dateFormat, timeFormat, language, businessHoursPreset, customHours,
+    timezone, dateFormat, timeFormat, language,
     securityData, notificationsData, eventLogsData, defaultsData, brandingData,
     aiBudgetsData, aiApprovalsData, remoteAccessData, networkProxyData,
   ]);
@@ -228,10 +224,6 @@ export default function PartnerSettingsPage() {
       setDateFormat(settings.dateFormat || 'MM/DD/YYYY');
       setTimeFormat(settings.timeFormat || '12h');
       setLanguage(normalizeLocale(settings.language) ?? 'en');
-      setBusinessHoursPreset(settings.businessHours?.preset || 'business');
-      if (settings.businessHours?.custom) {
-        setCustomHours({ ...DEFAULT_BUSINESS_HOURS, ...settings.businessHours.custom });
-      }
       setContactName(settings.contact?.name || '');
       setContactEmail(settings.contact?.email || '');
       setContactPhone(settings.contact?.phone || '');
@@ -377,10 +369,6 @@ export default function PartnerSettingsPage() {
 
     const settings: Record<string, unknown> = {
       timezone, dateFormat, timeFormat, language,
-      businessHours: {
-        preset: businessHoursPreset,
-        ...(businessHoursPreset === 'custom' ? { custom: customHours } : {})
-      },
       contact: {
         name: contactName || undefined,
         email: contactEmail || undefined,
@@ -471,10 +459,6 @@ export default function PartnerSettingsPage() {
     }
   };
 
-  const updateCustomHours = (day: string, field: keyof DaySchedule, value: string | boolean) => {
-    setCustomHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
-  };
-
   // Show a loading state while the partner context is still resolving, NOT the
   // access-denied state. The partner store starts empty (currentPartnerId null)
   // and only fills after the store fetch or the JWT-seed effect below runs, so
@@ -533,7 +517,7 @@ export default function PartnerSettingsPage() {
   const activeDef = TAB_BY_KEY[activeTab];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>
@@ -650,14 +634,10 @@ export default function PartnerSettingsPage() {
                 dateFormat={dateFormat}
                 timeFormat={timeFormat}
                 language={language}
-                businessHoursPreset={businessHoursPreset}
-                customHours={customHours}
                 onTimezoneChange={setTimezone}
                 onDateFormatChange={setDateFormat}
                 onTimeFormatChange={setTimeFormat}
                 onLanguageChange={setLanguage}
-                onBusinessHoursPresetChange={setBusinessHoursPreset}
-                onCustomHoursChange={updateCustomHours}
               />
             )}
 

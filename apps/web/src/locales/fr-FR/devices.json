@@ -1950,6 +1950,7 @@
     "title": "Connexions réseau actives"
   },
   "devicePatchStatusTab": {
+    "released": "Publié le {{date}}",
     "compliance": {
       "compliant": "{{percent}} % conforme",
       "description": "Mises à jour en attente vs installées",
@@ -2701,7 +2702,7 @@
       "message_one": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec {{count}} appareil restant ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
       "message_other": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{count}} appareils restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion."
     },
-    "importFromRmm": "Importer depuis un autre RMM",
+    "importFromRmm": "Importer des champs personnalisés depuis un autre RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} masqués — {{fields}} s'applique uniquement aux appareils avec agent.",
     "hiddenNonAgentClassLabel": {
       "network": "appareils réseau",
