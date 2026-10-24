@@ -126,6 +126,10 @@ function useOpenPastConversation() {
         });
         if (toast) showToast(toast);
       })
+      .catch((err) => {
+        console.error('[Workspace] Finishing a past-conversation pick failed:', err);
+        showToast({ type: 'error', message: t('aiConversationMove.notAvailable') });
+      })
       .finally(() => { picking.current = false; });
   }, [openSession, t]);
 

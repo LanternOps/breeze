@@ -115,6 +115,27 @@ describe('list', () => {
     errSpy.mockRestore();
   });
 
+  it('a 200 without a data array is a failure, not an empty history', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    fetchMock.mockImplementation(async () => json({ sessions: [] }));
+    const { result } = renderHook(() => useAiConversationSource({ surface: 'panel' }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.error).not.toBeNull();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('rows dropped as malformed or non-chat are reported once per response', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    listRows = [row(A), row(B, { type: 'mcp' }), { id: C }];
+    const { result } = renderHook(() => useAiConversationSource({ surface: 'panel' }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.items.map((r) => r.id)).toEqual([A]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0]![0])).toMatch(/2 of 3/);
+    warnSpy.mockRestore();
+  });
+
   it('a list response that lands after unmount writes nothing', async () => {
     let resolve!: (r: Response) => void;
     fetchMock.mockImplementation(() => new Promise<Response>((r) => { resolve = r; }));

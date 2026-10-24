@@ -276,11 +276,33 @@ describe('a pick of the row the side panel holds — a move (D3)', () => {
     await waitFor(() => expect(urls()).toContain(`/ai/sessions/${S}`));
     act(() => useWorkspaceStore.getState().resetForLogout());
     await act(async () => { resolveGet(session(S)); });
-    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    // The handler finished: the latch is open again, so a new pick goes through.
+    routes.set(`/ai/sessions/${P}`, () => session(P));
+    // resetForLogout emptied the tab bar, so the empty state's entry point is the one showing.
+    fireEvent.click(await screen.findByTestId('workspace-empty-open-past'));
+    await pick(P);
+    await waitFor(() => expect(tabFor(P)).toBeDefined());
     expect(releaseSpy).not.toHaveBeenCalled();
     expect(useAiStore.getState().sessionId).toBe(S);
     expect(toastMock).not.toHaveBeenCalled();
     useAiStore.setState({ releaseSession: release });
+  });
+
+  it('a failure after the open (here: the release throws) is logged and toasted, and the latch reopens', async () => {
+    bindPanel();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const release = useAiStore.getState().releaseSession;
+    useAiStore.setState({ releaseSession: () => { throw new Error('boom'); } });
+    render(<WorkspacePage />);
+    await openPickerFromMenu();
+    await pick(S);
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith({ type: 'error', message: "This conversation isn't available" }));
+    expect(errSpy).toHaveBeenCalled();
+    useAiStore.setState({ releaseSession: release });
+    await openPickerFromMenu();
+    await pick(P);
+    await waitFor(() => expect(tabFor(P)).toBeDefined());
+    errSpy.mockRestore();
   });
 
   it('a thrown openSession is an error: logged, toasted, panel kept', async () => {

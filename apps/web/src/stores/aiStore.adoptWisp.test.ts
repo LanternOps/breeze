@@ -92,6 +92,62 @@ describe('adoptSession and Wisp state (#10032)', () => {
     expect(fetchMock.mock.calls.map(([u]) => String(u)).some((u) => u.startsWith('/wisp/'))).toBe(false);
   });
 
+  it('adopting a session under another grant drops the shown one at once, then installs that grant', async () => {
+    useAiStore.setState({ wisp: wisp({ grantId: 'grant-1' }), sessionId: 'sess-other' });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u === `/ai/sessions/${S}`) {
+        return json({ session: { id: S, type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-2' }, messages: [] });
+      }
+      if (u === `/ai/sessions/${S}/stream`) return idleStream();
+      if (u === '/wisp/thread?orgId=org-a') { await gate; return json(threadBody('grant-2', 'org-a')); }
+      return json({ data: [] });
+    });
+    await expect(useAiStore.getState().adoptSession(S)).resolves.toBe('ok');
+    expect(useAiStore.getState().wisp).toBeNull();
+    release();
+    await vi.waitFor(() => expect(useAiStore.getState().wisp).toMatchObject({ grantId: 'grant-2' }));
+  });
+
+  it('a grant thread that resolves after the panel moved on writes nothing', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u === `/ai/sessions/${S}`) {
+        return json({ session: { id: S, type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      }
+      if (u === `/ai/sessions/${S}/stream`) return idleStream();
+      if (u.startsWith('/wisp/thread')) { await gate; return json(threadBody('grant-pw', 'org-a')); }
+      return json({ data: [] });
+    });
+    await expect(useAiStore.getState().adoptSession(S)).resolves.toBe('ok');
+    useAiStore.setState({ sessionId: 'sess-elsewhere' });
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/wisp/thread'))).toBe(true);
+    expect(useAiStore.getState().wisp).toBeNull();
+  });
+
+  it('a grant thread that fails leaves the adopted session plain, without throwing', async () => {
+    fetchMock.mockImplementation(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u === `/ai/sessions/${S}`) {
+        return json({ session: { id: S, type: 'general', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      }
+      if (u === `/ai/sessions/${S}/stream`) return idleStream();
+      if (u.startsWith('/wisp/thread')) throw new Error('network');
+      return json({ data: [] });
+    });
+    await expect(useAiStore.getState().adoptSession(S)).resolves.toBe('ok');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(useAiStore.getState()).toMatchObject({ sessionId: S, wisp: null });
+  });
+
   it('adopting a session under the grant the panel already shows keeps that Wisp state', async () => {
     const live = wisp({ grantId: 'grant-1', threadId: 'thread-1' });
     useAiStore.setState({ wisp: live, sessionId: 'sess-other' });

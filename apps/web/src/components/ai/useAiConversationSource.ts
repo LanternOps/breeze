@@ -60,9 +60,15 @@ function toRow(raw: unknown): BaseRow | null {
   };
 }
 
+/** A response body's rows; a body without a `data` array is a failure, not an empty history. */
 const rowsOf = (data: unknown): BaseRow[] => {
   const list = (data as { data?: unknown } | null)?.data;
-  return Array.isArray(list) ? list.map(toRow).filter((r): r is BaseRow => r !== null) : [];
+  if (!Array.isArray(list)) throw new Error('Unexpected conversation list response');
+  const rows = list.map(toRow).filter((r): r is BaseRow => r !== null);
+  if (rows.length < list.length) {
+    console.warn(`[AI] Dropped ${list.length - rows.length} of ${list.length} conversation rows (malformed or not a chat session)`);
+  }
+  return rows;
 };
 
 /** The workspace opens neither topology investigations nor closed sessions (D4). */
@@ -98,7 +104,8 @@ function useWorkspaceTabSessionIds(): ReadonlySet<string> {
         read();
         unsubscribe = useWorkspaceStore.subscribe(read);
       })
-      .catch((err) => console.warn('[AI] Could not read the AI Assistant tabs for the conversation list:', err));
+      // Without the tabs no row can say "open elsewhere", so a pick would not move.
+      .catch((err) => console.error('[AI] Could not read the AI Assistant tabs for the conversation list:', err));
     return () => {
       cancelled = true;
       unsubscribe?.();
