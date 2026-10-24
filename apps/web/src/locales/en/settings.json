@@ -1165,7 +1165,11 @@
     "validation": {
       "retentionDays": "Enter a whole number of days from 1 to 3650."
     },
-    "unsavedConfirm": "You have unsaved changes. Leave this page and discard them?"
+    "unsavedConfirm": "You have unsaved changes. Leave this page and discard them?",
+    "knownGuests": {
+      "added": "Known guest added",
+      "removed": "Known guest removed"
+    }
   },
   "partnerSendingDomains": {
     "title": "Custom sender addresses",

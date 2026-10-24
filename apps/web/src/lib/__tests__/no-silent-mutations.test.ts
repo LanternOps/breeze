@@ -121,6 +121,7 @@ const TARGET_GLOBS = [
   'src/components/settings/partnerSettings/units/trustCenterUnit.ts',
   'src/components/settings/partnerSettings/units/aiFeatureDefaultsUnit.ts',
   'src/components/settings/partnerSettings/units/aiDataPolicyUnit.ts',
+  'src/components/settings/KnownGuestsSettings.tsx',
   'src/components/settings/aiModels/PartnerAiModelsTab.tsx',
   'src/components/settings/aiModels/ConnectionDrawer.tsx',
   'src/components/settings/aiModels/ResidencySwitch.tsx',
@@ -972,7 +973,8 @@ describe('no silent mutations in targeted set', () => {
     // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 254 → 256.
     // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 256 → 257.
     // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 257 → 259.
-    expect(absoluteFiles.length).toBe(259);
+    // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 259 → 260.
+    expect(absoluteFiles.length).toBe(260);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

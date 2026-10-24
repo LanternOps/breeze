@@ -1165,7 +1165,11 @@
     "validation": {
       "retentionDays": "Inserisci un numero intero di giorni da 1 a 3650."
     },
-    "unsavedConfirm": "Hai modifiche non salvate. Lasciare questa pagina e scartarle?"
+    "unsavedConfirm": "Hai modifiche non salvate. Lasciare questa pagina e scartarle?",
+    "knownGuests": {
+      "added": "Ospite noto aggiunto",
+      "removed": "Ospite noto rimosso"
+    }
   },
   "partnerSendingDomains": {
     "title": "Indirizzi mittente personalizzati",

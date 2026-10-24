@@ -1165,7 +1165,11 @@
     "validation": {
       "retentionDays": "Geben Sie eine ganze Zahl an Tagen von 1 bis 3650 ein."
     },
-    "unsavedConfirm": "Sie haben ungespeicherte Änderungen. Diese Seite verlassen und die Änderungen verwerfen?"
+    "unsavedConfirm": "Sie haben ungespeicherte Änderungen. Diese Seite verlassen und die Änderungen verwerfen?",
+    "knownGuests": {
+      "added": "Bekanntes Gastgerät hinzugefügt",
+      "removed": "Bekanntes Gastgerät entfernt"
+    }
   },
   "partnerSendingDomains": {
     "title": "Eigene Absenderadressen",

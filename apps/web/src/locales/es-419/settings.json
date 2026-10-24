@@ -1165,7 +1165,11 @@
     "validation": {
       "retentionDays": "Ingresa un número entero de días entre 1 y 3650."
     },
-    "unsavedConfirm": "Tienes cambios sin guardar. ¿Salir de esta página y descartarlos?"
+    "unsavedConfirm": "Tienes cambios sin guardar. ¿Salir de esta página y descartarlos?",
+    "knownGuests": {
+      "added": "Invitado conocido agregado",
+      "removed": "Invitado conocido eliminado"
+    }
   },
   "partnerSendingDomains": {
     "title": "Direcciones de remitente propias",
