@@ -10,6 +10,10 @@ export type Site = {
   name: string;
   timezone: string;
   deviceCount: number;
+  /** Every `GET /orgs/sites` row carries its org; `orgName` rides along on a
+   *  cross-org (no `organizationId`) listing (#9794). */
+  orgId?: string;
+  orgName?: string | null;
   // jsonb on the wire (untyped); every value is checked before display.
   address?: {
     line1?: unknown;
