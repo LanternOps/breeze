@@ -227,6 +227,8 @@ export interface AdmitTaskInput {
   deadlineMs?: number;
   now?: Date;
   clientIdempotencyKey?: string | null;
+  /** Wisp W02 grant pin; see `AdmitServiceRecoveryTaskInput.grant`. */
+  grant?: AdmitServiceRecoveryTaskInput['grant'];
 }
 
 type Refusal = Extract<AdmitTaskResult, { ok: false }>;
