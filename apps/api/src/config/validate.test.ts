@@ -3569,6 +3569,58 @@ describe('MCP Apps env guard (B-W05 #6159)', () => {
   });
 });
 
+describe('MCP Tasks env guards (B-W06 #6160, D-B55)', () => {
+  const intKnobs = ['MCP_TASK_PENDING_POLL_INTERVAL_MS', 'MCP_TASK_POLL_INTERVAL_MS', 'MCP_TASK_TTL_GRACE_MS'];
+  it('declares every key in the schema', () => {
+    for (const k of ['MCP_TASKS_ENABLED', ...intKnobs]) expect(ENV_SCHEMA_KEYS).toContain(k);
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_TASKS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_TASKS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_TASKS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_TASKS_ENABLED: value, MCP_STATELESS_ENABLED: 'true' }, () => {
+      expect(validateConfig().MCP_TASKS_ENABLED).toBe(value);
+    });
+  });
+  it.each(intKnobs)('%s accepts a positive integer', (knob) => {
+    withEnv({ ...validEnv, [knob]: '15000' }, () => {
+      expect(validateConfig()[knob as 'MCP_TASK_POLL_INTERVAL_MS']).toBe('15000');
+    });
+  });
+  it.each(intKnobs.flatMap((k) => ['abc', '1.5', '-3', '0'].map((v) => [k, v] as const)))(
+    '%s refuses boot on %s',
+    (knob, value) => {
+      withEnv({ ...validEnv, [knob]: value }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(knob));
+      });
+    },
+  );
+
+  const tasksWarnings = (env: Record<string, string>): string[] => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let calls: string[] = [];
+    withEnv({ ...validEnv, ...env }, () => {
+      expect(() => validateConfig()).not.toThrow();
+      calls = warnSpy.mock.calls.map((args) => args[0] as string).filter((msg) => msg.includes('MCP_TASKS_ENABLED'));
+    });
+    warnSpy.mockRestore();
+    return calls;
+  };
+  it('warns at boot when MCP_TASKS_ENABLED is on without MCP_STATELESS_ENABLED', () => {
+    const calls = tasksWarnings({ MCP_TASKS_ENABLED: 'true' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/MCP_STATELESS_ENABLED/);
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'on', MCP_STATELESS_ENABLED: 'false' })).toHaveLength(1);
+  });
+  it('no warning when both are on, or Tasks are off', () => {
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'true', MCP_STATELESS_ENABLED: 'true' })).toHaveLength(0);
+    expect(tasksWarnings({ MCP_TASKS_ENABLED: 'false' })).toHaveLength(0);
+    expect(tasksWarnings({})).toHaveLength(0);
+  });
+});
+
 describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
   const intKnobs = [
     'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',

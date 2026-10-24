@@ -60,6 +60,12 @@ import {
 // tracked for a follow-up sweep; see the audit narrative referenced by the
 // SP2 launch-readiness plan.
 const SITE_SCOPE_EXEMPT_HANDLERS: ReadonlySet<string> = new Set<string>([
+  // Security scan start (#6263 W05 PR A): the handler delegates to
+  // services/securityScanStart.ts `startDeviceScan`, which is shared with the AI
+  // `security_scan scan` action and applies the gate itself (device org check +
+  // `canAccessSite(userPerms, device.siteId)` → 403). The static scan cannot see
+  // through the service call; the gate is unit-tested in securityScanStart.test.ts.
+  'routes/security/scans.ts:POST /scan/:deviceId',
   // Customer-portal hardware health (#7731): the caller is a portal user bound to
   // ONE customer org (orgId comes from portalAuth, never the request) and portal
   // users have no site scope. The read model filters devices by that orgId, so a

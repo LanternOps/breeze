@@ -318,6 +318,10 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // the three pinned caller-target columns only. It never reads or reverts
   // org_id, so a merge repoint of action_intents passes.
   'action_intents.action_intents_caller_target_immutable': 'freezes target_entra_tenant_id/target_entra_oid/target_connection_ref only; never reads or reverts org_id',
+  // MCP B-W06 (#6160, 2027-01-04-121000): BEFORE UPDATE stamp of
+  // status_changed_at = clock_timestamp() when status changes. It never reads
+  // or reverts org_id, so a merge repoint of action_intents passes.
+  'action_intents.action_intents_stamp_status_changed_at': 'stamps status_changed_at only when status changes; never reads or reverts org_id',
   // Backup key root W01 (#8731, 2026-12-28-110000): BEFORE UPDATE OF key_layout, key_prefix.
   'backup_snapshots.backup_snapshots_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',
   'backup_snapshot_id_reservations.backup_snapshot_id_reservations_key_root_immutable': 'guards key_layout/key_prefix immutability only; never reads or reverts org_id',

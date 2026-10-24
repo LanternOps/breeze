@@ -683,6 +683,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'security/recoveryKeys.ts': { gap: '#6781' },
   'security/scans.ts': { tools: ['security_scan'] },
   'security/status.ts': { gap: '#6781' },
+  'security/sweeps.ts': { exempt: 'tool_in_later_wave', note: 'IOC sweeps (#6263 W05); the ioc_hunt AI tool ships in W05 PR B (#6268).' },
   'security/threats.ts': { tools: ['security_scan'] },
   'security/yara.ts': { exempt: 'tool_in_later_wave', note: 'YARA rule set CRUD (#6263 W03a); the AI security_scan rule-set actions ship in W05 (#6268).' },
   'security/yaraIocImport.ts': { exempt: 'tool_in_later_wave', note: 'YARA IOC import (#6263 W04); AI rule-set actions ship in W05 (#6268).' },
