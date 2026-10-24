@@ -505,16 +505,18 @@ describe('paused grant', () => {
     await pauseGrant(g.grantId, 'grantor_suspended');
     expect(await readGrant(g.grantId)).toMatchObject({ status: 'paused', pausedReason: 'grantor_suspended' });
 
-    const first = await processWakeTick(new Date());
+    // One clock for both ticks: W05a's orphan notice is deduped per grant per UTC day.
+    const now = new Date();
+    const first = await processWakeTick(now);
     expect(first.watchesStopped).toBe(2);
-    const second = await processWakeTick(new Date());
+    const second = await processWakeTick(new Date(now.getTime() + 1_000));
     expect(second.watchesStopped).toBe(0);
 
     const rows = await asSystem(() => db.select().from(wispWatches).where(eq(wispWatches.grantId, g.grantId)));
     expect(rows.map((r) => r.id).sort()).toEqual([w1.id, w2.id].sort());
     for (const r of rows) expect(r).toMatchObject({ status: 'stopped', stoppedReason: 'paused' });
 
-    expect(await noticesByKey(t.adminId, `wisp-watches-orphaned-${g.grantId}`)).toHaveLength(1);
+    expect(await noticesByKey(t.adminId, `wisp-watches-orphaned-${g.grantId}-${now.toISOString().slice(0, 10)}`)).toHaveLength(1);
     // A paused grant is never floor-ticked and gets no assessment.
     expect(await getWispWakeQueue().getJob(wakeJobId(g.grantId, t.orgA))).toBeUndefined();
     expect(await enqueueAssessment({ grantId: g.grantId, orgId: t.orgA, reason: { kind: 'tick' } }))
