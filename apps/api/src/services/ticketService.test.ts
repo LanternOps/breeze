@@ -6108,3 +6108,171 @@ describe('SLA calendars — moveTicketOrg re-resolves for the target org (#8973 
     expect(set).not.toHaveProperty('responseDueAt');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #8883 W5 T5.3 — routing rules at create (spec §5.2). The evaluator is
+// module-mocked (the unit db mock has no execute); its own behaviour is
+// covered by ticketRouting/evaluate.test.ts and real Postgres by
+// ticketCreateCallerContexts.integration.test.ts. Default: no rule matched,
+// so every test above is unchanged.
+// ---------------------------------------------------------------------------
+
+const { routingMocks } = vi.hoisted(() => ({
+  routingMocks: {
+    evaluate: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({
+      ruleId: null, ruleName: null, applied: {}, skipped: [], appliedStatusCore: null,
+    })),
+  },
+}));
+vi.mock('./ticketRouting/evaluate', () => ({ evaluateRoutingRules: routingMocks.evaluate }));
+
+function routeTo(outcome: Record<string, unknown>) {
+  routingMocks.evaluate.mockResolvedValue({
+    ruleId: 'rule-1', ruleName: 'Printers', applied: {}, skipped: [], appliedStatusCore: null, ...outcome,
+  });
+}
+
+describe('createTicket — routing rules (#8883 W5 T5.3)', () => {
+  const insertedTicket = () => valuesMock.mock.calls[0]![0] as Record<string, unknown>;
+  const valuesOf = (pred: (v: Record<string, unknown>) => boolean) =>
+    valuesMock.mock.calls.map((c) => c[0] as Record<string, unknown>).filter(pred);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    routingMocks.evaluate.mockReset().mockResolvedValue({ ruleId: null, ruleName: null, applied: {}, skipped: [], appliedStatusCore: null });
+    dbMocks.selectResult.mockResolvedValue([{ id: 'o-1', partnerId: 'p-1' }]);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0042', status: 'new' }]);
+    assigneeEligibleMock.mockResolvedValue(true);
+    configMocks.getSystemStatusId.mockImplementation(async (_p: string, core: string) => `sys-${core}`);
+  });
+  afterEach(() => {
+    configMocks.getSystemStatusId.mockReset().mockResolvedValue(null);
+    configMocks.getPartnerPrioritySla.mockResolvedValue({ responseMinutes: null, resolutionMinutes: null });
+  });
+
+  it('evaluates once with the ticket org + partner + device, the final requester email, and explicit-choice flags', async () => {
+    await createTicket({
+      orgId: 'o-1', subject: 'Printer jam', source: 'email', submitterEmail: 'jane@example.com', priority: 'high',
+    }, actor);
+    expect(routingMocks.evaluate).toHaveBeenCalledTimes(1);
+    const [, owner, facts, explicit] = routingMocks.evaluate.mock.calls[0]!;
+    expect(owner).toEqual({ partnerId: 'p-1', orgId: 'o-1', deviceId: null });
+    expect(facts).toEqual({ source: 'email', priority: 'high', categoryId: null, subject: 'Printer jam', requesterEmail: 'jane@example.com' });
+    expect(explicit).toEqual({ priority: true, categoryId: false, assigneeId: false, statusId: false });
+  });
+
+  it('is skipped for a continuation ticket (Gate B14): nothing is copied or routed', async () => {
+    routeTo({ applied: { priority: 'urgent' } });
+    await createTicket({ orgId: 'o-1', subject: 'Re: T-1 (continued)', source: 'email', submitterEmail: 'a@b.com', continuationOfTicketId: 't-0' }, actor);
+    expect(routingMocks.evaluate).not.toHaveBeenCalled();
+    expect(insertedTicket()).toMatchObject({ priority: 'normal', routingRuleId: null });
+  });
+
+  it('no priority and no matching rule still stores normal (the service default stays)', async () => {
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+    expect(insertedTicket()).toMatchObject({ priority: 'normal', routingRuleId: null, status: 'new', statusId: 'sys-new', assignedTo: null });
+    // No rule matched: no routing note, no routing audit keys.
+    expect(valuesOf((v) => v.commentType === 'system')).toEqual([]);
+    expect(auditMock.mock.calls[0]![0].details).not.toHaveProperty('routingRuleId');
+  });
+
+  it("a rule's priority feeds the SLA target resolution and the insert", async () => {
+    routeTo({ applied: { priority: 'urgent' } });
+    configMocks.getPartnerPrioritySla.mockImplementation(async (_p: string, prio: string) =>
+      (prio === 'urgent' ? { responseMinutes: 15, resolutionMinutes: 60 } : { responseMinutes: null, resolutionMinutes: null }));
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+    expect(insertedTicket()).toMatchObject({ priority: 'urgent', responseSlaMinutes: 15, resolutionSlaMinutes: 60, routingRuleId: 'rule-1' });
+  });
+
+  it('precedence: an intake priority wins over the rule (the evaluator is told it is explicit)', async () => {
+    routeTo({ applied: {} });
+    formMocks.getTicketFormForOrg.mockResolvedValueOnce({ id: 'f-1' });
+    formMocks.applyIntakeForm.mockReturnValueOnce({ categoryId: undefined, defaultPriority: 'low', subjectFromForm: 'From form', descriptionBlock: null, defaultTags: [], intakeSnapshot: {} });
+    await createTicket({ orgId: 'o-1', source: 'manual', formId: 'f-1', formResponses: {} }, actor);
+    const [, , facts, explicit] = routingMocks.evaluate.mock.calls[0]!;
+    expect((facts as { priority: string }).priority).toBe('low');
+    expect((explicit as { priority: boolean }).priority).toBe(true);
+    expect(insertedTicket()).toMatchObject({ priority: 'low' });
+  });
+
+  it("a rule's category is validated, stored and drives the category SLA", async () => {
+    routeTo({ applied: { categoryId: 'cat-9' } });
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]) // org
+      .mockResolvedValueOnce([{ id: 'cat-9', partnerId: 'p-1', responseSlaMinutes: 30, resolutionSlaMinutes: 240 }]); // category
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+    expect(insertedTicket()).toMatchObject({ categoryId: 'cat-9', responseSlaMinutes: 30, resolutionSlaMinutes: 240 });
+  });
+
+  it("a rule's assignee is stored and the ticket starts at core open, like an explicit assignee", async () => {
+    routeTo({ applied: { assigneeId: 'u-9' } });
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+    expect(insertedTicket()).toMatchObject({ assignedTo: 'u-9', status: 'open', statusId: 'sys-open' });
+  });
+
+  it("a rule's status overrides the derivation; a pending/on_hold core starts the SLA clock paused at created_at", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-12T20:00:00Z'));
+    try {
+      routeTo({ applied: { assigneeId: 'u-9', statusId: 'st-wait' }, appliedStatusCore: 'pending' });
+      await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+      expect(insertedTicket()).toMatchObject({
+        status: 'pending', statusId: 'st-wait', assignedTo: 'u-9',
+        slaPausedAt: new Date('2026-06-12T20:00:00Z'), createdAt: new Date('2026-06-12T20:00:00Z'),
+      });
+      valuesMock.mockClear();
+      routeTo({ applied: { statusId: 'st-open' }, appliedStatusCore: 'open' });
+      await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+      expect(insertedTicket()).toMatchObject({ status: 'open', statusId: 'st-open', slaPausedAt: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a rule's tags are added to the intake form's default tags", async () => {
+    routeTo({ applied: { tags: ['vip', 'printer'] } });
+    formMocks.getTicketFormForOrg.mockResolvedValueOnce({ id: 'f-1' });
+    formMocks.applyIntakeForm.mockReturnValueOnce({ categoryId: undefined, defaultPriority: undefined, subjectFromForm: 'From form', descriptionBlock: null, defaultTags: ['printer', 'hw'], intakeSnapshot: {} });
+    await createTicket({ orgId: 'o-1', source: 'manual', formId: 'f-1', formResponses: {} }, actor);
+    expect(insertedTicket().tags).toEqual(['printer', 'hw', 'vip']);
+  });
+
+  it('the ticket.created outbox row carries the FINAL assignee; no ticket.assigned row is written', async () => {
+    routeTo({ applied: { assigneeId: 'u-9' } });
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+    const outbox = valuesOf((v) => typeof v.eventType === 'string');
+    expect(outbox.map((v) => v.eventType)).toEqual(['ticket.created']);
+    expect(outbox[0]!.payload).toMatchObject({ assigneeId: 'u-9' });
+  });
+
+  it('writes one internal system comment naming the rule and its applied and skipped actions, and audits them', async () => {
+    routeTo({
+      applied: { priority: 'high', tags: ['vip'] },
+      skipped: [{ action: 'set_assignee', reason: 'assignee_ineligible' }],
+    });
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor);
+    const notes = valuesOf((v) => v.commentType === 'system');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatchObject({ ticketId: 't-1', isPublic: false, authorType: 'internal', originPrincipalKind: 'system' });
+    expect(notes[0]!.content).toContain('"Printers"');
+    expect(notes[0]!.content).toContain('priority (high)');
+    expect(notes[0]!.content).toContain('tags (vip)');
+    expect(notes[0]!.content).toMatch(/Skipped: assignee — /);
+    expect(auditMock.mock.calls[0]![0].details).toMatchObject({
+      routingRuleId: 'rule-1',
+      routingActions: { applied: { priority: 'high', tags: ['vip'] }, skipped: [{ action: 'set_assignee', reason: 'assignee_ineligible' }] },
+    });
+  });
+
+  it('an explicit ineligible assignee still errors (the rule never rescues it)', async () => {
+    routeTo({ applied: {} });
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1', status: 'active', email: 'u2@example.com' }]);
+    await expect(createTicket({ orgId: 'o-1', subject: 'x', source: 'manual', assigneeId: 'u-2' }, actor))
+      .rejects.toMatchObject({ code: 'ASSIGNEE_NOT_ELIGIBLE' });
+    expect(routingMocks.evaluate).not.toHaveBeenCalled();
+  });
+});

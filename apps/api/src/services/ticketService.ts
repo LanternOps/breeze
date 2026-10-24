@@ -40,6 +40,7 @@ import {
   slaClockRowOf,
 } from './ticketSlaDeadlines';
 import { resolveBusinessCalendar } from './businessCalendars/resolve';
+import { evaluateRoutingRules, type RoutingOutcome } from './ticketRouting/evaluate';
 import { calendarPatchForOrgMove } from './businessCalendars/reresolve';
 
 export type { OpenWindow, TicketWriteMode } from './ticketWriteMode';
@@ -1028,6 +1029,14 @@ interface BaseCreateTicketInput {
   ticketType?: TicketType;
   /** Import mode only (#8313): the source ticket's tags. Ignored on a live create. */
   tags?: string[];
+  /**
+   * #8883 W5 (Gate B14): the id of the closed ticket this one continues (an
+   * inbound reply to a closed thread, an Office add-in follow-up). Explicit
+   * provenance — never inferred from the subject or description. A
+   * continuation skips routing and copies nothing from its predecessor
+   * (today's behaviour). Service-internal: not on any HTTP schema.
+   */
+  continuationOfTicketId?: string;
 }
 
 export type TicketWorkKind = 'support' | 'deliverable' | 'project_task';
@@ -1316,8 +1325,41 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     resolvedSubmitterEmail = resolvedSubmitterEmail ?? namedContact.email ?? null;
   }
 
-  const priority = input.priority ?? intake?.defaultPriority ?? 'normal';
-  const initialCoreStatus: TicketStatus = input.assigneeId ? 'open' : 'new';
+  // #8883 W5 (spec §5.2): routing rules, after the requester is resolved (the
+  // domain condition sees the final address) and before the priority, initial
+  // status, SLA targets and number. Skipped for import mode and continuations
+  // (Gate B14). A rule fills only what the caller — or the intake form, a
+  // configured choice — did not set; the explicit-assignee check above stays
+  // the caller's, the evaluator re-checks a rule assignee itself.
+  const routing: RoutingOutcome | null = importMode || input.continuationOfTicketId || !org.partnerId
+    ? null
+    : await evaluateRoutingRules(
+      db,
+      { partnerId: org.partnerId, orgId: input.orgId, deviceId: input.deviceId ?? null },
+      {
+        source: input.source,
+        priority: input.priority ?? intake?.defaultPriority ?? null,
+        categoryId: effectiveCategoryId ?? null,
+        subject,
+        requesterEmail: resolvedSubmitterEmail,
+      },
+      {
+        priority: input.priority !== undefined || intake?.defaultPriority != null,
+        categoryId: effectiveCategoryId !== undefined,
+        assigneeId: input.assigneeId !== undefined,
+        statusId: false,
+      },
+    );
+  const routed = routing?.ruleId ? routing : null;
+  const finalCategoryId = effectiveCategoryId ?? routed?.applied.categoryId;
+  if (!effectiveCategoryId && routed?.applied.categoryId) {
+    category = await assertCategoryInPartner(routed.applied.categoryId, org.partnerId);
+  }
+  const finalAssigneeId = input.assigneeId ?? routed?.applied.assigneeId;
+
+  const priority = input.priority ?? intake?.defaultPriority ?? routed?.applied.priority ?? 'normal';
+  // A rule's status overrides the assignee derivation (spec §5.2).
+  const initialCoreStatus: TicketStatus = routed?.appliedStatusCore ?? (finalAssigneeId ? 'open' : 'new');
 
   const workKind: TicketWorkKind = input.workKind ?? 'support';
   const ticketType: TicketType =
@@ -1329,7 +1371,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     importMode
       ? Promise.resolve({ responseMinutes: null, resolutionMinutes: null })
       : resolveEffectiveSlaTargetsForTicket({ orgId: input.orgId, partnerId: org.partnerId, priority, category, workKind }),
-    getSystemStatusId(org.partnerId, initialCoreStatus),
+    routed?.applied.statusId ? Promise.resolve(routed.applied.statusId) : getSystemStatusId(org.partnerId, initialCoreStatus),
   ]);
 
   // An imported 2021 ticket is T-2021-NNNN: the UTC year of its source time.
@@ -1346,6 +1388,8 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
   // new tickets only. An imported ticket carries null targets (§4.3 of the
   // import spec) and keeps the 24×7 snapshot.
   const createdAt = importMode ? importMode.at : new Date();
+  // A routed pending / on_hold status starts the SLA clock paused (spec §5.2).
+  const slaPausedAt = initialCoreStatus === 'pending' || initialCoreStatus === 'on_hold' ? createdAt : null;
   const slaCalendarRevisionId = importMode
     ? null
     : (await resolveBusinessCalendar(db, { partnerId: org.partnerId, orgId: input.orgId })).revisionId;
@@ -1354,7 +1398,7 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
       createdAt,
       responseSlaMinutes: effectiveSla.responseMinutes,
       resolutionSlaMinutes: effectiveSla.resolutionMinutes,
-      slaPausedAt: null,
+      slaPausedAt,
       slaPausedBusinessMinutes: 0,
       firstResponseAt: null,
       resolvedAt: null,
@@ -1371,12 +1415,14 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     subject,
     description: [input.description?.trim(), intake?.descriptionBlock].filter(Boolean).join('\n\n') || null,
     deviceId: input.deviceId ?? null,
-    categoryId: effectiveCategoryId ?? null,
+    categoryId: finalCategoryId ?? null,
     priority,
     dueDate: input.dueDate ?? null,
-    assignedTo: input.assigneeId ?? null,
+    assignedTo: finalAssigneeId ?? null,
     status: initialCoreStatus,
     statusId: statusId ?? null,
+    slaPausedAt,
+    routingRuleId: routed?.ruleId ?? null,
     source: input.source,
     submittedBy: resolvedSubmittedBy,
     requesterContactId: resolvedRequesterContactId,
@@ -1398,7 +1444,9 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
           resolutionSlaMinutes: 'service_principal' as const,
         }
       : input.ticketType !== undefined ? { ticketType: actorProvenance(actor) } : undefined,
-    tags: importMode && input.tags?.length ? input.tags : intake?.defaultTags.length ? intake.defaultTags : undefined,
+    tags: importMode && input.tags?.length
+      ? input.tags
+      : mergeRoutedTags(intake?.defaultTags ?? [], routed?.applied.tags ?? []),
     customFields: intake ? intake.intakeSnapshot : undefined,
     ...slaDeadlines,
     createdAt,
@@ -1424,10 +1472,17 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
   // Ids and enum labels only (never subject/description). No external id:
   // that key is namespaced per Partner API principal (ticket_external_refs)
   // and an org webhook has no single principal to answer for.
+  // #8883 W5 (spec §5.4): the routing explanation is a snapshot on the
+  // ticket, written in this transaction, so renaming or deleting the rule
+  // never erases it.
+  if (routed) await writeRoutingNote(ticket.id, routed);
+
   await fx.writeTicketOutbox(input.orgId, ticket.id, 'ticket.created', {
     internalNumber,
     source: input.source,
-    assigneeId: input.assigneeId ?? null,
+    // The FINAL assignee: a rule's assignment is part of the insert, so no
+    // separate ticket.assigned row (spec §5.2).
+    assigneeId: finalAssigneeId ?? null,
     ...actorEventIdentity(actor),
     partnerId: org.partnerId ?? null,
   });
@@ -1438,10 +1493,72 @@ export async function createTicket(input: CreateTicketInput, actor: TicketActor,
     resourceType: 'ticket',
     resourceId: ticket.id,
     resourceName: internalNumber,
-    details: { source: input.source, ...actorAuditDetails(actor) },
+    details: {
+      source: input.source,
+      ...(routed ? { routingRuleId: routed.ruleId, routingActions: { applied: routed.applied, skipped: routed.skipped } } : {}),
+      ...actorAuditDetails(actor),
+    },
     result: 'success'
   });
   return ticket;
+}
+
+/** Intake-form default tags, then a rule's tags not already present. Undefined when empty (column default). */
+function mergeRoutedTags(base: readonly string[], routed: readonly string[]): string[] | undefined {
+  const merged = [...base, ...routed.filter((t) => !base.includes(t))];
+  return merged.length > 0 ? merged : undefined;
+}
+
+const ROUTING_ACTION_LABELS: Record<RoutingOutcome['skipped'][number]['action'], string> = {
+  set_assignee: 'assignee',
+  set_category: 'category',
+  set_status: 'status',
+};
+const ROUTING_SKIP_LABELS: Record<RoutingOutcome['skipped'][number]['reason'], string> = {
+  assignee_ineligible: 'not eligible for this ticket',
+  assignee_deleted: 'user no longer exists',
+  category_foreign: 'category is not available to this organization',
+  status_foreign: 'status is not available to this organization',
+  status_inactive: 'status is inactive',
+  status_core_not_allowed: 'a new ticket cannot start in that status',
+};
+
+/** Plain-text routing explanation: rule name snapshot, applied and skipped actions. */
+export function routingNoteContent(outcome: Pick<RoutingOutcome, 'ruleName' | 'applied' | 'skipped'>): string {
+  const applied: string[] = [];
+  if (outcome.applied.assigneeId) applied.push('assignee');
+  if (outcome.applied.priority) applied.push(`priority (${outcome.applied.priority})`);
+  if (outcome.applied.categoryId) applied.push('category');
+  if (outcome.applied.statusId) applied.push('status');
+  if (outcome.applied.tags?.length) applied.push(`tags (${outcome.applied.tags.join(', ')})`);
+  const lines = [
+    `Routing rule "${outcome.ruleName ?? ''}" matched${applied.length ? ` and set: ${applied.join(', ')}` : ' (no action applied)'}.`,
+  ];
+  if (outcome.skipped.length) {
+    lines.push(`Skipped: ${outcome.skipped.map((s) => `${ROUTING_ACTION_LABELS[s.action]} — ${ROUTING_SKIP_LABELS[s.reason]}`).join('; ')}.`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The routing system note of a just-created ticket. Registered in
+ * ticketChildWriters.ts as `maintenance`: the ticket row was inserted by this
+ * same transaction moments earlier and no other transaction can see it, so no
+ * ticket lock is needed to order this write and none can form a cycle; and a
+ * brand-new ticket cannot be a merge tombstone.
+ */
+async function writeRoutingNote(ticketId: string, outcome: RoutingOutcome): Promise<void> {
+  await db.insert(ticketComments).values({
+    ticketId,
+    userId: null,
+    portalUserId: null,
+    authorName: 'Breeze',
+    authorType: 'internal',
+    commentType: 'system',
+    originPrincipalKind: 'system',
+    content: routingNoteContent(outcome),
+    isPublic: false,
+  });
 }
 
 export interface ChangeStatusOptions {

@@ -69,6 +69,9 @@ vi.mock('./ticketEvents', () => ({ emitTicketEvent: mocks.emit }));
 vi.mock('./businessCalendars/resolve', () => ({
   resolveBusinessCalendar: vi.fn(async () => ({ revisionId: null, calendarId: null, source: 'none' })),
 }));
+// #8883 W5: a live create evaluates routing rules (none match here); import mode never does.
+const routingEvaluate = vi.hoisted(() => vi.fn(async () => ({ ruleId: null, ruleName: null, applied: {}, skipped: [], appliedStatusCore: null })));
+vi.mock('./ticketRouting/evaluate', () => ({ evaluateRoutingRules: routingEvaluate }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: mocks.audit }));
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: mocks.triage }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: mocks.allocate }));
@@ -188,6 +191,8 @@ describe('createTicket in import mode', () => {
     });
     expect(ticket.id).toBe('row-1');
     expectNoSideEffects();
+    // #8883 W5 (spec §5.2): routing is skipped entirely for an import.
+    expect(routingEvaluate).not.toHaveBeenCalled();
   });
 
   it('a live create still resolves SLA targets, numbers by the local year and writes its outbox and audit rows', async () => {
@@ -201,6 +206,7 @@ describe('createTicket in import mode', () => {
     expect(values!.tags).toBeUndefined();
     expect(inserted(ticketOutbox)).toHaveLength(1);
     expect(mocks.audit).toHaveBeenCalledTimes(1);
+    expect(routingEvaluate).toHaveBeenCalledTimes(1);
   });
 
   it('refuses an org outside the window, a future time, and an actor that is not the window principal', async () => {
