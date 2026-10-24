@@ -196,3 +196,66 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(values).toEqual(['', 'org-a']);
   });
 });
+
+describe('WispThreadHeader (W06 T14/T15: thread page mode, spend meter, pause, live line)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.runAction.mockImplementation(async (o: { request: () => Promise<Response> }) => (await o.request()).json());
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', status: 'paused', pausedReason: 'user_paused' }) });
+  });
+
+  it('shows the spend meter only when the payload carries both A32 fields', () => {
+    const { rerender } = render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    expect(screen.queryByTestId('wisp-spend-meter')).toBeNull();
+    rerender(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 42, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    expect(screen.getByTestId('wisp-spend-meter').getAttribute('data-state')).toBe('ok');
+  });
+
+  it('the exhausted meter opens the budget settings (the notice’s one-tap raise)', () => {
+    render(
+      <WispThreadHeader wisp={wisp({ spentTodayCents: 200, budgetResetsAt: '2099-01-01T00:00:00.000Z' })} orgName={null} wideningAvailable={false} />,
+    );
+    fireEvent.click(screen.getByTestId('wisp-spend-raise'));
+    expect(screen.getByTestId('wisp-settings-panel')).toBeTruthy();
+  });
+
+  it('pause merges the server answer into the store by default', async () => {
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-pause'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalledWith({ status: 'paused', pausedReason: 'user_paused' }));
+  });
+
+  it('page mode: patches go to onWispChange (not the store), revoke calls onRevoked, the focus switcher is hidden', async () => {
+    const onWispChange = vi.fn();
+    const onRevoked = vi.fn();
+    render(
+      <WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} showFocus={false} onWispChange={onWispChange} onRevoked={onRevoked} />,
+    );
+    expect(screen.queryByTestId('wisp-focus')).toBeNull();
+    fireEvent.click(screen.getByTestId('wisp-pause'));
+    await waitFor(() => expect(onWispChange).toHaveBeenCalledWith({ status: 'paused', pausedReason: 'user_paused' }));
+    expect(h.updateWisp).not.toHaveBeenCalled();
+
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) });
+    fireEvent.click(screen.getByTestId('wisp-revoke'));
+    fireEvent.click(await screen.findByTestId('wisp-revoke-confirm'));
+    await waitFor(() => expect(onRevoked).toHaveBeenCalledTimes(1));
+    expect(h.exitWispMode).not.toHaveBeenCalled();
+  });
+
+  it('shows the live "checking…" line when an assessment is running', () => {
+    const { rerender } = render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} currentActivity={null} />);
+    expect(screen.queryByTestId('wisp-live-line')).toBeNull();
+    rerender(
+      <WispThreadHeader
+        wisp={wisp()}
+        orgName={null}
+        wideningAvailable={false}
+        currentActivity={{ orgId: 'org-a', orgName: 'Greenwood', startedAt: '2026-10-24T00:00:00.000Z' }}
+      />,
+    );
+    expect(screen.getByTestId('wisp-live-line').textContent).toContain('Greenwood');
+  });
+});
