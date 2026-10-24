@@ -72,6 +72,8 @@ export type ChunkAttachmentsInput = {
   reserve: (files: ReservationFile[], cost: number) => Promise<ReservedBatch>;
   /** Marks a stored reservation (markReservationStored, in its own import transaction); false when it is no longer pending. */
   markStored: (claim: ImportedAttachmentClaim) => Promise<boolean>;
+  /** Whether a reservation is still pending and unclaimed (isReservationPending, in the window's context). */
+  stillPending: (id: string) => Promise<boolean>;
   fetchAttachment: FetchImportAttachment;
   /** The window's byte bucket (chargeWindowBytes). */
   chargeBytes: (bytes: number) => Promise<void>;
@@ -159,7 +161,12 @@ export async function prepareChunkAttachments(
       ...(p.declaredBytes !== undefined ? { declaredBytes: p.declaredBytes } : {}),
       fetchAttachment: input.fetchAttachment,
       chargeBytes: input.chargeBytes,
+      stillPending: () => input.stillPending(row.id),
     });
+    if (outcome.kind === 'gone') {
+      elsewhere(p);
+      continue;
+    }
     if (outcome.kind === 'stored') {
       // Not pending any more (claimed, re-pointed or reaped since): not ours to claim.
       if (!(await input.markStored(outcome.claim))) {

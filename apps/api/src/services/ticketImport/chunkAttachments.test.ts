@@ -62,6 +62,7 @@ function harness(
       marked.push(claim.id);
       return true;
     }),
+    stillPending: vi.fn(async () => true),
     fetchAttachment: vi.fn(),
     chargeBytes: vi.fn(),
   };
@@ -160,6 +161,16 @@ describe('prepareChunkAttachments', () => {
       claims: [expect.objectContaining({ id: 'id-mine' })],
       skips: [{ sourceId: 'raced', filename: 'a.png', reason: 'present_elsewhere' }],
     });
+  });
+
+  it('a file whose reservation another run claimed before the put is present elsewhere, and its reservation is not deleted', async () => {
+    store.outcomes.set('raced', { kind: 'gone' });
+    const { input, marked } = harness([comment('c1', [file('raced', 'a.png', 10)])]);
+    const out = await prepareChunkAttachments(input);
+    if (out.merged) throw new Error('unexpected merge');
+    expect(out.files.byComment.get('c1')).toEqual({ claims: [], skips: [{ sourceId: 'raced', filename: 'a.png', reason: 'present_elsewhere' }] });
+    expect(out.files.skippedReservations).toEqual([]);
+    expect(marked).toEqual([]);
   });
 
   it('reserves at most 100 files per transaction, across comments, each charged its new files', async () => {

@@ -48,7 +48,9 @@ export class ImportAttachmentFetchError extends Error {
 
 export type StoreOutcome =
   | { kind: 'stored'; claim: ImportedAttachmentClaim }
-  | { kind: 'skipped'; reason: ImportAttachmentSkipReason };
+  | { kind: 'skipped'; reason: ImportAttachmentSkipReason }
+  /** The reservation was claimed (or reaped) by the time the bytes were ready: nothing was put. */
+  | { kind: 'gone' };
 
 function transient(attachmentSourceId: string, stage: 'fetch' | 'store', cause: unknown): MigrationWindowError {
   return new MigrationWindowError(
@@ -76,6 +78,8 @@ export async function storeReservedAttachment(input: {
   declaredBytes?: number;
   fetchAttachment: FetchImportAttachment;
   chargeBytes: (bytes: number) => Promise<void>;
+  /** Re-checks, right before the put, that the reservation is still pending and unclaimed (isReservationPending). */
+  stillPending: () => Promise<boolean>;
 }): Promise<StoreOutcome> {
   const declared = input.declaredBytes;
   await input.chargeBytes(declared !== undefined && declared > 0 ? Math.min(declared, IMPORT_ATTACHMENT_MAX_BYTES) : IMPORT_ATTACHMENT_MAX_BYTES);
@@ -96,6 +100,10 @@ export async function storeReservedAttachment(input: {
   if (sniffed.blocked) return { kind: 'skipped', reason: 'blocked_type' };
 
   const sha256 = createHash('sha256').update(buf).digest('hex');
+  // Another run of the same ticket may have claimed the file meanwhile; its
+  // object must not be overwritten (W4's one active run per source is the
+  // primary guarantee; this is belt and braces).
+  if (!(await input.stillPending())) return { kind: 'gone' };
   let stored: Awaited<ReturnType<typeof putBytes>>;
   try {
     stored = await putBytes(input.id, buf, sniffed.contentType, sha256);

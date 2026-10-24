@@ -409,11 +409,33 @@ export async function markReservationStored(ticketId: string, principalId: strin
 }
 
 /**
+ * Whether reservation `id` is still this principal's pending, unclaimed row
+ * (review finding 3): read right before its bytes are put, so a run does not
+ * overwrite the object of a file another run of the same ticket has claimed
+ * since. In the window's context, unlocked: markReservationStored re-checks
+ * under the row lock.
+ */
+export async function isReservationPending(id: string, principalId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: ticketAttachments.id })
+    .from(ticketAttachments)
+    .where(and(
+      eq(ticketAttachments.id, id),
+      isNull(ticketAttachments.commentId),
+      isNull(ticketAttachments.uploadedByUserId),
+      eq(ticketAttachments.originPrincipalId, principalId),
+    ))
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
  * Deletes this principal's pending reservations `ids` on `ticketId` (§4.3
  * step 3): files that turned out to be permanently skipped, for which nothing
  * was stored. Runs in the chunk transaction, after lockImportedTicket; the
- * ticket lock here is a no-op re-take. Only a pending import row matches, so
- * an attached file or a live upload is never deleted.
+ * ticket lock here is a no-op re-take. Only a pending import row that is not
+ * stored matches, so an attached file, a live upload, or a reservation
+ * another run of the same ticket stored meanwhile is never deleted.
  */
 export async function deleteSkippedReservations(ticketId: string, principalId: string, ids: readonly string[]): Promise<number> {
   if (ids.length === 0) return 0;
@@ -426,6 +448,7 @@ export async function deleteSkippedReservations(ticketId: string, principalId: s
       isNull(ticketAttachments.commentId),
       isNull(ticketAttachments.uploadedByUserId),
       eq(ticketAttachments.originPrincipalId, principalId),
+      eq(ticketAttachments.sha256, PROVISIONAL_SHA256),
     ))
     .returning({ id: ticketAttachments.id });
   return rows.length;

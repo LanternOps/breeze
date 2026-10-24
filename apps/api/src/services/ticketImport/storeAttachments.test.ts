@@ -24,10 +24,13 @@ const ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(6
 const MZ = Buffer.concat([Buffer.from([0x4d, 0x5a]), Buffer.alloc(62, 0)]);
 const MIB = 1024 * 1024;
 
-function run(fetchAttachment: (id: string, max: number) => Promise<Uint8Array>, declaredBytes?: number) {
+function run(fetchAttachment: (id: string, max: number) => Promise<Uint8Array>, declaredBytes?: number, pending = true) {
   const chargeBytes = vi.fn(async () => undefined);
-  const promise = storeReservedAttachment({ id: ID, sourceId: 'zammad-store-7', ...(declaredBytes !== undefined ? { declaredBytes } : {}), fetchAttachment, chargeBytes });
-  return { promise, chargeBytes };
+  const stillPending = vi.fn(async () => pending);
+  const promise = storeReservedAttachment({
+    id: ID, sourceId: 'zammad-store-7', ...(declaredBytes !== undefined ? { declaredBytes } : {}), fetchAttachment, chargeBytes, stillPending,
+  });
+  return { promise, chargeBytes, stillPending };
 }
 
 beforeEach(() => {
@@ -64,7 +67,7 @@ describe('storeReservedAttachment', () => {
     const chargeBytes = vi.fn(async () => {
       throw new MigrationWindowError('MIGRATION_WINDOW_RATE_LIMITED', 'limit', 429, { kind: 'bytes', retryAfterSeconds: 30 });
     });
-    await expect(storeReservedAttachment({ id: ID, sourceId: 's', fetchAttachment: fetch, chargeBytes }))
+    await expect(storeReservedAttachment({ id: ID, sourceId: 's', fetchAttachment: fetch, chargeBytes, stillPending: async () => true }))
       .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', details: { kind: 'bytes' } });
     expect(fetch).not.toHaveBeenCalled();
     expect(putBytesMock).not.toHaveBeenCalled();
@@ -108,6 +111,19 @@ describe('storeReservedAttachment', () => {
   it('refuses bytes that would land anywhere but object storage', async () => {
     putBytesMock.mockResolvedValueOnce({ backend: 'db', storageKey: null, data: PNG });
     await expect(run(async () => PNG).promise).rejects.toMatchObject({ code: 'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED', status: 409 });
+  });
+
+  it('puts nothing when the reservation was claimed by another run meanwhile (re-checked right before the put)', async () => {
+    const { promise, stillPending } = run(async () => PNG, PNG.length, false);
+    expect(await promise).toEqual({ kind: 'gone' });
+    expect(stillPending).toHaveBeenCalledTimes(1);
+    expect(putBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('does not re-check a file it skips anyway', async () => {
+    const { promise, stillPending } = run(async () => MZ);
+    expect(await promise).toEqual({ kind: 'skipped', reason: 'blocked_type' });
+    expect(stillPending).not.toHaveBeenCalled();
   });
 
   it('the fetch error says whether it is permanent', () => {

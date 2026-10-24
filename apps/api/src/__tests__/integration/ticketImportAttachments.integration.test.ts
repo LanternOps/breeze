@@ -113,7 +113,7 @@ import {
 import { reapPendingAttachments } from '../../jobs/ticketAttachmentReaper';
 import { closeMigrationWindow, getMigrationWindow, openMigrationWindow, publishPendingWindowSummaries } from '../../services/migrationWindows';
 import { getRedis } from '../../services/redis';
-import { reserveImportAttachments } from '../../services/ticketImport/importAttachments';
+import { deleteSkippedReservations, markReservationStored, reserveImportAttachments } from '../../services/ticketImport/importAttachments';
 import { ImportAttachmentFetchError, importTicket } from '../../services/ticketImport/importWriter';
 import type { ImportedTicket } from '../../services/ticketImport/importedTicket';
 import { chargeWindowBytes, migrationWindowBytesKey, migrationWindowRateKey } from '../../services/ticketImport/throughput';
@@ -671,6 +671,34 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     expect(fetchAttachment).not.toHaveBeenCalled();
     expect(await bySource(fx.principal.id, 'f1')).toHaveLength(1);
     expect(await attachmentsOf(survivor.ticketId)).toEqual([]);
+  }, CASE_TIMEOUT);
+
+  runDb('belt and braces for two runs of one ticket: the skip-delete spares a stored reservation, and a claimed one cannot be marked stored', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    // A pass reserves and stores f1 and f2, then dies before the chunk transaction.
+    chargeHook.before = async (call) => {
+      if (call === 5) throw new Error('simulated crash');
+    };
+    const ticket = source(fx, [comment('c1', 10, 'Two files.', [file('f1', 'one.png', PNG.length), file('f2', 'two.zip', ZIP.length)])]);
+    await expect(importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: PNG, f2: ZIP }) })).rejects.toThrow('simulated crash');
+    chargeHook.before = null;
+    const [f1] = await bySource(fx.principal.id, 'f1');
+    const [f2] = await bySource(fx.principal.id, 'f2');
+    expect([f1!.sha256, f2!.sha256]).toEqual([sha(PNG), sha(ZIP)]);
+    const context = windowWriteContext(descriptorOf(fx, window.id));
+
+    // Another run found f1 gone in its source: its skip-delete does not take the stored row.
+    expect(await withDbAccessContext(context, () => deleteSkippedReservations(f1!.ticketId, fx.principal.id, [f1!.id]))).toBe(0);
+    expect(await bySource(fx.principal.id, 'f1')).toHaveLength(1);
+
+    // Another run's comment claims f2 meanwhile; marking it stored again now fails.
+    const [other] = await getTestDb().insert(ticketComments).values({ ticketId: f2!.ticketId, authorType: 'internal', commentType: 'internal', content: 'other run', isPublic: false }).returning();
+    await getTestDb().update(ticketAttachments).set({ commentId: other!.id, attachedAt: new Date() }).where(eq(ticketAttachments.id, f2!.id));
+    const [claimedF2] = await bySource(fx.principal.id, 'f2');
+    expect(claimedF2!.commentId).not.toBeNull();
+    expect(await withDbAccessContext(context, () => markReservationStored(f2!.ticketId, fx.principal.id, { id: f2!.id, contentType: 'image/png', byteSize: 1, sha256: 'f'.repeat(64) }))).toBe(false);
+    expect((await bySource(fx.principal.id, 'f2'))[0]).toMatchObject({ contentType: 'application/octet-stream', sha256: sha(ZIP) });
   }, CASE_TIMEOUT);
 
   runDb('the reservation locks the ticket first: no deadlock against a ticket-first writer', async () => {

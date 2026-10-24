@@ -107,6 +107,7 @@ vi.mock('./importAttachments', async (orig) => ({
     h.writes.push(['markReservationStored', claim.id]);
     return true;
   }),
+  isReservationPending: vi.fn(async () => true),
 }));
 
 vi.mock('../ticketExternalRefs', () => ({
@@ -512,6 +513,15 @@ describe('importTicket — attachments: reserve, store, attach (#8313 W1, spec 2
     expect(h.writes[3]).toEqual(['deleteSkippedReservations', ['id-f9']]);
     expect(h.commentInputs[0]!.content).toBe('x\n\n[Attachments not imported: lost.pdf (not found in the source)]');
     expect(result).toMatchObject({ attachmentsWritten: 0, attachmentsSkipped: [{ sourceId: 'f9', reason: 'not_found' }] });
+  });
+
+  it('a claim shortfall in the chunk transaction (another run claimed a file) is transient: 503, the chunk rolls back', async () => {
+    const { addTicketComment } = await import('../ticketService');
+    vi.mocked(addTicketComment).mockRejectedValueOnce(Object.assign(new Error('One or more attachments could not be attached'), { status: 409, code: 'ATTACHMENT_NOT_CLAIMABLE' }));
+    const err = await run(ticket({ comments: [{ ...comment('a1', 1), attachments: [{ sourceId: 'f6', filename: 'a.png', inline: false }] }] }), { fetchAttachment: vi.fn(async () => PNG) })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE', status: 503, details: { sourceId: 'a1', stage: 'claim' } });
+    expect((err as Error).cause).toMatchObject({ code: 'ATTACHMENT_NOT_CLAIMABLE' });
   });
 
   it('a transient failure fails the ticket after the reservation: no comment, and the reservation stays', async () => {

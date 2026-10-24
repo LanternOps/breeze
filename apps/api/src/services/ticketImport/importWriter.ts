@@ -26,6 +26,7 @@ import {
 import {
   deleteSkippedReservations,
   importAttachmentStates,
+  isReservationPending,
   markReservationStored,
   reserveImportAttachments,
   withAttachmentSkipNote,
@@ -271,6 +272,11 @@ function inUse(sourceId: string, details: Record<string, unknown> = {}): Migrati
 
 function isImportSourceConflict(err: unknown): boolean {
   return isPgUniqueViolation(err) && pgErrorConstraint(err) === 'ticket_comments_import_source_uq';
+}
+
+/** addTicketComment's 409 ATTACHMENT_NOT_CLAIMABLE (a TicketServiceError, matched by its code). */
+function isClaimShortfall(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 'ATTACHMENT_NOT_CLAIMABLE';
 }
 
 function normalizedSubject(t: ImportedTicket): string {
@@ -688,6 +694,19 @@ async function writeComments(
       // imported. addTicketComment's own transaction is a savepoint inside
       // this one, so the conflict undoes only that insert and the chunk goes
       // on (pinned by ticketImport.integration.test.ts).
+      if (isClaimShortfall(err)) {
+        // A reservation this pass stored was claimed or reaped by something
+        // else since (another run of the same ticket; W4's one active run per
+        // source makes it rare). Transient: the chunk rolls back, and the next
+        // pass reserves again.
+        throw new MigrationWindowError(
+          'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE',
+          'An attachment could not be claimed by its comment; the ticket is retried on the next run',
+          503,
+          { sourceId: comment.sourceId, stage: 'claim' },
+          { cause: err },
+        );
+      }
       if (!isImportSourceConflict(err)) throw err;
       counts.skipped += 1;
     }
@@ -963,6 +982,7 @@ export async function importTicket(
           if (await lockImportedTicket(ticketId, t.sourceId)) return false;
           return markReservationStored(ticketId, scope.window.principalId, claim);
         }),
+        stillPending: (id) => withDbAccessContext(context, () => isReservationPending(id, principalId)),
         fetchAttachment: options.fetchAttachment!,
         chargeBytes: (bytes) => chargeWindowBytes(descriptor, bytes),
       })
