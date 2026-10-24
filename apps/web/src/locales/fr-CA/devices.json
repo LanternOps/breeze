@@ -2710,9 +2710,9 @@
       "bulkRestoreUninstallAlreadySent_other": "{{count}} appareils avaient déjà reçu la désinstallation — l'agent devra peut-être être réinstallé sur ces machines.",
       "bulkRestored_one": "{{count}} appareil restauré",
       "bulkRestored_other": "{{count}} appareils restaurés",
-      "bulkMoveSiteSuccess": "{{count}} appareils déplacés vers {{site}}",
-      "bulkMoveSiteSuccess_one": "{{count}} appareil déplacé vers {{site}}",
-      "bulkMoveSiteSuccess_other": "{{count}} appareils déplacés vers {{site}}",
+      "bulkMoveSiteSuccess": "{{count}} appareils sont maintenant sur le site {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} appareil est maintenant sur le site {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} appareils sont maintenant sur le site {{site}}",
       "bulkMoveSiteSomeFailed": "{{moved}} appareils sur {{total}} déplacés vers {{site}}. Non déplacés : {{devices}}",
       "bulkMoveSiteAllFailed": "Aucun appareil n’a été déplacé vers {{site}}. Non déplacés : {{devices}}",
       "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site"

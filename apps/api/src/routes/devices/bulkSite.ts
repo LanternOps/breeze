@@ -39,7 +39,8 @@ import {
 } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { moveDeviceToSite, type SiteMoveOutcome } from '../../services/deviceSiteMove';
+import { moveDeviceToSite, type SiteMoveAuditEntry, type SiteMoveOutcome } from '../../services/deviceSiteMove';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { bulkSiteMoveSchema } from './schemas';
 import {
   ensureOrgAccess,
@@ -126,14 +127,22 @@ bulkSiteRoutes.post(
     // so a `moved` in the response is always durable.
     const committed = new Map<string, BulkSiteMoveResult>();
 
-    await runBulkIsolated<BulkSiteMoveResult>(
+    // What one device's transaction hands to its post-commit step. The move's two audit rows and its
+    // peripheral reconciliation are held here rather than written in the transaction: writeRouteAudit
+    // persists on its own connection immediately, so writing it in-transaction would leave a
+    // `device.site_move` row for a device whose COMMIT then failed (reported `error`).
+    type ItemValue = { id: string; result: BulkSiteMoveResult; audits: SiteMoveAuditEntry[] };
+
+    await runBulkIsolated<ItemValue>(
       ctx,
       ids,
-      async (deviceId) => {
+      async (deviceId): Promise<ItemValue> => {
+        const audits: SiteMoveAuditEntry[] = [];
+        const done = (result: BulkSiteMoveResult): ItemValue => ({ id: deviceId, result, audits });
         try {
           const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
-          if (device === SITE_ACCESS_DENIED) return { id: deviceId, outcome: 'forbidden', message: 'Access to this site denied' };
-          if (!device) return { id: deviceId, outcome: 'not_found' };
+          if (device === SITE_ACCESS_DENIED) return done({ id: deviceId, outcome: 'forbidden', message: 'Access to this site denied' });
+          if (!device) return done({ id: deviceId, outcome: 'not_found' });
 
           const result = await moveDeviceToSite({
             device,
@@ -142,19 +151,20 @@ bulkSiteRoutes.post(
             expectedSiteId: expectedById.get(deviceId),
             trigger: 'manual',
             reevaluationReason: 'device_bulk_site_move',
-            audit: (entry) => writeRouteAudit(c, { ...entry, details: { ...entry.details, bulk: true } }),
+            audit: (entry) => { audits.push({ ...entry, details: { ...entry.details, bulk: true } }); },
+            peripheralReconciliation: 'caller',
           });
           switch (result.outcome) {
             case 'moved':
             case 'already_there':
-              return { id: deviceId, outcome: result.outcome };
+              return done({ id: deviceId, outcome: result.outcome });
             case 'conflict':
-              return {
+              return done({
                 id: deviceId, outcome: 'conflict', message: result.message,
                 ...(result.currentSiteId ? { currentSiteId: result.currentSiteId } : {}),
-              };
+              });
             case 'forbidden':
-              return { id: deviceId, outcome: 'forbidden', message: result.message };
+              return done({ id: deviceId, outcome: 'forbidden', message: result.message });
           }
         } catch (err) {
           // Rethrown so the device's transaction rolls back; logged here because this is the
@@ -164,7 +174,17 @@ bulkSiteRoutes.post(
         }
       },
       async (deviceId, value) => {
-        committed.set(deviceId, value);
+        committed.set(deviceId, value.result);
+        if (value.result.outcome !== 'moved') return;
+        // Best-effort, like PATCH: neither may turn a committed move into a reported failure.
+        try {
+          for (const entry of value.audits) writeRouteAudit(c, entry);
+        } catch (err) {
+          console.error(`[devices] bulk site move audit failed for ${deviceId}:`, err);
+        }
+        await schedulePeripheralPolicyDevice(deviceId, 'device_site_changed').catch((error) => {
+          console.error(`[devices] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+        });
       },
     );
 

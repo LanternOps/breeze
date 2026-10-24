@@ -80,6 +80,22 @@ describe('summarizeBulkSiteMove — the 200 body decides the tone, never the sta
     expect(s).toEqual({ tone: 'warning', moved: 1, total: 3, failedNames: ['Lab PC', 'SERVER-03'] });
   });
 
+  it('every device was already at the target (moved 0, no failures) → success, not error', () => {
+    const s = summarizeBulkSiteMove({
+      results: [{ id: 'd1', outcome: 'already_there' }, { id: 'd2', outcome: 'already_there' }],
+      summary: { moved: 0, total: 2 },
+    }, devices);
+    expect(s).toEqual({ tone: 'success', moved: 0, total: 2, failedNames: [] });
+  });
+
+  it('none moved, some already there and some refused → error naming only the refused', () => {
+    const s = summarizeBulkSiteMove({
+      results: [{ id: 'd1', outcome: 'already_there' }, { id: 'd2', outcome: 'conflict' }],
+      summary: { moved: 0, total: 2 },
+    }, devices);
+    expect(s).toEqual({ tone: 'error', moved: 0, total: 2, failedNames: ['Lab PC'] });
+  });
+
   it('none moved → error', () => {
     const s = summarizeBulkSiteMove({
       results: [{ id: 'd1', outcome: 'not_found' }, { id: 'd2', outcome: 'error' }],

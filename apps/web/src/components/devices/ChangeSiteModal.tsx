@@ -359,25 +359,39 @@ function BulkChangeSiteDialog(props: BulkChangeSiteProps) {
     if (!siteId || siteId === singleSourceSiteId) return;
     setSaving(true);
     setError(undefined);
+    let result: BulkSiteMoveResponse;
     try {
-      const result = await moveDevicesToSite({
+      result = await moveDevicesToSite({
         siteId,
         devices,
         errorFallback: t("changeSiteModal.failedToMoveDevices"),
         onUnauthorized,
       });
-      onBulkMoved(result, sites.find((s) => s.id === siteId)?.name ?? "");
-      onSaved();
-      onClose();
     } catch (err) {
+      setSaving(false);
       if (err instanceof ActionError && err.status === 401) return; // auth redirect handles it
       if (!(err instanceof ActionError)) {
         showToast({ type: "error", message: t("changeSiteModal.failedToMoveDevices") });
       }
+      // No answer (status 0) or an unreadable 2xx: the server may have moved some devices, so
+      // refresh the list behind the dialog rather than leave it showing sites that may be stale.
+      if (err instanceof ActionError && (err.status === 0 || (err.status >= 200 && err.status < 300))) {
+        onSaved();
+      }
       // ActionError was already toasted by runAction; keep the dialog open with the reason.
       setError(err instanceof Error ? err.message : t("changeSiteModal.failedToMoveDevices"));
+      return;
+    }
+    setSaving(false);
+    // Outside the request's try: the move is done, so nothing the caller does with the answer may
+    // be reported as "failed to move" — and the list is refreshed either way.
+    try {
+      onBulkMoved(result, sites.find((s) => s.id === siteId)?.name ?? "");
+    } catch (err) {
+      console.error("[ChangeSiteModal] reporting the bulk site move outcome failed:", err);
     } finally {
-      setSaving(false);
+      onSaved();
+      onClose();
     }
   };
 

@@ -117,6 +117,41 @@ describe('ChangeSiteModal — bulk variant', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('a committed move is never reported as failed, even if the caller\'s report throws; the list still refreshes', async () => {
+    rigFetch(json(200, { results: [{ id: 'd1', outcome: 'moved' }], summary: { moved: 1, total: 1 } }));
+    const onBulkMoved = vi.fn(() => { throw new Error('toast blew up'); });
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<ChangeSiteModal devices={[dev('d1', 'site-hq', 'HQ')]} isOpen onClose={onClose} onSaved={onSaved} onBulkMoved={onBulkMoved} />);
+    await screen.findByRole('option', { name: 'Branch' });
+    fireEvent.change(screen.getByLabelText(/New site/), { target: { value: 'site-branch' } });
+    fireEvent.click(screen.getByTestId('change-site-submit'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Couldn't move the devices. Try again.")).toBeNull();
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    // Logged, never silent.
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('bulk site move outcome'), expect.any(Error));
+    spy.mockRestore();
+  });
+
+  it('a network failure (no answer) refreshes the list behind the dialog: some devices may have moved', async () => {
+    vi.mocked(fetchWithAuth).mockImplementation(async (url: string) => {
+      if (url.startsWith('/orgs/sites')) return json(200, SITES);
+      throw new TypeError('Failed to fetch');
+    });
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    render(<ChangeSiteModal devices={[dev('d1', 'site-hq', 'HQ')]} isOpen onClose={onClose} onSaved={onSaved} onBulkMoved={vi.fn()} />);
+    await screen.findByRole('option', { name: 'Branch' });
+    fireEvent.change(screen.getByLabelText(/New site/), { target: { value: 'site-branch' } });
+    fireEvent.click(screen.getByTestId('change-site-submit'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toBeTruthy();
+  });
+
   it('the submit is disabled until a target is chosen when the selection spans several sites', async () => {
     rigFetch(json(200, { results: [], summary: { moved: 0, total: 0 } }));
     render(<ChangeSiteModal devices={[dev('d1', 'site-hq', 'HQ'), dev('d2', 'site-lab', 'Lab')]} isOpen onClose={vi.fn()} onSaved={vi.fn()} onBulkMoved={vi.fn()} />);

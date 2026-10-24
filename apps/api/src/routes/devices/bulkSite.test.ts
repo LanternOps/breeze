@@ -33,6 +33,7 @@ const state = vi.hoisted(() => ({
   reevaluated: [] as string[],
   rewrites: [] as string[],
   failRewriteFor: null as string | null,
+  failCommitFor: null as string | null,
   /** Simulates a concurrent move: the row lock re-read sees this site instead. */
   concurrentMove: null as { deviceId: string; siteId: string } | null,
   auth: {} as Record<string, unknown>,
@@ -52,6 +53,10 @@ vi.mock('../../db', () => ({
       result = await fn();
     } finally {
       state.hookStack.pop();
+    }
+    // Simulates a COMMIT that fails after the item's callback returned (e.g. a deferred constraint).
+    if (state.failCommitFor && (result as { id?: string } | undefined)?.id === state.failCommitFor) {
+      throw new Error('commit failed: deferred constraint');
     }
     state.commits++;
     for (const hook of hooks) await hook();
@@ -111,6 +116,10 @@ import { writeRouteAudit } from '../../services/auditEvents';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
 import { bulkSiteRoutes } from './bulkSite';
 import { BULK_SITE_MOVE_CAP } from './schemas';
+import { requirePermission } from '../../middleware/auth';
+
+// Captured at import, when the route registered its gates (beforeEach clears mock calls).
+const registeredPermissions = [...vi.mocked(requirePermission).mock.calls];
 
 const dialect = new PgDialect();
 const paramsOf = (where: unknown) => (where ? dialect.sqlToQuery(where as never).params.map(String) : []);
@@ -210,6 +219,7 @@ beforeEach(() => {
   state.reevaluated = [];
   state.rewrites = [];
   state.failRewriteFor = null;
+  state.failCommitFor = null;
   state.concurrentMove = null;
   state.auth = orgAuth();
   state.allowedSiteIds = undefined;
@@ -312,6 +322,35 @@ describe('POST /devices/bulk/site — isolation', () => {
   });
 });
 
+describe('POST /devices/bulk/site — audit follows the commit', () => {
+  it('a device whose transaction fails at COMMIT is `error` and gets NO audit rows (audits are written only after commit)', async () => {
+    state.failCommitFor = DEV_2;
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const body = await (await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1), entry(DEV_2, SITE_A1), entry(DEV_3, SITE_A3)] })).json();
+    expect(body.results.map((r: any) => r.outcome)).toEqual(['moved', 'error', 'moved']);
+    expect(auditActions().filter((a) => a.startsWith(DEV_2))).toEqual([]);
+    expect(auditActions()).toEqual([`${DEV_1}:device.update`, `${DEV_1}:device.site_move`, `${DEV_3}:device.update`, `${DEV_3}:device.site_move`]);
+    // Its post-commit work never ran either.
+    expect(state.reevaluated).toEqual([DEV_1, DEV_3]);
+    expect(vi.mocked(schedulePeripheralPolicyDevice).mock.calls.map(([id]) => id)).toEqual([DEV_1, DEV_3]);
+    spy.mockRestore();
+  });
+
+  it('peripheral reconciliation is scheduled only after the device\'s transaction committed', async () => {
+    let openAtSchedule: number | null = null;
+    vi.mocked(schedulePeripheralPolicyDevice).mockImplementation(async () => { openAtSchedule = state.hookStack.length; return 'job'; });
+    await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1)] });
+    expect(openAtSchedule).toBe(0);
+  });
+
+  it('no audit row is written while the device\'s transaction is still open', async () => {
+    let openAtAudit: number | null = null;
+    vi.mocked(writeRouteAudit).mockImplementation(() => { openAtAudit = openAtAudit ?? state.hookStack.length; });
+    await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1)] });
+    expect(openAtAudit).toBe(0);
+  });
+});
+
 describe('POST /devices/bulk/site — tenancy per device', () => {
   it('an org-scoped caller naming another org\'s device gets not_found for it (no leak), others still move', async () => {
     const body = await (await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1), entry(DEV_B, SITE_B1)] })).json();
@@ -358,6 +397,26 @@ describe('POST /devices/bulk/site — tenancy per device', () => {
     expect(db.transaction).not.toHaveBeenCalled();
     expect(writeRouteAudit).not.toHaveBeenCalled();
     expect(state.devices.get(DEV_1)!.siteId).toBe(SITE_A1);
+  });
+
+  it('precedence: an invisible target is site_not_found even when the devices also span two orgs', async () => {
+    state.auth = partnerAuth();
+    state.sites.delete(SITE_A2);
+    const res = await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1), entry(DEV_B, SITE_B1)] });
+    expect(await res.json()).toMatchObject({ code: 'site_not_found' });
+  });
+
+  it('precedence: mixed_org wins over site_org_mismatch', async () => {
+    state.auth = partnerAuth();
+    const res = await post({ siteId: SITE_B1, devices: [entry(DEV_1, SITE_A1), entry(DEV_B, SITE_B1)] });
+    expect(await res.json()).toMatchObject({ code: 'mixed_org' });
+  });
+
+  it('a partner caller moving one org\'s devices within that org moves them (partner context per device)', async () => {
+    state.auth = partnerAuth();
+    const body = await (await post({ siteId: SITE_A2, devices: [entry(DEV_1, SITE_A1), entry(DEV_3, SITE_A3)] })).json();
+    expect(body.results).toEqual([{ id: DEV_1, outcome: 'moved' }, { id: DEV_3, outcome: 'moved' }]);
+    expect(state.contexts.every((ctx: any) => ctx.scope === 'partner')).toBe(true);
   });
 
   it('a partner caller moving one org\'s devices to ANOTHER org\'s site gets 400 site_org_mismatch', async () => {
@@ -420,6 +479,10 @@ describe('POST /devices/bulk/site — gates', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
     expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('the route registers the devices:write permission gate (not read, not delete)', () => {
+    expect(registeredPermissions).toEqual([['devices', 'write']]);
   });
 
   it('a caller without devices:write → 403, zero reads', async () => {

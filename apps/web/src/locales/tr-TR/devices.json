@@ -2715,9 +2715,9 @@
       "bulkRestoreUninstallAlreadySent_other": "{{count}} cihaz kaldırma komutunu zaten almıştı — bu makinelerde aracının yeniden kurulması gerekebilir.",
       "bulkRestored_one": "{{count}} cihaz geri yüklendi",
       "bulkRestored_other": "{{count}} cihaz geri yüklendi",
-      "bulkMoveSiteSuccess": "{{count}} cihaz {{site}} sitesine taşındı",
-      "bulkMoveSiteSuccess_one": "{{count}} cihaz {{site}} sitesine taşındı",
-      "bulkMoveSiteSuccess_other": "{{count}} cihaz {{site}} sitesine taşındı",
+      "bulkMoveSiteSuccess": "{{count}} cihaz artık {{site}} konumunda",
+      "bulkMoveSiteSuccess_one": "{{count}} cihaz artık {{site}} konumunda",
+      "bulkMoveSiteSuccess_other": "{{count}} cihaz artık {{site}} konumunda",
       "bulkMoveSiteSomeFailed": "{{total}} cihazdan {{moved}} tanesi {{site}} sitesine taşındı. Taşınmayanlar: {{devices}}",
       "bulkMoveSiteAllFailed": "{{site}} sitesine hiçbir cihaz taşınmadı. Taşınmayanlar: {{devices}}",
       "deviceMovedToSite": "{{hostname}} yeni bir siteye taşındı"

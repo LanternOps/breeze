@@ -149,7 +149,7 @@ describe('DevicesPage — bulk move outcome toast', () => {
     act(() => captured.modalProps!.onBulkMoved({
       results: devices.map((d) => ({ id: d.id, outcome: 'moved' })), summary: { moved: 3, total: 3 },
     }, 'Lakeside'));
-    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: 'Moved 3 devices to Lakeside' });
+    expect(showToast).toHaveBeenCalledWith({ type: 'success', message: '3 devices are now at Lakeside' });
   });
 
   it('some moved → warning "Moved N of M" naming the failures', async () => {

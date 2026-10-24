@@ -2715,9 +2715,9 @@
       "bulkRestoreUninstallAlreadySent_other": "{{count}} dispositivi avevano già ricevuto la disinstallazione: su quelle macchine potrebbe essere necessario reinstallare l'agente.",
       "bulkRestored_one": "{{count}} dispositivo ripristinato",
       "bulkRestored_other": "{{count}} dispositivi ripristinati",
-      "bulkMoveSiteSuccess": "{{count}} dispositivi spostati in {{site}}",
-      "bulkMoveSiteSuccess_one": "{{count}} dispositivo spostato in {{site}}",
-      "bulkMoveSiteSuccess_other": "{{count}} dispositivi spostati in {{site}}",
+      "bulkMoveSiteSuccess": "{{count}} dispositivi ora si trovano in {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} dispositivo ora si trova in {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} dispositivi ora si trovano in {{site}}",
       "bulkMoveSiteSomeFailed": "{{moved}} dispositivi su {{total}} spostati in {{site}}. Non spostati: {{devices}}",
       "bulkMoveSiteAllFailed": "Nessun dispositivo è stato spostato in {{site}}. Non spostati: {{devices}}",
       "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito"

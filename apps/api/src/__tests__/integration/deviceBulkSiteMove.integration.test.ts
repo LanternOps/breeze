@@ -203,6 +203,44 @@ describe('POST /devices/bulk/site (real Postgres)', () => {
     expect((await ok.json()).results).toEqual([{ id: inA, outcome: 'moved' }]);
   });
 
+  it('a Postgres error on device 2 of 3 rolls back only that device: [moved, error, moved], no audit for it', async () => {
+    // A real database failure inside device 2's own transaction (raised by a trigger on its UPDATE).
+    const fn = `bulk_site_fail_${randomUUID().replace(/-/g, '')}`;
+    await getTestDb().execute(sql.raw(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF OLD.id = '${f.d2}'::uuid THEN RAISE EXCEPTION 'injected failure for bulk site move test'; END IF; RETURN NEW; END $$`));
+    await getTestDb().execute(sql.raw(`CREATE TRIGGER ${fn} BEFORE UPDATE OF site_id ON devices FOR EACH ROW EXECUTE FUNCTION ${fn}()`));
+    try {
+      const res = await bulk(f.token, { siteId: f.siteA2, devices: [
+        { id: f.d1, expectedSiteId: f.siteA1 }, { id: f.d2, expectedSiteId: f.siteA1 }, { id: f.d3, expectedSiteId: f.siteA3 },
+      ] });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.results).toEqual([{ id: f.d1, outcome: 'moved' }, { id: f.d2, outcome: 'error', message: 'Move failed' }, { id: f.d3, outcome: 'moved' }]);
+      expect(JSON.stringify(body)).not.toContain('injected');
+      expect(await siteOf(f.d1)).toBe(f.siteA2);
+      expect(await siteOf(f.d2)).toBe(f.siteA1);
+      expect(await siteOf(f.d3)).toBe(f.siteA2);
+      await waitForAudits([f.d1, f.d3], 4);
+      expect(await settleThenAudits([f.d2])).toHaveLength(0);
+    } finally {
+      await getTestDb().execute(sql.raw(`DROP TRIGGER IF EXISTS ${fn} ON devices`));
+      await getTestDb().execute(sql.raw(`DROP FUNCTION IF EXISTS ${fn}()`));
+    }
+  });
+
+  it('PATCH (shared service): a partner moving a device into ANOTHER org\'s site → 400, zero writes', async () => {
+    const p = await setupTestEnvironment({ scope: 'partner' });
+    const token = await assuredToken(p, 'partner');
+    const orgB = await createOrganization({ partnerId: p.partner.id });
+    const siteB = (await createSite({ orgId: orgB.id })).id;
+    const device = await insertDevice(p.organization.id, p.site.id, 'XORG');
+    const res = await patch(token, device, { siteId: siteB, expectedSiteId: p.site.id });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Target site not found or belongs to a different organization' });
+    expect(await siteOf(device)).toBe(p.site.id);
+    expect(await settleThenAudits([device])).toHaveLength(0);
+  });
+
   it('duplicate ids → 400 duplicate_device_ids with zero writes', async () => {
     const res = await bulk(f.token, { siteId: f.siteA2, devices: [{ id: f.d1, expectedSiteId: f.siteA1 }, { id: f.d1, expectedSiteId: f.siteA1 }] });
     expect(res.status).toBe(400);

@@ -207,6 +207,12 @@ export async function executeDeviceSiteMove(args: {
   changedFields: string[];
   reevaluationReason: string;
   audit: SiteMoveAuditSink;
+  /**
+   * `inline` (PATCH, unchanged): schedule peripheral reconciliation here, inside the caller's
+   * transaction. `caller` (bulk): the caller schedules it once the device's own transaction has
+   * committed, so a rolled-back move never queues a job. Default `inline`.
+   */
+  peripheralReconciliation?: 'inline' | 'caller';
 }): Promise<SiteMoveMoved | SiteMoveConflict> {
   const { device, permissions, toSiteId } = args;
   const deviceId = device.id;
@@ -278,9 +284,11 @@ export async function executeDeviceSiteMove(args: {
     reason: args.reevaluationReason,
   });
 
-  await schedulePeripheralPolicyDevice(deviceId, 'device_site_changed').catch((error) => {
-    console.error(`[devices] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
-  });
+  if ((args.peripheralReconciliation ?? 'inline') === 'inline') {
+    await schedulePeripheralPolicyDevice(deviceId, 'device_site_changed').catch((error) => {
+      console.error(`[devices] failed to schedule peripheral reconciliation for ${deviceId}:`, error);
+    });
+  }
 
   const resourceName = moved.hostname ?? moved.displayName ?? device.hostname;
   args.audit({
@@ -291,7 +299,9 @@ export async function executeDeviceSiteMove(args: {
     resourceName,
     details: { changedFields: args.changedFields },
   });
-  // Post-commit audit via the route audit queue, like moveOrg.ts (S§12.4).
+  // The semantic move audit (S§12.4). Handed to the caller's sink, which decides WHEN it is
+  // persisted: PATCH writes it during the request, as it always has; the bulk route buffers both
+  // entries and writes them only after that device's own transaction has committed.
   args.audit({
     orgId: device.orgId,
     action: 'device.site_move',
@@ -318,6 +328,7 @@ export async function moveDeviceToSite(args: {
   trigger: SiteMoveTrigger;
   reevaluationReason: string;
   audit: SiteMoveAuditSink;
+  peripheralReconciliation?: 'inline' | 'caller';
 }): Promise<SiteMoveResult> {
   const prepared = await prepareDeviceSiteMove(args);
   if (prepared.outcome !== 'ready') return prepared;

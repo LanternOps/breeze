@@ -2716,9 +2716,9 @@
       "bulkRestoreUninstallAlreadySent_other": "{{count}} devices had already received the uninstall — those machines may need the agent reinstalled.",
       "bulkRestored_one": "{{count}} device restored",
       "bulkRestored_other": "{{count}} devices restored",
-      "bulkMoveSiteSuccess": "Moved {{count}} devices to {{site}}",
-      "bulkMoveSiteSuccess_one": "Moved {{count}} device to {{site}}",
-      "bulkMoveSiteSuccess_other": "Moved {{count}} devices to {{site}}",
+      "bulkMoveSiteSuccess": "{{count}} devices are now at {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} device is now at {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} devices are now at {{site}}",
       "bulkMoveSiteSomeFailed": "Moved {{moved}} of {{total}} devices to {{site}}. Not moved: {{devices}}",
       "bulkMoveSiteAllFailed": "No devices were moved to {{site}}. Not moved: {{devices}}",
       "deviceMovedToSite": "{{hostname}} moved to a new site"

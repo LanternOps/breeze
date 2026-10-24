@@ -29,6 +29,9 @@ import {
   type SiteMoveAuditEntry,
 } from './deviceSiteMove';
 import type { UserPermissions } from './permissions';
+import { PgDialect } from 'drizzle-orm/pg-core';
+
+const dialect = new PgDialect();
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_A = '77777777-7777-4777-8777-777777777777';
@@ -140,7 +143,7 @@ describe('moveDeviceToSite', () => {
     expect(audits).toHaveLength(0);
   });
 
-  it('conflict: compares expectedSiteId case-insensitively', async () => {
+  it('a matching expectedSiteId in another case is not a conflict (case-insensitive compare)', async () => {
     moveSelects();
     const result = await moveDeviceToSite({ ...baseArgs, expectedSiteId: SITE_A.toUpperCase(), reevaluationReason: 'r' });
     expect(result.outcome).toBe('moved');
@@ -178,6 +181,12 @@ describe('moveDeviceToSite', () => {
     queueSelects([[]]);
     const result = await moveDeviceToSite({ ...baseArgs, reevaluationReason: 'r' });
     expect(result).toMatchObject({ outcome: 'forbidden', reason: 'target_site_not_found' });
+    // The target lookup is scoped to the DEVICE's org (the only cross-org defence for a partner
+    // caller whose RLS sees both orgs' sites): WHERE sites.id = target AND sites.org_id = device org.
+    const where = selectCalls[0]!.args[selectCalls[0]!.methods.indexOf('where')]![0];
+    const query = dialect.sqlToQuery(where as never);
+    expect(query.sql).toMatch(/"sites"\."org_id" = \$\d/);
+    expect(query.params).toEqual([SITE_B, 'org-1']);
     expect(db.transaction).not.toHaveBeenCalled();
     expect(audits).toHaveLength(0);
   });
@@ -190,12 +199,25 @@ describe('moveDeviceToSite', () => {
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
-  it('a non-Error throw inside the savepoint propagates (the caller decides; nothing is reported as moved)', async () => {
+  it('an unexpected throw inside the savepoint propagates (the caller decides; nothing is reported as moved)', async () => {
     moveSelects();
     vi.mocked(rewriteDeviceSiteDenormalizedTables).mockRejectedValueOnce(new Error('deadlock'));
     await expect(moveDeviceToSite({ ...baseArgs, reevaluationReason: 'r' })).rejects.toThrow('deadlock');
     expect(audits).toHaveLength(0);
     expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
+  });
+});
+
+describe('peripheral reconciliation mode', () => {
+  it('inline (PATCH default) schedules it; caller (bulk) leaves it to the caller', async () => {
+    moveSelects();
+    await moveDeviceToSite({ ...baseArgs, reevaluationReason: 'r' });
+    expect(schedulePeripheralPolicyDevice).toHaveBeenCalledTimes(1);
+    vi.mocked(schedulePeripheralPolicyDevice).mockClear();
+    moveSelects();
+    const result = await moveDeviceToSite({ ...baseArgs, reevaluationReason: 'r', peripheralReconciliation: 'caller' });
+    expect(result.outcome).toBe('moved');
+    expect(schedulePeripheralPolicyDevice).not.toHaveBeenCalled();
   });
 });
 
