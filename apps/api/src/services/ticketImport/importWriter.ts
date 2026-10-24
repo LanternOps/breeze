@@ -1,9 +1,10 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, withDbAccessContext, type DbAccessContext } from '../../db';
 import { ticketComments, ticketExternalRefs, tickets } from '../../db/schema';
 import { isPgUniqueViolation, pgErrorConstraint } from '../../utils/pgErrors';
 import { MigrationWindowError } from '../migrationWindows';
 import { TicketExternalRefConflictError, upsertTicketExternalRef } from '../ticketExternalRefs';
+import { lockTicketForWrite } from '../ticketRowLock';
 import {
   addTicketComment,
   assignTicket,
@@ -55,6 +56,11 @@ import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type 
  * applying, what changed in the source that it does not converge on: the
  * requester, the org, edited, flipped or deleted comments (`SourceChanges`).
  *
+ * Merged in Breeze (#8972): a ticket merged into another is a read-only
+ * tombstone. Resuming one writes nothing, charges nothing and returns
+ * `outcome: 'skipped'` with `skip.reason: 'merged_in_breeze'` and the
+ * survivor (see `lockImportedTicket`, `mergedAwayImport`).
+ *
  * Must be called with no ambient DB context: it opens its own transactions,
  * and the throughput charge is a Redis round trip that must not hold one.
  */
@@ -75,8 +81,11 @@ export const IMPORT_COMMENT_CHUNK_SIZE = 100;
 export const IMPORT_COMMENT_CHUNK_BYTES = 1024 * 1024;
 
 export type ImportTicketResult = {
+  /** The ticket written, or for a skip the one the source id resolves to. */
   ticketId: string;
-  outcome: 'created' | 'resumed';
+  /** 'skipped': nothing (more) is written for this source ticket; `skip` says why. */
+  outcome: 'created' | 'resumed' | 'skipped';
+  skip?: ImportSkip;
   commentsWritten: number;
   commentsSkipped: number;
   /** Header fields a resume re-applied from the source (0 on a first import). */
@@ -91,6 +100,18 @@ export type ImportTicketResult = {
   /** Why, when `statusSkipped` is true (absent otherwise): see `StatusSkip`. */
   statusSkip?: StatusSkip;
 } & SourceChanges;
+
+/**
+ * Why a resume wrote nothing (more). `merged_in_breeze`: a technician merged
+ * the imported ticket into `mergedIntoTicketId` with Breeze's native merge
+ * (#8972), so it is a read-only tombstone. Final, like a ticket removed in
+ * Breeze (spec 2026-10-19 §5.9): every later pass gets the same answer.
+ * Found by the plan, nothing was written or charged; found under the lock
+ * of a later transaction (a merge that committed mid-ticket), the
+ * transactions before it stay committed, that transaction's charge is spent
+ * and it writes nothing.
+ */
+export type ImportSkip = { reason: 'merged_in_breeze'; mergedIntoTicketId: string };
 
 /**
  * Why a source status was not applied (#8884 review, finding 1), for the run
@@ -150,6 +171,12 @@ type StoredTicket = {
   fieldProvenance: Record<string, string>;
   requesterContactId: string | null;
   submitterEmail: string | null;
+  /** Set on a tombstone (#8972): the survivor, always a live ticket (one hop). */
+  mergedIntoTicketId: string | null;
+  /** The principal of the window that created the ticket; null for a live ticket. */
+  windowPrincipalId: string | null;
+  /** See `mergedAwayImport`. */
+  mergedAwayImportId: string | null;
 };
 
 type StoredRef = { ticketId: string; externalNumber: string | null; externalUrl: string | null };
@@ -221,7 +248,31 @@ async function readRef(principalId: string, sourceId: string): Promise<StoredRef
   return row ?? null;
 }
 
-async function readStoredTicket(ticketId: string): Promise<StoredTicket | null> {
+/**
+ * A ticket this principal imported that a Breeze merge folded into the ticket
+ * being read AND that left its ref there (#8972): the merge moves a
+ * tombstone's ref to its survivor unless the survivor already has one from
+ * the same principal (ticketMerge/repoint.ts). The source id then resolves to
+ * the survivor, which this import did not create. One indexed probe on
+ * `tickets_merged_into_idx`; null when the ticket has no such tombstone.
+ * The outer row is named `tickets` in the SQL text: drizzle leaves a
+ * one-table select's columns unqualified, which the inner `tickets t` would
+ * make ambiguous.
+ */
+function mergedAwayImport(principalId: string) {
+  return sql<string | null>`(
+    SELECT t.id FROM tickets t
+      JOIN migration_windows mw ON mw.id = t.migration_window_id
+     WHERE t.merged_into_ticket_id = tickets.id
+       AND mw.partner_service_principal_id = ${principalId}
+       AND NOT EXISTS (
+         SELECT 1 FROM ticket_external_refs r
+          WHERE r.ticket_id = t.id AND r.partner_service_principal_id = ${principalId})
+     ORDER BY t.merged_at DESC, t.id
+     LIMIT 1)`;
+}
+
+async function readStoredTicket(ticketId: string, principalId: string): Promise<StoredTicket | null> {
   const [row] = await db
     .select({
       id: tickets.id,
@@ -239,6 +290,10 @@ async function readStoredTicket(ticketId: string): Promise<StoredTicket | null> 
       fieldProvenance: tickets.fieldProvenance,
       requesterContactId: tickets.requesterContactId,
       submitterEmail: tickets.submitterEmail,
+      mergedIntoTicketId: tickets.mergedIntoTicketId,
+      windowPrincipalId: sql<string | null>`(
+        SELECT mw.partner_service_principal_id FROM migration_windows mw WHERE mw.id = tickets.migration_window_id)`,
+      mergedAwayImportId: mergedAwayImport(principalId),
     })
     .from(tickets)
     .where(eq(tickets.id, ticketId))
@@ -433,27 +488,36 @@ export function statusSteps(
 }
 
 /**
- * Under the lock, the resume conditions the plan checked still hold: the
- * ticket is visible to the window, still imported, and not deleted.
+ * Locks the ticket row at the start of a write transaction and re-checks
+ * under the lock what the plan checked: the ticket is visible to the window,
+ * still imported, and not deleted. A tombstone (#8972) is not an error: it
+ * returns the survivor, and the transaction writes nothing. The merge locks
+ * the same row, so a merge that committed first is seen here, and one that
+ * comes later waits for this transaction.
+ *
+ * The lock is the ticket-first FOR UPDATE every ticket writer takes
+ * (services/ticketRowLock.ts), taken before any child write: since #8972 W0
+ * no writer holds a child row and then waits for the ticket, the import's own
+ * addTicketComment included, so taking it this early forms no cycle. The
+ * service calls that follow re-lock the row, a no-op.
  */
-async function assertStillImportable(ticketId: string, sourceId: string): Promise<void> {
-  const [row] = await db
-    .select({ migrationWindowId: tickets.migrationWindowId, deletedAt: tickets.deletedAt })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1);
-  if (!row) throw inUse(sourceId, { reason: 'org_outside_window', ticketId });
-  if (!row.migrationWindowId) throw inUse(sourceId, { reason: 'live_ticket', ticketId });
-  if (row.deletedAt) throw inUse(sourceId, { reason: 'deleted', ticketId });
+async function lockImportedTicket(ticketId: string, sourceId: string): Promise<{ mergedIntoTicketId: string } | null> {
+  const locked = await lockTicketForWrite(db, ticketId);
+  if (!locked) throw inUse(sourceId, { reason: 'org_outside_window', ticketId });
+  if (locked.mergedIntoTicketId) return { mergedIntoTicketId: locked.mergedIntoTicketId };
+  const [row] = await db.select({ migrationWindowId: tickets.migrationWindowId }).from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+  if (!row?.migrationWindowId) throw inUse(sourceId, { reason: 'live_ticket', ticketId });
+  if (locked.deletedAt) throw inUse(sourceId, { reason: 'deleted', ticketId });
+  return null;
 }
 
 /**
  * Applies `statusSteps` under the lock; returns why a Breeze change kept the
- * status, or null. The plan's status may be stale, so the ticket is re-read FOR NO
- * KEY UPDATE: a concurrent status change either committed first, and its feed
- * row is seen below, or waits for this transaction. Not FOR UPDATE: that
- * would conflict with the KEY SHARE lock a concurrent comment insert's
- * foreign-key check takes, and deadlock with its parent-touch trigger.
+ * status, or null. The plan's status may be stale, so the ticket is re-read
+ * here, where the transaction already holds its row (`lockImportedTicket`, or
+ * the row a create just inserted): a concurrent status change either
+ * committed first, and its feed row is seen below, or waits for this
+ * transaction. The FOR NO KEY UPDATE adds nothing to the lock already held.
  */
 async function applyFinalStatus(scope: WriteScope, ticketId: string, t: ImportedTicket): Promise<StatusSkip | null> {
   const [row] = await db.select({ status: tickets.status }).from(tickets).where(eq(tickets.id, ticketId)).limit(1).for('no key update');
@@ -562,6 +626,22 @@ function inSourceOrder(comments: readonly ImportedComment[]): ImportedComment[] 
     .map((entry) => entry.comment);
 }
 
+/** The result of a source ticket merged in Breeze (`ImportSkip`). */
+function mergedInBreeze(
+  ticketId: string,
+  mergedIntoTicketId: string,
+  counts: { commentsWritten: number; commentsSkipped: number; fieldsUpdated: number },
+): ImportTicketResult {
+  return {
+    ticketId,
+    outcome: 'skipped',
+    skip: { reason: 'merged_in_breeze', mergedIntoTicketId },
+    ...counts,
+    statusSkipped: false,
+    ...noSourceChanges(),
+  };
+}
+
 /**
  * Imports one ticket through the window `windowId` (spec §4.6). `input` is
  * validated first (`parseImportedTicket`); nothing is written for an invalid
@@ -588,10 +668,19 @@ export async function importTicket(
   const plan = await withDbAccessContext(context, async () => {
     const ref = await readRef(principalId, t.sourceId);
     if (!ref) return { kind: 'create' as const, missing: inSourceOrder(t.comments), present: 0 };
-    const stored = await readStoredTicket(ref.ticketId);
+    const stored = await readStoredTicket(ref.ticketId, principalId);
     // A ref whose ticket the window's RLS hides: the same reason code the
-    // locked re-check gives (assertStillImportable).
+    // locked re-check gives (lockImportedTicket).
     if (!stored) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: ref.ticketId });
+    // Merged in Breeze (#8972): the ref stayed on the tombstone, or the merge
+    // moved it onto a survivor this import did not create.
+    if (stored.mergedIntoTicketId) {
+      return { kind: 'merged' as const, ticketId: stored.id, mergedIntoTicketId: stored.mergedIntoTicketId };
+    }
+    const createdByThisImport = stored.migrationWindowId !== null && stored.windowPrincipalId === principalId;
+    if (!createdByThisImport && stored.mergedAwayImportId) {
+      return { kind: 'merged' as const, ticketId: stored.mergedAwayImportId, mergedIntoTicketId: stored.id };
+    }
     if (!stored.migrationWindowId) throw inUse(t.sourceId, { reason: 'live_ticket', ticketId: ref.ticketId });
     if (stored.deletedAt) throw inUse(t.sourceId, { reason: 'deleted', ticketId: stored.id });
     if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
@@ -620,6 +709,10 @@ export async function importTicket(
       sourceChanges: sourceChanges(stored, storedComments, t, options.isSourceArticleId),
     };
   });
+
+  if (plan.kind === 'merged') {
+    return mergedInBreeze(plan.ticketId, plan.mergedIntoTicketId, { commentsWritten: 0, commentsSkipped: 0, fieldsUpdated: 0 });
+  }
 
   if (plan.kind === 'create' && !descriptor.orgIds.includes(t.orgId)) {
     throw new MigrationWindowError(
@@ -680,10 +773,11 @@ export async function importTicket(
     });
   } else if (headerRuns) {
     const cost = plan.headerCost + (lastIsHeader ? plan.statusCost : 0);
-    fieldsUpdated = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+    const header = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
+      const merged = await lockImportedTicket(ticketId, t.sourceId);
+      if (merged) return { fieldsUpdated: 0, merged };
       // Recomputed under the lock, so a user edit since the plan still wins.
-      await assertStillImportable(ticketId, t.sourceId);
-      const stored = await readStoredTicket(ticketId);
+      const stored = await readStoredTicket(ticketId, principalId);
       const ref = await readRef(principalId, t.sourceId);
       if (!stored || ref?.ticketId !== ticketId) throw inUse(t.sourceId, { reason: 'changed', ticketId });
       const changes = headerChanges(stored, ref, await lastFeedRowBy(ticketId, 'assignment'), t, principalId);
@@ -701,19 +795,27 @@ export async function importTicket(
         });
       }
       if (lastIsHeader) await finalStatus(scope, ticketId);
-      return changes.fieldNames.length + (changes.assign ? 1 : 0);
+      return { fieldsUpdated: changes.fieldNames.length + (changes.assign ? 1 : 0), merged: null };
     });
+    if (header.merged) {
+      return mergedInBreeze(ticketId, header.merged.mergedIntoTicketId, { commentsWritten, commentsSkipped, fieldsUpdated });
+    }
+    fieldsUpdated = header.fieldsUpdated;
   }
 
   for (const [index, chunk] of chunks.entries()) {
     const last = index === chunks.length - 1;
     const cost = chunk.length + (last ? statusCost : 0);
     const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
-      await assertStillImportable(ticketId, t.sourceId);
+      const merged = await lockImportedTicket(ticketId, t.sourceId);
+      if (merged) return { written: 0, skipped: 0, merged };
       const counts = await writeComments(scope, ticketId, chunk);
       if (last) await finalStatus(scope, ticketId);
-      return counts;
+      return { ...counts, merged: null };
     });
+    if (result.merged) {
+      return mergedInBreeze(ticketId, result.merged.mergedIntoTicketId, { commentsWritten, commentsSkipped, fieldsUpdated });
+    }
     commentsWritten += result.written;
     commentsSkipped += result.skipped;
   }
@@ -721,10 +823,12 @@ export async function importTicket(
   // A resume with nothing but a status change still needs its transaction. A
   // predicted skip with nothing else to write opens none (see above).
   if (!headerRuns && chunks.length === 0 && plan.kind === 'resume' && plan.statusApplies) {
-    await inImportTransaction(descriptor, context, orgId, statusCost, async (scope) => {
-      await assertStillImportable(ticketId, t.sourceId);
-      await finalStatus(scope, ticketId);
+    const merged = await inImportTransaction(descriptor, context, orgId, statusCost, async (scope) => {
+      const tombstone = await lockImportedTicket(ticketId, t.sourceId);
+      if (!tombstone) await finalStatus(scope, ticketId);
+      return tombstone;
     });
+    if (merged) return mergedInBreeze(ticketId, merged.mergedIntoTicketId, { commentsWritten, commentsSkipped, fieldsUpdated });
   }
 
   return {
