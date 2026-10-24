@@ -20,6 +20,7 @@ exports[`agentToolCatalog contract > pins the unreachable set so a reachability 
   "get_user_risk_detail",
   "get_user_risk_scores",
   "instant_boot_vm",
+  "ioc_hunt",
   "launch_specialist",
   "list_diagnostic_access_grants",
   "m365_query_signins",

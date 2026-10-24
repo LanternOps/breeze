@@ -37,6 +37,9 @@ import {
 } from './wisp/specialistPolicy';
 import { LIVE_READ_INPUT_FLAGS, requestsLiveDeviceRead } from './aiLiveDeviceReads';
 import { classifyChatReadOnlyEventLogsQuery, type PinnedEventLogsQuery } from './aiChatEventLogsReadOnly';
+// Env-only operator knob; the module imports nothing but @breeze/shared.
+import { iocHuntFourEyesDeviceThreshold } from './securityScanSweepConfig';
+import { IOC_HUNT_RUN_ACTION } from './iocHuntActions';
 
 // Re-exported so every existing importer of AGENT_HUMAN_ONLY_TOOLS keeps
 // working unchanged after the move to aiToolExposure.ts (W01 quorum
@@ -187,6 +190,9 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // scan downgraded from Tier 3 (2026-07-20): discovery, not mutation —
   // consistent with approve/decline/defer here. install/rollback stay Tier 3.
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'scan'],
+  // #6268: stopping an IOC sweep is the safe direction (queued scans are
+  // cancelled, running ones finish), so it auto-executes with an audit row.
+  ioc_hunt: ['cancel_sweep'],
   manage_groups: ['add_devices', 'remove_devices'],
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
@@ -300,6 +306,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // changes no device state. Reclassifying it is W04's call (spec W01-D3).
   disk_cleanup: ['preview'],
   generate_report: ['list', 'data', 'history', 'download'],
+  // #6268 (base Tier 1): reads over PR A's sweep services; preview writes nothing.
+  ioc_hunt: ['list_rule_sets', 'preview_sweep', 'list_sweeps', 'sweep_status'],
   get_dns_security: ['allowed', 'blocked', 'redirected'],
   get_service_monitoring_status: ['status', 'summary', 'results', 'known_services'],
   manage_alert_rules: ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'],
@@ -375,6 +383,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // through configuration policies"), so the gate costs no live workflow —
   // it is here so re-enabling the handler cannot silently reopen the hole.
   manage_patches: ['install', 'rollback', 'setup_auto_approval'],
+  // #6268: a fleet IOC sweep (detect-only, single org; scope input-aware in
+  // resolveApprovalScope) and an IOC rule import (publishes a rule set every
+  // policy using it then scans with).
+  ioc_hunt: [IOC_HUNT_RUN_ACTION, 'import_iocs'],
   manage_groups: ['create', 'update', 'delete'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
@@ -626,6 +638,10 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // Wisp W07: one approver (the person asking, or a colleague) — the
   // specialist's own effects still mint their own intents.
   launch_specialist: [...ASK_FIRST_SPECIALIST_KINDS],
+  // #6268 Gate B 8: an IOC import authors detection rules (a set with
+  // auto-quarantine on is refused in the handler, under the set lock).
+  // ioc_hunt:sweep is NOT here: its scope is input-aware (expectedDeviceCount).
+  ioc_hunt: ['import_iocs'],
   // Supervised, not four_eyes: same class as a public ticket reply. list/get
   // resolve to Tier 1 (TIER1_ACTIONS) and never reach tier 3.
   send_endpoint_message: ['send'],
@@ -770,6 +786,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // #6268 Gate B 6: supervised up to IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD
+  // expected devices, four_eyes above it or when the count is missing.
+  'ioc_hunt:sweep',
   // A customer-visible ticket reply is a different class of act from an
   // internal note — the note stays at the tool's base Tier 2 (auto-execute
   // + audit), but an AI-composed comment that will be shown to the ticket
@@ -871,6 +890,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   run_script: ['proposalId'],
   // resolveApprovalScope: update_org with a `status` key is four-eyes.
   manage_organizations: ['status'],
+  // resolveApprovalScope: sweep above the four-eyes device threshold (or with no count) is four-eyes.
+  ioc_hunt: ['expectedDeviceCount'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -952,6 +973,17 @@ export function resolveApprovalScope(
     // tenant access — externally binding, same class as the other
     // TIER3_FOUR_EYES_ACTIONS members — vs a plain name edit, which is inert.
     return 'status' in input ? 'four_eyes' : 'supervised';
+  }
+  if (toolName === 'ioc_hunt' && action === IOC_HUNT_RUN_ACTION) {
+    // #6268 Gate B 6: a sweep the approver sees as "up to N devices" is
+    // supervised up to the four-eyes threshold, four_eyes above it. A count
+    // that is missing or not a non-negative integer cannot be trusted to bound
+    // the sweep, so it takes the stricter scope. createSweep refuses the
+    // released call as a scope change when it would target more devices.
+    const n = input.expectedDeviceCount;
+    return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= iocHuntFourEyesDeviceThreshold()
+      ? 'supervised'
+      : 'four_eyes';
   }
   if (isInputAwareTier3(toolName, action, input)) {
     // MANDATORY, not stylistic: manage_policy_feature_link is in NEITHER
@@ -1279,6 +1311,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove: { resource: 'devices', action: 'execute' },
     restore: { resource: 'devices', action: 'execute' },
     vulnerabilities: { resource: 'devices', action: 'read' },
+  },
+  // #6268: mirrors routes/security/sweeps.ts (reads devices:read, create/cancel
+  // devices:execute) and routes/security/yaraIocImport.ts (devices:write).
+  ioc_hunt: {
+    list_rule_sets: { resource: 'devices', action: 'read' },
+    preview_sweep: { resource: 'devices', action: 'read' },
+    list_sweeps: { resource: 'devices', action: 'read' },
+    sweep_status: { resource: 'devices', action: 'read' },
+    sweep: { resource: 'devices', action: 'execute' },
+    cancel_sweep: { resource: 'devices', action: 'execute' },
+    import_iocs: { resource: 'devices', action: 'write' },
   },
   // Stored snapshot read. `refresh: true` scans the device live and requires
   // devices:execute instead (LIVE_READ_INPUT_FLAGS; POST
@@ -3176,6 +3219,46 @@ const EXECUTE_COMMAND_HEADLINE_BUILDERS: Record<string, (payload: Record<string,
   },
 };
 
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+function iocSweepScopeLabel(scope: unknown): string {
+  const s = (scope && typeof scope === 'object' ? scope : {}) as Record<string, unknown>;
+  const count = (key: string) => (Array.isArray(s[key]) ? (s[key] as unknown[]).length : 0);
+  switch (s.kind) {
+    case 'sites': return plural(count('siteIds'), 'site', 'sites');
+    case 'groups': return plural(count('groupIds'), 'group', 'groups');
+    case 'devices': return plural(count('deviceIds'), 'device', 'devices');
+    case 'orgs': return 'this organization';
+    default: return 'all reachable devices';
+  }
+}
+
+/**
+ * #6268 approval headlines for ioc_hunt. Sync and DB-free, so a sweep names
+ * the rule-set COUNT and "this organization" rather than set and org names
+ * (the approval card shows the ids and the org beside it).
+ */
+function iocHuntHeadline(action: string | undefined, input: Record<string, unknown>): string {
+  const idPrefix = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v.slice(0, 8) : 'unknown');
+  if (action === IOC_HUNT_RUN_ACTION) {
+    const sets = Array.isArray(input.ruleSetIds) ? input.ruleSetIds.length : 0;
+    const n = input.expectedDeviceCount;
+    const reach = typeof n === 'number' && Number.isInteger(n) && n >= 0
+      ? `up to ${plural(n, 'device', 'devices')}`
+      : 'an unconfirmed number of devices';
+    const scan = input.scanType === 'custom'
+      ? `custom scan of ${plural(Array.isArray(input.paths) ? input.paths.length : 0, 'path', 'paths')}`
+      : input.scanType === 'full' ? 'full scan' : 'quick scan';
+    return `IOC sweep (${scan}): ${plural(sets, 'rule set', 'rule sets')} on ${reach} in this organization (${iocSweepScopeLabel(input.scope)})`;
+  }
+  if (action === 'import_iocs') {
+    const count = Array.isArray(input.iocs) ? input.iocs.length : 0;
+    return `Import ${plural(count, 'IOC', 'IOCs')} into rule set ${idPrefix(input.ruleSetId)}`;
+  }
+  if (action === 'cancel_sweep') return `Cancel IOC sweep ${idPrefix(input.sweepId)}`;
+  return humanizeToolAction('ioc_hunt', action);
+}
+
 /**
  * Build a human-readable description of what the tool is about to do.
  */
@@ -3320,6 +3403,10 @@ export function buildApprovalDescription(
       } else {
         parts.push(humanizeToolAction(toolName, action));
       }
+      break;
+
+    case 'ioc_hunt':
+      parts.push(iocHuntHeadline(action, input));
       break;
 
     case 'security_scan':

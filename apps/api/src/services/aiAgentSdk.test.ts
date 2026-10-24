@@ -1162,6 +1162,27 @@ describe('createSessionPreToolUse', () => {
       expect(waitForApproval).toHaveBeenCalled();
     });
 
+    it('#6268: the ai.tool.ioc_hunt row carries iocs as { count, kinds }, never the IOC values', async () => {
+      vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
+      mockInsertValues();
+      const mockSet = vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) }));
+      vi.mocked(db.update).mockReturnValue({ set: mockSet } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+      const md5 = 'f'.repeat(32);
+      const input = { action: 'import_iocs', ruleSetId: 'set-1', label: 'Advisory 7', iocs: [{ kind: 'md5', value: md5 }, { kind: 'domain', value: 'bad.example' }] };
+
+      await createSessionPreToolUse(session)('ioc_hunt', input);
+      await createSessionPostToolUse(session)('ioc_hunt', input, JSON.stringify({ ok: true }), false, 3);
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find((c) => (c[1] as any)?.action === 'ai.tool.ioc_hunt');
+      expect(auditCall).toBeDefined();
+      expect((auditCall![1] as any).details.toolInput).toEqual({
+        action: 'import_iocs', ruleSetId: 'set-1', label: 'Advisory 7', iocs: { count: 2, kinds: ['domain', 'md5'] },
+      });
+      expect(JSON.stringify(auditCall![1])).not.toContain(md5);
+      expect(JSON.stringify(auditCall![1])).not.toContain('bad.example');
+    });
+
     it('audits read_only_auto executions as approved:false with the concrete method', async () => {
       vi.mocked(checkGuardrails).mockReturnValue(readOnlyCheck as any);
       mockInsertValues();

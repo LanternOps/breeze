@@ -406,6 +406,7 @@ To make sure `run_script` executes exactly the content you reviewed, take `conte
 | Tool | Tier | Description |
 |---|---|---|
 | `security_scan` | 3 | Run security scans, check status, quarantine/remove/restore threats. |
+| `ioc_hunt` | 1 | Threat hunting with IOC sweeps in one organization: list detection rule sets, preview, list and check sweeps (Tier 1); `cancel_sweep` (Tier 2); `sweep` and `import_iocs` need approval (Tier 3; a sweep above 25 devices needs a second approver). |
 | `get_security_posture` | 1 | Fleet-wide or device-level security posture scores with factor breakdowns and recommendations. |
 
 ### Fleet orchestration tools
@@ -831,6 +832,7 @@ Each tool has its own sliding-window rate limit, enforced per user:
 | `execute_command` | 10 | 5 min |
 | `run_script` | 5 | 5 min |
 | `security_scan` | 3 | 10 min |
+| `ioc_hunt` | 30 | 10 min |
 | `network_discovery` | 2 | 10 min |
 | `file_operations` | 20 | 5 min |
 | `manage_services` | 10 | 5 min |

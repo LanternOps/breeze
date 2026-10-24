@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, iocHuntShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -293,6 +293,7 @@ export const TOOL_TIERS = {
   search_script_library: 1,
   manage_services: 3,
   security_scan: 3,
+  ioc_hunt: 1,               // Action-level escalation in guardrails (sweep/import_iocs Tier 3, cancel_sweep Tier 2)
   get_security_posture: 1,
   get_cis_compliance: 1,
   get_cis_device_report: 1,
@@ -2383,6 +2384,13 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('security_scan', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'ioc_hunt',
+      registryDescription('ioc_hunt'),
+      iocHuntShape,
+      makeHandler('ioc_hunt', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

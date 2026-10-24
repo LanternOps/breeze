@@ -1507,6 +1507,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
                 ...verifiedContext,
                 actionIntentId: intent.id,
                 releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+                intentSource: intent.source,
                 // #4177: present ONLY for a user-owned release (above); the
                 // handler asserts the auth it got is this approver and stamps
                 // `source: 'ai_suggested'`. Spread so the no-swap case keeps

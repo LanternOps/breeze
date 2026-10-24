@@ -94,9 +94,9 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   'services/yaraBuiltinPackStore.ts':
     'boot-only system-scope upsert of THE built-in set (no org, no site); no caller, so no site-restricted actor can reach it (#6263 W03b)',
   'services/yaraRuleSetPublisher.ts':
-    'reached only through routes/security/yara.ts and routes/security/yaraIocImport.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing any of these files',
-  'routes/security/yaraIocImport.ts':
-    'every mutation runs writeDenial (routes/security/yaraAccess.ts: canMutateOrgWideGovernance + canManagePartnerWidePolicies) first; 403s pinned in yaraIocImport.test.ts (#6263 W04)',
+    'reached only through routes/security/yara.ts and services/yaraIocImportService.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing any of these files',
+  'services/yaraIocImportService.ts':
+    'every mutation runs writeDenial (services/yaraRuleSetAccess.ts: canMutateOrgWideGovernance + canManagePartnerWidePolicies) first; 403s pinned in yaraIocImportService.test.ts and routes/security/yaraIocImport.test.ts (#6263 W04; extracted for the AI ioc_hunt import_iocs path, #6268)',
   // Background probe of a destination's create-only write support, started
   // after a brokered backup write is issued. Writes only the
   // provider_capabilities.conditionalWrites record, in system context; no

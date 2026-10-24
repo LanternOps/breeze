@@ -1,4 +1,5 @@
 import type { ReleaseDecision } from './scriptProposals/approvalMethod';
+import type { ActionIntentSource } from '../db/schema/actionIntents';
 import type { scripts } from '../db/schema';
 import type { RunScriptSnapshot } from './actionIntents/runScriptSnapshot';
 import type { TenantVariableScope } from './tenantVariableResolution';
@@ -123,6 +124,14 @@ export type ToolExecutionContext = {
    * it, and a tool-name gate would have to be edited by the next consumer.
    */
   releaseDecision?: ReleaseDecision;
+  /**
+   * The released intent's `source` (`chat` | `mcp_api` | `ai_agent`) — set by
+   * the SAME two release paths that set `actionIntentId`, from the intent row
+   * they hold, and by nothing else (#6268). `ioc_hunt sweep` stamps its sweep
+   * `origin` from it (`mcp_api` → `mcp`, otherwise `ai_chat`); the auth alone
+   * cannot say which surface filed the approval. Absent on every direct call.
+   */
+  intentSource?: ActionIntentSource;
   /**
    * #4177 (W04): set ONLY by jobs/intentReleaseWorker.ts, and only when it
    * releases an agent-originated intent whose action creates a row OWNED by

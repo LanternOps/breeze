@@ -53,6 +53,9 @@ export const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: nu
   // worse than the burst it prevents.
   cancel_script_execution: { limit: 20, windowSeconds: 300 },
   security_scan: { limit: 3, windowSeconds: 600 },
+  // #6268: per tool, reads included. Sweep creation is ALSO limited 10/h per
+  // user inside createSweep, shared by UI, API, AI and MCP.
+  ioc_hunt: { limit: 30, windowSeconds: 600 },
   network_discovery: { limit: 2, windowSeconds: 600 },
   file_operations: { limit: 20, windowSeconds: 300 },
   manage_services: { limit: 10, windowSeconds: 300 },

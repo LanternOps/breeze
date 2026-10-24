@@ -57,6 +57,9 @@ export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   // click (the §11 four-eyes bypass). The COORDINATOR raises it, under the
   // task's human requester.
   'operator_plan',
+  // #6263 W05 Gate B 10 (#6268): fleet IOC sweeps and IOC rule imports are
+  // started from a human chat or MCP session; no operator agent mints them.
+  'ioc_hunt',
   // Wisp W03 (spec §8.3): a person confirms or retracts memory; Wisp never does.
   // Also in HUMAN_ONLY_TOOLS; listed here so the ai_agent principal is denied
   // above any allowlist and assertWithinCeiling refuses them for every grant.
