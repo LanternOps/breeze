@@ -58,6 +58,8 @@ import {
   aiOperatorTasks,
   contacts,
   devices,
+  users,
+  wispGrants,
 } from '../db/schema';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
@@ -165,6 +167,13 @@ const TASK_ROW_COLUMNS = {
   successorOfTaskId: aiOperatorTasks.successorOfTaskId,
   createdAt: aiOperatorTasks.createdAt,
   updatedAt: aiOperatorTasks.updatedAt,
+  // W07 "Wisp for <user>" provenance — joined under the request db context;
+  // an RLS-hidden grant row yields a null grantorUserId and `wisp: null`.
+  grantId: aiOperatorTasks.grantId,
+  requestedByRunId: aiOperatorTasks.requestedByRunId,
+  depth: aiOperatorTasks.depth,
+  grantorUserId: wispGrants.grantorUserId,
+  grantorName: users.name,
 } as const;
 
 /**
@@ -434,6 +443,8 @@ aiOperatorTasksRoutes.get(
         createdAtRaw: sql<string>`to_char(${aiOperatorTasks.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
       })
       .from(aiOperatorTasks)
+      .leftJoin(wispGrants, eq(aiOperatorTasks.grantId, wispGrants.id))
+      .leftJoin(users, eq(wispGrants.grantorUserId, users.id))
       .$dynamic();
 
     // LEFT-join `devices` only when the caller is actually site-restricted
@@ -482,6 +493,8 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
   const [task] = await db
     .select(TASK_ROW_COLUMNS)
     .from(aiOperatorTasks)
+    .leftJoin(wispGrants, eq(aiOperatorTasks.grantId, wispGrants.id))
+    .leftJoin(users, eq(wispGrants.grantorUserId, users.id))
     // LEFT — present only to evaluate the site-visibility predicate below.
     .leftJoin(devices, eq(aiOperatorTasks.deviceId, devices.id))
     .where(

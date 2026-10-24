@@ -10,6 +10,22 @@
  */
 import { z } from 'zod';
 
+/**
+ * The specialist kinds an assessment may name in `request_specialist` (W07
+ * Task 5). Mirrors the API's code-owned `SPECIALIST_KINDS`
+ * (`apps/api/src/services/wisp/specialistPolicy.ts`); the parity test in
+ * `apps/api/src/services/wisp/specialistDispatch.test.ts` keeps them equal.
+ */
+export const WISP_SPECIALIST_KINDS = [
+  'sweep',
+  'analysis',
+  'operator_recipe',
+  'patch_plan',
+  'remediation_research',
+  'bulk_ticket_reply',
+] as const;
+export type WispSpecialistKind = (typeof WISP_SPECIALIST_KINDS)[number];
+
 export const BULK_TICKET_REPLY_MAX_TICKETS = 250;
 export const BULK_TICKET_REPLY_MESSAGE_MAX = 4000;
 export const BULK_TICKET_REPLY_NOTE_MAX = 1000;

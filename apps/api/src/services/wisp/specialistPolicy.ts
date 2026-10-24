@@ -106,6 +106,27 @@ export const SPECIALIST_KIND_POLICY: Readonly<Record<SpecialistKind, SpecialistK
   }),
 });
 
+/** Approval-card copy per kind ("Wisp wants to run <label> at <org>"). */
+export const SPECIALIST_KIND_LABELS: Readonly<Record<SpecialistKind, string>> = Object.freeze({
+  sweep: 'a health sweep',
+  analysis: 'a sandbox analysis',
+  operator_recipe: 'an Operator task',
+  patch_plan: 'a patch plan',
+  remediation_research: 'remediation research',
+  bulk_ticket_reply: 'one reply to a set of tickets',
+});
+
+/** Kinds by admission path, derived from the table (the chat tier tables read these). */
+export const AUTO_ADMIT_SPECIALIST_KINDS: readonly SpecialistKind[] = Object.freeze(
+  SPECIALIST_KINDS.filter((k) => SPECIALIST_KIND_POLICY[k].autoAdmit),
+);
+export const ASK_FIRST_SPECIALIST_KINDS: readonly SpecialistKind[] = Object.freeze(
+  SPECIALIST_KINDS.filter((k) => !SPECIALIST_KIND_POLICY[k].autoAdmit),
+);
+
+/** The approval carrier's tool name (plan Task 4). Here, in the leaf, so the tool registry can name it without importing the intent graph. */
+export const WISP_SPECIALIST_REQUEST_TOOL = 'wisp_specialist_request';
+
 /** Captured requests beyond this per assessment run are refused `too_many_requests`. */
 export const MAX_SPECIALIST_REQUESTS_PER_ASSESSMENT = 3;
 

@@ -47,6 +47,7 @@ function buildTask(overrides: Partial<AiOperatorTaskDto> = {}): AiOperatorTaskDt
     successorOfTaskId: null,
     createdAt: '2026-09-07T00:00:00.000Z',
     updatedAt: '2026-09-07T01:00:00.000Z',
+    wisp: null,
     operations: [
       {
         operationKey: 'clear-temp',

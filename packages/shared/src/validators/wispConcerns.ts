@@ -28,6 +28,7 @@ import {
   WATCH_PARAMS_MAX_BYTES,
   WATCH_PARAMS_MAX_KEYS,
 } from '../types/wispConcerns';
+import { WISP_SPECIALIST_KINDS, type WispSpecialistKind } from './wispSpecialists';
 
 const jsonBytes = (o: unknown): number => {
   try {
@@ -106,13 +107,29 @@ export const proposeActionSchema = z.object({
 });
 export type ProposeActionInput = z.infer<typeof proposeActionSchema>;
 
-/** W07 fills the body behind it; until then the tool refuses. */
+/**
+ * `request_specialist` (W07): validate-only during the assessment; the
+ * coordinator dispatches each recorded request after the run
+ * (`apps/api/src/services/wisp/specialistDispatch.ts`).
+ */
 export const requestSpecialistSchema = z.object({
-  kind: z.string().trim().min(1).max(100),
+  kind: z.enum(WISP_SPECIALIST_KINDS),
   params: z.record(z.string(), z.unknown()),
   reason: z.string().trim().min(10).max(500),
 });
 export type RequestSpecialistInput = z.infer<typeof requestSpecialistSchema>;
+
+/** Parses a `request_specialist` call; throws (ZodError) on an invalid one. */
+export function validateRequestSpecialist(input: unknown): RequestSpecialistInput {
+  return requestSpecialistSchema.parse(input);
+}
+
+/** What the post-run dispatch did with one recorded request (`requestId` = deriveRequestId(runId, ordinal)). */
+export type SpecialistRequestResult = { requestId: string; kind: WispSpecialistKind } & (
+  | { admitted: true; runId?: string; taskId?: string }
+  | { needsApproval: true; intentId: string }
+  | { refused: string; detail?: string }
+);
 
 /** The run's collected outcome-tool calls, applied by the post-run finalizer (W05b). */
 export interface AssessmentOutcome {
@@ -121,6 +138,8 @@ export interface AssessmentOutcome {
   nudges: NudgeInput[];
   proposedActions: ProposeActionInput[];
   specialistRequests: RequestSpecialistInput[];
+  /** W07 — one entry per `specialistRequests` item, in call order, written by the post-run dispatch. */
+  specialistResults?: SpecialistRequestResult[];
 }
 
 // ---------------------------------------------------------------------------

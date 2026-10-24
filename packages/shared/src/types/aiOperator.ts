@@ -18,6 +18,8 @@
  * reaches `JSON.stringify(response)` for a task/operation DTO — same
  * "impossible by construction" contract as `AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS`.
  */
+
+import type { WispProvenanceDto } from './wispProvenance';
 export const AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS = [
   'checkpoint', 'criteria', 'args', 'toolInput', 'toolOutput', 'result',
 ] as const;
@@ -190,6 +192,8 @@ export interface AiOperatorTaskRunLinkDto {
 export interface AiOperatorTaskListItemDto {
   schemaVersion: typeof AI_OPERATOR_TASK_DTO_SCHEMA_VERSION;
   id: string;
+  /** W07 "Wisp for <user>" provenance; null for a task not admitted under a grant. */
+  wisp: WispProvenanceDto | null;
   orgId: string;
   // Non-null: unlike `ai_agent_runs.agent_id` (a live FK resolved via LEFT
   // JOIN, with the dual-ownership partner-wide visibility gap that route's

@@ -395,7 +395,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
   });
 
   it('request_specialist entries are left in the outcome untouched', async () => {
-    const req = { kind: 'backup', params: { a: 1 }, reason: 'needs a backup specialist' };
+    const req = { kind: 'sweep' as const, params: { a: 1 }, reason: 'needs a backup specialist' };
     const result = makeResult(calls({ specialistRequests: [req] }));
     await finalizeAssessment(makeCtx(), result);
     expect(result.outcome.assessment!.specialistRequests).toEqual([req]);

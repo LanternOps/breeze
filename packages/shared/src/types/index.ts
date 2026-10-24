@@ -883,6 +883,7 @@ export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiToolDomains';
 export * from './aiOperator';
+export * from './wispProvenance';
 export * from './aiOperatorRecipes';
 export * from './aiOrigin';
 export * from './orgNarrativeReport';

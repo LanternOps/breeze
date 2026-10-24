@@ -29,7 +29,7 @@ const h = vi.hoisted(() => ({
   queueAdd: vi.fn(async (..._a: unknown[]) => ({})),
   getRepeatableJobs: vi.fn(async () => [] as Array<{ name: string; key: string }>),
   removeRepeatableByKey: vi.fn(async (..._a: unknown[]) => undefined),
-  workers: [] as Array<{ name: string; processor: (job: { name: string; data: unknown }) => Promise<unknown>; opts: Record<string, unknown> }>,
+  workers: [] as Array<{ name: string; processor: (job: { name: string; data: unknown; id?: string; timestamp?: number }) => Promise<unknown>; opts: Record<string, unknown> }>,
   attachWorkerObservability: vi.fn(),
   chargeableUnderGrant: vi.fn(async (..._a: unknown[]): Promise<{ ok: true } | { ok: false; reason: 'budget_exhausted' }> => ({ ok: true })),
   notifyBudgetExhaustedOnce: vi.fn(async (..._a: unknown[]) => true),
@@ -66,7 +66,7 @@ vi.mock('bullmq', () => ({
     close = async () => undefined;
   },
   Worker: class {
-    constructor(name: string, processor: (job: { name: string; data: unknown }) => Promise<unknown>, opts: Record<string, unknown>) {
+    constructor(name: string, processor: (job: { name: string; data: unknown; id?: string; timestamp?: number }) => Promise<unknown>, opts: Record<string, unknown>) {
       h.workers.push({ name, processor, opts });
     }
     on = vi.fn();

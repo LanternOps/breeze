@@ -182,6 +182,10 @@ vi.mock('../wisp/grantAuthority', async (importOriginal) => ({
   resolveGrantCeiling,
 }));
 
+// Wisp W07 — the post-run specialist dispatch (its own rules: specialistDispatch.test.ts).
+const dispatchSpecialistRequests = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../wisp/specialistDispatch', () => ({ dispatchSpecialistRequests }));
+
 import { executeAgentRun, resolveRunProfileLimits, resolveRunProfileToolAllowlist } from './runLoop';
 import { assessmentToolAllowlist } from './assessmentProfile';
 import { makeResolvedModel } from '../aiModels/__fixtures__/resolvedModel';
@@ -368,7 +372,7 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     scriptQuery([
       { tool: 'record_concern', input: raise('first') },
       { tool: 'record_concern', input: raise('second') },
-      { tool: 'request_specialist', input: { kind: 'backup', params: {}, reason: 'needs a backup specialist' } },
+      { tool: 'request_specialist', input: { kind: 'sweep', params: {}, reason: 'needs a backup specialist' } },
     ]);
     await executeAgentRun(RUN_ID);
     expect(upsertConcern).toHaveBeenCalledTimes(2);
@@ -378,6 +382,53 @@ describe('assessment run-loop wiring (Wisp W05b)', () => {
     const outcome = final.patch.outcome as { assessment: { concernsRaised: unknown[]; specialistRequests: unknown[] } };
     expect(outcome.assessment.concernsRaised).toHaveLength(2);
     expect(outcome.assessment.specialistRequests).toHaveLength(1);
+  });
+
+  it('W07: dispatchSpecialistRequests runs after finalizeAssessment and before the run is finished', async () => {
+    seedRows({ profile: 'assessment', grant: true });
+    dispatchSpecialistRequests.mockImplementationOnce(async (...args: unknown[]) => {
+      const result = args[1] as { outcome: { assessment: { specialistResults?: unknown[] } } };
+      result.outcome.assessment.specialistResults = [{ requestId: 'r0', kind: 'sweep', admitted: true }];
+    });
+    scriptQuery([
+      { tool: 'record_concern', input: { subject: { kind: 'org', id: ORG_ID }, summary: 'first', severity: 'low' } },
+      { tool: 'request_specialist', input: { kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' } },
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(dispatchSpecialistRequests).toHaveBeenCalledTimes(1);
+    const [ctxArg, resultArg] = dispatchSpecialistRequests.mock.calls[0] as unknown as [
+      { run: { id: string } }, { outcome: { assessment: { specialistRequests: unknown[] } } },
+    ];
+    expect(ctxArg.run.id).toBe(RUN_ID);
+    expect(resultArg.outcome.assessment.specialistRequests).toHaveLength(1);
+    // After finalizeAssessment (its rollup is that finalizer's last step) …
+    expect(dispatchSpecialistRequests.mock.invocationCallOrder[0]!)
+      .toBeGreaterThan(rollupPartnerPicture.mock.invocationCallOrder[0]!);
+    // … and before finishRun serializes the outcome it wrote into.
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect((final.patch.outcome as { assessment: { specialistResults: unknown[] } }).assessment.specialistResults)
+      .toEqual([{ requestId: 'r0', kind: 'sweep', admitted: true }]);
+  });
+
+  it('W07: a dispatchSpecialistRequests throw never fails the assessment run', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seedRows({ profile: 'assessment', grant: true });
+    dispatchSpecialistRequests.mockRejectedValueOnce(new Error('dispatch exploded'));
+    scriptQuery([
+      { tool: 'request_specialist', input: { kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' } },
+    ]);
+    await executeAgentRun(RUN_ID);
+    expect(dispatchSpecialistRequests).toHaveBeenCalledTimes(1);
+    expect(finalTransition()?.to).toBe('completed');
+    expect(finalTransition()?.patch.errorCode).toBeUndefined();
+    consoleError.mockRestore();
+  });
+
+  it('W07: a non-assessment run never reaches the specialist dispatch', async () => {
+    seedRows({ profile: 'triage', grant: false });
+    await executeAgentRun(RUN_ID);
+    expect(dispatchSpecialistRequests).not.toHaveBeenCalled();
   });
 
   it('a non-assessment run cannot record an assessment outcome', async () => {

@@ -748,13 +748,31 @@ describe('assessment outcome tools (Wisp W05b)', () => {
     expect(() => validateOutcomeToolInput('request_specialist', { kind: 'k', params: {}, reason: 'short' })).toThrow();
   });
 
-  it('builds all five SDK tools; request_specialist refuses with not_available_until_w07', async () => {
+  it('builds all five SDK tools', () => {
     const tools = buildOutcomeSdkTools(outcomeToolsForProfile('assessment'));
     expect(tools.map((t) => t.name)).toEqual([...ASSESSMENT_TOOLS]);
+  });
+
+  it('request_specialist (W07) validates kind/params/reason, records, and no longer refuses not_available_until_w07', async () => {
     const [specialist] = buildOutcomeSdkTools(['request_specialist']);
-    const result = await specialist!.handler({ kind: 'backup', params: {}, reason: 'needs a backup specialist' }, {});
-    expect(JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text))
-      .toEqual({ refused: 'not_available_until_w07' });
+    const result = await specialist!.handler({ kind: 'sweep', params: {}, reason: 'Backups failed twice at Greenwood' }, {});
+    const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+    expect(JSON.parse(text)).toEqual({ status: 'recorded' });
+    expect(text).not.toContain('not_available_until_w07');
+    // A kind outside the specialist policy is rejected (the model retries) …
+    await expect(specialist!.handler({ kind: 'run_script', params: {}, reason: 'Backups failed twice at Greenwood' }, {}))
+      .rejects.toThrow();
+    // … and so is a reason under 10 characters.
+    await expect(specialist!.handler({ kind: 'sweep', params: {}, reason: 'x' }, {})).rejects.toThrow();
+  });
+
+  it('request_specialist describes post-assessment coordinator handling, approval cards and the cap of 3', () => {
+    const [specialist] = buildOutcomeSdkTools(['request_specialist']);
+    expect(specialist!.description).not.toMatch(/not available/i);
+    expect(specialist!.description).toMatch(/coordinator/i);
+    expect(specialist!.description).toMatch(/after the assessment/i);
+    expect(specialist!.description).toMatch(/approval/i);
+    expect(specialist!.description).toMatch(/\b3\b/);
   });
 
   it('the recording tools validate and ack without executing anything', async () => {

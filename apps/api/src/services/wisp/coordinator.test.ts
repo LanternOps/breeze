@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   hasEntitlement: vi.fn(async () => true),
   resolveGrantCeiling: vi.fn(),
   chargeableUnderGrant: vi.fn(async () => ({ ok: true }) as { ok: true } | { ok: false; reason: 'budget_exhausted' }),
-  launch: {} as Record<string, ReturnType<typeof vi.fn>>,
+  launch: {} as Record<string, ReturnType<typeof vi.fn<(ctx: unknown) => Promise<unknown>>>>,
   raiseSpecialistIntent: vi.fn(async () => ({ intentId: 'intent-1' })),
   getUserPermissions: vi.fn(),
   incSpecialistRequest: vi.fn(),

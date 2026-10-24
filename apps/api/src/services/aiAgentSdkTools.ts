@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, launchSpecialistShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -497,6 +497,11 @@ export const TOOL_TIERS = {
   snooze_concern: 2,
   resolve_concern: 2,
   create_watch: 2,
+  // Wisp W07 (services/aiToolsWisp.ts). Declared to chat only when
+  // wispEnabled() (wispSpecialistToolDefinitions); asks-first kinds escalate
+  // to Tier 3 (TIER3_ACTIONS keyed on `kind`). wisp_specialist_request is
+  // HUMAN_ONLY_TOOLS and therefore never tiered here.
+  launch_specialist: 2,
   // Spec 2026-09-23 W01 (#6755): read-only, previously registered but untiered.
   // Monitoring, analytics and network reads.
   query_analytics: 1,
@@ -1372,6 +1377,25 @@ export function wispConcernToolDefinitions(
     tool('snooze_concern', registryDescription('snooze_concern'), snoozeConcernShape, handler('snooze_concern')),
     tool('resolve_concern', registryDescription('resolve_concern'), resolveConcernShape, handler('resolve_concern')),
     tool('create_watch', registryDescription('create_watch'), createWatchShape, handler('create_watch')),
+  ];
+}
+
+/**
+ * Wisp W07 specialist chat tool — the same `wispEnabled()` EXPOSURE gate as
+ * the W03/W05a factories. Registration in aiTools and TOOL_TIERS stays
+ * unconditional; Breeze's MCP server gates via `isToolEnvGatedOff`, and the
+ * handler refuses without `auth.wispGrant`. The approval carrier
+ * `wisp_specialist_request` is HUMAN_ONLY_TOOLS and is never declared.
+ */
+export function wispSpecialistToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!wispEnabled()) return [];
+  return [
+    tool('launch_specialist', registryDescription('launch_specialist'), launchSpecialistShape, makeToolHandler('launch_specialist', getAuth, getActiveSession, onPreToolUse, onPostToolUse)),
   ];
 }
 
@@ -4511,6 +4535,8 @@ export function buildBreezeSdkTools(
     ...wispMemoryToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Wisp W05a concerns/watches — behind wispEnabled() (see the factory).
     ...wispConcernToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Wisp W07 launch_specialist — behind wispEnabled() (see the factory).
+    ...wispSpecialistToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
