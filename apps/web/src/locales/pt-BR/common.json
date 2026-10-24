@@ -428,7 +428,12 @@
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "empty": "Ainda sem dados de patches",
       "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
-      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas",
+      "devicesNeedPatches_one": "{{count}} dispositivo precisa de patches",
+      "devicesNeedPatches_other": "{{count}} dispositivos precisam de patches",
+      "viewPendingDevices": "Ver dispositivos com patches pendentes",
+      "viewFailedDevices": "Ver dispositivos com patches com falha",
+      "viewCriticalDevices": "Ver dispositivos com patches críticos"
     },
     "vuln": {
       "title": "Vulnerabilidades",

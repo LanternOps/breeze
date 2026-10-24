@@ -428,7 +428,12 @@
       "unratedPending_other": "{{count}} correctifs non évalués en attente (ne seront pas approuvés automatiquement)",
       "empty": "Pas encore de données de correctifs",
       "imagesNotChecked_one": "{{count}} image de conteneur non vérifiée",
-      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées"
+      "imagesNotChecked_other": "{{count}} images de conteneur non vérifiées",
+      "devicesNeedPatches_one": "{{count}} appareil a besoin de correctifs",
+      "devicesNeedPatches_other": "{{count}} appareils ont besoin de correctifs",
+      "viewPendingDevices": "Voir les appareils avec des correctifs en attente",
+      "viewFailedDevices": "Voir les appareils avec des correctifs échoués",
+      "viewCriticalDevices": "Voir les appareils avec des correctifs critiques"
     },
     "vuln": {
       "title": "Vulnérabilités",

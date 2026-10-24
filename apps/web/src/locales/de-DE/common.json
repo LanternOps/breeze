@@ -428,7 +428,12 @@
       "unratedPending_other": "{{count}} unbewertete Patches ausstehend (werden nicht automatisch genehmigt)",
       "empty": "Noch keine Patch-Daten",
       "imagesNotChecked_one": "{{count}} Container-Image nicht geprüft",
-      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft"
+      "imagesNotChecked_other": "{{count}} Container-Images nicht geprüft",
+      "devicesNeedPatches_one": "{{count}} Gerät benötigt Patches",
+      "devicesNeedPatches_other": "{{count}} Geräte benötigen Patches",
+      "viewPendingDevices": "Geräte mit ausstehenden Patches anzeigen",
+      "viewFailedDevices": "Geräte mit fehlgeschlagenen Patches anzeigen",
+      "viewCriticalDevices": "Geräte mit kritischen Patches anzeigen"
     },
     "vuln": {
       "title": "Schwachstellen",

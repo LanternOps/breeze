@@ -428,7 +428,12 @@
       "unratedPending_other": "{{count}} derecelendirilmemiş yama beklemede (otomatik onaylanmayacak)",
       "empty": "Henüz yama verisi yok",
       "imagesNotChecked_one": "{{count}} kapsayıcı imajı denetlenmedi",
-      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi"
+      "imagesNotChecked_other": "{{count}} kapsayıcı imajı denetlenmedi",
+      "devicesNeedPatches_one": "{{count}} cihazın yamaya ihtiyacı var",
+      "devicesNeedPatches_other": "{{count}} cihazın yamaya ihtiyacı var",
+      "viewPendingDevices": "Bekleyen yaması olan cihazları göster",
+      "viewFailedDevices": "Başarısız yaması olan cihazları göster",
+      "viewCriticalDevices": "Kritik yaması olan cihazları göster"
     },
     "vuln": {
       "title": "Güvenlik Açıkları",
