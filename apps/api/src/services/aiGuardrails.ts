@@ -705,6 +705,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   // browser/peripheral policy tools above — no identity, tenant-destruction,
   // or restore/rewind action in its surface.
   'manage_monitor_definitions',
+  // Ticket routing rules (#8883 W5): config-object CRUD + reorder, same class;
+  // whole-tool backstop for its TIER3_SUPERVISED_ACTIONS entry.
+  'manage_ticket_routing_rules',
   'network_discovery', 'remediate_sensitive_data',
   'remediate_software_violation', 'remediate_vulnerability',
   'execute_playbook', 'execute_containment',
