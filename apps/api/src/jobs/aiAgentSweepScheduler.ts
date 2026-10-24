@@ -598,7 +598,8 @@ export async function processSweepOccurrence(
     console.info('[AiAgentSweepScheduler] sweep occurrence skipped — schedule or agent is no longer eligible', {
       scheduleId, occurrenceKey,
     });
-    return writeEmptySummary(scheduleId, occurrenceKey);
+    // A Wisp one-off never overwrites the schedule's cron summary (W07).
+    return data.grant ? emptySummary(occurrenceKey) : writeEmptySummary(scheduleId, occurrenceKey);
   }
 
   // Called with NO ambient DB context — it opens its own system context (and
@@ -609,7 +610,8 @@ export async function processSweepOccurrence(
     console.warn('[AiAgentSweepScheduler] baseline vanished from the partner resolver between reads', {
       scheduleId, occurrenceKey,
     });
-    return writeEmptySummary(scheduleId, occurrenceKey);
+    // A Wisp one-off never overwrites the schedule's cron summary (W07).
+    return data.grant ? emptySummary(occurrenceKey) : writeEmptySummary(scheduleId, occurrenceKey);
   }
   const overridesByOrg: Map<string, ScheduleOverrideSummary> = entry.overridesByOrg;
 

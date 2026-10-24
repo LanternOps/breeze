@@ -37,15 +37,26 @@ import { withAuthDbAccessContext, type AuthContext } from '../../../middleware/a
 import { ticketCounterpartScopeCondition } from '../../../routes/tickets/siteScope';
 import { createAuditLog } from '../../auditService';
 import { addTicketComment, changeTicketStatus, type TicketActor, type TicketStatus } from '../../ticketService';
-import { assertWithinCeiling, type GrantCeiling } from '../grantAuthority';
+import { assertWithinCeiling, CeilingViolationError, type GrantCeiling } from '../grantAuthority';
 
 export const BULK_TICKET_REPLY_BATCH_SIZE = 10;
 export const BULK_TICKET_REPLY_AUDIT_ACTION = 'ticket.reply.sent';
+/**
+ * Two-phase idempotency marker. Audit rows commit on their own connection
+ * (auditService), so the `sent` marker cannot share the reply's transaction:
+ * `sending` is written BEFORE the reply and `sent` after it; `failed` when the
+ * reply rolled back. A redelivery that finds `sending` with neither `sent` nor
+ * `failed` cannot know whether the customer got the reply — it skips the
+ * ticket as `uncertain` rather than risk sending it twice.
+ */
+export const BULK_TICKET_REPLY_SENDING_ACTION = 'ticket.reply.sending';
+export const BULK_TICKET_REPLY_FAILED_ACTION = 'ticket.reply.failed';
+const MARKER_ACTIONS = [BULK_TICKET_REPLY_SENDING_ACTION, BULK_TICKET_REPLY_AUDIT_ACTION, BULK_TICKET_REPLY_FAILED_ACTION];
 
 /** Core statuses a reply is not sent to (merged tombstones are skipped the same way). */
 const CLOSED_LIKE_STATUSES: ReadonlySet<TicketStatus> = new Set<TicketStatus>(['resolved', 'closed']);
 
-export type BulkTicketReplySkipReason = 'not_in_set' | 'not_in_org' | 'closed' | 'out_of_ceiling';
+export type BulkTicketReplySkipReason = 'not_in_set' | 'not_in_org' | 'closed' | 'out_of_ceiling' | 'uncertain';
 
 export interface BulkTicketReplyReport {
   sent: string[];
@@ -88,6 +99,27 @@ function defaultHoldNote(concernId: string | null): string {
   return concernId
     ? `Set to pending by a Wisp bulk reply for concern ${concernId}. A public update follows.`
     : 'Set to pending by a Wisp bulk reply. A public update follows.';
+}
+
+/** sent → already sent; sending without sent/failed → uncertain (may have reached the customer). */
+function classifyMarkers(rows: Array<{ resourceId: string | null; action: string }>): {
+  alreadySentIds: Set<string>;
+  uncertainIds: Set<string>;
+} {
+  const byTicket = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (!r.resourceId) continue;
+    const set = byTicket.get(r.resourceId) ?? new Set<string>();
+    set.add(r.action);
+    byTicket.set(r.resourceId, set);
+  }
+  const alreadySentIds = new Set<string>();
+  const uncertainIds = new Set<string>();
+  for (const [id, actions] of byTicket) {
+    if (actions.has(BULK_TICKET_REPLY_AUDIT_ACTION)) alreadySentIds.add(id);
+    else if (actions.has(BULK_TICKET_REPLY_SENDING_ACTION) && !actions.has(BULK_TICKET_REPLY_FAILED_ACTION)) uncertainIds.add(id);
+  }
+  return { alreadySentIds, uncertainIds };
 }
 
 type CandidateRow = {
@@ -146,8 +178,8 @@ export async function executeBulkTicketReply(input: {
   // Pinned order, restricted to the candidates.
   const ordered = params.ticketIds.filter((id) => requested.has(id));
 
-  const { rows, alreadySentIds } = ordered.length === 0
-    ? { rows: [] as CandidateRow[], alreadySentIds: new Set<string>() }
+  const { rows, alreadySentIds, uncertainIds } = ordered.length === 0
+    ? { rows: [] as CandidateRow[], alreadySentIds: new Set<string>(), uncertainIds: new Set<string>() }
     : await withAuthDbAccessContext(actorAuth, async () => {
         // One read for the whole set, through the human's RLS context plus the
         // same org / site / exact-device visibility the ticket routes apply.
@@ -176,17 +208,17 @@ export async function executeBulkTicketReply(input: {
         const audited = foundIds.length === 0
           ? []
           : await db
-              .select({ resourceId: auditLogs.resourceId })
+              .select({ resourceId: auditLogs.resourceId, action: auditLogs.action })
               .from(auditLogs)
               .where(and(
-                eq(auditLogs.action, BULK_TICKET_REPLY_AUDIT_ACTION),
+                inArray(auditLogs.action, MARKER_ACTIONS),
                 eq(auditLogs.resourceType, 'ticket'),
                 inArray(auditLogs.resourceId, foundIds),
                 sql`${auditLogs.details}->>'executionId' = ${executionId}`,
               ));
         return {
           rows: found,
-          alreadySentIds: new Set(audited.map((a) => a.resourceId).filter((id): id is string => !!id)),
+          ...classifyMarkers(audited),
         };
       });
 
@@ -197,6 +229,7 @@ export async function executeBulkTicketReply(input: {
     const row = byId.get(id);
     if (!row) { skipped.push({ ticketId: id, reason: 'not_in_org' }); continue; }
     if (alreadySentIds.has(id)) { alreadySent.push(id); continue; }
+    if (uncertainIds.has(id)) { skipped.push({ ticketId: id, reason: 'uncertain' }); continue; }
     if (!actorAuth.canAccessOrg(row.orgId)) { skipped.push({ ticketId: id, reason: 'out_of_ceiling' }); continue; }
     try {
       assertWithinCeiling(ceiling, {
@@ -204,8 +237,10 @@ export async function executeBulkTicketReply(input: {
         permission: 'tickets:write',
         ...(row.deviceSiteId ? { siteId: row.deviceSiteId } : {}),
       });
-    } catch {
+    } catch (err) {
       // CeilingViolationError (incl. an inactive grant) — this ticket only.
+      // Anything else is a bug, not a permission skip.
+      if (!(err instanceof CeilingViolationError)) throw err;
       skipped.push({ ticketId: id, reason: 'out_of_ceiling' });
       continue;
     }
@@ -223,6 +258,27 @@ export async function executeBulkTicketReply(input: {
   outer: for (let start = 0; start < sendable.length; start += BULK_TICKET_REPLY_BATCH_SIZE) {
     if (start > 0) await yieldToEventLoop();
     for (const ticket of sendable.slice(start, start + BULK_TICKET_REPLY_BATCH_SIZE)) {
+      // Awaited markers (not the fire-and-forget variant): a redelivery reads
+      // them to decide what was sent, so their loss must surface.
+      const marker = (action: string, result: 'success' | 'failure', extra: Record<string, unknown> = {}) => createAuditLog({
+        orgId: ticket.orgId,
+        actorId: actorAuth.user.id,
+        actorEmail: actorAuth.user.email,
+        action,
+        resourceType: 'ticket',
+        resourceId: ticket.id,
+        details: { executionId, grantId: ceiling.grantId, concernId: params.concernId, ...extra },
+        result,
+        initiatedBy: 'ai',
+      });
+      try {
+        await marker(BULK_TICKET_REPLY_SENDING_ACTION, 'success');
+      } catch (err) {
+        // Nothing sent for this ticket; without the marker a crash mid-send
+        // could not be told apart from "never tried", so stop here.
+        stoppedAt = { ticketId: ticket.id, error: `could not record the send: ${errorMessage(err)}` };
+        break outer;
+      }
       try {
         // One transaction per ticket: the hold, the note and the reply commit
         // together, so a failure leaves this ticket untouched and every
@@ -236,26 +292,17 @@ export async function executeBulkTicketReply(input: {
         });
       } catch (err) {
         stoppedAt = { ticketId: ticket.id, error: errorMessage(err) };
+        // The reply rolled back: a redelivery may retry this ticket. If even
+        // this marker fails the ticket stays `uncertain` — the safe side.
+        await marker(BULK_TICKET_REPLY_FAILED_ACTION, 'failure', { error: errorMessage(err).slice(0, 500) }).catch(() => undefined);
         break outer;
       }
       sent.push(ticket.id);
       try {
-        // Awaited (not the fire-and-forget variant): this row is the
-        // idempotency marker a redelivery reads, so its loss must surface.
-        await createAuditLog({
-          orgId: ticket.orgId,
-          actorId: actorAuth.user.id,
-          actorEmail: actorAuth.user.email,
-          action: BULK_TICKET_REPLY_AUDIT_ACTION,
-          resourceType: 'ticket',
-          resourceId: ticket.id,
-          details: { executionId, grantId: ceiling.grantId, concernId: params.concernId },
-          result: 'success',
-          initiatedBy: 'ai',
-        });
+        await marker(BULK_TICKET_REPLY_AUDIT_ACTION, 'success');
       } catch (err) {
-        // The reply is out; without its marker a redelivery would send it
-        // again. Stop here so a human looks before anything else goes.
+        // The reply is out; the `sending` marker makes a redelivery skip it as
+        // uncertain. Stop here so a human looks before anything else goes.
         stoppedAt = { ticketId: ticket.id, error: `reply sent but its audit row failed: ${errorMessage(err)}` };
         break outer;
       }

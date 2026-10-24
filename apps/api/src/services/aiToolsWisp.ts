@@ -41,7 +41,12 @@ const GRANT_REQUIRED = JSON.stringify({ error: 'wisp_grant_required' });
 
 function render(result: RequestSpecialistResult): string {
   if ('refused' in result) {
-    return JSON.stringify(result.detail ? { error: result.refused, detail: result.detail } : { error: result.refused });
+    return JSON.stringify({
+      error: result.refused,
+      ...(result.detail ? { detail: result.detail } : {}),
+      // bulk_reply_incomplete: what was and was not sent, stored on the intent.
+      ...(result.report ? { report: result.report } : {}),
+    });
   }
   return JSON.stringify(result);
 }

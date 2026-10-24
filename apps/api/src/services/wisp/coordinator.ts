@@ -88,7 +88,7 @@ export type SpecialistRequestInput = {
 export type RequestSpecialistResult =
   | { admitted: true; runId?: string; taskId?: string; report?: unknown }
   | { needsApproval: true; intentId: string }
-  | { refused: SpecialistRefusal; detail?: string };
+  | { refused: SpecialistRefusal; detail?: string; report?: unknown };
 
 /** Fixed namespace for `deriveRequestId` (uuid v5). Never change it: ids are durable. */
 export const WISP_REQUEST_NS = '6f1c2a3e-7b4d-5c8e-9a0f-1d2e3f4a5b6c';

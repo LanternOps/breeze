@@ -116,6 +116,7 @@ export async function raiseSpecialistIntent(
     reason: input.reason ? input.reason.slice(0, 500) : `Wisp asks to run ${SPECIALIST_KIND_LABELS[input.kind]}`,
     actionLabel: `Wisp: ${SPECIALIST_KIND_LABELS[input.kind]}`,
     idempotencyKey: specialistIntentIdempotencyKey(input.requestId),
+    coordinatorCarrier: true,
   });
   return { intentId: intent.id };
 }

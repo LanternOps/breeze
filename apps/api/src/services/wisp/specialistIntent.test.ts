@@ -68,6 +68,8 @@ describe('raiseSpecialistIntent', () => {
       input: { requestId: REQ, kind: 'patch_plan', orgId: ORG, grantId: 'g1', grantRevisionId: 'r1', params: {}, reason: base.reason },
     });
     expect(input.input).not.toHaveProperty('pinnedDigest');
+    // The one sanctioned carrier mint.
+    expect(input.coordinatorCarrier).toBe(true);
   });
 
   it('converges on one intent per request id: the idempotency key is derived from it', async () => {

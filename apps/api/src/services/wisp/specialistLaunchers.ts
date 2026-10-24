@@ -42,11 +42,14 @@ export type SpecialistRefusal =
   | 'wisp_disabled' | 'not_entitled' | 'grant_inactive' | 'org_out_of_ceiling' | 'depth_exceeded'
   | 'budget_exhausted' | 'permission_missing' | 'workspace_execute_required' | 'unknown_kind'
   | 'invalid_params' | 'device_not_in_org' | 'no_sweep_schedule' | 'no_effective_agent'
-  | 'admission_skipped' | 'too_many_requests';
+  | 'admission_skipped' | 'too_many_requests'
+  // bulk_ticket_reply: the batch stopped part-way, or sent nothing at all —
+  // never reported as a success (the report travels with the refusal).
+  | 'bulk_reply_incomplete';
 
 export type LaunchResult =
   | { admitted: true; runId?: string; taskId?: string; report?: BulkTicketReplyReport }
-  | { refused: SpecialistRefusal; detail?: string };
+  | { refused: SpecialistRefusal; detail?: string; report?: BulkTicketReplyReport };
 
 export interface LaunchContext {
   orgId: string;
@@ -115,15 +118,23 @@ export function parseSpecialistParams(kind: SpecialistKind, params: unknown): Re
 const systemRead = <T>(fn: () => Promise<T>): Promise<T> =>
   runOutsideDbContext(() => withSystemDbAccessContext(fn));
 
-/** The run a previous attempt of this request admitted, if any. */
+/**
+ * The run a previous attempt of this request admitted, if any. A row left
+ * `failed`/`enqueue_failed` is NOT a replay: no worker will ever pick it up,
+ * and admission reclaims exactly that row as a new attempt.
+ */
 async function existingRunId(orgId: string, requestId: string): Promise<string | null> {
   const [row] = await systemRead(() => db
-    .select({ id: aiAgentRuns.id })
+    .select({ id: aiAgentRuns.id, status: aiAgentRuns.status, errorCode: aiAgentRuns.errorCode })
     .from(aiAgentRuns)
     .where(and(eq(aiAgentRuns.orgId, orgId), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId))))
     .limit(1));
-  return row?.id ?? null;
+  if (!row || isEnqueueFailed(row)) return null;
+  return row.id;
 }
+
+const isEnqueueFailed = (run: { status?: string | null; errorCode?: string | null }) =>
+  run.status === 'failed' && run.errorCode === 'enqueue_failed';
 
 type RunAdmission = Parameters<typeof createAndEnqueueAgentRun>[0];
 
@@ -143,7 +154,13 @@ async function admitRun(ctx: LaunchContext, input: RunAdmission): Promise<Launch
     if (err instanceof GrantDepthExceededError) return { refused: 'depth_exceeded' };
     throw err;
   }
-  if (result.created) return { admitted: true, runId: result.run.id };
+  // `created` with an enqueue failure hands back a row already marked failed
+  // (runService) — nothing will run it, so it is not an admission.
+  if (result.created) {
+    return isEnqueueFailed(result.run)
+      ? { refused: 'admission_skipped', detail: 'enqueue_failed' }
+      : { admitted: true, runId: result.run.id };
+  }
   if (result.skipped === 'duplicate') {
     const raced = await existingRunId(ctx.orgId, ctx.requestId);
     if (raced) return { admitted: true, runId: raced };
@@ -167,7 +184,9 @@ function triggerRefFor(ctx: LaunchContext, extra: Record<string, unknown> = {}):
 
 /**
  * A one-off occurrence of the partner's enabled sweep baseline, restricted to
- * this org and carrying the grant. Going through the sweep queue keeps the
+ * this org and carrying the grant. `admitted` here means QUEUED: per-org
+ * admission (budget, overrides, duplicate) happens in the occurrence job, and
+ * its outcome lands on the sweep run, not on this result. Going through the sweep queue keeps the
  * system-collected evidence step a sweep run depends on. The run itself is
  * admitted by `processSweepOccurrence` (dedupe
  * `sweep-<scheduleId>-<orgId>-wisp-<requestId>`), so no run id comes back.
@@ -199,8 +218,10 @@ export async function launchSweep(ctx: LaunchContext): Promise<LaunchResult> {
     ...(params.sweepKinds ? { sweepKinds: params.sweepKinds } : {}),
   }, {
     jobId: getSweepOccurrenceJobId(scheduleId, occurrenceKey),
+    // Removed on completion AND failure: a retained job would make a later
+    // re-add under this deterministic id a silent BullMQ no-op.
     removeOnComplete: true,
-    removeOnFail: 100,
+    removeOnFail: true,
   });
   return { admitted: true };
 }
@@ -325,7 +346,22 @@ export async function launchBulkTicketReply(ctx: LaunchContext): Promise<LaunchR
     pinnedDigest: ctx.pinnedDigest,
   });
   if (!result.ok) return { refused: 'invalid_params', detail: result.refused };
-  return { admitted: true, report: result.report };
+  const { report } = result;
+  // A batch that stopped part-way, or sent nothing, must not read as done: the
+  // carrier release then terminalizes `failed` with the report stored, so a
+  // person looks before anything else is sent. A redelivery that finds every
+  // ticket already sent is a success.
+  if (report.stoppedAt) {
+    return { refused: 'bulk_reply_incomplete', detail: report.stoppedAt.error, report };
+  }
+  if (report.sent.length === 0 && report.alreadySent.length === 0) {
+    return { refused: 'bulk_reply_incomplete', detail: 'nothing_sent', report };
+  }
+  // A ticket an earlier delivery may already have replied to: a person checks.
+  if (report.skipped.some((s) => s.reason === 'uncertain')) {
+    return { refused: 'bulk_reply_incomplete', detail: 'uncertain', report };
+  }
+  return { admitted: true, report };
 }
 
 export const SPECIALIST_LAUNCHERS: Readonly<Record<SpecialistKind, (ctx: LaunchContext) => Promise<LaunchResult>>> = Object.freeze({

@@ -25,6 +25,10 @@ import { actionIntents, aiAgentRuns, aiAgents, devices, wispGrantRevisions, wisp
 import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 import { createAndEnqueueAgentRun, registerAgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { requestSpecialist } from '../../services/wisp/coordinator';
+import { wispSpecialistRequestHandler } from '../../services/aiToolsWisp';
+import { createActionIntent } from '../../services/actionIntents/intentService';
+import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
+import type { AuthContext } from '../../middleware/auth';
 import { specialistDedupeKey } from '../../services/wisp/specialistLaunchers';
 import { WISP_SPECIALIST_REQUEST_TOOL } from '../../services/wisp/specialistPolicy';
 import {
@@ -185,5 +189,96 @@ describe('Wisp specialist coordinator (real Postgres)', () => {
       params: {}, requestedByRunId: child.run.id,
     }, { requestId: randomUUID() });
     expect(result).toEqual({ refused: 'depth_exceeded' });
+  });
+
+  it('a card approved, then the grant paused before release → grant_inactive and no child (Review Focus 1)', async () => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+    ]);
+    const runId = await seedAssessmentRun(t, t.deviceId);
+    const requestId = randomUUID();
+    const card = await requestSpecialist({
+      grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'patch_plan',
+      params: {}, requestedByRunId: runId,
+    }, { requestId, reason: 'Patch compliance dropped this week' });
+    if (!('needsApproval' in card)) throw new Error(`expected a card, got ${JSON.stringify(card)}`);
+
+    // Approved by the partner admin, claimed for release…
+    await sys(() => db.update(actionIntents).set({
+      status: 'executing', decidedByUserId: t.admin.id, decidedAt: new Date(), decidedVia: 'human',
+    } as never).where(eq(actionIntents.id, card.intentId)));
+    // …and the grantor paused Wisp in between.
+    await sys(() => db.update(wispGrants).set({ status: 'paused', pausedReason: 'user_paused', pausedAt: new Date() } as never)
+      .where(eq(wispGrants.id, t.grant.grantId)));
+
+    const [intent] = await sys(() => db.select().from(actionIntents).where(eq(actionIntents.id, card.intentId)));
+    const out = JSON.parse(await wispSpecialistRequestHandler(
+      intent!.arguments as Record<string, unknown>, {} as AuthContext, { actionIntentId: card.intentId },
+    ));
+    expect(out).toEqual({ error: 'grant_inactive' });
+    const children = await sys(() => db.select({ id: aiAgentRuns.id }).from(aiAgentRuns)
+      .where(eq(aiAgentRuns.requestedByRunId, runId)));
+    expect(children).toEqual([]);
+  });
+
+  it('the same request id twice admits exactly one child run (Review Focus 3, real dedupe key)', async () => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+    ]);
+    const runId = await seedAssessmentRun(t, t.deviceId);
+    const approver = {
+      principal: { kind: 'user_session' },
+      user: { id: t.admin.id, email: 'admin@wisp.test', name: 'Admin', isPlatformAdmin: false },
+      token: null, partnerId: t.partner.id, orgId: null, scope: 'partner',
+      accessibleOrgIds: [t.org.id], partnerOrgAccess: 'all',
+      orgCondition: () => undefined, canAccessOrg: (id: string) => id === t.org.id,
+    } as unknown as AuthContext;
+    const requestId = randomUUID();
+    const input = {
+      grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, orgId: t.org.id, kind: 'remediation_research' as const,
+      params: { deviceId: t.deviceId }, requestedByRunId: runId,
+    };
+    const opts = { requester: { kind: 'approval' as const, intentId: randomUUID(), auth: approver }, requestId };
+    const a = await requestSpecialist(input, opts);
+    const b = await requestSpecialist(input, opts);
+    expect(a).toMatchObject({ admitted: true });
+    expect(b).toEqual(a);
+    const rows = await sys(() => db.select().from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.orgId, t.org.id), eq(aiAgentRuns.dedupeKey, specialistDedupeKey(requestId)))));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      depth: 1, requestedByRunId: runId, parentGrantRevisionId: t.grant.revisionId, grantId: t.grant.grantId,
+      profile: 'remediation_research',
+    });
+
+    // A child outlives its parent (retention): pointers clear, org and depth stay.
+    await sys(() => db.delete(aiAgentRuns).where(eq(aiAgentRuns.id, runId)));
+    const [orphan] = await sys(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, rows[0]!.id)));
+    expect(orphan).toMatchObject({ depth: 1, requestedByRunId: null, orgId: t.org.id });
+  });
+
+  it('no other agent path can mint the carrier: createActionIntent refuses it without the coordinator mint', async () => {
+    const t = await seedTenant([
+      { resource: 'ai_sessions', action: 'use' },
+      { resource: 'ai_agents', action: 'write' },
+      { resource: 'devices', action: 'read' },
+    ]);
+    const runId = await seedAssessmentRun(t, t.deviceId);
+    const [run] = await sys(() => db.select().from(aiAgentRuns).where(eq(aiAgentRuns.id, runId)));
+    const [agent] = await sys(() => db.select().from(aiAgents).where(eq(aiAgents.id, run!.agentId)));
+    const agentAuth = buildAgentAuthContext(agent!, { id: runId, orgId: t.org.id, deviceId: null, deviceSiteId: null }, { id: t.org.id, partnerId: t.partner.id });
+    await expect(createActionIntent(agentAuth, {
+      toolName: WISP_SPECIALIST_REQUEST_TOOL,
+      input: { requestId: randomUUID(), kind: 'patch_plan', orgId: t.org.id, grantId: t.grant.grantId, grantRevisionId: t.grant.revisionId, params: {}, reason: 'x' },
+      source: 'ai_agent',
+      orgId: t.org.id,
+    })).rejects.toMatchObject({ code: 'coordinator_carrier_only' });
+    const intents = await sys(() => db.select({ id: actionIntents.id }).from(actionIntents)
+      .where(and(eq(actionIntents.orgId, t.org.id), eq(actionIntents.actionName, WISP_SPECIALIST_REQUEST_TOOL))));
+    expect(intents).toEqual([]);
   });
 });

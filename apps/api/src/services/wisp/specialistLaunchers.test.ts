@@ -294,6 +294,19 @@ describe('launchPatchPlan', () => {
     expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
+  it('a run created but never enqueued is NOT admitted (no worker will pick it up)', async () => {
+    h.tables.ai_agent_runs = [[]];
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: 'run-dead', status: 'failed', errorCode: 'enqueue_failed' } });
+    expect(await launchPatchPlan(ctx())).toEqual({ refused: 'admission_skipped', detail: 'enqueue_failed' });
+  });
+
+  it('a prior enqueue-failed row is not a replay: admission runs again (and reclaims it)', async () => {
+    h.tables.ai_agent_runs = [[{ id: 'old', status: 'failed', errorCode: 'enqueue_failed' }]];
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: 'old', status: 'queued', errorCode: null } });
+    expect(await launchPatchPlan(ctx())).toEqual({ admitted: true, runId: 'old' });
+    expect(h.createAndEnqueueAgentRun).toHaveBeenCalledTimes(1);
+  });
+
   it('short-circuits on an existing row', async () => {
     h.tables.ai_agent_runs = [[{ id: 'old' }]];
     expect(await launchPatchPlan(ctx())).toEqual({ admitted: true, runId: 'old' });
@@ -377,8 +390,39 @@ describe('launchBulkTicketReply', () => {
       .toEqual({ refused: 'invalid_params', detail: 'digest_mismatch' });
   });
 
+  const reportOf = (o: Record<string, unknown> = {}) =>
+    ({ sent: [TICKET], alreadySent: [], skipped: [], stoppedAt: null, state: 'completed', ...o });
+
+  it('a batch that stopped part-way is NOT a success: refused with the report', async () => {
+    const report = reportOf({ stoppedAt: { ticketId: TICKET, error: 'db down' }, state: 'partial' });
+    h.executeBulkTicketReply.mockResolvedValue({ ok: true, report });
+    expect(await launchBulkTicketReply(ctx({ params, actorAuth: actor, pinnedDigest: 'd' })))
+      .toEqual({ refused: 'bulk_reply_incomplete', detail: 'db down', report });
+  });
+
+  it('a batch that sent nothing (every ticket skipped) is NOT a success', async () => {
+    const report = reportOf({ sent: [], skipped: [{ ticketId: TICKET, reason: 'closed' }] });
+    h.executeBulkTicketReply.mockResolvedValue({ ok: true, report });
+    expect(await launchBulkTicketReply(ctx({ params, actorAuth: actor, pinnedDigest: 'd' })))
+      .toEqual({ refused: 'bulk_reply_incomplete', detail: 'nothing_sent', report });
+  });
+
+  it('a ticket skipped as uncertain (an earlier delivery may have replied) is NOT a success', async () => {
+    const report = reportOf({ skipped: [{ ticketId: 'other', reason: 'uncertain' }] });
+    h.executeBulkTicketReply.mockResolvedValue({ ok: true, report });
+    expect(await launchBulkTicketReply(ctx({ params, actorAuth: actor, pinnedDigest: 'd' })))
+      .toEqual({ refused: 'bulk_reply_incomplete', detail: 'uncertain', report });
+  });
+
+  it('a redelivery that finds everything already sent is still admitted', async () => {
+    const report = reportOf({ sent: [], alreadySent: [TICKET] });
+    h.executeBulkTicketReply.mockResolvedValue({ ok: true, report });
+    expect(await launchBulkTicketReply(ctx({ params, actorAuth: actor, pinnedDigest: 'd' })))
+      .toEqual({ admitted: true, report });
+  });
+
   it('returns the report and passes the pinned inputs', async () => {
-    const report = { sent: 1 };
+    const report = reportOf();
     const ceiling = { grantId: GRANT } as never;
     h.executeBulkTicketReply.mockResolvedValue({ ok: true, report });
     expect(await launchBulkTicketReply(ctx({ params, actorAuth: actor, pinnedDigest: 'd', ceiling })))

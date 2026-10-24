@@ -47,6 +47,7 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../actionIntents/intentService';
 import { checkGuardrails } from '../aiGuardrails';
+import { AGENT_COORDINATOR_CARRIER_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import { captureException } from '../sentry';
 import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
@@ -263,7 +264,9 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
         ap.skipped.push('propose_tier1_refused');
         return;
       }
-      if (tier >= 4) {
+      // Human-only tools are never proposable — in particular the Wisp
+      // approval carrier, which only the coordinator mints (W07).
+      if (tier >= 4 || HUMAN_ONLY_TOOLS.has(proposal.toolName) || AGENT_COORDINATOR_CARRIER_TOOLS.has(proposal.toolName)) {
         ap.skipped.push('propose_tool_blocked');
         return;
       }

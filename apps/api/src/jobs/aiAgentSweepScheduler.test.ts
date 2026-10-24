@@ -514,6 +514,13 @@ describe('processSweepOccurrence', () => {
         .toEqual(['stale_agents']);
     });
 
+    it('an ineligible baseline does not overwrite the schedule\'s summary for a Wisp one-off', async () => {
+      queueSelect([]); // baseline gone / ineligible
+      queueUpdate([], 'summary');
+      await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_A], grant: GRANT });
+      expect(callOrder.current).not.toContain('summary');
+    });
+
     it('a grant on a non-sweep baseline admits nothing (specialist occurrences are sweep-only)', async () => {
       seedFanout({ baseline: { kind: 'narrative', sweepKinds: [] } });
       await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: WISP_KEY, orgIds: [ORG_A], grant: GRANT });

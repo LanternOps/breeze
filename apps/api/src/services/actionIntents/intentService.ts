@@ -41,6 +41,7 @@ import {
   type GuardrailCheck,
   type GuardrailContext,
 } from '../aiGuardrails';
+import { AGENT_COORDINATOR_CARRIER_TOOLS } from '../aiToolExposure';
 import {
   consumeProposalForIntent,
   latestCompletedReview,
@@ -230,6 +231,14 @@ export interface CreateActionIntentInput {
   requestingClientLabel?: string;
   /** MCP callers pass this explicitly; derived deterministically for chat. */
   idempotencyKey?: string;
+  /**
+   * Wisp W07 — TRUSTED INTERNAL INPUT, set ONLY by the Wisp coordinator
+   * (`wisp/specialistIntent.raiseSpecialistIntent`). A coordinator approval
+   * carrier (AGENT_COORDINATOR_CARRIER_TOOLS) is refused without it, so no
+   * other agent path (e.g. a model's `propose_action`) can mint one through
+   * the agent-guardrail carve-out those carriers get.
+   */
+  coordinatorCarrier?: true;
   /**
    * B-W04 (#6158): the MCP request's server-minted request id, stored as the
    * intent's `correlation_id` so the creation audit row and the intent link.
@@ -1286,6 +1295,12 @@ export async function createActionIntent(
   // outright rather than recorded as whatever synthetic user the agent's
   // attribution record carries — or, in the other direction, as a human
   // intent masquerading as an agent proposal.
+  if (AGENT_COORDINATOR_CARRIER_TOOLS.has(input.toolName) && input.coordinatorCarrier !== true) {
+    throw new ActionIntentError(
+      `"${input.toolName}" is an approval carrier only the Wisp coordinator may raise`,
+      'coordinator_carrier_only',
+    );
+  }
   const isAgentIntent = auth.principal.kind === 'ai_agent';
   if (isAgentIntent !== (input.source === 'ai_agent')) {
     throw new ActionIntentError(

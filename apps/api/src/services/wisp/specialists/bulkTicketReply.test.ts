@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   /** ticketId → error thrown by the PUBLIC reply for that ticket. */
   replyFailures: new Map<string, Error>(),
   ctxDepth: 0,
+  auditFailures: new Map<string, Error>(),
   selectCtx: [] as Array<{ table: string; inActorCtx: boolean }>,
 }));
 
@@ -72,6 +73,8 @@ vi.mock('../../ticketService', () => ({
 vi.mock('../../auditService', () => ({
   createAuditLog: vi.fn(async (p: { action: string; resourceId?: string }) => {
     h.calls.push(`audit:${p.action}:${p.resourceId}`);
+    const failure = h.auditFailures.get(`${p.action}:${p.resourceId}`);
+    if (failure) throw failure;
   }),
   createAuditLogAsync: vi.fn(async () => {}),
 }));
@@ -149,6 +152,7 @@ beforeEach(() => {
   h.selectCtx.length = 0;
   h.rows = {};
   h.replyFailures.clear();
+  h.auditFailures.clear();
   h.ctxDepth = 0;
   vi.clearAllMocks();
 });
@@ -373,7 +377,10 @@ describe('executeBulkTicketReply — hold, failure, idempotency, batching', () =
   it('re-execution with existing audit rows → alreadySent, no second send', async () => {
     const ids = [uid(1), uid(2), uid(3)];
     h.rows.tickets = ids.map((id) => ticketRow(id));
-    h.rows.audit_logs = [{ resourceId: uid(1) }, { resourceId: uid(2) }];
+    h.rows.audit_logs = [
+      { resourceId: uid(1), action: 'ticket.reply.sending' }, { resourceId: uid(1), action: 'ticket.reply.sent' },
+      { resourceId: uid(2), action: 'ticket.reply.sending' }, { resourceId: uid(2), action: 'ticket.reply.sent' },
+    ];
     const r = await run(ids);
     if (!r.ok) throw new Error('refused');
     expect(r.report).toEqual({ sent: [uid(3)], alreadySent: [uid(1), uid(2)], skipped: [], stoppedAt: null, state: 'completed' });
@@ -386,7 +393,7 @@ describe('executeBulkTicketReply — hold, failure, idempotency, batching', () =
   it('a fully re-delivered execution sends nothing', async () => {
     const ids = [uid(1), uid(2)];
     h.rows.tickets = ids.map((id) => ticketRow(id));
-    h.rows.audit_logs = ids.map((resourceId) => ({ resourceId }));
+    h.rows.audit_logs = ids.map((resourceId) => ({ resourceId, action: 'ticket.reply.sent' }));
     const r = await run(ids, { params: { holdTickets: true } });
     if (!r.ok) throw new Error('refused');
     expect(r.report).toMatchObject({ sent: [], alreadySent: ids, state: 'completed' });
@@ -401,6 +408,55 @@ describe('executeBulkTicketReply — hold, failure, idempotency, batching', () =
     expect(r.report.sent).toEqual(ids);
     expect(r.report.state).toBe('completed');
     expect(ticketCalls()).toEqual(ids.map((id) => `reply:${id}`));
-    expect(createAuditLog).toHaveBeenCalledTimes(25);
+    // Two markers per ticket: `sending` before the reply, `sent` after it.
+    expect(createAuditLog).toHaveBeenCalledTimes(50);
+  });
+});
+
+describe('executeBulkTicketReply — two-phase idempotency marker (no double send to a customer)', () => {
+  it('writes `sending` before the reply and `sent` after it, per ticket', async () => {
+    h.rows.tickets = [ticketRow(uid(1))];
+    await run([uid(1)]);
+    const seq = h.calls.filter((c) => c.startsWith('audit:') || c.startsWith('reply:'));
+    expect(seq).toEqual([`audit:ticket.reply.sending:${uid(1)}`, `reply:${uid(1)}`, `audit:ticket.reply.sent:${uid(1)}`]);
+  });
+
+  it('a `sending` marker with no `sent` (crash between reply and marker) is skipped uncertain, never re-sent', async () => {
+    const ids = [uid(1), uid(2)];
+    h.rows.tickets = ids.map((id) => ticketRow(id));
+    h.rows.audit_logs = [{ resourceId: uid(1), action: 'ticket.reply.sending' }];
+    const r = await run(ids);
+    if (!r.ok) throw new Error('refused');
+    expect(r.report.skipped).toEqual([{ ticketId: uid(1), reason: 'uncertain' }]);
+    expect(r.report.sent).toEqual([uid(2)]);
+    expect(ticketCalls()).toEqual([`reply:${uid(2)}`]);
+  });
+
+  it('a `sending` marker followed by `failed` (the reply rolled back) is sent again', async () => {
+    h.rows.tickets = [ticketRow(uid(1))];
+    h.rows.audit_logs = [
+      { resourceId: uid(1), action: 'ticket.reply.sending' }, { resourceId: uid(1), action: 'ticket.reply.failed' },
+    ];
+    const r = await run([uid(1)]);
+    if (!r.ok) throw new Error('refused');
+    expect(r.report.sent).toEqual([uid(1)]);
+  });
+
+  it('a reply that throws records `failed` so a redelivery may retry it', async () => {
+    h.rows.tickets = [ticketRow(uid(1))];
+    h.replyFailures.set(uid(1), new Error('db down'));
+    await run([uid(1)]);
+    expect(h.calls).toContain(`audit:ticket.reply.failed:${uid(1)}`);
+    expect(h.calls).not.toContain(`audit:ticket.reply.sent:${uid(1)}`);
+  });
+
+  it('when the `sending` marker cannot be written nothing is sent and the batch stops', async () => {
+    const ids = [uid(1), uid(2)];
+    h.rows.tickets = ids.map((id) => ticketRow(id));
+    h.auditFailures.set(`ticket.reply.sending:${uid(1)}`, new Error('audit down'));
+    const r = await run(ids);
+    if (!r.ok) throw new Error('refused');
+    expect(ticketCalls()).toEqual([]);
+    expect(r.report).toMatchObject({ sent: [], state: 'partial', stoppedAt: { ticketId: uid(1) } });
   });
 });
