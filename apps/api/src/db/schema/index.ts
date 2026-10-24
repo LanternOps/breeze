@@ -234,3 +234,4 @@ export * from './endpointMessages';
 export * from './emailOptouts';
 export * from './endpointConversations';
 export * from './partnerEntitlements';
+export * from './wisp';

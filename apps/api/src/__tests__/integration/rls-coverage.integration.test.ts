@@ -229,6 +229,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // Cross-partner forge proof: gmailInboundToTicket.integration.test.ts (composite
   // FK rejects an org owned by a different partner).
   'ticket_mailbox_connections',
+  // Wisp W02 (#9908): partner-axis (shape 3, in PARTNER_TENANT_TABLES). org_id
+  // is the grant's SCOPE (NULL = partner-wide), bound to the partner by the
+  // composite (org_id, partner_id) FK, not the tenancy axis. Functional forge
+  // proof: wispGrantsRls.integration.test.ts.
+  'wisp_grants',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -503,6 +508,11 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // merge registration; cascadeDeletePartner's partner_id sweep erases it.
   // Functional forge proof: trustPageTemplatesPartnerRls.integration.test.ts.
   ['trust_page_templates', 'partner_id'],
+  // Wisp W02 (#9908): delegation grants + their append-only revisions. Shape 3
+  // plus ownership constraints (self-only INSERT, admin tighten/revoke-only
+  // trigger). Forge proof: wispGrantsRls.integration.test.ts.
+  ['wisp_grants', 'partner_id'],
+  ['wisp_grant_revisions', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`

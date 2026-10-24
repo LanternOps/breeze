@@ -1402,25 +1402,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // mapping exists so the chat path reports that typed error rather than
   // "No RBAC permission mapping".
   //
-  // LANDMINE (2026-09-17 AI tool ROLE audit §2.7). Flat `ai_agents:read` is a
-  // LOW-BAR grant — seeded Org Admin holds it — and `workspace_run` executes
-  // arbitrary bash / python / node. It is safe ONLY because no chat or MCP
-  // caller can ever reach a workspace: `resolveWorkspace`
-  // (workspace/workspaceTools.ts) derives the run id from the caller identity
-  // alone (`auth.principal.kind === 'ai_agent'` + `runId`), there is no
-  // `runId` tool input, and chat-initiated launch is withdrawn (#6086,
-  // `workspace_launch_analysis` in AGENT_HUMAN_ONLY_TOOLS below). Agent
-  // principals bypass this table entirely, so it is never the control for a
-  // legitimate run.
-  //
-  // RE-ENABLING chat-initiated launch hands a CHAT caller a run-bearing
-  // principal, and at that moment this table becomes the ONLY gate. These four
-  // entries MUST be raised to an execute-class permission in the same change.
-  // Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
-  workspace_stage: { resource: 'ai_agents', action: 'read' },
-  workspace_run: { resource: 'ai_agents', action: 'read' },
-  workspace_collect: { resource: 'ai_agents', action: 'read' },
-  workspace_cancel: { resource: 'ai_agents', action: 'read' },
+  // CLOSED (2026-09-17 AI tool ROLE audit §2.7 landmine): raised to the
+  // execute-class `ai_workspace:execute` by Wisp W02 (spec §4.6) — the old
+  // flat `ai_agents:read` was a low-bar grant seeded Org Admin holds, while
+  // `workspace_run` executes arbitrary bash / python / node. Partner Admin
+  // holds the new key through `*:*`; no other role is seeded with it.
+  // `resolveWorkspace` (workspace/workspaceTools.ts) still answers non-agent
+  // principals with `workspace_requires_run`, and agent principals still
+  // bypass this table. Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
+  workspace_stage: { resource: 'ai_workspace', action: 'execute' },
+  workspace_run: { resource: 'ai_workspace', action: 'execute' },
+  workspace_collect: { resource: 'ai_workspace', action: 'execute' },
+  workspace_cancel: { resource: 'ai_workspace', action: 'execute' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools

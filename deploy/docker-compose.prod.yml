@@ -381,6 +381,8 @@ x-api-env: &api-env
   # Large-tool-result capture + read_artifact (#6732). Independent of the
   # workspace flag above; default false. Requires an artifact blob store.
   BREEZE_AI_ARTIFACT_CAPTURE_ENABLED: ${BREEZE_AI_ARTIFACT_CAPTURE_ENABLED:-false}
+  # Wisp (hosted only; wispEnabled() in config/env.ts). Default false.
+  BREEZE_WISP_ENABLED: ${BREEZE_WISP_ENABLED:-false}
   # EDR response actions (#8167): server-wide kill switch, default on. Each
   # EDR connection must still opt in (off by default).
   BREEZE_EDR_ACTIONS_ENABLED: ${BREEZE_EDR_ACTIONS_ENABLED:-}
@@ -601,6 +603,7 @@ x-api-env: &api-env
   MCP_INTENT_CREATES_PER_USER_PER_HOUR: ${MCP_INTENT_CREATES_PER_USER_PER_HOUR:-}
   MCP_APPROVAL_WAIT_MS: ${MCP_APPROVAL_WAIT_MS:-}
   MCP_APPROVAL_WAITS_PER_PRINCIPAL: ${MCP_APPROVAL_WAITS_PER_PRINCIPAL:-}
+  MCP_APPS_ENABLED: ${MCP_APPS_ENABLED:-}
   METRICS_INCLUDE_ORG_ID: ${METRICS_INCLUDE_ORG_ID:-}
   METRICS_SCRAPE_IP_ALLOWLIST: ${METRICS_SCRAPE_IP_ALLOWLIST:-}
   OAUTH_CONSENT_URL_BASE: ${OAUTH_CONSENT_URL_BASE:-}

@@ -154,6 +154,12 @@ export type EventType =
   // only. Payload: codes and ids, never provider text (eventPayload.ts).
   | 'integration.health_opened'
   | 'integration.health_resolved'
+  // Wisp W02 (w00 A29/A33): published from routes/wisp.ts after the grant
+  // create / user-resume commit. Payload { grantId, partnerId, orgId, grantorUserId }
+  // (ids only). The bus is org-keyed, so a partner-wide grant (orgId null)
+  // routes on its partner id. W05's wake subscriber consumes both.
+  | 'wisp.grant.created'
+  | 'wisp.grant.resumed'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -671,6 +677,9 @@ export const EVENT_TYPES = {
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   INTEGRATION_HEALTH_OPENED: 'integration.health_opened' as const,
   INTEGRATION_HEALTH_RESOLVED: 'integration.health_resolved' as const,
+  // Wisp W02
+  WISP_GRANT_CREATED: 'wisp.grant.created' as const,
+  WISP_GRANT_RESUMED: 'wisp.grant.resumed' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

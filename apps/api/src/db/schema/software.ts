@@ -32,6 +32,12 @@ export const softwareCatalog = pgTable('software_catalog', {
   orgId: uuid('org_id').references(() => organizations.id),
   partnerId: uuid('partner_id').references(() => partners.id),
   integrationProvider: varchar('integration_provider', { length: 20 }),
+  // #6958: a Breeze-defined built-in package (e.g. 'controld_windows').
+  // Partner-owned only and unique per partner
+  // (CHECK software_catalog_builtin_package_key_chk, index
+  // software_catalog_partner_builtin_key_uidx). Like integrationProvider, a
+  // non-null key makes the row immutable outside system scope.
+  builtinPackageKey: varchar('builtin_package_key', { length: 40 }),
   name: varchar('name', { length: 200 }).notNull(),
   vendor: varchar('vendor', { length: 200 }),
   description: text('description'),
@@ -75,6 +81,10 @@ export const softwareVersions = pgTable('software_versions', {
   silentUninstallArgs: text('silent_uninstall_args'),
   preInstallScript: text('pre_install_script'),
   postInstallScript: text('post_install_script'),
+  // #6958: whether the scripts above are dispatched. Only a create path whose
+  // writer holds devices.execute sets it true; scripts stored before the
+  // column existed stay dormant (never sent) until the version is re-created.
+  installScriptsEnabled: boolean('install_scripts_enabled').notNull().default(false),
   // Detection rules (issue #2022): an array of clauses the agent evaluates
   // against the device's real state to confirm whether the package is actually
   // present — independent of the installer exit code. Shape validated by

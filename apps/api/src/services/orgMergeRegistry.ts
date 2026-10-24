@@ -341,6 +341,9 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // already has (or none, falling back to the baseline). Partner baseline
   // rows have org_id NULL and are never touched by an org merge at all.
   ai_agent_schedules: { kind: 'leave-for-erasure', note: 'org override rows tighten a partner baseline for the LOSER org only; the survivor keeps its own overrides. Partner rows have org_id NULL and are not merge participants.' },
+  // Wisp W02 (#9908): an org-scoped delegation grant borrowed its grantor's
+  // authority for one org; org_id is trigger-immutable (wisp_grants_update_guard).
+  wisp_grants: { kind: 'leave-for-erasure', note: 'an org-scoped grant borrowed the grantor\'s authority for the LOSER org and its pinned revision names that org; it never follows a merge — the grantor turns Wisp on for the survivor again. Partner-wide grants have org_id NULL and are not merge participants.' },
   // ai_agent_fix_watches (Wave 6 PR 2, #3828): a fix-held watch is per-run
   // HISTORY tied to a specific ai_agent_runs row that itself never follows
   // an org merge (see ai_agent_runs above) — repointing the watch while its
