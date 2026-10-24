@@ -57,6 +57,15 @@ export type WispState = {
   floorTickMinutes: number;
   /** Live reach exceeds the grant's snapshot (W02 `wideningAvailable`, spec §4.4). */
   wideningAvailable: boolean;
+  /**
+   * Why a paused grant is paused (W02 A29: `'user_paused'` is the only reason
+   * the user may resume). `undefined` = not known yet (the thread payload
+   * does not carry it); `null` = not paused.
+   */
+  pausedReason?: string | null;
+  /** W05 spend meter (w00 A32): cents charged today under the grant, and when the UTC day resets. */
+  spentTodayCents?: number;
+  budgetResetsAt?: string;
 } | null;
 
 interface AiState {
