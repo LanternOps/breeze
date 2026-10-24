@@ -53,6 +53,8 @@ type WebhookListProps = {
   onSelect?: (webhook: Webhook) => void;
   selectedWebhookId?: string | null;
   timezone?: string;
+  /** False when the host already titles the panel (embedded in Integrations). */
+  showTitle?: boolean;
 };
 
 const statusStyles: Record<DisplayStatus, string> = {
@@ -77,7 +79,8 @@ export default function WebhookList({
   onToggle,
   onSelect,
   selectedWebhookId,
-  timezone
+  timezone,
+  showTitle = true
 }: WebhookListProps) {
   const { t } = useTranslation('common');
   const [query, setQuery] = useState('');
@@ -130,7 +133,9 @@ export default function WebhookList({
     <div className="rounded-lg border bg-card p-6 shadow-xs">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
+          {showTitle && (
+            <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhookList.title')}</h2>
+          )}
           <p className="text-sm text-muted-foreground">
             {t('longTail.webhooks.WebhookList.webhookCount', { filtered: filteredWebhooks.length, total: webhooks.length })}
           </p>

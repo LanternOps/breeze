@@ -56,6 +56,7 @@ import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools'
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
+import type { WispSessionGrant } from './wisp/chatCeiling';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
@@ -165,6 +166,27 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
+
+/**
+ * Wisp W04 Task 5: recompute the thread summary of each session just retired.
+ * Lazy import keeps wisp code out of this hot module's eager graph (as for
+ * chatCeiling). Never rejects: failures go to Sentry only.
+ */
+async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
+  if (sessionIds.length === 0) return;
+  try {
+    const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
+    for (const id of sessionIds) {
+      await finalizeWispSessionSummary(id).catch((err) => {
+        console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
+        captureException(err);
+      });
+    }
+  } catch (err) {
+    console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
+    captureException(err);
+  }
+}
 
 // The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
 // re-exported so existing importers (scripts, tests) keep working.
@@ -475,6 +497,16 @@ export interface ActiveSession {
    * `buildChatSessionToolAuth`, refreshed alongside `auth` on every request.
    */
   toolAuth: AuthContext;
+  /**
+   * Wisp W04 Task 4: the delegation grant this session runs under, or null
+   * for an ordinary session. Resolved by `getOrCreate` ITSELF from the
+   * ai_sessions row (`lookupWispGrant`) — never passed in by a route — so no
+   * caller can forget it; immutable for the session's life (the row's grant
+   * columns never change). When set, `createSessionPreToolUse` gates every
+   * tool call on the live ceiling and the tool runs under the per-call
+   * narrowed auth, never under `toolAuth` itself.
+   */
+  readonly wispGrant: WispSessionGrant | null;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
@@ -983,6 +1015,21 @@ export class StreamingSessionManager {
       }
     }
 
+    // Wisp W04 Task 4 (structural): every ActiveSession for a grant-pinned
+    // ai_sessions row carries its grant, whichever route built it — resolved
+    // HERE from the row, not from a caller argument. A reused session (above)
+    // already carries it. Fails closed: a pinned row that cannot be resolved
+    // (no revision pin, no thread link, lookup error) throws, so the turn is
+    // refused rather than run ungated. A Wisp session runs only on the default
+    // Breeze MCP server, whose handlers execute under the gate's per-call auth;
+    // a custom-factory surface (script builder, helper, client AI, topology)
+    // is refused outright.
+    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
+    const wispGrant = await lookupWispGrant(breezeSessionId);
+    if (wispGrant && mcpServerFactory) {
+      throw new WispSessionUnavailableError('surface_unsupported', breezeSessionId);
+    }
+
     // Create new session components
     const inputController = new StreamInputController();
     const eventBus = new SessionEventBus();
@@ -1081,6 +1128,7 @@ export class StreamingSessionManager {
       createdAt: now,
       auth: authWithOrigin,
       toolAuth,
+      wispGrant,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
@@ -1126,7 +1174,9 @@ export class StreamingSessionManager {
       mcpServerName = custom.name;
     } else {
       mcpServer = createBreezeMcpServer(
-        () => session.toolAuth,
+        // A Wisp session's handlers run under the gate's per-call auth
+        // (check.toolAuth); this shared fallback reaches no org at all.
+        wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
         preToolUse,
         postToolUse,
         () => session,
@@ -2399,7 +2449,7 @@ export class StreamingSessionManager {
           // rather than assumed. A partial count is normal (the
           // status='active' guard skips rows the user already closed); zero
           // across a whole batch is the RLS signature.
-          await runOutsideDbContextSafe(() =>
+          const expiredRows = await runOutsideDbContextSafe(() =>
             withDbAccessContext(
               { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
               () => dbWriteExpectingRows(
@@ -2414,6 +2464,11 @@ export class StreamingSessionManager {
               ),
             ),
           );
+          // Wisp W04 T5: only after the org-scoped write has committed and its
+          // context has exited, and only for the rows the UPDATE returned (the
+          // status='active' guard skips sessions the user already closed).
+          // Best effort: a failure is captured, never thrown into the loop.
+          void finalizeWispSummaries(expiredRows.map((r) => r.id));
         } catch (err) {
           // Never abandon the remaining orgs: a failure here strands rows as
           // 'active', which is the very defect this helper exists to fix.

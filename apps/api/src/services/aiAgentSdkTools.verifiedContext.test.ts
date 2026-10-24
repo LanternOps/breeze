@@ -53,7 +53,7 @@ vi.mock('./aiTools', async (importOriginal) => ({
   executeTool: (...args: unknown[]) => mockExecuteTool(...(args as [])),
 }));
 
-import { __test__, wrapExtraToolWithHooks } from './aiAgentSdkTools';
+import { __test__, WISP_UNGATED_CALL_MESSAGE, wrapExtraToolWithHooks } from './aiAgentSdkTools';
 import { buildScriptBuilderTools } from './scriptBuilderTools';
 import type { PreToolUseCallback } from './aiAgentSdkTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -293,5 +293,87 @@ describe('plain tool handler: typed caller-verification refusal (#6354 W05)', ()
     });
     expect((post.mock.calls[0] as unknown[])[2]).toBe(res.content[0]!.text);
     expect((post.mock.calls[0] as unknown[])[3]).toBe(true);
+  });
+});
+
+// Wisp W04 Task 4: the gate returns the per-call ceiling-narrowed auth on the
+// check result, and the handler runs the tool under IT, not the session's
+// shared getAuth(). W04 T6b reach: a Wisp session's capture scope names its
+// thread; an ordinary session's capture scope gains no key.
+describe('Wisp per-call auth and thread capture scope (W04 Task 4)', () => {
+  const { makeToolHandler, makeSessionAwareHandler } = __test__;
+  const narrowedAuth = { ...fakeAuth, accessibleOrgIds: ['org-1'], wispGrant: { grantId: 'g-1', grantRevisionId: 'r-1', sessionId: 's-1' } };
+  const session = (wispGrant: unknown) => ({ orgId: 'org-1', breezeSessionId: 's-1', wispGrant }) as never;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecuteTool.mockResolvedValue(JSON.stringify({ ok: true }));
+  });
+
+  it('executes under check.toolAuth when the gate returns one, and names the thread in the capture scope', async () => {
+    const getAuth = vi.fn(() => fakeAuth);
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const, toolAuth: narrowedAuth as never }));
+    const handler = makeToolHandler('list_scripts', getAuth, () => session({ grantId: 'g-1', revisionId: 'r-1', threadId: 't-1' }), onPreToolUse);
+
+    await handler({});
+
+    const call = mockExecuteTool.mock.calls[0]! as unknown as unknown[];
+    expect(call[2]).toBe(narrowedAuth);
+    expect(getAuth).not.toHaveBeenCalled();
+    expect((call[3] as { capture: unknown }).capture).toEqual({ orgId: 'org-1', sessionId: 's-1', wispThreadId: 't-1' });
+  });
+
+  it('an ordinary session keeps getAuth() and its capture scope gains no wispThreadId key', async () => {
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const }));
+    const handler = makeToolHandler('list_scripts', () => fakeAuth, () => session(null), onPreToolUse);
+
+    await handler({});
+
+    const call = mockExecuteTool.mock.calls[0]! as unknown as unknown[];
+    expect(call[2]).toBe(fakeAuth);
+    expect(Object.keys((call[3] as { capture: object }).capture)).toEqual(['orgId', 'sessionId']);
+  });
+
+  it('a Wisp session whose gate allowed a call WITHOUT toolAuth is denied, never run under getAuth() (makeToolHandler)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const getAuth = vi.fn(() => fakeAuth);
+    const post = vi.fn(async () => undefined);
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const }));
+    const handler = makeToolHandler('list_scripts', getAuth, () => session({ grantId: 'g-1', revisionId: 'r-1', threadId: 't-1' }), onPreToolUse, post);
+
+    const res = (await handler({})) as { content: Array<{ text: string }>; isError?: boolean };
+
+    expect(mockExecuteTool).not.toHaveBeenCalled();
+    expect(getAuth).not.toHaveBeenCalled();
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ error: WISP_UNGATED_CALL_MESSAGE });
+    expect((post.mock.calls[0] as unknown[])[3]).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('a Wisp session whose gate allowed a call WITHOUT toolAuth is denied (makeSessionAwareHandler)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const getAuth = vi.fn(() => fakeAuth);
+    const sessionHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const }));
+    const handler = makeSessionAwareHandler('m365_lookup_user', getAuth, () => session({ threadId: 't-1' }), sessionHandler, onPreToolUse);
+
+    const res = (await handler({ userPrincipalName: 'a@b.test' })) as { content: Array<{ text: string }>; isError?: boolean };
+
+    expect(sessionHandler).not.toHaveBeenCalled();
+    expect(getAuth).not.toHaveBeenCalled();
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0]!.text)).toEqual({ error: WISP_UNGATED_CALL_MESSAGE });
+    errSpy.mockRestore();
+  });
+
+  it('the session-aware (M365/Google) handler also runs under check.toolAuth', async () => {
+    const sessionHandler = vi.fn(async () => JSON.stringify({ ok: true }));
+    const onPreToolUse = vi.fn(async () => ({ allowed: true as const, toolAuth: narrowedAuth as never }));
+    const handler = makeSessionAwareHandler('m365_lookup_user', () => fakeAuth, () => session({ threadId: 't-1' }), sessionHandler, onPreToolUse);
+
+    await handler({ userPrincipalName: 'a@b.test' });
+
+    expect((sessionHandler.mock.calls[0] as unknown[])[1]).toBe(narrowedAuth);
   });
 });

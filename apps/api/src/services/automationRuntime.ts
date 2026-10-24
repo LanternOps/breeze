@@ -1724,6 +1724,12 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // Unreachable today — automations never pass a grant.
   grant_inactive: false,
   grant_org_out_of_ceiling: false,
+  // Wisp W05b: assessment volume guards and the grant precondition — caps and
+  // policy outcomes, not integrity failures. Unreachable — automations never
+  // admit an assessment.
+  max_concurrent_assessment_runs: false,
+  assessment_rate: false,
+  assessment_requires_grant: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
