@@ -334,6 +334,29 @@ describe('ToastContainer', () => {
   });
 });
 
+describe('ToastContainer action button (#9840 W3)', () => {
+  beforeEach(() => _resetToastQueueForTests());
+  afterEach(() => _resetToastQueueForTests());
+
+  it('renders a labelled action on any toast type; clicking runs it once and dismisses the toast', () => {
+    render(<ToastContainer />);
+    const onClick = vi.fn();
+    act(() => {
+      showToast({ type: 'warning', message: 'Investigations open from the topology map', action: { label: 'Open in side panel', onClick } });
+    });
+    const button = within(screen.getByTestId('toast')).getByRole('button', { name: 'Open in side panel' });
+    act(() => { button.click(); });
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
+  });
+
+  it('a toast without an action renders no action button', () => {
+    render(<ToastContainer />);
+    act(() => { showToast({ type: 'warning', message: 'plain' }); });
+    expect(screen.queryByTestId('toast-action')).not.toBeInTheDocument();
+  });
+});
+
 describe('ToastContainer bottom anchor (#2151)', () => {
   beforeEach(() => _resetToastQueueForTests());
   afterEach(() => {

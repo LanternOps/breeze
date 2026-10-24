@@ -106,6 +106,23 @@
     "noM365Customer": "M365 müşterisi yok",
     "dismiss": "Kapat"
   },
+  "aiConversationMove": {
+    "openInAssistant": "Yapay Zeka Asistanında aç",
+    "continueInPanel": "Yan panelde devam et",
+    "openPastConversation": "Geçmiş bir konuşmayı aç",
+    "closeTabInAssistant": "Bu konuşmayı açmak için Yapay Zeka Asistanında bir sekmeyi kapatın",
+    "closeTabToOpen": "Bu konuşmayı açmak için bir sekmeyi kapatın",
+    "notAvailable": "Bu konuşma kullanılamıyor",
+    "wasClosed": "Bu konuşma kapatıldı",
+    "topologyFromMap": "İncelemeler topoloji haritasından açılır",
+    "openInPanel": "Yan panelde aç",
+    "replaceConfirm": "Yan paneldeki konuşma değiştirilsin mi? Geçmişinizde kalmaya devam eder.",
+    "joinedMidResponse": "Yanıtın ortasında katıldınız. Tam yanıt tamamlandığında görünür.",
+    "chooseModelInPanel": "Model seçmek için yan panelde devam edin",
+    "tabMenu": "Sekme seçenekleri",
+    "anotherOrg": "Başka bir kuruluş",
+    "device": "Cihaz"
+  },
   "aiContextBadge": {
     "context": "Bağlam",
     "dashboard": "Kontrol Paneli"

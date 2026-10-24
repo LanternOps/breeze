@@ -106,6 +106,23 @@
     "noM365Customer": "Nessun cliente M365",
     "dismiss": "Ignora"
   },
+  "aiConversationMove": {
+    "openInAssistant": "Apri nell'Assistente IA",
+    "continueInPanel": "Continua nel pannello laterale",
+    "openPastConversation": "Apri una conversazione precedente",
+    "closeTabInAssistant": "Chiudi una scheda nell'Assistente IA per aprire questa conversazione",
+    "closeTabToOpen": "Chiudi una scheda per aprire questa conversazione",
+    "notAvailable": "Questa conversazione non è disponibile",
+    "wasClosed": "Questa conversazione è stata chiusa",
+    "topologyFromMap": "Le indagini si aprono dalla mappa della topologia",
+    "openInPanel": "Apri nel pannello laterale",
+    "replaceConfirm": "Sostituire la conversazione nel pannello laterale? Resterà nella cronologia.",
+    "joinedMidResponse": "Ti sei unito a risposta in corso. La risposta completa apparirà al termine.",
+    "chooseModelInPanel": "Continua nel pannello laterale per scegliere un modello",
+    "tabMenu": "Opzioni scheda",
+    "anotherOrg": "Altra organizzazione",
+    "device": "Dispositivo"
+  },
   "aiContextBadge": {
     "context": "Contesto",
     "dashboard": "Dashboard"
