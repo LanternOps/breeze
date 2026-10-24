@@ -19,7 +19,7 @@
  */
 import { and, desc, eq, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, type MemoryConfidence } from '@breeze/shared';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext, type Database } from '../../db';
 import { aiMemoryBlocks, aiSessions, organizations, users } from '../../db/schema';
 import type { AiMemoryBlockRow } from '../../db/schema/aiMemoryBlocks';
 import type { AuthContext } from '../../middleware/auth';
@@ -67,6 +67,35 @@ function assertCanWritePartnerOwned(auth: AuthContext): void {
   if (!canManagePartnerWidePolicies(auth)) {
     throw new MemoryServiceError('partner_wide_write_denied', 'Partner-wide memory requires full partner org access');
   }
+}
+
+/**
+ * The block fields an approval of `confirm_memory` / `retract_memory` pins
+ * (actionIntents/effectDigest.ts). Reads through the CALLER's `database` —
+ * the request-context handle at intent creation and release — so RLS still
+ * applies: a block the caller cannot see is `undefined`, i.e. target_absent.
+ * Lives here so effectDigest.ts never queries ai_memory_blocks itself
+ * (memoryBroker.singleCaller.contract.test.ts).
+ */
+export async function readMemoryBlockForEffectDigest(database: Database, id: string) {
+  const [row] = await database
+    .select({
+      id: aiMemoryBlocks.id,
+      tenantPartnerId: aiMemoryBlocks.tenantPartnerId,
+      ownerKind: aiMemoryBlocks.ownerKind,
+      ownerUserId: aiMemoryBlocks.ownerUserId,
+      ownerOrgId: aiMemoryBlocks.ownerOrgId,
+      blockType: aiMemoryBlocks.blockType,
+      subjectKey: aiMemoryBlocks.subjectKey,
+      content: aiMemoryBlocks.content,
+      status: aiMemoryBlocks.status,
+      supersededById: aiMemoryBlocks.supersededById,
+      updatedAt: aiMemoryBlocks.updatedAt,
+    })
+    .from(aiMemoryBlocks)
+    .where(eq(aiMemoryBlocks.id, id))
+    .limit(1);
+  return row;
 }
 
 async function selectBlock(id: string): Promise<AiMemoryBlockRow | undefined> {
