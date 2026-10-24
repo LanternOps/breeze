@@ -109,7 +109,8 @@ CVE-2026-93687
 # NOT verified: the Hermes bundle source-map check used for the node-forge and
 # braces entries has not been run for zod (the JSON exception says the same);
 # run it before renewal.
-# Remove together with that exception; tracking #9915.
+# Remove together with that exception; its `expires` date is the re-review
+# deadline for this ignore too. Tracking #9915.
 #
 # Added 2026-10-24 (Trivy DB refresh).
 CVE-2023-54404
