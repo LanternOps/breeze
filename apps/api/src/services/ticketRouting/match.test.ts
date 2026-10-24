@@ -80,7 +80,7 @@ describe('matchRule', () => {
     expect(matchRule(rule({ matchRequesterDomains: ['example.com'] }), facts())).toBe(false);
     expect(matchRule(rule({ matchRequesterDomains: ['*.example.com'] }), facts())).toBe(true);
     expect(matchRule(rule({ matchRequesterDomains: ['*.example.com'] }), facts({ requesterEmail: 'x@example.com' }))).toBe(false);
-    expect(matchRule(rule({ matchRequesterDomains: ['*.example.com'] }), facts({ requesterEmail: 'x@example.com.evil' }))).toBe(false);
+    expect(matchRule(rule({ matchRequesterDomains: ['*.example.com'] }), facts({ requesterEmail: 'x@example.com.invalid' }))).toBe(false);
     expect(matchRule(rule({ matchRequesterDomains: ['*.example.com'] }), facts({ requesterEmail: null }))).toBe(false);
   });
 });
