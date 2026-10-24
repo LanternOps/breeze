@@ -9,6 +9,9 @@ import { showToast } from '../shared/Toast';
 import { ALL_TABS } from './partnerSettings/tabRegistry';
 import { PARTNERS_ME_FIXTURE } from './partnerSettings/partnersMeFixture';
 import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
+import { getPolicy, putPolicy, type PolicyResponse } from '@/lib/api/callerVerification';
+import { policy, policyValues } from '../callerVerification/testFixtures';
+import { inheritedDraft } from './partnerSettings/units/callerVerificationUnit';
 
 const authState = vi.hoisted(() => ({ user: { id: 'u-1', canManagePartnerWide: true as boolean | undefined } }));
 
@@ -22,11 +25,14 @@ vi.mock('../../lib/authScope', () => ({ getJwtClaims: vi.fn(() => ({ scope: null
 vi.mock('../auth/MfaPolicyOffBanner', () => ({ PARTNER_SETTINGS_SAVED_EVENT: 'breeze:partner-settings-saved', default: () => null }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('./EmailTemplatesTab', () => ({ default: () => <div data-testid="stub-email-templates-tab" /> }));
+const cvEnabled = vi.hoisted(() => ({ value: false }));
+vi.mock('../../lib/useCallerVerificationEnabled', () => ({ useCallerVerificationEnabled: () => cvEnabled.value }));
+vi.mock('@/lib/api/callerVerification', () => ({ getPolicy: vi.fn(), putPolicy: vi.fn() }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 
-export const json = (payload: unknown, status = 200): Response =>
+const json = (payload: unknown, status = 200): Response =>
   ({ ok: status >= 200 && status < 300, status, statusText: '', json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
 
 type Handler = (init: RequestInit | undefined) => Response | Promise<Response>;
@@ -63,6 +69,7 @@ async function openTab(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
 beforeEach(() => {
   vi.clearAllMocks();
   authState.user.canManagePartnerWide = true;
+  cvEnabled.value = false;
   usePartnerSettingsDraftStore.getState().reset();
   vi.mocked(useOrgStore).mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   routeFetch({ 'GET /orgs/partners/me': () => json(partnerWith()) });
@@ -205,5 +212,95 @@ describe('PartnerSettingsPage header Save runs the units (W2 Task 19)', () => {
     await act(async () => { release(json(partnerWith())); });
     await waitFor(() => expect(status().getAttribute('data-state')).toBe('dirty'));
     expect(JSON.parse((patchCalls()[0][1] as RequestInit).body as string).settings.address.city).toBe('SpringfieldA');
+  });
+});
+
+const cvResponse = (over: Partial<PolicyResponse> = {}): PolicyResponse => ({ maxAchievableTier: 3, row: null, defaults: policyValues, baseline: policyValues, effective: policy, ...over });
+const loginPuts = () => fetchMock.mock.calls.filter(([url, init]) => url === '/partners/me/login-branding' && (init as RequestInit | undefined)?.method === 'PUT');
+
+describe('Caller verification and Login page save through the header (W2 Task 20)', () => {
+  beforeEach(() => {
+    cvEnabled.value = true;
+    vi.mocked(getPolicy).mockResolvedValue(cvResponse());
+  });
+
+  it('no in-card Save on the partner caller verification tab', async () => {
+    await renderPage('#caller-verification');
+    await screen.findByTestId('cv-policy-coolingOffHours');
+    expect(screen.queryByTestId('cv-policy-save')).toBeNull();
+  });
+
+  it('no in-card Save on Login page', async () => {
+    await renderPage('#login-branding');
+    await screen.findByTestId('login-branding-headline');
+    expect(screen.queryByTestId('login-branding-save')).toBeNull();
+  });
+
+  it('a Login page draft survives a tab switch and marks its tab dirty', async () => {
+    const user = await renderPage('#login-branding');
+    await user.type(await screen.findByTestId('login-branding-headline'), 'Hello');
+    await openTab(user, /^company$/i);
+    expect(status().textContent).toBe('Unsaved changes in Login Branding.');
+    await openTab(user, /^login branding/i);
+    expect((await screen.findByTestId('login-branding-headline') as HTMLInputElement).value).toBe('Hello');
+  });
+
+  it('header Save sends the existing request bodies', async () => {
+    vi.mocked(putPolicy).mockResolvedValue(cvResponse({ row: { ...inheritedDraft(), coolingOffHours: 48 } }));
+    const user = await renderPage('#caller-verification');
+    const cooling = await screen.findByTestId('cv-policy-coolingOffHours');
+    await user.clear(cooling);
+    await user.type(cooling, '48');
+    await user.tab();
+    await openTab(user, /^login branding/i);
+    await user.type(await screen.findByTestId('login-branding-headline'), 'Hello');
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
+    expect(putPolicy).toHaveBeenCalledWith({ ownerScope: 'partner' }, { ...inheritedDraft(), coolingOffHours: 48 }, { silentSuccess: true });
+    expect((loginPuts()[0][1] as RequestInit).body).toBe('{"logoUrl":null,"accentColor":null,"headline":"Hello"}');
+    expect(showToastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('partial success re-baselines only saved units', async () => {
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'PATCH /orgs/partners/me': () => json(partnerWith()),
+      'PUT /partners/me/login-branding': () => json({ error: 'boom' }, 500),
+    });
+    const user = await renderPage('#login-branding');
+    await user.type(await screen.findByTestId('login-branding-headline'), 'Hello');
+    await openTab(user, /^company$/i);
+    await user.type(screen.getByLabelText('City'), 'ville');
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('partial'));
+    expect(status().textContent).toBe("Couldn't save Login Branding. Other changes saved.");
+    expect(screen.getByRole('link', { name: /^company$/i })).toBeTruthy();
+    expect(screen.getByRole('link', { name: /^login branding \(unsaved changes\)$/i })).toBeTruthy();
+    expect(saveButton().disabled).toBe(false);
+  });
+
+  it('units run sequentially in rail order', async () => {
+    const order: string[] = [];
+    let releaseMe!: () => void;
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'PATCH /orgs/partners/me': () => { order.push('partnersMe:start'); return new Promise<Response>(r => { releaseMe = () => { order.push('partnersMe:end'); r(json(partnerWith())); }; }); },
+      'PUT /partners/me/login-branding': () => { order.push('loginBranding'); return json({ data: {} }); },
+    });
+    vi.mocked(putPolicy).mockImplementation(async () => { order.push('callerVerification'); return cvResponse(); });
+    const user = await renderPage('#login-branding');
+    await user.type(await screen.findByTestId('login-branding-headline'), 'Hello');
+    await openTab(user, /^caller verification$/i);
+    const cooling = await screen.findByTestId('cv-policy-coolingOffHours');
+    await user.clear(cooling);
+    await user.type(cooling, '48');
+    await user.tab();
+    await openTab(user, /^company$/i);
+    await user.type(screen.getByLabelText('City'), 'ville');
+    await user.click(saveButton());
+    await waitFor(() => expect(order).toEqual(['partnersMe:start']));
+    await act(async () => { releaseMe(); });
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
+    expect(order).toEqual(['partnersMe:start', 'partnersMe:end', 'callerVerification', 'loginBranding']);
   });
 });

@@ -1,6 +1,8 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { create } from 'zustand';
-import type { SaveOutcome, SaveUnitId, TabValidity } from './saveUnits';
+import { ActionError } from '@/lib/runAction';
+import { showToast } from '../../shared/Toast';
+import { UNIT_TABS, type SaveOutcome, type SaveUnit, type SaveUnitId, type TabValidity } from './saveUnits';
 
 /**
  * Drafts for the five self-contained partner-settings save units (Gate B 2).
@@ -183,33 +185,52 @@ export const usePartnerSettingsDraftStore = create<DraftStore>()((set, get) => {
   };
 });
 
-export type SendResult = { revision?: number } | void;
+/**
+ * What a unit's request reports back. `value` is the server's copy of what was
+ * saved; it replaces the draft only when the user has not edited since the
+ * request was sent.
+ */
+export type SendResult<T> = { revision?: number; value?: T } | void;
 
 /**
  * The shared body of a draft unit's `save()`: snapshot the draft, send it,
- * then re-baseline to that snapshot. Drops the result after a partner switch
- * or page reset. Never throws.
+ * then re-baseline to that snapshot (or the server's copy of it). Drops the
+ * result after a partner switch or page reset. Never throws: a request that
+ * went through `runAction` has already toasted its error; anything else gets
+ * the `errorFallback` toast here.
  */
 export async function saveSlice<T>(
   id: DraftUnitId,
-  send: (draft: T, revision: number | undefined) => Promise<SendResult>,
-  opts: { classifyError?: (err: unknown) => 'failed' | 'conflict' } = {}
+  send: (draft: T, revision: number | undefined) => Promise<SendResult<T>>,
+  opts: { classifyError?: (err: unknown) => 'failed' | 'conflict'; errorFallback?: string } = {}
 ): Promise<SaveOutcome> {
   const store = usePartnerSettingsDraftStore.getState();
   const slice = store.slices[id] as Slice<T>;
   if (slice.status !== 'ready' || slice.draft === null) return { status: 'failed' };
   const sent = slice.draft;
   const epoch = store.epoch;
-  const isCurrent = () => usePartnerSettingsDraftStore.getState().epoch === epoch;
+  const current = () => usePartnerSettingsDraftStore.getState();
   try {
     const result = await send(sent, slice.revision);
-    if (!isCurrent()) return { status: 'cancelled' };
-    usePartnerSettingsDraftStore.getState().markSaved(id, sent, result ? result.revision : undefined);
-    return usePartnerSettingsDraftStore.getState().slices[id].lastOutcome ?? { status: 'saved', savedAt: Date.now() };
+    if (current().epoch !== epoch) return { status: 'cancelled' };
+    const revision = result ? result.revision : undefined;
+    const untouched = current().slices[id].draft === sent;
+    if (result && result.value !== undefined && untouched) {
+      current().rebaseline(id, result.value, revision);
+      current().markSaved(id, result.value);
+    } else {
+      // An edit made during the request stays dirty against what was sent.
+      current().markSaved(id, sent, revision);
+    }
+    return current().slices[id].lastOutcome ?? { status: 'saved', savedAt: Date.now() };
   } catch (err) {
-    if (!isCurrent()) return { status: 'cancelled' };
+    if (current().epoch !== epoch) return { status: 'cancelled' };
+    if (!(err instanceof ActionError)) {
+      console.error(`[partnerSettings] saving ${id} failed`, err);
+      if (opts.errorFallback) showToast({ type: 'error', message: opts.errorFallback });
+    }
     const outcome: SaveOutcome = { status: opts.classifyError?.(err) ?? 'failed' };
-    usePartnerSettingsDraftStore.getState().markOutcome(id, outcome);
+    current().markOutcome(id, outcome);
     return outcome;
   }
 }
@@ -232,4 +253,28 @@ export function useDraftSlice<T>(id: DraftUnitId, loader: Loader<T>) {
   );
   const retry = useCallback(() => { void usePartnerSettingsDraftStore.getState().ensureLoaded(id, loader); }, [id, loader]);
   return { slice, setDraft, retry };
+}
+
+/**
+ * A draft slice as a header-Save unit. Subscribes to the slice, so the page
+ * re-renders its status line and dirty dots as the draft changes. `validate`
+ * derives validity from the draft; without it the slice's stored validity is used.
+ */
+export function useDraftSaveUnit<T>(
+  id: DraftUnitId,
+  save: () => Promise<SaveOutcome>,
+  validate?: (draft: T) => TabValidity
+): SaveUnit {
+  const slice = usePartnerSettingsDraftStore(s => s.slices[id]) as Slice<T>;
+  return useMemo(() => {
+    const [tab] = UNIT_TABS[id];
+    const validity = validate && slice.status === 'ready' && slice.draft !== null ? validate(slice.draft) : slice.validity;
+    return {
+      id,
+      tabs: UNIT_TABS[id],
+      isDirty: () => isSliceDirty(slice),
+      validity: () => ({ [tab]: validity }),
+      save,
+    };
+  }, [id, slice, save, validate]);
 }

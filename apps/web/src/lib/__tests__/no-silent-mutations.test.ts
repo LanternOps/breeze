@@ -116,6 +116,8 @@ const TARGET_GLOBS = [
   'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/partnerSettings/usePartnersMeUnit.ts',
+  'src/components/settings/partnerSettings/units/callerVerificationUnit.ts',
+  'src/components/settings/partnerSettings/units/loginBrandingUnit.ts',
   'src/components/settings/aiModels/PartnerAiModelsTab.tsx',
   'src/components/settings/aiModels/ConnectionDrawer.tsx',
   'src/components/settings/aiModels/ResidencySwitch.tsx',
@@ -964,7 +966,8 @@ describe('no silent mutations in targeted set', () => {
     // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
     // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 253 → 254.
-    expect(absoluteFiles.length).toBe(254);
+    // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 254 → 256.
+    expect(absoluteFiles.length).toBe(256);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

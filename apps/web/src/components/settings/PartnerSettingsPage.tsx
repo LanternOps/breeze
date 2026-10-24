@@ -33,6 +33,9 @@ import { TAB_BY_KEY, tabFromHash, visibleTabGroups, type TabKey } from './partne
 import { usePartnersMeUnit } from './partnerSettings/usePartnersMeUnit';
 import { isUnitValid, type SaveUnit } from './partnerSettings/saveUnits';
 import { usePartnerSettingsSave } from './partnerSettings/usePartnerSettingsSave';
+import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
+import { useCallerVerificationUnit } from './partnerSettings/units/callerVerificationUnit';
+import { useLoginBrandingUnit } from './partnerSettings/units/loginBrandingUnit';
 import PartnerSettingsStatus, { deriveStatus } from './partnerSettings/PartnerSettingsStatus';
 
 // Kept on this module's surface: existing callers and tests import it from here.
@@ -48,8 +51,22 @@ export default function PartnerSettingsPage() {
   const [focusRequest, setFocusRequest] = useState<string | null>(null);
   const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide) !== false;
 
-  const units: SaveUnit[] = useMemo(() => [me.unit], [me.unit]);
-  const dirtyTabs = me.dirtyTabs;
+  // Drafts of the self-contained units are page-scoped: reset on unmount and on a partner switch.
+  const setDraftPartner = usePartnerSettingsDraftStore(s => s.setPartner);
+  useEffect(() => { setDraftPartner(currentPartnerId ?? null); }, [currentPartnerId, setDraftPartner]);
+  useEffect(() => () => usePartnerSettingsDraftStore.getState().reset(), []);
+
+  const callerVerificationUnit = useCallerVerificationUnit();
+  const loginBrandingUnit = useLoginBrandingUnit();
+  const units: SaveUnit[] = useMemo(
+    () => [me.unit, callerVerificationUnit, loginBrandingUnit],
+    [me.unit, callerVerificationUnit, loginBrandingUnit]
+  );
+  const dirtyTabs = useMemo(() => {
+    const dirty: Partial<Record<TabKey, boolean>> = { ...me.dirtyTabs };
+    for (const unit of units) if (unit.id !== 'partnersMe' && unit.isDirty()) for (const tab of unit.tabs) dirty[tab] = true;
+    return dirty;
+  }, [me.dirtyTabs, units]);
   const isDirty = units.some(u => u.isDirty());
 
   // Warn before a full navigation away discards unsaved edits.

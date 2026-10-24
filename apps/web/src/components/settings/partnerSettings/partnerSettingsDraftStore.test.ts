@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
+import { showToast } from '../../shared/Toast';
+import { ActionError } from '@/lib/runAction';
 import {
   usePartnerSettingsDraftStore,
   useDraftSlice,
@@ -7,6 +9,9 @@ import {
   saveSlice,
   stableStringify,
 } from './partnerSettingsDraftStore';
+
+vi.mock('../../shared/Toast', () => ({ showToast: vi.fn() }));
+const showToastMock = vi.mocked(showToast);
 
 const store = () => usePartnerSettingsDraftStore.getState();
 
@@ -102,6 +107,24 @@ describe('partnerSettingsDraftStore', () => {
     expect(slice.baseline).toEqual({ x: 1 });
     expect(slice.revision).toBe(3);
     expect(slice.lastOutcome).toEqual({ status: 'conflict' });
+  });
+
+  it('a non-ActionError failure is toasted with the fallback; an ActionError is not toasted again', async () => {
+    await store().ensureLoaded('loginBranding', async () => ({ value: { t: 1 } }));
+    store().setDraft('loginBranding', { t: 2 });
+    await saveSlice('loginBranding', async () => { throw new TypeError('bug'); }, { errorFallback: 'Could not save' });
+    expect(showToastMock).toHaveBeenCalledWith({ type: 'error', message: 'Could not save' });
+    showToastMock.mockClear();
+    await saveSlice('loginBranding', async () => { throw new ActionError('server said no', 500); }, { errorFallback: 'Could not save' });
+    expect(showToastMock).not.toHaveBeenCalled();
+  });
+
+  it('a save after the draft settles to the server copy re-baselines to that copy', async () => {
+    await store().ensureLoaded('loginBranding', async () => ({ value: { t: ' a ' } }));
+    store().setDraft('loginBranding', { t: ' b ' });
+    await saveSlice('loginBranding', async () => ({ value: { t: 'b' } }));
+    expect(store().slices.loginBranding.draft).toEqual({ t: 'b' });
+    expect(isSliceDirty(store().slices.loginBranding)).toBe(false);
   });
 
   it('a stale load for a previous partner is ignored', async () => {
