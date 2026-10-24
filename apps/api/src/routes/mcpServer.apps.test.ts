@@ -657,3 +657,232 @@ describe('flag on: negotiation and advertisement (D-B40, D-B42)', () => {
     expect(sideKeyWrites()).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 4: the gated tools/list `_meta.ui` and resources/read (D-B43)
+// ---------------------------------------------------------------------------
+const UI_META = { resourceUri: APP_URI, visibility: ['model'] };
+const unknownUri = (id: number, uri: string) => ({
+  jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource URI: ${uri}` },
+});
+
+async function listFor(era: 'legacy' | 'modern', caps?: Record<string, unknown>) {
+  if (era === 'modern') return (await (await modern('tools/list', { caps })).json()).result.tools as any[];
+  const { sessionId } = await legacyInit(caps);
+  return (await (await legacy('tools/list', sessionId)).json()).result.tools as any[];
+}
+
+async function readFor(era: 'legacy' | 'modern', uri: string, caps?: Record<string, unknown>) {
+  if (era === 'modern') return modern('resources/read', { params: { uri }, caps });
+  const { sessionId } = await legacyInit(caps);
+  return legacy('resources/read', sessionId, { uri });
+}
+
+async function callFor(era: 'legacy' | 'modern', name: string, caps?: Record<string, unknown>) {
+  if (era === 'modern') return modern('tools/call', { params: { name, arguments: {} }, caps });
+  const { sessionId } = await legacyInit(caps);
+  return legacy('tools/call', sessionId, { name, arguments: {} });
+}
+
+describe.each(['legacy', 'modern'] as const)('flag on, %s era: tools/list _meta.ui', (era) => {
+  beforeEach(() => {
+    process.env.MCP_APPS_ENABLED = 'true';
+  });
+
+  it('declaring client: get_fleet_health has _meta.ui and keeps app.breeze/domain; no other entry changes', async () => {
+    const declared = await listFor(era, UI_CAPS);
+    const plain = await listFor(era);
+    const fleet = declared.find((t) => t.name === 'get_fleet_health');
+    expect(fleet._meta).toEqual({ 'app.breeze/domain': 'devices', ui: UI_META });
+    // The entry's key order is unchanged; only `_meta` gained `ui`.
+    expect(Object.keys(fleet)).toEqual(Object.keys(plain.find((t) => t.name === 'get_fleet_health')));
+    expect(declared.filter((t) => t.name !== 'get_fleet_health')).toEqual(plain.filter((t) => t.name !== 'get_fleet_health'));
+    expect(declared.map((t) => t.name)).toEqual(plain.map((t) => t.name));
+    expect({ ...fleet, _meta: { 'app.breeze/domain': 'devices' } }).toEqual(plain.find((t) => t.name === 'get_fleet_health'));
+    expect(mocks.checkPermissionRequirement).toHaveBeenCalledWith(expect.anything(), { resource: 'devices', action: 'read' });
+  });
+
+  it('non-declaring client or flag off: tools/list has no _meta.ui; checkPermissionRequirement not called', async () => {
+    const plain = await listFor(era);
+    expect(plain.some((t) => t._meta?.ui !== undefined)).toBe(false);
+    for (const caps of [{ extensions: { [UI_EXT]: {} } }, { extensions: { [UI_EXT]: { mimeTypes: ['text/html'] } } }]) {
+      expect(await listFor(era, caps)).toEqual(plain);
+    }
+    delete process.env.MCP_APPS_ENABLED;
+    expect(await listFor(era, UI_CAPS)).toEqual(plain);
+    expect(mocks.checkPermissionRequirement).not.toHaveBeenCalled();
+  });
+
+  it('restricted grant or missing devices.read: no _meta.ui and no view', async () => {
+    // A domain-restricted key without `devices`.
+    currentKey = { mcpDomains: ['tickets'] };
+    let tools = await listFor(era, UI_CAPS);
+    expect(tools.some((t) => t._meta?.ui !== undefined)).toBe(false);
+    let body = await (await readFor(era, APP_URI, UI_CAPS)).json();
+    const nope = await (await readFor(era, 'ui://breeze/nope', UI_CAPS)).json();
+    expect(body.error).toEqual(unknownUri(1, APP_URI).error);
+    expect(nope.error).toEqual(unknownUri(1, 'ui://breeze/nope').error);
+    expect(body.error).not.toHaveProperty('data');
+
+    // A role without devices.read.
+    currentKey = {};
+    mocks.checkPermissionRequirement.mockResolvedValue('Permission denied: devices.read required');
+    tools = await listFor(era, UI_CAPS);
+    expect(tools.find((t) => t.name === 'get_fleet_health')._meta).toEqual({ 'app.breeze/domain': 'devices' });
+    body = await (await readFor(era, APP_URI, UI_CAPS)).json();
+    expect(body.error).toEqual(unknownUri(1, APP_URI).error);
+  });
+
+  it('a throwing permission check fails closed: no _meta.ui, unknown-URI body, never a 5xx', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.checkPermissionRequirement.mockRejectedValue(new Error('db down'));
+    const listRes = era === 'modern' ? await modern('tools/list', { caps: UI_CAPS }) : null;
+    if (listRes) expect(listRes.status).toBe(200);
+    const tools = await listFor(era, UI_CAPS);
+    expect(tools.find((t) => t.name === 'get_fleet_health')._meta).toEqual({ 'app.breeze/domain': 'devices' });
+    const res = await readFor(era, APP_URI, UI_CAPS);
+    expect(res.status).toBe(200);
+    expect((await res.json()).error).toEqual(unknownUri(1, APP_URI).error);
+    error.mockRestore();
+  });
+
+  it('resources/list and resources/templates/list are unchanged for a declaring client', async () => {
+    if (era === 'modern') {
+      const a = await (await modern('resources/list', { caps: UI_CAPS })).json();
+      const b = await (await modern('resources/list')).json();
+      expect(a).toEqual(b);
+      const c = await (await modern('resources/templates/list', { caps: UI_CAPS })).json();
+      const d = await (await modern('resources/templates/list')).json();
+      expect(c).toEqual(d);
+      return;
+    }
+    const declaring = await legacyInit(UI_CAPS);
+    const plain = await legacyInit();
+    for (const method of ['resources/list', 'resources/templates/list']) {
+      const a = await (await legacy(method, declaring.sessionId)).json();
+      const b = await (await legacy(method, plain.sessionId)).json();
+      expect(a).toEqual(b);
+      expect(JSON.stringify(a)).not.toContain('ui://');
+    }
+  });
+
+  it('tools/call get_fleet_health is identical for declaring and non-declaring clients (text parity)', async () => {
+    const declared = await (await callFor(era, 'get_fleet_health', UI_CAPS)).json();
+    const plain = await (await callFor(era, 'get_fleet_health')).json();
+    expect(declared.result).toEqual(plain.result);
+    expect(JSON.stringify(declared.result)).toBe(JSON.stringify(plain.result));
+    expect(declared.result.structuredContent).toEqual(FLEET_OUTPUT);
+    expect(declared.result.content).toEqual([{ type: 'text', text: JSON.stringify(FLEET_OUTPUT) }]);
+    expect(declared.result._meta?.ui).toBeUndefined();
+    if (era === 'legacy') expect(declared.result).not.toHaveProperty('_meta');
+  });
+});
+
+describe('flag on: resources/read of the app URI (D-B43)', () => {
+  beforeEach(() => {
+    process.env.MCP_APPS_ENABLED = 'true';
+  });
+
+  type Row = { flagOn: boolean; declared: boolean; listed: boolean; permitted: boolean };
+  const rows: Row[] = [];
+  for (let mask = 0; mask < 16; mask += 1) {
+    rows.push({ flagOn: (mask & 1) !== 0, declared: (mask & 2) !== 0, listed: (mask & 4) !== 0, permitted: (mask & 8) !== 0 });
+  }
+
+  async function setUp(row: Row) {
+    if (!row.flagOn) delete process.env.MCP_APPS_ENABLED;
+    currentKey = row.listed ? {} : { mcpDomains: ['tickets'] };
+    mocks.checkPermissionRequirement.mockResolvedValue(row.permitted ? null : 'Permission denied');
+    const { sessionId } = await legacyInit(row.declared ? UI_CAPS : undefined);
+    return sessionId;
+  }
+
+  it.each(rows)('resources/read gate matrix: %j', async (row) => {
+    const sessionId = await setUp(row);
+    const res = await legacy('resources/read', sessionId, { uri: APP_URI });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    if (row.flagOn && row.declared && row.listed && row.permitted) {
+      expect(body.error).toBeUndefined();
+      expect(body.result.contents).toHaveLength(1);
+      const [content] = body.result.contents;
+      expect(content.uri).toBe(APP_URI);
+      expect(content.mimeType).toBe('text/html;profile=mcp-app');
+      const { FLEET_HEALTH_VIEW_HTML } = await import('../services/mcpApps/fleetHealthView');
+      expect(content.text).toBe(FLEET_HEALTH_VIEW_HTML);
+      expect(content._meta).toEqual({ ui: { csp: { connectDomains: [], resourceDomains: [] }, prefersBorder: true } });
+    } else {
+      expect(body).toEqual(unknownUri(2, APP_URI));
+    }
+  });
+
+  it('serves the view with no DB read beyond what an unknown URI costs', async () => {
+    const { sessionId } = await legacyInit(UI_CAPS);
+    mocks.dbSelect.mockClear();
+    await legacy('resources/read', sessionId, { uri: 'ui://breeze/nope' });
+    const baseline = mocks.dbSelect.mock.calls.length;
+    mocks.dbSelect.mockClear();
+    const body = await (await legacy('resources/read', sessionId, { uri: APP_URI })).json();
+    expect(body.result.contents).toHaveLength(1);
+    expect(mocks.dbSelect.mock.calls.length).toBe(baseline);
+  });
+
+  it.each(['ui://breeze/fleet-health/v2', 'ui://breeze/fleet-health/v1?x', 'ui://breeze/fleet-health/v1/', 'UI://breeze/fleet-health/v1'])(
+    '%s falls through to unknown-URI even when everything else holds',
+    async (uri) => {
+      const { sessionId } = await legacyInit(UI_CAPS);
+      expect(await (await legacy('resources/read', sessionId, { uri })).json()).toEqual(unknownUri(2, uri));
+    },
+  );
+
+  it('existing breeze:// resources still read as before for a declaring client', async () => {
+    const { sessionId } = await legacyInit(UI_CAPS);
+    const body = await (await legacy('resources/read', sessionId, { uri: 'breeze://secrets' })).json();
+    expect(body).toEqual(unknownUri(2, 'breeze://secrets'));
+  });
+
+  it('modern era: resources/read result decorated with resultType complete, ttlMs 0, cacheScope private', async () => {
+    const body = await (await modern('resources/read', { params: { uri: APP_URI }, caps: UI_CAPS })).json();
+    expect(body.result.resultType).toBe('complete');
+    expect(body.result.ttlMs).toBe(0);
+    expect(body.result.cacheScope).toBe('private');
+    expect(body.result.contents[0].mimeType).toBe('text/html;profile=mcp-app');
+    const plain = await (await modern('resources/read', { params: { uri: APP_URI } })).json();
+    expect(plain.error).toEqual(unknownUri(1, APP_URI).error);
+  });
+
+  it('HTTP+SSE /message never serves the view', async () => {
+    const body = await (await sse('resources/read', { uri: APP_URI })).json();
+    expect(body).toEqual(unknownUri(3, APP_URI));
+  });
+
+  it('audit: resources/read of the app and tools/call of get_fleet_health carry mcpApp fleet-health/v1; other calls do not', async () => {
+    const { sessionId } = await legacyInit(UI_CAPS);
+    await legacy('resources/read', sessionId, { uri: APP_URI });
+    expect(requestAuditRows().at(-1)!.details).toMatchObject({ mcpApp: 'fleet-health/v1', uiExtension: true });
+    await legacy('tools/call', sessionId, { name: 'get_fleet_health', arguments: {} });
+    expect(requestAuditRows().at(-1)!.details).toMatchObject({ mcpApp: 'fleet-health/v1', uiExtension: true });
+    await legacy('tools/call', sessionId, { name: 'query_devices', arguments: {} });
+    expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('mcpApp');
+    await legacy('tools/list', sessionId);
+    expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('mcpApp');
+    await legacy('resources/read', sessionId, { uri: 'ui://breeze/fleet-health/v2' });
+    expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('mcpApp');
+    // A non-declaring caller's tools/call of the app tool is counted, without uiExtension.
+    const plain = await legacyInit();
+    await legacy('tools/call', plain.sessionId, { name: 'get_fleet_health', arguments: {} });
+    expect(requestAuditRows().at(-1)!.details.mcpApp).toBe('fleet-health/v1');
+    expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('uiExtension');
+    // A denied read of the app URI is not counted as a fetch.
+    mocks.checkPermissionRequirement.mockResolvedValue('Permission denied');
+    await legacy('resources/read', sessionId, { uri: APP_URI });
+    expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('mcpApp');
+  });
+
+  it('flag off: tools/call of get_fleet_health carries no mcpApp', async () => {
+    delete process.env.MCP_APPS_ENABLED;
+    const { sessionId } = await legacyInit(UI_CAPS);
+    await legacy('tools/call', sessionId, { name: 'get_fleet_health', arguments: {} });
+    expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('mcpApp');
+  });
+});

@@ -78,6 +78,15 @@ import {
   writeLegacySessionExtensions,
   type McpClientExtensions,
 } from '../services/mcpClientExtensions';
+import {
+  MCP_APPS,
+  findMcpAppByTool,
+  findMcpAppByUri,
+  isMcpAppAvailable,
+  mcpAppResourceContents,
+  mcpAppToolMeta,
+  type McpAppDefinition,
+} from '../services/mcpApps/registry';
 import { mcpRequestStateKey, openMcpRequestState, sealMcpRequestState } from '../services/mcpRequestState';
 import { canonicalizeArguments, computeArgumentDigest } from '@breeze/shared/canonicalize';
 import { isMcpIntentEligible, mcpOriginRef, type McpIntentIneligibleReason } from '../services/mcpIntentEligibility';
@@ -1345,9 +1354,10 @@ async function handleJsonRpc(
 
     switch (req.method) {
       case 'tools/list':
-        return await handleToolsList(req.id, scopes, auth, req.params, apiKey);
+        return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions());
 
       case 'tools/call':
+        noteMcpAppToolCall(req.params, ctx.auditExtras);
         return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null);
 
       case 'resources/list':
@@ -1357,7 +1367,12 @@ async function handleJsonRpc(
         return handleResourceTemplatesList(req.id, parseStoredMcpDomains(apiKey?.mcpDomains));
 
       case 'resources/read':
-        return await handleResourcesRead(req.id, req.params ?? {}, auth, parseStoredMcpDomains(apiKey?.mcpDomains));
+        return await handleResourcesRead(req.id, req.params ?? {}, auth, parseStoredMcpDomains(apiKey?.mcpDomains), {
+          clientExtensions: await ctx.resolveClientExtensions(),
+          scopes,
+          apiKey,
+          auditExtras: ctx.auditExtras,
+        });
 
       case 'prompts/list':
         return handlePromptsList(req.id);
@@ -1741,12 +1756,46 @@ function isToolListedForCaller(
     && (tier < 3 || process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(tool.name));
 }
 
+/**
+ * B-W05 (#6159, D-B43): the one MCP App gate, shared by tools/list (`_meta.ui`)
+ * and resources/read (the view). Flag and declaration are checked first so
+ * flag-off and non-declaring callers pay nothing; the RBAC check runs only for
+ * a listed tool, and a thrown check fails closed (not available).
+ */
+async function isMcpAppAvailableForCaller(
+  app: McpAppDefinition,
+  auth: AuthContext,
+  clientExtensions: McpClientExtensions,
+  listedForCaller: () => boolean,
+): Promise<boolean> {
+  const flagOn = mcpAppsEnabled();
+  const declared = clientExtensions.ui;
+  if (!flagOn || !declared) return false;
+  const listed = listedForCaller();
+  if (!listed) return false;
+  let permissionGranted = false;
+  try {
+    permissionGranted = !(await checkPermissionRequirement(auth, app.permission));
+  } catch (err) {
+    console.error('[MCP] Permission check failed for MCP App:', app.key, err);
+  }
+  return isMcpAppAvailable({ flagOn, declared, listedForCaller: listed, permissionGranted });
+}
+
+/** B-W05 (#6159, D-B44): a tools/call of an app's tool is counted for the go/no-go. */
+function noteMcpAppToolCall(params: Record<string, unknown> | undefined, auditExtras: { mcpApp?: string }): void {
+  if (!mcpAppsEnabled() || typeof params?.name !== 'string') return;
+  const app = findMcpAppByTool(resolveDeprecatedToolAlias(params.name));
+  if (app) auditExtras.mcpApp = app.key;
+}
+
 async function handleToolsList(
   id: string | number,
   scopes: string[],
   auth: AuthContext,
   params?: Record<string, unknown>,
   apiKey?: McpApiKeyContext,
+  clientExtensions: McpClientExtensions = NO_MCP_CLIENT_EXTENSIONS,
 ): Promise<JsonRpcResponse> {
   const listing = buildMcpListingContext(scopes, auth, apiKey);
   const { domainGrant, hasWrite, callerFailsMfaGate, ownsIntents, canRunTier3Unattended, canFileTier3Intent } = listing;
@@ -1754,6 +1803,18 @@ async function handleToolsList(
 
   // Filter tools based on API key scopes.
   const scopedTools = allTools.filter((tool) => isToolListedForCaller(tool, listing));
+
+  // B-W05 (#6159, D-B43): `_meta.ui` for each app whose tool is listed here
+  // and whose gate holds for this caller. Empty unless flag on + declared.
+  const appToolMeta = new Map<string, ReturnType<typeof mcpAppToolMeta>>();
+  if (mcpAppsEnabled() && clientExtensions.ui) {
+    for (const app of MCP_APPS) {
+      const listed = scopedTools.some((tool) => tool.name === app.toolName);
+      if (await isMcpAppAvailableForCaller(app, auth, clientExtensions, () => listed)) {
+        appToolMeta.set(app.toolName, mcpAppToolMeta(app));
+      }
+    }
+  }
 
   const result = scopedTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
@@ -1789,8 +1850,11 @@ async function handleToolsList(
       description += ` (Actions ${quote(mfaGatedActions)} require a multi-factor-authenticated session and are not available over MCP — use the Breeze web app AI assistant, signed in with MFA, for those.)`;
     }
     const presentation = buildMcpToolPresentation(tool, getToolTier(tool.name), getToolDomain(tool.name));
+    // B-W05: merged, so `app.breeze/domain` survives and `_meta` keeps its position.
+    const appMeta = appToolMeta.get(tool.name);
     return {
       ...presentation,
+      ...(appMeta ? { _meta: { ...presentation._meta, ...appMeta } } : {}),
       name: tool.name,
       description,
       inputSchema: tool.input_schema,
@@ -3280,10 +3344,35 @@ async function handleResourcesRead(
   params: Record<string, unknown>,
   auth: AuthContext,
   domainGrant: McpDomainGrant,
+  apps: {
+    clientExtensions: McpClientExtensions;
+    scopes: string[];
+    apiKey: McpApiKeyContext | undefined;
+    auditExtras: { mcpApp?: string };
+  },
 ): Promise<JsonRpcResponse> {
   const uri = params.uri as string;
   if (!uri) {
     return jsonRpcError(id, -32602, 'Missing required parameter: uri');
+  }
+  // One copy of the unknown-URI body: the B-W05 app branch must answer it
+  // byte-for-byte, or a caller failing the app gate could tell the app exists.
+  const unknownResourceUri = () => jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+
+  // B-W05 (#6159, D-B43): a registered MCP App URI (exact match) is decided
+  // here, before MCP_RESOURCE_PERMISSIONS (which has no row for it), by the
+  // same gate as its tools/list `_meta.ui`. Every gate failure — flag,
+  // declaration, scope, domain, RBAC — is the unknown-URI body: a caller who
+  // fails it was never shown the URI. The view carries no tenant data; no DB.
+  const app = findMcpAppByUri(uri);
+  if (app) {
+    const available = await isMcpAppAvailableForCaller(app, auth, apps.clientExtensions, () => {
+      const tool = getToolDefinitions().find((definition) => definition.name === app.toolName);
+      return tool !== undefined && isToolListedForCaller(tool, buildMcpListingContext(apps.scopes, auth, apps.apiKey));
+    });
+    if (!available) return unknownResourceUri();
+    apps.auditExtras.mcpApp = app.key;
+    return jsonRpcResult(id, mcpAppResourceContents(app));
   }
 
   // MCP-OAUTH-03: authorize the URI before any site resolution or DB query.
@@ -3292,7 +3381,7 @@ async function handleResourcesRead(
   // check's job, and it must fail closed (unknown URI families denied).
   const requiredPermission = findMcpResourcePermission(uri);
   if (!requiredPermission) {
-    return jsonRpcError(id, -32602, `Unknown resource URI: ${uri}`);
+    return unknownResourceUri();
   }
   // B-W02 (#6156): domain gate after the (pure) unknown-URI check — so an
   // unknown URI answers identically for every principal — and before RBAC
