@@ -13,6 +13,7 @@ import {
   type TicketStatus,
 } from '@/lib/api';
 import { formatDate, formatDateTime } from '@/lib/utils';
+import { isPortalMergedTicket } from '@/lib/mergedTicket';
 import { cn } from '@/lib/utils';
 import { approvalAskSentence } from '@/lib/approvalText';
 import { BTN_PRIMARY, INPUT, StatusMark } from './ui';
@@ -209,11 +210,6 @@ function ReplyComposer({
   );
 }
 
-/** Local guard: '@/lib/api' is mocked wholesale in tests, so no runtime helper from it. */
-function isMergedTicket(t: TicketDetailsType | PortalMergedTicket | null): t is PortalMergedTicket {
-  return !!t && 'merged' in t && t.merged === true;
-}
-
 /** Where a merged request went (#8972, spec §6.1). No reply form and no status:
  *  the conversation continues on the ticket it was merged into. */
 function MergedTicketNotice({ ticket }: { ticket: PortalMergedTicket }) {
@@ -256,7 +252,7 @@ function MergedTicketNotice({ ticket }: { ticket: PortalMergedTicket }) {
 }
 
 export function TicketDetails({ ticket: ticketOrMerged, error, statusCode, pendingApproval }: TicketDetailsProps) {
-  const mergedTicket = isMergedTicket(ticketOrMerged) ? ticketOrMerged : null;
+  const mergedTicket = isPortalMergedTicket(ticketOrMerged) ? ticketOrMerged : null;
   const ticket = mergedTicket ? null : (ticketOrMerged as TicketDetailsType | null);
   // The API returns public replies newest-first; this reads as a conversation
   // under the description, so show them oldest-first. `comments` is defensively

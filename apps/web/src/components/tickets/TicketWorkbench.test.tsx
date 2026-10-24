@@ -3328,28 +3328,31 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
     mockTombstoneApi();
     render(<TicketWorkbench ticketId="tk-1" assignees={[{ id: 'u-1', name: 'Alex', email: 'a@example.com' }]} categories={[{ id: 'cat-1', name: 'Hardware' }]} />);
     await screen.findByTestId('ticket-merged-banner');
-    // Give the triage/draft fetches time to land so a missed gate would have rendered them.
     await waitFor(() => expect(screen.getByTestId('ticket-merged-banner')).toHaveTextContent('T-2026-0002'));
 
-    const inert = [
-      'ticket-workbench-subject-edit', 'ticket-workbench-status', 'ticket-workbench-type', 'ticket-workbench-priority',
-      'ticket-workbench-category', 'ticket-workbench-assignee', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice',
-      'ticket-workbench-move-org', 'ticket-delete-button', 'ticket-merge-open', 'ticket-workbench-description-edit-btn',
-      'ticket-workbench-requester-edit', 'ticket-workbench-due', 'ticket-workbench-tag-input', 'ticket-workbench-device-edit',
-      'ticket-workbench-device-unlink', 'ticket-triage-apply', 'ticket-triage-reject', 'ticket-ai-draft-reply-send',
-      'ticket-ai-draft-reply-discard', 'ticket-composer', 'ticket-composer-input', 'ticket-composer-send',
-      'ticket-comment-edit-c-1', 'ticket-comment-delete-c-1',
+    // Hidden outright on a tombstone.
+    const mustBeAbsent = [
+      'ticket-workbench-type', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice', 'ticket-workbench-move-org',
+      'ticket-delete-button', 'ticket-merge-open', 'ticket-workbench-description-edit-btn', 'ticket-workbench-requester-edit',
+      'ticket-workbench-tag-input', 'ticket-workbench-device-edit', 'ticket-workbench-device-unlink',
+      'ticket-triage-suggestion', 'ticket-triage-apply', 'ticket-triage-reject', 'ticket-ai-draft-reply',
+      'ticket-ai-draft-reply-send', 'ticket-ai-draft-reply-discard', 'ticket-composer', 'ticket-composer-input',
+      'ticket-comment-edit-c-1', 'ticket-comment-delete-c-1', 'ticket-workbench-resolve-form', 'ticket-workbench-pending-form',
     ];
-    for (const id of inert) {
-      const el = screen.queryByTestId(id);
-      if (el) expect(el, id).toBeDisabled();
-    }
-    // The selects that stay visible for reading are disabled, not removed.
-    expect(screen.getByTestId('ticket-workbench-status')).toBeDisabled();
-    expect(screen.getByTestId('ticket-workbench-priority')).toBeDisabled();
-    // No AI suggestion/draft affordances on a tombstone.
-    expect(screen.queryByTestId('ticket-triage-suggestion')).toBeNull();
-    expect(screen.queryByTestId('ticket-ai-draft-reply')).toBeNull();
+    for (const id of mustBeAbsent) expect(screen.queryByTestId(id), id).toBeNull();
+    // Still shown for reading, but inert.
+    const mustBeDisabled = [
+      'ticket-workbench-subject-edit', 'ticket-workbench-status', 'ticket-workbench-priority', 'ticket-workbench-category',
+      'ticket-workbench-assignee', 'ticket-workbench-due',
+    ];
+    for (const id of mustBeDisabled) expect(screen.getByTestId(id), id).toBeDisabled();
+    // The type is shown as a chip instead of a select.
+    expect(screen.getByTestId('ticket-workbench-type-chip')).toBeInTheDocument();
+    // A tombstone never asks for AI suggestions or drafts.
+    const requested = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(requested).not.toContain('/tickets/tk-1/triage-suggestion');
+    expect(requested).not.toContain('/tickets/tk-1/ai-drafts');
+    expect(requested).not.toContain('/tickets/tk-1/ai-proposal');
     // The composer's place shows the read-only note instead.
     expect(screen.getByTestId('ticket-merged-readonly')).toHaveTextContent('Merged tickets are read-only.');
     expect(linksCardProps.last).toMatchObject({ canWrite: false });

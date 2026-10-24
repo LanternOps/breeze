@@ -342,3 +342,52 @@ describe('MergeTicketDialog — confirm', () => {
     expect(onMerged).not.toHaveBeenCalled();
   });
 });
+
+describe('MergeTicketDialog — review follow-ups', () => {
+  it('a slow preview for an earlier pick never lands over the newer target', async () => {
+    let resolveOld: (r: Response) => void = () => {};
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/tickets?')) return json({ data: [NEWER, OLDER] });
+      if (url === '/tickets/src-1/merge-preview?into=tk-old') {
+        return new Promise<Response>((r) => { resolveOld = r; });
+      }
+      if (url === '/tickets/src-1/merge-preview?into=tk-new') {
+        return json({ data: preview({ requestersDiffer: true, suggestedSurvivorId: 'tk-new' }) });
+      }
+      if (url === '/tickets/src-1/merge' && init?.method === 'POST') {
+        return json({ data: { survivorId: 'tk-new', counts: ZERO_COUNTS, droppedLinks: [] } });
+      }
+      return json({ error: 'unexpected' }, 500);
+    });
+    const { onMerged } = renderDialog();
+    fireEvent.click(await screen.findByTestId('ticket-merge-option-tk-old'));
+    fireEvent.click(screen.getByTestId('ticket-merge-option-tk-new'));
+    await screen.findByTestId('ticket-merge-preview');
+    // The old target's preview arrives last and is ineligible — it must be ignored.
+    resolveOld(json({ data: preview({ eligible: false, requestersDiffer: false, refusals: [{ code: 'MERGE_APPROVAL_STATE', side: 'survivor', message: 'x' }] }) }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('ticket-merge-refusal-MERGE_APPROVAL_STATE')).toBeNull();
+    expect(screen.getByTestId('ticket-merge-notify')).toBeChecked();
+    expect(screen.getByTestId('ticket-merge-confirm')).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId('ticket-merge-confirm'));
+    await waitFor(() => expect(onMerged).toHaveBeenCalledWith({ id: 'tk-new', internalNumber: 'T-2026-0005' }));
+    expect(JSON.parse(String(mergeCalls()[0][1]?.body))).toEqual({ intoTicketId: 'tk-new', notifyRequester: true });
+  });
+
+  it('a re-check after a refused confirm keeps the user\'s notify choice', async () => {
+    mockApi({
+      preview: preview({ requestersDiffer: true }),
+      merge: () => json({ error: 'busy', code: 'CONCURRENT_MODIFICATION' }, 409),
+    });
+    renderDialog();
+    await pick('tk-old');
+    expect(screen.getByTestId('ticket-merge-notify')).toBeChecked();
+    fireEvent.click(screen.getByTestId('ticket-merge-notify')); // user opts out
+    fireEvent.click(screen.getByTestId('ticket-merge-confirm'));
+    await waitFor(() => expect(previewCalls()).toHaveLength(2));
+    await waitFor(() => expect(screen.getByTestId('ticket-merge-confirm')).toBeEnabled());
+    expect(screen.getByTestId('ticket-merge-notify')).not.toBeChecked();
+  });
+});

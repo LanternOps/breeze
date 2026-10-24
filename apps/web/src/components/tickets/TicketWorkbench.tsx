@@ -558,7 +558,13 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     const forTicketId = ticketId;
     for (const id of pending) {
       void fetchWithAuth(`/tickets/${id}`)
-        .then(async (res) => (res.ok ? ((await res.json()) as { data?: { id: string; internalNumber?: string | null; ticketNumber?: string | null } }) : null))
+        .then(async (res) => {
+          if (!res.ok) {
+            console.warn(`[TicketWorkbench] merged-from lookup ${id} answered ${res.status}`);
+            return null;
+          }
+          return (await res.json()) as { data?: { id: string; internalNumber?: string | null; ticketNumber?: string | null } };
+        })
         .then((body) => {
           if (!body?.data || ticketIdRef.current !== forTicketId) return;
           const number = ticketDisplayNumber(body.data);
@@ -1276,7 +1282,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
               <EntityLink kind="device" id={ticket.deviceId ?? ''} name={ticket.deviceHostname} tone="muted" />
             </>
           )}
-          {ticket.requesterContactId && (
+          {ticket.requesterContactId && !merged && (
             // Both render nothing (and fetch nothing) unless the server's
             // caller-verification flag is on.
             <>
@@ -1481,7 +1487,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
             </button>
           )}
         </div>
-        {(invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
+        {!merged && (invoiceBlocked.length > 0 || invoiceMissingRate.length > 0) && (
           <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid="ticket-invoice-blocked" role="status">
             {partialInvoiceId ? (
               <p>

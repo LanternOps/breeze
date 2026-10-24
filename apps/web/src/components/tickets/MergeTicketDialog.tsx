@@ -140,7 +140,9 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
     return () => { cancelled = true; };
   }, [open, source.id, source.orgId, debouncedSearch]);
 
-  const loadPreview = useCallback(async (into: Candidate) => {
+  // `keepNotify`: a re-check of the SAME target (after a refused confirm) keeps
+  // the user's notify choice; only a new target re-defaults it.
+  const loadPreview = useCallback(async (into: Candidate, opts: { keepNotify?: boolean } = {}) => {
     const seq = ++previewSeq.current;
     setPreviewLoading(true);
     setPreviewFailed(false);
@@ -154,7 +156,7 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
       if (!body.data) throw new Error('empty preview');
       setPreview(body.data);
       // D6: default on when the requesters differ; re-defaulted per target.
-      setNotify(hasRequester && body.data.requestersDiffer);
+      if (!opts.keepNotify) setNotify(hasRequester && body.data.requestersDiffer);
     } catch (err) {
       if (seq !== previewSeq.current) return;
       console.warn('[MergeTicketDialog] preview failed', err);
@@ -179,8 +181,9 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
   const confirm = async () => {
     if (!target || !preview?.eligible || submitting) return;
     setSubmitting(true);
+    let result: MergeResult;
     try {
-      const result = await runAction<MergeResult>({
+      result = await runAction<MergeResult>({
         request: () => fetchWithAuth(`/tickets/${source.id}/merge`, {
           method: 'POST',
           body: JSON.stringify({ intoTicketId: target.id, notifyRequester: notify }),
@@ -196,8 +199,6 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
         },
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true }),
       });
-      const survivorId = result?.data?.survivorId ?? target.id;
-      onMerged({ id: survivorId, internalNumber: survivorId === target.id ? target.internalNumber : null });
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) {
@@ -206,10 +207,15 @@ export default function MergeTicketDialog({ open, source, onClose, onMerged }: P
       }
       // Already toasted. Stay open and refresh the preview so a refusal that
       // arose since the preview (a closed target, a new approval) shows inline.
-      void loadPreview(target);
+      void loadPreview(target, { keepNotify: true });
+      return;
     } finally {
       setSubmitting(false);
     }
+    // Outside the try: the merge has happened, so a throw in the host's
+    // handler must not surface as "Merge failed".
+    const survivorId = result?.data?.survivorId ?? target.id;
+    onMerged({ id: survivorId, internalNumber: survivorId === target.id ? target.internalNumber : null });
   };
 
   const hostnameFor = (deviceId: string | null): string => {

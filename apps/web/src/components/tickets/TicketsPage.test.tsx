@@ -1412,6 +1412,36 @@ describe('TicketsPage — merged tickets (#8972)', () => {
     await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&sort=newest&merged=1'));
   });
 
+  it('#merged=1 alone is not a selection: auto-select keeps the segment', async () => {
+    window.location.hash = '#merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&merged=1'));
+    expect(screen.queryByTestId('tickets-deeplink-absent')).toBeNull();
+  });
+
+  it('merged=0 or another value reads as off', async () => {
+    window.location.hash = '#T-2026-0001&merged=true';
+    mockListApi([healthy]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-healthy');
+    expect(screen.getByTestId('ticket-list-show-merged')).not.toBeChecked();
+    expect(ticketFetchUrls().every((u) => !u.includes('showMerged'))).toBe(true);
+  });
+
+  it('the type filter and row selection keep merged=1', async () => {
+    window.location.hash = '#T-2026-0001&merged=1';
+    mockListApi([healthy, atRisk]);
+    render(<TicketsPage />);
+    await screen.findByTestId('ticket-row-tk-risk');
+    fireEvent.change(screen.getByTestId('tickets-filter-type'), { target: { value: 'problem' } });
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0001&type=problem&merged=1'));
+    await waitFor(() => expect(ticketFetchUrls().at(-1)).toContain('showMerged=true'));
+    fireEvent.click(await screen.findByTestId('ticket-row-tk-risk'));
+    await waitFor(() => expect(window.location.hash).toBe('#T-2026-0002&type=problem&merged=1'));
+  });
+
   it('onMerged moves the selection to the survivor and reconciles the queue', async () => {
     mockListApi([healthy, atRisk]);
     render(<TicketsPage />);
