@@ -17,7 +17,7 @@ import {
 } from '../services/featureConfigResolver';
 import { securityScanCron, type SecurityScanSettings } from '@breeze/shared';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
-import { parsePositiveIntEnv, sweepPumpIntervalMs } from '../services/securityScanSweepConfig';
+import { parsePositiveIntEnv } from '../services/securityScanSweepConfig';
 import { claimAndDispatchScan, type ClaimOutcome, type DispatchScanJobData } from './securityScanClaim';
 import { pumpSweeps, type SweepDispatchJob } from './securityScanSweepPump';
 
@@ -38,6 +38,9 @@ const POLICY_SCAN_INTERVAL_MS = 60 * 1000;
 const SECURITY_SCAN_WORKER_CONCURRENCY = parsePositiveIntEnv('SECURITY_SCAN_WORKER_CONCURRENCY', 6);
 const SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT =
   parsePositiveIntEnv('SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT', 500);
+// #6263 W05 — the sweep pump's cadence. A same-file const so the schedule
+// registry contract can read the repeat statically.
+const SECURITY_SWEEP_PUMP_INTERVAL_MS = parsePositiveIntEnv('SECURITY_SWEEP_PUMP_INTERVAL_MS', 30_000);
 const SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS =
   parsePositiveIntEnv('SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS', 20);
 
@@ -340,7 +343,7 @@ async function schedulePolicyTick(): Promise<void> {
   await queue.add(
     'pump-sweeps',
     { type: 'pump-sweeps', tickAt: new Date().toISOString() },
-    { repeat: { every: sweepPumpIntervalMs() }, removeOnComplete: { count: 20 }, removeOnFail: { count: 100 } },
+    { repeat: { every: SECURITY_SWEEP_PUMP_INTERVAL_MS }, removeOnComplete: { count: 20 }, removeOnFail: { count: 100 } },
   );
 }
 

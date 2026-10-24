@@ -29,8 +29,7 @@ export const sweepMaxDevices = (): number =>
   parsePositiveIntEnv('SECURITY_SWEEP_MAX_DEVICES', SECURITY_SWEEP_MAX_DEVICES_DEFAULT);
 /** Sweeps in state `active` per org. */
 export const sweepMaxActivePerOrg = (): number => parsePositiveIntEnv('SECURITY_SWEEP_MAX_ACTIVE_PER_ORG', 5);
-/** Pump cadence. */
-export const sweepPumpIntervalMs = (): number => parsePositiveIntEnv('SECURITY_SWEEP_PUMP_INTERVAL_MS', 30_000);
+/** Pump cadence: `SECURITY_SWEEP_PUMP_INTERVAL_MS`, read in jobs/securityScanJobs.ts (the schedule registry needs it static). */
 /** Scans admitted per sweep per org per pump tick. */
 export const sweepPumpBatch = (): number => parsePositiveIntEnv('SECURITY_SWEEP_PUMP_BATCH', 100);
 /** `running` scans across a partner's orgs, all origins. */

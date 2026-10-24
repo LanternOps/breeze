@@ -39,7 +39,6 @@ import {
   yaraRuleSets,
 } from '../db/schema';
 import { isInteractiveUserSession, withAuthDbAccessContext, type AuthContext } from '../middleware/auth';
-import { enqueueSweepPump } from '../jobs/securityScanJobs';
 import { canonicalizeArguments, computeArgumentDigest } from './actionIntents/canonicalize';
 import { createAuditLogAsync, type CreateAuditLogParams, type InitiatedByType } from './auditService';
 import { hasPermission, type UserPermissions } from './permissions';
@@ -201,6 +200,9 @@ export async function createSweep(
   // Committed. Audit rows and the pump nudge only ever describe real rows.
   for (const audit of outcome.audits) void createAuditLogAsync(audit);
   try {
+    // Dynamic: the queue module pulls the claim and the agent socket graph,
+    // which the HTTP route modules importing this service must not load.
+    const { enqueueSweepPump } = await import('../jobs/securityScanJobs');
     await enqueueSweepPump();
   } catch (error) {
     // The repeatable pump tick admits the rows anyway; the nudge only saves latency.
@@ -547,7 +549,9 @@ const emptyProgress = (): SweepProgress => ({
 const countStatus = (status: string) =>
   sql<number>`count(*) FILTER (WHERE ${securityScans.status} = ${status})::int`;
 
-const progressFields = {
+// Built per call, not at module load: route modules import this service, and
+// their unit tests mock the schema with only the tables they use.
+const progressFields = () => ({
   sweepId: securityScans.sweepId,
   queued: countStatus('queued'),
   running: countStatus('running'),
@@ -561,9 +565,9 @@ const progressFields = {
   degraded: sql<number>`count(*) FILTER (WHERE ${securityScans.status} IN ('completed', 'timed_out') AND (coalesce(${securityScans.engine}, 'legacy') <> 'yara' OR (CASE WHEN jsonb_typeof(${securityScans.ruleSetErrors}) = 'array' THEN jsonb_array_length(${securityScans.ruleSetErrors}) ELSE 0 END) > 0))::int`,
   threatsFound: sql<number>`coalesce(sum(${securityScans.threatsFound}), 0)::int`,
   total: sql<number>`count(*)::int`,
-};
+});
 
-const summaryFields = {
+const summaryFields = () => ({
   id: securityScanSweeps.id,
   orgId: securityScanSweeps.orgId,
   groupId: securityScanSweeps.groupId,
@@ -579,7 +583,7 @@ const summaryFields = {
   completedAt: securityScanSweeps.completedAt,
   orgName: organizations.name,
   createdByName: users.name,
-};
+});
 
 type SummaryRow = {
   id: string;
@@ -634,14 +638,23 @@ async function loadSummaries(
   const permsFor = opts.permsFor ?? createOrgPermissionResolver(auth);
   const fence = auth.orgCondition(securityScanSweeps.orgId);
   const where = and(...[match, fence].filter((c): c is SQL => c !== undefined));
-  const base = db
-    .select(summaryFields)
-    .from(securityScanSweeps)
-    .innerJoin(organizations, eq(organizations.id, securityScanSweeps.orgId))
-    .leftJoin(users, eq(users.id, securityScanSweeps.createdBy))
-    .where(where)
-    .orderBy(desc(securityScanSweeps.createdAt), asc(securityScanSweeps.id));
-  const rows = (opts.page ? await base.limit(opts.page.limit).offset(opts.page.offset) : await base) as SummaryRow[];
+  const rows = (opts.page
+    ? await db
+        .select(summaryFields())
+        .from(securityScanSweeps)
+        .innerJoin(organizations, eq(organizations.id, securityScanSweeps.orgId))
+        .leftJoin(users, eq(users.id, securityScanSweeps.createdBy))
+        .where(where)
+        .orderBy(desc(securityScanSweeps.createdAt), asc(securityScanSweeps.id))
+        .limit(opts.page.limit)
+        .offset(opts.page.offset)
+    : await db
+        .select(summaryFields())
+        .from(securityScanSweeps)
+        .innerJoin(organizations, eq(organizations.id, securityScanSweeps.orgId))
+        .leftJoin(users, eq(users.id, securityScanSweeps.createdBy))
+        .where(where)
+        .orderBy(desc(securityScanSweeps.createdAt), asc(securityScanSweeps.id))) as SummaryRow[];
 
   const readable: Array<{ row: SummaryRow; perms: UserPermissions }> = [];
   for (const row of rows) {
@@ -672,7 +685,7 @@ async function loadSummaries(
 
   const sweepIds = readable.map(({ row }) => row.id);
   const progressRows = await db
-    .select(progressFields)
+    .select(progressFields())
     .from(securityScans)
     .innerJoin(
       securityScanSweeps,
