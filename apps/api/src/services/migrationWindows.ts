@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { PERMISSION_GRANTS } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
@@ -10,6 +10,7 @@ import {
   partnerUsers,
   permissions,
   rolePermissions,
+  ticketAttachments,
   ticketComments,
   tickets,
   users,
@@ -131,9 +132,24 @@ function iso(d: Date | null): string | null {
 
 function emptySummary(orgIds: readonly string[]): MigrationWindowSummary {
   return {
-    orgs: orgIds.map((orgId) => ({ orgId, ticketsImported: 0, commentsImported: 0 })),
+    orgs: orgIds.map((orgId) => ({ orgId, ticketsImported: 0, commentsImported: 0, attachmentsImported: 0 })),
     ticketsImported: 0,
     commentsImported: 0,
+    attachmentsImported: 0,
+  };
+}
+
+/**
+ * A closed window's frozen summary. One frozen before #8313 W1 has no
+ * `attachmentsImported`; it imported none (nothing wrote import attachments
+ * before), so it reads as 0.
+ */
+function storedSummary(summary: MigrationWindowSummary | null, orgIds: readonly string[]): MigrationWindowSummary {
+  if (!summary) return emptySummary(orgIds);
+  return {
+    ...summary,
+    orgs: summary.orgs.map((org) => ({ ...org, attachmentsImported: org.attachmentsImported ?? 0 })),
+    attachmentsImported: summary.attachmentsImported ?? 0,
   };
 }
 
@@ -194,9 +210,11 @@ function holdsOpenerPermissionsSql(userId: SQLWrapper | string, partnerId: SQLWr
 }
 
 /**
- * Per-org counts of what a window imported: tickets carrying its id, and
+ * Per-org counts of what a window imported: tickets carrying its id,
  * comments carrying it with comment_type comment/internal (feed rows are not
- * counted). Rows are grouped by their CURRENT org and reported for the
+ * counted), and attached files carrying it (#8313 W1, spec 2026-10-19 §4.6:
+ * a pending reservation is not counted; idx_ticket_attachments_migration_window
+ * serves it). Rows are grouped by their CURRENT org and reported for the
  * window's orgs only.
  */
 async function countImported(tx: Tx | typeof db, windowId: string, orgIds: readonly string[]): Promise<MigrationWindowSummary> {
@@ -218,6 +236,15 @@ async function countImported(tx: Tx | typeof db, windowId: string, orgIds: reado
       inArray(tickets.orgId, [...orgIds]),
     ))
     .groupBy(tickets.orgId);
+  const attachmentRows = await tx
+    .select({ orgId: ticketAttachments.orgId, n: sql<number>`count(*)::int` })
+    .from(ticketAttachments)
+    .where(and(
+      eq(ticketAttachments.migrationWindowId, windowId),
+      isNotNull(ticketAttachments.commentId),
+      inArray(ticketAttachments.orgId, [...orgIds]),
+    ))
+    .groupBy(ticketAttachments.orgId);
   for (const row of ticketRows) {
     const entry = byOrg.get(row.orgId);
     if (entry) entry.ticketsImported = Number(row.n);
@@ -226,8 +253,13 @@ async function countImported(tx: Tx | typeof db, windowId: string, orgIds: reado
     const entry = byOrg.get(row.orgId);
     if (entry) entry.commentsImported = Number(row.n);
   }
+  for (const row of attachmentRows) {
+    const entry = byOrg.get(row.orgId);
+    if (entry) entry.attachmentsImported = Number(row.n);
+  }
   summary.ticketsImported = summary.orgs.reduce((a, o) => a + o.ticketsImported, 0);
   summary.commentsImported = summary.orgs.reduce((a, o) => a + o.commentsImported, 0);
+  summary.attachmentsImported = summary.orgs.reduce((a, o) => a + o.attachmentsImported, 0);
   return summary;
 }
 
@@ -524,7 +556,7 @@ export async function closeMigrationWindow(
   if (!row) return null;
   const orgIds = await windowOrgIds(tx, row.id);
   if (row.status === 'closed') {
-    return { window: toView(row, orgIds, row.summary ?? emptySummary(orgIds)), alreadyClosed: true };
+    return { window: toView(row, orgIds, storedSummary(row.summary, orgIds)), alreadyClosed: true };
   }
 
   const summary = await countImported(tx, row.id, orgIds);
@@ -563,6 +595,7 @@ export async function closeMigrationWindow(
       endsAt: row.endsAt.toISOString(),
       ticketsImported: summary.ticketsImported,
       commentsImported: summary.commentsImported,
+      attachmentsImported: summary.attachmentsImported,
       orgs: summary.orgs,
     },
     result: 'success',
@@ -581,7 +614,7 @@ export async function listMigrationWindows(partnerId: string, limit = 100): Prom
   const views: MigrationWindowView[] = [];
   for (const row of rows) {
     const orgIds = await windowOrgIds(db, row.id);
-    const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : (row.summary ?? emptySummary(orgIds));
+    const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : storedSummary(row.summary, orgIds);
     views.push(toView(row, orgIds, counts));
   }
   return views;
@@ -596,7 +629,7 @@ export async function getMigrationWindow(partnerId: string, windowId: string): P
     .limit(1);
   if (!row) return null;
   const orgIds = await windowOrgIds(db, row.id);
-  const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : (row.summary ?? emptySummary(orgIds));
+  const counts = row.status === 'open' ? await countImported(db, row.id, orgIds) : storedSummary(row.summary, orgIds);
   return toView(row, orgIds, counts);
 }
 
@@ -699,6 +732,26 @@ async function sweepCandidates(): Promise<SweepCandidate[]> {
 }
 
 /**
+ * The `migration.window_closed` payload, one per org in the window, with
+ * that org's counts: ids and counts only. Its keys are the webhook docs row
+ * (apps/docs/src/content/docs/features/webhooks.mdx), pinned by
+ * eventBus.types.test.ts. `attachmentsImported` is #8313 W1's (spec
+ * 2026-10-19 §4.6), additive.
+ */
+export type MigrationWindowClosedPayload = {
+  windowId: string;
+  partnerId: string;
+  sourceLabel: string;
+  openedAt: string;
+  endsAt: string;
+  closedAt: string | null;
+  closedReason: MigrationWindowClosedReason | null;
+  ticketsImported: number;
+  commentsImported: number;
+  attachmentsImported: number;
+};
+
+/**
  * Publishes `migration.window_closed` once per org for every closed window
  * whose summary is not out yet, then stamps summary_published_at (spec §3.5).
  * The eventId is `${windowId}:${orgId}`, so a retry after a partial failure
@@ -713,10 +766,10 @@ export async function publishPendingWindowSummaries(): Promise<number> {
   let published = 0;
   for (const row of pending) {
     try {
-      const summary = row.summary ?? emptySummary([]);
+      const summary = storedSummary(row.summary, []);
       await runOutsideDbContext(async () => {
         for (const org of summary.orgs) {
-          await publishEvent(
+          await publishEvent<MigrationWindowClosedPayload>(
             'migration.window_closed',
             org.orgId,
             {
@@ -729,6 +782,7 @@ export async function publishPendingWindowSummaries(): Promise<number> {
               closedReason: row.closedReason,
               ticketsImported: org.ticketsImported,
               commentsImported: org.commentsImported,
+              attachmentsImported: org.attachmentsImported,
             },
             'migration-window-sweep',
             { eventId: `${row.id}:${org.orgId}`, occurredAt: iso(row.closedAt) ?? undefined },

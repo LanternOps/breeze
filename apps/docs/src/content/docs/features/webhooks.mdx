@@ -144,7 +144,7 @@ A ticket migration window lets a partner admin import ticket history from anothe
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
+| `migration.window_closed` | `windowId`, `partnerId`, `sourceLabel`, `openedAt`, `endsAt`, `closedAt`, `closedReason`, `ticketsImported`, `commentsImported`, `attachmentsImported` | A migration window closed. Sent once per organization in the window, with that organization's counts. `attachmentsImported` counts the files attached to imported comments. `closedReason` is `expired`, `closed_by_admin`, `principal_inactive` or `opener_inactive`. The event id is `<windowId>:<orgId>`, so a retried delivery is recognizable |
 
 ### Integration Events
 
