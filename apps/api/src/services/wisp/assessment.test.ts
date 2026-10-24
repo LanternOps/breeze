@@ -102,6 +102,7 @@ import { alerts } from '../../db/schema/alerts';
 import { connectionHealthIncidents } from '../../db/schema/connectionHealth';
 import { tickets } from '../../db/schema/portal';
 import {
+  assessableOrgIds,
   enqueueAssessment,
   lastAssessmentWatermark,
   loadAssessmentContext,
@@ -193,6 +194,31 @@ describe('enqueueAssessment', () => {
       .resolves.toEqual({ skipped: 'grant_org_out_of_ceiling' });
     expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
     expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  // W05a spot-check: the digest reads are org-wide, so a grant whose reach in
+  // the org is narrowed to sites must never get an assessment there (the same
+  // rule W05a's concern reads apply).
+  it.each([
+    ['a ceiling-wide site restriction', { siteIds: new Set(['site-1']) }],
+    ['a per-org membership site restriction', { orgTerms: new Map([[ORG, { permissionKeys: new Set(['*:*']), siteIds: new Set(['site-1']) }]]) }],
+  ])('returns grant_org_site_restricted for %s and admits nothing', async (_label, o) => {
+    h.results.push([grantRow()]);
+    h.resolveGrantCeiling.mockResolvedValue(ceiling(o));
+    await expect(enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } }))
+      .resolves.toEqual({ skipped: 'grant_org_site_restricted' });
+    expect(h.chargeableUnderGrant).not.toHaveBeenCalled();
+    expect(h.createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('assessableOrgIds keeps only ceiling orgs with no site restriction', () => {
+    const OTHER = OTHER_ORG;
+    const c = ceiling({
+      orgIds: new Set([ORG, OTHER]),
+      orgTerms: new Map([[OTHER, { permissionKeys: new Set(['*:*']), siteIds: new Set(['s']) }]]),
+    });
+    expect([...assessableOrgIds(c as never)]).toEqual([ORG]);
+    expect([...assessableOrgIds(ceiling({ orgIds: new Set([ORG, OTHER]), siteIds: new Set(['s']) }) as never)]).toEqual([]);
   });
 
   it('budget exhausted: notifies once, records a deterministic concern for alert.triggered, returns budget_exhausted, admits nothing', async () => {
@@ -412,6 +438,12 @@ describe('loadAssessmentContext', () => {
       triggerRef: { wisp: { grantId: OTHER_ORG, grantRevisionId: REV, reason: { kind: 'tick' }, watermark: null } },
     }))).resolves.toBeNull();
     expect(h.resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the grant reaches the run org only through a site restriction', async () => {
+    h.resolveGrantCeiling.mockResolvedValue(ceiling({ siteIds: new Set(['site-1']) }));
+    await expect(loadAssessmentContext(run())).resolves.toBeNull();
+    expect(h.getOrCreateThread).not.toHaveBeenCalled();
   });
 
   it('returns null when the run org has left the ceiling', async () => {

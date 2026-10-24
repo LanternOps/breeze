@@ -46,6 +46,7 @@ import { listConcernsForCeiling, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { recallForGrant } from './memoryBroker';
+import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
 import { getOrCreateThread, seedContextForSession, updateThreadSummary } from './threads';
 import { listWatches } from './watches';
@@ -58,6 +59,7 @@ import type {
 } from './assessmentTypes';
 
 export type { AssessmentReason, AssessmentRunContext, AssessmentDigest, WispAssessmentTriggerRef } from './assessmentTypes';
+export { assessableOrgIds } from './assessableOrgs';
 
 /** Rows per digest table (w00: bounded, newest first). */
 const DIGEST_ROW_LIMIT = 25;
@@ -178,6 +180,7 @@ export async function enqueueAssessment(
   }
   // Same spelling as W02's admission skip (step 1d), which re-checks it.
   if (!ceiling.orgIds.has(orgId)) return { skipped: 'grant_org_out_of_ceiling' };
+  if (!assessableOrgIds(ceiling).has(orgId)) return { skipped: 'grant_org_site_restricted' };
 
   const budget = await chargeableUnderGrant(grantId, ASSESSMENT_BUDGET_CENTS_PER_RUN);
   if (!budget.ok) {
@@ -468,7 +471,7 @@ export async function loadAssessmentContext(run: {
     if (err instanceof GrantInactiveError) return null;
     throw err;
   }
-  if (!ceiling.orgIds.has(run.orgId)) return null;
+  if (!ceiling.orgIds.has(run.orgId) || !assessableOrgIds(ceiling).has(run.orgId)) return null;
 
   const thread = await getOrCreateThread(run.grantId);
   const threadSummary = await seedContextForSession(thread.id, ceiling);

@@ -21,12 +21,14 @@ const SRC = path.resolve(__dirname, '..', '..');
 export const AI_MEMORY_BLOCKS_ACCESS_ALLOWLIST: Record<string, string> = {
   'services/wisp/memoryBroker.ts': 'the agent-side broker: system context + ceiling filter (spec §8.4)',
   'services/wisp/memoryService.ts': 'the human-side service: request context, RLS-enforced; one audited admin read',
+  'jobs/wispConcernRetention.ts': 'retention delete, not an agent-side write (concern_outcome blocks past 180 days, system context)',
 };
 
 /** Files allowed to INSERT/UPDATE/DELETE ai_memory_blocks, split by side so neither can quietly absorb the other. */
-export const AI_MEMORY_BLOCKS_WRITER_ALLOWLIST: Record<string, 'agent' | 'human'> = {
+export const AI_MEMORY_BLOCKS_WRITER_ALLOWLIST: Record<string, 'agent' | 'human' | 'retention'> = {
   'services/wisp/memoryBroker.ts': 'agent',   // rememberForGrant: unconfirmed, grant + revision stamped
   'services/wisp/memoryService.ts': 'human',  // confirm / retract / recordHumanBlock: a person acted
+  'jobs/wispConcernRetention.ts': 'retention', // retention delete, not an agent-side write
 };
 
 const ACCESS_PATTERNS: RegExp[] = [
