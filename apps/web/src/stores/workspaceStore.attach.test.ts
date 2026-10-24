@@ -168,6 +168,61 @@ describe('per-tab ownership (#5684 class)', () => {
     expect(tabOf('b')!.isStreaming).toBe(true);
   });
 
+  it('with B active, A’s events (seq colliding with B’s) touch only A', async () => {
+    const { liveA, liveB } = await twoRunningTabs();
+    useWorkspaceStore.getState().switchTab('b');
+    const bBefore = tabOf('b')!;
+    liveA.push(frame({ type: 'message_start', messageId: 'am1', seq: 1 }));
+    liveA.push(frame({ type: 'content_delta', delta: 'only A', seq: 2 }));
+    liveB.push(frame({ type: 'message_start', messageId: 'bm1', seq: 1 }));
+    liveB.push(frame({ type: 'content_delta', delta: 'only B', seq: 2 }));
+    await vi.waitFor(() => expect(tabOf('a')!.messages.map((m) => m.content)).toEqual(['only A']));
+    await vi.waitFor(() => expect(tabOf('b')!.messages.map((m) => m.content)).toEqual(['only B']));
+    expect(tabOf('a')!.unreadCount).toBe(1); // A is the background tab now
+    expect(tabOf('b')!.unreadCount).toBe(bBefore.unreadCount);
+    expect(tabOf('b')!.hasApprovalPending).toBe(false);
+  });
+
+  it('a tab whose session was unbound stops taking its old attach’s frames', async () => {
+    const { liveA } = await twoRunningTabs();
+    const signal = signalOf(callsTo('/ai/sessions/sa/stream')[0]);
+    useWorkspaceStore.setState((s) => ({ tabs: s.tabs.map((t) => (t.id === 'a' ? { ...t, sessionId: 'other', messages: [] } : t)) }));
+    liveA.push(frame({ type: 'message_start', messageId: 'late', seq: 1 }));
+    liveA.push(frame({ type: 'content_delta', delta: 'stale', seq: 2 }));
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
+    await flush();
+    expect(tabOf('a')!.messages).toEqual([]);
+  });
+
+  it('logout while two tabs are attached: both streams aborted, later frames write nothing, nothing re-persisted', async () => {
+    const { liveA, liveB } = await twoRunningTabs();
+    useWorkspaceStore.getState().resetForLogout();
+    localStorage.removeItem('breeze-workspace');
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    expect(signalOf(callsTo('/ai/sessions/sa/stream')[0])?.aborted).toBe(true);
+    expect(signalOf(callsTo('/ai/sessions/sb/stream')[0])?.aborted).toBe(true);
+    for (const live of [liveA, liveB]) {
+      try { live.push(frame({ type: 'message_start', messageId: 'x', seq: 1 })); } catch { /* cancelled */ }
+    }
+    await flush();
+    expect(useWorkspaceStore.getState().tabs).toEqual([]);
+    expect(setItem.mock.calls.filter(([k]) => k === 'breeze-workspace')).toEqual([]);
+  });
+
+  it('logout while the restore hydrate is in flight → the late hydrate writes nothing and attaches nothing', async () => {
+    let release!: () => void;
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'a', sessionId: 'sa' })], activeTabId: 'a' });
+    on('/ai/sessions/sa', () => new Promise<Response>((r) => { release = () => r(session('sa')); }));
+    const restored = useWorkspaceStore.getState().restoreWorkspace();
+    await vi.waitFor(() => expect(sessionGets('sa')).toHaveLength(1));
+    useWorkspaceStore.getState().resetForLogout();
+    release();
+    await restored;
+    await flush();
+    expect(useWorkspaceStore.getState().tabs).toEqual([]);
+    expect(callsTo('/ai/sessions/sa/stream')).toHaveLength(0);
+  });
+
   it('a background tab’s attach counts unread and flags a pending approval', async () => {
     const { liveB } = await twoRunningTabs();
     liveB.push(frame({ type: 'message_start', messageId: 'bm1', seq: 1 }));

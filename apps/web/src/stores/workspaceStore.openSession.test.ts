@@ -156,6 +156,16 @@ describe('openSession — short-circuits', () => {
     expect(useWorkspaceStore.getState().activeTabId).toBe('a');
   });
 
+  it('focusing an existing tab keeps a handed-over draft (empty tab draft → the draft; else appended)', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'a', sessionId: 's1' }), tab({ id: 'b', sessionId: 's2', composerDraft: 'mine' })], activeTabId: 'a' });
+    await expect(useWorkspaceStore.getState().openSession('s1', { draft: 'from panel' })).resolves.toBe('focused');
+    await expect(useWorkspaceStore.getState().openSession('s2', { draft: 'from panel' })).resolves.toBe('focused');
+    const [a, b] = useWorkspaceStore.getState().tabs;
+    expect(a!.composerDraft).toBe('from panel');
+    expect(b!.composerDraft).toBe('mine\nfrom panel');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('five tabs → tab_cap with no fetch, and no tab is closed (never eviction)', async () => {
     useWorkspaceStore.setState({ tabs: [1, 2, 3, 4, 5].map((i) => tab({ id: `t${i}` })), activeTabId: 't1' });
     await expect(useWorkspaceStore.getState().openSession('s1')).resolves.toBe('tab_cap');
@@ -191,9 +201,13 @@ describe('openSession — short-circuits', () => {
     on('/ai/sessions/s1/stream', () => live.res);
     const p = useWorkspaceStore.getState().openSession('s1', { signal: c.signal });
     await vi.waitFor(() => expect(callsTo('/ai/sessions/s1/stream')).toHaveLength(1));
+    const attachSignal = (callsTo('/ai/sessions/s1/stream')[0]?.[1] as { signal?: AbortSignal } | undefined)?.signal;
     c.abort();
-    live.push(frame(snap()));
-    await expect(p).resolves.toBe('aborted');
+    await expect(p).resolves.toBe('aborted'); // without waiting for attach_state
+    expect(useWorkspaceStore.getState().tabs).toHaveLength(0);
+    expect(attachSignal?.aborted).toBe(true);
+    try { live.push(frame(snap({ turn: 'running' }))); } catch { /* cancelled */ }
+    await flush();
     expect(useWorkspaceStore.getState().tabs).toHaveLength(0);
   });
 

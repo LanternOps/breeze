@@ -4,7 +4,7 @@
 // and their persist middleware has nothing left to write back.
 //
 // Kept out of auth.ts on purpose: the stores import this module, not ./auth,
-// to register, so auth.ts never imports a store (both stores import ./auth;
+// to register, so auth.ts never imports them (workspaceStore and aiSessionAttach import ./auth;
 // a cycle would break evictLocalAuthState's synchronous contract), and the
 // many tests that mock ./auth with only fetchWithAuth keep working. auth.ts
 // re-exports registerLogoutHook as its public name.

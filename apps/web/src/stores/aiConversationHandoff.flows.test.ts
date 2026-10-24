@@ -149,6 +149,8 @@ describe('moveToAssistant (panel → workspace)', () => {
   it('completeHandoff → the panel is released (unbound, closed, persisted null), resolves moved, and nothing was DELETEd', async () => {
     const result = moveToAssistant(S, { draft: 'half a thought' });
     await vi.waitFor(() => expect(navigateMock).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(useAiStore.getState()).toMatchObject({ sessionId: S, isOpen: true }); // not before completion
     completeHandoff(S);
     await expect(result).resolves.toBe('moved');
     const s = useAiStore.getState();
@@ -168,6 +170,24 @@ describe('moveToAssistant (panel → workspace)', () => {
     await expect(result).resolves.toBe('aborted');
     expect(useAiStore.getState()).toMatchObject({ sessionId: S, isOpen: true, composerDraft: 'half a thought' });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a second click while that move is pending is ignored (no restart, the first still completes)', async () => {
+    const first = moveToAssistant(S, { draft: 'half a thought' });
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+    await expect(moveToAssistant(S, { draft: 'half a thought' })).resolves.toBe('aborted');
+    expect(navigateMock).toHaveBeenCalledTimes(1);
+    completeHandoff(S);
+    await expect(first).resolves.toBe('moved');
+  });
+
+  it('navigation throwing → aborted, toast, no pending hand-off, panel untouched', async () => {
+    navigateMock.mockImplementationOnce(() => { throw new Error('router gone'); });
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await expect(moveToAssistant(S, { draft: 'half a thought' })).resolves.toBe('aborted');
+    expect(useHandoffStore.getState().pending).toBeNull();
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: "This conversation isn't available" }));
+    expect(useAiStore.getState()).toMatchObject({ sessionId: S, isOpen: true, composerDraft: 'half a thought' });
   });
 
   it('an aborted destination (abortHandoff) keeps the panel at once', async () => {
@@ -238,6 +258,41 @@ describe('continueInSidePanel (workspace → panel)', () => {
     expect(useWorkspaceStore.getState().tabs.map((t) => t.id)).toEqual(['ta', 'tb']);
     expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message }));
     expect(methodsCalled()).not.toContain('DELETE');
+  });
+
+  it('a tab closed while adopt is in flight → moved, and no other tab is closed', async () => {
+    let release!: () => void;
+    routes.set(`/ai/sessions/${S}`, () => new Promise<Response>((r) => { release = () => r(session(S)); }));
+    const result = continueInSidePanel('ta', { confirm: async () => true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    useWorkspaceStore.getState().closeTab('ta');
+    release();
+    await expect(result).resolves.toBe('moved');
+    expect(useWorkspaceStore.getState().tabs.map((t) => t.id)).toEqual(['tb']);
+  });
+
+  it('text typed in the tab while adopt is in flight still reaches the panel', async () => {
+    let release!: () => void;
+    routes.set(`/ai/sessions/${S}`, () => new Promise<Response>((r) => { release = () => r(session(S)); }));
+    const result = continueInSidePanel('ta', { confirm: async () => true });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    useWorkspaceStore.getState().setComposerDraft('ta', 'tab draft and more');
+    release();
+    await expect(result).resolves.toBe('moved');
+    expect(useAiStore.getState().composerDraft).toBe('tab draft and more');
+  });
+
+  it('a superseded adopt (aborted) keeps the tab without a false "not available" toast', async () => {
+    const adopt = vi.spyOn(useAiStore.getState(), 'adoptSession').mockResolvedValueOnce('aborted');
+    useAiStore.setState({ adoptSession: adopt as never });
+    await expect(continueInSidePanel('ta', { confirm: async () => true })).resolves.toBe('failed');
+    expect(toastMock).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().tabs.map((t) => t.id)).toEqual(['ta', 'tb']);
+  });
+
+  it('a tab that is gone by the time the move runs → failed with a toast', async () => {
+    await expect(continueInSidePanel('nope', { confirm: async () => true })).resolves.toBe('failed');
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ message: "This conversation isn't available" }));
   });
 
   it('a tab without a session → failed, nothing fetched', async () => {

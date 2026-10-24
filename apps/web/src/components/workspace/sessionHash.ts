@@ -30,7 +30,7 @@ export function writeSessionHash(sessionId: string | null): void {
 type ToastInput = Parameters<typeof showToast>[0];
 
 /**
- * The toast for a deep-link / picker open result (shared with W4's picker), or
+ * The toast for an open result (the deep link, and any picker that opens a session), or
  * null when the open needs none. "Not found" and a failed read read the same,
  * so a session the user cannot reach is indistinguishable from a missing one.
  */

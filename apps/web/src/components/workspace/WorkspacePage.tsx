@@ -42,7 +42,13 @@ function WorkspaceSessionLink() {
     if (!linked) return;
     const id = linked;
     const handoff = takeHandoff(id);
-    void openSession(id, { draft: handoff?.draft, signal: handoff?.signal }).then((result) => {
+    void openSession(id, { draft: handoff?.draft, signal: handoff?.signal })
+      .catch((err): 'error' => {
+        // Never leave the origin waiting out the timeout, or the link un-cleared.
+        console.error('[Workspace] Opening a linked conversation failed:', err);
+        return 'error';
+      })
+      .then((result) => {
       // Release the origin only once the tab is there; anything else keeps
       // it at once rather than after the 15 s timeout (D3).
       if (result === 'opened' || result === 'focused') completeHandoff(id);

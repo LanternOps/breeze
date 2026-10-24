@@ -59,7 +59,7 @@ export interface TabState {
   m365ConnectionId: string | null;
   /** The composer text, held here so a move carries it (not persisted). */
   composerDraft: string;
-  /** Attached to a running turn whose replay was too large; cleared by `done`. */
+  /** Attached to a running turn whose replay was too large; cleared when the turn ends or the attach stops. */
   joinedMidResponse: boolean;
   /** A refusal the workspace cannot resolve itself: the banner offers the side panel. */
   errorAction: 'continue_in_panel' | null;
@@ -301,7 +301,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
        * controller is still the tab's — closeTab, cleanupAllStreams,
        * resetForLogout and a newer attach for the tab each end it
        * synchronously. Re-attach per W1's shouldReattach/attachBackoffMs (Gate
-       * B #6); on a stop without `done`: one messages re-read if anything may
+       * B #6); on any other stop (not `done`/`idle`): one messages re-read if anything may
        * have changed, `isStreaming:false`, `joinedMidResponse:false`, no
        * banner. `not_found` unbinds the tab like restore's 404 path.
        */
@@ -476,6 +476,12 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             const existing = get().tabs.find((t) => t.sessionId === sessionId);
             if (!existing) return false;
             get().switchTab(existing.id);
+            // A handed-over draft is not dropped because the tab was already open.
+            if (draft) {
+              updateTab(existing.id, {
+                composerDraft: existing.composerDraft ? `${existing.composerDraft}\n${draft}` : draft,
+              });
+            }
             return true;
           };
           if (focusExisting()) return 'focused';

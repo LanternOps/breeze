@@ -1,8 +1,10 @@
-// Panel <-> workspace hand-off coordinator (#9427). Coordination only: the
-// destination prepares first, and the origin is released (onRelease) only once
+// Panel <-> workspace hand-off coordinator (#9427). The coordinator half
+// (begin/complete/abort/takeHandoff) only sequences release: the destination
+// prepares first, and the origin is released (onRelease) only once
 // the destination reports success, so a failed or late hand-off leaves the
 // origin untouched. Not persisted; a reload drops any pending hand-off.
-// moveToAssistant / continueInSidePanel (bottom) are the two UI-level moves.
+// moveToAssistant and continueInSidePanel are the UI-level moves built on it
+// (they navigate, toast and lazily load workspaceStore).
 import { create } from 'zustand';
 import { navigate } from 'astro:transitions/client';
 import { i18n } from '@/lib/i18n';
@@ -106,26 +108,38 @@ export async function moveToAssistant(
   sessionId: string,
   opts: { draft?: string } = {},
 ): Promise<'moved' | 'tab_cap' | 'aborted'> {
-  // Lazy: keeps workspaceStore out of the side panel's bundle.
-  const { useWorkspaceStore, MAX_TABS } = await import('./workspaceStore');
-  const { tabs } = useWorkspaceStore.getState();
-  if (!tabs.some((t) => t.sessionId === sessionId) && tabs.length >= MAX_TABS) {
-    showToast({ type: 'warning', message: i18n.t('ai:aiConversationMove.closeTabInAssistant') });
-    return 'tab_cap';
-  }
+  // A repeat click while this move is pending must not restart it: a new
+  // hand-off would abort the one the workspace is already opening.
+  if (useHandoffStore.getState().pending?.sessionId === sessionId) return 'aborted';
+  let result: Promise<'completed' | 'aborted'> | null = null;
+  try {
+    // Lazy: keeps workspaceStore out of the side panel's bundle.
+    const { useWorkspaceStore, MAX_TABS } = await import('./workspaceStore');
+    const { tabs } = useWorkspaceStore.getState();
+    if (!tabs.some((t) => t.sessionId === sessionId) && tabs.length >= MAX_TABS) {
+      showToast({ type: 'warning', message: i18n.t('ai:aiConversationMove.closeTabInAssistant') });
+      return 'tab_cap';
+    }
 
-  const result = beginHandoff(
-    { sessionId, origin: 'panel', draft: opts.draft },
-    () => useAiStore.getState().releaseSession(sessionId),
-  );
-  const target = `session=${sessionId}`;
-  if (onWorkspacePage()) {
-    // The workspace listens for a real hashchange; assigning the hash it
-    // already has fires none, so announce that case explicitly.
-    if (window.location.hash === `#${target}`) window.dispatchEvent(new HashChangeEvent('hashchange'));
-    else window.location.hash = target;
-  } else {
-    navigate(`/workspace#${target}`);
+    result = beginHandoff(
+      { sessionId, origin: 'panel', draft: opts.draft },
+      () => useAiStore.getState().releaseSession(sessionId),
+    );
+    const target = `session=${sessionId}`;
+    if (onWorkspacePage()) {
+      // The workspace listens for a real hashchange; assigning the hash it
+      // already has fires none, so announce that case explicitly.
+      if (window.location.hash === `#${target}`) window.dispatchEvent(new HashChangeEvent('hashchange'));
+      else window.location.hash = target;
+    } else {
+      navigate(`/workspace#${target}`);
+    }
+  } catch (err) {
+    // A failed chunk load or navigation: keep the panel as it is, now.
+    console.error('[AI] Open in AI Assistant failed:', err);
+    abortHandoff(sessionId);
+    showToast({ type: 'error', message: i18n.t('ai:aiConversationMove.notAvailable') });
+    return 'aborted';
   }
   return (await result) === 'completed' ? 'moved' : 'aborted';
 }
@@ -144,7 +158,11 @@ export async function continueInSidePanel(
   const { useWorkspaceStore } = await import('./workspaceStore');
   const tab = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
   const sessionId = tab?.sessionId;
-  if (!tab || !sessionId) return 'failed';
+  if (!tab || !sessionId) {
+    // Closed or unbound between the click and now.
+    showToast({ type: 'error', message: i18n.t('ai:aiConversationMove.notAvailable') });
+    return 'failed';
+  }
 
   const panel = useAiStore.getState();
   const panelBusy = panel.sessionId !== null && panel.sessionId !== sessionId
@@ -154,9 +172,16 @@ export async function continueInSidePanel(
   const adopted = await useAiStore.getState().adoptSession(sessionId, { draft: tab.composerDraft });
   if (adopted === 'ok') {
     const still = useWorkspaceStore.getState().tabs.find((t) => t.id === tabId);
-    if (still?.sessionId === sessionId) useWorkspaceStore.getState().closeTab(tabId);
+    if (still?.sessionId === sessionId) {
+      // Text typed in the tab while the adopt was in flight goes along too.
+      if (still.composerDraft !== tab.composerDraft) useAiStore.getState().setComposerDraft(still.composerDraft);
+      useWorkspaceStore.getState().closeTab(tabId);
+    }
     return 'moved';
   }
+  // Superseded by another side-panel action: nothing failed, nothing to say.
+  if (adopted === 'aborted') return 'failed';
+  console.warn('[AI] Continue in side panel: adopt returned', adopted);
   showToast({
     type: 'error',
     message: adopted === 'closed'

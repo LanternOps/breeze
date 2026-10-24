@@ -224,6 +224,23 @@ describe('result → toast, hash, hand-off', () => {
     expect(onRelease).not.toHaveBeenCalled();
   });
 
+  it('openSession throwing → the hand-off is aborted at once, a toast, and the link can re-arm', async () => {
+    const original = state().openSession;
+    const boom = vi.fn(async () => { throw new Error('unexpected'); });
+    useWorkspaceStore.setState({ openSession: boom as never });
+    const onRelease = vi.fn();
+    const handoff = beginHandoff({ sessionId: A, origin: 'panel' }, onRelease);
+    setUrl(`#session=${A}`);
+    render(<WorkspacePage />);
+    await expect(handoff).resolves.toBe('aborted');
+    expect(onRelease).not.toHaveBeenCalled();
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ message: "This conversation isn't available" })));
+    useWorkspaceStore.setState({ openSession: original });
+    await fireHash(`session=${B}`);
+    await fireHash(`session=${A}`);
+    await waitFor(() => expect(activeSession()).toBe(A));
+  });
+
   it('a closed session → "This conversation was closed"', async () => {
     routes.set(`/ai/sessions/${A}`, () => session(A, { status: 'closed' }));
     setUrl(`#session=${A}`);
