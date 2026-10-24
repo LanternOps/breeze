@@ -973,6 +973,7 @@ These enable partners to connect a Microsoft 365 shared support mailbox so custo
 | `MIGRATION_WINDOW_MAX_DAYS` | `14` | Longest window an admin can open. A longer migration opens a new window. |
 | `MIGRATION_WINDOW_DEFAULT_WRITES_PER_HOUR` | `6000` | Import writes per hour a new window gets when the admin sets none. Kept between 600 and the maximum below. |
 | `MIGRATION_WINDOW_MAX_WRITES_PER_HOUR` | `20000` | Most import writes per hour an admin can set. Kept between 600 and 100000. |
+| `TICKET_IMPORT_MAX_BYTES_PER_HOUR` | `2147483648` | Attachment bytes one window may download and store per hour (2 GiB). Never below 10 MiB, the size of one file. |
 
 ## Customer Microsoft 365 Graph-read consent (optional)
 

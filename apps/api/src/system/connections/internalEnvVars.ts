@@ -553,6 +553,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   TERMINAL_INPUT_MAX_BYTES_PER_MIN: 'rate limit knob',
   TERMINAL_INPUT_MAX_MESSAGES_PER_MIN: 'rate limit knob',
   // TICKET_*
+  TICKET_IMPORT_MAX_BYTES_PER_HOUR: 'rate limit knob',
   TICKET_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   TICKET_OUTBOX_RETENTION_DAYS: 'data retention window',
   TICKET_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',

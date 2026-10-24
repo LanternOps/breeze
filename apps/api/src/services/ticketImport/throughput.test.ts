@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ rateLimiter: vi.fn(), getRedis: vi.fn(() => ({}) as unknown) }));
-vi.mock('../rate-limit', () => ({ rateLimiter: mocks.rateLimiter }));
+const mocks = vi.hoisted(() => ({ rateLimiter: vi.fn(), getRedis: vi.fn(() => ({}) as unknown), assertOutside: vi.fn() }));
+vi.mock('../rate-limit', () => ({ rateLimiter: mocks.rateLimiter, assertOutsideHeldDbContextSafe: mocks.assertOutside }));
 vi.mock('../redis', () => ({ getRedis: mocks.getRedis }));
 vi.mock('../migrationWindows', () => ({
   MigrationWindowError: class MigrationWindowError extends Error {
@@ -11,7 +11,7 @@ vi.mock('../migrationWindows', () => ({
   },
 }));
 
-import { chargeWindowThroughput, migrationWindowRateKey } from './throughput';
+import { BYTE_BUCKET_LUA, chargeWindowBytes, chargeWindowThroughput, migrationWindowBytesKey, migrationWindowRateKey } from './throughput';
 
 const WINDOW = { id: '55555555-5555-4555-8555-555555555555', writesPerHour: 6000 };
 
@@ -32,7 +32,7 @@ describe('the import throughput bucket (spec §4.7)', () => {
     await expect(chargeWindowThroughput(WINDOW, 3)).rejects.toMatchObject({
       code: 'MIGRATION_WINDOW_RATE_LIMITED',
       status: 429,
-      details: { writesPerHour: 6000, retryAfterSeconds: expect.any(Number) },
+      details: { kind: 'writes', writesPerHour: 6000, retryAfterSeconds: expect.any(Number) },
     });
   });
 
@@ -44,5 +44,64 @@ describe('the import throughput bucket (spec §4.7)', () => {
     mocks.rateLimiter.mockClear();
     await chargeWindowThroughput(WINDOW, 0);
     expect(mocks.rateLimiter).not.toHaveBeenCalled();
+  });
+});
+
+describe('the import byte bucket (spec 2026-10-19 §4.5)', () => {
+  const GIB = 1024 * 1024 * 1024;
+  const MIB = 1024 * 1024;
+  let evalMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    delete process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR;
+    evalMock = vi.fn();
+    mocks.getRedis.mockReturnValue({ eval: evalMock });
+    mocks.assertOutside.mockClear();
+  });
+
+  it("charges the window's own byte bucket, migration_window_bytes:{windowId}, against 2 GiB an hour by default", async () => {
+    evalMock.mockResolvedValueOnce([1, 0]);
+    await chargeWindowBytes(WINDOW, 4 * MIB);
+    expect(evalMock).toHaveBeenCalledWith(BYTE_BUCKET_LUA, 1, `migration_window_bytes:${WINDOW.id}`, String(2 * GIB), String(4 * MIB), String(7_200_000));
+    expect(migrationWindowBytesKey(WINDOW.id)).toBe(`migration_window_bytes:${WINDOW.id}`);
+    // A Redis round trip: never inside a held DB context (#1105).
+    expect(mocks.assertOutside).toHaveBeenCalledWith('chargeWindowBytes');
+  });
+
+  it('refuses with 429 MIGRATION_WINDOW_RATE_LIMITED, kind bytes, and when the charge will fit', async () => {
+    evalMock.mockResolvedValueOnce([0, 90_500]);
+    await expect(chargeWindowBytes(WINDOW, 10 * MIB)).rejects.toMatchObject({
+      code: 'MIGRATION_WINDOW_RATE_LIMITED',
+      status: 429,
+      details: { kind: 'bytes', bytesPerHour: 2 * GIB, retryAfterSeconds: 91 },
+    });
+  });
+
+  it('takes TICKET_IMPORT_MAX_BYTES_PER_HOUR, never below one 10 MiB file, and clamps a charge to it', async () => {
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = String(500 * MIB);
+    evalMock.mockResolvedValue([1, 0]);
+    await chargeWindowBytes(WINDOW, MIB);
+    expect(evalMock).toHaveBeenLastCalledWith(BYTE_BUCKET_LUA, 1, expect.any(String), String(500 * MIB), String(MIB), expect.any(String));
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = '1024';
+    await chargeWindowBytes(WINDOW, 10 * MIB);
+    expect(evalMock).toHaveBeenLastCalledWith(BYTE_BUCKET_LUA, 1, expect.any(String), String(10 * MIB), String(10 * MIB), expect.any(String));
+  });
+
+  it('fails closed with no Redis, and on a Redis error', async () => {
+    mocks.getRedis.mockReturnValueOnce(null);
+    await expect(chargeWindowBytes(WINDOW, MIB)).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', details: { kind: 'bytes', retryAfterSeconds: 60 } });
+    evalMock.mockRejectedValueOnce(new Error('READONLY'));
+    await expect(chargeWindowBytes(WINDOW, MIB)).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', details: { kind: 'bytes', retryAfterSeconds: 60 } });
+  });
+
+  it('charges nothing for nothing', async () => {
+    await chargeWindowBytes(WINDOW, 0);
+    expect(evalMock).not.toHaveBeenCalled();
+  });
+
+  it('the script refills at the hourly rate from the Redis clock and takes nothing on refusal', () => {
+    expect(BYTE_BUCKET_LUA).toContain("redis.call('TIME')");
+    expect(BYTE_BUCKET_LUA).toContain('local rate = capacity / 3600000');
+    expect(BYTE_BUCKET_LUA).toMatch(/if tokens >= cost then\s+tokens = tokens - cost/);
   });
 });
