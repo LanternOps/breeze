@@ -333,3 +333,69 @@ describe('AI Operator task read routes (W07, #5205/#5212) — real Postgres', ()
     });
   });
 });
+
+/**
+ * W06 R1b (#6171, G2): `GET /tasks/:id` now carries the task's plan revisions.
+ * The read runs on the request's RLS-scoped connection with explicit task + org
+ * predicates; these prove the owner sees the rows and another org sees none.
+ */
+describe('AI Operator task read — plan (W06 R1b) — real Postgres', () => {
+  const DIGEST = 'a'.repeat(64);
+
+  async function seedPlan(orgId: string, taskId: string) {
+    const { aiOperatorPlanApprovals, aiOperatorPlanApprovalEffects } = await import('../../db/schema');
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [approval] = await db.insert(aiOperatorPlanApprovals).values({
+        orgId, taskId, stepKey: 'effects', planRevision: 1, effectSetDigest: DIGEST, effectCount: 1, state: 'pending',
+      }).returning({ id: aiOperatorPlanApprovals.id });
+      await db.insert(aiOperatorPlanApprovalEffects).values({
+        orgId, approvalId: approval!.id, taskId, planRevision: 1, ordinal: 0, toolName: 'google_suspend_user',
+        provider: 'google', targetId: null, accountExternalId: '101', argumentDigest: DIGEST,
+        targetLabel: 'Dana Example', principalLabel: 'dana@example.com', rendering: 'Suspend dana@example.com',
+        idempotencyClass: 'idempotent',
+      });
+    });
+  }
+
+  runDb('the owning org reads its plan, frozen labels as stored and no operation yet', async () => {
+    const env = await setupTestEnvironment({ scope: 'organization' });
+    const agentId = await insertAgent(env.organization.id, env.user.id);
+    const taskId = await insertTask(env.organization.id, agentId, env.user.id);
+    await seedPlan(env.organization.id, taskId);
+
+    const res = await get(env, `/tasks/${taskId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.plan).toHaveLength(1);
+    expect(res.body.data.plan[0]).toMatchObject({ planRevision: 1, state: 'pending', intentId: null, effectCount: 1 });
+    expect(res.body.data.plan[0].effects).toEqual([{
+      ordinal: 0, toolName: 'google_suspend_user', provider: 'google', targetLabel: 'Dana Example',
+      principalLabel: 'dana@example.com', rendering: 'Suspend dana@example.com', idempotencyClass: 'idempotent',
+      operationState: null, noop: false,
+    }]);
+  });
+
+  runDb('another org\'s caller gets no plan row: the task 404s and nothing of the plan is disclosed', async () => {
+    const envA = await setupTestEnvironment({ scope: 'organization' });
+    const envB = await setupTestEnvironment({ scope: 'organization' });
+    const agentB = await insertAgent(envB.organization.id, envB.user.id);
+    const taskB = await insertTask(envB.organization.id, agentB, envB.user.id);
+    await seedPlan(envB.organization.id, taskB);
+
+    const res = await get(envA, `/tasks/${taskB}`);
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(res.body)).not.toContain('google_suspend_user');
+    expect(JSON.stringify(res.body)).not.toContain('Dana Example');
+
+    // And B's plan rows are invisible to A's request context at the table level too.
+    const { aiOperatorPlanApprovals, aiOperatorPlanApprovalEffects } = await import('../../db/schema');
+    const ctxA: DbAccessContext = {
+      scope: 'organization', orgId: envA.organization.id, accessibleOrgIds: [envA.organization.id], accessiblePartnerIds: null,
+    };
+    const [approvals, effects] = await withDbAccessContext(ctxA, () => Promise.all([
+      db.select({ id: aiOperatorPlanApprovals.id }).from(aiOperatorPlanApprovals).where(eq(aiOperatorPlanApprovals.taskId, taskB)),
+      db.select({ ordinal: aiOperatorPlanApprovalEffects.ordinal }).from(aiOperatorPlanApprovalEffects).where(eq(aiOperatorPlanApprovalEffects.taskId, taskB)),
+    ]));
+    expect(approvals).toEqual([]);
+    expect(effects).toEqual([]);
+  });
+});

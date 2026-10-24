@@ -770,3 +770,158 @@ describe('POST /ai/operator/tasks (W08 admission)', () => {
     }));
   });
 });
+
+/**
+ * W06 R1b (#6171, G2) — the read-only `plan` on `GET /tasks/:id`: every plan
+ * revision (superseded included) with its frozen effect rows, and each
+ * effect's operation state derived ONLY from the operation row the walk keys
+ * to it (same step, revision, tool, target and ordinal). Anything looser is
+ * `null`, never a guess.
+ */
+describe('GET /ai/operator/tasks/:id — plan (W06 R1b, G2)', () => {
+  const TARGET = '77777777-7777-4777-8777-777777777777';
+  const APPROVAL_R1 = '88888888-8888-4888-8888-888888888881';
+  const APPROVAL_R2 = '88888888-8888-4888-8888-888888888882';
+  // The walk's own key builder, so the test cannot drift from what it writes.
+  let planEffectOperationKey!: typeof import('../services/aiOperator/planApproval')['planEffectOperationKey'];
+  beforeEach(async () => {
+    ({ planEffectOperationKey } = await import('../services/aiOperator/planApproval'));
+  });
+  const keyFor = (planRevision: number, toolName: string, ordinal: number) =>
+    planEffectOperationKey({ stepKey: 'effects', planRevision, toolName, targetId: TARGET, ordinal });
+
+  const approvalRow = (id: string, planRevision: number, overrides: Record<string, unknown> = {}) => ({
+    id, taskId: TASK_ID, stepKey: 'effects', planRevision, effectSetDigest: 'd'.repeat(64), effectCount: 2,
+    intentId: `intent-r${planRevision}`, state: 'approved', approvedByUserId: USER_ID,
+    approvedAt: new Date('2026-09-01T00:03:00.000Z'), supersededByRevision: null,
+    createdAt: new Date('2026-09-01T00:02:00.000Z'), ...overrides,
+  });
+  const effectRow = (approvalId: string, planRevision: number, ordinal: number, toolName: string, overrides: Record<string, unknown> = {}) => ({
+    approvalId, planRevision, ordinal, toolName, provider: toolName.startsWith('google_') ? 'google' : 'm365',
+    targetId: TARGET, targetLabel: 'Dana Smith', principalLabel: 'dana@acme.example',
+    rendering: `${toolName} for dana@acme.example`, idempotencyClass: 'idempotent', ...overrides,
+  });
+
+  afterEach(() => selectMock.mockReset());
+
+  function script(opts: { approvals: unknown[]; effects: unknown[]; ops?: unknown[]; capture?: (p: unknown) => void }) {
+    // Drop any queued-but-unread rows from an earlier script in the same test.
+    selectMock.mockReset();
+    selectMock.mockImplementation(() => selectChain([]));
+    selectMock
+      .mockReturnValueOnce(selectChain([taskRow({ deviceId: null, workflowKey: 'identity_offboarding', revision: 2 })]))
+      .mockReturnValueOnce(selectChain([])) // operations
+      .mockReturnValueOnce(selectChain([])) // runs
+      .mockReturnValueOnce(selectChain([])) // targets
+      .mockReturnValueOnce(selectChain([])) // accounts
+      .mockReturnValueOnce(selectChain([])) // steps
+      .mockReturnValueOnce(selectChain([])) // events
+      .mockReturnValueOnce(selectChain(opts.approvals, opts.capture))
+      .mockReturnValueOnce(selectChain(opts.effects, opts.capture))
+      .mockReturnValueOnce(selectChain(opts.ops ?? [], opts.capture));
+  }
+
+  it('returns every revision — superseded included — in revision order, effects in ordinal order, frozen labels as stored', async () => {
+    script({
+      approvals: [
+        approvalRow(APPROVAL_R1, 1, { state: 'superseded', supersededByRevision: 2, approvedByUserId: null, approvedAt: null }),
+        approvalRow(APPROVAL_R2, 2),
+      ],
+      effects: [
+        effectRow(APPROVAL_R1, 1, 0, 'm365_set_auto_reply'),
+        effectRow(APPROVAL_R2, 2, 0, 'm365_set_auto_reply', { idempotencyClass: 'idempotent_by_probe' }),
+        effectRow(APPROVAL_R2, 2, 1, 'm365_disable_user', { principalLabel: null }),
+      ],
+    });
+    const res = await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const { data } = await res.json();
+    expect(data.plan.map((p: { planRevision: number; state: string }) => [p.planRevision, p.state])).toEqual([[1, 'superseded'], [2, 'approved']]);
+    expect(data.plan[0]).toMatchObject({ id: APPROVAL_R1, supersededByRevision: 2, approvedByUserId: null, approvedAt: null });
+    expect(data.plan[1]).toMatchObject({ id: APPROVAL_R2, taskId: TASK_ID, intentId: 'intent-r2', approvedAt: '2026-09-01T00:03:00.000Z' });
+    expect(data.plan[1].effects.map((e: { ordinal: number }) => e.ordinal)).toEqual([0, 1]);
+    expect(data.plan[1].effects[0]).toEqual({
+      ordinal: 0, toolName: 'm365_set_auto_reply', provider: 'm365', targetLabel: 'Dana Smith',
+      principalLabel: 'dana@acme.example', rendering: 'm365_set_auto_reply for dana@acme.example',
+      idempotencyClass: 'idempotent_by_probe', operationState: null, noop: false,
+    });
+    expect(data.plan[1].effects[1].principalLabel).toBeNull();
+  });
+
+  it('derives operationState and noop only from the operation the walk keyed to the effect', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 0, 'm365_set_auto_reply'),
+        effectRow(APPROVAL_R2, 2, 1, 'm365_revoke_sessions'),
+        effectRow(APPROVAL_R2, 2, 2, 'm365_disable_user'),
+      ],
+      ops: [
+        { operationKey: keyFor(2, 'm365_set_auto_reply', 0), taskStepKey: 'effects', planRevision: 2, resultState: 'succeeded', noop: true },
+        { operationKey: keyFor(2, 'm365_revoke_sessions', 1), taskStepKey: 'effects', planRevision: 2, resultState: 'pending', noop: false },
+        // Key matches but the row says another revision: ambiguous → null, never trusted.
+        { operationKey: keyFor(2, 'm365_disable_user', 2), taskStepKey: 'effects', planRevision: 3, resultState: 'succeeded', noop: false },
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    const states = data.plan[0].effects.map((e: { operationState: string | null; noop: boolean }) => [e.operationState, e.noop]);
+    expect(states).toEqual([['succeeded', true], ['pending', false], [null, false]]);
+  });
+
+  it('puts explicit task_id AND org_id predicates on both plan tables and on the operation link read', async () => {
+    const predicates: unknown[] = [];
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user')],
+      ops: [],
+      capture: (p) => predicates.push(p),
+    });
+    await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(predicates).toHaveLength(3);
+    for (const p of predicates) {
+      const q = dialect.sqlToQuery(p as SQL);
+      expect(q.sql).toContain('"task_id"');
+      expect(q.sql).toContain('"org_id"');
+      expect(q.params).toContain(TASK_ID);
+      expect(q.params).toContain(ORG_ID);
+    }
+  });
+
+  it('returns plan: [] when nothing was proposed, appends plan after every existing field, and leaks no tripwire key', async () => {
+    script({ approvals: [], effects: [] });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan).toEqual([]);
+    const keys = Object.keys(data);
+    expect(keys[keys.length - 1]).toBe('plan');
+    expect(keys.slice(-6)).toEqual(['operations', 'runs', 'targets', 'steps', 'events', 'plan']);
+    // No approval, so neither the effects read nor the operation link read runs.
+    expect(selectMock).toHaveBeenCalledTimes(8);
+
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user')],
+      ops: [{ operationKey: keyFor(2, 'm365_disable_user', 0), taskStepKey: 'effects', planRevision: 2, resultState: 'succeeded', noop: false }],
+    });
+    const res = await buildApp().request(`/ai/operator/tasks/${TASK_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data.plan[0].effects[0].operationState).toBe('succeeded');
+    const json = JSON.stringify(body);
+    for (const forbidden of AI_OPERATOR_TASK_LEAK_TRIPWIRE_KEYS) {
+      expect(json).not.toContain(`"${forbidden}":`);
+    }
+  });
+
+  it('drops an effect row whose approval is not in this task\'s read rather than inventing one', async () => {
+    script({
+      approvals: [approvalRow(APPROVAL_R2, 2)],
+      effects: [
+        effectRow(APPROVAL_R2, 2, 0, 'm365_disable_user'),
+        effectRow('99999999-9999-4999-8999-999999999999', 2, 1, 'google_suspend_user'),
+      ],
+    });
+    const { data } = await (await buildApp().request(`/ai/operator/tasks/${TASK_ID}`)).json();
+    expect(data.plan).toHaveLength(1);
+    expect(data.plan[0].effects.map((e: { toolName: string }) => e.toolName)).toEqual(['m365_disable_user']);
+  });
+});
