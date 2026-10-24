@@ -4,6 +4,7 @@
  * i.e. /api/v1/wisp/thread.
  *
  *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | 404 no_active_grant
+ *                                    (grant carries the W05 spend meter: spentTodayCents, budgetResetsAt — w00 A32)
  *   GET   /:id/sessions?limit=&cursor= → { data: [{ sessionId, orgId, attachedAt, title, status }], nextCursor }
  *   PATCH /:id/focus              { orgId: uuid | null } → { data: { focusOrgId, focusOrgName } }
  *   GET   /:id/attachments        → { data: ThreadAttachmentDto[] }   (live only, newest first)
@@ -52,6 +53,7 @@ import { bodyLimitOnError } from '../middleware/bodyLimitGate';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
+import { spendSummary } from '../services/wisp/budget';
 import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
 import {
@@ -267,9 +269,10 @@ wispThreadRoutes.get('/', zValidator('query', threadQuery), async (c) => {
   if (!grant) return fail(c, 404, 'no_active_grant', 'No active Wisp delegation for this scope');
 
   const thread = await getOrCreateThread(grant.id);
-  const [focusOrgName, widening] = await Promise.all([
+  const [focusOrgName, widening, spend] = await Promise.all([
     focusOrgNameOf(partnerId, thread.focusOrgId),
     wideningAvailable(grant.id),
+    spendSummary(grant.id),
   ]);
   return c.json({
     data: {
@@ -283,6 +286,9 @@ wispThreadRoutes.get('/', zValidator('query', threadQuery), async (c) => {
         currentRevisionId: grant.currentRevisionId,
         budgetCentsPerDay: grant.budgetCentsPerDay,
         floorTickMinutes: grant.floorTickMinutes,
+        // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
+        spentTodayCents: spend.spentTodayCents,
+        budgetResetsAt: spend.budgetResetsAt.toISOString(),
       },
       wideningAvailable: widening,
     },

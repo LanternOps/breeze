@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     hasEntitlement: vi.fn(async () => true),
     getActiveGrantForUser: vi.fn(),
     wideningAvailable: vi.fn(async () => false),
+    spendSummary: vi.fn(),
     getOrCreateThread: vi.fn(),
     setThreadFocus: vi.fn(),
     resolveGrantCeiling: vi.fn(),
@@ -84,6 +85,10 @@ vi.mock('../services/wisp/grants', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../services/wisp/grants')>()),
   getActiveGrantForUser: h.getActiveGrantForUser,
   wideningAvailable: h.wideningAvailable,
+}));
+vi.mock('../services/wisp/budget', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/budget')>()),
+  spendSummary: h.spendSummary,
 }));
 vi.mock('../services/wisp/threads', () => ({
   getOrCreateThread: h.getOrCreateThread,
@@ -192,6 +197,7 @@ beforeEach(() => {
   h.hasEntitlement.mockResolvedValue(true);
   h.wideningAvailable.mockResolvedValue(false);
   h.resolveGrantCeiling.mockResolvedValue(ceiling);
+  h.spendSummary.mockResolvedValue({ spentTodayCents: 42, budgetCentsPerDay: 200, budgetResetsAt: new Date('2026-10-25T00:00:00Z') });
 });
 
 describe('GET /wisp/thread', () => {
@@ -237,6 +243,7 @@ describe('GET /wisp/thread', () => {
     expect(h.getActiveGrantForUser).toHaveBeenCalledWith(USER, { partnerId: PARTNER, orgId: null });
     expect(h.getOrCreateThread).toHaveBeenCalledWith(GRANT_ID);
     expect(h.wideningAvailable).toHaveBeenCalledWith(GRANT_ID);
+    expect(h.spendSummary).toHaveBeenCalledWith(GRANT_ID);
     const body = await res.json() as { data: Record<string, unknown> };
     expect(body.data).toEqual({
       thread: {
@@ -247,6 +254,8 @@ describe('GET /wisp/thread', () => {
       grant: {
         id: GRANT_ID, status: 'active', orgId: null, expiresAt: '2027-04-01T00:00:00.000Z',
         currentRevisionId: REV, budgetCentsPerDay: 200, floorTickMinutes: 30,
+        // w00 A32 spend meter — field names are the cross-wave contract.
+        spentTodayCents: 42, budgetResetsAt: '2026-10-25T00:00:00.000Z',
       },
       wideningAvailable: widening,
     });

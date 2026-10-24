@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   mfaOk: vi.fn(() => true),
   publishEvent: vi.fn(async () => 'evt-1'),
   hasEntitlement: vi.fn(async () => true),
+  grantSettingsBounds: vi.fn(async () => ({ budgetCentsPerDayMax: 1000, minFloorTickMinutes: 15 })),
   svc: {
     createGrant: vi.fn(),
     refreshGrant: vi.fn(),
@@ -50,6 +51,10 @@ vi.mock('../services/eventBus', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   publishEvent: h.publishEvent,
 }));
+vi.mock('../services/wisp/budget', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wisp/budget')>()),
+  grantSettingsBounds: h.grantSettingsBounds,
+}));
 vi.mock('../services/wisp/grants', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/wisp/grants')>();
   return { ...actual, ...h.svc };
@@ -57,6 +62,7 @@ vi.mock('../services/wisp/grants', async (importOriginal) => {
 
 import { wispRoutes } from './wisp';
 import { GrantLimitReachedError, WispGrantError } from '../services/wisp/grants';
+import { EntitlementResolutionError } from '../services/entitlements';
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -105,6 +111,7 @@ beforeEach(() => {
   h.hasPerm.mockReturnValue(true);
   h.mfaOk.mockReturnValue(true);
   h.hasEntitlement.mockResolvedValue(true);
+  h.grantSettingsBounds.mockResolvedValue({ budgetCentsPerDayMax: 1000, minFloorTickMinutes: 15 });
 });
 
 describe('wisp routes — flag gate', () => {
@@ -351,6 +358,28 @@ describe('PATCH /wisp/grants/:id/settings', () => {
     expect((await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { floorTickMinutes: 60, extra: 1 })).status).toBe(400);
     h.svc.updateGrantSettings.mockRejectedValueOnce(new WispGrantError('forbidden', 'no'));
     expect((await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { floorTickMinutes: 60 })).status).toBe(403);
+  });
+
+  it('passes the partner\'s plan bounds (W05 grantSettingsBounds) to updateGrantSettings', async () => {
+    h.grantSettingsBounds.mockResolvedValueOnce({ budgetCentsPerDayMax: 2500, minFloorTickMinutes: 30 });
+    h.svc.updateGrantSettings.mockResolvedValueOnce(grant({ budgetCentsPerDay: 2000 }));
+    const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { budgetCentsPerDay: 2000 });
+    expect(res.status).toBe(200);
+    expect(h.grantSettingsBounds).toHaveBeenCalledWith(PARTNER);
+    expect(h.svc.updateGrantSettings).toHaveBeenCalledWith(expect.objectContaining({
+      grantId: GRANT_ID,
+      patch: { budgetCentsPerDay: 2000 },
+      bounds: { budgetCentsPerDayMax: 2500, minFloorTickMinutes: 30 },
+    }));
+  });
+
+  it('an unresolvable entitlement read for the bounds → 503 entitlement_check_failed, nothing updated', async () => {
+    h.grantSettingsBounds.mockRejectedValueOnce(new EntitlementResolutionError(PARTNER, new Error('db down')));
+    const res = await patch(buildApp(), `/wisp/grants/${GRANT_ID}/settings`, { budgetCentsPerDay: 300 });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect(await res.json()).toMatchObject({ code: 'entitlement_check_failed', featureKey: 'wisp' });
+    expect(h.svc.updateGrantSettings).not.toHaveBeenCalled();
   });
 
   it('settings_out_of_bounds → 400 SETTINGS_OUT_OF_BOUNDS', async () => {
