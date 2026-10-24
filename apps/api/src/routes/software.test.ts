@@ -151,7 +151,9 @@ const authDbContexts = vi.hoisted(() => ({
 }));
 
 const { permissionGate, mfaGate, siteAccessGate, authState } = vi.hoisted(() => ({
-  permissionGate: { deny: false },
+  // `denied` withholds single grants (e.g. 'devices:execute', #6958) while the
+  // others pass; `deny` denies every permission gate.
+  permissionGate: { deny: false, denied: new Set<string>() },
   mfaGate: { deny: false },
   siteAccessGate: { deny: false },
   authState: {
@@ -178,8 +180,10 @@ vi.mock('../middleware/auth', () => ({
     return next();
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (c: any, next: any) => {
-    if (permissionGate.deny) return c.json({ error: 'Permission denied' }, 403);
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    if (permissionGate.deny || permissionGate.denied.has(`${resource}:${action}`)) {
+      return c.json({ error: 'Permission denied' }, 403);
+    }
     return next();
   }),
   requireMfa: vi.fn(() => async (c: any, next: any) => {
@@ -288,6 +292,7 @@ describe('software routes', () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     permissionGate.deny = false;
+    permissionGate.denied.clear();
     mfaGate.deny = false;
     siteAccessGate.deny = false;
     authState.scope = 'organization';
@@ -1591,8 +1596,9 @@ describe('software routes', () => {
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
         body: JSON.stringify({
           version: '1.0.0',
-          downloadUrl: 'https://cdn.example.com/acme.zip',
-          fileType: 'zip',
+          // zip became a supported type in #6958; rar never was.
+          downloadUrl: 'https://cdn.example.com/acme.rar',
+          fileType: 'rar',
         }),
       });
       expect(res.status).toBe(400);
@@ -3597,5 +3603,345 @@ describe('computeSoftwareDeploymentAggregateStatus', () => {
       { status: 'pending', count: 1 },
       { status: 'completed', count: 1 },
     ])).toBe('in_progress');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #6958 PR C — install-spec validation, devices.execute for scripts, built-in
+// immutability, zip, supportedOs de-duplication.
+// ---------------------------------------------------------------------------
+describe('software version install spec (#6958)', () => {
+  let app: Hono;
+  const CAT_ID = '77777777-7777-4777-8777-777777777777';
+  const VER_ID = '88888888-8888-4888-8888-888888888888';
+  const orgRow = { id: CAT_ID, orgId: 'org-123', partnerId: null, integrationProvider: null, builtinPackageKey: null, name: 'Tool' };
+  const builtinRow = {
+    id: CAT_ID, orgId: null, partnerId: 'partner-123', integrationProvider: null, builtinPackageKey: 'controld_windows', name: 'Control D',
+  };
+  const s1Row = { ...builtinRow, integrationProvider: 'sentinelone', builtinPackageKey: null, name: 'SentinelOne' };
+
+  const thenable = (rows: any): any => {
+    const p: any = new Proxy(() => p, {
+      get: (_t, prop) => (prop === 'then' ? (resolve: any) => resolve(rows) : () => p),
+    });
+    return p;
+  };
+  const selectOnce = (rows: unknown[]) => vi.mocked(db.select).mockReturnValueOnce(thenable(rows));
+  const setPartnerAdmin = (overrides: Record<string, unknown> = {}) => {
+    vi.mocked(authMiddleware).mockImplementationOnce((c: any, next: any) => {
+      c.set('auth', {
+        user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+        userId: 'user-123',
+        scope: 'partner',
+        orgId: null,
+        partnerId: 'partner-123',
+        partnerOrgAccess: 'all',
+        accessibleOrgIds: ['org-a'],
+        canAccessOrg: () => true,
+        ...overrides,
+      });
+      return next();
+    });
+  };
+  /** Captures the values insertLatestSoftwareVersion writes. */
+  const captureInsert = () => {
+    const captured: { values?: Record<string, any> } = {};
+    vi.mocked(db.transaction).mockImplementationOnce(async (fn: any) =>
+      fn({
+        insert: () => ({
+          values: (v: Record<string, any>) => {
+            captured.values = v;
+            return { returning: async () => [{ id: 'ver-1', ...v }] };
+          },
+        }),
+        update: () => ({
+          set: () => ({
+            where: () => ({
+              then: (resolve: any) => resolve(undefined),
+              returning: async () => [{ id: 'ver-1', ...captured.values }],
+            }),
+          }),
+        }),
+      }),
+    );
+    return captured;
+  };
+  const json = (body: unknown) => ({
+    method: 'POST',
+    headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const createVersion = (body: Record<string, unknown>, row: unknown = orgRow) => {
+    selectOnce([row]);
+    const captured = captureInsert();
+    return app.request(`/software/catalog/${CAT_ID}/versions`, json({ version: '1.0.0', ...body })).then((res) => ({ res, captured }));
+  };
+  const uploadVersion = (fields: Record<string, string>, fileName: string, row: unknown = orgRow) => {
+    vi.mocked(isS3Configured).mockReturnValueOnce(true);
+    selectOnce([row]);
+    const captured = captureInsert();
+    const fd = new FormData();
+    fd.append('version', '1.0.0');
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    fd.append('file', new File(['payload-bytes'], fileName, { type: 'application/octet-stream' }));
+    return app
+      .request(`/software/catalog/${CAT_ID}/versions/upload`, { method: 'POST', headers: { Authorization: 'Bearer token' }, body: fd })
+      .then((res) => ({ res, captured }));
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // A request refused before it reads/writes leaves queued *Once values
+    // behind, which clearAllMocks keeps; reset to the factory defaults.
+    vi.mocked(db.select).mockReset().mockImplementation(() => chainMock([]));
+    vi.mocked(db.insert).mockReset().mockImplementation(() => chainMock([]));
+    vi.mocked(db.update).mockReset().mockImplementation(() => chainMock(undefined));
+    vi.mocked(db.delete).mockReset().mockImplementation(() => chainMock(undefined));
+    vi.mocked(db.transaction).mockReset().mockImplementation((async (fn: any) => fn({
+      update: vi.fn(() => chainMock([])),
+      insert: vi.fn(() => chainMock([])),
+    })) as any);
+    vi.mocked(isS3Configured).mockReset().mockReturnValue(false);
+    vi.mocked(authMiddleware).mockClear();
+    permissionGate.deny = false;
+    permissionGate.denied.clear();
+    mfaGate.deny = false;
+    authState.scope = 'organization';
+    authState.orgId = 'org-123';
+    authState.partnerId = null;
+    authState.accessibleOrgIds = ['org-123'];
+    authState.allowedSiteIds = undefined;
+    app = new Hono();
+    app.route('/software', softwareRoutes);
+  });
+
+  describe('JSON POST /catalog/:id/versions', () => {
+    it.each([
+      [{ fileType: 'zip', downloadUrl: 'https://dl.example/c.zip' }, ['zip_requires_post_install_script']],
+      [{ supportedOs: ['windows', 'macos'], postInstallScript: 'x' }, ['scripts_require_single_os']],
+      [{ fileType: 'pkg', silentInstallArgs: '/S' }, ['args_unsupported_for_file_type']],
+      [{ supportedOs: ['windows'], postInstallScript: 'x'.repeat(65537) }, ['script_too_large']],
+    ])('(a) %j → 400 with issues %j', async (body, issues) => {
+      const { res, captured } = await createVersion(body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: expect.any(String), issues });
+      expect(captured.values).toBeUndefined();
+    });
+
+    it('accepts zip with a post-install script (fileType inferred from .zip)', async () => {
+      const { res, captured } = await createVersion({
+        downloadUrl: 'https://github.com/v/t/releases/download/v1/tool.zip',
+        supportedOs: ['windows'],
+        postInstallScript: 'Copy-Item x y',
+      });
+      expect(res.status).toBe(201);
+      expect(captured.values).toMatchObject({ fileType: 'zip', installScriptsEnabled: true, supportedOs: ['windows'] });
+    });
+
+    it('dedupes supportedOs before validation: [windows, windows] + a script is single-OS', async () => {
+      const { res, captured } = await createVersion({ supportedOs: ['windows', 'windows'], postInstallScript: 'x' });
+      expect(res.status).toBe(201);
+      expect(captured.values!.supportedOs).toEqual(['windows']);
+    });
+
+    it('rejects an empty supportedOs entry with 400', async () => {
+      const { res, captured } = await createVersion({ supportedOs: ['windows', ''] });
+      expect(res.status).toBe(400);
+      expect(captured.values).toBeUndefined();
+    });
+
+    it('(b) a script without devices.execute → 403 and nothing is written', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, captured } = await createVersion({ supportedOs: ['windows'], preInstallScript: 'Write-Output 1' });
+      expect(res.status).toBe(403);
+      expect(captured.values).toBeUndefined();
+    });
+
+    it('(b) the same body with no script → 201, installScriptsEnabled:false (devices.execute not needed)', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, captured } = await createVersion({ supportedOs: ['windows'] });
+      expect(res.status).toBe(201);
+      expect(captured.values!.installScriptsEnabled).toBe(false);
+    });
+
+    it('(b) a whitespace-only script is no script: stored dormant, no devices.execute needed', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, captured } = await createVersion({ supportedOs: ['windows', 'macos'], postInstallScript: '   ' });
+      expect(res.status).toBe(201);
+      expect(captured.values!.installScriptsEnabled).toBe(false);
+    });
+
+    it('(b) with devices.execute → 201, installScriptsEnabled:true', async () => {
+      const { res, captured } = await createVersion({ supportedOs: ['windows'], postInstallScript: 'Write-Output 1' });
+      expect(res.status).toBe(201);
+      expect(captured.values).toMatchObject({ installScriptsEnabled: true, postInstallScript: 'Write-Output 1' });
+    });
+
+    it('(d) a built-in (builtinPackageKey) row takes no version outside system scope → 403', async () => {
+      setPartnerAdmin();
+      const { res, captured } = await createVersion({ downloadUrl: 'https://dl.example/a.msi' }, builtinRow);
+      expect(res.status).toBe(403);
+      expect(captured.values).toBeUndefined();
+    });
+
+    it('(e) an S1 row (NULL builtinPackageKey) still takes a partner-uploaded version', async () => {
+      setPartnerAdmin();
+      const { res } = await createVersion({ downloadUrl: 'https://dl.example/s1.msi' }, s1Row);
+      expect(res.status).toBe(201);
+    });
+  });
+
+  describe('multipart POST /catalog/:id/versions/upload', () => {
+    it('(a) a zip with no post-install script → 400 zip_requires_post_install_script, nothing uploaded', async () => {
+      const { res, captured } = await uploadVersion({ supportedOs: '["windows"]' }, 'client.zip');
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['zip_requires_post_install_script']);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(captured.values).toBeUndefined();
+    });
+
+    it('accepts a .zip with a post-install script and dedupes supportedOs', async () => {
+      const { res, captured } = await uploadVersion(
+        { supportedOs: '["windows","windows"]', postInstallScript: 'Copy-Item a b' },
+        'client.zip',
+      );
+      expect(res.status).toBe(201);
+      expect(captured.values).toMatchObject({ fileType: 'zip', supportedOs: ['windows'], installScriptsEnabled: true });
+    });
+
+    it('rejects an empty supportedOs entry with 400', async () => {
+      const { res } = await uploadVersion({ supportedOs: '[""]' }, 'pkg.msi');
+      expect(res.status).toBe(400);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+
+    it('(b) a script without devices.execute → 403', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, captured } = await uploadVersion({ supportedOs: '["windows"]', preInstallScript: 'x' }, 'pkg.msi');
+      expect(res.status).toBe(403);
+      expect(uploadBinary).not.toHaveBeenCalled();
+      expect(captured.values).toBeUndefined();
+    });
+
+    it('(b) no script → installScriptsEnabled:false', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, captured } = await uploadVersion({}, 'pkg.msi');
+      expect(res.status).toBe(201);
+      expect(captured.values!.installScriptsEnabled).toBe(false);
+    });
+
+    it('(d) a built-in row takes no upload → 403', async () => {
+      const { res } = await uploadVersion({}, 'pkg.msi', { ...builtinRow, orgId: 'org-123' });
+      expect(res.status).toBe(403);
+      expect(uploadBinary).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PATCH /catalog/:id/versions/:versionId', () => {
+    const scriptVersion = {
+      id: VER_ID, catalogId: CAT_ID, version: '1.0.0', s3Key: 'k', fileType: 'exe',
+      supportedOs: ['windows'], installScriptsEnabled: true, preInstallScript: null, postInstallScript: 'x',
+    };
+    const patch = (body: unknown, version: unknown = scriptVersion) => {
+      selectOnce([orgRow]);
+      selectOnce([version]);
+      const setSpy = vi.fn((v: Record<string, unknown>) => ({
+        where: () => ({ returning: async () => [{ ...(version as object), ...v }] }),
+      }));
+      vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+      return app
+        .request(`/software/catalog/${CAT_ID}/versions/${VER_ID}`, { ...json(body), method: 'PATCH' })
+        .then((res) => ({ res, setSpy }));
+    };
+
+    it('(c) two OSes on a script-enabled version → 400 scripts_require_single_os', async () => {
+      const { res, setSpy } = await patch({ supportedOs: ['windows', 'macos'] });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['scripts_require_single_os']);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('(c) moving a script-enabled version to another OS → 400 (the OS picks the interpreter)', async () => {
+      const { res, setSpy } = await patch({ supportedOs: ['macos'] });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['scripts_os_immutable']);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('dedupes before the check: [windows, windows] stays single-OS and is stored once', async () => {
+      const { res, setSpy } = await patch({ supportedOs: ['windows', 'windows'] });
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith({ supportedOs: ['windows'] });
+    });
+
+    it('rejects an empty supportedOs entry with 400', async () => {
+      const { res, setSpy } = await patch({ supportedOs: [''] });
+      expect(res.status).toBe(400);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('a version without enabled scripts may still target several OSes', async () => {
+      const { res } = await patch(
+        { supportedOs: ['windows', 'macos'] },
+        { ...scriptVersion, installScriptsEnabled: false, postInstallScript: 'dormant' },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects new silentInstallArgs on a type that ignores them (args_unsupported_for_file_type)', async () => {
+      const { res, setSpy } = await patch({ silentInstallArgs: '/S' }, { ...scriptVersion, fileType: 'pkg', installScriptsEnabled: false });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['args_unsupported_for_file_type']);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('stays script-immutable: a script key in the PATCH body is not written', async () => {
+      const { res, setSpy } = await patch({ version: '1.0.1', postInstallScript: 'evil', installScriptsEnabled: true });
+      expect(res.status).toBe(200);
+      expect(setSpy).toHaveBeenCalledWith({ version: '1.0.1' });
+    });
+  });
+
+  describe('catalog built-in immutability', () => {
+    it('(d) PATCH and DELETE of a builtinPackageKey row → 403 outside system scope', async () => {
+      setPartnerAdmin();
+      selectOnce([builtinRow]);
+      const patchRes = await app.request(`/software/catalog/${CAT_ID}`, { ...json({ name: 'Renamed' }), method: 'PATCH' });
+      expect(patchRes.status).toBe(403);
+
+      setPartnerAdmin();
+      selectOnce([builtinRow]);
+      const delRes = await app.request(`/software/catalog/${CAT_ID}`, { method: 'DELETE', headers: { Authorization: 'Bearer token' } });
+      expect(delRes.status).toBe(403);
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
+    it('(d) system scope may still PATCH a builtinPackageKey row', async () => {
+      setPartnerAdmin({ scope: 'system', partnerId: null, partnerOrgAccess: undefined });
+      selectOnce([builtinRow]);
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: () => ({ where: () => ({ returning: async () => [{ ...builtinRow, name: 'Renamed' }] }) }),
+      } as any);
+      const res = await app.request(`/software/catalog/${CAT_ID}`, { ...json({ name: 'Renamed' }), method: 'PATCH' });
+      expect(res.status).toBe(200);
+    });
+
+    it('(f) POST /catalog ignores a builtinPackageKey in the body', async () => {
+      const valuesSpy = vi.fn(() => ({ returning: vi.fn(async () => [{ id: 'cat-1', name: 'Fake', orgId: 'org-123' }]) }));
+      vi.mocked(db.insert).mockReturnValueOnce({ values: valuesSpy } as any);
+      const res = await app.request('/software/catalog', json({ name: 'Fake', builtinPackageKey: 'controld_windows' }));
+      expect(res.status).toBe(201);
+      expect(valuesSpy).toHaveBeenCalledTimes(1);
+      expect(valuesSpy.mock.calls[0]![0]).not.toHaveProperty('builtinPackageKey');
+    });
+
+    it('GET /catalog returns builtinPackageKey and the latest version\'s installScriptsEnabled', async () => {
+      const res = await app.request('/software/catalog', { headers: { Authorization: 'Bearer token' } });
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[0]![0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('builtinPackageKey');
+      expect(projection).toHaveProperty('installScriptsEnabled');
+    });
   });
 });

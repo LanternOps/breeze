@@ -2528,7 +2528,7 @@ describe('buildAndDispatchSoftwareInstalls — install scripts, zip and agent ga
     checksum: 'a'.repeat(64),
     originalFileName: 'pkg.exe',
     fileType: 'exe',
-    silentInstallArgs: '/S',
+    silentInstallArgs: '/S' as string | null,
     version: '1.0.0',
     detectionRules: null as unknown,
     supportedOs: ['windows'] as unknown,
