@@ -19,7 +19,7 @@ import {
   type ChatRunState,
 } from './processStreamEvent';
 
-const MAX_TABS = 5;
+export const MAX_TABS = 5;
 
 export interface TabState {
   id: string;

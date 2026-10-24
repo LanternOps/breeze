@@ -1,11 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useAiStore } from '@/stores/aiStore';
-import { abortHandoff, completeHandoff, takeHandoff } from '@/stores/aiConversationHandoff';
+import { abortHandoff, completeHandoff, continueInSidePanel, takeHandoff } from '@/stores/aiConversationHandoff';
 import AccessDenied from '../shared/AccessDenied';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import WorkspaceTabBar from './WorkspaceTabBar';
 import WorkspaceChatPanel from './WorkspaceChatPanel';
@@ -27,6 +28,16 @@ function WorkspaceSessionLink() {
     (s) => s.tabs.find((tab) => tab.id === s.activeTabId)?.sessionId ?? null,
   );
 
+  // The session id the URL shows because this component put it there (or a
+  // link it already handled). Any other valid `#session=` in the URL is a link
+  // whose hashchange has not been delivered yet, and must not be overwritten.
+  const ownedHash = useRef<string | null>(null);
+  const currentHashSession = () => parseSessionHash(window.location.hash.replace(/^#/, ''));
+  const writeOwned = (sessionId: string | null) => {
+    writeSessionHash(sessionId);
+    ownedHash.current = sessionId;
+  };
+
   useEffect(() => {
     if (!linked) return;
     const id = linked;
@@ -44,9 +55,9 @@ function WorkspaceSessionLink() {
       // Handled. Point the URL at the active tab now, synchronously, unless a
       // newer link is already there: a hashchange that lands before the next
       // render then reads the new hash instead of re-arming this link.
-      if (parseSessionHash(window.location.hash.replace(/^#/, '')) === id) {
+      if (currentHashSession() === id) {
         const { tabs, activeTabId } = useWorkspaceStore.getState();
-        writeSessionHash(tabs.find((tab) => tab.id === activeTabId)?.sessionId ?? null);
+        writeOwned(tabs.find((tab) => tab.id === activeTabId)?.sessionId ?? null);
       }
       // Then clear the link (unless a newer one arrived meanwhile) so a later
       // hashchange back to this id re-triggers (Advisor finding 8) and the
@@ -55,21 +66,61 @@ function WorkspaceSessionLink() {
     });
   }, [linked, openSession, setLinked, t]);
 
-  // The hash follows the active tab — but never before a link is handled.
-  // useHashState reads the hash in a layout effect after the first render, so
-  // this effect's first run still sees `linked === null`: leave a valid link
-  // in the URL for that read instead of overwriting it with the persisted tab.
-  const firstWrite = useRef(true);
+  // The hash follows the active tab, only while no link is being handled and
+  // never over a link still on its way (see ownedHash). This also covers the
+  // first render, before useHashState's layout effect has read the hash.
   useEffect(() => {
     if (linked !== null) return;
-    if (firstWrite.current) {
-      firstWrite.current = false;
-      if (parseSessionHash(window.location.hash.replace(/^#/, '')) !== undefined) return;
-    }
-    writeSessionHash(activeSessionId);
+    const inUrl = currentHashSession();
+    if (inUrl !== undefined && inUrl !== ownedHash.current && inUrl !== activeSessionId) return;
+    writeOwned(activeSessionId);
   }, [linked, activeSessionId]);
 
   return null;
+}
+
+/**
+ * #9427 W3: "Continue in side panel" from the tab menu, the header and the
+ * error banner. One move at a time; replacing a busy side-panel conversation
+ * asks first (continueInSidePanel decides when).
+ */
+function useContinueInPanel() {
+  const { t } = useTranslation('ai');
+  const [pendingConfirm, setPendingConfirm] = useState<((ok: boolean) => void) | null>(null);
+  const moving = useRef(false);
+
+  const continueInPanel = useCallback((tabId: string) => {
+    if (moving.current) return;
+    moving.current = true;
+    continueInSidePanel(tabId, {
+      confirm: () => new Promise<boolean>((resolve) => setPendingConfirm(() => resolve)),
+    })
+      .catch((err) => {
+        console.error('[Workspace] Continue in side panel failed:', err);
+        showToast({ type: 'error', message: t('aiConversationMove.notAvailable') });
+      })
+      .finally(() => { moving.current = false; });
+  }, [t]);
+
+  const settle = (ok: boolean) => {
+    pendingConfirm?.(ok);
+    setPendingConfirm(null);
+  };
+
+  const replaceDialog = (
+    <ConfirmDialog
+      open={pendingConfirm !== null}
+      onClose={() => settle(false)}
+      onConfirm={() => settle(true)}
+      title={t('aiConversationMove.continueInPanel')}
+      message={t('aiConversationMove.replaceConfirm')}
+      confirmLabel={t('aiConversationMove.continueInPanel')}
+      variant="warning"
+      confirmTestId="workspace-replace-panel-confirm"
+    />
+  );
+
+  return { continueInPanel, replaceDialog };
 }
 
 export default function WorkspacePage() {
@@ -96,6 +147,7 @@ export default function WorkspacePage() {
   const permissionsLoaded = permissions !== undefined;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const { continueInPanel, replaceDialog } = useContinueInPanel();
 
   // Restore messages on mount
   useEffect(() => {
@@ -158,9 +210,10 @@ export default function WorkspacePage() {
             onCloseTab={closeTab}
             onRenameTab={(tabId, title) => void renameTab(tabId, title)}
             onNewTab={() => createTab()}
+            onContinueInPanel={continueInPanel}
           />
           {activeTab ? (
-            <WorkspaceChatPanel tab={activeTab} />
+            <WorkspaceChatPanel tab={activeTab} onContinueInPanel={() => continueInPanel(activeTab.id)} />
           ) : (
             <WorkspaceEmptyState onCreateTab={() => createTab()} />
           )}
@@ -168,6 +221,7 @@ export default function WorkspacePage() {
       ) : (
         <WorkspaceEmptyState onCreateTab={() => createTab()} />
       )}
+      {replaceDialog}
     </div>
   );
 }

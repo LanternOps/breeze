@@ -22,10 +22,19 @@ vi.mock('@/lib/permissions', () => ({
 }));
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
-const ai = vi.hoisted(() => ({ adoptSession: vi.fn(async () => 'ok'), releaseSession: vi.fn() }));
+const ai = vi.hoisted(() => ({
+  adoptSession: vi.fn(async (..._args: unknown[]) => 'ok'), releaseSession: vi.fn(),
+  sessionId: null as string | null, composerDraft: '', isStreaming: false,
+}));
+const panelHarness = vi.hoisted(() => ({ props: null as Record<string, any> | null }));
 vi.mock('@/stores/aiStore', () => ({ useAiStore: { getState: () => ai } }));
 vi.mock('./WorkspaceTabBar', () => ({ default: () => <div data-testid="workspace-tab-bar" /> }));
-vi.mock('./WorkspaceChatPanel', () => ({ default: () => <div data-testid="workspace-chat-panel" /> }));
+vi.mock('./WorkspaceChatPanel', () => ({
+  default: (props: Record<string, any>) => {
+    panelHarness.props = props;
+    return <div data-testid="workspace-chat-panel" />;
+  },
+}));
 vi.mock('./WorkspaceEmptyState', () => ({ default: () => <div data-testid="workspace-empty-state" /> }));
 
 import { fetchWithAuth } from '@/stores/auth';
@@ -90,6 +99,8 @@ const fireHash = async (hash: string) => {
 beforeEach(() => {
   vi.clearAllMocks();
   perms.allow = true;
+  Object.assign(ai, { sessionId: null, composerDraft: '', isStreaming: false });
+  panelHarness.props = null;
   routes = new Map();
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (url: string | URL | Request) => {
@@ -293,6 +304,23 @@ describe('hash follows the active tab', () => {
     expect(callsTo(`/ai/sessions/${A}`)).toHaveLength(1); // focused, not reopened
   });
 
+  it('a new link whose hashchange is still in flight when the previous one finishes is not overwritten', async () => {
+    let release!: () => void;
+    routes.set(`/ai/sessions/${A}`, () => new Promise<Response>((r) => { release = () => r(session(A)); }));
+    setUrl(`#session=${A}`);
+    render(<WorkspacePage />);
+    await waitFor(() => expect(callsTo(`/ai/sessions/${A}`)).toHaveLength(1));
+    // The user follows a link to B: the URL changes now, its hashchange is delivered later.
+    window.history.replaceState(null, '', `/workspace#session=${B}`);
+    await act(async () => { release(); });
+    await waitFor(() => expect(activeSession()).toBe(A));
+    await act(async () => { await Promise.resolve(); });
+    expect(window.location.hash).toBe(`#session=${B}`);
+    await act(async () => { window.dispatchEvent(new HashChangeEvent('hashchange')); });
+    await waitFor(() => expect(activeSession()).toBe(B));
+    expect(callsTo(`/ai/sessions/${B}`)).toHaveLength(1);
+  });
+
   it('an active tab with no session clears the fragment', async () => {
     setUrl(`#session=${A}`);
     useWorkspaceStore.setState({ tabs: [tab({ id: 'empty' })], activeTabId: 'empty' });
@@ -314,5 +342,38 @@ describe('permission gate (#6498)', () => {
     expect(sessionCalls()).toEqual([]);
     expect(replace).not.toHaveBeenCalled();
     expect(window.location.hash).toBe(`#session=${A}`);
+  });
+});
+
+describe('Continue in side panel wiring (#9840 W3)', () => {
+  it('the chat panel’s control adopts the tab’s session with its draft, then the tab closes', async () => {
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'ta', sessionId: A, composerDraft: 'mine' }), tab({ id: 'tb', sessionId: B })], activeTabId: 'ta' });
+    render(<WorkspacePage />);
+    await act(async () => { panelHarness.props!.onContinueInPanel(); });
+    await waitFor(() => expect(state().tabs.map((t) => t.id)).toEqual(['tb']));
+    expect(ai.adoptSession).toHaveBeenCalledWith(A, { draft: 'mine' });
+    await waitFor(() => expect(window.location.hash).toBe(`#session=${B}`)); // hash follows the new active tab
+  });
+
+  it('a busy side panel asks first; confirming moves', async () => {
+    Object.assign(ai, { sessionId: B, isStreaming: true });
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'ta', sessionId: A })], activeTabId: 'ta' });
+    render(<WorkspacePage />);
+    await act(async () => { panelHarness.props!.onContinueInPanel(); });
+    const confirmButton = await screen.findByTestId('workspace-replace-panel-confirm');
+    expect(screen.getByText('Replace the conversation in the side panel? It stays in your history.')).toBeInTheDocument();
+    expect(ai.adoptSession).not.toHaveBeenCalled();
+    await act(async () => { confirmButton.click(); });
+    await waitFor(() => expect(ai.adoptSession).toHaveBeenCalledWith(A, { draft: '' }));
+    await waitFor(() => expect(state().tabs).toEqual([]));
+  });
+
+  it('a failed adopt keeps the tab', async () => {
+    ai.adoptSession.mockResolvedValueOnce('not_found');
+    useWorkspaceStore.setState({ tabs: [tab({ id: 'ta', sessionId: A })], activeTabId: 'ta' });
+    render(<WorkspacePage />);
+    await act(async () => { panelHarness.props!.onContinueInPanel(); });
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ message: "This conversation isn't available" })));
+    expect(state().tabs.map((t) => t.id)).toEqual(['ta']);
   });
 });
