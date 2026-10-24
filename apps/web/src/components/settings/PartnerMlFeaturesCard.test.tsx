@@ -12,6 +12,7 @@ const handleSessionExpired = vi.hoisted(() => vi.fn());
 vi.mock('@/stores/auth', () => ({ fetchWithAuth, handleSessionExpired }));
 
 import PartnerMlFeaturesCard from './PartnerMlFeaturesCard';
+import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -21,8 +22,8 @@ beforeEach(() => {
 describe('PartnerMlFeaturesCard', () => {
   it('renders both switches off when the partner has no ml settings (platform default)', () => {
     const { getByTestId } = render(<PartnerMlFeaturesCard value={undefined} onSaved={vi.fn()} />);
-    expect((getByTestId('partner-ml-anomalies-enabled') as HTMLInputElement).checked).toBe(false);
-    expect((getByTestId('partner-ml-anomalies-create-alerts') as HTMLInputElement).checked).toBe(false);
+    expect(getByTestId('partner-ml-anomalies-enabled')).not.toBeChecked();
+    expect(getByTestId('partner-ml-anomalies-create-alerts')).not.toBeChecked();
   });
 
   it('PATCHes /orgs/partners/me with the COMPLETE ml.anomalies object when a switch flips', async () => {
@@ -46,7 +47,7 @@ describe('PartnerMlFeaturesCard', () => {
     fireEvent.click(getByTestId('partner-ml-anomalies-enabled'));
     await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect((getByTestId('partner-ml-anomalies-enabled') as HTMLInputElement).checked).toBe(false),
+      expect(getByTestId('partner-ml-anomalies-enabled')).not.toBeChecked(),
     );
     expect(onSaved).not.toHaveBeenCalled();
   });
@@ -54,7 +55,7 @@ describe('PartnerMlFeaturesCard', () => {
     const { getByTestId } = render(
       <PartnerMlFeaturesCard value={{ remediation_suggestions: { enabled: true } }} onSaved={vi.fn()} />,
     );
-    expect((getByTestId('partner-ml-remediation-suggestions-enabled') as HTMLInputElement).checked).toBe(true);
+    expect(getByTestId('partner-ml-remediation-suggestions-enabled')).toBeChecked();
   });
 
   it('PATCHes ONLY ml.remediation_suggestions when the Suggested fixes switch flips, never the anomalies block (#6934)', async () => {
@@ -74,7 +75,7 @@ describe('PartnerMlFeaturesCard', () => {
       anomalies: { enabled: true, create_alerts: true },
       remediation_suggestions: { enabled: true },
     });
-    expect((getByTestId('partner-ml-anomalies-enabled') as HTMLInputElement).checked).toBe(true);
+    expect(getByTestId('partner-ml-anomalies-enabled')).toBeChecked();
   });
 
   it('reverts the Suggested fixes switch when the save fails (#6934)', async () => {
@@ -84,7 +85,26 @@ describe('PartnerMlFeaturesCard', () => {
     fireEvent.click(getByTestId('partner-ml-remediation-suggestions-enabled'));
     await waitFor(() => expect(runAction).toHaveBeenCalledTimes(1));
     await waitFor(() =>
-      expect((getByTestId('partner-ml-remediation-suggestions-enabled') as HTMLInputElement).checked).toBe(false),
+      expect(getByTestId('partner-ml-remediation-suggestions-enabled')).not.toBeChecked(),
     );
+  });
+
+  it('renders every ML control as a switch (it saves immediately)', () => {
+    const { getAllByRole } = render(<PartnerMlFeaturesCard value={undefined} onSaved={vi.fn()} />);
+    expect(getAllByRole('switch')).toHaveLength(3);
+  });
+
+  it('reports each autosave outcome to the page status line', async () => {
+    const reportAutosave = vi.fn();
+    const wrap = (node: React.ReactNode) => (
+      <PartnerSettingsSaveContext.Provider value={{ submit: vi.fn(), reportAutosave }}>{node}</PartnerSettingsSaveContext.Provider>
+    );
+    const { getByTestId } = render(wrap(<PartnerMlFeaturesCard value={undefined} onSaved={vi.fn()} />));
+    fireEvent.click(getByTestId('partner-ml-anomalies-enabled'));
+    await waitFor(() => expect(reportAutosave).toHaveBeenCalledWith('aiFeatures', { status: 'saved', savedAt: expect.any(Number) }));
+    const { ActionError } = await import('@/lib/runAction');
+    runAction.mockRejectedValueOnce(new ActionError('nope', 500));
+    fireEvent.click(getByTestId('partner-ml-remediation-suggestions-enabled'));
+    await waitFor(() => expect(reportAutosave).toHaveBeenLastCalledWith('aiFeatures', { status: 'failed' }));
   });
 });

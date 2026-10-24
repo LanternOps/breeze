@@ -1164,7 +1164,8 @@
     },
     "validation": {
       "retentionDays": "Informe um número inteiro de dias entre 1 e 3650."
-    }
+    },
+    "unsavedConfirm": "Você tem alterações não salvas. Sair desta página e descartá-las?"
   },
   "partnerSendingDomains": {
     "title": "Endereços de remetente personalizados",

@@ -39,7 +39,10 @@ import { useLoginBrandingUnit } from './partnerSettings/units/loginBrandingUnit'
 import { useTrustCenterUnit } from './partnerSettings/units/trustCenterUnit';
 import { useAiFeatureDefaultsUnit } from './partnerSettings/units/aiFeatureDefaultsUnit';
 import { useAiDataPolicyUnit } from './partnerSettings/units/aiDataPolicyUnit';
-import PartnerSettingsStatus, { deriveStatus } from './partnerSettings/PartnerSettingsStatus';
+import PartnerSettingsStatus, { deriveStatus, type AutosaveReport } from './partnerSettings/PartnerSettingsStatus';
+import FormCard from './partnerSettings/FormCard';
+import { PartnerSettingsSaveContext } from './partnerSettings/partnerSettingsSaveContext';
+import { useUnsavedGuard } from './partnerSettings/useUnsavedGuard';
 
 // Kept on this module's surface: existing callers and tests import it from here.
 export { runPartnerSave } from './partnerSettings/usePartnersMeUnit';
@@ -75,13 +78,8 @@ export default function PartnerSettingsPage() {
   }, [me.dirtyTabs, units]);
   const isDirty = units.some(u => u.isDirty());
 
-  // Warn before a full navigation away discards unsaved edits.
-  useEffect(() => {
-    if (!isDirty) return;
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); };
-    window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
-  }, [isDirty]);
+  // Warn before a full or soft navigation away discards unsaved edits.
+  useUnsavedGuard(isDirty, t('partnerSettingsPage.unsavedConfirm'));
 
   const { load, markNoPartner } = me;
   useEffect(() => {
@@ -172,6 +170,12 @@ export default function PartnerSettingsPage() {
   const { save, saving, failedUnits, otherUnitsSaved, savedAt } = usePartnerSettingsSave(units);
   const canSave = canManagePartnerWide && !saving && isDirty && units.every(u => !u.isDirty() || isUnitValid(u));
   const handleSave = () => { if (canSave) void save(); };
+  // The last outcome of an autosave control (ML switches, Modules), for the status line.
+  const [autosave, setAutosave] = useState<AutosaveReport | null>(null);
+  const saveApi = useMemo(() => ({
+    submit: handleSave,
+    reportAutosave: (tab: TabKey, outcome: AutosaveReport['outcome']) => setAutosave({ tab, outcome }),
+  }), [handleSave]);
 
   const statusState = deriveStatus({
     units,
@@ -181,7 +185,7 @@ export default function PartnerSettingsPage() {
     failedUnits,
     otherUnitsSaved,
     savedAt,
-    autosave: null,
+    autosave,
   });
 
   // Show a loading state while the partner context is still resolving, NOT the
@@ -229,9 +233,12 @@ export default function PartnerSettingsPage() {
   }
 
   const activeDef = TAB_BY_KEY[activeTab];
-  const card = (node: React.ReactNode) => <section className="rounded-lg border bg-card p-6 shadow-xs">{node}</section>;
+  // A form card: its fields save with the header Save, and Enter submits it.
+  const card = (node: React.ReactNode) => <FormCard>{node}</FormCard>;
+  const bare = (node: React.ReactNode, className = '') => <FormCard className={className}>{node}</FormCard>;
 
   return (
+    <PartnerSettingsSaveContext.Provider value={saveApi}>
     <div className="mx-auto max-w-6xl space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -303,8 +310,7 @@ export default function PartnerSettingsPage() {
                 </h2>
                 <p className="max-w-prose text-sm text-muted-foreground">{t(/* i18n-dynamic */ activeDef.description)}</p>
               </div>
-            {activeTab === 'company' && (
-              <div className="space-y-6">
+            {activeTab === 'company' && bare(
                 <PartnerCompanyTab
                   name={state.companyName}
                   address={state.address}
@@ -314,8 +320,7 @@ export default function PartnerSettingsPage() {
                   onNameChange={v => update('companyName', v)}
                   onAddressChange={v => update('address', v)}
                   onContactChange={c => update('contact', { name: c.name || '', email: c.email || '', phone: c.phone || '', website: c.website || '' })}
-                />
-              </div>
+                />, 'space-y-6'
             )}
 
             {/* Modules Tab (M7): the service management on/off switch gets its own home. */}
@@ -326,7 +331,7 @@ export default function PartnerSettingsPage() {
               />
             )}
 
-            {activeTab === 'regional' && (
+            {activeTab === 'regional' && bare(
               <PartnerRegionalTab
                 timezone={state.timezone}
                 dateFormat={state.dateFormat}
@@ -344,7 +349,7 @@ export default function PartnerSettingsPage() {
             )}
             {/* Caller verification (#6354): partner baseline; the rail hides the
                 tab (and the form renders nothing) unless the server flag is on. */}
-            {activeTab === 'callerVerification' && <PartnerCallerVerificationPolicy />}
+            {activeTab === 'callerVerification' && bare(<PartnerCallerVerificationPolicy />)}
 
             {/* Known guests: partner-wide MAC whitelist, with its own add/remove. */}
             {activeTab === 'knownGuests' && <KnownGuestsSettings />}
@@ -356,10 +361,10 @@ export default function PartnerSettingsPage() {
             )}
             {activeTab === 'branding' && card(<PartnerBrandingTab data={state.branding} onChange={v => update('branding', v)} />)}
 
-            {activeTab === 'loginBranding' && <LoginBrandingCard partnerSlug={partner.slug} />}
+            {activeTab === 'loginBranding' && bare(<LoginBrandingCard partnerSlug={partner.slug} />)}
 
             {/* Trust Center defaults: revisioned, MFA-gated. */}
-            {activeTab === 'trustCenter' && <TrustTemplateSettings />}
+            {activeTab === 'trustCenter' && bare(<TrustTemplateSettings />)}
 
             {activeTab === 'aiBudgets' && card(
               <PartnerAiBudgetsTab
@@ -371,14 +376,18 @@ export default function PartnerSettingsPage() {
             )}
             {activeTab === 'aiApprovals' && card(<PartnerAiApprovalsTab data={state.aiApprovals} onChange={v => update('aiApprovals', v)} />)}
 
-            {/* AI Providers & Models: connection and model rows are list items. */}
-            {activeTab === 'aiProvider' && card(<PartnerAiModelsTab />)}
+            {/* AI Providers & Models: connection and model rows are list items; the
+                feature-defaults card inside is the tab's form card. */}
+            {activeTab === 'aiProvider' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs"><PartnerAiModelsTab /></section>
+            )}
 
-            {activeTab === 'aiFeatures' && card(
-              <>
-                <PartnerAiDataPolicyCard />
+            {/* AI Features: a data-policy form card beside the ML autosave switches. */}
+            {activeTab === 'aiFeatures' && (
+              <section className="rounded-lg border bg-card p-6 shadow-xs">
+                {bare(<PartnerAiDataPolicyCard />)}
                 <PartnerMlFeaturesCard value={partner.settings?.ml} onSaved={ml => me.patchPartnerSettings({ ml })} />
-              </>
+              </section>
             )}
 
             {activeTab === 'remoteAccess' && card(
@@ -404,5 +413,6 @@ export default function PartnerSettingsPage() {
         </div>
       </div>
     </div>
+    </PartnerSettingsSaveContext.Provider>
   );
 }

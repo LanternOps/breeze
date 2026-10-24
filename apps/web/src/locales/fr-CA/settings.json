@@ -1164,7 +1164,8 @@
     },
     "validation": {
       "retentionDays": "Entrez un nombre entier de jours entre 1 et 3650."
-    }
+    },
+    "unsavedConfirm": "Vous avez des modifications non enregistrées. Quitter cette page et les abandonner?"
   },
   "partnerSendingDomains": {
     "title": "Adresses d'expéditeur personnalisées",

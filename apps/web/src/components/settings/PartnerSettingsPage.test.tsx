@@ -737,7 +737,7 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
 
   it('hydrates an opted-in partner, marks the tab dirty on toggle, and saves the explicit choice', async () => {
     const toggle = await openRemoteAccess({ networkProxy: { dedicatedTunnelOrigin: true } });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle).toBeChecked();
     const saveBtn = screen.getByRole('button', { name: /save settings/i }) as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
 
@@ -751,7 +751,7 @@ describe('PartnerSettingsPage Remote Access — dedicated tunnel origin', () => 
 
   it('leaves the choice unset for a partner who never chose, so a later default flip still reaches them', async () => {
     const toggle = await openRemoteAccess({});
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(toggle).not.toBeChecked();
     const user = userEvent.setup();
     // An unrelated edit on another tab makes the page saveable.
     await user.click(screen.getByRole('link', { name: /^company$/i }));

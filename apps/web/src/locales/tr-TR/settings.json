@@ -1164,7 +1164,8 @@
     },
     "validation": {
       "retentionDays": "1 ile 3650 arasında tam sayı olarak gün girin."
-    }
+    },
+    "unsavedConfirm": "Kaydedilmemiş değişiklikleriniz var. Bu sayfadan çıkıp değişiklikleri silmek istiyor musunuz?"
   },
   "partnerSendingDomains": {
     "title": "Özel gönderen adresleri",
