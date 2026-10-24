@@ -20,6 +20,7 @@ vi.mock('../../db', () => ({ db: {} }));
 vi.mock('../ticketAttachmentStorage', () => ({ objectKeyFor: (id: string) => `ticket-attachments/${id}`, putBytes: vi.fn() }));
 
 import { hasAttachments, prepareChunkAttachments, type ChunkAttachmentsInput } from './chunkAttachments';
+import type { ReservationFile } from './importAttachments';
 import type { ImportedComment } from './importedTicket';
 
 const T0 = new Date('2021-03-04T09:00:00.000Z');
@@ -34,7 +35,7 @@ function harness(chunk: ImportedComment[], states: Record<string, 'pending' | 'a
   const input: ChunkAttachmentsInput = {
     chunk,
     readStates: vi.fn(async () => new Map(Object.entries(states))),
-    reserve: vi.fn(async (files) => {
+    reserve: vi.fn(async (files: ReservationFile[]) => {
       reserveCalls.push(files.map((f) => f.sourceId));
       return { merged: null, reserved: files.filter((f) => !attachedUnderLock.includes(f.sourceId)).map((f) => ({ id: `id-${f.sourceId}`, sourceId: f.sourceId })) };
     }),
