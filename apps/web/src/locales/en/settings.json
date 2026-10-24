@@ -6087,6 +6087,19 @@
     },
     "primaryContact": "Primary contact"
   },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locations where your devices live. Open a site to see its details and devices.",
+      "organizationColumn": "Organization",
+      "pickOrg": "Organization",
+      "pickOrgPlaceholder": "Choose an organization",
+      "pickOrgRequired": "Choose the organization this site belongs to.",
+      "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
+      "empty": "No sites yet. Add a site to an organization to get started.",
+      "viewDevicesAt": "view devices at {{name}}"
+    }
+  },
   "siteList": {
     "title": "Sites",
     "count": "{{filtered}} of {{total}} sites",

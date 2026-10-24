@@ -143,4 +143,54 @@ describe('SiteList', () => {
     expect(screen.getAllByText('Austin').length).toBeGreaterThan(0);
     expect(screen.queryByText(/object/)).toBeNull();
   });
+
+  describe('fleet-view options (#9794), all off by default', () => {
+    const fleetSite: Site = { ...site(1), id: 'aaaaaaaa-0000-4000-8000-000000000001', orgId: 'org-a', orgName: 'Alpha Co' };
+
+    it('renders no Organization column, no device-count link, and the legacy row id by default', () => {
+      render(<SiteList sites={[fleetSite]} onAddSite={() => undefined} />);
+      expect(screen.queryByRole('columnheader', { name: 'Organization' })).toBeNull();
+      expect(screen.queryByTestId(`sites-device-count-link-${fleetSite.id}`)).toBeNull();
+      expect(screen.getByTestId(`site-row-${fleetSite.id}`)).toBeInTheDocument();
+    });
+
+    it("showOrgColumn adds an Organization column with each row's org name", () => {
+      render(<SiteList sites={[fleetSite, { ...site(2), orgName: null }]} showOrgColumn />);
+      expect(screen.getByRole('columnheader', { name: 'Organization' })).toBeInTheDocument();
+      expect(within(screen.getByTestId(`site-row-${fleetSite.id}`)).getByText('Alpha Co')).toBeInTheDocument();
+      expect(within(screen.getByTestId('site-row-s2')).getAllByText('—').length).toBeGreaterThan(0);
+    });
+
+    it('deviceCountHref links the count, and a null href leaves plain text', () => {
+      const onSiteClick = vi.fn();
+      render(
+        <SiteList
+          sites={[fleetSite, site(2)]}
+          onSiteClick={onSiteClick}
+          deviceCountHref={(s) => (s.id === fleetSite.id ? '/devices#x' : null)}
+        />,
+      );
+      const link = screen.getAllByTestId(`sites-device-count-link-${fleetSite.id}`)[0]!;
+      expect(link).toHaveAttribute('href', '/devices#x');
+      fireEvent.click(link);
+      expect(onSiteClick).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('sites-device-count-link-s2')).toBeNull();
+    });
+
+    it('rowTestIdPrefix renames the row id; addButtonTestId tags Add; no onAddSite means no Add button', () => {
+      const { unmount } = render(
+        <SiteList sites={[fleetSite]} onAddSite={() => undefined} rowTestIdPrefix="sites-row" addButtonTestId="sites-add-button" />,
+      );
+      expect(screen.getByTestId(`sites-row-${fleetSite.id}`)).toBeInTheDocument();
+      expect(screen.getByTestId('sites-add-button')).toHaveTextContent('Add site');
+      unmount();
+      render(<SiteList sites={[fleetSite]} />);
+      expect(screen.queryByRole('button', { name: 'Add site' })).toBeNull();
+    });
+
+    it('emptyMessage overrides the empty-state copy', () => {
+      render(<SiteList sites={[]} emptyMessage="Nothing here" />);
+      expect(screen.getAllByText('Nothing here').length).toBeGreaterThan(0);
+    });
+  });
 });
