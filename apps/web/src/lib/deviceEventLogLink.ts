@@ -61,3 +61,33 @@ export function eventLogFilterFromHash(hash: string): EventLogFilter | undefined
   // `selection` is already percent-decoded exactly once by parseHashGrammar.
   return selection ? { source: selection, from, to } : { from, to };
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The fault factors are scored over a 30-day bucket window ending at `computedAt`. */
+const SCORING_WINDOW_DAYS = 30;
+
+/**
+ * The reliability scoring window, derived from fields the reliability payload
+ * already carries (no API change): `to` = `computedAt` (the scorer's
+ * windowEnd); `from` = the start of the UTC day 30 days earlier (the scorer
+ * counts an inclusive span of UTC day buckets), clamped to the later of the
+ * baseline marker and enrolment (the scorer's `windowFloor`). Returns null
+ * when the window cannot be vouched for (unparseable `computedAt`, or an
+ * empty/inverted window) so the caller renders text instead of a link.
+ */
+export function reliabilityScoringWindow(input: {
+  computedAt: string;
+  enrolledAt?: string | null;
+  baselineAt?: string | null;
+}): { from: string; to: string } | null {
+  const end = Date.parse(input.computedAt);
+  if (Number.isNaN(end)) return null;
+  const startOfDay = Math.floor((end - SCORING_WINDOW_DAYS * DAY_MS) / DAY_MS) * DAY_MS;
+  let start = startOfDay;
+  for (const floor of [input.baselineAt, input.enrolledAt]) {
+    const ms = floor ? Date.parse(floor) : Number.NaN;
+    if (!Number.isNaN(ms) && ms > start) start = ms;
+  }
+  if (start > end) return null;
+  return { from: new Date(start).toISOString(), to: new Date(end).toISOString() };
+}
