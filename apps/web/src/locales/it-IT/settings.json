@@ -254,41 +254,7 @@
       "twelveHour": "12 ore",
       "twentyFourHour": "24 ore",
       "language": "Lingua",
-      "languageDescription": "Lingua predefinita per le impostazioni del partner.",
-      "businessHours": {
-        "title": "Orario lavorativo",
-        "description": "Imposta l'orario operativo standard per assistenza e avvisi.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Sempre disponibile"
-          },
-          "business": {
-            "label": "Orario lavorativo",
-            "description": "Lun-ven 9:00-17:00"
-          },
-          "extended": {
-            "label": "Orario esteso",
-            "description": "Lun-ven 7:00-19:00, sab 9:00-13:00"
-          },
-          "custom": {
-            "label": "Personalizzato",
-            "description": "Imposta il tuo calendario"
-          }
-        },
-        "customSchedule": "Calendario personalizzato",
-        "open": "Aperto",
-        "to": "a"
-      },
-      "days": {
-        "mon": "Lunedì",
-        "tue": "Martedì",
-        "wed": "Mercoledì",
-        "thu": "Giovedì",
-        "fri": "Venerdì",
-        "sat": "Sabato",
-        "sun": "Domenica"
-      }
+      "languageDescription": "Lingua predefinita per le impostazioni del partner."
     }
   },
   "partnerAiBudgets": {
@@ -5797,6 +5763,20 @@
       "sourceOrg": "Sovrascrittura dell’organizzazione",
       "sourcePartner": "Predefinito del partner",
       "sourceDefault": "Predefinito integrato"
+    },
+    "businessCalendar": {
+      "title": "Orari di lavoro",
+      "description": "Il calendario su cui vengono conteggiati i timer SLA di questa organizzazione. Lascia su Eredita per seguire il predefinito del partner.",
+      "label": "Calendario degli orari di lavoro",
+      "inherit": "Eredita",
+      "inheritedDefault": "Ereditato: {{name}} (predefinito del partner)",
+      "inheritedNone": "Ereditato: 24×7 (nessun predefinito del partner)",
+      "partnerWideOption": "{{name}} (tutte le org)",
+      "archivedOverride": "Calendario archiviato (non si applica più)",
+      "loadFailed": "Impossibile caricare il calendario degli orari di lavoro.",
+      "errors": {
+        "save": "Impossibile salvare il calendario degli orari di lavoro. Riprova."
+      }
     }
   },
   "organizationForm": {
@@ -6926,5 +6906,104 @@
     "enabledToast": "Scorciatoie a tasto singolo attivate",
     "disabledToast": "Scorciatoie a tasto singolo disattivate",
     "saveFailed": "Impossibile salvare le scorciatoie a tasto singolo."
+  },
+  "businessHoursCard": {
+    "title": "Orari di lavoro",
+    "description": "Calendari su cui vengono conteggiati i timer SLA di risposta e risoluzione. Un ticket usa il calendario della sua organizzazione o il calendario predefinito; se non ce n'è nessuno, il timer corre 24 ore su 24.",
+    "newTicketsOnly": "La modifica di orari o fuso orario si applica solo ai nuovi ticket. Usa \"Applica ai ticket aperti\" per aggiornare i ticket già aperti.",
+    "create": "Nuovo calendario",
+    "loading": "Caricamento degli orari di lavoro…",
+    "loadError": "Impossibile caricare gli orari di lavoro.",
+    "retry": "Riprova",
+    "empty": "Nessun calendario di orari di lavoro. I ticket corrono 24 ore su 24 (24×7) finché non ne crei uno e lo imposti come predefinito.",
+    "allOrgs": "Tutte le org",
+    "default": "Predefinito",
+    "archived": "Archiviato",
+    "edit": "Modifica",
+    "setDefault": "Imposta come predefinito",
+    "clearDefault": "Rimuovi predefinito",
+    "applyOpen": "Applica ai ticket aperti",
+    "archive": "Archivia",
+    "unarchive": "Ripristina",
+    "delete": "Elimina",
+    "deleteTitle": "Eliminare {{name}}?",
+    "deleteMessage": "Questa azione elimina definitivamente il calendario e le sue festività. Un calendario ancora usato da ticket o organizzazioni non può essere eliminato; archivialo invece.",
+    "name": "Nome",
+    "timezone": "Fuso orario",
+    "appliesTo": "Si applica a",
+    "ownerPartner": "Tutte le organizzazioni (a livello di partner)",
+    "ownerOrg": "Una organizzazione",
+    "organization": "Organizzazione",
+    "chooseOrg": "Scegli un'organizzazione",
+    "weeklyHours": "Orari settimanali",
+    "closed": "Chiuso",
+    "to": "a",
+    "addInterval": "Aggiungi orario",
+    "intervalStart": "{{day}} apre alle",
+    "intervalEnd": "{{day}} chiude alle",
+    "removeInterval": "Rimuovi l'orario di {{day}}",
+    "save": "Salva",
+    "saving": "Salvataggio…",
+    "cancel": "Annulla",
+    "holidays": "Festività",
+    "holidayHint": "Le festività con data odierna o precedente non modificano i ticket aperti.",
+    "noHolidays": "Nessuna festività.",
+    "holidayDate": "Data",
+    "holidayName": "Nome",
+    "holidayAdd": "Aggiungi festività",
+    "holidayRemove": "Rimuovi la festività {{name}}",
+    "weekdays": {
+      "0": "Domenica",
+      "1": "Lunedì",
+      "2": "Martedì",
+      "3": "Mercoledì",
+      "4": "Giovedì",
+      "5": "Venerdì",
+      "6": "Sabato"
+    },
+    "errors": {
+      "nameRequired": "Inserisci un nome.",
+      "orgRequired": "Scegli un'organizzazione.",
+      "invalidTime": "Inserisci gli orari come HH:MM (ad esempio 09:00); la fine può essere 24:00.",
+      "order": "Ogni intervallo deve terminare dopo il suo inizio.",
+      "overlap": "Gli intervalli dello stesso giorno non devono sovrapporsi.",
+      "empty": "Aggiungi almeno un intervallo di apertura.",
+      "timezone": "Scegli un fuso orario valido.",
+      "save": "Impossibile salvare il calendario. Riprova.",
+      "holidayInvalid": "Inserisci una data valida e un nome per la festività.",
+      "holidayAdd": "Impossibile aggiungere la festività. Riprova.",
+      "holidayRemove": "Impossibile rimuovere la festività. Riprova.",
+      "inUse": "Questo calendario è usato da ticket o organizzazioni e non può essere eliminato. Archivialo invece.",
+      "isDefault": "Questo calendario è quello predefinito. Rimuovi il predefinito prima di eliminarlo.",
+      "default": "Impossibile modificare il calendario predefinito. Riprova.",
+      "archive": "Impossibile modificare lo stato di archiviazione. Riprova.",
+      "delete": "Impossibile eliminare il calendario. Riprova.",
+      "apply": "Impossibile applicare il calendario ai ticket aperti. Riprova."
+    },
+    "toasts": {
+      "created": "Calendario creato",
+      "updated": "Calendario aggiornato",
+      "defaultSet": "Calendario predefinito impostato",
+      "defaultCleared": "Predefinito rimosso; i ticket senza eccezione corrono 24×7",
+      "archived": "Calendario archiviato",
+      "unarchived": "Calendario ripristinato",
+      "deleted": "Calendario eliminato",
+      "holidayAdded": "Festività aggiunta",
+      "holidayRemoved": "Festività rimossa",
+      "recompute": "Le scadenze dei ticket aperti sono in aggiornamento.",
+      "applied": "Applicato ai ticket aperti: {{count}} aggiornati",
+      "appliedPartial": "{{skipped}} ticket erano in modifica e mantengono il vecchio orario. Applica di nuovo per riprovare."
+    },
+    "apply": {
+      "title": "Applica {{name}} ai ticket aperti",
+      "explanation": "I ticket aperti mai messi in pausa passeranno agli orari attuali e le loro scadenze verranno ricalcolate. I ticket con cronologia di pause restano invariati.",
+      "loading": "Caricamento dell'anteprima…",
+      "loadFailed": "Impossibile caricare l'anteprima.",
+      "revisionChanged": "Gli orari sono cambiati dopo questa anteprima. Controlla i conteggi aggiornati prima di applicare.",
+      "eligible": "Ticket che verranno aggiornati: {{count}}",
+      "breached": "Di questi, scaduti immediatamente: {{count}}",
+      "paused": "Ignorati perché sono stati in pausa: {{count}}",
+      "confirm": "Applica ai ticket aperti"
+    }
   }
 }

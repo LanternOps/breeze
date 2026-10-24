@@ -52,6 +52,8 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'call:assertNoHourBlockDrawnTime': { moveOnly: TICKET_CHAIN },
   'call:assertTicketMoveCurrencyCompatible': { moveOnly: TICKET_CHAIN },
   'call:revalidateTicketAssignee': { moveOnly: TICKET_CHAIN },
+  // #8973 W4: moved tickets re-resolve their business calendar for the new org.
+  'call:reresolveMovedTicketCalendars': { moveOnly: TICKET_CHAIN },
   'call:removedTicketLinksFromRows': { moveOnly: TICKET_CHAIN },
   'call:dissolveLinkGroupIfBelowMinimum': { moveOnly: 'link groups are per org; a reattach keeps the org and the group' },
 

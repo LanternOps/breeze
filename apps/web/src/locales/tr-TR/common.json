@@ -116,7 +116,8 @@
     "ticketsServiceRequests": "Hizmet talepleri",
     "ticketsProblems": "Sorunlar",
     "ticketsChanges": "Değişiklikler",
-    "endpointMessages": "Mesajlar"
+    "endpointMessages": "Mesajlar",
+    "securityDetectionRules": "Tespit Kuralları"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -434,6 +435,9 @@
       "criticalOpen": "Kritik açık",
       "kev": "Kullanıldığı biliniyor",
       "patchReady": "Yama mevcut",
+      "viewCritical": "Kritik CVE'leri göster",
+      "viewPatchReady": "Yaması hazır CVE'leri göster",
+      "viewOpen": "Açık CVE'leri görüntüle",
       "totalOpen": "{{count}} açık bulgular",
       "totalOpen_one": "{{count}} açık bulgu",
       "totalOpen_other": "{{count}} açık bulgular",

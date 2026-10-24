@@ -1022,7 +1022,25 @@
         "fullScan": "Scansione completa",
         "maxFileSizeMb": "Dimensione massima file (MB)",
         "scanTimeoutMinutes": "Timeout scansione (minuti)",
-        "scanRunsServerSideDescription": "Breeze avvia questa scansione dal server — il dispositivo non necessita di una pianificazione locale."
+        "scanRunsServerSideDescription": "Breeze avvia questa scansione dal server — il dispositivo non necessita di una pianificazione locale.",
+        "ruleSets": {
+          "title": "Set di regole di rilevamento",
+          "description": "Set di regole usati dalle scansioni IOC di questo criterio.",
+          "manageLink": "Gestisci regole di rilevamento",
+          "loading": "Caricamento dei set di regole…",
+          "loadError": "Impossibile caricare i set di regole. Il criterio mantiene i set attuali; puoi comunque salvare le altre impostazioni.",
+          "none": "Nessun set di regole disponibile per questo criterio.",
+          "legacyNote": "Nessun set di regole: le scansioni usano solo le firme legacy integrate.",
+          "cap": "Un criterio può usare al massimo {{max}} set di regole.",
+          "unavailable": "Set di regole non disponibile",
+          "blocking": "Questo criterio non può usare i set di regole non disponibili (eliminati, spostati o di un'altra organizzazione). Rimuovili prima di salvare.",
+          "overrideDraft": "Le impostazioni ereditate includono set di regole che questo criterio non può usare. Rimuovi i set non disponibili, poi salva.",
+          "errors": {
+            "tooMany": "Un criterio può usare al massimo {{max}} set di regole.",
+            "invalidIds": "L'elenco dei set di regole non è valido. Ricarica la pagina e riprova.",
+            "notAttachable": "Questo criterio non può usare alcuni dei set di regole selezionati. Sono evidenziati qui sotto."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credenziali",

@@ -61,6 +61,11 @@ const TARGET_GLOBS = [
   'src/components/backup/VaultDashboard.tsx',
   'src/components/backup/VaultConfigDialog.tsx',
   'src/components/settings/TicketPushoverSettings.tsx',
+  // Business-hours calendars (#8973): every mutation through runAction.
+  'src/components/settings/BusinessHoursCard.tsx',
+  'src/components/settings/BusinessHoursForm.tsx',
+  'src/components/settings/BusinessHoursHolidays.tsx',
+  'src/components/settings/BusinessHoursApplyDialog.tsx',
   // #8330: saved-filter create/edit/delete surface the API's error text.
   'src/components/filters/SavedFilterList.tsx',
   // Endpoint messaging W1 (#8741): the send POST goes through runAction from birth.
@@ -955,7 +960,9 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W2 (#8770 W02a) pre-lists six W2 sections, TrustTemplateSettings and OrganizationForm: 237 → 245.
     // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
-    expect(absoluteFiles.length).toBe(249);
+    // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
+    // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
+    expect(absoluteFiles.length).toBe(253);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -1022,7 +1022,25 @@
         "fullScan": "Full scan",
         "maxFileSizeMb": "Max file size (MB)",
         "scanTimeoutMinutes": "Scan timeout (minutes)",
-        "scanRunsServerSideDescription": "Breeze dispatches this scan from the server — the device does not need a local schedule."
+        "scanRunsServerSideDescription": "Breeze dispatches this scan from the server — the device does not need a local schedule.",
+        "ruleSets": {
+          "title": "Detection rule sets",
+          "description": "Rule sets this policy's IOC scans use.",
+          "manageLink": "Manage detection rules",
+          "loading": "Loading rule sets…",
+          "loadError": "Rule sets could not be loaded. The policy keeps its current rule sets; you can still save the other settings.",
+          "none": "No rule sets are available for this policy.",
+          "legacyNote": "No rule sets: scans use the built-in legacy signatures only.",
+          "cap": "A policy can use at most {{max}} rule sets.",
+          "unavailable": "Unavailable rule set",
+          "blocking": "This policy cannot use the unavailable rule sets (deleted, moved, or owned by another organization). Remove them before saving.",
+          "overrideDraft": "The inherited settings list rule sets this policy cannot use. Remove the unavailable rule sets, then Save.",
+          "errors": {
+            "tooMany": "A policy can use at most {{max}} rule sets.",
+            "invalidIds": "The rule set list is not valid. Reload the page and try again.",
+            "notAttachable": "This policy cannot use some of the selected rule sets. They are highlighted below."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Credentials",

@@ -1022,7 +1022,25 @@
         "fullScan": "Balayage complet",
         "maxFileSizeMb": "Taille de fichier maximale (Mo)",
         "scanTimeoutMinutes": "Délai d'expiration du balayage (minutes)",
-        "scanRunsServerSideDescription": "Breeze envoie ce balayage depuis le serveur — l'appareil n'a pas besoin d'une planification locale."
+        "scanRunsServerSideDescription": "Breeze envoie ce balayage depuis le serveur — l'appareil n'a pas besoin d'une planification locale.",
+        "ruleSets": {
+          "title": "Ensembles de règles de détection",
+          "description": "Ensembles de règles utilisés par les analyses IOC de cette stratégie.",
+          "manageLink": "Gérer les règles de détection",
+          "loading": "Chargement des ensembles de règles…",
+          "loadError": "Impossible de charger les ensembles de règles. La stratégie conserve ses ensembles actuels ; vous pouvez tout de même enregistrer les autres paramètres.",
+          "none": "Aucun ensemble de règles n’est disponible pour cette stratégie.",
+          "legacyNote": "Aucun ensemble de règles : les analyses utilisent uniquement les anciennes signatures intégrées.",
+          "cap": "Une stratégie peut utiliser au maximum {{max}} ensembles de règles.",
+          "unavailable": "Ensemble de règles indisponible",
+          "blocking": "Cette stratégie ne peut pas utiliser les ensembles de règles indisponibles (supprimés, déplacés ou appartenant à une autre organisation). Retirez-les avant d’enregistrer.",
+          "overrideDraft": "Les paramètres hérités contiennent des ensembles de règles que cette stratégie ne peut pas utiliser. Retirez les ensembles indisponibles, puis enregistrez.",
+          "errors": {
+            "tooMany": "Une stratégie peut utiliser au maximum {{max}} ensembles de règles.",
+            "invalidIds": "La liste des ensembles de règles n’est pas valide. Rechargez la page et réessayez.",
+            "notAttachable": "Cette stratégie ne peut pas utiliser certains des ensembles de règles sélectionnés. Ils sont mis en évidence ci-dessous."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Diplômes",

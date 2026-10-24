@@ -286,6 +286,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'google_security_drift',
   'list_ai_agent_runs', // A-W06 Tier-1 read
   'list_ai_agents', // A-W06 Tier-1 read
+  'list_business_calendars', // #8973 W4 Tier-1 read
   'list_configuration_policies',
   'list_contracts',
   'list_deliverable_templates',

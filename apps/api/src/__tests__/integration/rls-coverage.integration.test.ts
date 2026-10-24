@@ -611,6 +611,16 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // 2027-01-02-130000-flows.sql (flows_one_owner_chk). Functional
   // cross-partner forge proof: flowsPartnerRls.integration.test.ts.
   'flows',
+  // Business-hours calendars (#8973 W4, 2027-01-03-160000): org_id XOR
+  // partner_id config table plus three children that DENORMALISE the owner
+  // pair from their parent (owner-guard constraint triggers, like
+  // tool_source_tools), all four with the partner-wide SELECT branch in the
+  // creating migration. Functional forge proof:
+  // businessCalendarsPartnerRls.integration.test.ts.
+  'business_calendars',
+  'business_calendar_revisions',
+  'business_calendar_intervals',
+  'business_calendar_holidays',
   'users',
   // connection_health_incidents (#8845, spec 2026-10-15 connection health
   // §2.1): partner_id always set, org_id NULL only for a partner-owned
@@ -957,6 +967,13 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // flows_one_owner_chk, 2027-01-02-130000-flows.sql (#5218); its
   // partner-wide SELECT branch (flows_partner_wide_select) ships in the same file.
   'flows',
+  // business_calendars_one_owner_chk and the three children's *_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2027-01-03-160000 (#8973 W4).
+  // All four partner-wide SELECT branches ship in the same file.
+  'business_calendars',
+  'business_calendar_revisions',
+  'business_calendar_intervals',
+  'business_calendar_holidays',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',

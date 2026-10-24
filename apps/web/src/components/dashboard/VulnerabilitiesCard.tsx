@@ -112,7 +112,7 @@ export default function VulnerabilitiesCard({
         {!noFindings && (
           <span className="text-xs tabular-nums text-muted-foreground">
             <DashboardMetric metric="vuln.openFindings">
-              {t('dashboard.vuln.totalOpen', { count: data.totalFindings })}
+              {t('dashboard.vuln.totalOpen', { count: data.openFindings })}
             </DashboardMetric>
           </span>
         )}
@@ -164,6 +164,20 @@ export default function VulnerabilitiesCard({
             </dd>
           </div>
         </dl>
+      )}
+
+      {!noFindings && (data.openFindings > 0 || data.criticalOpen > 0 || data.patchReadyFindingCount > 0) && (
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+          {data.openFindings > 0 && (
+            <DashboardMetric metric="vuln.viewOpen">{t('dashboard.vuln.viewOpen')}</DashboardMetric>
+          )}
+          {data.criticalOpen > 0 && (
+            <DashboardMetric metric="vuln.viewCritical">{t('dashboard.vuln.viewCritical')}</DashboardMetric>
+          )}
+          {data.patchReadyFindingCount > 0 && (
+            <DashboardMetric metric="vuln.viewPatchReady">{t('dashboard.vuln.viewPatchReady')}</DashboardMetric>
+          )}
+        </div>
       )}
     </div>
   );

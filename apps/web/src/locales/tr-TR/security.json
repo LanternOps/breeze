@@ -205,7 +205,8 @@
     "endpointDetectionAndAmpResponse": "Uç Nokta Tespiti ve Yanıtı",
     "huntressIncidents": "Huntress Olaylar",
     "sentineloneThreats": "SentinelOne Tehditleri",
-    "threatsAndIncidentsAcrossYourFleetFrom": "Filonuz genelinde SentinelOne ve Huntress kaynaklı tehditler ve olaylar."
+    "threatsAndIncidentsAcrossYourFleetFrom": "Filonuz genelinde SentinelOne ve Huntress kaynaklı tehditler ve olaylar.",
+    "iocScansLink": "Breeze IOC taramalarını mı arıyorsunuz? →"
   },
   "securityOtherEdr": {
     "tabLabel": "Diğer EDR",
@@ -753,7 +754,27 @@
     "threatRemoved": "Tehdit kaldırıldı",
     "threatStatus": "Tehdit durumu",
     "threatWasMovedToQuarantineByPolicy": "Tehdit, politika veya operatör eylemi nedeniyle karantinaya taşındı.",
-    "timeline": "Zaman Çizelgesi"
+    "timeline": "Zaman Çizelgesi",
+    "actionFailed": "İşlem başarısız oldu",
+    "quarantineSucceeded": "Tehdit karantinaya alındı",
+    "restoreSucceeded": "Tehdit geri yüklendi",
+    "removeSucceeded": "Tehdit kaldırıldı",
+    "notFound": "Bu tehdit bulunamadı. Silinmiş olabilir veya cihazına erişiminiz olmayabilir.",
+    "relatedLoadFailed": "İlgili tehditler yüklenemedi.",
+    "rule": {
+      "title": "Tespit kuralı",
+      "legacy": "Yerleşik imza (eski tarama)",
+      "ruleName": "Kural",
+      "ruleSet": "Kural kümesi",
+      "ruleSetMissing": "Kural kümesi artık kullanılamıyor",
+      "tags": "Etiketler",
+      "matchedStrings": "Eşleşen dizeler",
+      "noMatchedStrings": "Eşleşen dize bildirilmedi.",
+      "sha256": "Dosya SHA-256 değeri",
+      "copy": "SHA-256 değerini kopyala",
+      "quarantinedTo": "Karantinaya alındığı yer (tarama anında)",
+      "quarantineFailed": "Otomatik karantina başarısız oldu"
+    }
   },
   "securityThreatList": {
     "active": "Aktif",
@@ -2322,6 +2343,191 @@
       "awaitingVendorReport": "Sağlayıcı raporu bekleniyor",
       "awaitingEvaluation": "Değerlendirme bekleniyor",
       "vendorOrgMismatch": "Sağlayıcı farklı bir kuruluş bildiriyor"
+    }
+  },
+  "detectionRules": {
+    "title": "Tespit Kuralları",
+    "subtitle": "IOC taramaları ve tehdit avcılığı için kural kümeleri. Her değişiklik, cihazlara ulaşmadan önce sunucuda denetlenir.",
+    "listHelp": "Kural kümelerini IOC taramalarında kullanmak için bir Yapılandırma İlkesinin Güvenlik sekmesine ekleyin.",
+    "newRuleSet": "Yeni kural kümesi",
+    "back": "Kural kümelerine dön",
+    "loadFailed": "Kural kümeleri yüklenemedi.",
+    "empty": "Henüz kural kümesi yok.",
+    "rulesLabel": "Kurallar: {{total}}",
+    "publishedVersion": "sürüm {{version}}",
+    "created": "Kural kümesi oluşturuldu",
+    "deleted": "Kural kümesi silindi",
+    "columns": {
+      "name": "Ad",
+      "owner": "Sahip",
+      "rules": "Kurallar",
+      "published": "Yayımlandı"
+    },
+    "owner": {
+      "builtin": "Breeze (yerleşik)",
+      "allOrgs": "Tüm kuruluşlar",
+      "organization": "Kuruluş"
+    },
+    "badges": {
+      "builtin": "Yerleşik",
+      "allOrgs": "Tüm kuruluşlar",
+      "errors": "Hatalı",
+      "unpublished": "Yayımlanmadı",
+      "disabled": "Devre dışı"
+    },
+    "create": {
+      "title": "Yeni kural kümesi",
+      "name": "Ad",
+      "description": "Açıklama (isteğe bağlı)",
+      "owner": "Sahip",
+      "ownerAllOrgs": "Tüm kuruluşlar (iş ortağı genelinde)",
+      "ownerOrganization": "Tek bir kuruluş",
+      "organization": "Kuruluş",
+      "selectOrganization": "Bir kuruluş seçin",
+      "submit": "Kural kümesi oluştur"
+    },
+    "errors": {
+      "autoQuarantineExecuteRequired": "Otomatik karantinayı açmak devices:execute iznini gerektirir; çünkü bu küme ile tarama yapan her cihazda dosyaları taşır.",
+      "iocBatchAlreadyImported": "Bu IOC'ler bu kümeye zaten içe aktarıldı.",
+      "iocRuleNameTaken": "Bu kümede aynı üretilmiş ada sahip ama içeriği farklı bir kural zaten var. Onu yeniden adlandırın veya silin, sonra yeniden içe aktarın.",
+      "iocTooManyRules": "Bu içe aktarma kümeyi {{max}} kuralın üzerine çıkarır. Başka bir kümeye aktarın.",
+      "iocInvalid": "Bazı IOC'ler geçerli değil. İşaretli satırları düzeltip yeniden deneyin."
+    },
+    "test": {
+      "requestFailed": "Test tamamlanmadı. Bağlantınızı denetleyip yeniden deneyin.",
+      "privacy": "Dosya, Breeze sunucusunda bir korumalı alanda, bu kümenin henüz yayımlanmamış değişiklikler dahil güncel kurallarıyla taranır. Dosya saklanmaz. Denetim günlüğüne yalnızca SHA-256 değeri, boyutu ve eşleşme sayısı kaydedilir.",
+      "sandboxUnavailable": "Bu sunucuda dosya testleri kullanılamıyor",
+      "sandboxUnavailableHelp": "Sunucu taramayı yalıtamadığı için yüklenen dosyaları işlemez. Kural düzenleme, IOC içe aktarma ve cihaz taramaları etkilenmez.",
+      "file": "Test edilecek dosya",
+      "filepath": "Cihazdaki yol (isteğe bağlı)",
+      "filepathHelp": "Dosyanın bir cihazda bulunacağı yer. Yolu denetleyen kurallar bunu kullanır; varsayılan değer dosya adıdır.",
+      "run": "Testi çalıştır",
+      "running": "Test ediliyor…",
+      "testedVersion": "Test edilen sürüm {{version}}",
+      "unpublishedChanges": "Yayımlanmamış değişiklikleriniz test ediliyor.",
+      "noMatches": "Hiçbir kural eşleşmedi.",
+      "errors": {
+        "tooLarge": "Dosya {{max}} MB'tan büyük. Daha küçük bir dosya seçin.",
+        "busy": "Başka bir test çalışıyor. Birkaç saniye sonra yeniden deneyin.",
+        "rateLimited": "Son birkaç dakikada çok fazla test çalıştırdınız. Daha sonra yeniden deneyin.",
+        "unavailable": "Kural denetleyicisi kullanılamıyor. Daha sonra yeniden deneyin.",
+        "noRules": "Bu kümede test edilecek etkin kural yok.",
+        "compileFailed": "Bu küme güncel kurallarıyla derlenmiyor, bu nedenle hiçbir şey taranmadı:",
+        "bodyTimeout": "Yükleme çok uzun sürdü. Yeniden deneyin.",
+        "unexpected": "Test tamamlanamadı. Yeniden deneyin."
+      }
+    },
+    "severity": {
+      "low": "Düşük",
+      "medium": "Orta",
+      "high": "Yüksek",
+      "critical": "Kritik"
+    },
+    "publish": {
+      "saved": "Kaydedildi",
+      "autoQuarantineOnly": "Otomatik karantina artık cihazlarda kapalı. Diğer değişiklikleriniz henüz etkin değil.",
+      "published": "Kaydedildi ve {{version}} sürümü olarak yayımlandı",
+      "savedDisabled": "Kaydedildi. Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
+      "checkerUnavailable": "Kaydedildi, yayımlanmadı: kural denetleyicisi kullanılamıyor. {{devices}}",
+      "compileErrors_one": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
+      "compileErrors_other": "Kaydedildi, yayımlanmadı: {{count}} kuralda hata var. {{devices}}",
+      "setErrors": "Kaydedildi, yayımlanmadı: {{message}}. {{devices}}",
+      "noEnabledRules": "Etkin kural yok: cihazlar artık bu kümeyle tarama yapmıyor.",
+      "unknown": "Kaydedildi, ancak yayımlama sonucu okunamadı. Cihazların hangi sürümü kullandığını görmek için kümeyi yeniden yükleyin.",
+      "devicesKeep": "Cihazlar {{version}} sürümünü kullanmaya devam ediyor.",
+      "neverPublished": "Bu küme henüz yayımlanmadı, bu nedenle cihazlar onu kullanmıyor.",
+      "setDisabled": "Küme devre dışı olduğu için cihazlar onu kullanmıyor.",
+      "staleBanner": "Yayımlanmadı: aşağıdaki hataları düzeltin. {{devices}}"
+    },
+    "editor": {
+      "tabs": {
+        "rules": "Kurallar",
+        "import": "IOC içe aktar",
+        "test": "Dosya test et"
+      },
+      "rename": "Kural kümesini yeniden adlandır",
+      "enabled": "Etkin",
+      "autoQuarantine": "Otomatik karantina",
+      "autoQuarantineHelp": "Bu kümeyle tarama yapan her cihazda eşleşen dosyaları karantinaya taşı.",
+      "deleteSet": "Sil",
+      "deleteSetTitle": "Bu kural kümesi silinsin mi?",
+      "deleteSetMessage": "Kuralları da silinir. Onu hâlâ listeleyen ilkeler bir sonraki taramada onu bulunamadı olarak kaydeder.",
+      "deleteRuleTitle": "Bu kural silinsin mi?",
+      "deleteRuleMessage": "Küme o kural olmadan denetlenir ve yeniden yayımlanır.",
+      "addRule": "Kural ekle",
+      "noRules": "Bu kümede henüz kural yok.",
+      "columns": {
+        "name": "Kural",
+        "severity": "Önem derecesi",
+        "tags": "Etiketler",
+        "state": "Durum"
+      },
+      "viewSource": "Kaynağı göster",
+      "hideSource": "Kaynağı gizle",
+      "editRule": "Kuralı düzenle",
+      "deleteRule": "Kuralı sil",
+      "errorLine": "Satır {{line}}:",
+      "publishedVersion": "Yayımlanan sürüm {{version}}",
+      "readOnlyBuiltin": "Yerleşik kural kümesi salt okunurdur. Kuralları Breeze sürümleriyle güncellenir.",
+      "refreshFailed": "Değişiklik gönderildi, ancak kural kümesi yeniden yüklenemedi. Gördükleriniz güncel olmayabilir."
+    },
+    "dialog": {
+      "titleAdd": "Kural ekle",
+      "titleEdit": "Kuralı düzenle",
+      "name": "Kural adı",
+      "nameHelp": "Harf, rakam ve alt çizgi; bir harf veya alt çizgiyle başlar (en fazla 128).",
+      "severity": "Önem derecesi",
+      "tags": "Etiketler",
+      "tagsHelp": "Virgülle ayrılmış, ör. ransomware, advisory-42",
+      "enabled": "Etkin",
+      "source": "YARA kaynağı",
+      "sourceTooLarge": "Kural kaynağı {{max}} KB'tan büyük.",
+      "checkedOnSave": "Kaydettiğinizde küme, cihazların kullandığı derleyiciyle denetlenir. Hatalı kurallar yayımlanmaz."
+    },
+    "ioc": {
+      "help": {
+        "title": "İçe aktarıcı nasıl çalışır",
+        "format": "Her satıra bir IOC (# bir yorum başlatır) veya bir JSON dizisi. Türü kendiniz belirlemek için satırın başına sha256: veya domain: gibi türünü yazın.",
+        "exactMatch": "Yalnızca tam eşleşme: joker karakter veya desen yok.",
+        "contentNotTraffic": "Alan adları ve IP adresleri ağ trafiğiyle değil, taranan dosyaların içindeki metinle eşleşir.",
+        "partialOverlap": "Aynı IOC'lerin yeniden içe aktarılması algılanır. Önceki bir içe aktarmayla yalnızca kısmen örtüşen bir grup tekilleştirilmez."
+      },
+      "label": "Etiket",
+      "labelPlaceholder": "Örneğin: Üretici bülteni 2026-10",
+      "labelRequired": "Üretilen kuralları önizlemek için bir etiket girin.",
+      "paste": "IOC'leri yapıştırın",
+      "textTooLong": "Yapıştırılan metin {{max}} KB'tan büyük. Daha küçük içe aktarmalara bölün.",
+      "skippedLines": "Bu satırlar atlanıyor:",
+      "lineError": "Satır {{line}}: {{error}}",
+      "validCount": "{{total}} IOC'den {{valid}} tanesi içe aktarılmaya hazır",
+      "kind": "Tür",
+      "value": "Değer",
+      "kinds": {
+        "md5": "MD5 karması",
+        "sha1": "SHA-1 karması",
+        "sha256": "SHA-256 karması",
+        "filename": "Dosya adı",
+        "filepath": "Dosya yolu",
+        "domain": "Alan adı",
+        "ip": "IP adresi",
+        "string": "Metin dizesi"
+      },
+      "errors": {
+        "empty": "Boş değer",
+        "unknown_kind": "Bilinmeyen tür",
+        "bad_hash": "Bu tür için geçerli bir karma değil",
+        "too_short": "Metin en az 4 bayt olmalı",
+        "too_long": "Çok uzun",
+        "bad_path": "Bu tür için geçerli bir yol değil",
+        "bad_ip": "Geçerli bir IP adresi değil",
+        "bad_domain": "Geçerli bir alan adı değil",
+        "duplicate": "Önceki bir satırın yinelenmesi"
+      },
+      "overCap": "İçe aktarma başına en fazla {{max}} IOC. Listeyi daha küçük içe aktarmalara bölün.",
+      "hashNote": "Karma IOC'leri cihazların taranan her dosyanın tamamının karmasını almasına yol açar; bu nedenle tam taramalar daha uzun sürer.",
+      "generateFailed": "Bu IOC'lerden kural üretilemedi.",
+      "generatedTitle": "Kaydedilecek kurallar: {{total}}",
+      "import": "{{total}} IOC içe aktar"
     }
   },
   "sensitiveDataAccess": {
