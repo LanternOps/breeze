@@ -116,8 +116,8 @@ afterEach(() => {
 
 describe('leaving /workspace mid-turn and returning', () => {
   it('unmount stops both attaches; the next mount re-joins each running turn with one /stream per tab', async () => {
-    const first = { [A]: liveSse(), [B]: liveSse() };
-    const second = { [A]: liveSse(), [B]: liveSse() };
+    const first: Record<string, Live> = { [A]: liveSse(), [B]: liveSse() };
+    const second: Record<string, Live> = { [A]: liveSse(), [B]: liveSse() };
     for (const id of [A, B]) {
       on(`/ai/sessions/${id}`, () => session(id));
       on(`/ai/sessions/${id}/stream`, () => first[id]!.res, () => second[id]!.res);

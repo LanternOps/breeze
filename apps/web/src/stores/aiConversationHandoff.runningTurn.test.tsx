@@ -374,8 +374,8 @@ describe('RT2 workspace → panel mid-turn (the reverse of leg (a))', () => {
 
 describe('RT3 leave /workspace mid-turn and return (plan T17 Step 3 (c))', () => {
   it('cleanup stops both attaches (old frames write nothing); the return re-hydrates and re-attaches each tab to the still-running turn', async () => {
-    const first = { [S]: liveSse(), [S2]: liveSse() };
-    const second = { [S]: liveSse(), [S2]: liveSse() };
+    const first: Record<string, Live> = { [S]: liveSse(), [S2]: liveSse() };
+    const second: Record<string, Live> = { [S]: liveSse(), [S2]: liveSse() };
     for (const id of [S, S2]) {
       on(`/ai/sessions/${id}`, () => session(id));
       on(`/ai/sessions/${id}/stream`, () => first[id]!.res, () => second[id]!.res);
