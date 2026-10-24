@@ -87,6 +87,10 @@ const TARGET_GLOBS = [
   // Wisp W05a (#9911): concerns list snooze/dismiss/resolve go through runAction.
   'src/components/ai/WispConcernsPanel.tsx',
   'src/lib/wispConcernsApi.ts',
+  // Wisp W06b (#9918): grant pause/resume go through runAction; the thread page (reads only today) is
+  // listed per the W06 plan so a mutation added there later cannot go silent.
+  'src/components/wisp/WispThreadPage.tsx',
+  'src/components/wisp/WispGrantPauseControl.tsx',
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -123,6 +127,13 @@ const TARGET_GLOBS = [
   // gone when it is still being stamped.
   'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
+  'src/components/settings/partnerSettings/usePartnersMeUnit.ts',
+  'src/components/settings/partnerSettings/units/callerVerificationUnit.ts',
+  'src/components/settings/partnerSettings/units/loginBrandingUnit.ts',
+  'src/components/settings/partnerSettings/units/trustCenterUnit.ts',
+  'src/components/settings/partnerSettings/units/aiFeatureDefaultsUnit.ts',
+  'src/components/settings/partnerSettings/units/aiDataPolicyUnit.ts',
+  'src/components/settings/KnownGuestsSettings.tsx',
   'src/components/settings/aiModels/PartnerAiModelsTab.tsx',
   'src/components/settings/aiModels/ConnectionDrawer.tsx',
   'src/components/settings/aiModels/ResidencySwitch.tsx',
@@ -156,6 +167,9 @@ const TARGET_GLOBS = [
   // POST are advisory-then-destructive mutations against a partner's tenant
   // tree, so a silent failure here is exactly the class this guard exists for.
   'src/components/settings/MergeOrgModal.tsx',
+  // #9796: the bulk site move (POST /devices/bulk/site) — a multi-device tenant write that must
+  // never ride ChangeSiteModal.tsx's migration-backlog exemption.
+  'src/components/devices/bulkSiteMove.ts',
   // Org archive (org-lifecycle Wave 5), replacing the org delete flow: the
   // archive POST hides an org, uninstalls its agents, and stops its billing —
   // a silent failure here is exactly the class this guard exists for.
@@ -978,8 +992,15 @@ describe('no silent mutations in targeted set', () => {
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
     // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
     // Wisp W05a (#9911) adds WispConcernsPanel/wispConcernsApi (+2 = 259).
-    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 259 → 261.
-    expect(absoluteFiles.length).toBe(261);
+    // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 259 → 260.
+    // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 260 → 262.
+    // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 262 → 263.
+    // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 263 → 265.
+    // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 265 → 266.
+    // Wisp W06b (#9918) adds WispThreadPage/WispGrantPauseControl: 266 → 268;
+    // bulk site move (#9796) adds devices/bulkSiteMove.ts (+1 = 269).
+    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 269 → 271.
+    expect(absoluteFiles.length).toBe(271);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

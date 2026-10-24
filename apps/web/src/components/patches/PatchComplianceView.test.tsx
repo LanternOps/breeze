@@ -908,10 +908,13 @@ describe('PatchComplianceView server-side list (#9791 C)', () => {
     });
     render(<PatchComplianceView ringId={null} />);
     await screen.findByText('host-0');
+    await screen.findByText('host-1');
 
     await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
-    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    // The selection count re-renders after the click; under CI load a
+    // synchronous getByText raced it (ejected #9983 from CI on 2026-10-24).
+    expect(await screen.findByText('2 selected')).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Compliance status filter' }), { target: { value: 'reboot' } });
     await waitFor(() => expect(screen.queryByText('2 selected')).toBeNull());

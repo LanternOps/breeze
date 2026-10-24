@@ -30,8 +30,17 @@ const store = vi.hoisted(() => ({
   renameTab: vi.fn(),
   restoreWorkspace: vi.fn(async () => undefined),
   cleanupAllStreams: vi.fn(),
+  // #9840 W3: the deep link (#session=) and the move controls.
+  openSession: vi.fn(async () => 'opened'),
+  setComposerDraft: vi.fn(),
+  resetForLogout: vi.fn(),
 }));
-vi.mock('@/stores/workspaceStore', () => ({ useWorkspaceStore: () => store }));
+vi.mock('@/stores/workspaceStore', () => ({
+  useWorkspaceStore: Object.assign(
+    (selector?: (s: typeof store) => unknown) => (selector ? selector(store) : store),
+    { getState: () => store },
+  ),
+}));
 vi.mock('./WorkspaceTabBar', () => ({ default: () => <div data-testid="workspace-tab-bar" /> }));
 vi.mock('./WorkspaceChatPanel', () => ({ default: () => <div data-testid="workspace-chat-panel" /> }));
 vi.mock('./WorkspaceEmptyState', () => ({ default: () => <div data-testid="workspace-empty-state" /> }));
@@ -63,6 +72,17 @@ describe('WorkspacePage - ai_sessions:use gate (#6498)', () => {
 
     expect(store.restoreWorkspace).not.toHaveBeenCalled();
     expect(store.createTab).not.toHaveBeenCalled();
+  });
+
+  it('never acts on a #session= deep link without the permission (#9840 W3)', () => {
+    state.permissions = [DEVICES_READ];
+    window.history.replaceState(null, '', '/workspace#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    render(<WorkspacePage />);
+
+    expect(screen.getByTestId('workspace-access-denied')).toBeInTheDocument();
+    expect(store.openSession).not.toHaveBeenCalled();
+    expect(window.location.hash).toBe('#session=0f8fad5b-d9cb-469f-a165-70867728950e');
+    window.history.replaceState(null, '', '/');
   });
 
   it('keeps the workspace hidden while permissions are still loading', () => {

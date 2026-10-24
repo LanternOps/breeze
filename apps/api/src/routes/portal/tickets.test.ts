@@ -698,6 +698,24 @@ describe('POST /tickets — delegates to createTicket', () => {
     );
   });
 
+  // #8883 W5 T5.4: an untouched portal priority is not an explicit choice, so
+  // a routing rule may set it; the service still defaults to 'normal'.
+  it('passes priority through only when the customer chose one (no schema default)', async () => {
+    await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'No priority', description: 'untouched' })
+    });
+    expect(createTicketMock.mock.calls.at(-1)![0].priority).toBeUndefined();
+
+    await app.request('/tickets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: 'Chosen', description: 'touched', priority: 'high' })
+    });
+    expect(createTicketMock.mock.calls.at(-1)![0].priority).toBe('high');
+  });
+
   it('returns the same response shape as before (id, ticketNumber, subject, description, status, priority, createdAt, updatedAt)', async () => {
     const res = await app.request('/tickets', {
       method: 'POST',

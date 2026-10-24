@@ -144,7 +144,8 @@ describe('partner settings page: heading ladder and nesting on every panel (#978
 
   it.each(panelTabs.map(t => [t.key, t.hash, t.label] as const))('every control has an accessible name on %s', async (_key, hash, labelKey) => {
     await mountTab(hash, i18n.t(labelKey, { ns: 'settings' }));
-    const controls = Array.from(document.querySelectorAll('main input, main select, main textarea, section input, section select, section textarea'));
+    // Autosave switches (W2: ML features, Modules) are buttons with role="switch" and need a name too.
+    const controls = Array.from(document.querySelectorAll('main input, main select, main textarea, section input, section select, section textarea, section [role="switch"]'));
     // callerVerification (form loads policy data) and emailTemplates (link list) expose no inputs under these fixtures.
     if (!['callerVerification', 'emailTemplates'].includes(_key)) expect(controls.length).toBeGreaterThan(0);
     for (const control of controls) {

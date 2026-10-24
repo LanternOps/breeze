@@ -193,7 +193,7 @@ vi.mock('../../db/schema', () => ({
     slaPausedAt: 'sla_paused_at', slaPausedMinutes: 'sla_paused_minutes',
     slaBreachReason: 'sla_breach_reason', statusId: 'statusId',
     deletedAt: 'deletedAt', deletedBy: 'deletedBy', ticketType: 'ticket_type',
-    mergedIntoTicketId: 'mergedIntoTicketId',
+    mergedIntoTicketId: 'mergedIntoTicketId', mergedAt: 'merged_at',
     // #8973 W3 stored deadlines.
     responseDueAt: 'response_due_at', resolutionDueAt: 'resolution_due_at',
     responseWarnAt: 'response_warn_at', resolutionWarnAt: 'resolution_warn_at',
@@ -350,6 +350,22 @@ describe('GET /tickets', () => {
       slaPausedMinutes: 'sla_paused_minutes',
       slaBreachReason: 'sla_breach_reason'
     });
+  });
+
+  it('selects the merged marker for list rows (#8972 W2: "Merged" chip under showMerged)', async () => {
+    dbSelectMock.mockResolvedValue([
+      { id: 't-1', internalNumber: 'T-2026-0001', subject: 'Printer', mergedIntoTicketId: 't-9', mergedAt: '2026-10-20T12:00:00.000Z' },
+    ]);
+    const res = await makeApp().request('/tickets?showMerged=true');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0]).toMatchObject({ mergedIntoTicketId: 't-9', mergedAt: '2026-10-20T12:00:00.000Z' });
+
+    const { db } = await import('../../db');
+    const listSelection = (db.select as any).mock.calls.find(
+      (args: any[]) => args[0] && typeof args[0] === 'object' && 'internalNumber' in args[0] && 'subject' in args[0]
+    )?.[0];
+    expect(listSelection).toMatchObject({ mergedIntoTicketId: 'mergedIntoTicketId', mergedAt: 'merged_at' });
   });
 
   it('GET /tickets?slaState=breached filters on sla_breached_at IS NOT NULL', async () => {

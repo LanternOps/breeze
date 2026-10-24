@@ -6,6 +6,7 @@ import { db, withSystemDbAccessContext } from '../../db';
 import {
   partners, organizations, contracts, contractLines, tickets, orgTicketSettings,
   businessCalendars, businessCalendarRevisions, businessCalendarIntervals, businessCalendarHolidays,
+  ticketCategories, ticketRoutingRules, ticketRoutingRuleOrgLinks,
 } from '../../db/schema';
 import { eq } from 'drizzle-orm';
 import { executeOrgMerge } from '../../services/orgMerge';
@@ -1099,5 +1100,55 @@ describe('org merge of an org that owns a business calendar (#8973 W4, Gate B15)
     expect(after.ticket?.orgId).toBe(survivor!.id);
     expect(after.ticket?.slaCalendarRevisionId).toBe(seeded.revId);
     expect(after.settings.map((r) => r.businessCalendarId)).toEqual([seeded.survCalId]);
+  });
+});
+
+// #8883 W5: an org that owns routing rules, and is named in a partner-wide
+// rule's org allowlist, merges cleanly. Org-owned rules repoint (no org-axis
+// unique to collide on); the loser's link repoints and dedupes against the
+// survivor's link on the same rule (ticket_routing_rule_org_links_rule_org_uq);
+// the deferrable same-partner reference guard checks the final state.
+describe('org merge of an org that owns routing rules (#8883 W5)', () => {
+  it('repoints org-owned rules and dedupes org links on a partner-wide rule', async () => {
+    const partner = await createPartner();
+    const loser = await createOrganization({ partnerId: partner!.id });
+    const survivor = await createOrganization({ partnerId: partner!.id });
+    const actor = await createUser({ partnerId: partner!.id, email: `rr-merge-${randomUUID().slice(0, 8)}@example.com` });
+
+    const seeded = await withSystemDbAccessContext(async () => {
+      const [cat] = await db.insert(ticketCategories).values({ partnerId: partner!.id, name: `RR ${randomUUID().slice(0, 8)}` }).returning();
+      // Same name and position under both orgs: no org-axis unique exists.
+      const [loserRule] = await db.insert(ticketRoutingRules).values({ orgId: loser!.id, partnerId: null, name: 'Escalate', position: 0, setCategoryId: cat!.id }).returning();
+      const [survRule] = await db.insert(ticketRoutingRules).values({ orgId: survivor!.id, partnerId: null, name: 'Escalate', position: 0, setPriority: 'high' }).returning();
+      const [wide] = await db.insert(ticketRoutingRules).values({ orgId: null, partnerId: partner!.id, name: 'Wide', setPriority: 'urgent' }).returning();
+      await db.insert(ticketRoutingRuleOrgLinks).values([{ ruleId: wide!.id, orgId: loser!.id }, { ruleId: wide!.id, orgId: survivor!.id }]);
+      const [wide2] = await db.insert(ticketRoutingRules).values({ orgId: null, partnerId: partner!.id, name: 'Wide loser only', setPriority: 'low' }).returning();
+      await db.insert(ticketRoutingRuleOrgLinks).values({ ruleId: wide2!.id, orgId: loser!.id });
+      return { loserRuleId: loserRule!.id, survRuleId: survRule!.id, wideId: wide!.id, wide2Id: wide2!.id };
+    });
+
+    const priorDrain = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    try {
+      await executeOrgMerge({
+        loserOrgId: loser!.id,
+        survivorOrgId: survivor!.id,
+        partnerId: partner!.id,
+        performedBy: actor.id,
+        performedByEmail: actor.email,
+      });
+    } finally {
+      if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+      else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+    }
+
+    const after = await withSystemDbAccessContext(async () => ({
+      rules: await db.select().from(ticketRoutingRules).where(eq(ticketRoutingRules.orgId, survivor!.id)),
+      wideLinks: await db.select().from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, seeded.wideId)),
+      wide2Links: await db.select().from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, seeded.wide2Id)),
+    }));
+    expect(after.rules.map((r) => r.id).sort()).toEqual([seeded.loserRuleId, seeded.survRuleId].sort());
+    expect(after.wideLinks.map((l) => l.orgId)).toEqual([survivor!.id]);
+    expect(after.wide2Links.map((l) => l.orgId)).toEqual([survivor!.id]);
   });
 });

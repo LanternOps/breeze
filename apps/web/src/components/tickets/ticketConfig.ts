@@ -44,6 +44,10 @@ export interface TicketSummary {
   // Only present on the soft-deleted "Archived" queue (GET /tickets?deleted=only).
   // ISO timestamp of when the ticket was soft-deleted; null/absent on live rows.
   deletedAt?: string | null;
+  // #8972: set on a merged tombstone (the survivor's id / when). null on live
+  // tickets; optional so older payloads and fixtures read as not merged.
+  mergedIntoTicketId?: string | null;
+  mergedAt?: string | null;
 }
 
 export interface TicketComment {
@@ -63,6 +67,9 @@ export interface TicketComment {
   /** W08 #3902 — photo/PDF attachments on this comment. Absent on older
    *  payloads and always [] for a soft-deleted comment. */
   attachments?: TicketAttachmentMeta[];
+  /** #8972: the tombstone this comment was moved from by a merge (the earliest
+   *  origin on a twice-merged comment); null/absent on native comments. */
+  mergedFromTicketId?: string | null;
 }
 
 export interface TicketDetail extends TicketSummary {
@@ -80,8 +87,18 @@ export interface TicketDetail extends TicketSummary {
   // Stamped by the API on resolve/close, cleared on reopen. The detail endpoint
   // returns the full ticket row, so this is always present (unlike the list).
   resolvedAt: string | null;
+  // Legacy display number; the UI prefers internalNumber (see ticketDisplayNumber).
+  ticketNumber?: string | null;
+  // #8972: who merged this tombstone (null once that user is deleted).
+  mergedByUserId?: string | null;
   comments: TicketComment[];
   alertLinks: Array<{ id: string; alertId: string; linkType: string; alertTitle: string | null; alertSeverity: string | null; alertStatus: string | null }>;
+}
+
+/** The number a technician reads for a ticket: internal number, then the
+ *  legacy ticket number, then a short id. */
+export function ticketDisplayNumber(t: { id: string; internalNumber?: string | null; ticketNumber?: string | null }): string {
+  return t.internalNumber ?? t.ticketNumber ?? t.id.slice(0, 8);
 }
 
 export const statusConfig: Record<TicketStatus, { label: string; color: string }> = {

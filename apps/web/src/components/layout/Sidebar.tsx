@@ -59,6 +59,7 @@ import {
   Bug,
   Puzzle,
   LayoutGrid,
+  MapPin,
   Cpu,
   TrendingUp,
   BookCheck,
@@ -75,6 +76,7 @@ import { RECENT_ENTRY_ICONS } from './recentEntryIcons';
 import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
 import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate, useAiOperatorTasksGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
@@ -328,6 +330,7 @@ export const navSections: NavSection[] = [
     // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sites', labelKey: 'nav.sites', href: '/settings/sites', icon: MapPin, testId: 'nav-sites', requiredPermission: { resource: 'sites', action: 'read' } },
       // Parked devices waiting for assignment — full partner admins only; the
       // pre-assignment routes also require devices:write and organizations:write.
       { name: 'Unassigned Devices', labelKey: 'nav.unassignedDevices', href: '/devices/unassigned', icon: Inbox, partnerScopeOnly: true, requiresPreAssignment: true, requiresPartnerWideAdmin: true, requiredPermission: { resource: 'devices', action: 'write' }, alsoRequiredPermissions: [{ resource: 'organizations', action: 'write' }] },
@@ -751,7 +754,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     if (jwtScope !== 'partner') return;
 
     let cancelled = false;
-    fetchWithAuth('/orgs/partners/me')
+    // Shared with the other islands reading partners/me at load (#9172).
+    getPartnersMe()
       .then((r) => {
         if (!r.ok) {
           if (r.status !== 403 && r.status !== 404) {
@@ -759,13 +763,13 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{
+        return r.data as {
           name?: string;
           aiForOfficeEnabled?: boolean;
           wispEnabled?: boolean;
           serviceManagementMode?: ServiceManagementMode;
           settings?: { branding?: { logoUrl?: string } };
-        }>;
+        };
       })
       .then((data) => {
         if (cancelled || !data) return;

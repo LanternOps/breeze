@@ -12,6 +12,7 @@
  * `deepLink`) are what W06's web bell fallback (`buildHref`) reads — keep the
  * spelling.
  */
+import type { BriefSection } from '@breeze/shared';
 import { createNotification } from '../userNotifications';
 import { inSystemContext } from './grantAuthority';
 
@@ -31,6 +32,8 @@ export type InAppDelivery = {
   threadId?: string | null;
   grantId?: string | null;
   deepLink?: string | null;
+  /** W06 morning brief (w00 A28): its sections, stored as `metadata.brief` for the home to render. */
+  brief?: BriefSection[] | null;
 };
 
 /** `created: false` when the dedupe key already exists for the user. */
@@ -50,6 +53,7 @@ export async function deliverInApp(d: InAppDelivery): Promise<{ created: boolean
       grantId: d.grantId ?? null,
       intentId: d.approvalIntentId ?? null,
       deepLink: d.deepLink ?? null,
+      ...(d.brief ? { brief: d.brief } : {}),
     },
   }));
   return { created: id !== null };

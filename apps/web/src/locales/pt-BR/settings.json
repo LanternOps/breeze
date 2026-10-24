@@ -1120,7 +1120,6 @@
     "title": "Configurações do parceiro",
     "description": "Configure os padrões de {{name}}.",
     "yourMsp": "seu MSP",
-    "selfSaving": "Esta seção salva as próprias alterações.",
     "saveSettings": "Salvar configurações",
     "enforcedDescription": "Os valores definidos aqui são aplicados a todas as organizações. Deixe os campos vazios para cada organização configurar individualmente.",
     "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações.",
@@ -1149,6 +1148,27 @@
       "topologyAiDescription": "Permitir que a Breeze AI resuma o mapa e sinalize mudanças incomuns na topologia de um local.",
       "saved": "Módulos atualizados",
       "saveFailed": "Falha ao atualizar os módulos"
+    },
+    "status": {
+      "clean": "Todas as alterações salvas · {{time}}",
+      "cleanNoTime": "Todas as alterações salvas",
+      "dirty": "Alterações não salvas em <tabs></tabs>.",
+      "invalid_one": "Corrija {{count}} campo em {{tab}} para salvar.",
+      "invalid_other": "Corrija {{count}} campos em {{tab}} para salvar.",
+      "saving": "Salvando…",
+      "partial": "Não foi possível salvar <tabs></tabs>. As outras alterações foram salvas.",
+      "failed": "Não foi possível salvar <tabs></tabs>.",
+      "autosaved": "Salvo · {{time}}",
+      "autosaveFailed": "Não foi possível salvar — tente novamente",
+      "readOnly": "Salvar exige acesso total de parceiro"
+    },
+    "validation": {
+      "retentionDays": "Informe um número inteiro de dias entre 1 e 3650."
+    },
+    "unsavedConfirm": "Você tem alterações não salvas. Sair desta página e descartá-las?",
+    "knownGuests": {
+      "added": "Convidado conhecido adicionado",
+      "removed": "Convidado conhecido removido"
     }
   },
   "partnerSendingDomains": {
@@ -1526,9 +1546,6 @@
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
     "staffForwardRouting": "Registrar encaminhamentos da equipe no cliente do remetente original",
     "staffForwardRoutingDescription": "Quando um membro da sua equipe no nível de parceiro encaminha o e-mail de um cliente para o endereço de suporte, o novo ticket é registrado na organização vinculada ao domínio do remetente original, e não na sua. O membro da equipe precisa ter acesso a essa organização. Funciona apenas para encaminhamentos feitos no Gmail e recebidos por uma caixa do Gmail conectada; não para o endereço de entrada nativo, caixas do Microsoft 365 nem encaminhamentos do Outlook.",
-    "defaultAssignee": "Responsável padrão para novos tickets recebidos",
-    "defaultAssigneeDescription": "Todo ticket novo criado a partir de um e-mail recebido é atribuído a essa pessoa, a menos que outra regra já o tenha atribuído. Se ela não tiver acesso à organização do ticket, o ticket fica sem responsável.",
-    "defaultAssigneeUnavailable": "Usuário indisponível",
     "defaultAssigneeNotAssignable": "Esse usuário não pode ser o responsável padrão. Escolha um membro ativo da sua equipe com acesso a tickets.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
     "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
@@ -5263,7 +5280,8 @@
     "timeTracking": "Controle de tempo",
     "email": "E-mail",
     "templates": "Modelos",
-    "timeCapture": "Registro de tempo"
+    "timeCapture": "Registro de tempo",
+    "routing": "Roteamento"
   },
   "ticketFormsCard": {
     "heading": "Formulários de abertura",
@@ -6006,8 +6024,10 @@
   "siteDetailPage": {
     "loading": "Carregando site...",
     "backToOrganizations": "Voltar para organizações",
+    "backToSites": "Voltar para sites",
     "breadcrumbs": {
       "settings": "Configurações",
+      "sites": "Sites",
       "organizations": "Organizações"
     },
     "errors": {
@@ -6093,6 +6113,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contato principal"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locais onde seus dispositivos ficam. Abra um site para ver os detalhes e os dispositivos.",
+      "organizationColumn": "Organização",
+      "pickOrg": "Organização",
+      "pickOrgPlaceholder": "Escolha uma organização",
+      "pickOrgRequired": "Escolha a organização à qual este site pertence.",
+      "fleetAddDescription": "Adicione um novo site e escolha a organização à qual ele pertence.",
+      "empty": "Nenhum site ainda. Adicione um site a uma organização para começar.",
+      "viewDevicesAt": "ver dispositivos em {{name}}"
+    }
   },
   "siteList": {
     "title": "Sites",
@@ -7057,6 +7090,144 @@
     },
     "loadError": "Não foi possível carregar seu plano.",
     "retry": "Tentar novamente"
+  },
+  "ticketRouting": {
+    "title": "Roteamento de tickets",
+    "description": "As regras são executadas quando um ticket é criado e preenchem o responsável, a prioridade, a categoria, o status e as tags que o criador não escolheu. Primeiro valem as regras da organização, depois as do parceiro. A primeira correspondência vence.",
+    "createRule": "Nova regra",
+    "loadFailed": "Não foi possível carregar as regras de roteamento.",
+    "lookupsFailed": "Não foi possível carregar alguns técnicos, categorias ou status, então as listas podem estar incompletas. Recarregue a página para tentar novamente.",
+    "empty": "Ainda não há regras de roteamento.",
+    "groupOrg": "Regras de {{org}}",
+    "groupPartner": "Regras de todo o parceiro",
+    "thisOrganization": "Esta organização",
+    "allOrgs": "Todas as orgs",
+    "limitedOrgs": "Somente {{count}} orgs",
+    "catchAll": "Corresponde a todos os tickets",
+    "noActions": "Não define nada",
+    "enabledLabel": "Ativar a regra {{name}}",
+    "enabledOn": "Regra ativada",
+    "enabledOff": "Regra desativada",
+    "saveFailed": "Não foi possível salvar a regra. Tente novamente.",
+    "deleteFailed": "Não foi possível excluir a regra. Tente novamente.",
+    "saved": "Regra salva",
+    "created": "Regra criada",
+    "deleted": "Regra excluída",
+    "reorderFailed": "Não foi possível salvar a nova ordem. Tente novamente.",
+    "dragHandle": "Arraste para reordenar {{name}}, ou use as setas para cima e para baixo para movê-la.",
+    "readOnly": "Você pode ver esta regra, mas não alterá-la.",
+    "chips": {
+      "add": "Adicionar",
+      "remove": "Remover {{value}}"
+    },
+    "errors": {
+      "keywordShort": "As palavras-chave precisam ter pelo menos 2 caracteres.",
+      "keywordLong": "As palavras-chave podem ter no máximo 100 caracteres.",
+      "keywordsMax": "Você pode adicionar no máximo 20 palavras-chave.",
+      "domainInvalid": "Use um host como example.com ou *.example.com.",
+      "domainsMax": "Você pode adicionar no máximo 50 domínios.",
+      "tagEmpty": "Informe uma tag.",
+      "tagLong": "As tags podem ter no máximo 50 caracteres.",
+      "tagsMax": "Você pode adicionar no máximo 20 tags.",
+      "nameRequired": "Informe um nome para a regra.",
+      "orgRequired": "Escolha uma organização.",
+      "orgLinksRequired": "Escolha pelo menos uma organização ou aplique a regra a todas as organizações."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "E-mail",
+      "alert": "Alerta",
+      "manual": "Manual",
+      "api": "API",
+      "ai": "IA"
+    },
+    "priorities": {
+      "low": "Baixa",
+      "normal": "Normal",
+      "high": "Alta",
+      "urgent": "Urgente"
+    },
+    "drawer": {
+      "titleCreate": "Nova regra de roteamento",
+      "titleEdit": "Editar regra de roteamento",
+      "close": "Fechar",
+      "owner": "Proprietário",
+      "ownerOrg": "Somente esta organização",
+      "ownerPartner": "Todas as organizações (todo o parceiro)",
+      "organization": "Organização",
+      "chooseOrg": "Escolha uma organização",
+      "appliesTo": "Aplica-se a",
+      "orgLinksAll": "Todas as organizações",
+      "orgLinksSelected": "Somente as organizações selecionadas",
+      "name": "Nome",
+      "conditions": "Quando um ticket corresponde",
+      "conditionsHelp": "Todas as condições preenchidas devem corresponder. Deixe uma condição vazia para ignorá-la.",
+      "matchSources": "A origem é uma de",
+      "matchPriorities": "A prioridade é uma de",
+      "matchCategory": "Categoria",
+      "any": "Qualquer",
+      "matchKeywords": "O assunto contém uma de",
+      "matchKeywordsHint": "De 2 a 100 caracteres cada, até 20.",
+      "matchDomains": "O domínio do e-mail do solicitante é um de",
+      "matchDomainsHint": "example.com ou *.example.com, até 50.",
+      "actions": "Então definir",
+      "actionsHelp": "Aplicado somente aos campos que o criador não escolheu. Defina pelo menos um.",
+      "setAssignee": "Responsável",
+      "setPriority": "Prioridade",
+      "setCategory": "Categoria",
+      "setStatus": "Status",
+      "addTags": "Adicionar tags",
+      "noChange": "Sem alteração",
+      "unavailableUser": "Usuário indisponível",
+      "unavailableStatus": "Status indisponível",
+      "enabled": "Ativada",
+      "save": "Salvar",
+      "saving": "Salvando...",
+      "delete": "Excluir",
+      "deleteTitle": "Excluir esta regra?",
+      "deleteMessage": "\"{{name}}\" deixará de ser aplicada a novos tickets. Esta ação não pode ser desfeita."
+    },
+    "test": {
+      "title": "Testar um ticket",
+      "description": "Simulação: veja qual regra corresponderia a um novo ticket e o que ela alteraria. Nada é criado.",
+      "org": "Organização",
+      "source": "Origem",
+      "subject": "Assunto",
+      "email": "E-mail do solicitante (opcional)",
+      "category": "Categoria (opcional)",
+      "priority": "Prioridade (opcional)",
+      "notChosen": "Não escolhida",
+      "run": "Executar teste",
+      "running": "Testando...",
+      "failed": "Não foi possível executar o teste. Tente novamente.",
+      "matched": "Regra correspondente: {{name}}",
+      "noMatch": "Nenhuma regra correspondeu",
+      "applied": "Seria aplicado",
+      "appliedNothing": "Nada mudaria",
+      "skipped": "Ignorado",
+      "actions": {
+        "set_assignee": "Responsável",
+        "set_category": "Categoria",
+        "set_status": "Status"
+      },
+      "reasons": {
+        "assignee_ineligible": "O responsável não pode acessar os tickets desta organização.",
+        "assignee_deleted": "O responsável não existe mais.",
+        "category_foreign": "A categoria pertence a outro parceiro.",
+        "status_foreign": "O status pertence a outro parceiro.",
+        "status_inactive": "O status está inativo.",
+        "status_core_not_allowed": "Uma regra não pode definir este status."
+      }
+    },
+    "fallback": {
+      "title": "Se nenhuma regra atribuir um ticket de e-mail",
+      "description": "Cada novo ticket criado a partir de e-mails recebidos é atribuído a esta pessoa quando nenhuma regra de roteamento o atribui. Se ela não puder acessar a organização do ticket, ele fica sem responsável.",
+      "label": "Responsável padrão",
+      "unavailable": "Usuário indisponível",
+      "saveFailed": "Não foi possível salvar o responsável de reserva. Tente novamente.",
+      "saved": "Responsável de reserva salvo",
+      "loadFailed": "Não foi possível carregar o responsável de reserva."
+    }
   },
   "wispMemory": {
     "title": "Memória do Wisp",

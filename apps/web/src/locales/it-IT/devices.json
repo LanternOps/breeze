@@ -360,7 +360,22 @@
     "moving": "Spostamento...",
     "toADifferentSite": "in un sito diverso.",
     "deviceMovedByOther": "Questo dispositivo è stato spostato da qualcun altro: ricarica per vedere il sito attuale",
-    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente."
+    "policyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a {{device}}. Breeze non lo riporterà indietro automaticamente.",
+    "bulkIntro": "Sposta {{count}} dispositivi selezionati in un sito diverso all'interno di {{org}}.",
+    "bulkIntro_one": "Sposta {{count}} dispositivo selezionato in un sito diverso all'interno di {{org}}.",
+    "bulkIntro_other": "Sposta {{count}} dispositivi selezionati in un sito diverso all'interno di {{org}}.",
+    "bulkIntroNoOrg": "Sposta {{count}} dispositivi selezionati in un sito diverso.",
+    "bulkIntroNoOrg_one": "Sposta {{count}} dispositivo selezionato in un sito diverso.",
+    "bulkIntroNoOrg_other": "Sposta {{count}} dispositivi selezionati in un sito diverso.",
+    "devicesFromSites": "{{count}} dispositivi da {{siteCount}} siti",
+    "devicesFromSites_one": "{{count}} dispositivo da {{siteCount}} siti",
+    "devicesFromSites_other": "{{count}} dispositivi da {{siteCount}} siti",
+    "selectSite": "Seleziona un sito",
+    "moveDevices": "Sposta {{count}} dispositivi",
+    "moveDevices_one": "Sposta {{count}} dispositivo",
+    "moveDevices_other": "Sposta {{count}} dispositivi",
+    "bulkPolicyNote": "Lo spostamento cambia le policy di configurazione, le finestre di manutenzione, l'instradamento degli avvisi e i report del sito che si applicano a questi dispositivi. Breeze non li riporterà indietro automaticamente.",
+    "failedToMoveDevices": "Impossibile spostare i dispositivi"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossibile creare il gruppo",
@@ -1846,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} di {{count}} dispositivo",
     "countLine_other": "{{shown}} di {{count}} dispositivi",
-    "noMatchesTitle": "Nessun dispositivo corrisponde a questi filtri"
+    "noMatchesTitle": "Nessun dispositivo corrisponde a questi filtri",
+    "moveToSite": "Sposta in un sito",
+    "moveSelectedToSite": "Sposta in un sito",
+    "moveSiteMixedOrgs": "I dispositivi selezionati appartengono a più di un'organizzazione",
+    "moveSiteOverCap": "Seleziona al massimo {{count}} dispositivi da spostare contemporaneamente"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossibile recuperare i log del dispositivo",
@@ -2695,7 +2714,13 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} dispositivo aveva già ricevuto la disinstallazione: su quella macchina potrebbe essere necessario reinstallare l'agente.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} dispositivi avevano già ricevuto la disinstallazione: su quelle macchine potrebbe essere necessario reinstallare l'agente.",
       "bulkRestored_one": "{{count}} dispositivo ripristinato",
-      "bulkRestored_other": "{{count}} dispositivi ripristinati"
+      "bulkRestored_other": "{{count}} dispositivi ripristinati",
+      "bulkMoveSiteSuccess": "{{count}} dispositivi ora si trovano in {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} dispositivo ora si trova in {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} dispositivi ora si trovano in {{site}}",
+      "bulkMoveSiteSomeFailed": "{{moved}} dispositivi su {{total}} spostati in {{site}}. Non spostati: {{devices}}",
+      "bulkMoveSiteAllFailed": "Nessun dispositivo è stato spostato in {{site}}. Non spostati: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} spostato in un nuovo sito"
     },
     "tryAgain": "Prova di nuovo",
     "unknownDevice": "Sconosciuto",

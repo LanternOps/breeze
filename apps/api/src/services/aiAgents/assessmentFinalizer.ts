@@ -11,8 +11,9 @@
  * raised concern):
  *   1. record_concern  → upsertConcern (≤ ASSESSMENT_MAX_RAISES_PER_RUN, else `raise_cap`)
  *   2. update_concern  → updateConcern / resolveConcern
- *   3. nudge           → deliverInApp to the grantor + recordNudge, unless the
- *                        recipient state says not to
+ *   3. nudge           → notifyUser to the grantor (W06: in-app via deliverInApp,
+ *                        push, quiet hours, prefs; it counts the nudge itself),
+ *                        unless the recipient state says not to
  *   4. propose_action  → createActionIntent (Tier 2/3 only, capped)
  *   5. request_specialist — left in the outcome untouched (W07)
  *   then the onboarding readiness concern (Task 15), the
@@ -51,12 +52,10 @@ import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
 import {
   getConcernForCeiling,
-  recordNudge,
   resolveConcern,
   updateConcern,
   upsertConcern,
 } from '../wisp/concerns';
-import { deliverInApp } from '../wisp/deliver';
 import {
   CeilingViolationError,
   GrantInactiveError,
@@ -64,6 +63,8 @@ import {
   resolveGrantCeiling,
   type GrantCeiling,
 } from '../wisp/grantAuthority';
+import { mobileDeepLink } from '../wisp/nudgeLinks';
+import { notifyUser } from '../wisp/notifyUser';
 import { renderReadinessSummary } from '../wisp/readiness';
 import { isAssessmentProfile } from './assessmentProfile';
 import type { AssessmentRunContext, LoopResult, RunContext } from './runLoopTypes';
@@ -184,7 +185,6 @@ async function applyUpdates(ap: Applier, updates: UpdateConcernInput[]): Promise
 }
 
 async function applyNudges(ap: Applier, nudges: NudgeInput[]): Promise<void> {
-  const { run } = ap.ctx;
   for (const nudge of nudges) {
     await ap.item('nudge', async () => {
       const c = await ownConcern(ap, nudge.concernId);
@@ -213,30 +213,28 @@ async function applyNudges(ap: Applier, nudges: NudgeInput[]): Promise<void> {
         ap.skipped.push('nudge_digest_only');
         return;
       }
-      const nudgeCount = r?.nudgeCount ?? 0;
       // A model-supplied card id is trusted only when it is the concern's own
       // card or one this run minted; otherwise the concern's card (or none).
       const approvalIntentId = nudge.approvalIntentId
         && (nudge.approvalIntentId === c.approvalIntentId || ap.result.intentIds.includes(nudge.approvalIntentId))
         ? nudge.approvalIntentId
         : c.approvalIntentId;
-      // W06 Task 4 replaces this one call with notifyUser(...) and keeps recordNudge.
-      await deliverInApp({
+      // W06 Task 4: one delivery primitive. notifyUser re-checks the backoff
+      // under its own read, writes the in-app row (dedupe key per backoff
+      // window), pushes, and counts the nudge (recordNudge) itself.
+      const res = await notifyUser({
         userId: ap.a.grantorUserId,
-        orgId: run.orgId,
+        category: 'wisp_nudge',
+        kind: 'concern',
         title: 'Wisp: ' + c.summary.slice(0, 80),
         body: nudge.nextStep,
-        link: `/ai/wisp/thread/${ap.a.threadId}#concern=${c.id}`,
-        priority: c.severity === 'high' ? 'high' : 'normal',
+        deepLink: mobileDeepLink(ap.a.threadId, c.id),
         concernId: c.id,
         approvalIntentId,
         threadId: ap.a.threadId,
         grantId: ap.grantId,
-        dedupeKey: `wisp-nudge-${c.id}-${ap.grantId}-${nudgeCount}`,
       });
-      // Recorded even on a dedupe hit (`created: false`): that notice was
-      // already delivered by an earlier attempt that died before counting it.
-      await recordNudge(c.id, ap.grantId, ap.now);
+      if (!res.inApp && res.pushed === 0 && res.suppressed === 'backoff') ap.skipped.push('nudge_backoff');
     });
   }
 }

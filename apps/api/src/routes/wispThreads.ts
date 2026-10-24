@@ -5,6 +5,10 @@
  *
  *   GET   /?orgId=                → { data: { thread, focusOrgName, grant, wideningAvailable } } | 404 no_active_grant
  *                                    (grant carries the W05 spend meter: spentTodayCents, budgetResetsAt — w00 A32)
+ *   GET   /:id                    → the same { data: { thread, focusOrgName, grant, wideningAvailable } } for the
+ *                                    caller's own thread (W06 deep links; existence-neutral 404)
+ *   GET   /:id/activity?cursor=&limit= → { data: { items: ActivityItem[], nextCursor, current } } (W06, w00 A31:
+ *                                    the derived, ceiling-filtered timeline + the live "checking…" line)
  *   GET   /:id/sessions?limit=&cursor= → { data: [{ sessionId, orgId, attachedAt, title, status }], nextCursor }
  *   PATCH /:id/focus              { orgId: uuid | null } → { data: { focusOrgId, focusOrgName } }
  *   GET   /:id/attachments        → { data: ThreadAttachmentDto[] }   (live only, newest first)
@@ -40,6 +44,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { and, desc, eq, lt, or } from 'drizzle-orm';
 import { z } from 'zod';
+import { wispActivityQuerySchema } from '@breeze/shared';
 import { aiArtifactCaptureEnabled } from '../config/env';
 import { db } from '../db';
 import { readOwnPartnerAxisRows } from '../db/partnerAxisRead';
@@ -53,8 +58,9 @@ import { bodyLimitOnError } from '../middleware/bodyLimitGate';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
+import { currentActivity, InvalidActivityCursorError, listActivity, type CurrentActivity } from '../services/wisp/activity';
 import { spendSummary } from '../services/wisp/budget';
-import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
+import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
@@ -144,7 +150,16 @@ function attachmentDto(a: ThreadAttachment) {
 
 type OwnThread = {
   thread: WispThread;
-  grant: { id: string; orgId: string | null; status: WispGrantStatus; currentRevisionId: string | null };
+  grant: {
+    id: string;
+    orgId: string | null;
+    status: WispGrantStatus;
+    currentRevisionId: string | null;
+    expiresAt: Date;
+    budgetCentsPerDay: number;
+    floorTickMinutes: number;
+    pausedReason: string | null;
+  };
 };
 
 /** The caller's own thread (see OWNERSHIP above), or null for every other case. */
@@ -168,6 +183,10 @@ async function loadOwnThread(c: Context): Promise<OwnThread | null> {
         grantOrgId: wispGrants.orgId,
         grantStatus: wispGrants.status,
         grantRevisionId: wispGrants.currentRevisionId,
+        grantExpiresAt: wispGrants.expiresAt,
+        grantBudgetCentsPerDay: wispGrants.budgetCentsPerDay,
+        grantFloorTickMinutes: wispGrants.floorTickMinutes,
+        grantPausedReason: wispGrants.pausedReason,
       })
       .from(wispThreads)
       .innerJoin(wispGrants, and(eq(wispGrants.id, wispThreads.grantId), eq(wispGrants.partnerId, wispThreads.partnerId)))
@@ -191,7 +210,16 @@ async function loadOwnThread(c: Context): Promise<OwnThread | null> {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     },
-    grant: { id: row.grantId, orgId: row.grantOrgId ?? null, status: row.grantStatus, currentRevisionId: row.grantRevisionId ?? null },
+    grant: {
+      id: row.grantId,
+      orgId: row.grantOrgId ?? null,
+      status: row.grantStatus,
+      currentRevisionId: row.grantRevisionId ?? null,
+      expiresAt: row.grantExpiresAt,
+      budgetCentsPerDay: row.grantBudgetCentsPerDay,
+      floorTickMinutes: row.grantFloorTickMinutes,
+      pausedReason: row.grantPausedReason ?? null,
+    },
   };
 }
 
@@ -244,6 +272,45 @@ const grantCorrupt = (c: Context) =>
 const ceilingRefusal = (c: Context, reason: 'inactive' | 'corrupt') =>
   reason === 'corrupt' ? grantCorrupt(c) : grantInactive(c);
 
+type GrantForPayload = {
+  id: string;
+  status: WispGrantStatus;
+  orgId: string | null;
+  expiresAt: Date;
+  currentRevisionId: string | null;
+  budgetCentsPerDay: number;
+  floorTickMinutes: number;
+  pausedReason: string | null;
+};
+
+/** GET / and GET /:id return the same members. */
+async function threadPayload(partnerId: string, thread: WispThread, grant: GrantForPayload) {
+  const [focusOrgName, widening, spend] = await Promise.all([
+    focusOrgNameOf(partnerId, thread.focusOrgId),
+    wideningAvailable(grant.id),
+    spendSummary(grant.id),
+  ]);
+  return {
+    thread: threadDto(thread),
+    focusOrgName,
+    grant: {
+      id: grant.id,
+      status: grant.status,
+      orgId: grant.orgId,
+      expiresAt: grant.expiresAt.toISOString(),
+      currentRevisionId: grant.currentRevisionId,
+      budgetCentsPerDay: grant.budgetCentsPerDay,
+      floorTickMinutes: grant.floorTickMinutes,
+      // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
+      spentTodayCents: spend.spentTodayCents,
+      budgetResetsAt: spend.budgetResetsAt.toISOString(),
+      // W06b/W06c: a paused thread says why (A29 user pause vs system reasons).
+      pausedReason: grant.pausedReason,
+    },
+    wideningAvailable: widening,
+  };
+}
+
 // Keyset cursor over (attached_at DESC, session_id DESC): base64url("<iso>|<uuid>").
 function encodeCursor(attachedAt: Date, sessionId: string): string {
   return Buffer.from(`${attachedAt.toISOString()}|${sessionId}`, 'utf8').toString('base64url');
@@ -269,30 +336,48 @@ wispThreadRoutes.get('/', zValidator('query', threadQuery), async (c) => {
   if (!grant) return fail(c, 404, 'no_active_grant', 'No active Wisp delegation for this scope');
 
   const thread = await getOrCreateThread(grant.id);
-  const [focusOrgName, widening, spend] = await Promise.all([
-    focusOrgNameOf(partnerId, thread.focusOrgId),
-    wideningAvailable(grant.id),
-    spendSummary(grant.id),
-  ]);
-  return c.json({
-    data: {
-      thread: threadDto(thread),
-      focusOrgName,
-      grant: {
-        id: grant.id,
-        status: grant.status,
-        orgId: grant.orgId,
-        expiresAt: grant.expiresAt.toISOString(),
-        currentRevisionId: grant.currentRevisionId,
-        budgetCentsPerDay: grant.budgetCentsPerDay,
-        floorTickMinutes: grant.floorTickMinutes,
-        // w00 A32 spend meter (UTC day, runs charged to the day they were queued).
-        spentTodayCents: spend.spentTodayCents,
-        budgetResetsAt: spend.budgetResetsAt.toISOString(),
-      },
-      wideningAvailable: widening,
-    },
-  });
+  return c.json({ data: await threadPayload(partnerId, thread, grant) });
+});
+
+// W06: the caller's own thread by id (deep links from nudges). Same payload
+// as GET /; partner-admin reads of another tech's thread are not added
+// (W04 call #9) — anything but the grantor's own thread is the same 404.
+wispThreadRoutes.get('/:id', async (c) => {
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  return c.json({ data: await threadPayload(partnerIdOf(authOf(c)), own.thread, { ...own.grant }) });
+});
+
+/** The live line names an org: show it only while that org is still inside the grant's live ceiling. */
+function withinCeiling(ceiling: GrantCeiling, current: CurrentActivity): CurrentActivity {
+  if (!current) return null;
+  try {
+    assertWithinCeiling(ceiling, { orgId: current.orgId });
+    return current;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return null;
+    throw err;
+  }
+}
+
+// W06 (w00 A31): the derived, ceiling-filtered activity timeline and the live
+// "Wisp is checking …" line. The grant's LIVE ceiling filters every item.
+wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchema), async (c) => {
+  const { cursor, limit } = c.req.valid('query');
+  const own = await loadOwnThread(c);
+  if (!own) return c.json(NOT_FOUND, 404);
+  const outcome = await ceilingOf(own);
+  if (!outcome.ok) return ceilingRefusal(c, outcome.reason);
+  try {
+    const [page, current] = await Promise.all([
+      listActivity(outcome.ceiling, { cursor, limit, threadId: own.thread.id }),
+      currentActivity(own.grant.id),
+    ]);
+    return c.json({ data: { items: page.items, nextCursor: page.nextCursor, current: withinCeiling(outcome.ceiling, current) } });
+  } catch (err) {
+    if (err instanceof InvalidActivityCursorError) return fail(c, 400, 'invalid_cursor', 'Invalid cursor');
+    throw err;
+  }
 });
 
 wispThreadRoutes.get('/:id/sessions', zValidator('query', sessionsQuery), async (c) => {

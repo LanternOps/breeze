@@ -155,6 +155,7 @@
     "settingsProfile": "Paramètres du profil",
     "settingsRoles": "Rôles",
     "settingsSitesDetail": "Paramètres du site",
+    "settingsSites": "Sites",
     "settingsSso": "Authentification unique (SSO)",
     "settingsUsers": "Utilisateurs",
     "settingsVariables": "Variables",
@@ -182,7 +183,8 @@
     "endpointMessages": "Messages aux terminaux",
     "securityDetectionRules": "Règles de détection",
     "settingsPlan": "Offre et fonctionnalités",
-    "settingsWispMemory": "Mémoire de Wisp"
+    "settingsWispMemory": "Mémoire de Wisp",
+    "wispThread": "Fil Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

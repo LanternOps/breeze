@@ -84,7 +84,8 @@
       "low": "Düşük"
     },
     "checklistProgress": "{{done}}/{{total}} adım",
-    "checklistTitle": "Kontrol listesi: {{total}} adımın {{done}} tanesi tamamlandı"
+    "checklistTitle": "Kontrol listesi: {{total}} adımın {{done}} tanesi tamamlandı",
+    "merged": "Birleştirildi"
   },
   "ticketArchivedList": {
     "emptyTitle": "Arşivlenmiş bilet yok.",
@@ -176,7 +177,9 @@
       "broken": "{{name}} yüklenemedi",
       "open": "Eki aç",
       "remove": "Eki kaldır"
-    }
+    },
+    "mergedFrom": "{{number}} biletinden",
+    "mergedFromUnknown": "birleştirilmiş bir biletten"
   },
   "ticketPartsCard": {
     "title": "Parçalar",
@@ -412,7 +415,8 @@
       "confirm": "Biletleri sil"
     },
     "filterByType": "Türe göre filtrele",
-    "allTypes": "Tüm türler"
+    "allTypes": "Tüm türler",
+    "showMerged": "Birleştirilenleri göster"
   },
   "ticketWorkbench": {
     "notFound": "Bilet bulunamadı. Silinmiş olabilir veya erişiminiz olmayabilir.",
@@ -479,6 +483,90 @@
       "blockedCurrency": "Bu bilette {{sourceCurrency}} ile fiyatlandırılmış {{timeCount}} faturalanmamış zaman kaydı ve {{partCount}} faturalanmamış parça var, ancak {{targetOrg}} {{targetCurrency}} ile faturalandırıyor. Önce bunları faturalandırın ya da yine de taşıyın: tutarlar {{sourceCurrency}} olarak kalır ve yalnızca {{sourceCurrency}} taslağında faturalandırılabilir.",
       "acceptCurrency": "Bu tutarların {{sourceCurrency}} olarak kalacağını ve dönüştürülmeyeceğini anlıyorum.",
       "moveAnyway": "Yine de taşı"
+    },
+    "merge": {
+      "open": "Birleştir…",
+      "title": "{{number}} biletini başka bir biletle birleştir",
+      "description": "{{number}} biletinin yorumları, süreleri, parçaları ve bağlantıları seçtiğiniz bilete taşınır. Ardından {{number}} kapatılır ve o bileti gösterir.",
+      "pickerLabel": "Hedef bilet",
+      "searchPlaceholder": "Numaraya veya konuya göre ara",
+      "pickerHint": "Yalnızca bu kuruluşun açık biletleri, en eskiden başlayarak listelenir.",
+      "loading": "Biletler yükleniyor…",
+      "candidatesFailed": "Biletler yüklenemedi. İletişim kutusunu kapatıp tekrar deneyin.",
+      "noCandidates": "Bu kuruluşta başka açık bilet yok.",
+      "previewLoading": "Birleştirme kontrol ediliyor…",
+      "previewFailed": "Bu birleştirme kontrol edilemedi. Yeniden denemek için bileti tekrar seçin.",
+      "side": {
+        "source": "Bu bilet",
+        "survivor": "Hedef",
+        "both": "Her iki bilet"
+      },
+      "refusal": {
+        "MERGE_SAME_TICKET": "Bir bilet kendisiyle birleştirilemez.",
+        "MERGE_CROSS_ORG": "Her iki bilet de aynı kuruluşa ait olmalıdır.",
+        "MERGE_SOURCE_INELIGIBLE": "Bu bilet birleştirilemez (silinmiş veya zaten birleştirilmiş).",
+        "MERGE_SURVIVOR_INELIGIBLE": "Hedef birleştirme alamaz (kapalı, silinmiş veya zaten birleştirilmiş).",
+        "MERGE_DELIVERABLE_PINNED": "Bir hizmet teslimatına bağlı bilet birleştirilemez.",
+        "MERGE_IMPORT_WINDOW": "Açık bir içe aktarma penceresindeki bilet birleştirilemez.",
+        "MERGE_APPROVAL_STATE": "Onay talebi veya bütçesi olan biletler birleştirilemez.",
+        "MERGE_WORK_KIND_MISMATCH": "Destek işi ile proje işi birleştirilemez.",
+        "MERGE_PENDING_INTENTS": "Bu biletin bekleyen yapay zeka eylemleri var. Bitmelerini bekleyin veya iptal edin.",
+        "ORG_MERGING": "Bu kuruluş birleştiriliyor. Daha sonra tekrar deneyin.",
+        "MERGE_SCOPE_DENIED": "Bu biletlerden birindeki bir cihaza veya konuma erişiminiz yok."
+      },
+      "suggested": "{{number}} daha eski; genellikle korunması gereken odur.",
+      "movesTo": "{{number}} biletine taşınır",
+      "nothingMoves": "Başka hiçbir şey taşınmaz.",
+      "counts": {
+        "ticket_comments": "Yorumlar: {{count}}",
+        "time_entries": "Zaman kayıtları: {{count}}",
+        "ticket_parts": "Parçalar: {{count}}",
+        "ticket_alert_links": "Uyarı bağlantıları: {{count}}",
+        "ticket_attachments": "Ekler: {{count}}",
+        "ticket_email_links": "E-posta bağlantıları: {{count}}",
+        "ticket_checklist_items": "Kontrol listesi öğeleri: {{count}}",
+        "ticket_external_refs": "Dış referanslar: {{count}}",
+        "ticket_links": "Bilet bağlantıları: {{count}}",
+        "device_vulnerabilities": "Güvenlik açıkları: {{count}}",
+        "organization_key_dates": "Önemli tarih hatırlatıcıları: {{count}}",
+        "service_deliverable_occurrences": "Teslimat oluşumları: {{count}}",
+        "ai_operator_task_targets": "Yapay zeka operatörü hedefleri: {{count}}",
+        "ticket_drafts": "Atılan taslaklar: {{count}}"
+      },
+      "droppedHeading": "Kaldırılan bağlantılar",
+      "dropped": {
+        "between_pair": "iki bilet arasındaki bağlantı",
+        "pair_unique": "hedefte zaten bulunan bir bağlantının kopyası",
+        "self": "kendisini gösterirdi",
+        "canonical_duplicate": "yeniden sıralamadan sonra kopya",
+        "cycle": "bir döngü oluştururdu",
+        "limit": "bilet başına bağlantı sınırını aşıyor"
+      },
+      "retained": "{{number}} üzerinde kalır: {{name}}",
+      "anIntegration": "bir entegrasyon",
+      "device": {
+        "keeps": "Birleştirilen bilet {{device}} cihazını korur.",
+        "takes": "Birleştirilen bilet {{device}} cihazını alır.",
+        "unknown": "başka bir cihaz"
+      },
+      "requesterAccess": "{{source}} biletinin istek sahibi, portalda {{survivor}} biletinin herkese açık yazışmasını görür ve oradan yanıt verebilir.",
+      "notify": "{{number}} biletinin istek sahibine talebinin birleştirildiğini e-postayla bildir",
+      "noRequester": "{{number}} biletinin e-posta gönderilecek bir istek sahibi yok.",
+      "warning": "Bu işlem geri alınamaz. {{source}} salt okunur olur ve {{survivor}} biletini gösterir.",
+      "confirm": "Birleştir",
+      "merging": "Birleştiriliyor…",
+      "failed": "Birleştirme başarısız oldu. Tekrar deneyin.",
+      "merged": "{{number}} ile birleştirildi",
+      "mfaRequired": "Biletleri birleştirmek için çok faktörlü kimlik doğrulama gerekir. MFA ile yeniden oturum açıp tekrar deneyin.",
+      "alreadyMerged": "Bu biletlerden biri zaten birleştirilmiş. Başka bir hedef seçin.",
+      "retry": "Bu biletler birleştirme sırasında değişti. Tekrar deneyin."
+    },
+    "mergedBanner": {
+      "mergedInto": "Bu bilet {{date}} tarihinde {{number}} ile birleştirildi.",
+      "pending": "Bu bilet {{date}} tarihinde başka bir biletle birleştirildi.",
+      "deleted": "Bu bilet {{date}} tarihinde, silinmiş veya göremediğiniz bir biletle birleştirildi.",
+      "open": "{{number}} aç",
+      "readOnly": "Birleştirilen biletler salt okunurdur. Birleştirildiği bilette yanıt verin."
     },
     "triage": {
       "title": "Önerilen önceliklendirme",

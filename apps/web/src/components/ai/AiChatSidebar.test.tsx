@@ -38,6 +38,8 @@ const baseState = {
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,
+  // #9840 W3: the Open in AI Assistant control reads both.
+  topologySiteId: null, wisp: null,
 };
 
 // #1419: the off-canvas shell stays mounted (transition:persist); collapsed it

@@ -422,6 +422,20 @@ export interface TicketDetails extends TicketSummary {
   comments: TicketComment[];
 }
 
+/**
+ * A request of the viewer's that staff merged into another ticket (#8972, spec
+ * §6.1). `mergedInto` is set only while the viewer may read that ticket;
+ * `survivorDeleted` means it was deleted since, and nothing else of it is sent.
+ */
+export interface PortalMergedTicket {
+  merged: true;
+  mergedInto: { id: string; internalNumber: string | null } | null;
+  mergedAt: string | null;
+  survivorDeleted: boolean;
+}
+
+export type PortalTicketDetailResult = TicketDetails | PortalMergedTicket;
+
 // Slim portal-visible intake form (Phase 2). Mirrors the `GET /portal/tickets/forms`
 // payload — no titleTemplate (the server composes the subject) and no showInPortal
 // (the route already filtered to portal-visible forms).
@@ -438,12 +452,12 @@ export interface PortalTicketForm {
 // payload. On the form path the subject/description are composed server-side, so
 // no `subject` key is sent (an optional free-text `description` may still ride along).
 export type CreateTicketInput =
-  | { subject: string; description: string; priority: TicketPriority }
+  | { subject: string; description: string; priority?: TicketPriority }
   | {
       formId: string;
       formResponses: Record<string, unknown>;
       description?: string;
-      priority: TicketPriority;
+      priority?: TicketPriority;
     };
 
 export interface Asset {
@@ -1105,8 +1119,13 @@ export const portalApi = {
   getTicket: async (
     id: string,
     config: ApiRequestConfig = {}
-  ): Promise<ApiResponse<TicketDetails>> => {
-    const response = await apiGet<{ ticket: TicketDetails }>(`/portal/tickets/${id}`, config);
+  ): Promise<ApiResponse<PortalTicketDetailResult>> => {
+    // A merged tombstone answers top-level `{ merged: true, mergedInto, mergedAt,
+    // survivorDeleted? }` with no `ticket` key (#8972).
+    type Body =
+      | { ticket: TicketDetails; merged?: undefined }
+      | { merged: true; mergedInto?: PortalMergedTicket['mergedInto']; mergedAt?: string | null; survivorDeleted?: boolean };
+    const response = await apiGet<Body>(`/portal/tickets/${id}`, config);
     if (!response.data) {
       return {
         error: response.error,
@@ -1116,8 +1135,22 @@ export const portalApi = {
       };
     }
 
+    const body = response.data;
+    if (body.merged === true) {
+      return {
+        data: {
+          merged: true,
+          mergedInto: body.mergedInto ?? null,
+          mergedAt: body.mergedAt ?? null,
+          survivorDeleted: body.survivorDeleted === true,
+        },
+        statusCode: response.statusCode,
+        headers: response.headers
+      };
+    }
+
     return {
-      data: response.data.ticket,
+      data: body.ticket,
       statusCode: response.statusCode,
       headers: response.headers
     };

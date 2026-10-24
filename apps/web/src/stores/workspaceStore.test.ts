@@ -66,6 +66,13 @@ function tab(over: Partial<TabState> = {}): TabState {
     isFlagged: false,
     unreadCount: 0,
     hasApprovalPending: false,
+    orgId: null,
+    deviceId: null,
+    deviceLabel: null,
+    m365ConnectionId: null,
+    composerDraft: '',
+    joinedMidResponse: false,
+    errorAction: null,
     ...over,
   };
 }

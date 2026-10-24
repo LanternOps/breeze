@@ -10,6 +10,9 @@ import {
   type RegistrationResponseJSON
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
+import { runLogoutHooks } from './logoutHooks';
+// #9427 W3: stores register through ./logoutHooks directly (see that module).
+export { registerLogoutHook } from './logoutHooks';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
 import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
@@ -1886,11 +1889,15 @@ export type CfTerminalLogoutPreparationOutcome =
   | Readonly<{ kind: 'partial'; message: string }>;
 
 function evictLocalAuthState(): void {
+  // #9427 W3: clear runtime AI state (workspace tabs, attach readers) BEFORE
+  // any storage removal, or a persist write would put the old tabs back.
+  runLogoutHooks();
   useAuthStore.getState().logout();
   try {
     localStorage.removeItem('breeze-auth');
     localStorage.removeItem('breeze-org');
     localStorage.removeItem('breeze-ai-chat');
+    localStorage.removeItem('breeze-workspace');
   } catch {
     // localStorage may be unavailable
   }

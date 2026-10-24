@@ -3148,10 +3148,29 @@ orgRoutes.get('/sites',requireScope('organization', 'partner', 'system'), requir
   // non-empty page so an empty list never issues a `site_id IN ()` query.
   const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite(data.map((s) => s.id));
 
+  // A listing with no org filter spans orgs (the fleet-wide Sites page,
+  // #9794), so each row names its org for the Organization column. One
+  // request-context (RLS-scoped) lookup over the page's distinct org ids, never
+  // a query per row. An org-filtered listing skips it: the caller already
+  // knows the org, and this route is on the org-switch hot path.
+  let orgNameById: Map<string, string> | undefined;
+  if (!effectiveOrgId) {
+    orgNameById = new Map();
+    const pageOrgIds = [...new Set(data.map((s) => s.orgId).filter((id): id is string => Boolean(id)))];
+    if (pageOrgIds.length > 0) {
+      const orgRows = await db
+        .select({ id: organizations.id, name: organizations.name })
+        .from(organizations)
+        .where(inArray(organizations.id, pageOrgIds));
+      for (const row of orgRows) orgNameById.set(row.id, row.name);
+    }
+  }
+
   const dataWithCounts = data.map((site) => ({
     ...withMaskedSettings(site),
     deviceCount: deviceCountBySite.get(site.id) ?? 0,
     removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
+    ...(orgNameById && { orgName: orgNameById.get(site.orgId) ?? null }),
   }));
 
   // Ride the org's resolved enrollment defaults along on this response (#2776).

@@ -1,10 +1,133 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/lib/permissions';
+import { useHashState } from '@/lib/useHashState';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { useAiStore } from '@/stores/aiStore';
+import { abortHandoff, completeHandoff, continueInSidePanel, takeHandoff } from '@/stores/aiConversationHandoff';
 import AccessDenied from '../shared/AccessDenied';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
+import { showToast } from '../shared/Toast';
 import WorkspaceTabBar from './WorkspaceTabBar';
 import WorkspaceChatPanel from './WorkspaceChatPanel';
 import WorkspaceEmptyState from './WorkspaceEmptyState';
+import { parseSessionHash, toastForOpenResult, writeSessionHash } from './sessionHash';
+
+/**
+ * #9427 W3 (spec §3.6, D6): `#session=<uuid>` opens or focuses that
+ * conversation, completing or aborting a pending side-panel hand-off; once a
+ * link is handled the hash follows the active tab. Mounted only with
+ * `ai_sessions:use`, so without it the hash is never read and nothing is
+ * fetched.
+ */
+function WorkspaceSessionLink() {
+  const { t } = useTranslation('ai');
+  const [linked, setLinked] = useHashState<string | null>(null, parseSessionHash);
+  const openSession = useWorkspaceStore((s) => s.openSession);
+  const activeSessionId = useWorkspaceStore(
+    (s) => s.tabs.find((tab) => tab.id === s.activeTabId)?.sessionId ?? null,
+  );
+
+  // The session id the URL shows because this component put it there (or a
+  // link it already handled). Any other valid `#session=` in the URL is a link
+  // whose hashchange has not been delivered yet, and must not be overwritten.
+  const ownedHash = useRef<string | null>(null);
+  const currentHashSession = () => parseSessionHash(window.location.hash.replace(/^#/, ''));
+  const writeOwned = (sessionId: string | null) => {
+    writeSessionHash(sessionId);
+    ownedHash.current = sessionId;
+  };
+
+  useEffect(() => {
+    if (!linked) return;
+    const id = linked;
+    const handoff = takeHandoff(id);
+    void openSession(id, { draft: handoff?.draft, signal: handoff?.signal })
+      .catch((err): 'error' => {
+        // Never leave the origin waiting out the timeout, or the link un-cleared.
+        console.error('[Workspace] Opening a linked conversation failed:', err);
+        return 'error';
+      })
+      .then((result) => {
+      // Release the origin only once the tab is there; anything else keeps
+      // it at once rather than after the 15 s timeout (D3).
+      if (result === 'opened' || result === 'focused') completeHandoff(id);
+      else abortHandoff(id);
+      const toast = toastForOpenResult(result, {
+        t,
+        onOpenInPanel: () => { void useAiStore.getState().adoptSession(id); },
+      });
+      if (toast) showToast(toast);
+      // Handled. Point the URL at the active tab now, synchronously, unless a
+      // newer link is already there: a hashchange that lands before the next
+      // render then reads the new hash instead of re-arming this link.
+      if (currentHashSession() === id) {
+        const { tabs, activeTabId } = useWorkspaceStore.getState();
+        writeOwned(tabs.find((tab) => tab.id === activeTabId)?.sessionId ?? null);
+      }
+      // Then clear the link (unless a newer one arrived meanwhile) so a later
+      // hashchange back to this id re-triggers (Advisor finding 8) and the
+      // hash writer below takes over.
+      setLinked((current) => (current === id ? null : current));
+    });
+  }, [linked, openSession, setLinked, t]);
+
+  // The hash follows the active tab, only while no link is being handled and
+  // never over a link still on its way (see ownedHash). This also covers the
+  // first render, before useHashState's layout effect has read the hash.
+  useEffect(() => {
+    if (linked !== null) return;
+    const inUrl = currentHashSession();
+    if (inUrl !== undefined && inUrl !== ownedHash.current && inUrl !== activeSessionId) return;
+    writeOwned(activeSessionId);
+  }, [linked, activeSessionId]);
+
+  return null;
+}
+
+/**
+ * #9427 W3: "Continue in side panel" from the tab menu, the header and the
+ * error banner. One move at a time; replacing a busy side-panel conversation
+ * asks first (continueInSidePanel decides when).
+ */
+function useContinueInPanel() {
+  const { t } = useTranslation('ai');
+  const [pendingConfirm, setPendingConfirm] = useState<((ok: boolean) => void) | null>(null);
+  const moving = useRef(false);
+
+  const continueInPanel = useCallback((tabId: string) => {
+    if (moving.current) return;
+    moving.current = true;
+    continueInSidePanel(tabId, {
+      confirm: () => new Promise<boolean>((resolve) => setPendingConfirm(() => resolve)),
+    })
+      .catch((err) => {
+        console.error('[Workspace] Continue in side panel failed:', err);
+        showToast({ type: 'error', message: t('aiConversationMove.notAvailable') });
+      })
+      .finally(() => { moving.current = false; });
+  }, [t]);
+
+  const settle = (ok: boolean) => {
+    pendingConfirm?.(ok);
+    setPendingConfirm(null);
+  };
+
+  const replaceDialog = (
+    <ConfirmDialog
+      open={pendingConfirm !== null}
+      onClose={() => settle(false)}
+      onConfirm={() => settle(true)}
+      title={t('aiConversationMove.continueInPanel')}
+      message={t('aiConversationMove.replaceConfirm')}
+      confirmLabel={t('aiConversationMove.continueInPanel')}
+      variant="warning"
+      confirmTestId="workspace-replace-panel-confirm"
+    />
+  );
+
+  return { continueInPanel, replaceDialog };
+}
 
 export default function WorkspacePage() {
   const {
@@ -30,6 +153,7 @@ export default function WorkspacePage() {
   const permissionsLoaded = permissions !== undefined;
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const { continueInPanel, replaceDialog } = useContinueInPanel();
 
   // Restore messages on mount
   useEffect(() => {
@@ -82,6 +206,7 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex h-full flex-col bg-white dark:bg-gray-900">
+      <WorkspaceSessionLink />
       {tabs.length > 0 ? (
         <>
           <WorkspaceTabBar
@@ -91,9 +216,10 @@ export default function WorkspacePage() {
             onCloseTab={closeTab}
             onRenameTab={(tabId, title) => void renameTab(tabId, title)}
             onNewTab={() => createTab()}
+            onContinueInPanel={continueInPanel}
           />
           {activeTab ? (
-            <WorkspaceChatPanel tab={activeTab} />
+            <WorkspaceChatPanel tab={activeTab} onContinueInPanel={() => continueInPanel(activeTab.id)} />
           ) : (
             <WorkspaceEmptyState onCreateTab={() => createTab()} />
           )}
@@ -101,6 +227,7 @@ export default function WorkspacePage() {
       ) : (
         <WorkspaceEmptyState onCreateTab={() => createTab()} />
       )}
+      {replaceDialog}
     </div>
   );
 }

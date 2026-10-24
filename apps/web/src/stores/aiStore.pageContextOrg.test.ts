@@ -197,7 +197,7 @@ describe('ai store page-context org rebinding (#5684)', () => {
     useAiStore.setState({ sessionId: 'session-org-b', sessionOrgId: null, pageContext: deviceBContext });
 
     fetchWithAuthMock.mockResolvedValueOnce(
-      makeResponse({ session: { id: 'session-org-b', orgId: ORG_B, status: 'active' }, messages: [] }),
+      makeResponse({ session: { id: 'session-org-b', orgId: ORG_B, status: 'active', type: 'general' }, messages: [] }),
     );
     await useAiStore.getState().loadSession('session-org-b');
 

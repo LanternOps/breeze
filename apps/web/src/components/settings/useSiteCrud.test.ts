@@ -280,4 +280,172 @@ describe('useSiteCrud', () => {
     expect(value).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  describe('fleet mode (#9794)', () => {
+    const ORG_A = 'org-a';
+    const ORG_B = 'org-b';
+    const SITE_A = { ...SITE, id: 'site-a', orgId: ORG_A, orgName: 'Alpha' };
+    const SITE_B = { ...SITE, id: 'site-b', orgId: ORG_B, orgName: 'Bravo' };
+    const findWrite = (method: string) =>
+      fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === method);
+
+    it('refresh() with no org lists every accessible site with NO organizationId and no org pin', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: [SITE_A, SITE_B] }));
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+
+      let value: unknown;
+      await act(async () => {
+        value = await result.current.refresh();
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('/orgs/sites?page=1&limit=100');
+      // null = inject nothing, so a stale ambient org can never narrow the fleet list.
+      expect((init as { orgIdOverride?: string | null }).orgIdOverride).toBeNull();
+      expect(value).toEqual([SITE_A, SITE_B]);
+      expect(result.current.sites.map((s) => s.orgId)).toEqual([ORG_A, ORG_B]);
+    });
+
+    it('refresh() with an org selected still lists that org only', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: [SITE_A] }));
+      const { result } = renderHook(() => useSiteCrud(ORG_A, { onUnauthorized, t, fleet: true }));
+      await act(async () => {
+        await result.current.refresh();
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/orgs/sites?organizationId=${ORG_A}&page=1&limit=100`,
+        expect.objectContaining({ orgIdOverride: ORG_A }),
+      );
+    });
+
+    it('add in fleet view without an org pick issues no write', async () => {
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+      act(() => result.current.openAdd());
+      expect(result.current.writeOrgId).toBeNull();
+      await act(async () => {
+        await result.current.submit({ name: 'New Site' });
+      });
+      expect(findWrite('POST')).toBeUndefined();
+      expect(result.current.siteModalMode).toBe('add');
+    });
+
+    it('add in fleet view writes to the picked org', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+      act(() => result.current.openAdd());
+      act(() => result.current.setWriteOrgId(ORG_B));
+      await act(async () => {
+        await result.current.submit({ name: 'New Site' });
+      });
+      const post = findWrite('POST')!;
+      expect(JSON.parse((post[1] as RequestInit).body as string).orgId).toBe(ORG_B);
+      expect((post[1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_B);
+    });
+
+    it('an org switch mid-add does not retarget the write (org captured at openAdd)', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+      const { result, rerender } = renderHook(
+        ({ orgId }: { orgId: string | null }) => useSiteCrud(orgId, { onUnauthorized, t, fleet: true }),
+        { initialProps: { orgId: ORG_A as string | null } },
+      );
+      act(() => result.current.openAdd(ORG_A));
+      rerender({ orgId: ORG_B });
+      await act(async () => {
+        await result.current.submit({ name: 'New Site' });
+      });
+      const post = findWrite('POST')!;
+      expect(JSON.parse((post[1] as RequestInit).body as string).orgId).toBe(ORG_A);
+      expect((post[1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_A);
+    });
+
+    it('openAdd() ignores a non-string argument (an onClick MouseEvent) and falls back to the bound org', () => {
+      const { result } = renderHook(() => useSiteCrud(ORG_A, { onUnauthorized, t }));
+      act(() => (result.current.openAdd as (arg?: unknown) => void)({ type: 'click' }));
+      expect(result.current.writeOrgId).toBe(ORG_A);
+    });
+
+    it("edit and delete in fleet view target the row's own org", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: [] }));
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+
+      act(() => result.current.openEdit(SITE_B));
+      await act(async () => {
+        await result.current.submit({ name: 'Renamed' });
+      });
+      const patch = findWrite('PATCH')!;
+      expect(patch[0]).toBe(`/orgs/sites/${SITE_B.id}`);
+      expect(JSON.parse((patch[1] as RequestInit).body as string).orgId).toBe(ORG_B);
+      expect((patch[1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_B);
+
+      act(() => result.current.openDelete(SITE_A));
+      await act(async () => {
+        await result.current.confirmDelete();
+      });
+      const del = findWrite('DELETE')!;
+      expect(del[0]).toBe(`/orgs/sites/${SITE_A.id}`);
+      expect((del[1] as { orgIdOverride?: string }).orgIdOverride).toBe(ORG_A);
+    });
+
+    it('a slower, superseded refresh never overwrites the newer org\'s list', async () => {
+      let resolveSlow!: (r: Response) => void;
+      fetchMock.mockImplementation((url: string) =>
+        String(url).includes(`organizationId=${ORG_A}`)
+          ? new Promise<Response>((resolve) => { resolveSlow = resolve; })
+          : Promise.resolve(jsonResponse({ data: [SITE_B] })),
+      );
+      const { result, rerender } = renderHook(
+        ({ orgId }: { orgId: string | null }) => useSiteCrud(orgId, { onUnauthorized, t, fleet: true }),
+        { initialProps: { orgId: ORG_A as string | null } },
+      );
+
+      let slow!: Promise<unknown>;
+      act(() => { slow = result.current.refresh(); });
+      rerender({ orgId: ORG_B });
+      await act(async () => {
+        await result.current.refresh();
+      });
+      expect(result.current.sites).toEqual([SITE_B]);
+
+      await act(async () => {
+        resolveSlow(jsonResponse({ data: [SITE_A] }));
+        await slow;
+      });
+      expect(result.current.sites).toEqual([SITE_B]);
+      expect(result.current.sitesLoading).toBe(false);
+    });
+
+    it('a write with no resolvable org is refused loudly, not silently', async () => {
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+      const orphan = { ...SITE, id: 'site-x' }; // a row without orgId
+      act(() => result.current.openEdit(orphan));
+      await act(async () => {
+        await result.current.submit({ name: 'Renamed' });
+      });
+      act(() => result.current.openDelete(orphan));
+      await act(async () => {
+        await result.current.confirmDelete();
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(showToastMock).toHaveBeenCalledTimes(2);
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    });
+
+    it('an MFA-required 403 on the write keeps the modal open and surfaces it (same path as OrgSitesTab)', async () => {
+      fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+        init?.method === 'POST'
+          ? jsonResponse({ error: 'MFA required', code: 'MFA_REQUIRED' }, false, 403)
+          : jsonResponse({ data: [] }),
+      );
+      const { result } = renderHook(() => useSiteCrud(null, { onUnauthorized, t, fleet: true }));
+      act(() => result.current.openAdd(ORG_A));
+      await act(async () => {
+        await result.current.submit({ name: 'New Site' });
+      });
+      expect(findWrite('POST')).toBeDefined();
+      expect(result.current.siteModalMode).toBe('add');
+      expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+      expect(onUnauthorized).not.toHaveBeenCalled();
+    });
+  });
 });

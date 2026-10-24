@@ -9,8 +9,10 @@ import {
   Loader2,
   Flag,
   Building2,
+  ExternalLink,
 } from "lucide-react";
 import { useAiStore } from "@/stores/aiStore";
+import { moveToAssistant } from "@/stores/aiConversationHandoff";
 import { usePermissions } from "@/lib/permissions";
 import AiChatMessages from "./AiChatMessages";
 import AiChatInput from "./AiChatInput";
@@ -83,7 +85,11 @@ export default function AiChatSidebar() {
     boundM365ConnectionId,
     loadM365Connections,
     setSelectedM365Connection,
+    composerDraft,
+    setComposerDraft,
     wisp,
+    topologySiteId,
+    joinedMidResponse,
   } = useAiStore();
   const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
   const wispScopeOrgName = useOrgStore((s) =>
@@ -223,6 +229,18 @@ export default function AiChatSidebar() {
                 title={t("aiChatSidebar.conversationHistory")}
               >
                 <History className="h-4 w-4" />
+              </button>
+            )}
+            {/* #9427 W3: hidden for topology investigations (D4) and Wisp threads (the workspace has no Wisp controls). */}
+            {!showHistory && sessionId && topologySiteId === null && !wisp && (
+              <button
+                onClick={() => void moveToAssistant(sessionId, { draft: composerDraft })}
+                className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title={t("aiConversationMove.openInAssistant")}
+                aria-label={t("aiConversationMove.openInAssistant")}
+                data-testid="ai-open-in-assistant"
+              >
+                <ExternalLink className="h-4 w-4" />
               </button>
             )}
             {!showHistory && sessionId && (
@@ -421,6 +439,13 @@ export default function AiChatSidebar() {
               </div>
             )}
 
+            {/* #9427: attached to a running turn whose replay was too large to send. */}
+            {joinedMidResponse && (
+              <div className="border-b px-4 py-1.5 text-xs text-muted-foreground" data-testid="ai-joined-mid-response">
+                {t("aiConversationMove.joinedMidResponse")}
+              </div>
+            )}
+
             {/* Messages area */}
             <AiChatMessages
               messages={messages}
@@ -448,6 +473,8 @@ export default function AiChatSidebar() {
             {/* Input */}
             <AiChatInput
               onSend={sendMessage}
+              value={composerDraft}
+              onValueChange={setComposerDraft}
               onInterrupt={interruptResponse}
               disabled={isLoading}
               isStreaming={isStreaming}

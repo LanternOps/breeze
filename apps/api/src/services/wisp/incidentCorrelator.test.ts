@@ -21,6 +21,7 @@ const h = vi.hoisted(() => ({
   recordNudge: vi.fn(async () => ({ nudgeCount: 1, nextEligibleNudgeAt: new Date() })),
   resolveGrantCeiling: vi.fn(),
   deliverInApp: vi.fn(async () => ({ created: true })),
+  notifyUser: vi.fn(async (_p: Record<string, unknown>) => ({ inApp: true, pushed: 0, suppressed: null as string | null })),
   getOrCreateThread: vi.fn(async (grantId: string) => ({ id: `thread-${grantId}` })),
   captureException: vi.fn(),
   writesInsideSystem: [] as boolean[],
@@ -66,6 +67,8 @@ vi.mock('./grantAuthority', async (importOriginal) => {
   };
 });
 vi.mock('./deliver', () => ({ deliverInApp: (...a: unknown[]) => track(h.deliverInApp as (...x: unknown[]) => unknown)(...a) }));
+// W06 Task 4: the correlator nudges through notifyUser (which counts the nudge itself).
+vi.mock('./notifyUser', () => ({ notifyUser: (...a: unknown[]) => track(h.notifyUser as (...x: unknown[]) => unknown)(...a) }));
 vi.mock('./threads', () => ({ getOrCreateThread: (g: string) => h.getOrCreateThread(g) }));
 
 import { GrantInactiveError } from './grantAuthority';
@@ -142,6 +145,7 @@ beforeEach(() => {
   let next = 500;
   h.upsertConcern.mockImplementation(async () => ({ id: uid(next++), created: true }));
   h.deliverInApp.mockImplementation(async () => ({ created: true }));
+  h.notifyUser.mockImplementation(async () => ({ inApp: true, pushed: 0, suppressed: null }));
   h.recipientState.mockImplementation(async () => ({ nudgeCount: 0, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null }));
   h.resolveConcern.mockImplementation(async () => undefined);
   h.resolveGrantCeiling.mockImplementation(async (grantId: string) => {
@@ -198,20 +202,22 @@ describe('correlateIncidents', () => {
     expect(input.evidence.ticketIds).toHaveLength(6);
 
     const concernId = uid(500);
-    expect(h.deliverInApp).toHaveBeenCalledTimes(2);
-    expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({
+    expect(h.notifyUser).toHaveBeenCalledTimes(2);
+    expect(h.notifyUser).toHaveBeenCalledWith({
       userId: `user-${G1}`,
-      orgId: null,
-      grantId: G1,
+      category: 'wisp_nudge',
+      kind: 'concern',
+      title: 'Wisp: possible incident across 2 customers',
+      body: 'Possible incident across 2 customers: asking keeps outlook password',
+      deepLink: `breeze://wisp/thread/thread-${G1}?concern=${concernId}`,
       concernId,
       threadId: `thread-${G1}`,
-      link: `/ai/wisp/thread/thread-${G1}#concern=${concernId}`,
-      dedupeKey: `wisp-incident-${concernId}-${G1}`,
-      priority: 'high',
-    }));
-    expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ userId: `user-${G2}`, dedupeKey: `wisp-incident-${concernId}-${G2}` }));
-    expect(h.recordNudge).toHaveBeenCalledWith(concernId, G1, NOW);
-    expect(h.recordNudge).toHaveBeenCalledWith(concernId, G2, NOW);
+      grantId: G1,
+    });
+    expect(h.notifyUser).toHaveBeenCalledWith(expect.objectContaining({ userId: `user-${G2}`, grantId: G2, concernId }));
+    // notifyUser writes the row and counts the nudge; the correlator does neither directly.
+    expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.recordNudge).not.toHaveBeenCalled();
     // Reads ran in system context; every write ran after the read block returned.
     expect(h.executes.every((e) => e.inSystem)).toBe(true);
     expect(h.writesInsideSystem.every((x) => x === false)).toBe(true);
@@ -221,7 +227,7 @@ describe('correlateIncidents', () => {
     orgConcerns = [orgConcern(1, OA, [1, 2, 3])];
     await expect(correlateIncidents(NOW)).resolves.toEqual({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 });
     expect(h.upsertConcern).not.toHaveBeenCalled();
-    expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.notifyUser).not.toHaveBeenCalled();
   });
 
   it('opens one for a single org with 8 tickets', async () => {
@@ -253,7 +259,7 @@ describe('correlateIncidents', () => {
         ticketCount: 6, healthIncidentIds: [], tokens: TOKENS, firstSeenAt: ago(30 * MIN), lastTicketAt: ago(5 * MIN),
       },
     }];
-    h.deliverInApp.mockImplementation(async () => ({ created: false }));
+    h.notifyUser.mockImplementation(async () => ({ inApp: false, pushed: 0, suppressed: 'backoff' }));
     const res = await correlateIncidents(NOW);
     expect(res).toEqual({ partnerIncidentsOpened: 0, updated: 1, autoClosed: 0 });
     expect(h.upsertConcern).not.toHaveBeenCalled();
@@ -280,7 +286,7 @@ describe('correlateIncidents', () => {
     h.recipientState.mockImplementation(async () => ({ nudgeCount: 1, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null }));
     await expect(correlateIncidents(NOW)).resolves.toEqual({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 });
     expect(h.updateConcern).not.toHaveBeenCalled();
-    expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.notifyUser).not.toHaveBeenCalled();
     expect(h.recipientState).toHaveBeenCalledWith(uid(600), G1);
   });
 
@@ -289,11 +295,16 @@ describe('correlateIncidents', () => {
     let nudged = 0;
     h.recordNudge.mockImplementation(async () => { nudged += 1; return { nudgeCount: nudged, nextEligibleNudgeAt: new Date() }; });
     h.recipientState.mockImplementation(async () => ({ nudgeCount: nudged, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null }));
-    h.deliverInApp.mockImplementationOnce(async () => { throw new Error('insert failed'); });
+    // notifyUser counts a delivered nudge (emulated here; its own suite proves it).
+    h.notifyUser.mockImplementation(async (p: Record<string, unknown>) => {
+      await (h.recordNudge as (...x: unknown[]) => Promise<unknown>)(p.concernId, p.grantId, NOW);
+      return { inApp: true, pushed: 0, suppressed: null };
+    });
+    h.notifyUser.mockImplementationOnce(async () => { throw new Error('insert failed'); });
 
     // Tick 1: the incident opens, its one nudge fails.
     await expect(correlateIncidents(NOW)).resolves.toMatchObject({ partnerIncidentsOpened: 1 });
-    expect(h.deliverInApp).toHaveBeenCalledTimes(1);
+    expect(h.notifyUser).toHaveBeenCalledTimes(1);
     expect(h.recordNudge).not.toHaveBeenCalled();
     expect(h.captureException).toHaveBeenCalledTimes(1);
 
@@ -306,11 +317,10 @@ describe('correlateIncidents', () => {
     await expect(correlateIncidents(NOW)).resolves.toEqual({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 });
     expect(h.upsertConcern).toHaveBeenCalledTimes(1);
     expect(h.updateConcern).not.toHaveBeenCalled();
-    expect(h.deliverInApp).toHaveBeenCalledTimes(2);
-    expect(h.deliverInApp).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(h.notifyUser).toHaveBeenCalledTimes(2);
+    expect(h.notifyUser).toHaveBeenLastCalledWith(expect.objectContaining({
       grantId: G1,
       concernId: uid(500),
-      dedupeKey: `wisp-incident-${uid(500)}-${G1}`,
       body: 'Possible incident across 2 customers: asking keeps outlook password',
     }));
     expect(h.recordNudge).toHaveBeenCalledTimes(1);
@@ -318,7 +328,7 @@ describe('correlateIncidents', () => {
 
     // Tick 3: the nudge is recorded — nothing more is delivered.
     await correlateIncidents(NOW);
-    expect(h.deliverInApp).toHaveBeenCalledTimes(2);
+    expect(h.notifyUser).toHaveBeenCalledTimes(2);
   });
 
   it('nudges a live partner-level incident whose children went quiet, but never one naming an org outside the ceilings', async () => {
@@ -338,8 +348,8 @@ describe('correlateIncidents', () => {
       },
     ];
     await correlateIncidents(NOW);
-    expect(h.deliverInApp).toHaveBeenCalledTimes(1);
-    expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ concernId: uid(610), grantId: G1 }));
+    expect(h.notifyUser).toHaveBeenCalledTimes(1);
+    expect(h.notifyUser).toHaveBeenCalledWith(expect.objectContaining({ concernId: uid(610), grantId: G1 }));
   });
 
   it('does not re-open a partner-level incident a person closed recently for the same children', async () => {
@@ -351,7 +361,7 @@ describe('correlateIncidents', () => {
     await expect(correlateIncidents(NOW)).resolves.toEqual({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 });
     expect(h.upsertConcern).not.toHaveBeenCalled();
     expect(h.updateConcern).not.toHaveBeenCalled();
-    expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.notifyUser).not.toHaveBeenCalled();
     expect(queryWith('wisp:incident-partner-live')[0]!.sql).toMatch(/status IN \('resolved', 'dismissed'\) AND c\.updated_at >=/);
   });
 
@@ -405,7 +415,7 @@ describe('correlateIncidents', () => {
     orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
     await correlateIncidents(NOW);
     expect(h.upsertConcern).toHaveBeenCalledTimes(1);
-    const grantIds = h.deliverInApp.mock.calls.map((c) => ((c as unknown[])[0] as { grantId?: string }).grantId);
+    const grantIds = h.notifyUser.mock.calls.map((c) => ((c as unknown[])[0] as { grantId?: string }).grantId);
     expect(grantIds).toContain(G1);
     expect(grantIds).not.toContain(G2);
   });
@@ -451,19 +461,18 @@ describe('correlateIncidents', () => {
       ? { nudgeCount: 0, nextEligibleNudgeAt: null, snoozedUntil: new Date(NOW.getTime() + HOUR), dismissedAt: null }
       : { nudgeCount: 0, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null }));
     await correlateIncidents(NOW);
-    expect(h.deliverInApp).toHaveBeenCalledTimes(1);
-    expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ grantId: G1 }));
+    expect(h.notifyUser).toHaveBeenCalledTimes(1);
+    expect(h.notifyUser).toHaveBeenCalledWith(expect.objectContaining({ grantId: G1 }));
   });
 
   it('a failed delivery is captured and the next grantor is still nudged', async () => {
     grants.push({ id: G2, partner_id: P, current_revision_id: uid(32) });
     ceilings.set(G2, ceiling(G2, P, [OA, OB, OC]));
     orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
-    h.deliverInApp.mockImplementationOnce(async () => { throw new Error('insert failed'); });
+    h.notifyUser.mockImplementationOnce(async () => { throw new Error('insert failed'); });
     const res = await correlateIncidents(NOW);
     expect(res.partnerIncidentsOpened).toBe(1);
-    expect(h.deliverInApp).toHaveBeenCalledTimes(2);
-    expect(h.recordNudge).toHaveBeenCalledTimes(1);
+    expect(h.notifyUser).toHaveBeenCalledTimes(2);
     expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 });

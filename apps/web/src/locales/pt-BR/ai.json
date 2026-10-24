@@ -106,6 +106,23 @@
     "noM365Customer": "Nenhum cliente M365",
     "dismiss": "Dispensar"
   },
+  "aiConversationMove": {
+    "openInAssistant": "Abrir no Assistente de IA",
+    "continueInPanel": "Continuar no painel lateral",
+    "openPastConversation": "Abrir uma conversa anterior",
+    "closeTabInAssistant": "Feche uma aba no Assistente de IA para abrir esta conversa",
+    "closeTabToOpen": "Feche uma aba para abrir esta conversa",
+    "notAvailable": "Esta conversa não está disponível",
+    "wasClosed": "Esta conversa foi encerrada",
+    "topologyFromMap": "As investigações são abertas pelo mapa de topologia",
+    "openInPanel": "Abrir no painel lateral",
+    "replaceConfirm": "Substituir a conversa do painel lateral? Ela continua no seu histórico.",
+    "joinedMidResponse": "Você entrou no meio da resposta. A resposta completa aparece quando terminar.",
+    "chooseModelInPanel": "Continue no painel lateral para escolher um modelo",
+    "tabMenu": "Opções da aba",
+    "anotherOrg": "Outra organização",
+    "device": "Dispositivo"
+  },
   "aiContextBadge": {
     "context": "Contexto",
     "dashboard": "Painel"
@@ -635,7 +652,51 @@
       "attachFailed": "Não foi possível anexar",
       "attachTooLarge": "Esse arquivo tem mais de 5 MB",
       "attachUnsupported": "Só é possível anexar arquivos de texto",
-      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la."
+      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la.",
+      "paused": "Wisp pausado",
+      "resumed": "Wisp retomado",
+      "pauseFailed": "Não foi possível pausar o Wisp",
+      "resumeFailed": "Não foi possível retomar o Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ de {{budget}}¢ hoje",
+      "resets": "reinicia em {{hours}} h",
+      "raise": "Aumentar o orçamento de hoje",
+      "label": "Gasto do Wisp hoje"
+    },
+    "pause": "Pausar o Wisp",
+    "resume": "Retomar",
+    "paused": {
+      "byYou": "Você pausou o Wisp. Ele não fará verificações nem enviará lembretes até você retomar."
+    },
+    "live": {
+      "checking": "Verificando {{org}}…",
+      "checkingUnnamed": "Verificando um cliente…"
+    },
+    "thread": {
+      "title": "Conversa do Wisp",
+      "openChat": "Abrir no chat",
+      "openChatInactive": "O Wisp precisa estar ativo para conversar nesta conversa.",
+      "notFound": "Esta conversa do Wisp não existe ou não é sua.",
+      "loadFailed": "Não foi possível carregar esta conversa do Wisp.",
+      "retry": "Tentar novamente",
+      "stale": "Não foi possível atualizar esta conversa. O que você vê pode estar desatualizado."
+    },
+    "activity": {
+      "title": "Atividade",
+      "empty": "Nada ainda. O trabalho do Wisp aparecerá aqui.",
+      "loadFailed": "Não foi possível carregar a atividade",
+      "loadMore": "Carregar mais",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Verificação",
+        "concern": "Pendência",
+        "specialist": "Especialista",
+        "approval": "Aprovação",
+        "memory": "Memória",
+        "nudge": "Lembrete",
+        "brief": "Resumo"
+      }
     }
   },
   "wispConcerns": {
@@ -677,6 +738,14 @@
       "invoice": "Fatura",
       "contract": "Contrato",
       "site": "Local"
-    }
+    },
+    "reviewApproval": "Revisar aprovação",
+    "useful": "Útil",
+    "notUseful": "Não útil",
+    "feedbackNotePlaceholder": "O que teria sido melhor? (opcional)",
+    "feedbackSend": "Enviar",
+    "feedbackGivenUseful": "Você marcou isto como útil",
+    "feedbackGivenNotUseful": "Você marcou isto como não útil",
+    "feedbackSaved": "Obrigado. O Wisp vai se lembrar disso."
   }
 }

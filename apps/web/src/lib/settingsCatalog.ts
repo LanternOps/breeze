@@ -18,6 +18,7 @@ import {
   LayoutTemplate,
   Cpu,
   ListChecks,
+  MapPin,
   Plug,
   Puzzle,
   Tags,
@@ -67,6 +68,10 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   // Account & Access
   { id: 'partner', name: 'Partner', labelKey: 'nav.partner', descriptionKey: 'settings:partnerSettingsCard.description', href: '/settings/partner', icon: Building, group: 'account', partnerScopeOnly: true },
   { id: 'organizations', name: 'Organizations', labelKey: 'nav.organizations', descriptionKey: card('organizations', 'description'), href: '/organizations', icon: Building2, group: 'account', partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
+  // #9794: the Sites list (site records, not a setting) — its nav home is
+  // Fleet Management; listed here so /settings still finds it. Same gate as
+  // the sidebar item: sites:read, every scope.
+  { id: 'sites', name: 'Sites', labelKey: 'nav.sites', descriptionKey: 'settings:sites.page.description', href: '/settings/sites', icon: MapPin, group: 'account', requiredPermission: { resource: 'sites', action: 'read' } },
   // Users + Roles are both served by the users routes (users:read).
   { id: 'users', name: 'Users', labelKey: 'nav.users', descriptionKey: card('users', 'description'), href: '/settings/users', icon: Users, group: 'account', requiredPermission: { resource: 'users', action: 'read' } },
   { id: 'roles', name: 'Roles', labelKey: 'nav.roles', href: '/settings/roles', icon: KeyRound, group: 'account', requiredPermission: { resource: 'users', action: 'read' } },

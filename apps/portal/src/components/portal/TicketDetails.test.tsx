@@ -14,7 +14,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 import { TicketDetails } from './TicketDetails';
-import type { TicketDetails as TicketDetailsType, TicketStatus } from '@/lib/api';
+import type { TicketDetails as TicketDetailsType, TicketStatus, PortalMergedTicket } from '@/lib/api';
 
 const ticket = (over: Partial<TicketDetailsType> = {}): TicketDetailsType => ({
   id: 't1',
@@ -401,5 +401,46 @@ describe('TicketDetails — ticket type (#8596)', () => {
   it('does not render an unknown type value raw at the customer', () => {
     render(<TicketDetails ticket={ticket({ ticketType: 'mystery' as never })} />);
     expect(screen.queryByTestId('portal-ticket-type')).toBeNull();
+  });
+});
+
+describe('TicketDetails — merged request (#8972)', () => {
+  const merged = (over: Partial<PortalMergedTicket> = {}): PortalMergedTicket => ({
+    merged: true,
+    mergedInto: { id: 'surv-1', internalNumber: 'T-2026-0002' },
+    mergedAt: '2026-10-20T12:00:00.000Z',
+    survivorDeleted: false,
+    ...over,
+  });
+
+  it('shows the banner with a link to the ticket it was merged into', () => {
+    render(<TicketDetails ticket={merged()} />);
+    const banner = screen.getByTestId('portal-ticket-merged-banner');
+    expect(banner.textContent).toContain('This request was merged into T-2026-0002.');
+    const link = screen.getByTestId('portal-ticket-merged-link');
+    expect(link.getAttribute('href')).toMatch(/\/tickets\/surv-1$/);
+    // A tombstone takes no replies and has no status of its own to report.
+    expect(screen.queryByTestId('ticket-reply-form')).toBeNull();
+    expect(screen.queryByTestId('ticket-activity-status')).toBeNull();
+    expect(screen.queryByText('Ticket not found')).toBeNull();
+  });
+
+  it('says the target was removed, with no link, when the survivor was deleted (Review Focus #5)', () => {
+    render(<TicketDetails ticket={merged({ mergedInto: null, survivorDeleted: true })} />);
+    expect(screen.getByTestId('portal-ticket-merged-banner').textContent).toContain(
+      'This request was merged into a ticket that has since been removed.',
+    );
+    expect(screen.queryByTestId('portal-ticket-merged-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-reply-form')).toBeNull();
+  });
+
+  it('names no target and links nowhere when the survivor is not readable', () => {
+    render(<TicketDetails ticket={merged({ mergedInto: null })} />);
+    expect(screen.getByTestId('portal-ticket-merged-banner').textContent).toContain('This request was merged into another request.');
+    expect(screen.queryByTestId('portal-ticket-merged-link')).toBeNull();
+  });
+
+  it('renders on the server without touching ticket fields a tombstone does not have', () => {
+    expect(() => renderToString(<TicketDetails ticket={merged()} />)).not.toThrow();
   });
 });

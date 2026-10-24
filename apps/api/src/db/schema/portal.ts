@@ -230,6 +230,11 @@ export const tickets = pgTable('tickets', {
   // deadlines are computed on, snapshotted at create (spec §4.3); NULL = 24×7.
   // FK tickets_sla_calendar_revision_id_fk ON DELETE SET NULL (declared below).
   slaCalendarRevisionId: uuid('sla_calendar_revision_id'),
+  // #8883 W5 (2027-01-04-120100): the routing rule matched at create (spec
+  // §5.4); NULL = none. FK tickets_routing_rule_id_fk → ticket_routing_rules
+  // ON DELETE SET NULL lives in SQL only (importing ticketRoutingRules.ts here
+  // would close a module-load import cycle; see that file).
+  routingRuleId: uuid('routing_rule_id'),
   source: ticketSourceEnum('source').notNull().default('portal'),
   workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   // #7900 (2026-12-26-170000): constant default, so existing rows read as
@@ -307,6 +312,9 @@ export const tickets = pgTable('tickets', {
   // #8973 W4 (2027-01-03-160100, CONCURRENTLY): recompute, apply-revision,
   // delete-in-use and the FK's SET NULL find tickets by revision.
   slaCalendarRevisionIdx: index('tickets_sla_calendar_revision_idx').on(table.slaCalendarRevisionId).where(sql`sla_calendar_revision_id IS NOT NULL`),
+  // #8883 W5 (2027-01-04-120100, CONCURRENTLY): the FK's SET NULL and the
+  // per-rule reporting read find tickets by rule.
+  routingRuleIdx: index('tickets_routing_rule_idx').on(table.routingRuleId).where(sql`routing_rule_id IS NOT NULL`),
   slaCalendarRevisionFk: foreignKey({
     name: 'tickets_sla_calendar_revision_id_fk',
     columns: [table.slaCalendarRevisionId],

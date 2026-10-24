@@ -415,6 +415,9 @@ ticketsRoutes.get(
         deletedAt: tickets.deletedAt,
         // #8313: the window that imported the ticket; null when live.
         migrationWindowId: tickets.migrationWindowId,
+        // #8972: the merged marker for the "Merged" chip (rows appear only under showMerged=true).
+        mergedIntoTicketId: tickets.mergedIntoTicketId,
+        mergedAt: tickets.mergedAt,
         statusName: ticketStatuses.name,
         statusColor: ticketStatuses.color
       })

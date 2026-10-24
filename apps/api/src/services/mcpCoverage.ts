@@ -438,6 +438,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'devices/billing.ts': { gap: '#6784' },
   'devices/bootMetrics.ts': { tools: ['analyze_boot_performance', 'manage_startup_items'] },
   'devices/bulkLifecycle.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk restore / permanent-delete; the single-item equivalents already have tools.' },
+  'devices/bulkSite.ts': { exempt: 'human_only_bulk_destructive', note: 'Bulk site move (#9796); the single-device move (PATCH /devices/:id) is covered by core.ts tools.' },
   'devices/commands.ts': { tools: ['registry_operations', 'execute_command', 'trigger_agent_restart', 'trigger_agent_upgrade'] },
   'devices/core.ts': { tools: ['query_devices', 'get_device_details', 'get_device_context', 'set_device_context', 'resolve_device_context', 'manage_tags'] },
   'devices/customFieldImport.ts': { exempt: 'ui_file_transfer', note: 'CSV import preview/commit -- a browser file flow.' },
@@ -732,6 +733,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/mailboxConnect.ts': { exempt: 'vendor_console_admin' },
   'tickets/moveOrg.ts': { tools: ['manage_tickets'] },
   'tickets/parts.ts': { tools: ['list_time_entries'] },
+  // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
+  // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
+  'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
   'tickets/ticketResponseTemplates.ts': { gap: '#6776' },
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },
@@ -811,5 +815,6 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'wisp/memory.ts': { tools: ['recall', 'remember'] },
   'wispConcerns.ts': { tools: ['list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern'] },
   'wispWatches.ts': { tools: ['create_watch'] },
+  'wispNudgePreferences.ts': { exempt: 'human_only_ai_governance', note: 'Wisp nudge preferences (W06): how and when Wisp may reach the person (channels, quiet-hour override, brief time, proactivity) and the partner urgent-capable severities that break quiet hours; the AI must never set its own reach.' },
   'wispThreads.ts': { exempt: 'human_only_ai_governance', note: 'Wisp thread surface (W04): the human reads their grant\'s thread, picks its customer focus and attaches context; focus and attachments decide what Wisp sees, so the AI never sets them. The model reads attachments through read_artifact.' },
 };

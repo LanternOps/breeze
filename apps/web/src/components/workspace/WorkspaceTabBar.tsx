@@ -12,6 +12,8 @@ interface WorkspaceTabBarProps {
   onCloseTab: (tabId: string) => void;
   onRenameTab: (tabId: string, title: string) => void;
   onNewTab: () => void;
+  /** #9427 W3: the tab menu's "Continue in side panel". */
+  onContinueInPanel?: (tabId: string) => void;
 }
 
 export default function WorkspaceTabBar({
@@ -21,10 +23,12 @@ export default function WorkspaceTabBar({
   onCloseTab,
   onRenameTab,
   onNewTab,
+  onContinueInPanel,
 }: WorkspaceTabBarProps) {
   const { t } = useTranslation("ai");
   return (
     <div className="flex items-end gap-0.5 border-b border-gray-200 bg-white px-2 pt-2 dark:border-gray-700 dark:bg-gray-900">
+      <div role="tablist" className="contents">
       {tabs.map((tab) => (
         <WorkspaceTab
           key={tab.id}
@@ -37,8 +41,10 @@ export default function WorkspaceTabBar({
           onSelect={() => onSelectTab(tab.id)}
           onClose={() => onCloseTab(tab.id)}
           onRename={(title) => onRenameTab(tab.id, title)}
+          onContinueInPanel={tab.sessionId && onContinueInPanel ? () => onContinueInPanel(tab.id) : undefined}
         />
       ))}
+      </div>
 
       {tabs.length < MAX_TABS && (
         <button

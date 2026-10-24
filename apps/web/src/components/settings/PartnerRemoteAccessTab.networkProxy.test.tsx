@@ -19,17 +19,20 @@ const renderTab = (networkProxy: { dedicatedTunnelOrigin?: boolean }) => {
 };
 
 describe('PartnerRemoteAccessTab — dedicated tunnel origin', () => {
-  it('shows the switch on when the partner opted in, and turning it off reports false', () => {
+  it('is a checkbox (saved by the header Save, not a switch), checked when the partner opted in; unticking reports false', () => {
     const { toggle, onNetworkProxyChange } = renderTab({ dedicatedTunnelOrigin: true });
-    expect(toggle).toHaveAttribute('role', 'switch');
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(toggle.tagName).toBe('INPUT');
+    expect(toggle).toHaveAttribute('type', 'checkbox');
+    expect(toggle).not.toHaveAttribute('role', 'switch');
+    expect(toggle).toBeChecked();
+    expect(toggle).toHaveAccessibleName('Serve Network Proxy from a dedicated origin');
     fireEvent.click(toggle);
     expect(onNetworkProxyChange).toHaveBeenCalledWith({ dedicatedTunnelOrigin: false });
   });
 
-  it('shows the platform default (off) for a partner who never chose, and turning it on reports true', () => {
+  it('shows the platform default (unchecked) for a partner who never chose, and ticking it reports true', () => {
     const { toggle, onNetworkProxyChange } = renderTab({});
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     expect(onNetworkProxyChange).toHaveBeenCalledWith({ dedicatedTunnelOrigin: true });
   });

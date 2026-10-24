@@ -1120,7 +1120,6 @@
     "title": "Partnereinstellungen",
     "description": "Konfigurieren Sie die Standardeinstellungen für {{name}}.",
     "yourMsp": "Ihr MSP",
-    "selfSaving": "Dieser Abschnitt speichert seine eigenen Änderungen.",
     "saveSettings": "Einstellungen speichern",
     "enforcedDescription": "Die hier festgelegten Werte werden in allen Organisationen durchgesetzt. Lassen Sie die Felder leer, damit jede Organisation sie individuell konfigurieren kann.",
     "ticketingDescription": "Konfigurieren Sie Ticketstatus, Standardeinstellungen für Priorität SLA, Kategorien und Rechnungsexporte. Diese gelten für alle Ihre Organisationen.",
@@ -1149,6 +1148,27 @@
       "topologyAiDescription": "Breeze AI die Karte zusammenfassen und ungewöhnliche Änderungen in der Topologie eines Standorts markieren lassen.",
       "saved": "Module aktualisiert",
       "saveFailed": "Module konnten nicht aktualisiert werden"
+    },
+    "status": {
+      "clean": "Alle Änderungen gespeichert · {{time}}",
+      "cleanNoTime": "Alle Änderungen gespeichert",
+      "dirty": "Ungespeicherte Änderungen in <tabs></tabs>.",
+      "invalid_one": "Korrigieren Sie {{count}} Feld in {{tab}}, um zu speichern.",
+      "invalid_other": "Korrigieren Sie {{count}} Felder in {{tab}}, um zu speichern.",
+      "saving": "Wird gespeichert…",
+      "partial": "<tabs></tabs> konnte nicht gespeichert werden. Die übrigen Änderungen wurden gespeichert.",
+      "failed": "<tabs></tabs> konnte nicht gespeichert werden.",
+      "autosaved": "Gespeichert · {{time}}",
+      "autosaveFailed": "Speichern fehlgeschlagen – bitte erneut versuchen",
+      "readOnly": "Zum Speichern ist voller Partnerzugriff erforderlich"
+    },
+    "validation": {
+      "retentionDays": "Geben Sie eine ganze Zahl an Tagen von 1 bis 3650 ein."
+    },
+    "unsavedConfirm": "Sie haben ungespeicherte Änderungen. Diese Seite verlassen und die Änderungen verwerfen?",
+    "knownGuests": {
+      "added": "Bekanntes Gastgerät hinzugefügt",
+      "removed": "Bekanntes Gastgerät entfernt"
     }
   },
   "partnerSendingDomains": {
@@ -1526,9 +1546,6 @@
     "dropUnverifiedDescription": "Ist diese Option deaktiviert, werden nicht verifizierte E-Mails zur Prüfung in Quarantäne gestellt. Ist sie aktiviert, werden sie ohne Benachrichtigung verworfen. Dies gilt für <all>alle</all> nicht verifizierten Absender – einschließlich zugeordneter Kunden, deren einzelne Nachricht die Prüfung nicht besteht.",
     "staffForwardRouting": "Weitergeleitete E-Mails von Mitarbeitern dem ursprünglichen Kunden zuordnen",
     "staffForwardRoutingDescription": "Leitet ein Mitarbeiter auf Partnerebene die E-Mail eines Kunden an die Support-Adresse weiter, wird das neue Ticket der Organisation zugeordnet, die der Domain des ursprünglichen Absenders zugewiesen ist, statt Ihrer eigenen. Der Mitarbeiter muss Zugriff auf diese Organisation haben. Funktioniert nur für in Gmail erstellte Weiterleitungen, die in einem verbundenen Gmail-Postfach eingehen; nicht für die native Eingangsadresse, Postfächer von Microsoft 365 oder Weiterleitungen aus Outlook.",
-    "defaultAssignee": "Standardbearbeiter für neue eingehende Tickets",
-    "defaultAssigneeDescription": "Jedes neue Ticket aus eingehenden E-Mails wird dieser Person zugewiesen, sofern es nicht bereits anders zugewiesen wurde. Hat sie keinen Zugriff auf die Organisation des Tickets, bleibt das Ticket nicht zugewiesen.",
-    "defaultAssigneeUnavailable": "Nicht verfügbarer Benutzer",
     "defaultAssigneeNotAssignable": "Dieser Benutzer kann nicht Standardbearbeiter sein. Wählen Sie ein aktives Teammitglied mit Ticketzugriff.",
     "enableAutoresponse": "Senden Sie eine automatische Antwort zur Bestätigung neuer E-Mail-Tickets",
     "editEmailTemplates": "Die Bestätigungs-E-Mail wird unter E-Mail-Vorlagen bearbeitet.",
@@ -5210,7 +5227,8 @@
     "timeTracking": "Zeiterfassung",
     "email": "E-Mail",
     "templates": "Vorlagen",
-    "timeCapture": "Zeiterfassung"
+    "timeCapture": "Zeiterfassung",
+    "routing": "Routing"
   },
   "ticketFormsCard": {
     "heading": "Aufnahmeformulare",
@@ -5953,8 +5971,10 @@
   "siteDetailPage": {
     "loading": "Seite wird geladen...",
     "backToOrganizations": "Zurück zu Organisationen",
+    "backToSites": "Zurück zu Standorten",
     "breadcrumbs": {
       "settings": "Einstellungen",
+      "sites": "Standorte",
       "organizations": "Organisationen"
     },
     "errors": {
@@ -6040,6 +6060,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Hauptkontakt"
+  },
+  "sites": {
+    "page": {
+      "title": "Standorte",
+      "description": "Orte, an denen Ihre Geräte stehen. Öffnen Sie einen Standort, um Details und Geräte zu sehen.",
+      "organizationColumn": "Organisation",
+      "pickOrg": "Organisation",
+      "pickOrgPlaceholder": "Organisation auswählen",
+      "pickOrgRequired": "Wählen Sie die Organisation, zu der dieser Standort gehört.",
+      "fleetAddDescription": "Fügen Sie einen neuen Standort hinzu und wählen Sie die Organisation, zu der er gehört.",
+      "empty": "Noch keine Standorte. Fügen Sie einer Organisation einen Standort hinzu, um loszulegen.",
+      "viewDevicesAt": "Geräte an {{name}} anzeigen"
+    }
   },
   "siteList": {
     "title": "Standorte",
@@ -7057,6 +7090,144 @@
     },
     "loadError": "Ihr Tarif konnte nicht geladen werden.",
     "retry": "Erneut versuchen"
+  },
+  "ticketRouting": {
+    "title": "Ticket-Routing",
+    "description": "Regeln laufen beim Erstellen eines Tickets und setzen Bearbeiter, Priorität, Kategorie, Status und Tags, die der Ersteller nicht gewählt hat. Zuerst gelten Organisationsregeln, dann partnerweite Regeln. Die erste passende Regel gewinnt.",
+    "createRule": "Neue Regel",
+    "loadFailed": "Routing-Regeln konnten nicht geladen werden.",
+    "lookupsFailed": "Einige Techniker, Kategorien oder Status konnten nicht geladen werden, daher sind die Auswahllisten möglicherweise unvollständig. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "empty": "Noch keine Routing-Regeln.",
+    "groupOrg": "Regeln für {{org}}",
+    "groupPartner": "Partnerweite Regeln",
+    "thisOrganization": "Diese Organisation",
+    "allOrgs": "Alle Orgs",
+    "limitedOrgs": "Nur {{count}} Orgs",
+    "catchAll": "Trifft auf jedes Ticket zu",
+    "noActions": "Setzt nichts",
+    "enabledLabel": "Regel {{name}} aktivieren",
+    "enabledOn": "Regel aktiviert",
+    "enabledOff": "Regel deaktiviert",
+    "saveFailed": "Die Regel konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+    "deleteFailed": "Die Regel konnte nicht gelöscht werden. Versuchen Sie es erneut.",
+    "saved": "Regel gespeichert",
+    "created": "Regel erstellt",
+    "deleted": "Regel gelöscht",
+    "reorderFailed": "Die neue Reihenfolge konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+    "dragHandle": "Ziehen, um {{name}} neu zu ordnen, oder mit den Pfeiltasten nach oben oder unten verschieben.",
+    "readOnly": "Sie können diese Regel ansehen, aber nicht ändern.",
+    "chips": {
+      "add": "Hinzufügen",
+      "remove": "{{value}} entfernen"
+    },
+    "errors": {
+      "keywordShort": "Stichwörter benötigen mindestens 2 Zeichen.",
+      "keywordLong": "Stichwörter dürfen höchstens 100 Zeichen lang sein.",
+      "keywordsMax": "Sie können höchstens 20 Stichwörter hinzufügen.",
+      "domainInvalid": "Verwenden Sie einen Host wie example.com oder *.example.com.",
+      "domainsMax": "Sie können höchstens 50 Domains hinzufügen.",
+      "tagEmpty": "Geben Sie ein Tag ein.",
+      "tagLong": "Tags dürfen höchstens 50 Zeichen lang sein.",
+      "tagsMax": "Sie können höchstens 20 Tags hinzufügen.",
+      "nameRequired": "Geben Sie einen Namen für die Regel ein.",
+      "orgRequired": "Wählen Sie eine Organisation.",
+      "orgLinksRequired": "Wählen Sie mindestens eine Organisation oder wenden Sie die Regel auf alle Organisationen an."
+    },
+    "sources": {
+      "portal": "Portal",
+      "email": "E-Mail",
+      "alert": "Alarm",
+      "manual": "Manuell",
+      "api": "API",
+      "ai": "KI"
+    },
+    "priorities": {
+      "low": "Niedrig",
+      "normal": "Normal",
+      "high": "Hoch",
+      "urgent": "Dringend"
+    },
+    "drawer": {
+      "titleCreate": "Neue Routing-Regel",
+      "titleEdit": "Routing-Regel bearbeiten",
+      "close": "Schließen",
+      "owner": "Eigentümer",
+      "ownerOrg": "Nur diese Organisation",
+      "ownerPartner": "Alle Organisationen (partnerweit)",
+      "organization": "Organisation",
+      "chooseOrg": "Organisation wählen",
+      "appliesTo": "Gilt für",
+      "orgLinksAll": "Alle Organisationen",
+      "orgLinksSelected": "Nur ausgewählte Organisationen",
+      "name": "Name",
+      "conditions": "Wenn ein Ticket passt",
+      "conditionsHelp": "Alle ausgefüllten Bedingungen müssen zutreffen. Leere Bedingungen werden ignoriert.",
+      "matchSources": "Quelle ist eine von",
+      "matchPriorities": "Priorität ist eine von",
+      "matchCategory": "Kategorie",
+      "any": "Beliebig",
+      "matchKeywords": "Betreff enthält eines von",
+      "matchKeywordsHint": "Je 2 bis 100 Zeichen, bis zu 20.",
+      "matchDomains": "E-Mail-Domain des Anfragenden ist eine von",
+      "matchDomainsHint": "example.com oder *.example.com, bis zu 50.",
+      "actions": "Dann setzen",
+      "actionsHelp": "Nur für Felder, die der Ersteller nicht gewählt hat. Legen Sie mindestens eines fest.",
+      "setAssignee": "Bearbeiter",
+      "setPriority": "Priorität",
+      "setCategory": "Kategorie",
+      "setStatus": "Status",
+      "addTags": "Tags hinzufügen",
+      "noChange": "Keine Änderung",
+      "unavailableUser": "Nicht verfügbarer Benutzer",
+      "unavailableStatus": "Nicht verfügbarer Status",
+      "enabled": "Aktiviert",
+      "save": "Speichern",
+      "saving": "Wird gespeichert...",
+      "delete": "Löschen",
+      "deleteTitle": "Diese Regel löschen?",
+      "deleteMessage": "„{{name}}“ wird nicht mehr auf neue Tickets angewendet. Das kann nicht rückgängig gemacht werden."
+    },
+    "test": {
+      "title": "Ticket testen",
+      "description": "Probelauf: Sehen Sie, welche Regel auf ein neues Ticket passen würde und was sie ändern würde. Es wird nichts erstellt.",
+      "org": "Organisation",
+      "source": "Quelle",
+      "subject": "Betreff",
+      "email": "E-Mail des Anfragenden (optional)",
+      "category": "Kategorie (optional)",
+      "priority": "Priorität (optional)",
+      "notChosen": "Nicht gewählt",
+      "run": "Test ausführen",
+      "running": "Test läuft...",
+      "failed": "Der Test konnte nicht ausgeführt werden. Versuchen Sie es erneut.",
+      "matched": "Passende Regel: {{name}}",
+      "noMatch": "Keine Regel passt",
+      "applied": "Würde anwenden",
+      "appliedNothing": "Nichts würde sich ändern",
+      "skipped": "Übersprungen",
+      "actions": {
+        "set_assignee": "Bearbeiter",
+        "set_category": "Kategorie",
+        "set_status": "Status"
+      },
+      "reasons": {
+        "assignee_ineligible": "Der Bearbeiter hat keinen Zugriff auf die Tickets dieser Organisation.",
+        "assignee_deleted": "Der Bearbeiter existiert nicht mehr.",
+        "category_foreign": "Die Kategorie gehört zu einem anderen Partner.",
+        "status_foreign": "Der Status gehört zu einem anderen Partner.",
+        "status_inactive": "Der Status ist inaktiv.",
+        "status_core_not_allowed": "Dieser Status kann nicht durch eine Regel gesetzt werden."
+      }
+    },
+    "fallback": {
+      "title": "Wenn keine Regel ein E-Mail-Ticket zuweist",
+      "description": "Jedes neue Ticket aus eingehenden E-Mails wird dieser Person zugewiesen, wenn keine Routing-Regel es zuweist. Hat die Person keinen Zugriff auf die Organisation des Tickets, bleibt es unzugewiesen.",
+      "label": "Standard-Bearbeiter",
+      "unavailable": "Nicht verfügbarer Benutzer",
+      "saveFailed": "Der Ersatz-Bearbeiter konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+      "saved": "Ersatz-Bearbeiter gespeichert",
+      "loadFailed": "Der Ersatz-Bearbeiter konnte nicht geladen werden."
+    }
   },
   "wispMemory": {
     "title": "Wisp-Gedächtnis",

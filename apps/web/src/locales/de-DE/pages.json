@@ -155,6 +155,7 @@
     "settingsProfile": "Profileinstellungen",
     "settingsRoles": "Rollen",
     "settingsSitesDetail": "Standorteinstellungen",
+    "settingsSites": "Standorte",
     "settingsSso": "Single Sign-On (SSO)",
     "settingsUsers": "Benutzer",
     "settingsVariables": "Variablen",
@@ -182,7 +183,8 @@
     "endpointMessages": "Endpunkt-Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",
     "settingsPlan": "Tarif & Funktionen",
-    "settingsWispMemory": "Wisp-Gedächtnis"
+    "settingsWispMemory": "Wisp-Gedächtnis",
+    "wispThread": "Wisp-Thread"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { AiAssignmentRowDto, AiModelsSnapshotDto, AiOfferingDto, AiSurface, AiSurfaceDefaultsDto } from '@breeze/shared';
 import { jsonRes, SNAPSHOT } from './testFixtures';
 import { offeringRow } from './offeringFixtures';
@@ -11,6 +11,16 @@ vi.mock('../../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import FeatureDefaultsCard from './FeatureDefaultsCard';
+import { usePartnerSettingsDraftStore } from '../partnerSettings/partnerSettingsDraftStore';
+import { useAiFeatureDefaultsUnit } from '../partnerSettings/units/aiFeatureDefaultsUnit';
+import { runSaveUnits } from '../partnerSettings/saveUnits';
+
+// W2: the card has no Save of its own; the partner settings header Save runs
+// the aiFeatureDefaults unit (skipping it while it is invalid).
+const headerSave = async () => {
+  const unit = renderHook(() => useAiFeatureDefaultsUnit()).result.current;
+  await act(async () => { await runSaveUnits([unit]); });
+};
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -49,7 +59,7 @@ function snapWithDefaults(over: { offerings?: AiOfferingDto[]; helperDefault?: s
   };
 }
 
-beforeEach(() => { fetchWithAuth.mockReset(); showToast.mockReset(); });
+beforeEach(() => { fetchWithAuth.mockReset(); showToast.mockReset(); usePartnerSettingsDraftStore.getState().reset(); });
 
 const optionValues = (testId: string) => [...(screen.getByTestId(testId) as HTMLSelectElement).options].map((o) => o.value);
 
@@ -59,7 +69,7 @@ describe('FeatureDefaultsCard', () => {
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('ai-defaults-default-chat'), { target: { value: B } });
     expect(screen.getByTestId('ai-defaults-dirty')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
     expect(fetchWithAuth.mock.calls[0][0]).toBe('/ai/models/assignments');
     expect(fetchWithAuth.mock.calls[0][1].method).toBe('PUT');
@@ -75,7 +85,7 @@ describe('FeatureDefaultsCard', () => {
     s.defaults[1] = { ...s.defaults[1], partner: null };
     render(<FeatureDefaultsCard snapshot={s} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('ai-defaults-default-helper'), { target: { value: B } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
     expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments[0]).toMatchObject({ surface: 'helper', defaultOfferingId: B, expectedUpdatedAt: null });
   });
@@ -85,7 +95,7 @@ describe('FeatureDefaultsCard', () => {
     const onSaved = vi.fn();
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={onSaved} />);
     fireEvent.click(screen.getByTestId('ai-defaults-user-choice-chat'));
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByTestId('ai-defaults-dirty')).toBeNull());
   });
@@ -107,12 +117,39 @@ describe('FeatureDefaultsCard', () => {
     expect((screen.getByTestId('ai-defaults-default-chat') as HTMLSelectElement).value).toBe(B);
   });
 
-  it('refuses to save an "Only these" set with nothing ticked', async () => {
+  it('an "Only these" set with nothing ticked is invalid: inline error, and the header Save skips it', async () => {
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('ai-defaults-permitted-mode-chat'), { target: { value: 'list' } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(screen.getByTestId('ai-defaults-row-error-chat')).toBeTruthy();
+    expect(renderHook(() => useAiFeatureDefaultsUnit()).result.current.validity().aiProvider)
+      .toEqual({ isValid: false, invalidCount: 1, firstInvalidFieldId: 'ai-defaults-permitted-mode-chat' });
+    await headerSave();
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+
+  it('feature defaults partner mode has no Save button', () => {
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ai-defaults-user-choice-chat'));
+    expect(screen.getByTestId('ai-defaults-dirty')).toBeTruthy();
+    expect(screen.queryByTestId('ai-defaults-save')).toBeNull();
+  });
+
+  it('the draft survives the card unmounting (a tab switch)', () => {
+    const first = render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByTestId('ai-defaults-default-chat'), { target: { value: B } });
+    first.unmount();
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    expect((screen.getByTestId('ai-defaults-default-chat') as HTMLSelectElement).value).toBe(B);
+    expect(screen.getByTestId('ai-defaults-dirty')).toBeTruthy();
+  });
+
+  it('header Save sends no per-unit success toast', async () => {
+    fetchWithAuth.mockResolvedValueOnce(jsonRes({ assignments: [] }));
+    render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('ai-defaults-user-choice-chat'));
+    await headerSave();
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
   it('Discard restores the snapshot and hides the footer', () => {
@@ -128,17 +165,17 @@ describe('FeatureDefaultsCard', () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'needs tools', code: 'tools_unsupported', details: { surface: 'chat', field: 'defaultOfferingId' } }, 422));
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
     fireEvent.click(screen.getByTestId('ai-defaults-user-choice-chat'));
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(screen.getByTestId('ai-defaults-row-chat').getAttribute('aria-invalid')).toBe('true'));
     expect(screen.getByTestId('ai-defaults-row-helper').getAttribute('aria-invalid')).not.toBe('true');
   });
 
-  it('a 409 stale_write reloads the snapshot', async () => {
+  it('a 409 stale_write is a conflict: the draft stays and the snapshot reloads', async () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'stale', code: 'stale_write' }, 409));
     const onSaved = vi.fn();
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={onSaved} />);
     fireEvent.click(screen.getByTestId('ai-defaults-user-choice-chat'));
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
   });
 
@@ -177,7 +214,7 @@ describe('FeatureDefaultsCard', () => {
     expect(optionValues('ai-defaults-speed-chat')).toContain('fast');
     fireEvent.change(screen.getByTestId('ai-defaults-effort-chat'), { target: { value: 'high' } });
     fireEvent.change(screen.getByTestId('ai-defaults-speed-chat'), { target: { value: 'fast' } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
     expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments[0].options).toEqual({ effort: 'high', speed: 'fast' });
   });
@@ -188,7 +225,7 @@ describe('FeatureDefaultsCard', () => {
     render(<FeatureDefaultsCard snapshot={s} onSaved={vi.fn()} />);
     expect(screen.getByTestId('ai-defaults-row-script_reviewer').textContent).toMatch(/approvals permission/i);
     fireEvent.click(screen.getByTestId('ai-defaults-user-choice-script_reviewer'));
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/approvals/i) })));
   });
 
@@ -213,7 +250,7 @@ describe('FeatureDefaultsCard', () => {
       expect(box.closest('label')?.textContent).toMatch(/Model B.*unavailable/i);
       fireEvent.click(box);
       expect((screen.getByTestId(`ai-defaults-permitted-chat-${B}`) as HTMLInputElement).checked).toBe(false);
-      fireEvent.click(screen.getByTestId('ai-defaults-save'));
+      await headerSave();
       await waitFor(() => expect(fetchWithAuth).toHaveBeenCalled());
       expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments[0].permittedOfferingIds).toEqual([A]);
     });
@@ -252,7 +289,7 @@ describe('FeatureDefaultsCard', () => {
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('ai-defaults-default-ai_agents-triage'), { target: { value: B } });
     fireEvent.change(screen.getByTestId('ai-defaults-fallback-add-ai_agents-triage'), { target: { value: A } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments).toEqual([expect.objectContaining({
       surface: 'ai_agents', role: 'triage', defaultOfferingId: B, fallbackOfferingIds: [A], fallbackMayCrossFunding: false, expectedUpdatedAt: null,
     })]));
@@ -265,7 +302,7 @@ describe('FeatureDefaultsCard', () => {
     triage.partner = { ...assignment('ai_agents', B), role: 'triage' };
     render(<FeatureDefaultsCard snapshot={s} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('ai-defaults-default-ai_agents-triage'), { target: { value: '' } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments).toEqual([expect.objectContaining({
       surface: 'ai_agents', role: 'triage', defaultOfferingId: null, permittedOfferingIds: null, options: null, fallbackOfferingIds: null, expectedUpdatedAt: UPDATED,
     })]));
@@ -278,7 +315,7 @@ describe('FeatureDefaultsCard', () => {
     expect(screen.queryByTestId('ai-defaults-fallback-chat-1')).toBeNull();
     expect(screen.queryByTestId('ai-defaults-dirty')).toBeNull();
     fireEvent.change(screen.getByTestId('ai-defaults-default-chat'), { target: { value: A2 } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(JSON.parse(fetchWithAuth.mock.calls[0][1].body).assignments).toEqual([expect.objectContaining({
       surface: 'chat', defaultOfferingId: A2, fallbackOfferingIds: [B],
     })]));
@@ -296,7 +333,7 @@ describe('FeatureDefaultsCard', () => {
     fetchWithAuth.mockResolvedValueOnce(jsonRes({ error: 'x', code: 'crosses_funding', details: { surface: 'ai_agents', role: 'triage', field: 'fallbackOfferingIds' } }, 422));
     render(<FeatureDefaultsCard snapshot={snapWithDefaults()} onSaved={vi.fn()} />);
     fireEvent.change(screen.getByTestId('ai-defaults-default-ai_agents-triage'), { target: { value: B } });
-    fireEvent.click(screen.getByTestId('ai-defaults-save'));
+    await headerSave();
     await waitFor(() => expect(screen.getByTestId('ai-defaults-row-ai_agents-triage').getAttribute('aria-invalid')).toBe('true'));
     expect(screen.getByTestId('ai-defaults-row-ai_agents').getAttribute('aria-invalid')).not.toBe('true');
   });

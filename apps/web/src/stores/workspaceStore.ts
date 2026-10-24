@@ -1,13 +1,18 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AiPageContext, AiStreamEvent, AiApprovalMode, AiTicketDraft, CreateTicketFromChatInput } from '@breeze/shared';
+import type { AiAttachState, AiPageContext, AiStreamEvent, AiApprovalMode, AiTicketDraft, CreateTicketFromChatInput } from '@breeze/shared';
 import { fetchWithAuth } from './auth';
+import { openAiSession, type AiSessionView } from './aiSessionOpen';
+import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type AttachOutcome } from './aiSessionAttach';
+import { classifySendRefusal } from './aiSendRefusal';
+import { registerLogoutHook } from './logoutHooks';
 import { extractApiError } from '@/lib/apiError';
 import { runAction } from '@/lib/runAction';
 import { showToast } from '../components/shared/Toast';
 import {
   processStreamEvent,
   mapMessagesFromApi,
+  attachAnchorMissing,
   type AiMessage,
   type PendingApproval,
   type PendingPlan,
@@ -15,7 +20,7 @@ import {
   type ChatRunState,
 } from './processStreamEvent';
 
-const MAX_TABS = 5;
+export const MAX_TABS = 5;
 
 export interface TabState {
   id: string;
@@ -46,6 +51,69 @@ export interface TabState {
   isFlagged: boolean;
   unreadCount: number;
   hasApprovalPending: boolean;
+  /** #9427 W3 (chips): the session's org, from GET /ai/sessions/:id. Null for a tab that created its own session. */
+  orgId: string | null;
+  deviceId: string | null;
+  /** Hostname from the rebuilt device page context, for the device chip. */
+  deviceLabel: string | null;
+  m365ConnectionId: string | null;
+  /** The composer text, held here so a move carries it (not persisted). */
+  composerDraft: string;
+  /** Attached to a running turn whose replay was too large; cleared when the turn ends or the attach stops. */
+  joinedMidResponse: boolean;
+  /** A refusal the workspace cannot resolve itself: the banner offers the side panel. */
+  errorAction: 'continue_in_panel' | null;
+}
+
+/** Shown when a send needs a model choice or a continuation the workspace has no UI for. */
+export const CHOOSE_MODEL_IN_PANEL = 'Continue in side panel to choose a model';
+
+export type OpenSessionResult = 'focused' | 'opened' | 'tab_cap' | 'not_found' | 'closed' | 'topology' | 'error';
+
+function contextLabelOf(context: AiPageContext | null): string | null {
+  if (!context) return null;
+  return context.type === 'device' ? context.hostname
+    : context.type === 'alert' ? context.title
+    : context.type === 'dashboard' ? (context.orgName ?? 'Dashboard')
+    : context.type === 'custom' ? context.label
+    : null;
+}
+
+/** Chip fields and flags a tab takes from a hydrated session. */
+function sessionFieldsOf(view: AiSessionView): Partial<TabState> {
+  return {
+    orgId: view.orgId || null,
+    deviceId: view.deviceId,
+    deviceLabel: view.pageContext?.type === 'device' ? view.pageContext.hostname : null,
+    m365ConnectionId: view.m365ConnectionId,
+    isFlagged: view.isFlagged,
+  };
+}
+
+/**
+ * #9427 W3: bumped by resetForLogout. Every async action captures it; a
+ * continuation whose captured generation is stale writes nothing, so a late
+ * send/open/attach cannot re-persist the previous user's tabs (Codex finding 1).
+ */
+let workspaceGeneration = 0;
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+type TabAttachReady = 'ready' | 'not_found' | 'stopped';
+
+/** Per-attempt bookkeeping of one tab attach (one GET …/stream). */
+interface TabAttachAttempt {
+  owns: () => boolean;
+  abort: () => void;
+  currentAssistantId: string | null;
 }
 
 function createEmptyTab(title?: string): TabState {
@@ -70,6 +138,13 @@ function createEmptyTab(title?: string): TabState {
     isFlagged: false,
     unreadCount: 0,
     hasApprovalPending: false,
+    orgId: null,
+    deviceId: null,
+    deviceLabel: null,
+    m365ConnectionId: null,
+    composerDraft: '',
+    joinedMidResponse: false,
+    errorAction: null,
   };
 }
 
@@ -77,9 +152,21 @@ interface WorkspaceState {
   tabs: TabState[];
   activeTabId: string | null;
   _readers: Map<string, ReadableStreamDefaultReader<Uint8Array>>;
+  /** #9427 W3: one live attach loop per tab, keyed by tab id. */
+  _attachControllers: Map<string, AbortController>;
 
   // Tab lifecycle
   createTab: (title?: string, context?: AiPageContext) => void;
+  /**
+   * #9427 W3: open an existing conversation. An existing tab is focused (no
+   * fetch); a full tab bar is `tab_cap` (no fetch, never an eviction); topology
+   * never opens here. `'opened'` resolves once the new tab's attach is ready.
+   * An aborted `signal` (a dead hand-off) commits no tab.
+   */
+  openSession: (sessionId: string, opts?: { draft?: string; signal?: AbortSignal }) => Promise<OpenSessionResult | 'aborted'>;
+  setComposerDraft: (tabId: string, text: string) => void;
+  /** #9427 W3 (T14): logout — stop every reader and attach, drop all tabs, stale every in-flight action. */
+  resetForLogout: () => void;
   closeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
   /**
@@ -127,17 +214,246 @@ type PersistedWorkspace = {
 export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
     (set, get) => {
-      const updateTab = (tabId: string, patch: Partial<TabState>) =>
+      const getTab = (tabId: string) => get().tabs.find((t) => t.id === tabId);
+
+      // A write for a tab that no longer exists (closed, or every tab dropped
+      // at logout) is skipped outright: even an empty set() would make the
+      // persist middleware write `breeze-workspace` again.
+      const updateTab = (tabId: string, patch: Partial<TabState>) => {
+        if (!getTab(tabId)) return;
         set((s) => ({
           tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, ...patch } : t)),
         }));
+      };
 
-      const getTab = (tabId: string) => get().tabs.find((t) => t.id === tabId);
+      /** Tab-scoped setter/getter handed to processStreamEvent. */
+      const tabSetFor = (tabId: string) => (fn: (s: TabState) => Partial<TabState>) => {
+        if (!getTab(tabId)) return;
+        set((state) => ({
+          tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, ...fn(t) } : t)),
+        }));
+      };
+      const tabGetFor = (tabId: string) => (): TabState => getTab(tabId) ?? createEmptyTab();
+
+      /**
+       * One stream event (send or attach) applied to one tab: background-tab
+       * notification bookkeeping, the title rule, then processStreamEvent.
+       */
+      const applyTabStreamEvent = (tabId: string, event: AiStreamEvent, currentAssistantId: string | null): string | null => {
+        const isBackground = get().activeTabId !== tabId;
+        if (isBackground) {
+          if (event.type === 'message_start') {
+            const t = getTab(tabId);
+            if (t) updateTab(tabId, { unreadCount: t.unreadCount + 1 });
+          }
+          if (event.type === 'approval_required' || event.type === 'plan_approval_required') {
+            updateTab(tabId, { hasApprovalPending: true });
+          }
+          if (event.type === 'attach_state' && event.pendingCards.length > 0) {
+            updateTab(tabId, { hasApprovalPending: true });
+          }
+        }
+
+        // Update title from title_updated events — but never stomp on a title
+        // the user explicitly set (guards a race where the rename lands after
+        // the auto-title generation already started server-side).
+        if (event.type === 'title_updated') {
+          const currentTab = getTab(tabId);
+          if (!currentTab?.isTitleCustom) {
+            updateTab(tabId, { title: event.title });
+          }
+        }
+
+        return processStreamEvent(
+          event,
+          tabSetFor(tabId) as (fn: (s: any) => Partial<any>) => void,
+          tabGetFor(tabId) as () => any,
+          currentAssistantId,
+        );
+      };
+
+      /**
+       * #9427 W3: the one place attach-delivered events reach a tab (the seam
+       * #9429's notifications will hook). A superseded attach stops its reader
+       * and writes nothing.
+       */
+      const applyTabAttachEvent = (tabId: string, event: AiStreamEvent, attempt: TabAttachAttempt): boolean => {
+        if (!attempt.owns()) {
+          attempt.abort();
+          return false;
+        }
+        attempt.currentAssistantId = applyTabStreamEvent(tabId, event, attempt.currentAssistantId);
+        return true;
+      };
+
+      const abortTabAttach = (tabId: string) => {
+        const controllers = get()._attachControllers;
+        const controller = controllers.get(tabId);
+        if (!controller) return;
+        controllers.delete(tabId);
+        controller.abort();
+      };
+
+      /**
+       * #9427 W3 (spec §3.5, the T9 rules per tab): attach a tab's session and
+       * keep the turn applied until it ends. Owned while the workspace
+       * generation is unchanged, the tab still holds the same session, and this
+       * controller is still the tab's — closeTab, cleanupAllStreams,
+       * resetForLogout and a newer attach for the tab each end it
+       * synchronously. Re-attach per W1's shouldReattach/attachBackoffMs (Gate
+       * B #6); on any other stop (not `done`/`idle`): one messages re-read if anything may
+       * have changed, `isStreaming:false`, `joinedMidResponse:false`, no
+       * banner. `not_found` unbinds the tab like restore's 404 path.
+       */
+      const startTabAttach = (
+        tabId: string,
+        opts: { afterClosedOr409?: boolean } = {},
+      ): { ready: Promise<TabAttachReady>; finished: Promise<void> } => {
+        const sessionId = getTab(tabId)?.sessionId;
+        if (!sessionId) {
+          const stopped = Promise.resolve<TabAttachReady>('stopped');
+          return { ready: stopped, finished: stopped.then(() => undefined) };
+        }
+        const gen = workspaceGeneration;
+        abortTabAttach(tabId);
+        const controller = new AbortController();
+        get()._attachControllers.set(tabId, controller);
+        const untrack = trackAttach(controller);
+
+        const owns = () =>
+          !controller.signal.aborted
+          && gen === workspaceGeneration
+          && get()._attachControllers.get(tabId) === controller
+          && getTab(tabId)?.sessionId === sessionId;
+
+        let settleReady!: (r: TabAttachReady) => void;
+        const ready = new Promise<TabAttachReady>((resolve) => { settleReady = resolve; });
+
+        /** One owner-guarded messages re-read (reconciliation). */
+        const rehydrate = async (): Promise<void> => {
+          try {
+            const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
+            if (!owns()) return;
+            if (!res.ok) {
+              console.warn('[Workspace] Attach re-hydrate failed: HTTP', res.status);
+              return;
+            }
+            const data = await res.json();
+            if (!owns()) return;
+            updateTab(tabId, { messages: mapMessagesFromApi(data.messages || []) });
+          } catch (err) {
+            console.warn('[Workspace] Attach re-hydrate failed:', err);
+          }
+        };
+
+        const run = async (): Promise<void> => {
+          const cycle = { attempt: 0, afterClosedOr409: !!opts.afterClosedOr409 };
+          let anchorRetried = false;
+          // Whether a stop re-reads messages: something may have changed since
+          // the hydrate (a refused send, a running snapshot, a re-attach).
+          let reconcileOnStop = cycle.afterClosedOr409;
+          for (;;) {
+            if (!owns()) return;
+            const attemptController = new AbortController();
+            const abortAttempt = () => attemptController.abort();
+            controller.signal.addEventListener('abort', abortAttempt, { once: true });
+            const attempt: TabAttachAttempt = { owns, abort: abortAttempt, currentAssistantId: null };
+            const seen: { snapshot: AiAttachState | null; messagesBefore: AiMessage[] | null; anchorMissing: boolean; rehydrateOnDone: boolean } = {
+              snapshot: null, messagesBefore: null, anchorMissing: false, rehydrateOnDone: false,
+            };
+
+            const { finished } = attachAiSession(sessionId, {
+              signal: attemptController.signal,
+              onEvent: (event) => {
+                if (event.type !== 'attach_state') {
+                  applyTabAttachEvent(tabId, event, attempt);
+                  return;
+                }
+                const messagesBefore = getTab(tabId)?.messages ?? [];
+                if (owns() && !anchorRetried && attachAnchorMissing(event, messagesBefore)) {
+                  // Hydrated before this turn's user row was written: re-read,
+                  // then attach once more (Advisor findings 2 and 4).
+                  seen.anchorMissing = true;
+                  abortAttempt();
+                  return;
+                }
+                if (!applyTabAttachEvent(tabId, event, attempt)) return;
+                seen.messagesBefore = messagesBefore;
+                seen.snapshot = event;
+                // The reply on screen is not the full persisted turn: re-read on done.
+                seen.rehydrateOnDone = event.turn === 'running'
+                  && (event.partial || event.turnUserMessageId === null || attachAnchorMissing(event, messagesBefore));
+                settleReady('ready');
+              },
+            });
+            let outcome: AttachOutcome;
+            try {
+              outcome = await finished;
+            } finally {
+              controller.signal.removeEventListener('abort', abortAttempt);
+            }
+            if (!owns()) return;
+
+            if (seen.anchorMissing) {
+              anchorRetried = true;
+              await rehydrate();
+              continue;
+            }
+            const applied = seen.snapshot;
+            if (applied?.turn === 'running') reconcileOnStop = true;
+
+            if (outcome.kind === 'done') {
+              if (seen.rehydrateOnDone) await rehydrate();
+              return;
+            }
+            if (outcome.kind === 'idle') {
+              // Gate B #15: a turn ran on this instance — re-read once.
+              if (applied?.turnId != null || reconcileOnStop) await rehydrate();
+              return;
+            }
+            if (outcome.kind === 'not_found') {
+              settleReady('not_found');
+              updateTab(tabId, {
+                sessionId: null, messages: [], isLoading: false, isStreaming: false, joinedMidResponse: false,
+                pendingApproval: null, pendingPlan: null, activePlan: null,
+              });
+              return;
+            }
+            if (shouldReattach(outcome, cycle)) {
+              // The next snapshot replays the turn from scratch: un-apply this one.
+              if (applied?.turn === 'running' && seen.messagesBefore) updateTab(tabId, { messages: seen.messagesBefore });
+              if (outcome.kind === 'closed') cycle.afterClosedOr409 = true;
+              reconcileOnStop = true;
+              await sleep(attachBackoffMs(cycle.attempt), controller.signal);
+              cycle.attempt += 1;
+              continue;
+            }
+            if (outcome.kind === 'error') console.warn('[Workspace] Attach failed:', outcome.message);
+            if (reconcileOnStop) await rehydrate();
+            if (owns()) updateTab(tabId, { isStreaming: false, joinedMidResponse: false });
+            return;
+          }
+        };
+
+        const finished = run()
+          .catch((err) => {
+            console.error('[Workspace] Attach loop failed:', err);
+            if (owns()) updateTab(tabId, { isStreaming: false, joinedMidResponse: false });
+          })
+          .finally(() => {
+            untrack();
+            const controllers = get()._attachControllers;
+            if (controllers.get(tabId) === controller) controllers.delete(tabId);
+            settleReady('stopped');
+          });
+        return { ready, finished };
+      };
 
       return {
         tabs: [],
         activeTabId: null,
         _readers: new Map(),
+        _attachControllers: new Map(),
 
         createTab: (title?: string, context?: AiPageContext) => {
           const { tabs } = get();
@@ -145,11 +461,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           const tab = createEmptyTab(title);
           if (context) {
             tab.pageContext = context;
-            tab.contextLabel = context.type === 'device' ? context.hostname
-              : context.type === 'alert' ? context.title
-              : context.type === 'dashboard' ? (context.orgName ?? 'Dashboard')
-              : context.type === 'custom' ? context.label
-              : null;
+            tab.contextLabel = contextLabelOf(context);
           }
           set((s) => ({
             tabs: [...s.tabs, tab],
@@ -157,10 +469,78 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           }));
         },
 
+        openSession: async (sessionId, opts = {}) => {
+          const { signal, draft } = opts;
+          if (signal?.aborted) return 'aborted';
+          const focusExisting = (): boolean => {
+            const existing = get().tabs.find((t) => t.sessionId === sessionId);
+            if (!existing) return false;
+            get().switchTab(existing.id);
+            // A handed-over draft is not dropped because the tab was already open.
+            if (draft) {
+              updateTab(existing.id, {
+                composerDraft: existing.composerDraft ? `${existing.composerDraft}\n${draft}` : draft,
+              });
+            }
+            return true;
+          };
+          if (focusExisting()) return 'focused';
+          // A full tab bar is a toast, never an eviction (D5) — and no request.
+          if (get().tabs.length >= MAX_TABS) return 'tab_cap';
+
+          const gen = workspaceGeneration;
+          const result = await openAiSession(sessionId);
+          if (gen !== workspaceGeneration || signal?.aborted) return 'aborted';
+          if (result.kind !== 'ok') return result.kind;
+          // Topology investigations live in the side panel only (D4).
+          if (result.view.type === 'topology') return 'topology';
+          if (focusExisting()) return 'focused';
+          if (get().tabs.length >= MAX_TABS) return 'tab_cap';
+
+          const { view } = result;
+          const tab: TabState = {
+            ...createEmptyTab(view.title ?? undefined),
+            sessionId,
+            pageContext: view.pageContext,
+            contextLabel: contextLabelOf(view.pageContext),
+            messages: result.messages,
+            composerDraft: draft ?? '',
+            ...sessionFieldsOf(view),
+          };
+          set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+
+          // Resolve on the attach's ready (attach_state), never on the turn's end.
+          const { ready } = startTabAttach(tab.id);
+          const outcome = await (signal
+            ? Promise.race([ready, new Promise<'signal'>((resolve) => {
+              signal.addEventListener('abort', () => resolve('signal'), { once: true });
+            })])
+            : ready);
+          if (gen !== workspaceGeneration || !getTab(tab.id)) return 'aborted';
+          // The hand-off died while this tab was being prepared: the origin
+          // keeps the session, so withdraw the tab rather than mirror it (D3).
+          if (outcome === 'signal' || signal?.aborted) {
+            get().closeTab(tab.id);
+            return 'aborted';
+          }
+          if (outcome === 'not_found') {
+            get().closeTab(tab.id);
+            return 'not_found';
+          }
+          return 'opened';
+        },
+
+        setComposerDraft: (tabId: string, text: string) => {
+          updateTab(tabId, { composerDraft: text });
+        },
+
         closeTab: (tabId: string) => {
           const { _readers, tabs, activeTabId } = get();
           const tab = tabs.find((t) => t.id === tabId);
           if (!tab) return;
+
+          // Stop this tab's attach now: its later events must write nothing.
+          abortTabAttach(tabId);
 
           // Cancel any active stream
           const reader = _readers.get(tab.sessionId ?? '');
@@ -236,6 +616,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           const tab = getTab(tabId);
           if (!tab || tab.isStreaming || tab.isLoading) return;
 
+          // #9427 W3: a logout during any await below makes every later write
+          // a no-op (including the finally) — nothing re-persists old tabs.
+          const gen = workspaceGeneration;
+          const stale = () => gen !== workspaceGeneration;
+          // This send supersedes the tab's attach (an idle one still closing).
+          abortTabAttach(tabId);
+
           // Create session lazily if needed
           let sessionId = tab.sessionId;
           if (!sessionId) {
@@ -260,11 +647,13 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                   title: titleAtCreation,
                 }),
               });
+              if (stale()) return;
               if (!res.ok) {
                 const data = await res.json().catch(() => null);
                 throw new Error(extractApiError(data, 'Failed to create session'));
               }
               const data = await res.json();
+              if (stale()) return;
               sessionId = data.id;
               updateTab(tabId, { sessionId, isLoading: false });
 
@@ -276,6 +665,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 }).catch((err) => console.error('[Workspace] Failed to sync title after session creation:', err));
               }
             } catch (err) {
+              if (stale()) return;
               updateTab(tabId, {
                 error: err instanceof Error ? err.message : 'Failed to create session',
                 isLoading: false,
@@ -298,32 +688,62 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             messages: [...(getTab(tabId)?.messages ?? []), userMsg],
             isStreaming: true,
             error: null,
+            errorAction: null,
             pendingApproval: null,
           });
 
+          let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+          // Set when a refusal hands the tab to an attach: the finally must not
+          // touch isStreaming then (the attach owns it).
+          let handedToAttach = false;
           try {
             const currentTab = getTab(tabId);
             const res = await fetchWithAuth(`/ai/sessions/${sessionId}/messages`, {
               method: 'POST',
               body: JSON.stringify({ content: trimmed, pageContext: currentTab?.pageContext ?? undefined }),
             });
+            if (stale()) return;
 
             if (!res.ok) {
               const data = await res.json().catch(() => null);
-              if (res.status === 409) {
+              if (stale()) return;
+              const code = data && typeof data === 'object' && typeof (data as { code?: unknown }).code === 'string'
+                ? (data as { code: string }).code : null;
+              const refusal = classifySendRefusal(res.status, code);
+              const dropBubble = (patch: Partial<TabState>) => {
+                if (!getTab(tabId)) return;
                 set((s) => ({
                   tabs: s.tabs.map((t) =>
-                    t.id === tabId
-                      ? { ...t, messages: t.messages.filter((m) => m.id !== userMsgId), error: extractApiError(data, 'Another response is still in progress.') }
-                      : t
+                    t.id === tabId ? { ...t, messages: t.messages.filter((m) => m.id !== userMsgId), ...patch } : t
                   ),
                 }));
+              };
+
+              if (refusal === 'attach') {
+                // #9427 (Gate B #7): another turn is running on this
+                // conversation (turn_in_progress, or an uncoded 409 from an
+                // older API). Join it; the refused text goes back in the
+                // composer, no error banner.
+                if (!getTab(tabId)) return;
+                dropBubble({ isStreaming: false, composerDraft: trimmed, error: null, errorAction: null });
+                handedToAttach = true;
+                void startTabAttach(tabId, { afterClosedOr409: true }).finished;
+                return;
+              }
+              if (refusal === 'continuation' || refusal === 'choose_model') {
+                // The workspace has no model picker or continuation prompt:
+                // the banner offers the side panel, which has both.
+                dropBubble({ isStreaming: false, error: CHOOSE_MODEL_IN_PANEL, errorAction: 'continue_in_panel' });
+                return;
+              }
+              if (res.status === 409) {
+                dropBubble({ error: extractApiError(data, 'Another response is still in progress.') });
                 return;
               }
               throw new Error(extractApiError(data, 'Failed to send message'));
             }
 
-            const reader = res.body?.getReader();
+            reader = res.body?.getReader();
             if (!reader) throw new Error('No response body');
 
             // Store reader for interrupt/cleanup
@@ -333,33 +753,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             let buffer = '';
             let currentAssistantId: string | null = null;
 
-            // Create tab-scoped setter/getter that route updates to the correct tab
-            const tabSet = (fn: (s: TabState) => Partial<TabState>) => {
-              set((state) => ({
-                tabs: state.tabs.map((t) => {
-                  if (t.id !== tabId) return t;
-                  return { ...t, ...fn(t) };
-                }),
-              }));
-
-              // Increment unread if this tab is in the background
-              const { activeTabId } = get();
-              if (activeTabId !== tabId) {
-                // Check if the update added a message_start or approval
-                const updatedTab = getTab(tabId);
-                if (updatedTab) {
-                  // We'll handle notification tracking in the event processing below
-                }
-              }
-            };
-
-            const tabGet = (): TabState => {
-              return getTab(tabId) ?? createEmptyTab();
-            };
-
             while (true) {
               const { done, value } = await reader.read();
-              if (done) break;
+              if (done || stale()) break;
 
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split('\n');
@@ -372,38 +768,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
 
                   try {
                     const event = JSON.parse(jsonStr) as AiStreamEvent;
-
-                    // Track notifications for background tabs
-                    const { activeTabId: currentActive } = get();
-                    const isBackground = currentActive !== tabId;
-
-                    if (isBackground) {
-                      if (event.type === 'message_start') {
-                        const t = getTab(tabId);
-                        if (t) updateTab(tabId, { unreadCount: t.unreadCount + 1 });
-                      }
-                      if (event.type === 'approval_required' || event.type === 'plan_approval_required') {
-                        updateTab(tabId, { hasApprovalPending: true });
-                      }
-                    }
-
-                    // Update title from title_updated events — but never
-                    // stomp on a title the user explicitly set (guards a race
-                    // where the rename lands after the auto-title generation
-                    // already started server-side).
-                    if (event.type === 'title_updated') {
-                      const currentTab = getTab(tabId);
-                      if (!currentTab?.isTitleCustom) {
-                        updateTab(tabId, { title: event.title });
-                      }
-                    }
-
-                    currentAssistantId = processStreamEvent(
-                      event,
-                      tabSet as (fn: (s: any) => Partial<any>) => void,
-                      tabGet as () => any,
-                      currentAssistantId
-                    );
+                    currentAssistantId = applyTabStreamEvent(tabId, event, currentAssistantId);
                   } catch (parseErr) {
                     console.error('[Workspace] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
                   }
@@ -411,17 +776,21 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               }
             }
           } catch (err) {
+            if (stale()) return;
             updateTab(tabId, {
               error: err instanceof Error ? err.message : 'Failed to send message',
               isStreaming: false,
             });
           } finally {
-            const t = getTab(tabId);
-            if (t?.isStreaming) {
-              updateTab(tabId, { isStreaming: false });
-            }
-            if (sessionId) {
-              get()._readers.delete(sessionId);
+            // A stale send (logout since it started) writes nothing at all,
+            // so the persist middleware has nothing to write back.
+            if (!stale()) {
+              const t = getTab(tabId);
+              if (t?.isStreaming && !handedToAttach) {
+                updateTab(tabId, { isStreaming: false });
+              }
+              const readers = get()._readers;
+              if (reader && readers.get(sessionId) === reader) readers.delete(sessionId);
             }
           }
         },
@@ -639,44 +1008,53 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         },
 
         restoreWorkspace: async () => {
-          const { tabs } = get();
-          const tabsWithSessions = tabs.filter((t) => t.sessionId);
+          const gen = workspaceGeneration;
+          const tabsWithSessions = get().tabs.filter((t) => t.sessionId);
           if (tabsWithSessions.length === 0) return;
 
+          // #9427 W3: hydrate through openAiSession, then attach each tab, so
+          // returning to /workspace re-joins a turn that is still running.
+          // Never moves activeTabId (a deep link may be opening one).
           await Promise.all(
             tabsWithSessions.map(async (tab) => {
-              if (!tab.sessionId) return;
-              try {
-                const res = await fetchWithAuth(`/ai/sessions/${tab.sessionId}`);
-                if (!res.ok) {
-                  if (res.status === 404) {
-                    updateTab(tab.id, { sessionId: null, messages: [] });
-                  }
-                  return;
-                }
-                const data = await res.json();
-                if (data.session?.status !== 'active') {
-                  updateTab(tab.id, { sessionId: null, messages: [] });
-                  return;
-                }
-                const messages = mapMessagesFromApi(data.messages || []);
-                updateTab(tab.id, {
-                  messages,
-                  isFlagged: !!data.session.flaggedAt,
-                });
-              } catch (err) {
-                console.error(`[Workspace] Failed to restore tab ${tab.id}:`, err);
+              const sessionId = tab.sessionId;
+              if (!sessionId) return;
+              const result = await openAiSession(sessionId);
+              if (gen !== workspaceGeneration || getTab(tab.id)?.sessionId !== sessionId) return;
+              if (result.kind === 'error') {
+                console.error(`[Workspace] Failed to restore tab ${tab.id}:`, result.message);
+                return;
               }
+              // Gone, closed, not a chat type, or a topology investigation
+              // (side panel only, D4): the tab keeps its slot, not the session.
+              if (result.kind !== 'ok' || result.view.type === 'topology') {
+                updateTab(tab.id, { sessionId: null, messages: [] });
+                return;
+              }
+              updateTab(tab.id, { messages: result.messages, ...sessionFieldsOf(result.view) });
+              await startTabAttach(tab.id).ready;
             })
           );
         },
 
         cleanupAllStreams: () => {
-          const { _readers } = get();
+          const { _readers, _attachControllers } = get();
           for (const reader of _readers.values()) {
             reader.cancel().catch(() => {});
           }
           _readers.clear();
+          const controllers = [..._attachControllers.values()];
+          _attachControllers.clear();
+          for (const controller of controllers) controller.abort();
+        },
+
+        resetForLogout: () => {
+          // Stale every in-flight send/open/attach first, then stop the
+          // streams, then drop the tabs (the persist write this makes is
+          // removed by evictLocalAuthState right after its hooks run).
+          workspaceGeneration += 1;
+          get().cleanupAllStreams();
+          set({ tabs: [], activeTabId: null });
         },
       };
     },
@@ -712,3 +1090,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     }
   )
 );
+
+// #9427 W3 (T14): logout drops every tab and stales every in-flight action
+// before evictLocalAuthState removes breeze-workspace.
+registerLogoutHook(() => useWorkspaceStore.getState().resetForLogout());

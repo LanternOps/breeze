@@ -211,6 +211,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_flow: 'automations_reports',
   list_flows: 'automations_reports',
   list_business_calendars: 'tickets', // #8973 W4: read-only
+  list_ticket_routing_rules: 'tickets', // #8883 W5: read-only
+  test_ticket_routing_rule: 'tickets', // #8883 W5: dry run, writes nothing
+  manage_ticket_routing_rules: 'tickets', // #8883 W5: Tier 3 writes
   get_sensitive_data_overview: 'security_response',
   get_huntress_status: 'security_response',
   get_huntress_incidents: 'security_response',

@@ -1120,7 +1120,6 @@
     "title": "Paramètres partenaires",
     "description": "Configurez les paramètres par défaut pour {{name}}.",
     "yourMsp": "votre MSP",
-    "selfSaving": "Cette section conserve ses propres modifications.",
     "saveSettings": "Enregistrer les paramètres",
     "enforcedDescription": "Les valeurs que vous fixez ici sont appliquées dans toutes les organisations. Laissez les champs vides pour permettre à chaque organisation de configurer individuellement.",
     "ticketingDescription": "Configurez les statuts des billets, les priorités SLA par défaut, les catégories et les exportations de facturation. Ces éléments s’appliquent à toutes vos organisations.",
@@ -1149,6 +1148,27 @@
       "topologyAiDescription": "Laisser Breeze AI résumer la carte et signaler les changements inhabituels dans la topologie d'un site.",
       "saved": "Modules mis à jour",
       "saveFailed": "Échec de la mise à jour des modules"
+    },
+    "status": {
+      "clean": "Toutes les modifications sont enregistrées · {{time}}",
+      "cleanNoTime": "Toutes les modifications sont enregistrées",
+      "dirty": "Modifications non enregistrées dans <tabs></tabs>.",
+      "invalid_one": "Corrigez {{count}} champ dans {{tab}} pour enregistrer.",
+      "invalid_other": "Corrigez {{count}} champs dans {{tab}} pour enregistrer.",
+      "saving": "Enregistrement…",
+      "partial": "Impossible d’enregistrer <tabs></tabs>. Les autres modifications ont été enregistrées.",
+      "failed": "Impossible d’enregistrer <tabs></tabs>.",
+      "autosaved": "Enregistré · {{time}}",
+      "autosaveFailed": "Échec de l’enregistrement — réessayez",
+      "readOnly": "L’enregistrement nécessite un accès partenaire complet"
+    },
+    "validation": {
+      "retentionDays": "Entrez un nombre entier de jours entre 1 et 3650."
+    },
+    "unsavedConfirm": "Vous avez des modifications non enregistrées. Quitter cette page et les abandonner?",
+    "knownGuests": {
+      "added": "Invité connu ajouté",
+      "removed": "Invité connu retiré"
     }
   },
   "partnerSendingDomains": {
@@ -1526,9 +1546,6 @@
     "dropUnverifiedDescription": "Lorsque cette option est désactivée, les courriels non vérifiés sont mis en quarantaine pour examen. Lorsqu’elle est activée, ils sont supprimés silencieusement. Cela s’applique à <all>tous</all> les expéditeurs non vérifiés, y compris les clients associés dont le message échoue à la vérification.",
     "staffForwardRouting": "Classer les transferts du personnel sous le client de l’expéditeur d’origine",
     "staffForwardRoutingDescription": "Lorsqu’un membre de votre personnel au niveau partenaire transfère le courriel d’un client à l’adresse de soutien, le nouveau billet est classé sous l’organisation associée au domaine de l’expéditeur d’origine plutôt que sous la vôtre. Ce membre du personnel doit avoir accès à cette organisation. Fonctionne seulement pour les transferts faits dans Gmail et reçus par une boîte Gmail connectée; pas pour l’adresse de réception native, les boîtes Microsoft 365 ni les transferts d’Outlook.",
-    "defaultAssignee": "Responsable par défaut des nouveaux billets entrants",
-    "defaultAssigneeDescription": "Chaque nouveau billet créé à partir d’un courriel entrant est attribué à cette personne, sauf s’il a déjà été attribué autrement. Si elle n’a pas accès à l’organisation du billet, le billet reste non attribué.",
-    "defaultAssigneeUnavailable": "Utilisateur non disponible",
     "defaultAssigneeNotAssignable": "Cet utilisateur ne peut pas être le responsable par défaut. Choisissez un membre actif de votre équipe ayant accès aux billets.",
     "enableAutoresponse": "Envoyez une réponse automatique pour accuser réceptionné des nouveaux billets par courriel",
     "editEmailTemplates": "Le courriel d'accusé de réception s'édite sous Modèles de courriel.",
@@ -5258,7 +5275,8 @@
     "timeTracking": "Suivi du temps",
     "email": "Courriel",
     "templates": "Modèles",
-    "timeCapture": "Saisie du temps"
+    "timeCapture": "Saisie du temps",
+    "routing": "Routage"
   },
   "ticketFormsCard": {
     "heading": "Formulaires d’admission",
@@ -6001,8 +6019,10 @@
   "siteDetailPage": {
     "loading": "Chargement du site...",
     "backToOrganizations": "Retour aux organisations",
+    "backToSites": "Retour aux sites",
     "breadcrumbs": {
       "settings": "Paramètres",
+      "sites": "Sites",
       "organizations": "Organisations"
     },
     "errors": {
@@ -6088,6 +6108,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contact principal"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Les emplacements où se trouvent vos appareils. Ouvrez un site pour voir ses détails et ses appareils.",
+      "organizationColumn": "Organisation",
+      "pickOrg": "Organisation",
+      "pickOrgPlaceholder": "Sélectionnez une organisation",
+      "pickOrgRequired": "Sélectionnez l'organisation à laquelle appartient ce site.",
+      "fleetAddDescription": "Ajoutez un nouveau site et sélectionnez l'organisation à laquelle il appartient.",
+      "empty": "Aucun site pour l'instant. Ajoutez un site à une organisation pour commencer.",
+      "viewDevicesAt": "voir les appareils de {{name}}"
+    }
   },
   "siteList": {
     "title": "Sites",
@@ -7057,6 +7090,144 @@
     },
     "loadError": "Impossible de charger votre forfait.",
     "retry": "Réessayer"
+  },
+  "ticketRouting": {
+    "title": "Routage des billets",
+    "description": "Les règles s'exécutent à la création d'un billet et renseignent l'assigné, la priorité, la catégorie, le statut et les étiquettes que le créateur n'a pas choisis. Les règles de l'organisation passent en premier, puis celles du partenaire. La première correspondance l'emporte.",
+    "createRule": "Nouvelle règle",
+    "loadFailed": "Impossible de charger les règles de routage.",
+    "lookupsFailed": "Certains techniciens, catégories ou statuts n'ont pas pu être chargés; les listes peuvent donc être incomplètes. Rechargez la page pour réessayer.",
+    "empty": "Aucune règle de routage pour le moment.",
+    "groupOrg": "Règles de {{org}}",
+    "groupPartner": "Règles pour tout le partenaire",
+    "thisOrganization": "Cette organisation",
+    "allOrgs": "Toutes les orgs",
+    "limitedOrgs": "{{count}} orgs seulement",
+    "catchAll": "S'applique à tous les billets",
+    "noActions": "Ne définit rien",
+    "enabledLabel": "Activer la règle {{name}}",
+    "enabledOn": "Règle activée",
+    "enabledOff": "Règle désactivée",
+    "saveFailed": "Impossible d'enregistrer la règle. Réessayez.",
+    "deleteFailed": "Impossible de supprimer la règle. Réessayez.",
+    "saved": "Règle enregistrée",
+    "created": "Règle créée",
+    "deleted": "Règle supprimée",
+    "reorderFailed": "Impossible d'enregistrer le nouvel ordre. Réessayez.",
+    "dragHandle": "Glissez pour réordonner {{name}}, ou utilisez les flèches haut et bas pour la déplacer.",
+    "readOnly": "Vous pouvez consulter cette règle, mais pas la modifier.",
+    "chips": {
+      "add": "Ajouter",
+      "remove": "Retirer {{value}}"
+    },
+    "errors": {
+      "keywordShort": "Les mots-clés doivent comporter au moins 2 caractères.",
+      "keywordLong": "Les mots-clés peuvent comporter au plus 100 caractères.",
+      "keywordsMax": "Vous pouvez ajouter au plus 20 mots-clés.",
+      "domainInvalid": "Utilisez un hôte comme example.com ou *.example.com.",
+      "domainsMax": "Vous pouvez ajouter au plus 50 domaines.",
+      "tagEmpty": "Saisissez une étiquette.",
+      "tagLong": "Les étiquettes peuvent comporter au plus 50 caractères.",
+      "tagsMax": "Vous pouvez ajouter au plus 20 étiquettes.",
+      "nameRequired": "Saisissez un nom pour la règle.",
+      "orgRequired": "Choisissez une organisation.",
+      "orgLinksRequired": "Choisissez au moins une organisation ou appliquez la règle à toutes les organisations."
+    },
+    "sources": {
+      "portal": "Portail",
+      "email": "Courriel",
+      "alert": "Alerte",
+      "manual": "Manuel",
+      "api": "API",
+      "ai": "IA"
+    },
+    "priorities": {
+      "low": "Basse",
+      "normal": "Normale",
+      "high": "Haute",
+      "urgent": "Urgente"
+    },
+    "drawer": {
+      "titleCreate": "Nouvelle règle de routage",
+      "titleEdit": "Modifier la règle de routage",
+      "close": "Fermer",
+      "owner": "Propriétaire",
+      "ownerOrg": "Cette organisation seulement",
+      "ownerPartner": "Toutes les organisations (tout le partenaire)",
+      "organization": "Organisation",
+      "chooseOrg": "Choisir une organisation",
+      "appliesTo": "S'applique à",
+      "orgLinksAll": "Toutes les organisations",
+      "orgLinksSelected": "Organisations sélectionnées seulement",
+      "name": "Nom",
+      "conditions": "Quand un billet correspond",
+      "conditionsHelp": "Toutes les conditions renseignées doivent correspondre. Laissez une condition vide pour l'ignorer.",
+      "matchSources": "La source est l'une de",
+      "matchPriorities": "La priorité est l'une de",
+      "matchCategory": "Catégorie",
+      "any": "Toutes",
+      "matchKeywords": "Le sujet contient l'un de",
+      "matchKeywordsHint": "De 2 à 100 caractères chacun, jusqu'à 20.",
+      "matchDomains": "Le domaine de courriel du demandeur est l'un de",
+      "matchDomainsHint": "example.com ou *.example.com, jusqu'à 50.",
+      "actions": "Alors définir",
+      "actionsHelp": "Appliqué seulement aux champs que le créateur n'a pas choisis. Définissez-en au moins un.",
+      "setAssignee": "Assigné",
+      "setPriority": "Priorité",
+      "setCategory": "Catégorie",
+      "setStatus": "Statut",
+      "addTags": "Ajouter des étiquettes",
+      "noChange": "Aucun changement",
+      "unavailableUser": "Utilisateur indisponible",
+      "unavailableStatus": "Statut indisponible",
+      "enabled": "Activée",
+      "save": "Enregistrer",
+      "saving": "Enregistrement...",
+      "delete": "Supprimer",
+      "deleteTitle": "Supprimer cette règle ?",
+      "deleteMessage": "« {{name}} » ne s'appliquera plus aux nouveaux billets. Cette action est irréversible."
+    },
+    "test": {
+      "title": "Tester un billet",
+      "description": "Simulation : voyez quelle règle correspondrait à un nouveau billet et ce qu'elle modifierait. Rien n'est créé.",
+      "org": "Organisation",
+      "source": "Source",
+      "subject": "Sujet",
+      "email": "Courriel du demandeur (facultatif)",
+      "category": "Catégorie (facultatif)",
+      "priority": "Priorité (facultatif)",
+      "notChosen": "Non choisi",
+      "run": "Lancer le test",
+      "running": "Test en cours...",
+      "failed": "Impossible de lancer le test. Réessayez.",
+      "matched": "Règle correspondante : {{name}}",
+      "noMatch": "Aucune règle ne correspond",
+      "applied": "S'appliquerait",
+      "appliedNothing": "Rien ne changerait",
+      "skipped": "Ignoré",
+      "actions": {
+        "set_assignee": "Assigné",
+        "set_category": "Catégorie",
+        "set_status": "Statut"
+      },
+      "reasons": {
+        "assignee_ineligible": "L'assigné n'a pas accès aux billets de cette organisation.",
+        "assignee_deleted": "L'assigné n'existe plus.",
+        "category_foreign": "La catégorie appartient à un autre partenaire.",
+        "status_foreign": "Le statut appartient à un autre partenaire.",
+        "status_inactive": "Le statut est inactif.",
+        "status_core_not_allowed": "Une règle ne peut pas définir ce statut."
+      }
+    },
+    "fallback": {
+      "title": "Si aucune règle n'assigne un billet courriel",
+      "description": "Chaque nouveau billet créé à partir d'un courriel entrant est assigné à cette personne lorsqu'aucune règle de routage ne l'assigne. Si elle n'a pas accès à l'organisation du billet, il reste non assigné.",
+      "label": "Assigné par défaut",
+      "unavailable": "Utilisateur indisponible",
+      "saveFailed": "Impossible d'enregistrer l'assigné de secours. Réessayez.",
+      "saved": "Assigné de secours enregistré",
+      "loadFailed": "Impossible de charger l'assigné de secours."
+    }
   },
   "wispMemory": {
     "title": "Mémoire de Wisp",

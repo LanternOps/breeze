@@ -22,6 +22,7 @@ export const AI_MEMORY_BLOCKS_ACCESS_ALLOWLIST: Record<string, string> = {
   'services/wisp/memoryBroker.ts': 'the agent-side broker: system context + ceiling filter (spec §8.4)',
   'services/wisp/memoryService.ts': 'the human-side service: request context, RLS-enforced; one audited admin read',
   'jobs/wispConcernRetention.ts': 'retention delete, not an agent-side write (concern_outcome blocks past 180 days, system context)',
+  'services/wisp/activity.ts': 'W06 activity timeline (w00 A31): read-only, selects id / block type / subject key / status / owner of blocks authored_by_grant_id = the grant — never content — filtered to the grant ceiling (readable orgs, the grantor\'s own user blocks)',
 };
 
 /** Files allowed to INSERT/UPDATE/DELETE ai_memory_blocks, split by side so neither can quietly absorb the other. */
