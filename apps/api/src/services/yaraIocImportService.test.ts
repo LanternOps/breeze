@@ -40,6 +40,7 @@ const auth = {
 } as unknown as AuthContext;
 const orgSet = { id: SET, orgId: ORG, partnerId: null, isBuiltin: false, name: 'Advisories', autoQuarantine: false };
 const MD5 = 'f'.repeat(32);
+const ALLOW = { autoQuarantine: 'allow' } as const;
 const input = { label: 'Advisory 7', iocs: [{ kind: 'md5' as const, value: MD5 }, { kind: 'domain' as const, value: 'bad.example' }] };
 
 /** The queries in call order: visible set, FOR UPDATE lock, existing names, count. */
@@ -75,7 +76,7 @@ beforeEach(() => {
 describe('importIocsIntoSet', () => {
   it('imports, publishes and returns the route body plus an audit event with no IOC value', async () => {
     queue({});
-    const out = await importIocsIntoSet(auth, SET, input);
+    const out = await importIocsIntoSet(auth, SET, input, ALLOW);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(out.status).toBe(201);
@@ -90,7 +91,7 @@ describe('importIocsIntoSet', () => {
 
   it('AI path: an auto-quarantine set is refused AFTER the FOR UPDATE lock and before any insert', async () => {
     queue({ locked: { id: SET, autoQuarantine: true } });
-    const out = await importIocsIntoSet(auth, SET, input, { refuseAutoQuarantine: true });
+    const out = await importIocsIntoSet(auth, SET, input, { autoQuarantine: 'refuse' });
     expect(out).toMatchObject({ ok: false, status: 409, body: { code: AI_IMPORT_AUTO_QUARANTINE_SET } });
     expect(calls).toEqual(['visible', 'lock:update']);
     expect(insertMock).not.toHaveBeenCalled();
@@ -99,42 +100,42 @@ describe('importIocsIntoSet', () => {
 
   it('decides on the LOCKED row, not the pre-lock read: a set flipped on before the lock is refused', async () => {
     queue({ visible: { ...orgSet, autoQuarantine: false }, locked: { id: SET, autoQuarantine: true } });
-    expect(await importIocsIntoSet(auth, SET, input, { refuseAutoQuarantine: true })).toMatchObject({ status: 409, body: { code: AI_IMPORT_AUTO_QUARANTINE_SET } });
+    expect(await importIocsIntoSet(auth, SET, input, { autoQuarantine: 'refuse' })).toMatchObject({ status: 409, body: { code: AI_IMPORT_AUTO_QUARANTINE_SET } });
     expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('the route path (no option) imports into an auto-quarantine set as W04 always did', async () => {
     queue({ locked: { id: SET, autoQuarantine: true } });
-    expect(await importIocsIntoSet(auth, SET, input)).toMatchObject({ ok: true, status: 201 });
+    expect(await importIocsIntoSet(auth, SET, input, ALLOW)).toMatchObject({ ok: true, status: 201 });
   });
 
   it('built-in → 403; partner-wide without canManagePartnerWidePolicies → 403; site ceiling → 403', async () => {
     queue({ visible: { ...orgSet, isBuiltin: true, orgId: null } });
-    expect(await importIocsIntoSet(auth, SET, input, { refuseAutoQuarantine: true })).toMatchObject({ status: 403, body: { error: 'The built-in rule set is read-only' } });
+    expect(await importIocsIntoSet(auth, SET, input, { autoQuarantine: 'refuse' })).toMatchObject({ status: 403, body: { error: 'The built-in rule set is read-only' } });
 
     selectMock.mockReset();
     partnerWideMock.mockReturnValue(false);
     queue({ visible: { ...orgSet, orgId: null, partnerId: 'p-1' } });
-    expect(await importIocsIntoSet(auth, SET, input, { refuseAutoQuarantine: true })).toMatchObject({ status: 403, body: { error: 'partner-wide denied' } });
+    expect(await importIocsIntoSet(auth, SET, input, { autoQuarantine: 'refuse' })).toMatchObject({ status: 403, body: { error: 'partner-wide denied' } });
 
     selectMock.mockReset();
     partnerWideMock.mockReturnValue(true);
     siteCeilingMock.mockReturnValue(false);
     queue({});
-    expect(await importIocsIntoSet(auth, SET, input, { refuseAutoQuarantine: true })).toMatchObject({ status: 403, body: { error: 'site ceiling denied' } });
+    expect(await importIocsIntoSet(auth, SET, input, { autoQuarantine: 'refuse' })).toMatchObject({ status: 403, body: { error: 'site ceiling denied' } });
     expect(insertMock).not.toHaveBeenCalled();
   });
 
   it('unknown set → 404; invalid IOC → 400 IOC_INVALID; cap → 400; identical batch → 409', async () => {
     queue({ visible: null });
-    expect(await importIocsIntoSet(auth, SET, input)).toEqual({ ok: false, status: 404, body: { error: 'Rule set not found' } });
+    expect(await importIocsIntoSet(auth, SET, input, ALLOW)).toEqual({ ok: false, status: 404, body: { error: 'Rule set not found' } });
 
     selectMock.mockReset();
     queue({});
-    expect(await importIocsIntoSet(auth, SET, { label: 'x', iocs: [{ kind: 'md5', value: 'not-a-hash' }] })).toMatchObject({ status: 400, body: { code: 'IOC_INVALID' } });
+    expect(await importIocsIntoSet(auth, SET, { label: 'x', iocs: [{ kind: 'md5', value: 'not-a-hash' }] }, ALLOW)).toMatchObject({ status: 400, body: { code: 'IOC_INVALID' } });
 
     selectMock.mockReset();
     queue({ count: 499 });
-    expect(await importIocsIntoSet(auth, SET, input)).toMatchObject({ status: 400, body: { code: 'IOC_TOO_MANY_RULES' } });
+    expect(await importIocsIntoSet(auth, SET, input, ALLOW)).toMatchObject({ status: 400, body: { code: 'IOC_TOO_MANY_RULES' } });
   });
 });

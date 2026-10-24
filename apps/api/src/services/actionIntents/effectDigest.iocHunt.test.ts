@@ -95,6 +95,11 @@ describe('ioc_hunt effect digests (#6268)', () => {
         .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
       expect(await computeEffectDigestOutcome('ioc_hunt', importArgs({ iocs: [] }), makeFakeDb([]).database))
         .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      // Malformed elements are refused, never coerced into the pin.
+      for (const bad of [[null], [{ kind: 'md5' }], [{ kind: 'md5', value: 5 }], ['md5:abc']]) {
+        expect(await computeEffectDigestOutcome('ioc_hunt', importArgs({ iocs: bad }), makeFakeDb([]).database))
+          .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+      }
       expect(await computeEffectDigestOutcome('ioc_hunt', importArgs(), makeFakeDb([[]]).database))
         .toEqual({ kind: 'unresolved', reason: 'target_absent' });
     });

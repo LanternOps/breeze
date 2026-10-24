@@ -59,7 +59,9 @@ export async function topSweepRuleHits(
         eq(securityScans.sweepId, sweep.id),
         eq(securityThreats.orgId, sweep.orgId),
         eq(securityThreats.provider, 'breeze'),
-        sql`${ruleName} IS NOT NULL`,
+        // YARA rule identifiers only: the name is agent-reported and goes back
+        // to the model, so anything else (free text) is never returned.
+        sql`${ruleName} ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'`,
         inArray(ruleSetId, setIds),
         sweepScanVisibility(auth, sweep.orgId, perms),
       ),

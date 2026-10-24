@@ -837,6 +837,23 @@ describe('releaseApprovedIntent', () => {
       toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
     }
 
+    it('#6268: passes the intent\'s own source through as context.intentSource (not a constant)', async () => {
+      const intent = baseIntent({
+        source: 'ai_agent',
+        approvalExpiresAt: new Date(Date.now() - 60_000),
+        releaseBy: new Date(Date.now() + 5 * 60_000),
+      } as Partial<ActionIntent>);
+      leaseAwareClaimOnce(intent);
+      primeAfterClaim(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      const call = aiToolsMock.executeTool.mock.calls.at(-1);
+      expect(call?.[3]).toMatchObject({ context: { actionIntentId: intent.id, intentSource: 'ai_agent' } });
+    });
+
     it('claims and executes when approval_expires_at is already past but the release lease is still live', async () => {
       const intent = baseIntent({
         approvalExpiresAt: new Date(Date.now() - 60_000),

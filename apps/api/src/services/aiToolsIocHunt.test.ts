@@ -207,9 +207,12 @@ describe('ioc_hunt sweep (released Tier-3 action)', () => {
     expect(sweeps.createSweep).not.toHaveBeenCalled();
   });
 
-  it('refuses outside an approved release (no actionIntentId)', async () => {
+  it('refuses outside an approved release (no actionIntentId), with no source, or with an agent source', async () => {
     expect(await call(sweepInput())).toEqual({ error: 'intent_required' });
     expect(await call(sweepInput(), { intentSource: 'chat' })).toEqual({ error: 'intent_required' });
+    // Never defaulted to chat: an unattributed release is refused.
+    expect(await call(sweepInput(), { actionIntentId: 'intent-1' })).toEqual({ error: 'intent_required' });
+    expect(await call(sweepInput(), released({ intentSource: 'ai_agent' }))).toEqual({ error: 'intent_required' });
     expect(sweeps.createSweep).not.toHaveBeenCalled();
   });
 
@@ -263,7 +266,7 @@ describe('ioc_hunt import_iocs (released Tier-3 action)', () => {
     expect(importer.importIocsIntoSet).toHaveBeenCalledWith(
       auth, SET_A,
       { label: 'Advisory 7', severity: 'high', iocs: [{ kind: 'md5', value: MD5 }, { kind: 'domain', value: 'bad.example' }] },
-      { refuseAutoQuarantine: true },
+      { autoQuarantine: 'refuse' },
     );
     expect(audit.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'security.yara_rule.ioc_import', actorId: 'u-1', initiatedBy: 'ai', details: expect.objectContaining({ tool_name: 'ioc_hunt' }),
@@ -284,6 +287,21 @@ describe('ioc_hunt import_iocs (released Tier-3 action)', () => {
     expect(await call(importInput({ iocs: [] }), released())).toMatchObject({ error: 'invalid_input' });
     expect(await call(importInput({ ruleSetId: 'nope' }), released())).toMatchObject({ error: 'invalid_input' });
     expect(await call(importInput({ iocs: [{ kind: 'md5', value: MD5, extra: 1 }] }), released())).toMatchObject({ error: 'invalid_input' });
+    expect(importer.importIocsIntoSet).not.toHaveBeenCalled();
+  });
+
+  it('says plainly when the rules were saved but the set did not publish', async () => {
+    const notPublished = { ...okOutcome, body: { ...okOutcome.body, publish: { ...publish, published: false, stale: true } } };
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(notPublished as never);
+    const out = await call(importInput(), released());
+    expect(out.publish.published).toBe(false);
+    expect(out.warning).toMatch(/not published/);
+    vi.mocked(importer.importIocsIntoSet).mockResolvedValue(okOutcome as never);
+    expect((await call(importInput(), released())).warning).toBeUndefined();
+  });
+
+  it('refuses an import released with no source', async () => {
+    expect(await call(importInput(), { actionIntentId: 'intent-1' })).toEqual({ error: 'intent_required' });
     expect(importer.importIocsIntoSet).not.toHaveBeenCalled();
   });
 

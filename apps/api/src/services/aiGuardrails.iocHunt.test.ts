@@ -83,9 +83,13 @@ describe('ioc_hunt approval headline', () => {
 
   it('sweep names the set count, device ceiling and scope', () => {
     expect(buildApprovalDescription('ioc_hunt', 'sweep', sweep({ ruleSetIds: [SET_A, SET_B], expectedDeviceCount: 12, scope: { kind: 'sites', siteIds: [SET_A, SET_B, ORG] } })))
-      .toBe('IOC sweep: 2 rule sets on up to 12 devices in this organization (3 sites)');
+      .toBe('IOC sweep (quick scan): 2 rule sets on up to 12 devices in this organization (3 sites)');
     expect(buildApprovalDescription('ioc_hunt', 'sweep', sweep({ expectedDeviceCount: 1 })))
-      .toBe('IOC sweep: 1 rule set on up to 1 device in this organization (all reachable devices)');
+      .toBe('IOC sweep (quick scan): 1 rule set on up to 1 device in this organization (all reachable devices)');
+    expect(buildApprovalDescription('ioc_hunt', 'sweep', sweep({ expectedDeviceCount: 30, scanType: 'full' })))
+      .toBe('IOC sweep (full scan): 1 rule set on up to 30 devices in this organization (all reachable devices)');
+    expect(buildApprovalDescription('ioc_hunt', 'sweep', sweep({ expectedDeviceCount: 3, scanType: 'custom', paths: ['C:\\Temp', 'D:\\Share'] })))
+      .toContain('IOC sweep (custom scan of 2 paths)');
     expect(buildApprovalDescription('ioc_hunt', 'sweep', sweep({ expectedDeviceCount: 4, scope: { kind: 'groups', groupIds: [SET_A] } })))
       .toContain('(1 group)');
     expect(buildApprovalDescription('ioc_hunt', 'sweep', sweep({ expectedDeviceCount: 4, scope: { kind: 'devices', deviceIds: [SET_A, SET_B] } })))

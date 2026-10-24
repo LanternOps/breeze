@@ -39,7 +39,7 @@ yaraIocImportRoutes.post(
   zValidator('json', yaraIocImportSchema),
   async (c) => {
     const { id } = c.req.valid('param');
-    const outcome = await importIocsIntoSet(c.get('auth'), id, c.req.valid('json'));
+    const outcome = await importIocsIntoSet(c.get('auth'), id, c.req.valid('json'), { autoQuarantine: 'allow' });
     if (!outcome.ok) return c.json(outcome.body, outcome.status);
     writeRouteAudit(c, outcome.audit);
     return c.json(outcome.body, 201);

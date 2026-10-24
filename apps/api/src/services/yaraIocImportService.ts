@@ -49,11 +49,12 @@ export interface IocImportInput {
 
 export interface IocImportOptions {
   /**
-   * #6268 Gate B 8 (the AI path): refuse a set whose `auto_quarantine` is on,
-   * checked under the import's set lock so a concurrent flip cannot slip an AI
-   * import into a set that moves files fleet-wide.
+   * Required, no default: every caller states it. `'refuse'` (#6268 Gate B 8,
+   * the AI path) refuses a set whose `auto_quarantine` is on, checked under the
+   * import's set lock so a concurrent flip cannot slip an AI import into a set
+   * that moves files fleet-wide. `'allow'` is the W04 route's behaviour.
    */
-  refuseAutoQuarantine?: boolean;
+  autoQuarantine: 'allow' | 'refuse';
 }
 
 export type IocImportOutcome =
@@ -78,7 +79,7 @@ export async function importIocsIntoSet(
   auth: AuthContext,
   setId: string,
   input: IocImportInput,
-  opts: IocImportOptions = {},
+  opts: IocImportOptions,
 ): Promise<IocImportOutcome> {
   const set = await loadVisibleSet(auth, setId);
   if (!set) return NOT_FOUND;
@@ -111,7 +112,7 @@ export async function importIocsIntoSet(
         .where(eq(yaraRuleSets.id, setId))
         .for('update');
       if (!locked) return { kind: 'not_found' };
-      if (opts.refuseAutoQuarantine && locked.autoQuarantine) return { kind: 'auto_quarantine' };
+      if (opts.autoQuarantine === 'refuse' && locked.autoQuarantine) return { kind: 'auto_quarantine' };
 
       const existing = await db
         .select({ name: yaraRules.name, source: yaraRules.source })

@@ -5,10 +5,12 @@
  * the raw input; `sanitizeAuditPayload` redacts secret-shaped keys only.
  *
  * `ioc_hunt`: an IOC list is customer threat intelligence (hashes, domains,
- * IPs, file paths). Its values never reach audit_logs — `iocs` becomes
- * `{ count, kinds }`. The intent row (`action_intents.arguments`) still holds
- * the full list by design: it is what the approver reviews and what release
- * executes.
+ * IPs, file paths). Its values never reach `audit_logs` — `iocs` becomes
+ * `{ count, kinds }`. Scope is the audit trail only: the intent row
+ * (`action_intents.arguments`, what the approver reviews and release
+ * executes) and the chat transcript tables (`ai_messages`,
+ * `ai_tool_executions.tool_input`) still hold the list, like any other tool
+ * input there.
  *
  * Identity for every other tool. Never mutates the caller's object.
  */

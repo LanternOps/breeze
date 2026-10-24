@@ -3204,7 +3204,10 @@ function iocHuntHeadline(action: string | undefined, input: Record<string, unkno
     const reach = typeof n === 'number' && Number.isInteger(n) && n >= 0
       ? `up to ${plural(n, 'device', 'devices')}`
       : 'an unconfirmed number of devices';
-    return `IOC sweep: ${plural(sets, 'rule set', 'rule sets')} on ${reach} in this organization (${iocSweepScopeLabel(input.scope)})`;
+    const scan = input.scanType === 'custom'
+      ? `custom scan of ${plural(Array.isArray(input.paths) ? input.paths.length : 0, 'path', 'paths')}`
+      : input.scanType === 'full' ? 'full scan' : 'quick scan';
+    return `IOC sweep (${scan}): ${plural(sets, 'rule set', 'rule sets')} on ${reach} in this organization (${iocSweepScopeLabel(input.scope)})`;
   }
   if (action === 'import_iocs') {
     const count = Array.isArray(input.iocs) ? input.iocs.length : 0;

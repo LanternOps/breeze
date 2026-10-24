@@ -120,6 +120,8 @@ export function writeMcpToolAuditEvent(
   // would let a partner-scoped caller forge cross-tenant audit_logs attribution
   // (audit rows are written under the RLS-bypassed system context).
   const orgId = event.orgId ?? principal.orgId ?? event.auth.orgId ?? null;
+  // #6268: per-tool input summary (ioc_hunt IOC values never reach audit_logs).
+  const auditInput = summarizeToolInputForAudit(event.toolName, event.toolInput);
   audit({
     orgId,
     actorType: 'api_key',
@@ -148,9 +150,8 @@ export function writeMcpToolAuditEvent(
         ? { requestedToolName: event.requestedToolName, deprecatedToolAlias: true }
         : {}),
       tier: event.tier,
-      // #6268: per-tool input summary first (ioc_hunt IOC values never reach audit_logs).
-      target: summarizePayload(summarizeToolInputForAudit(event.toolName, event.toolInput), { maxStringLength: 512 }),
-      arguments: sanitizeAuditPayload(summarizeToolInputForAudit(event.toolName, event.toolInput), { maxStringLength: 2048 }),
+      target: summarizePayload(auditInput, { maxStringLength: 512 }),
+      arguments: sanitizeAuditPayload(auditInput, { maxStringLength: 2048 }),
       durationMs: event.durationMs,
       ...(event.result ? { result: summarizeToolResult(event.result, { maxStringLength: 500 }) } : {}),
       ...(error ? { errorClass: error.name } : {}),

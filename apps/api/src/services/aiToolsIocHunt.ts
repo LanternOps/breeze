@@ -23,6 +23,7 @@
  */
 import { z } from 'zod';
 import {
+  SECURITY_SWEEP_SCAN_TYPES,
   securitySweepRequestSchema,
   YARA_IOC_KINDS,
   YARA_IOC_LABEL_MAX,
@@ -39,6 +40,7 @@ import { approverReleaseMismatch } from './aiToolReleaseGuards';
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import { cancelSweep, createSweep, getSweep, listSweeps, previewSweep } from './securityScanSweeps';
 import type { ToolExecutionContext } from './toolExecutionContext';
+import type { ActionIntentSource } from '../db/schema/actionIntents';
 import { topSweepRuleHits } from './securityScanSweepHits';
 import { importIocsIntoSet } from './yaraIocImportService';
 import { listVisibleRuleSets } from './yaraRuleSetAccess';
@@ -53,6 +55,23 @@ const uuid = z.string().guid();
 type ToolResult = Record<string, unknown>;
 
 const invalid = (detail: string): ToolResult => ({ error: 'invalid_input', detail });
+
+/**
+ * Who filed the approval this release executes, as the sweep `origin` and the
+ * audit `initiatedBy`. Exhaustive over ActionIntentSource: an `ai_agent`
+ * intent cannot exist for ioc_hunt (AGENT_HUMAN_ONLY_TOOLS), and an absent or
+ * unknown source is refused rather than defaulted to chat.
+ */
+const RELEASE_SOURCES: Record<ActionIntentSource, { origin: 'ai_chat' | 'mcp'; initiatedBy: 'ai' | 'integration' } | null> = {
+  chat: { origin: 'ai_chat', initiatedBy: 'ai' },
+  mcp_api: { origin: 'mcp', initiatedBy: 'integration' },
+  ai_agent: null,
+};
+
+function releaseSource(context: ToolExecutionContext | undefined) {
+  if (!context?.actionIntentId || !context.intentSource) return null;
+  return RELEASE_SOURCES[context.intentSource] ?? null;
+}
 
 function paging(input: Record<string, unknown>): { page: number; limit: number } {
   const page = Number.isInteger(input.page) && (input.page as number) >= 1 ? (input.page as number) : 1;
@@ -188,15 +207,16 @@ async function sweepAction(
   // AGENT_HUMAN_ONLY_TOOLS — but the guard costs nothing).
   if (approverReleaseMismatch(auth, context)) return { error: 'approver_auth_mismatch' };
   // A Tier-3 call reaches a handler only through an approved release, which
-  // always names its intent. Fail closed rather than create an unapproved,
-  // unattributed fleet sweep.
-  if (!context?.actionIntentId) return { error: 'intent_required' };
+  // always names its intent and its source. Fail closed rather than create an
+  // unapproved or misattributed fleet sweep.
+  const source = releaseSource(context);
+  if (!source || !context?.actionIntentId) return { error: 'intent_required' };
 
   const result = await createSweep(
     auth,
     { ...parsed.request, previewDigest },
     {
-      origin: context.intentSource === 'mcp_api' ? 'mcp' : 'ai_chat',
+      origin: source.origin,
       aiOrigin: requireAiOrigin(auth, 'ioc_hunt'),
       intentId: context.actionIntentId,
       mfaSatisfied: false,
@@ -254,10 +274,11 @@ async function importIocsAction(
     return invalid(parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; '));
   }
   if (approverReleaseMismatch(auth, context)) return { error: 'approver_auth_mismatch' };
-  if (!context?.actionIntentId) return { error: 'intent_required' };
+  const source = releaseSource(context);
+  if (!source) return { error: 'intent_required' };
 
   const outcome = await inToolDbPhase(auth, () =>
-    importIocsIntoSet(auth, ruleSetId.data, parsed.data, { refuseAutoQuarantine: true }),
+    importIocsIntoSet(auth, ruleSetId.data, parsed.data, { autoQuarantine: 'refuse' }),
   );
   if (!outcome.ok) {
     const code = typeof outcome.body.code === 'string' ? outcome.body.code : null;
@@ -275,10 +296,20 @@ async function importIocsAction(
     ...outcome.audit,
     actorId: auth.user.id,
     actorEmail: auth.user.email,
-    initiatedBy: context.intentSource === 'mcp_api' ? 'integration' : 'ai',
+    initiatedBy: source.initiatedBy,
     details: { ...outcome.audit.details, tool_name: 'ioc_hunt' },
   });
-  return { ruleSetId: ruleSetId.data, rules: outcome.body.data.rules, publish: outcome.body.publish };
+  const publish = outcome.body.publish;
+  return {
+    ruleSetId: ruleSetId.data,
+    rules: outcome.body.data.rules,
+    publish,
+    // The rules are saved either way; say so plainly when they are not live yet
+    // so the model never reports them as detecting.
+    ...(publish.published
+      ? {}
+      : { warning: 'The IOC rules were added but the rule set was not published; scans keep using the previous version until it publishes.' }),
+  };
 }
 
 async function handle(
@@ -329,7 +360,7 @@ export function registerIocHuntTools(aiTools: Map<string, AiTool>): void {
             type: 'object',
             description: 'Devices in the org: {kind:"all"}, {kind:"sites",siteIds}, {kind:"groups",groupIds}, {kind:"devices",deviceIds} or {kind:"orgs",orgIds:[orgId]}',
           },
-          scanType: { type: 'string', enum: ['quick', 'full', 'custom'], description: 'IOC scan type (preview_sweep, sweep)' },
+          scanType: { type: 'string', enum: [...SECURITY_SWEEP_SCAN_TYPES], description: 'IOC scan type (preview_sweep, sweep)' },
           paths: { type: 'array', items: { type: 'string' }, description: 'Paths to scan; required for a custom scan and not allowed otherwise' },
           ttlHours: { type: 'number', description: 'Hours a queued sweep scan may wait for its device (1-72, default 24)' },
           expectedDeviceCount: { type: 'number', description: 'sweep: the targeted count preview_sweep returned' },
@@ -342,7 +373,7 @@ export function registerIocHuntTools(aiTools: Map<string, AiTool>): void {
             description: 'import_iocs: [{kind, value}], kind one of md5, sha1, sha256, filename, filepath, domain, ip, string; up to 1000',
           },
           label: { type: 'string', description: 'import_iocs: short label for the generated rules (e.g. the advisory name)' },
-          severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'import_iocs: severity of the generated rules' },
+          severity: { type: 'string', enum: [...YARA_RULE_SEVERITIES], description: 'import_iocs: severity of the generated rules' },
           page: { type: 'number', description: 'Page number for list_rule_sets and list_sweeps (default 1)' },
           limit: { type: 'number', description: 'Max rule sets or sweeps per page (default 25, max 100)' },
         },

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
 import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
@@ -634,7 +634,9 @@ const EFFECT_DIGEST_RESOLVERS: Record<
         publishedSha256: yaraRuleSets.publishedSha256,
       })
       .from(yaraRuleSets)
-      .where(inArray(yaraRuleSets.id, setIds));
+      // Only sets usable in the sweep's org (its own, partner-wide, built-in):
+      // a foreign org's set pins as absent, never as material.
+      .where(and(inArray(yaraRuleSets.id, setIds), or(eq(yaraRuleSets.orgId, orgId), isNull(yaraRuleSets.orgId))));
     const byId = new Map(rows.map((r) => [r.id.toLowerCase(), r]));
     const pins: Array<{ id: string; version: number; sha256: string }> = [];
     for (const id of setIds) {
@@ -652,7 +654,11 @@ const EFFECT_DIGEST_RESOLVERS: Record<
   'ioc_hunt:import_iocs': async (args, database) => {
     const ruleSetId = typeof args.ruleSetId === 'string' && UUID_RE.test(args.ruleSetId) ? args.ruleSetId.toLowerCase() : null;
     const iocs = Array.isArray(args.iocs) ? args.iocs : [];
-    if (!ruleSetId || iocs.length === 0) return MISSING_ARG;
+    const wellFormed = iocs.every((ioc) => {
+      const o = (ioc && typeof ioc === 'object' ? ioc : null) as Record<string, unknown> | null;
+      return !!o && typeof o.kind === 'string' && typeof o.value === 'string';
+    });
+    if (!ruleSetId || iocs.length === 0 || !wellFormed) return MISSING_ARG;
     const [set] = await database
       .select({ currentVersion: yaraRuleSets.currentVersion, publishedVersion: yaraRuleSets.publishedVersion })
       .from(yaraRuleSets)
@@ -660,11 +666,10 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       .limit(1);
     if (!set) return TARGET_ABSENT;
     const sorted = iocs
-      .map((ioc) => {
-        const o = (ioc && typeof ioc === 'object' ? ioc : {}) as Record<string, unknown>;
-        return { kind: String(o.kind ?? ''), value: String(o.value ?? '') };
-      })
-      .sort((a, b) => a.kind.localeCompare(b.kind) || a.value.localeCompare(b.value));
+      .map((ioc) => ({ kind: (ioc as { kind: string }).kind, value: (ioc as { value: string }).value }))
+      // Code-point order, not localeCompare: the digest is recomputed at release,
+      // possibly on another host, and must not depend on its ICU locale.
+      .sort((a, b) => cmp(a.kind, b.kind) || cmp(a.value, b.value));
     const iocDigest = createHash('sha256').update(canonicalizeArguments({ iocs: sorted })).digest('hex');
     return material(canonicalizeArguments({
       v: 1,
@@ -675,6 +680,8 @@ const EFFECT_DIGEST_RESOLVERS: Record<
     }));
   },
 };
+
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
