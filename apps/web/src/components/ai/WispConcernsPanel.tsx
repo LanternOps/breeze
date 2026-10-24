@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CONCERN_SEVERITIES } from '@breeze/shared';
+import { ThumbsDown, ThumbsUp } from 'lucide-react';
+import { CONCERN_FEEDBACK_NOTE_MAX, CONCERN_SEVERITIES } from '@breeze/shared';
 import type { Concern, ConcernSeverity, ConcernStatus } from '@breeze/shared';
 import {
   dismissWispConcern,
+  feedbackWispConcern,
   listWispConcerns,
   resolveWispConcern,
   snoozeWispConcern,
@@ -11,11 +13,11 @@ import {
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '@/components/shared/Toast';
 import { formatRelativeTime } from '@/lib/utils';
+import { concernIdFromHash } from '../wisp/wispThreadHash';
 
 const LIVE: ConcernStatus[] = ['open', 'snoozed'];
 const ALL: ConcernStatus[] = ['open', 'snoozed', 'resolved', 'dismissed'];
 const OUTCOME_MAX = 1000;
-const HASH_PREFIX = '#concern=';
 
 // High first.
 const SEVERITY_ORDER: ConcernSeverity[] = [...CONCERN_SEVERITIES].reverse();
@@ -28,14 +30,7 @@ const SEVERITY_DOT: Record<ConcernSeverity, string> = {
 };
 
 function readHashId(): string | null {
-  const hash = typeof window === 'undefined' ? '' : window.location.hash;
-  if (!hash.startsWith(HASH_PREFIX)) return null;
-  try {
-    const id = decodeURIComponent(hash.slice(HASH_PREFIX.length));
-    return id || null;
-  } catch {
-    return null; // malformed percent-encoding in a pasted link: ignore it, don't crash the sidebar
-  }
+  return concernIdFromHash(typeof window === 'undefined' ? '' : window.location.hash);
 }
 
 function tomorrowNineLocal(): Date {
@@ -55,6 +50,8 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   const [snoozeMenuId, setSnoozeMenuId] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [outcome, setOutcome] = useState('');
+  const [feedbackNoteId, setFeedbackNoteId] = useState<string | null>(null);
+  const [feedbackNote, setFeedbackNote] = useState('');
   const [busy, setBusy] = useState(false);
 
   // Only the newest load may commit (grant switch, filter flip, unmount).
@@ -112,6 +109,79 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   const snooze = (id: string, until: Date) =>
     run(() => snoozeWispConcern(id, grantId, until), () => setSnoozeMenuId(null));
 
+  // W06 Task 16 (w00 A34): the server's recipient lands on the row at once;
+  // the refetch that follows confirms it.
+  const giveFeedback = (id: string, useful: boolean, note?: string) =>
+    run(async () => {
+      const recipient = note === undefined
+        ? await feedbackWispConcern(id, grantId, useful)
+        : await feedbackWispConcern(id, grantId, useful, note);
+      if (recipient) setConcerns((list) => list.map((c) => (c.id === id ? { ...c, recipient } : c)));
+    }, () => { setFeedbackNoteId(null); setFeedbackNote(''); });
+
+  const renderFeedback = (c: Concern) => {
+    const r = c.recipient;
+    if (!r || r.nudgeCount <= 0) return null;
+    if (r.feedback) {
+      return (
+        <p className="mt-1 pl-3.5 text-[11px] text-muted-foreground" data-testid={`wisp-concern-feedback-given-${c.id}`}>
+          {r.feedback === 'useful' ? t('wispConcerns.feedbackGivenUseful') : t('wispConcerns.feedbackGivenNotUseful')}
+        </p>
+      );
+    }
+    const noting = feedbackNoteId === c.id;
+    return (
+      <div className="mt-1.5 space-y-1 pl-3.5">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid={`wisp-concern-useful-${c.id}`}
+            disabled={busy}
+            onClick={() => void giveFeedback(c.id, true)}
+            className="flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] hover:bg-muted disabled:opacity-50"
+          >
+            <ThumbsUp className="h-3 w-3" aria-hidden="true" />
+            {t('wispConcerns.useful')}
+          </button>
+          <button
+            type="button"
+            data-testid={`wisp-concern-not-useful-${c.id}`}
+            aria-expanded={noting}
+            disabled={busy}
+            onClick={() => { setFeedbackNote(''); setFeedbackNoteId(noting ? null : c.id); }}
+            className="flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] hover:bg-muted disabled:opacity-50"
+          >
+            <ThumbsDown className="h-3 w-3" aria-hidden="true" />
+            {t('wispConcerns.notUseful')}
+          </button>
+        </div>
+        {noting && (
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              data-testid={`wisp-concern-feedback-note-${c.id}`}
+              value={feedbackNote}
+              maxLength={CONCERN_FEEDBACK_NOTE_MAX}
+              placeholder={t('wispConcerns.feedbackNotePlaceholder')}
+              aria-label={t('wispConcerns.feedbackNotePlaceholder')}
+              onChange={(e) => setFeedbackNote(e.target.value)}
+              className="min-w-0 flex-1 rounded border bg-background px-2 py-0.5 text-xs"
+            />
+            <button
+              type="button"
+              data-testid={`wisp-concern-feedback-send-${c.id}`}
+              disabled={busy}
+              onClick={() => void giveFeedback(c.id, false, feedbackNote)}
+              className="rounded bg-primary px-2 py-0.5 text-[11px] text-primary-foreground disabled:opacity-50"
+            >
+              {t('wispConcerns.feedbackSend')}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const grouped = useMemo(
     () => SEVERITY_ORDER
       .map((severity) => ({ severity, items: concerns.filter((c) => c.severity === severity) }))
@@ -158,6 +228,16 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
         {expanded && c.outcome && (
           <p className="mt-1 pl-3.5 text-[11px]" data-testid={`wisp-concern-outcome-text-${c.id}`}>{c.outcome}</p>
         )}
+        {c.approvalIntentId && (
+          <a
+            href={`/approvals#intent-${encodeURIComponent(c.approvalIntentId)}`}
+            data-testid={`wisp-concern-approval-${c.id}`}
+            className="mt-1 ml-3.5 inline-block text-[11px] font-medium text-primary underline-offset-2 hover:underline"
+          >
+            {t('wispConcerns.reviewApproval')}
+          </a>
+        )}
+        {renderFeedback(c)}
         {live && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-3.5">
             <div className="relative">

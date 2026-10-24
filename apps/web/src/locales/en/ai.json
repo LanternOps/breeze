@@ -635,7 +635,50 @@
       "attachFailed": "Could not attach",
       "attachTooLarge": "That file is over 5 MB",
       "attachUnsupported": "Only text files can be attached",
-      "threadFailed": "Wisp is on, but its thread could not be opened. Turn on Wisp again to reopen it."
+      "threadFailed": "Wisp is on, but its thread could not be opened. Turn on Wisp again to reopen it.",
+      "paused": "Wisp paused",
+      "resumed": "Wisp resumed",
+      "pauseFailed": "Could not pause Wisp",
+      "resumeFailed": "Could not resume Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ of {{budget}}¢ today",
+      "resets": "resets in {{hours}} h",
+      "raise": "Raise today's budget",
+      "label": "Wisp spend today"
+    },
+    "pause": "Pause Wisp",
+    "resume": "Resume",
+    "paused": {
+      "byYou": "You paused Wisp. It won't check in or nudge you until you resume."
+    },
+    "live": {
+      "checking": "Checking {{org}}…",
+      "checkingUnnamed": "Checking a customer…"
+    },
+    "thread": {
+      "title": "Wisp thread",
+      "openChat": "Open in chat",
+      "openChatInactive": "Wisp must be active to chat on this thread.",
+      "notFound": "This Wisp thread doesn't exist or isn't yours.",
+      "loadFailed": "Couldn't load this Wisp thread.",
+      "retry": "Try again"
+    },
+    "activity": {
+      "title": "Activity",
+      "empty": "Nothing yet. Wisp's work shows up here.",
+      "loadFailed": "Couldn't load activity",
+      "loadMore": "Load more",
+      "cost": "{{cents}}¢",
+      "kind": {
+        "assessment": "Check",
+        "concern": "Concern",
+        "specialist": "Specialist",
+        "approval": "Approval",
+        "memory": "Memory",
+        "nudge": "Nudge",
+        "brief": "Brief"
+      }
     }
   },
   "wispConcerns": {
@@ -677,6 +720,14 @@
       "invoice": "Invoice",
       "contract": "Contract",
       "site": "Site"
-    }
+    },
+    "reviewApproval": "Review approval",
+    "useful": "Useful",
+    "notUseful": "Not useful",
+    "feedbackNotePlaceholder": "What would have been better? (optional)",
+    "feedbackSend": "Send",
+    "feedbackGivenUseful": "You marked this useful",
+    "feedbackGivenNotUseful": "You marked this not useful",
+    "feedbackSaved": "Thanks. Wisp will remember that."
   }
 }

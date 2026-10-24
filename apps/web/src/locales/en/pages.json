@@ -182,7 +182,8 @@
     "endpointMessages": "Endpoint Messages",
     "securityDetectionRules": "Detection Rules",
     "settingsPlan": "Plan & features",
-    "settingsWispMemory": "Wisp memory"
+    "settingsWispMemory": "Wisp memory",
+    "wispThread": "Wisp thread"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",

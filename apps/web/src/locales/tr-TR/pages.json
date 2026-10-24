@@ -182,7 +182,8 @@
     "endpointMessages": "Uç Nokta Mesajları",
     "securityDetectionRules": "Tespit Kuralları",
     "settingsPlan": "Plan ve özellikler",
-    "settingsWispMemory": "Wisp belleği"
+    "settingsWispMemory": "Wisp belleği",
+    "wispThread": "Wisp konuşması"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

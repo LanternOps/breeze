@@ -635,7 +635,50 @@
       "attachFailed": "No se pudo adjuntar",
       "attachTooLarge": "Ese archivo supera los 5 MB",
       "attachUnsupported": "Solo se pueden adjuntar archivos de texto",
-      "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a activar Wisp para abrirlo de nuevo."
+      "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a activar Wisp para abrirlo de nuevo.",
+      "paused": "Wisp en pausa",
+      "resumed": "Wisp reanudado",
+      "pauseFailed": "No se pudo pausar Wisp",
+      "resumeFailed": "No se pudo reanudar Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ de {{budget}}¢ hoy",
+      "resets": "se restablece en {{hours}} h",
+      "raise": "Aumentar el presupuesto de hoy",
+      "label": "Gasto de Wisp hoy"
+    },
+    "pause": "Pausar Wisp",
+    "resume": "Reanudar",
+    "paused": {
+      "byYou": "Pausaste Wisp. No hará revisiones ni te enviará avisos hasta que lo reanudes."
+    },
+    "live": {
+      "checking": "Revisando {{org}}…",
+      "checkingUnnamed": "Revisando un cliente…"
+    },
+    "thread": {
+      "title": "Hilo de Wisp",
+      "openChat": "Abrir en el chat",
+      "openChatInactive": "Wisp debe estar activo para chatear en este hilo.",
+      "notFound": "Este hilo de Wisp no existe o no es tuyo.",
+      "loadFailed": "No se pudo cargar este hilo de Wisp.",
+      "retry": "Intentar de nuevo"
+    },
+    "activity": {
+      "title": "Actividad",
+      "empty": "Aún no hay nada. Aquí aparecerá el trabajo de Wisp.",
+      "loadFailed": "No se pudo cargar la actividad",
+      "loadMore": "Cargar más",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Revisión",
+        "concern": "Asunto",
+        "specialist": "Especialista",
+        "approval": "Aprobación",
+        "memory": "Memoria",
+        "nudge": "Aviso",
+        "brief": "Resumen"
+      }
     }
   },
   "wispConcerns": {
@@ -677,6 +720,14 @@
       "invoice": "Factura",
       "contract": "Contrato",
       "site": "Sitio"
-    }
+    },
+    "reviewApproval": "Revisar aprobación",
+    "useful": "Útil",
+    "notUseful": "No útil",
+    "feedbackNotePlaceholder": "¿Qué habría sido mejor? (opcional)",
+    "feedbackSend": "Enviar",
+    "feedbackGivenUseful": "Marcaste esto como útil",
+    "feedbackGivenNotUseful": "Marcaste esto como no útil",
+    "feedbackSaved": "Gracias. Wisp lo recordará."
   }
 }

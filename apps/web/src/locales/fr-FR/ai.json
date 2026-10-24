@@ -635,7 +635,50 @@
       "attachFailed": "Impossible de joindre l’élément",
       "attachTooLarge": "Ce fichier dépasse 5 Mo",
       "attachUnsupported": "Seuls les fichiers texte peuvent être joints",
-      "threadFailed": "Wisp est activé, mais son fil n’a pas pu être ouvert. Réactivez Wisp pour le rouvrir."
+      "threadFailed": "Wisp est activé, mais son fil n’a pas pu être ouvert. Réactivez Wisp pour le rouvrir.",
+      "paused": "Wisp mis en pause",
+      "resumed": "Wisp réactivé",
+      "pauseFailed": "Impossible de mettre Wisp en pause",
+      "resumeFailed": "Impossible de réactiver Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ sur {{budget}}¢ aujourd’hui",
+      "resets": "réinitialisation dans {{hours}} h",
+      "raise": "Augmenter le budget du jour",
+      "label": "Dépenses de Wisp aujourd’hui"
+    },
+    "pause": "Mettre Wisp en pause",
+    "resume": "Reprendre",
+    "paused": {
+      "byYou": "Vous avez mis Wisp en pause. Il ne fera aucun point de suivi et ne vous enverra aucun rappel tant que vous n’aurez pas repris."
+    },
+    "live": {
+      "checking": "Vérification de {{org}}…",
+      "checkingUnnamed": "Vérification d’un client…"
+    },
+    "thread": {
+      "title": "Fil Wisp",
+      "openChat": "Ouvrir dans le chat",
+      "openChatInactive": "Wisp doit être actif pour discuter dans ce fil.",
+      "notFound": "Ce fil Wisp n’existe pas ou ne vous appartient pas.",
+      "loadFailed": "Impossible de charger ce fil Wisp.",
+      "retry": "Réessayer"
+    },
+    "activity": {
+      "title": "Activité",
+      "empty": "Rien pour le moment. Le travail de Wisp apparaîtra ici.",
+      "loadFailed": "Impossible de charger l’activité",
+      "loadMore": "Charger plus",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Vérification",
+        "concern": "Point de vigilance",
+        "specialist": "Spécialiste",
+        "approval": "Approbation",
+        "memory": "Mémoire",
+        "nudge": "Rappel",
+        "brief": "Synthèse"
+      }
     }
   },
   "wispConcerns": {
@@ -677,6 +720,14 @@
       "invoice": "Facture",
       "contract": "Contrat",
       "site": "Emplacement"
-    }
+    },
+    "reviewApproval": "Examiner l’approbation",
+    "useful": "Utile",
+    "notUseful": "Pas utile",
+    "feedbackNotePlaceholder": "Qu’est-ce qui aurait été mieux ? (facultatif)",
+    "feedbackSend": "Envoyer",
+    "feedbackGivenUseful": "Vous avez jugé ceci utile",
+    "feedbackGivenNotUseful": "Vous avez jugé ceci pas utile",
+    "feedbackSaved": "Merci. Wisp s’en souviendra."
   }
 }

@@ -182,7 +182,8 @@
     "endpointMessages": "Mensagens para dispositivos",
     "securityDetectionRules": "Regras de detecção",
     "settingsPlan": "Plano e recursos",
-    "settingsWispMemory": "Memória do Wisp"
+    "settingsWispMemory": "Memória do Wisp",
+    "wispThread": "Conversa do Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

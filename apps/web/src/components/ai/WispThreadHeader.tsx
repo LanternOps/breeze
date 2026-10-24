@@ -9,12 +9,26 @@ import { fetchWithAuth } from '@/stores/auth';
 import { useAiStore, type WispState } from '@/stores/aiStore';
 import { useOrgStore } from '@/stores/orgStore';
 import WispGrantStepUpModal from './WispGrantStepUpModal';
+import WispGrantPauseControl from '../wisp/WispGrantPauseControl';
+import WispSpendMeter from '../wisp/WispSpendMeter';
+import type { CurrentActivity } from '../wisp/wispLiveLine';
 
 export type WispThreadHeaderProps = {
   wisp: NonNullable<WispState>;
   /** Name of the grant's org; ignored for a partner-wide grant. */
   orgName: string | null;
   wideningAvailable: boolean;
+  /**
+   * Thread-page mode (W06): the page owns its Wisp state, so grant patches
+   * (settings, refresh, pause/resume) go here instead of the chat store.
+   */
+  onWispChange?: (patch: Partial<NonNullable<WispState>>) => void;
+  /** Thread-page mode: called after a revoke instead of leaving chat Wisp mode. */
+  onRevoked?: () => void | Promise<void>;
+  /** Customer focus is a chat-session setting (spec §6.1); the thread page hides it. */
+  showFocus?: boolean;
+  /** The running assessment, for the live "Checking …" line (w00 A31); the panel passes none. */
+  currentActivity?: CurrentActivity | null;
 };
 
 const STATUS_TONE: Record<NonNullable<WispState>['status'], string> = {
@@ -47,11 +61,20 @@ function handleMutationError(err: unknown, fallback: string) {
  * scope, customer focus, grant status, refresh (primary when the user's live
  * reach has outgrown the grant), operational settings, and turn-off.
  */
-export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: WispThreadHeaderProps) {
+export default function WispThreadHeader({
+  wisp,
+  orgName,
+  wideningAvailable,
+  onWispChange,
+  onRevoked,
+  showFocus = true,
+  currentActivity = null,
+}: WispThreadHeaderProps) {
   const { t } = useTranslation('ai');
   const exitWispMode = useAiStore((s) => s.exitWispMode);
   const setWispFocus = useAiStore((s) => s.setWispFocus);
-  const updateWisp = useAiStore((s) => s.updateWisp);
+  const storeUpdateWisp = useAiStore((s) => s.updateWisp);
+  const updateWisp = onWispChange ?? storeUpdateWisp;
   const organizations = useOrgStore((s) => s.organizations);
   const { limits } = useEntitlement('wisp');
   const { budgetMax, tickMin } = readLimits(limits);
@@ -98,7 +121,7 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
         successMessage: t('wisp.toast.off'),
       });
       setConfirmRevoke(false);
-      await exitWispMode();
+      await (onRevoked ?? exitWispMode)();
     } catch (err) {
       handleMutationError(err, errorFallback);
     } finally {
@@ -106,10 +129,10 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
     }
   };
 
-  const openSettings = () => {
+  const openSettings = (force = false) => {
     setBudget(String(wisp.budgetCentsPerDay));
     setTick(String(wisp.floorTickMinutes));
-    setSettingsOpen((v) => !v);
+    setSettingsOpen((v) => force || !v);
   };
 
   const saveSettings = async () => {
@@ -170,7 +193,7 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
             <RefreshCw className="h-3.5 w-3.5" />
             {wideningAvailable && <span>{t('wisp.header.refresh')}</span>}
           </button>
-          <button type="button" data-testid="wisp-settings" onClick={openSettings} title={t('wisp.settings.title')} className={iconButton} aria-expanded={settingsOpen}>
+          <button type="button" data-testid="wisp-settings" onClick={() => openSettings()} title={t('wisp.settings.title')} className={iconButton} aria-expanded={settingsOpen}>
             <SlidersHorizontal className="h-3.5 w-3.5" />
           </button>
           <button type="button" data-testid="wisp-revoke" onClick={() => setConfirmRevoke(true)} title={t('wisp.header.revoke')} className={iconButton}>
@@ -183,7 +206,27 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
         <p className="text-amber-600 dark:text-amber-400" data-testid="wisp-widening">{t('wisp.header.widening')}</p>
       )}
 
-      <label className="flex items-center gap-2">
+      {currentActivity && (
+        <p className="flex items-center gap-1.5 text-muted-foreground" data-testid="wisp-live-line" aria-live="polite">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" aria-hidden="true" />
+          {currentActivity.orgName
+            ? t('wisp.live.checking', { org: currentActivity.orgName })
+            : t('wisp.live.checkingUnnamed')}
+        </p>
+      )}
+
+      {typeof wisp.spentTodayCents === 'number' && typeof wisp.budgetResetsAt === 'string' && (
+        <WispSpendMeter
+          spentCents={wisp.spentTodayCents}
+          budgetCents={wisp.budgetCentsPerDay}
+          resetsAt={wisp.budgetResetsAt}
+          onRaise={() => openSettings(true)}
+        />
+      )}
+
+      <WispGrantPauseControl wisp={wisp} onChange={updateWisp} />
+
+      {showFocus && <label className="flex items-center gap-2">
         <span className="shrink-0 text-muted-foreground">{t('wisp.focus.label')}</span>
         <select
           data-testid="wisp-focus"
@@ -198,7 +241,7 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
             <option key={o.id} value={o.id}>{o.name}</option>
           ))}
         </select>
-      </label>
+      </label>}
 
       {settingsOpen && (
         <div className="space-y-2 rounded border p-2" data-testid="wisp-settings-panel">

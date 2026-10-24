@@ -73,7 +73,17 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
   const status = str(grant?.status);
   const expiresAt = str(grant?.expiresAt);
   if (!threadId || !grantId || !status || !STATUSES.has(status) || !expiresAt) return null;
+  const optional: Partial<NonNullable<WispState>> = {};
+  // A32 spend meter: only when both halves are present, so a half-formed
+  // payload never renders "NaN¢".
+  if (typeof grant?.spentTodayCents === 'number' && Number.isFinite(grant.spentTodayCents) && typeof grant?.budgetResetsAt === 'string') {
+    optional.spentTodayCents = grant.spentTodayCents;
+    optional.budgetResetsAt = grant.budgetResetsAt;
+  }
+  // Absent key = unknown (left undefined, WispGrantPauseControl looks it up); present = authoritative.
+  if (grant && 'pausedReason' in grant) optional.pausedReason = str(grant.pausedReason);
   return {
+    ...optional,
     grantId,
     threadId,
     scopeOrgId: str(grant?.orgId),

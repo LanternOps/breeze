@@ -8,7 +8,7 @@ vi.mock('@/lib/runAction', async (importOriginal) => {
   return { ...actual, runAction: (o: unknown) => runAction(o) };
 });
 
-import { dismissWispConcern, listWispConcerns, resolveWispConcern, snoozeWispConcern } from './wispConcernsApi';
+import { dismissWispConcern, feedbackWispConcern, listWispConcerns, resolveWispConcern, snoozeWispConcern } from './wispConcernsApi';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -61,5 +61,21 @@ describe('mutations go through runAction', () => {
     expect(runAction.mock.calls[0]![0].successMessage).toBe('Resolved');
     expect(call()[0]).toBe('/wisp/concerns/c1/resolve');
     expect(JSON.parse(call()[1].body)).toEqual({ grantId: 'g1', outcome: 'fixed it' });
+  });
+  it('feedback (w00 A34): useful without a note, returns the server recipient', async () => {
+    const recipient = { nudgeCount: 1, feedback: 'useful' };
+    runAction.mockImplementationOnce(async (o: { request: () => Promise<unknown> }) => { await o.request(); return { data: { recipient } }; });
+    await expect(feedbackWispConcern('c1', 'g1', true)).resolves.toEqual(recipient);
+    expect(runAction.mock.calls[0]![0].successMessage).toBe('Thanks. Wisp will remember that.');
+    expect(call()[0]).toBe('/wisp/concerns/c1/feedback');
+    expect(call()[1].method).toBe('POST');
+    expect(JSON.parse(call()[1].body)).toEqual({ grantId: 'g1', useful: true });
+  });
+  it('feedback: not useful carries the trimmed note, drops a blank one, and tolerates a body without data', async () => {
+    await expect(feedbackWispConcern('c1', 'g1', false, '  too noisy  ')).resolves.toBeNull();
+    expect(JSON.parse(call()[1].body)).toEqual({ grantId: 'g1', useful: false, note: 'too noisy' });
+    fetchWithAuth.mockClear();
+    await feedbackWispConcern('c1', 'g1', false, '   ');
+    expect(JSON.parse(call()[1].body)).toEqual({ grantId: 'g1', useful: false });
   });
 });
