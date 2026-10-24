@@ -22,7 +22,11 @@ export function useFeatureLink(policyId: string) {
   const [errorDetail, setErrorDetail] = useState<FeatureLinkErrorDetail>();
 
   const save = useCallback(
-    async (existingLinkId: string | null, payload: SavePayload): Promise<FeatureLink | null> => {
+    async (
+      existingLinkId: string | null,
+      payload: SavePayload,
+      opts: { successMessage?: string | null } = {},
+    ): Promise<FeatureLink | null> => {
       setSaving(true);
       setError(undefined);
       setErrorDetail(undefined);
@@ -62,7 +66,9 @@ export function useFeatureLink(policyId: string) {
             }
             return undefined;
           },
-          successMessage: i18n.t('common:states.saved'),
+          ...(opts.successMessage === null
+            ? {}
+            : { successMessage: opts.successMessage ?? i18n.t('common:states.saved') }),
           onUnauthorized: () => void navigateTo('/login', { replace: true }),
         });
       } catch (err) {

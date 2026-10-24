@@ -336,6 +336,7 @@
     "selectedCount_other": "{{count}} sélectionné",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un ticket. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le ticket {{number}} n’est pas dans cette vue.",
     "movedToClosed": {
       "message": "{{status}} — désormais sous {{tab}}",
       "view": "Voir dans {{tab}}"

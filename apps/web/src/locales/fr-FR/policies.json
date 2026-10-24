@@ -200,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Postulé à toutes les organisations. Décochez « Toutes les organisations » pour choisir un sous-ensemble.",
       "polite": "poli",
       "loading": "Chargement...",
-      "loadMoreOrganizations": "Chargez plus d’organisations"
+      "loadMoreOrganizations": "Chargez plus d’organisations",
+      "appliedToAllOrgs": "La politique s’applique désormais à toutes les organisations",
+      "removedFromAllOrgs": "La politique ne s’applique plus à toutes les organisations"
     },
     "featureTabs": {
       "automationTab": {
@@ -1355,7 +1357,6 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Aucune politique logicielle trouvée. Créez-en un pour commencer.",
       "recentViolations": "Violations récentes",
       "noCurrentSoftwareViolations": "Aucune violation logicielle actuelle.",
-      "violationS": "Violation",
       "remediation": "Assainissement : {{value}}",
       "checked": "Vérifié : {{date}}",
       "deactivatePolicy": "Politique de désactivation",
@@ -1393,7 +1394,10 @@
       "coverageVendor": "Éditeur",
       "coverageReason": "Motif",
       "vendorOnlyAgent": "Agent connu de l'éditeur uniquement",
-      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}"
+      "coverageRowsNote": "Affichage de {{shown}} sur {{total}}",
+      "violationCount": "{{count}} violation",
+      "violationCount_one": "{{count}} violation",
+      "violationCount_other": "{{count}} violations"
     },
     "deploymentList": {
       "running": "En cours",
@@ -1609,7 +1613,9 @@
       "registry": "Registre",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Service en cours d’exécution",
+      "readOnlyHint": "Créée via l’API. Non modifiable ici ; elle est conservée telle quelle à l’enregistrement."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Impossible de récupérer les appareils",

@@ -19,6 +19,7 @@
  */
 
 import { serviceRecoveryRecipe } from './serviceRecovery';
+import { identityOffboardingRecipe } from './identityOffboarding';
 import type { AnyRecipeDefinition, RecipeDefinition } from './types';
 
 export * from './types';
@@ -36,6 +37,7 @@ type RegisteredRecipe = RecipeDefinition<never>;
  */
 export const RECIPES: Readonly<Record<string, RegisteredRecipe>> = Object.freeze({
   [serviceRecoveryRecipe.key]: serviceRecoveryRecipe as unknown as RegisteredRecipe,
+  [identityOffboardingRecipe.key]: identityOffboardingRecipe as unknown as RegisteredRecipe,
 });
 
 /** Sorted, for deterministic error messages and the future library route. */

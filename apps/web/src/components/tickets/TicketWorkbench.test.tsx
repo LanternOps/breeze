@@ -1785,6 +1785,42 @@ describe('TicketWorkbench custom-status select (config path)', () => {
     });
   });
 
+  it('resolve patch carries the custom status name/colour so the host banner never shows the stale name', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open', statusName: 'Open' }) });
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+    fireEvent.change(select, { target: { value: 'st-done' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Verified the fix.' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({
+        status: 'resolved', statusName: 'Done & verified', statusColor: '#00aa55',
+      }));
+    });
+  });
+
+  it('a plain resolve clears the stale custom status name in the patch', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open', statusName: 'Open' }) });
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Replaced the toner.' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({
+        status: 'resolved', statusName: null, statusColor: null,
+      }));
+    });
+  });
+
   it('picking a custom PENDING-core status opens the pending form and submits {statusId, pendingReason}', async () => {
     fetchConfigMock.mockResolvedValue(makeConfig());
     mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });

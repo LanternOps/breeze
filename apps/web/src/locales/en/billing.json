@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Who agreed",
         "signerEmailLabel": "Their email (optional)",
         "consequenceInvoice": "An invoice for {{amount}} will be issued and numbered now.",
+        "consequenceInvoiceDraft": "A draft invoice will be created. It is not issued or numbered yet.",
         "consequenceContracts": "Recurring lines become draft contracts you activate later.",
         "consequenceEmail": "The invoice will be emailed to {{recipients}}.",
         "consequenceEmailNotConfigured": "No email service is configured; the invoice will not be emailed. Share it from the invoice page.",
@@ -1368,6 +1369,7 @@
         "evidenceError": "The acceptance was recorded, but the evidence file could not be attached. Attach it from the quote page.",
         "consequenceEmailNoRecipient": "No recipient is recorded on this quote, so the invoice may not be emailed. Send it to the customer yourself if needed.",
         "successNoRecipient": "Quote accepted. Invoice {{number}} issued. It may not have been emailed — no recipient is recorded on this quote.",
+        "successNoEmailService": "Quote accepted. Invoice {{number}} issued. It was not emailed — no email service is configured. Share it from the invoice page.",
         "overlap": {
           "title": "This organization already has a contract on the same schedule",
           "body": "The acceptance created a new draft contract. Activating it as well as the existing one bills the customer for both. Review both before activating either.",

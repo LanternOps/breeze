@@ -970,7 +970,15 @@
       "allAdmitted": "Tous les appareils sélectionnés ont été admis et placés en file d’attente.",
       "partiallyAdmitted": "Certains appareils ont été admis et placés en file d’attente. Examinez les cibles restantes.",
       "rejected": "Aucun appareil n’a été admis. Examinez les raisons ci-dessous.",
-      "queued": "En file d’attente"
+      "queued": "En file d’attente",
+      "reasons": {
+        "not_found_or_inaccessible": "Appareil introuvable ou inaccessible",
+        "site_access_denied": "Vous n'avez pas accès au site de cet appareil",
+        "script_org_mismatch": "Le script appartient à une autre organisation que l'appareil",
+        "os_incompatible": "Le script n'est pas compatible avec le système d'exploitation de cet appareil",
+        "device_decommissioned": "L'appareil a été mis hors service",
+        "maintenance_suppressed": "Ignoré : l'appareil est dans une fenêtre de maintenance"
+      }
     },
     "confirm": {
       "title": "Confirmer l’exécution",

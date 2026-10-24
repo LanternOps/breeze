@@ -482,6 +482,48 @@ describe('analytics routes', () => {
       expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
     });
 
+    it('does not bind the date_trunc unit as a parameter and groups by the same expression', async () => {
+      const chain = createChain([]);
+      vi.mocked(db.select).mockImplementationOnce(() => chain as any);
+
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['cpu_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-18T01:00:00Z',
+          aggregation: 'avg',
+          interval: 'minute'
+        })
+      });
+
+      expect(res.status).toBe(200);
+      const selected = vi.mocked(db.select).mock.calls.at(-1)![0] as unknown as { bucket: { values: unknown[] } };
+      // A bound "minute" param in SELECT and GROUP BY are distinct $n for Postgres -> 500.
+      expect(selected.bucket.values).not.toContain('minute');
+      expect(JSON.stringify(selected.bucket.values[0])).toContain("'minute'");
+      expect(chain.groupBy).toHaveBeenCalledWith(selected.bucket);
+      expect(chain.orderBy).toHaveBeenCalledWith(selected.bucket);
+    });
+
+    it('rejects an interval outside the date_trunc allowlist with 400', async () => {
+      const res = await app.request('/analytics/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: [DEVICE_IN_SCOPE],
+          metricTypes: ['cpu_usage'],
+          startTime: '2026-06-18T00:00:00Z',
+          endTime: '2026-06-18T01:00:00Z',
+          aggregation: 'avg',
+          interval: "minute'); DROP TABLE devices;--"
+        })
+      });
+      expect(res.status).toBe(400);
+    });
+
     it('should validate required fields', async () => {
       const res = await app.request('/analytics/query', {
         method: 'POST',

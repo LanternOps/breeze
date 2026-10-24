@@ -3175,15 +3175,22 @@ jobs:
         uses: ./.github/actions/tauri-apt-cache
 
       - name: Install Tauri system dependencies
-        # Bound the STEP, not just the commands inside it. The per-command
-        # deadlines below sum to ~27.75m worst case (3 attempts x 8m, plus two
-        # 90s dpkg recoveries, plus 45s of backoff), and the job budget is 35m
-        # JOB-wide — so a worst-case apt would leave ~7m for Rust toolchain
-        # setup, a cold `cargo check` on two webkit2gtk-linked crates, and the
-        # viewer tests. On a cache miss that is not enough, and the job would
-        # die on GitHub's generic "job timed out" with no diagnostic: the exact
-        # failure #3730 reported and this step exists to prevent, merely
-        # relocated from apt to whatever ran last.
+        # Bound the STEP, not just the commands inside it. The old network path
+        # retried 3 times (~27.75m worst case) under a step with no timeout, which
+        # on a 35m JOB-wide budget left ~7m for Rust toolchain setup, a cold
+        # `cargo check` on two webkit2gtk-linked crates, and the viewer tests. On a
+        # cache miss that is not enough, and the job would die on GitHub's generic
+        # "job timed out" with no diagnostic: the exact failure #3730 reported and
+        # this step exists to prevent, merely relocated from apt to whatever ran
+        # last.
+        #
+        # Worst case inside the 12m step: a failed cached `dpkg -i` (<= 1m45s +
+        # 45s recovery = 2.5m), then ONE network attempt (2m update + 5m install,
+        # +15s/30s kill-after = ~8m) = ~10.5m. The network path is a single attempt
+        # (#9847): attempt 2 of the old loop could never complete inside 12m, so
+        # the retries were dead weight. It fails fast with a real error; re-run to
+        # land on a fresh runner. The cache (keyed on distro + package list) is
+        # what keeps normal runs off this path.
         #
         # 12m caps apt at roughly a third of the budget and fires as a labelled
         # step timeout, leaving 23m for the Rust work regardless of how badly
@@ -3197,12 +3204,12 @@ jobs:
           # update, no mirror traffic (#9753). Any failure here falls through to
           # the network path below, which is also the cache-miss path.
           if [ "${TAURI_CACHE_HIT}" = "true" ] && ls "${TAURI_DEBS_DIR}"/*.deb >/dev/null 2>&1; then
-            if sudo timeout --kill-after=30s 3m dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
+            if sudo timeout --kill-after=15s 90s dpkg -i "${TAURI_DEBS_DIR}"/*.deb; then
               echo "Tauri system dependencies installed from cache (no mirror access)."
               exit 0
             fi
             echo "::warning::cached .deb install failed; falling back to the network install"
-            sudo timeout --kill-after=30s 60s dpkg --configure -a || true
+            sudo timeout --kill-after=15s 30s dpkg --configure -a || true
           fi
           # Network path. Download into a private archives dir so the .debs can
           # be copied into the cache dir once the install succeeds.
@@ -3213,15 +3220,14 @@ jobs:
           # degraded and can crawl at 1-4 min/package, blowing this job's
           # timeout before Rust ever compiles — a transient infra flake that
           # reds `main` and fires main-red-alert with zero code signal (#1605).
-          # Switch to the canonical mirror and retry update+install with
-          # backoff so a slow mirror doesn't masquerade as a build failure.
+          # Switch to the canonical mirror so a slow mirror doesn't masquerade as
+          # a build failure.
           #
-          # The retry loop above only helps when apt EXITS non-zero. Observed
-          # failures instead STALL: apt stops emitting output right after the
-          # InRelease fetches and never returns, so no attempt ever completes
-          # and the job burns its full 35-minute budget without logging a single
-          # retry warning (#3730). Give each phase its own deadline so a stall
-          # fails fast and the retry logic can actually run.
+          # Observed failures STALL rather than exit non-zero: apt stops
+          # emitting output right after the InRelease fetches and never
+          # returns, and the job burns its full 35-minute budget without
+          # logging anything (#3730). Give each phase its own deadline so a
+          # stall fails fast with a real error.
           #
           # `timeout` is invoked under sudo (not `timeout sudo ...`) so it
           # signals apt-get itself as root; wrapping sudo would kill the wrapper
@@ -3230,11 +3236,10 @@ jobs:
           # Deadlines bound each apt phase so a stall fails fast with a real
           # message instead of consuming the job. Counting the --kill-after
           # grace on every bound (each deadline can run to deadline + 30s),
-          # three attempts plus two recovery runs plus the sleeps come to
-          # ~27.75m — which is why the step-level timeout above exists: sized
-          # against the job budget alone, that worst case starves everything
-          # after it. Normal runs finish in well under a minute, so these are
-          # roughly 10x headroom rather than tight.
+          # the single network attempt comes to ~8m (~10.5m after a failed cached
+          # install), inside the 12m step timeout above.
+          # Normal runs finish in well under a minute, so these are roughly
+          # 10x headroom rather than tight.
           sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
             /etc/apt/sources.list \
             /etc/apt/sources.list.d/*.list \
@@ -3251,36 +3256,21 @@ jobs:
               -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3 \
               -o "Dir::Cache::archives=$TAURI_ARCHIVES" "${TAURI_PKGS[@]}"
           }
-          attempts=3
-          for attempt in $(seq 1 "${attempts}"); do
-            if install_deps; then
-              echo "Tauri system dependencies installed (attempt ${attempt})."
-              # Seed the cache (saved by the post step only on a cache miss).
-              # Never leave a partial/empty dir behind: cache keys are immutable,
-              # so saving one would poison every later run for this key.
-              rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
-              if ! { ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1 \
-                     && sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ \
-                     && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"; }; then
-                echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
-                sudo rm -rf "${TAURI_DEBS_DIR}"
-              fi
-              exit 0
+          if install_deps; then
+            echo "Tauri system dependencies installed."
+            # Seed the cache (saved by the post step only on a cache miss).
+            # Never leave a partial/empty dir behind: cache keys are immutable,
+            # so saving one would poison every later run for this key.
+            rm -rf "${TAURI_DEBS_DIR}"; mkdir -p "${TAURI_DEBS_DIR}"
+            if ! { ls "$TAURI_ARCHIVES"/*.deb >/dev/null 2>&1 \
+                   && sudo cp "$TAURI_ARCHIVES"/*.deb "${TAURI_DEBS_DIR}"/ \
+                   && sudo chown -R "$(id -u):$(id -g)" "${TAURI_DEBS_DIR}"; }; then
+              echo "::warning::could not seed the Tauri apt cache; next run will use the network path"
+              sudo rm -rf "${TAURI_DEBS_DIR}"
             fi
-            if [ "${attempt}" -eq "${attempts}" ]; then
-              break
-            fi
-            echo "::warning::apt install failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 15))s"
-            # A killed apt can leave the dpkg lock held or a package
-            # half-configured; clear that or the retry just fails on the lock.
-            # Bounded too: dpkg runs maintainer scripts and can block on its
-            # own, and an unbounded recovery would reintroduce the very stall
-            # this step exists to prevent.
-            sudo timeout --kill-after=30s 60s dpkg --configure -a || \
-              echo "::warning::dpkg --configure -a recovery failed after attempt ${attempt}; this can mean a genuinely broken runner (corrupted dpkg state, disk full) rather than a slow mirror — check this run's logs if all ${attempts} attempts fail."
-            sleep $((attempt * 15))
-          done
-          echo "::error::Failed to install Tauri system dependencies after ${attempts} attempts."
+            exit 0
+          fi
+          echo "::error::Failed to install Tauri system dependencies (apt error or phase deadline); re-run to land on a fresh runner (#9847)."
           exit 1
 
       - name: Setup Rust

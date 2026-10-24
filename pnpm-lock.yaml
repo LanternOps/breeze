@@ -1339,7 +1339,7 @@ importers:
         specifier: 17.4.2
         version: 17.4.2
       happy-dom:
-        specifier: '>=21.0.4 <22.0.0'
+        specifier: ^21.0.4
         version: 21.0.4
       postgres:
         specifier: 3.4.9
@@ -1444,7 +1444,7 @@ importers:
         version: 4.13.13
     devDependencies:
       happy-dom:
-        specifier: '>=21.0.4 <22.0.0'
+        specifier: ^21.0.4
         version: 21.0.4
       typescript:
         specifier: ^5.7.2

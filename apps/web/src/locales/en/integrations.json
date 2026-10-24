@@ -340,7 +340,9 @@
     "retry": "Retry",
     "since": "since {{time}}",
     "fix": "Fix",
-    "remedy": { "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze." },
+    "remedy": {
+      "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze."
+    },
     "truncated": "Showing the first {{count}}",
     "recentlyResolved": "Recently resolved ({{count}})",
     "resolution": {
@@ -707,7 +709,10 @@
     "allApplications": "All applications",
     "searchAllApplicationsFirst2": " (not Owned applications) for an existing Breeze app in this tenant. ",
     "tenantIdGuidPlaceholder": "Tenant ID (GUID), e.g. 00000000-0000-0000-0000-000000000000",
-    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain."
+    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain.",
+    "savingRequiresMfa": " Saving requires MFA verification.",
+    "clientSecretPlaceholder": "app client secret",
+    "clientSecretStoredPlaceholder": "•••••••••• (stored, encrypted)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",

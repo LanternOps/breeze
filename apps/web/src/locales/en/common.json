@@ -1408,7 +1408,7 @@
           "name": "Production Webhook",
           "signingSecret": "Enter a signing secret"
         },
-        "subtitle": "Set delivery, authentication, and payload behavior.",
+        "subtitle": "Set the destination, events, authentication, and headers.",
         "title": "Webhook configuration",
         "validation": {
           "eventRequired": "Select at least one event",
@@ -1470,7 +1470,7 @@
           "noPayloadTemplate": "No payload template saved yet.",
           "payloadPreview": "Payload template preview",
           "testEvent": "Test event",
-          "testEventHelp": "Tests use the selected event and your payload template.",
+          "testEventHelp": "Sends a sample payload for the selected event to this endpoint.",
           "title": "Webhook details"
         },
         "emptySelection": "Select a webhook to view delivery history and testing tools.",

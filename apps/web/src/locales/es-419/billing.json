@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Quién dio la conformidad",
         "signerEmailLabel": "Su correo electrónico (opcional)",
         "consequenceInvoice": "Se emitirá y numerará ahora una factura por {{amount}}.",
+        "consequenceInvoiceDraft": "Se creará una factura en borrador. Todavía no se emite ni se numera.",
         "consequenceContracts": "Las líneas recurrentes se convierten en contratos en borrador que activas después.",
         "consequenceEmail": "La factura se enviará por correo electrónico a {{recipients}}.",
         "consequenceEmailNotConfigured": "No hay un servicio de correo configurado; la factura no se enviará por correo. Compártela desde la página de la factura.",
@@ -1368,6 +1369,7 @@
         "evidenceError": "La aceptación quedó registrada, pero no se pudo adjuntar el archivo de evidencia. Adjúntalo desde la página de la propuesta.",
         "consequenceEmailNoRecipient": "Esta cotización no tiene destinatarios registrados, por lo que es posible que la factura no se envíe por correo. Envíasela al cliente tú mismo si es necesario.",
         "successNoRecipient": "Cotización aceptada. Factura {{number}} emitida. Es posible que no se haya enviado por correo: esta cotización no tiene destinatarios registrados.",
+        "successNoEmailService": "Cotización aceptada. Factura {{number}} emitida. No se envió por correo: no hay un servicio de correo configurado. Compártala desde la página de la factura.",
         "overlap": {
           "title": "Esta organización ya tiene un contrato con la misma periodicidad",
           "body": "La aceptación creó un nuevo borrador de contrato. Si lo activa además del existente, se le cobra al cliente por los dos. Revise ambos antes de activar cualquiera.",

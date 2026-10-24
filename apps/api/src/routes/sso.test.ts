@@ -3161,6 +3161,51 @@ describe('sso routes', () => {
       expect(db.insert).not.toHaveBeenCalled();
     });
 
+    // The web form never sends a body orgId; fetchWithAuth appends ?orgId=.
+    describe('selected ?orgId fallback', () => {
+      const OTHER_ORG = '00000000-0000-4000-8000-000000000011';
+      const partnerCtx = (canAccessOrg: (id: string) => boolean) => setAuthContext({
+        scope: 'partner',
+        orgId: null,
+        partnerId: PARTNER_UUID,
+        accessibleOrgIds: [ORG_UUID, OTHER_ORG],
+        partnerOrgAccess: 'selected',
+        canAccessOrg
+      });
+      const post = (qs: string) => app.request(`/sso/providers${qs}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Authentik', type: 'oidc' })
+      });
+
+      it('creates for the accessible query orgId when the body has none', async () => {
+        partnerCtx((id) => id === ORG_UUID);
+        const valuesMock = vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: PROVIDER_UUID, name: 'Authentik', orgId: ORG_UUID }])
+        });
+        vi.mocked(db.insert).mockReturnValue({ values: valuesMock } as any);
+
+        const res = await post(`?orgId=${ORG_UUID}`);
+
+        expect(res.status).toBe(201);
+        expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_UUID }));
+      });
+
+      it('403s an inaccessible query orgId', async () => {
+        partnerCtx((id) => id === ORG_UUID);
+        const res = await post(`?orgId=${OTHER_ORG}`);
+        expect(res.status).toBe(403);
+        expect(db.insert).not.toHaveBeenCalled();
+      });
+
+      it('still 400s with neither body nor query orgId', async () => {
+        partnerCtx(() => true);
+        const res = await post('');
+        expect(res.status).toBe(400);
+        expect((await res.json()).code).toBe('sso_provider_org_required');
+      });
+    });
+
     it('does not suggest ownerScope=partner to an org-scoped caller (it cannot use it)', async () => {
       setAuthContext({ scope: 'organization', orgId: null, partnerId: null, accessibleOrgIds: [] });
 

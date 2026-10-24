@@ -25,6 +25,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import type { OSType } from './DeviceList';
 import PatchInstallHistory from '../patches/PatchInstallHistory';
 import { widthPercentClass } from '@/lib/utils';
+import { isDateOnly, parseDateOnly } from '@/lib/dateOnly';
 import { formatDateTime as formatDateTimeCentral } from '@/lib/dateTimeFormat';
 import { runAction, ActionError } from '@/lib/runAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
@@ -595,8 +596,12 @@ function isNativePatchForOs(patch: PatchItem, osType: OSType) {
 
 function formatDate(value?: string, timezone?: string, fallback = 'Not reported') {
   if (!value) return fallback;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString([], timezone ? { timeZone: timezone } : undefined);
+  // A bare YYYY-MM-DD is a calendar date: no zone conversion (would shift it a day).
+  const dateOnly = isDateOnly(value);
+  const date = parseDateOnly(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString([], timezone && !dateOnly ? { timeZone: timezone } : undefined);
 }
 
 function formatDateTime(value?: string | null, timezone?: string, fallback = 'Never') {
@@ -749,11 +754,11 @@ function getSourceBadge(patch: PatchItem): { label: string; className: string } 
   return null;
 }
 
-function getReleaseLabel(patch: PatchItem, timezone?: string): string | null {
+function getReleaseLabel(patch: PatchItem, t: TFunction, timezone?: string): string | null {
   const value = patch.releaseDate || patch.releasedAt;
   if (!value) return null;
   const formatted = formatDate(value, timezone, '');
-  return formatted ? `Released ${formatted}` : null;
+  return formatted ? t('devicePatchStatusTab.released', { date: formatted }) : null;
 }
 
 function getInstalledVersionFromDescription(description?: string): string | null {
@@ -1551,7 +1556,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const badge = getCategoryBadge(patch, normalizedOsType);
                       const severityBadge = getSeverityBadge(patch.severity);
                       const kbLabel = getKbLabel(patch);
-                      const releaseLabel = getReleaseLabel(patch, effectiveTimezone);
+                      const releaseLabel = getReleaseLabel(patch, t, effectiveTimezone);
                       const srcBadge = getSourceBadge(patch);
                       const patchId = patch.id;
                       const isInstalling = patchId ? installingPatchIds.has(patchId) : false;
@@ -1706,7 +1711,7 @@ export default function DevicePatchStatusTab({ deviceId, timezone, osType }: Dev
                       const brewDetails = getHomebrewPendingDetails(patch, normalizedOsType);
                       const severityBadge = getSeverityBadge(patch.severity);
                       const kbLabel = getKbLabel(patch);
-                      const releaseLabel = getReleaseLabel(patch, effectiveTimezone);
+                      const releaseLabel = getReleaseLabel(patch, t, effectiveTimezone);
                       const srcBadge = getSourceBadge(patch);
                       const patchId = patch.id;
                       const isInstalling = patchId ? installingPatchIds.has(patchId) : false;

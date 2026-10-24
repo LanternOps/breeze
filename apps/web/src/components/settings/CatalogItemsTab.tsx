@@ -142,11 +142,11 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
       });
       void load(view);
     } catch (err) {
-      handleActionError(err, 'Archive failed. Retry.');
+      handleActionError(err, t('catalogItemsTab.archiveFailedRetry'));
     } finally {
       setArchivingId(null);
     }
-  }, [load, view, archivingId]);
+  }, [load, view, archivingId, t]);
 
   const restore = useCallback(async (id: string) => {
     if (archivingId) return;
@@ -160,11 +160,11 @@ export default function CatalogItemsTab({ reloadKey = 0 }: { reloadKey?: number 
       });
       void load(view);
     } catch (err) {
-      handleActionError(err, 'Restore failed. Retry.');
+      handleActionError(err, t('catalogItemsTab.restoreFailedRetry'));
     } finally {
       setArchivingId(null);
     }
-  }, [load, view, archivingId]);
+  }, [load, view, archivingId, t]);
 
   const toggleExpand = useCallback((it: CatalogItem) => {
     setExpanded((prev) => {

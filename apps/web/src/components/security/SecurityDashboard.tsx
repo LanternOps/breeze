@@ -931,7 +931,8 @@ export default function SecurityDashboard({
                   {vulnerabilities && (
                     <p className="text-xs text-muted-foreground">
                       {t("securitySecurityDashboard.openItems", {
-                        count: formatNumber(vulnerabilities.total),
+                        count: vulnerabilities.total,
+                        countLabel: formatNumber(vulnerabilities.total),
                       })}
                     </p>
                   )}
@@ -1156,7 +1157,8 @@ export default function SecurityDashboard({
                   {overview && (
                     <p className="text-xs text-muted-foreground">
                       {t("securitySecurityDashboard.devicesReviewed", {
-                        count: formatNumber(encryptionTotal),
+                        count: encryptionTotal,
+                        countLabel: formatNumber(encryptionTotal),
                       })}
                     </p>
                   )}
@@ -1396,7 +1398,8 @@ export default function SecurityDashboard({
                   {overview && (
                     <p className="text-xs text-muted-foreground">
                       {t("securitySecurityDashboard.actionsPrioritized", {
-                        count: formatNumber(sortedRecommendations.length),
+                        count: sortedRecommendations.length,
+                        countLabel: formatNumber(sortedRecommendations.length),
                       })}
                     </p>
                   )}

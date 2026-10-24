@@ -1950,6 +1950,7 @@
     "title": "Active Network Connections"
   },
   "devicePatchStatusTab": {
+    "released": "Released {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compliant",
       "description": "Pending vs installed updates",

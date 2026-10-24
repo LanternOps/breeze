@@ -348,6 +348,7 @@ export default function DeliverableTable({
           fetcher={fetcher}
           orgId={orgId}
           deliverableIds={[...selectedIds]}
+          sourceContractIds={rows.filter((r) => selectedIds.has(r.id)).map((r) => r.contractId)}
           onClose={() => setMoving(false)}
           onMoved={() => {
             setMoving(false);

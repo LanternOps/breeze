@@ -547,6 +547,9 @@ const TARGET_GLOBS = [
   // restarted from their fix — or reverted to full history — when it did not.
   'src/components/devices/ReliabilityBaselineDialog.tsx',
   'src/components/devices/ReliabilityBaselineSection.tsx',
+  // Sweep G4: peripheral policy save + config-policy partner-wide toggle toast their outcome.
+  'src/components/peripherals/PeripheralPolicyForm.tsx',
+  'src/components/configurationPolicies/OrganizationScopePanel.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -958,7 +961,8 @@ describe('no silent mutations in targeted set', () => {
     // #8330 adds filters/SavedFilterList.tsx: 245 → 246.
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
     // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
-    expect(absoluteFiles.length).toBe(251);
+    // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
+    expect(absoluteFiles.length).toBe(253);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

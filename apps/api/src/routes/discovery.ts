@@ -1451,6 +1451,7 @@ discoveryRoutes.get(
           model: maskOidShapedModel(a.model),
           nicVendor: nicVendorFromMac(a.macAddress),
           openPorts: a.openPorts,
+          osFingerprint: normalizeOsFingerprint(a.osFingerprint),
           snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
           linkedDeviceId: row.linkedDeviceId ?? null,

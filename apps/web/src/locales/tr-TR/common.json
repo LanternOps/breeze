@@ -1408,7 +1408,7 @@
           "name": "Prodüksiyon Web Kancası",
           "signingSecret": "İmza sırrını girin"
         },
-        "subtitle": "Teslimatı, kimlik doğrulamayı ve yük davranışını ayarlayın.",
+        "subtitle": "Hedefi, etkinlikleri, kimlik doğrulamayı ve üstbilgileri ayarlayın.",
         "title": "Web kancası yapılandırması",
         "validation": {
           "eventRequired": "En az bir etkinlik seçin",
@@ -1470,7 +1470,7 @@
           "noPayloadTemplate": "Henüz kayıtlı yük şablonu yok.",
           "payloadPreview": "Yük şablonu önizlemesi",
           "testEvent": "Test etkinliği",
-          "testEventHelp": "Testler, seçilen etkinliği ve yük şablonunuzu kullanır.",
+          "testEventHelp": "Seçilen etkinlik için bu uç noktaya örnek bir yük gönderir.",
           "title": "Web kancası ayrıntıları"
         },
         "emptySelection": "Teslimat geçmişini ve test araçlarını görüntülemek için bir web kancası seçin.",

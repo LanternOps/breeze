@@ -282,6 +282,7 @@ const EXEMPT: Record<string, string> = {
   'services/aiAgents/sweepSubjectProbe.ts': 'derived: re-probes one device already named by an existing sweep finding',
   'services/aiAgents/ticketContext.ts': 'org-pinned: linked-device lookup pinned to the ticket\'s org',
   'services/aiOperator/deviceCommandEvidence.ts': 'derived: device lookup by id and org from a task\'s own row',
+  'services/aiOperator/identityDiscovery.ts': 'org-pinned: start-form device SUGGESTIONS by last_user, pinned to the task\'s own org; never an effect target',
   'services/aiOperator/requesterAccessGate.ts': 'request path: rechecks a human requester\'s live org/site access to a task\'s device',
   'services/aiOperator/taskService.ts': 'request path: creates a task for a device named on the request, scoped to the request org',
   'services/aiOperator/verification.ts': 'derived: re-validates a task\'s own device is still in the task\'s org',

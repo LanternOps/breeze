@@ -203,6 +203,7 @@
       "scanQueued": "Le scan de découverte est mis en file d’attente pour « {{name}} »",
       "profileCreated": "Profil de découverte « {{name}} » créé",
       "profileUpdated": "Profil de découverte « {{name}} » mis à jour",
+      "profileDeleted": "Profil de découverte « {{name}} » supprimé",
       "profileMoved": "Profil déplacé vers {{site}}.",
       "assetsMoved_one": "{{count}} appareil réseau déplacé",
       "assetsMoved_other": "{{count}} appareils réseau déplacés",

@@ -168,13 +168,15 @@ async function filterSlaDefinitionsForSiteScope<T extends SlaTargetShape>(
   return rows.filter((r) => !slaDefinitionOutOfScope(scopeAuth, r, allowedDeviceIds));
 }
 
+const DATE_TRUNC_UNITS = ['minute', 'hour', 'day', 'week', 'month'] as const;
+
 const timeSeriesQuerySchema = z.object({
   deviceIds: z.array(z.string().guid()).min(1),
   metricTypes: z.array(z.string().min(1)).min(1),
   startTime: z.string().min(1),
   endTime: z.string().min(1),
   aggregation: z.enum(['avg', 'min', 'max', 'sum', 'count', 'p95', 'p99']),
-  interval: z.enum(['minute', 'hour', 'day', 'week', 'month']),
+  interval: z.enum(DATE_TRUNC_UNITS),
   groupBy: z.array(z.string().min(1)).optional()
 });
 
@@ -567,7 +569,13 @@ analyticsRoutes.post(
           .orderBy(rollupBucket);
       }
 
-      const bucket = sql<Date>`date_trunc(${interval}, ${deviceMetrics.timestamp})`;
+      // Inline the unit as a literal: a bound parameter makes SELECT and GROUP BY
+      // distinct $n placeholders, which Postgres rejects ("must appear in GROUP BY").
+      // Assert allowlist membership immediately before sql.raw.
+      if (!(DATE_TRUNC_UNITS as readonly string[]).includes(interval)) {
+        return c.json({ error: 'Invalid interval' }, 400);
+      }
+      const bucket = sql<Date>`date_trunc(${sql.raw(`'${interval}'`)}, ${deviceMetrics.timestamp})`;
       const value = aggregationSql(metricColumn, data.aggregation);
 
       // Org-scope: join devices table to ensure deviceIds belong to the user's org

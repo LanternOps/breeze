@@ -63,12 +63,15 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import {
+  isIdentityOffboardingCheckpoint,
   isServiceRecoveryCheckpoint,
   serviceRecoveryCheckpointSchema,
   type ServiceRecoveryCheckpoint,
   type TaskCheckpoint,
 } from '@breeze/shared';
 import { SERVICE_RECOVERY_WORKFLOW_KEY, taskRunDedupeKey } from './recipes/serviceRecovery';
+import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
+import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
 import { getRecipe, validateRecipeNextStep } from './recipes';
 import type { RecipeDefinition, StepDefinition, StepKind } from './recipes/types';
 import { parseTaskCheckpointResult } from './taskService';
@@ -658,6 +661,7 @@ const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdva
     observe: withServiceRecoveryCheckpoint((a, c) => advanceObserve(a.task, a.leaseEpoch, c, a.recipe, a.now)),
     verify: withServiceRecoveryCheckpoint((a, c) => advanceVerify(a.task, a.leaseEpoch, c, a.recipe)),
   },
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: IDENTITY_OFFBOARDING_ADVANCERS,
 };
 
 /**
@@ -692,6 +696,7 @@ function withServiceRecoveryCheckpoint(
  */
 export const RECIPE_CHECKPOINT_ARMS: Readonly<Record<string, (c: TaskCheckpoint) => boolean>> = Object.freeze({
   [SERVICE_RECOVERY_WORKFLOW_KEY]: isServiceRecoveryCheckpoint,
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: isIdentityOffboardingCheckpoint,
 });
 
 /**
@@ -841,7 +846,7 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
     return `failed: checkpoint does not match workflow ${recipe.key}`;
   }
 
-  const stepKey = task.currentStepKey ?? 'investigate';
+  const stepKey = task.currentStepKey ?? recipe.entryStepKey ?? 'investigate';
   const advance =
     RECIPE_ADVANCERS[recipe.key]?.[stepKey]
     ?? KIND_ADVANCERS[recipe.steps[stepKey]?.kind as StepKind];

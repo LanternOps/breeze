@@ -112,6 +112,10 @@
     "reason": "Grund",
     "expiresAt": "Läuft ab (Ihre Ortszeit)",
     "updatePolicy": "Richtlinie aktualisieren",
-    "createPolicy": "Richtlinie erstellen"
+    "createPolicy": "Richtlinie erstellen",
+    "saved": {
+      "created": "Richtlinie erstellt",
+      "updated": "Richtlinie aktualisiert"
+    }
   }
 }

@@ -354,6 +354,7 @@ x-api-env: &api-env
   # deployment and `GET /config` reports it disabled with no error anywhere.
   AI_OPERATOR_TASKS_ENABLED: ${AI_OPERATOR_TASKS_ENABLED:-false}
   AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
+  AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED: ${AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
   # AI sweeps act mode (#5755 W04) — sub-flag on top of POLICY_DECIDE; default OFF.

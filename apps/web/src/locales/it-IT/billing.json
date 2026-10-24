@@ -1350,6 +1350,7 @@
         "signerNameLabel": "Chi ha dato l'assenso",
         "signerEmailLabel": "La sua e-mail (facoltativa)",
         "consequenceInvoice": "Verrà emessa e numerata subito una fattura di {{amount}}.",
+        "consequenceInvoiceDraft": "Verrà creata una fattura in bozza. Non è ancora emessa né numerata.",
         "consequenceContracts": "Le righe ricorrenti diventano contratti in bozza da attivare in seguito.",
         "consequenceEmail": "La fattura verrà inviata via e-mail a {{recipients}}.",
         "consequenceEmailNotConfigured": "Nessun servizio e-mail è configurato; la fattura non verrà inviata via e-mail. Condividila dalla pagina della fattura.",
@@ -1368,6 +1369,7 @@
         "evidenceError": "L'accettazione è stata registrata, ma non è stato possibile allegare il file di prova. Allegalo dalla pagina del preventivo.",
         "consequenceEmailNoRecipient": "Nessun destinatario è registrato su questo preventivo, quindi la fattura potrebbe non essere inviata via e-mail. Se necessario, inviala tu stesso al cliente.",
         "successNoRecipient": "Preventivo accettato. Fattura {{number}} emessa. Potrebbe non essere stata inviata via e-mail: nessun destinatario è registrato su questo preventivo.",
+        "successNoEmailService": "Preventivo accettato. Fattura {{number}} emessa. Non è stata inviata via e-mail: nessun servizio e-mail è configurato. Condividila dalla pagina della fattura.",
         "overlap": {
           "title": "Questa organizzazione ha già un contratto con la stessa cadenza",
           "body": "L’accettazione ha creato una nuova bozza di contratto. Attivandola insieme a quello esistente, il cliente paga per entrambi. Controlla entrambi prima di attivarne uno.",

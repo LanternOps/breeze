@@ -221,6 +221,7 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/deliverableAutoEvidence.ts::recordRefusal': TF(['ticket_comments']),
   'services/deliverableAutoEvidence.ts::finishRun': TF(['ticket_comments']),
   'services/aiOperator/humanWorkService.ts::sendHumanWorkReminders': TF(['ticket_comments']),
+  'services/aiOperator/completionRecord.ts::postCompletionRecord': TF(['ticket_comments']),
   'services/serviceDeliverableService.ts::applyTicketStatusChange': TF(['ticket_comments']),
   'services/serviceDeliverableService.ts::openOneOccurrence': TF(['ticket_checklist_items', 'ticket_comments']),
 
@@ -231,6 +232,8 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'services/ticketChecklistService.ts::deleteChecklistItem': TF(['ticket_checklist_items']),
   'services/ticketChecklistTemplateService.ts::applyChecklistTemplateToTicket': TF(['ticket_checklist_items']),
   'services/aiOperator/humanWorkService.ts::openHumanWorkStep': TF(['ticket_checklist_items']),
+  'services/aiOperator/manualWork.ts::ensureManualWorkItems': TF(['ticket_checklist_items']),
+  'services/aiOperator/manualWork.ts::attachHumanWorkStep': TF(['ticket_checklist_items'], { lockHeldByCaller: true }),
 
   // ── Links, external refs, email links ───────────────────────────────────
   'services/ticketLinkService.ts::addTicketLink': TF(['ticket_links', 'ticket_comments']),
