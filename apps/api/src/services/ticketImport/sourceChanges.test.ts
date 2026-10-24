@@ -64,6 +64,7 @@ describe('sourceChanges — what a resume reports and does not apply', () => {
 
     it('treats no email on both sides as equal, and an email gained or lost as a change', () => {
       expect(sourceChanges(stored({ submitterEmail: null }), [], ticket({ requester: { name: 'Walk-in' } })).requesterChanged).toBe(false);
+      expect(sourceChanges(stored({ submitterEmail: '  ' }), [], ticket({ requester: { name: 'Walk-in' } })).requesterChanged).toBe(false);
       expect(sourceChanges(stored({ submitterEmail: null }), [], ticket()).requesterChanged).toBe(true);
       expect(sourceChanges(stored(), [], ticket({ requester: { name: 'Maya' } })).requesterChanged).toBe(true);
     });
@@ -120,7 +121,8 @@ describe('sourceChanges — what a resume reports and does not apply', () => {
   describe('commentsMissingInSource', () => {
     const rows = [
       storedComment('article-1', 'a'),
-      storedComment('article-2', 'b'),
+      // Not in the input: the read hashes only the input's comments.
+      storedComment('article-2', 'b', true, { contentHash: null }),
       storedComment('zammad-41023:time-accounting', 'Time: 3h'),
       storedComment('article-9', 'moved here by a Breeze merge', true, { mergedIn: true }),
       storedComment('article-3', 'deleted in Breeze', true, { deleted: true }),

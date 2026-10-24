@@ -518,7 +518,9 @@ All in `services/ticketImport/`, so the confinement rules of F4 hold.
      the input;
    - `commentsMissingInSource`: a stored source-article id absent from the input. The writer
      takes `ImportTicketOptions.isSourceArticleId` to tell source articles from composed notes;
-     without it, nothing is counted.
+     without it, nothing is counted. An article the source moved to another ticket (a merge in
+     the source) would read as deleted, so the module (W5) excludes the articles it knows moved,
+     through `isSourceArticleId` or a sibling option.
 
    Each is counted and listed. None changes a row (§5.9).
 4. **`importTicketLink(windowId, { sourceKey, targetKey, linkType, at }, options)`.** It resolves

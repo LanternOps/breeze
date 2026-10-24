@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { ticketComments } from '../../db/schema';
+import { normalizeRequesterEmail } from '../ticketRequesterEmail';
 import type { ImportedComment, ImportedTicket } from './importedTicket';
 
 /**
@@ -25,17 +26,28 @@ export type SourceChanges = {
    * The input's requester is not the stored one: another contact, or a
    * display-only email that differs from the stored submitter email (trimmed,
    * case-insensitive; no email on both sides is equal). The name is not
-   * compared.
+   * compared. It also fires when a Breeze user changed the requester: no
+   * reliable trace tells the two apart (a requester edit stamps no
+   * field_provenance, and an org move or a contact deletion clears
+   * requester_contact_id without one).
    */
   requesterChanged: boolean;
-  /** The input's org is not the ticket's. The writer never moves a ticket. */
+  /**
+   * The input's org is not the ticket's. The writer never moves a ticket. It
+   * also fires when the ticket was moved in Breeze: moveTicketOrg leaves only
+   * a free-text feed note and best-effort audit rows, and a device move or an
+   * org merge leaves none.
+   */
   orgChanged: boolean;
   /** Comments of this import whose content or visibility differs in the source. */
   commentsChangedInSource: CommentChangedInSource[];
   /**
    * Source article ids this import stored on the ticket that the input no
    * longer has (deleted in the source). Counted only when the caller passes
-   * `ImportTicketOptions.isSourceArticleId`; empty otherwise.
+   * `ImportTicketOptions.isSourceArticleId`; empty otherwise. An article the
+   * source moved to another ticket (a merge in the source) also reads as
+   * deleted here: the module must exclude the articles it knows moved,
+   * through `isSourceArticleId`.
    */
   commentsMissingInSource: string[];
 };
@@ -64,8 +76,11 @@ export function noSourceChanges(): SourceChanges {
 export type StoredImportedComment = {
   sourceId: string;
   isPublic: boolean;
-  /** sha256 (hex) of the stored content's UTF-8 bytes. */
-  contentHash: string;
+  /**
+   * sha256 (hex) of the stored content's UTF-8 bytes; computed only for a
+   * comment whose source id is in the input (null otherwise).
+   */
+  contentHash: string | null;
   /** A Breeze user edited its content since (editTicketComment). */
   edited: boolean;
   /** Soft-deleted in Breeze. */
@@ -77,15 +92,22 @@ export type StoredImportedComment = {
 /**
  * The comments this principal imported onto `ticketId`, for a resume: one
  * read that serves both the presence check (which input comments are already
- * here) and the report (`sourceChanges`). The content comes back as a hash, so
- * a long thread costs its ids, not its text.
+ * here, by id) and the report (`sourceChanges`). The content is hashed only
+ * for a comment whose source id is in the input, the only ones the report
+ * compares; the rest cost their id and flags. `inputSourceIds` travels as one
+ * JSON parameter, however long the thread.
  */
-export async function importedCommentsOf(ticketId: string, principalId: string): Promise<StoredImportedComment[]> {
+export async function importedCommentsOf(
+  ticketId: string,
+  principalId: string,
+  inputSourceIds: readonly string[],
+): Promise<StoredImportedComment[]> {
+  const inInput = sql`${ticketComments.importSourceId} IN (SELECT jsonb_array_elements_text(${JSON.stringify(inputSourceIds)}::jsonb))`;
   const rows = await db
     .select({
       sourceId: ticketComments.importSourceId,
       isPublic: ticketComments.isPublic,
-      contentHash: sql<string>`encode(sha256(convert_to(${ticketComments.content}, 'UTF8')), 'hex')`,
+      contentHash: sql<string | null>`CASE WHEN ${inInput} THEN encode(sha256(convert_to(${ticketComments.content}, 'UTF8')), 'hex') END`,
       edited: sql<boolean>`${ticketComments.editedAt} IS NOT NULL`,
       deleted: sql<boolean>`${ticketComments.deletedAt} IS NOT NULL`,
       mergedIn: sql<boolean>`${ticketComments.mergedFromTicketId} IS NOT NULL`,
@@ -113,10 +135,6 @@ function contentHash(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
-function normalizedEmail(email: string | null | undefined): string {
-  return (email ?? '').trim().toLowerCase();
-}
-
 /**
  * What changed in the source that a resume does not apply (`SourceChanges`;
  * spec 2026-10-19 §5.3 item 3, §5.9). Pure: `stored` and `storedComments` are
@@ -136,7 +154,7 @@ export function sourceChanges(
 ): SourceChanges {
   const requesterChanged = 'contactId' in t.requester
     ? stored.requesterContactId !== t.requester.contactId
-    : normalizedEmail(stored.submitterEmail) !== normalizedEmail(t.requester.email);
+    : normalizeRequesterEmail(stored.submitterEmail) !== normalizeRequesterEmail(t.requester.email);
 
   const bySourceId = new Map(storedComments.filter((c) => !c.deleted).map((c) => [c.sourceId, c]));
   const commentsChangedInSource: CommentChangedInSource[] = [];

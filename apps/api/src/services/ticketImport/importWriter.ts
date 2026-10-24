@@ -151,7 +151,9 @@ export type ImportTicketOptions = {
    * Tells a source article id from a comment id the module composed (a
    * time-accounting note, an owner note), for `commentsMissingInSource`: a
    * composed note a later pass does not send is not an article deleted in
-   * the source. Without it, nothing is counted as missing.
+   * the source. Without it, nothing is counted as missing. The module also
+   * answers false for an article it knows the source moved to another ticket
+   * (a merge in the source), which is not deleted either.
    */
   isSourceArticleId?: (sourceId: string) => boolean;
 };
@@ -721,7 +723,7 @@ export async function importTicket(
     if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     // Present: on this ticket (the read the report also uses), or imported by
     // this principal onto another ticket, which is asked only for the rest.
-    const storedComments = await importedCommentsOf(stored.id, principalId);
+    const storedComments = await importedCommentsOf(stored.id, principalId, t.comments.map((c) => c.sourceId));
     const onTicket = new Set(storedComments.map((c) => c.sourceId));
     const elsewhere = await presentCommentSourceIds(principalId, t.comments.map((c) => c.sourceId).filter((id) => !onTicket.has(id)));
     const missing = inSourceOrder(t.comments.filter((c) => !onTicket.has(c.sourceId) && !elsewhere.has(c.sourceId)));
