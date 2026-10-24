@@ -188,6 +188,93 @@ describe('dnsSyncJob — per-slice persistence and checkpointing (#7207)', () =>
     expect((successWrites()[1]!.payload.lastSync as Date).getTime()).toBe(SLICE_2_END.getTime());
   });
 
+  // #10018 — a walk that ran out of its request budget used to write nothing,
+  // so the row kept its previous `success` while lastSync sat still for days.
+  describe('a walk that stops short at the request budget (#10018)', () => {
+    function partialWrites() {
+      return updatePayloads.filter((u) => u.payload.lastSyncStatus === 'partial');
+    }
+
+    it('records partial with the unfetched range, without moving lastSync past the last slice', async () => {
+      selectResults = [[integrationRow()], []];
+      let requestedUntil: Date | undefined;
+      async function* syncEventSlices(_since: Date, until: Date) {
+        requestedUntil = until;
+        yield { events: [event('one.example', new Date('2026-08-01T01:00:00.000Z'))], until: SLICE_1_END };
+        return { stoppedShort: { from: SLICE_1_END, to: until }, sliceWidthMs: 6 * 60 * 60 * 1000 };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      const result = await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      expect(result.fetched).toBe(1);
+      // The completed slice still checkpoints...
+      expect(successWrites().map((u) => (u.payload.lastSync as Date).getTime())).toEqual([SLICE_1_END.getTime()]);
+      // ...and the run is then recorded as partial, naming what is left.
+      expect(partialWrites()).toHaveLength(1);
+      const partial = partialWrites()[0]!;
+      expect(partial.depth).toBeGreaterThan(0);
+      expect(partial.payload).not.toHaveProperty('lastSync');
+      expect(partial.payload.lastSyncError).toBe(
+        `Reached the per-run request budget; ${SLICE_1_END.toISOString()}..${requestedUntil!.toISOString()} ` +
+        'not yet fetched, resumes next run'
+      );
+      // The partial write is the LAST status write, so it is what the row shows.
+      const statusWrites = updatePayloads.filter((u) => 'lastSyncStatus' in u.payload);
+      expect(statusWrites[statusWrites.length - 1]!.payload.lastSyncStatus).toBe('partial');
+    });
+
+    it('records partial even when the budget ran out before any slice completed', async () => {
+      selectResults = [[integrationRow()]];
+      async function* syncEventSlices(since: Date, until: Date) {
+        return { stoppedShort: { from: since, to: until }, sliceWidthMs: 60_000 };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      expect(successWrites()).toEqual([]);
+      expect(partialWrites()).toHaveLength(1);
+      expect(updatePayloads.some((u) => 'lastSync' in u.payload)).toBe(false);
+      expect(String(partialWrites()[0]!.payload.lastSyncError)).toMatch(/request budget/);
+    });
+
+    it('passes the remembered slice width to the provider and stores the width the walk ended on', async () => {
+      selectResults = [[{ ...integrationRow(), config: { syncSliceWidthMs: 1_800_000 } }], []];
+      let options: unknown;
+      async function* syncEventSlices(_since: Date, _until: Date, opts?: unknown) {
+        options = opts;
+        yield { events: [], until: SLICE_1_END };
+        return { sliceWidthMs: 900_000 };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      expect(options).toEqual({ initialSliceMs: 1_800_000 });
+      const configWrites = updatePayloads.filter((u) => 'config' in u.payload);
+      expect(configWrites).toHaveLength(1);
+      expect(configWrites[0]!.depth).toBeGreaterThan(0);
+      // A walk that reached `until` is not partial: the slice's success stands.
+      expect(partialWrites()).toEqual([]);
+      expect(configWrites[0]!.payload).not.toHaveProperty('lastSyncStatus');
+    });
+
+    it('writes nothing extra when the walk completes at the width already stored', async () => {
+      selectResults = [[{ ...integrationRow(), config: { syncSliceWidthMs: 900_000 } }], []];
+      async function* syncEventSlices() {
+        yield { events: [], until: SLICE_1_END };
+        return { sliceWidthMs: 900_000 };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      expect(updatePayloads).toHaveLength(1);
+      expect(updatePayloads[0]!.payload.lastSyncStatus).toBe('success');
+    });
+  });
+
   it('releases the provider session even when a slice fails', async () => {
     selectResults = [[integrationRow()], []];
     const dispose = vi.fn(async () => {});

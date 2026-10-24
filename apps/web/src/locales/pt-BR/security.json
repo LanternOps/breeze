@@ -1750,6 +1750,7 @@
       "actions": "Ações"
     },
     "lastSyncFailedSuffix": " — falhou",
+    "lastSyncPartialSuffix": " — recuperando atraso",
     "never": "Nunca"
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
