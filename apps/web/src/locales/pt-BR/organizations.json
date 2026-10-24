@@ -589,6 +589,7 @@
       "title": "Documentos",
       "subtitle": "Runbooks, baselines, políticas e evidências de entrega desta organização.",
       "empty": "Ainda não há documentos. Envie um runbook, uma baseline ou uma política assinada para iniciar a biblioteca.",
+      "emptyPortalHint": "Seu cliente vê os documentos marcados como Visível no portal. Uma proposta ou um contrato assinado e uma baseline de segurança são bons primeiros documentos.",
       "emptyFiltered": "Nenhum documento nesta categoria.",
       "loadFailed": "Não foi possível carregar os documentos.",
       "upload": "Enviar documento",

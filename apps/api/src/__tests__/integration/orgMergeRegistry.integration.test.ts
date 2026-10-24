@@ -3,7 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, contracts, contractLines } from '../../db/schema';
+import {
+  partners, organizations, contracts, contractLines, tickets, orgTicketSettings,
+  businessCalendars, businessCalendarRevisions, businessCalendarIntervals, businessCalendarHolidays,
+} from '../../db/schema';
+import { eq } from 'drizzle-orm';
+import { executeOrgMerge } from '../../services/orgMerge';
+import { createOrganization, createPartner, createUser } from './db-utils';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import { getOrgCascadeDeleteOrder } from '../../services/tenantCascade';
 import { getOrgMergePolicies, __testOnly } from '../../services/orgMergeRegistry';
@@ -195,6 +201,14 @@ const ORG_ID_BLOCKING_TRIGGERS: Readonly<Record<string, string>> = {
   // Conditional immutability guards: RAISE iff org_id changed.
   'action_intents.action_intents_immutable_trg': 'RAISEs iff org_id changed',
   'ai_agent_runs.ai_agent_runs_immutable_trg': 'RAISEs iff org_id changed',
+  // Wisp W02 (#9908, 2027-01-04-100100): ownership columns incl. org_id are
+  // immutable; wisp_grants is leave-for-erasure, never repointed.
+  'wisp_grants.wisp_grants_update_guard': 'RAISEs 42501 iff an ownership column (incl. org_id) changed',
+  // Grant-pinned runs/tasks: RAISE when a grant-bearing row's org_id leaves the
+  // grant's partner/scope. Both tables stay with the loser (ai_agent_runs is
+  // leave-for-erasure, ai_operator_tasks custom-left), so a merge never repoints them.
+  'ai_agent_runs.ai_agent_runs_grant_tenant_guard': 'RAISEs 23503 when a grant-pinned run\'s org_id is outside the grant\'s tenant scope',
+  'ai_operator_tasks.ai_operator_tasks_grant_tenant_guard': 'RAISEs 23503 when a grant-pinned task\'s org_id is outside the grant\'s tenant scope',
   // Unconditional append-only guards: RAISE on any UPDATE (the retention job's
   // `breeze.allow_audit_retention` GUC is the only bypass, and it is DELETE-path
   // machinery, not something a merge may set).
@@ -273,6 +287,12 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
   // proposals in the loser and leaves terminal ones alone": org_id stays with
   // the loser for both fenced and terminal rows).
   script_proposals: 'fence (status/decision_note only) + no-op move — orgMergeCustomExecutors.ts',
+
+  // fenceAiOperatorTasks sets state/lease/outcome_detail and detaches the
+  // target device in the resolve phase; moveAiOperatorTasks is a documented
+  // no-op (rows stay with the loser). Neither writes org_id, so the Wisp W02
+  // ai_operator_tasks_grant_tenant_guard (UPDATE OF grant_id, org_id) never fires.
+  ai_operator_tasks: 'fence (state/lease/target detach only) + no-op move — orgMergeCustomExecutors.ts',
 };
 
 /**
@@ -289,6 +309,10 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
+  // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
+  // not name those columns, so the trigger never fires on it.
+  'ai_sessions.ai_sessions_wisp_grant_tenant_guard': 'fires only on UPDATE OF wisp_grant_id/wisp_grant_revision_id; an org_id repoint never runs it',
   // Caller verification W05 (#6354, 2026-12-30-220000): BEFORE UPDATE guard on
   // the three pinned caller-target columns only. It never reads or reverts
   // org_id, so a merge repoint of action_intents passes.
@@ -322,6 +346,8 @@ const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // request, but org_id is in its exempt list (to_jsonb(NEW) - org_id …), so an
   // org_id-only repoint, move or merge passes on every row, pending or decided.
   'ticket_approval_requests.ticket_approval_requests_decided_immutable': 'freezes decided rows but exempts org_id by name; an org_id-only repoint always passes',
+  'business_calendar_revisions.business_calendar_revisions_immutable': 'freezes a revision snapshot but exempts org_id by name (Gate B15, #8973 W4); an org_id-only repoint always passes — proven below by driving executeOrgMerge',
+  'business_calendar_intervals.business_calendar_intervals_immutable': 'freezes an interval of a revision snapshot but exempts org_id by name (#8973 W4); an org_id-only repoint always passes',
   // Diagnostic access grants (2026-12-13-130000): on an org_id change, turns an
   // active grant into revoked and a pending request into expired. Never blocks
   // or reverts the org_id change itself; the merge fences these rows in its
@@ -1011,5 +1037,67 @@ describe('contract_lines live-block index vs the merge registry (#4547 W03, Open
       await db.execute(sql`UPDATE contract_lines SET org_id = ${b.orgId}::uuid WHERE id = ${a.lineId}::uuid`);
     }).then(() => null, (e: unknown) => e);
     expect(isPgUniqueViolation(err, 'contract_lines_one_live_hour_block_per_org_uq')).toBe(true);
+  });
+});
+
+// Gate B15 (#8973 W4): an org that owns a business calendar merges cleanly.
+// The loser's calendar and all three children repoint to the survivor (the
+// revision/interval immutability triggers exempt an org_id-only restamp; the
+// owner guards are DEFERRABLE INITIALLY IMMEDIATE), so a loser ticket's
+// snapshotted revision stays valid. org_ticket_settings is keep-survivor.
+describe('org merge of an org that owns a business calendar (#8973 W4, Gate B15)', () => {
+  it('repoints the calendar, its revisions, intervals and holidays, and keeps the ticket snapshot', async () => {
+    const partner = await createPartner();
+    const loser = await createOrganization({ partnerId: partner!.id });
+    const survivor = await createOrganization({ partnerId: partner!.id });
+    const actor = await createUser({ partnerId: partner!.id, email: `bc-merge-${randomUUID().slice(0, 8)}@example.com` });
+
+    const seeded = await withSystemDbAccessContext(async () => {
+      const own = (orgId: string) => ({ orgId, partnerId: null });
+      const [cal] = await db.insert(businessCalendars).values({ ...own(loser!.id), name: 'Loser hours' }).returning();
+      const [rev] = await db.insert(businessCalendarRevisions).values({ calendarId: cal!.id, ...own(loser!.id), revision: 1, timezone: 'UTC' }).returning();
+      await db.insert(businessCalendarIntervals).values({ revisionId: rev!.id, ...own(loser!.id), weekday: 1, startMinute: 540, endMinute: 1020 });
+      await db.insert(businessCalendarHolidays).values({ calendarId: cal!.id, ...own(loser!.id), holidayDate: '2031-01-01', name: 'New Year' });
+      // Same name under the survivor: there is no org-axis name unique to collide on.
+      const [survCal] = await db.insert(businessCalendars).values({ ...own(survivor!.id), name: 'Loser hours' }).returning();
+      await db.insert(orgTicketSettings).values({ orgId: loser!.id, businessCalendarId: cal!.id });
+      await db.insert(orgTicketSettings).values({ orgId: survivor!.id, businessCalendarId: survCal!.id });
+      const [ticket] = await db.insert(tickets).values({
+        orgId: loser!.id, partnerId: partner!.id, ticketNumber: `BCM-${randomUUID().slice(0, 8)}`, subject: 'merge me',
+        source: 'api', slaCalendarRevisionId: rev!.id,
+      }).returning();
+      return { calId: cal!.id, revId: rev!.id, survCalId: survCal!.id, ticketId: ticket!.id };
+    });
+
+    const priorDrain = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    try {
+      await executeOrgMerge({
+        loserOrgId: loser!.id,
+        survivorOrgId: survivor!.id,
+        partnerId: partner!.id,
+        performedBy: actor.id,
+        performedByEmail: actor.email,
+      });
+    } finally {
+      if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+      else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+    }
+
+    const after = await withSystemDbAccessContext(async () => ({
+      cal: (await db.select().from(businessCalendars).where(eq(businessCalendars.id, seeded.calId)))[0],
+      revs: await db.select().from(businessCalendarRevisions).where(eq(businessCalendarRevisions.calendarId, seeded.calId)),
+      ivals: await db.select().from(businessCalendarIntervals).where(eq(businessCalendarIntervals.revisionId, seeded.revId)),
+      hols: await db.select().from(businessCalendarHolidays).where(eq(businessCalendarHolidays.calendarId, seeded.calId)),
+      ticket: (await db.select().from(tickets).where(eq(tickets.id, seeded.ticketId)))[0],
+      settings: await db.select().from(orgTicketSettings).where(eq(orgTicketSettings.orgId, survivor!.id)),
+    }));
+    expect(after.cal?.orgId).toBe(survivor!.id);
+    expect(after.revs.map((r) => [r.orgId, r.revision, r.timezone])).toEqual([[survivor!.id, 1, 'UTC']]);
+    expect(after.ivals.map((i) => i.orgId)).toEqual([survivor!.id]);
+    expect(after.hols.map((h) => h.orgId)).toEqual([survivor!.id]);
+    expect(after.ticket?.orgId).toBe(survivor!.id);
+    expect(after.ticket?.slaCalendarRevisionId).toBe(seeded.revId);
+    expect(after.settings.map((r) => r.businessCalendarId)).toEqual([seeded.survCalId]);
   });
 });

@@ -158,6 +158,16 @@ describe('coded 409s remove the optimistic user bubble', () => {
     expect(s.isStreaming).toBe(false);
   });
 
+  it.each(['credits_exhausted', 'plan_not_eligible'])('a coded 402 %s drops the bubble and keeps the code (#9450)', async (code) => {
+    route({ '/ai/sessions/A/messages': () => json({ error: 'Out of credits', code }, 402) });
+    await useAiStore.getState().sendMessage('hello');
+    const s = useAiStore.getState();
+    expect(s.messages.filter((m) => m.role === 'user')).toHaveLength(0);
+    expect(s.errorCode).toBe(code);
+    expect(s.error).toBe('Out of credits');
+    expect(s.isStreaming).toBe(false);
+  });
+
   it('turn_in_progress keeps the picker selection for the retry', async () => {
     useAiModelPickerStore.setState({ choices: CHOICES });
     useAiModelPickerStore.getState().select('haiku');

@@ -18,6 +18,7 @@ import { sweepToolAllowlist } from './sweepProfile';
 import { narrativeToolAllowlist } from './narrativeProfile';
 import { triageToolAllowlist } from './triageProfile';
 import { designToolAllowlist } from './designProfile';
+import { assessmentToolAllowlist } from './assessmentProfile';
 import { patchToolAllowlist } from './patchProfile';
 import type { FleetDesignOutcomeRefs } from '@breeze/shared';
 
@@ -244,6 +245,8 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // AI Suggested Fixes W2 — placeholder until Task 10 adds researchProfile.ts's
       // allowlist; Task 10 must replace this literal with the real floor.
       remediation_research: ['submit_suggestions'],
+      // Wisp W05b — read-only drill-down tier plus the five assessment outcome tools.
+      assessment: assessmentToolAllowlist(['manage_services', 'run_script']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {
@@ -687,5 +690,78 @@ describe('submit_suggestions tool (W2)', () => {
   });
   it('validateOutcomeToolInput returns the server-built outcome', () => {
     expect(validateOutcomeToolInput('submit_suggestions', { summary: 's', items: [] }, refs)).toMatchObject({ noSafeFix: true });
+  });
+});
+
+// Wisp W05b Task 6 — the assessment profile's five outcome tools.
+describe('assessment outcome tools (Wisp W05b)', () => {
+  const ASSESSMENT_TOOLS = ['record_concern', 'update_concern', 'nudge', 'propose_action', 'request_specialist'] as const;
+  const CONCERN_ID = '00000000-0000-4000-8000-0000000000c1';
+
+  it('registers the five names in OUTCOME_TOOL_NAMES and OUTCOME_MCP_TOOL_NAMES', () => {
+    for (const name of ASSESSMENT_TOOLS) {
+      expect(OUTCOME_TOOL_NAMES as readonly string[]).toContain(name);
+      expect((OUTCOME_MCP_TOOL_NAMES as Record<string, string>)[name]).toBe(`mcp__breeze__${name}`);
+      expect(isOutcomeTool(name)).toBe(true);
+    }
+  });
+
+  it('outcomeToolsForProfile("assessment") is exactly the five, in order', () => {
+    expect(outcomeToolsForProfile('assessment')).toEqual([...ASSESSMENT_TOOLS]);
+  });
+
+  it('no assessment outcome-tool name is a TOOL_TIERS key (createBreezeMcpServer collision guard)', () => {
+    // Chat's `raise_concern` (Task 11b) lives in TOOL_TIERS; the run-side
+    // tool is `record_concern` so the two sets stay disjoint.
+    for (const name of ASSESSMENT_TOOLS) {
+      expect(Object.prototype.hasOwnProperty.call(TOOL_TIERS, name), name).toBe(false);
+      expect(aiTools.has(name), name).toBe(false);
+    }
+    expect(outcomeToolsForProfile('assessment') as string[]).not.toContain('raise_concern');
+  });
+
+  it('the real createBreezeMcpServer accepts the five as extraTools', () => {
+    expect(() => createBreezeMcpServer(
+      () => ({}) as never, undefined, undefined, undefined, buildOutcomeSdkTools(outcomeToolsForProfile('assessment')),
+    )).not.toThrow();
+  });
+
+  it('validateOutcomeToolInput("record_concern") throws on a 2001-char summary and accepts a valid one', () => {
+    const base = { subject: { kind: 'ticket', id: CONCERN_ID }, severity: 'medium' };
+    expect(() => validateOutcomeToolInput('record_concern', { ...base, summary: 'x'.repeat(2001) })).toThrow();
+    expect(validateOutcomeToolInput('record_concern', { ...base, summary: 'Ticket waiting 3 days' }))
+      .toMatchObject({ summary: 'Ticket waiting 3 days', severity: 'medium' });
+  });
+
+  it('validateOutcomeToolInput("update_concern") requires an outcome when resolving', () => {
+    expect(() => validateOutcomeToolInput('update_concern', { concernId: CONCERN_ID, status: 'resolved' })).toThrow();
+    expect(validateOutcomeToolInput('update_concern', { concernId: CONCERN_ID, status: 'resolved', outcome: 'fixed' }))
+      .toMatchObject({ status: 'resolved', outcome: 'fixed' });
+  });
+
+  it('validates nudge / propose_action / request_specialist with the shared schemas', () => {
+    expect(validateOutcomeToolInput('nudge', { concernId: CONCERN_ID, nextStep: 'Call the customer' }))
+      .toMatchObject({ nextStep: 'Call the customer' });
+    expect(() => validateOutcomeToolInput('nudge', { concernId: 'not-a-uuid', nextStep: 'x' })).toThrow();
+    expect(validateOutcomeToolInput('propose_action', { toolName: 'manage_services', input: {}, reason: 'restart it' }))
+      .toMatchObject({ toolName: 'manage_services' });
+    expect(() => validateOutcomeToolInput('request_specialist', { kind: 'k', params: {}, reason: 'short' })).toThrow();
+  });
+
+  it('builds all five SDK tools; request_specialist refuses with not_available_until_w07', async () => {
+    const tools = buildOutcomeSdkTools(outcomeToolsForProfile('assessment'));
+    expect(tools.map((t) => t.name)).toEqual([...ASSESSMENT_TOOLS]);
+    const [specialist] = buildOutcomeSdkTools(['request_specialist']);
+    const result = await specialist!.handler({ kind: 'backup', params: {}, reason: 'needs a backup specialist' }, {});
+    expect(JSON.parse((result as { content: Array<{ text: string }> }).content[0]!.text))
+      .toEqual({ refused: 'not_available_until_w07' });
+  });
+
+  it('the recording tools validate and ack without executing anything', async () => {
+    const [record] = buildOutcomeSdkTools(['record_concern']);
+    const ok = await record!.handler({ subject: { kind: 'org', id: CONCERN_ID }, summary: 's', severity: 'low' }, {});
+    expect(JSON.stringify(ok)).toContain('recorded');
+    await expect(record!.handler({ subject: { kind: 'org', id: CONCERN_ID }, summary: '', severity: 'low' }, {}))
+      .rejects.toThrow();
   });
 });

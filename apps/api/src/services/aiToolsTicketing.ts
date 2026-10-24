@@ -79,6 +79,11 @@ import {
 } from './ticketChecklistTemplateService';
 import { PartnerWideWriteDeniedError, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { listWorkTypes } from './workTypeService';
+import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged, MergeRefusedError, TicketMergedError } from './ticketMerge/errors';
+import { mergeTickets } from './ticketMerge/execute';
+import { previewMerge } from './ticketMerge/preview';
+import { loadMergeTicketRows, type MergeEligibilityContext, type MergeTicketRow } from './ticketMerge/eligibility';
 import {
   addTicketLink,
   findTicketIdByNumber,
@@ -192,6 +197,14 @@ function serviceErrorToJson(err: unknown): string | null {
   // The details never name a third ticket (ticketLinkService.ts).
   if (err instanceof TicketLinkError) {
     return JSON.stringify({ error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) });
+  }
+  // Ticket merge (#8972): a refusal names the rule (and which ticket) that
+  // blocked it; a tombstone write names the survivor.
+  if (err instanceof MergeRefusedError) {
+    return JSON.stringify({ error: err.message, code: err.code, side: err.side });
+  }
+  if (err instanceof TicketMergedError) {
+    return JSON.stringify({ error: err.message, code: err.code, mergedIntoTicketId: err.mergedIntoTicketId });
   }
   return null;
 }
@@ -670,7 +683,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       name: 'manage_tickets',
       description:
         // Budget: 300 chars and every action named (aiTools.descriptionBudget.contract.test.ts).
-        "move_org needs approval. Actions: list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,move_org,link_device,draft,list_links,link_ticket,unlink_ticket.",
+        "Actions: list,get,create,comment,assign,update_status,list_work_types,log_time_entry,start_timer,stop_timer,update_time_entry,update_fields,link_alert,unlink_alert,create_from_alert,edit_comment,delete_comment,link_device,draft,list_links,link_ticket,unlink_ticket,move_org,merge_preview,merge",
       input_schema: {
         type: 'object' as const,
         properties: {
@@ -699,7 +712,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               'draft',
               'list_links',
               'link_ticket',
-              'unlink_ticket'
+              'unlink_ticket',
+              'merge_preview',
+              'merge'
             ],
             description: 'The action to perform'
           },
@@ -779,6 +794,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
           targetOrgId: {
             type: 'string',
             description: 'Target organization UUID for move_org'
+          },
+          intoTicketId: {
+            type: 'string',
+            description: 'Survivor ticket UUID for merge_preview/merge (ticketId is the source; same org)'
+          },
+          notifyRequester: {
+            type: 'boolean',
+            description: 'merge: email the source requester about the merge (omit for the default: on when requesters differ)'
           },
           fields: {
             type: 'object',
@@ -1326,6 +1349,47 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         }
       }
 
+      // ── merge_preview / merge (#8972) ────────────────────────────────────
+      if (action === 'merge_preview' || action === 'merge') {
+        if (!input.ticketId) return JSON.stringify({ error: `ticketId is required for ${action} action` });
+        if (!input.intoTicketId) return JSON.stringify({ error: `intoTicketId is required for ${action} action` });
+        const sourceId = String(input.ticketId);
+        const intoId = String(input.intoTicketId);
+        // Both tickets must be visible to the caller (org + site/device axis);
+        // otherwise the same "not found" a missing ticket gets.
+        const srcVisible = await findTicketWithAccess(sourceId, auth);
+        const dstVisible = srcVisible && (sourceId === intoId ? srcVisible : await findTicketWithAccess(intoId, auth));
+        if (!srcVisible || !dstVisible) return JSON.stringify({ error: 'Ticket not found' });
+        const mergeCtx: MergeEligibilityContext = {
+          // Same site/device rule findTicketWithAccess applies, re-checked under the merge locks.
+          canAccessTicket: async (t: Pick<MergeTicketRow, 'deviceId'>) =>
+            t.deviceId ? deviceInSiteScope(auth, t.deviceId) : true,
+        };
+        try {
+          if (action === 'merge_preview') {
+            const rows = await loadMergeTicketRows(db, [sourceId, intoId]);
+            const src = rows.get(sourceId);
+            const dst = rows.get(intoId);
+            if (!src || !dst) return JSON.stringify({ error: 'Ticket not found' });
+            return JSON.stringify(await previewMerge(db, src, dst, mergeCtx));
+          }
+          const result = await mergeTickets(
+            {
+              sourceTicketId: sourceId,
+              intoTicketId: intoId,
+              notifyRequester: typeof input.notifyRequester === 'boolean' ? input.notifyRequester : undefined,
+            },
+            actor,
+            mergeCtx,
+          );
+          return JSON.stringify({ survivorId: result.survivorId, counts: result.counts, droppedLinks: result.droppedLinks });
+        } catch (err) {
+          const json = serviceErrorToJson(err);
+          if (json) return json;
+          throw err;
+        }
+      }
+
       // ── link_device (P2-4, #4191) ────────────────────────────────────────
       if (action === 'link_device') {
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for link_device action' });
@@ -1371,6 +1435,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (await deviceIdSiteDenied(auth, deviceId)) {
           return JSON.stringify({ linked: false, reason: 'device_out_of_scope' });
         }
+        // #8972: the ticket row lock first, so the tombstone guard runs under
+        // it (a tombstone has device_id NULL, so the CAS below would not refuse it).
+        assertTicketNotMerged(await lockTicketForWrite(db, String(input.ticketId)));
         // The `device_id IS NULL` guard in the WHERE (not just the read above)
         // is the actual CAS — closes the race between two concurrent
         // link_device calls both passing the "not yet linked" read.
@@ -1428,6 +1495,9 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               ))
               .limit(1)
               .for('update');
+            // #8972 W1: the ticket row after the draft (#3778 order: drafts
+            // are pre-ticket children), so no draft lands on a merged tombstone.
+            assertTicketNotMerged(await lockTicketForWrite(tx, ticketId));
 
             const newDraftId = crypto.randomUUID();
 
@@ -1660,6 +1730,22 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       throw new Error(`Unknown action: ${action}`);
     }
   });
+
+  // #8972: any manage_tickets write that reaches a merged tombstone (comment,
+  // assign, status, draft, time, …) answers the model with the survivor to
+  // retry on, instead of failing the tool call.
+  {
+    const tool = aiTools.get('manage_tickets')!;
+    const inner = tool.handler;
+    tool.handler = async (input, auth, context) => {
+      try {
+        return await inner(input, auth, context);
+      } catch (err) {
+        if (err instanceof TicketMergedError) return serviceErrorToJson(err)!;
+        throw err;
+      }
+    };
+  }
 
   // #6930 — the MCP/AI surface for routes/tickets/checklist.ts and the
   // read side of routes/ticketChecklistTemplates.ts. Same services, same

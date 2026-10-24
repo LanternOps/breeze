@@ -42,8 +42,8 @@ const INTENTS: readonly SsoReauthIntent[] = ['totp', 'passkey', 'recovery_codes'
 
 export const SSO_REAUTH_INTENT_KEY = 'breeze.ssoReauth.intent';
 
-function isIntent(value: string | null): value is SsoReauthIntent {
-  return value !== null && (INTENTS as readonly string[]).includes(value);
+export function isSsoReauthIntent(value: unknown): value is SsoReauthIntent {
+  return typeof value === 'string' && (INTENTS as readonly string[]).includes(value);
 }
 
 /** Record the originating card immediately before navigating to the IdP. */
@@ -73,7 +73,7 @@ export function takeSsoReauthIntent(): SsoReauthIntent | null {
   try {
     const stored = window.sessionStorage.getItem(SSO_REAUTH_INTENT_KEY);
     if (stored !== null) window.sessionStorage.removeItem(SSO_REAUTH_INTENT_KEY);
-    return isIntent(stored) ? stored : null;
+    return isSsoReauthIntent(stored) ? stored : null;
   } catch {
     return null;
   }

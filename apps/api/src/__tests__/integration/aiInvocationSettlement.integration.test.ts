@@ -7,7 +7,7 @@ import './setup';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 // Settlement waits up to 30 s for the org lock, twice. The contention cases
 // below need it to give up fast; nothing else about the bound is under test.
@@ -22,6 +22,15 @@ vi.mock('../../db/lockTimeout', async (importOriginal) => {
 
 import { db, withSystemDbAccessContext } from '../../db';
 import { settleAndDebitAiReservations } from '../../jobs/aiBudgetReservationSweep';
+import { aiAgentRuns, aiAgents } from '../../db/schema';
+import { settleComputeCents } from '../../services/aiCostTracker';
+import {
+  listFailedPlatformCreditDebits,
+  listUndeliveredCreditDebits,
+  redriveFailedCreditDebit,
+  replayDeadPendingSettlement,
+  requeueFailedCreditDebits,
+} from '../../services/aiCreditDebits';
 import {
   AiBudgetPendingSettlementError,
   clearCreditDebitFailure,
@@ -943,4 +952,334 @@ describe.skipIf(!RUN)('an unbound BYOK refusal-fallback key at its own offering 
     expect(row.rate_snapshot).toEqual(binding.rateSnapshot);
     expect(Number(row.cost_cents)).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
   });
+});
+
+// ---------------------------------------------------------------------------
+// #9451 + #7717: compute and unreserved token debits are keyed and durable, and
+// an operator can re-drive anything that failed terminally — always under the
+// ORIGINAL key and amount, so the billing service's dedupe makes a re-drive
+// unable to double-charge.
+// ---------------------------------------------------------------------------
+
+async function seedAgentRun(s: SeededRegistryPartner, reservedCents = 25): Promise<string> {
+  return sys(async () => {
+    // One agent per (org, kind): reuse it for a second run in the same org.
+    const [agent] = (await db.select({ id: aiAgents.id }).from(aiAgents)
+      .where(and(eq(aiAgents.orgId, s.orgId), eq(aiAgents.kind, 'triage'))).limit(1))
+      .concat(await db.insert(aiAgents).values({
+        orgId: s.orgId, partnerId: null, kind: 'triage', name: 'Compute debit fixture', createdBy: s.userId,
+      }).onConflictDoNothing().returning({ id: aiAgents.id }));
+    const [run] = await db.insert(aiAgentRuns).values({
+      agentId: agent!.id, orgId: s.orgId, triggerKind: 'manual', dedupeKey: `compute-${randomUUID()}`,
+      modeAtStart: 'shadow', policySnapshot: { schemaVersion: 1 } as never, computeReservedCents: reservedCents,
+    }).returning({ id: aiAgentRuns.id });
+    return run!.id as string;
+  });
+}
+
+function computeCallsFor(runId: string): DeductCall[] {
+  return deductCalls.filter((c) => c.key?.startsWith(`ai-compute:${runId}:`));
+}
+
+async function creditDebitRow(key: string) {
+  const [row] = await q<{
+    id: string; source: string; source_id: string; cost_cents: string; debited_at: string | null;
+    failed_at: string | null; error: string | null; attempts: number;
+  }>(sql`SELECT id, source, source_id, cost_cents, debited_at, failed_at, error, attempts
+         FROM ai_credit_debits WHERE idempotency_key = ${key}`);
+  return row;
+}
+
+async function backdateCreditDebit(key: string): Promise<void> {
+  await fixtureSql`UPDATE ai_credit_debits SET created_at = now() - interval '10 minutes' WHERE idempotency_key = ${key}`;
+}
+
+async function computeRollup(orgId: string): Promise<number> {
+  const [row] = await q<{ c: string | null }>(sql`
+    SELECT compute_cents AS c FROM ai_cost_usage WHERE org_id = ${orgId}::uuid AND period = 'daily'`);
+  return Number(row?.c ?? 0);
+}
+
+const billingStatus = (code: number, error?: string) => async () =>
+  new Response(JSON.stringify(error ? { error } : { success: false }), { status: code });
+
+describe.skipIf(!RUN)('compute and unreserved token debits are keyed and durable (#9451, #7717 item 2)', () => {
+  let s: SeededRegistryPartner;
+  let binding: TurnBinding;
+
+  beforeEach(async () => {
+    installBillingStub();
+    s = await seedRegistryPartner('platform');
+    binding = await bindingFor(s);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+  });
+
+  it('compute debits once under ai-compute:<runId>:<attempt>; a second settle of the same attempt changes nothing', async () => {
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    const calls = computeCallsFor(runId);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.key).toMatch(new RegExp(`^ai-compute:${runId}:\\d+$`));
+    expect(calls[0]).toEqual({ key: calls[0]!.key, headerKey: calls[0]!.key, costCents: 13 });
+    const row = await creditDebitRow(calls[0]!.key!);
+    expect(row).toMatchObject({ source: 'compute', source_id: runId, attempts: 0, failed_at: null });
+    expect(row!.debited_at).not.toBeNull();
+
+    // The reservation-release path (transitionRunStatus) settling the same
+    // attempt again, at the reservation, must neither re-bill nor re-roll-up.
+    await settleComputeCents(s.orgId, runId, 25, 'platform');
+    expect(computeCallsFor(runId)).toHaveLength(1);
+    const [run] = await q<{ compute_cents: number; compute_reserved_cents: number | null }>(sql`
+      SELECT compute_cents, compute_reserved_cents FROM ai_agent_runs WHERE id = ${runId}::uuid`);
+    expect(run).toEqual({ compute_cents: 13, compute_reserved_cents: null });
+    expect(await computeRollup(s.orgId)).toBe(13);
+  });
+
+  it('partner_key compute is charged on the run and rollup once, and never debited', async () => {
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'partner_key');
+    await settleComputeCents(s.orgId, runId, 13, 'partner_key');
+    expect(deductCalls).toHaveLength(0);
+    expect(await q(sql`SELECT 1 FROM ai_credit_debits WHERE source_id = ${runId}::uuid`)).toHaveLength(0);
+    expect(await computeRollup(s.orgId)).toBe(13);
+  });
+
+  it('a lost compute response is retried by the sweep under the SAME key and amount, then never again', async () => {
+    deductResponses.push(async () => { throw new TypeError('fetch failed'); });
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    const key = computeCallsFor(runId)[0]!.key!;
+    expect(await creditDebitRow(key)).toMatchObject({ debited_at: null, failed_at: null, attempts: 1, error: 'transport' });
+
+    // Inside the grace the settling call may still be in flight: the sweep leaves it.
+    expect((await listUndeliveredCreditDebits()).map((r) => r.idempotencyKey)).not.toContain(key);
+    await backdateCreditDebit(key);
+    await settleAndDebitAiReservations();
+    const calls = computeCallsFor(runId);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(calls[0]);
+    expect((await creditDebitRow(key))!.debited_at).not.toBeNull();
+
+    await settleAndDebitAiReservations();
+    expect(computeCallsFor(runId)).toHaveLength(2);
+  });
+
+  it('inside a caller\'s open SYSTEM transaction that already updated the run (the reaper inside admission): no self-deadlock; the intent commits with the caller and the sweep sends it', async () => {
+    const runId = await seedAgentRun(s);
+    await sys(async () => {
+      // What transitionRunStatus does first, uncommitted, in admission's transaction.
+      await db.execute(sql`UPDATE ai_agent_runs SET status = 'failed' WHERE id = ${runId}::uuid`);
+      await Promise.race([
+        settleComputeCents(s.orgId, runId, 25, 'platform'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('settleComputeCents blocked on the caller\'s own row lock')), 10_000)),
+      ]);
+    });
+    // Not sent inline (it was not committed yet); owed durably.
+    expect(computeCallsFor(runId)).toHaveLength(0);
+    const [row] = await q<{ key: string; debited_at: string | null }>(sql`
+      SELECT idempotency_key AS key, debited_at FROM ai_credit_debits WHERE source_id = ${runId}::uuid`);
+    expect(row).toMatchObject({ debited_at: null });
+    await backdateCreditDebit(row!.key);
+    await settleAndDebitAiReservations();
+    expect(computeCallsFor(runId)).toEqual([{ key: row!.key, headerKey: row!.key, costCents: 25 }]);
+  }, 30_000);
+
+  it('a deployment with no billing service records no debit intent (nothing to owe, nothing to replay later) and cannot re-drive', async () => {
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    const out = await settleInvocation(settleInput(s, binding, undefined));
+    expect(await q(sql`SELECT 1 FROM ai_credit_debits WHERE org_id = ${s.orgId}::uuid`)).toHaveLength(0);
+    expect(out.invocationIds).toHaveLength(1);
+    expect(await computeRollup(s.orgId)).toBe(13);   // still charged on the run + rollup
+    await expect(redriveFailedCreditDebit({ source: 'compute', id: randomUUID() })).rejects.toThrow(/billing service/);
+    await expect(requeueFailedCreditDebits({ orgId: s.orgId, limit: 10 })).rejects.toThrow(/billing service/);
+  });
+
+  it('a reclaimed run is a new attempt: it debits under a NEW key', async () => {
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    // What the enqueue_failed reclaim does: re-stamp queued_at, reopen settlement.
+    await fixtureSql`UPDATE ai_agent_runs SET queued_at = now() + interval '1 second', compute_settled_at = NULL,
+                     compute_reserved_cents = 25 WHERE id = ${runId}`;
+    await settleComputeCents(s.orgId, runId, 7, 'platform');
+    const calls = computeCallsFor(runId);
+    expect(calls.map((c) => c.costCents)).toEqual([13, 7]);
+    expect(new Set(calls.map((c) => c.key)).size).toBe(2);
+  });
+
+  it('an unreserved platform token settlement writes its debit intent with the ledger rows; the sweep retries a 5xx under the same key', async () => {
+    deductResponses.push(billingStatus(503, 'deduct_unconfirmed'));
+    const out = await settleInvocation(settleInput(s, binding, undefined));
+    expect(out.invocationIds).toHaveLength(1);
+    const key = `ai-invocation:${out.invocationIds[0]}`;
+    const row = await creditDebitRow(key);
+    expect(row).toMatchObject({ source: 'invocation', source_id: out.invocationIds[0], attempts: 1, error: 'http_503:deduct_unconfirmed', failed_at: null });
+    expect(Number(row!.cost_cents)).toBeCloseTo(out.costCents, 6);
+
+    await backdateCreditDebit(key);
+    await settleAndDebitAiReservations();
+    const calls = deductCalls.filter((c) => c.key === key);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(calls[0]);
+    expect(calls[0]!.costCents).toBe(Number(row!.cost_cents));
+    expect((await creditDebitRow(key))!.debited_at).not.toBeNull();
+  });
+});
+
+describe.skipIf(!RUN)('operator re-drive of terminally failed debits (#7717 item 1)', () => {
+  let s: SeededRegistryPartner;
+  let binding: TurnBinding;
+
+  beforeEach(async () => {
+    installBillingStub();
+    s = await seedRegistryPartner('platform');
+    binding = await bindingFor(s);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+  });
+
+  it('a billing-key rotation (401/403): every source is listed as auth, bulk re-queued, and re-sent under its ORIGINAL key and amount', async () => {
+    deductResponses.push(billingStatus(401, 'unauthorized'), billingStatus(401, 'unauthorized'), billingStatus(403));
+    const reservationId = await reserve(s, binding);
+    await settleInvocation(settleInput(s, binding, reservationId));
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    const unreserved = await settleInvocation(settleInput(s, binding, undefined));
+    const firstCalls = [...deductCalls];
+    expect(firstCalls).toHaveLength(3);
+
+    const failed = await listFailedPlatformCreditDebits({ orgId: s.orgId, failureClass: 'auth' });
+    expect(failed.map((f) => f.source).sort()).toEqual(['compute', 'invocation', 'settlement']);
+    expect(failed.map((f) => f.idempotencyKey).sort()).toEqual(firstCalls.map((c) => c.key).sort());
+    expect(failed.find((f) => f.source === 'settlement')).toMatchObject({ id: reservationId, error: 'http_401:unauthorized', failureClass: 'auth' });
+    expect(failed.find((f) => f.source === 'invocation')!.idempotencyKey).toBe(`ai-invocation:${unreserved.invocationIds[0]}`);
+
+    // Terminal: the sweep does not touch them on its own.
+    await backdateDebit(reservationId);
+    await settleAndDebitAiReservations();
+    expect(deductCalls).toHaveLength(3);
+
+    const requeued = await requeueFailedCreditDebits({ orgId: s.orgId, failureClass: 'auth', limit: 100 });
+    expect(requeued.map((r) => r.source).sort()).toEqual(['compute', 'invocation', 'settlement']);
+    // As if the operator fixed the key a while after the rotation: past the grace.
+    await fixtureSql`UPDATE ai_credit_debits SET created_at = now() - interval '10 minutes' WHERE org_id = ${s.orgId}`;
+    await settleAndDebitAiReservations();
+    const byKey = (a: DeductCall, b: DeductCall) => a.key!.localeCompare(b.key!);
+    // Same key, same amount for every row: the billing service's dedupe makes it one charge.
+    expect(deductCalls.slice(3).sort(byKey)).toEqual([...firstCalls].sort(byKey));
+    expect(await listFailedPlatformCreditDebits({ orgId: s.orgId })).toEqual([]);
+    expect((await reservationState(reservationId)).credits_debited_at).not.toBeNull();
+
+    // Nothing is left to re-drive, and a further sweep sends nothing.
+    expect(await requeueFailedCreditDebits({ orgId: s.orgId, failureClass: 'auth', limit: 100 })).toEqual([]);
+    await settleAndDebitAiReservations();
+    expect(deductCalls).toHaveLength(6);
+  });
+
+  it('the failure-class and time-window filters only re-queue what they match', async () => {
+    deductResponses.push(billingStatus(409, 'idempotency_key_reused'), billingStatus(401));
+    const runA = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runA, 13, 'platform');
+    const runB = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runB, 9, 'platform');
+    expect((await listFailedPlatformCreditDebits({ orgId: s.orgId })).map((f) => f.failureClass).sort()).toEqual(['auth', 'rejected']);
+    expect((await listFailedPlatformCreditDebits({ orgId: s.orgId, failureClass: 'rejected' })).map((f) => f.idempotencyKey))
+      .toEqual([computeCallsFor(runA)[0]!.key]);
+
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    expect(await requeueFailedCreditDebits({ orgId: s.orgId, failureClass: 'auth', failedBefore: hourAgo, limit: 100 })).toEqual([]);
+    expect(await requeueFailedCreditDebits({ orgId: s.orgId, failureClass: 'auth', failedAfter: hourAgo, limit: 100 })).toHaveLength(1);
+    expect((await listFailedPlatformCreditDebits({ orgId: s.orgId })).map((f) => f.failureClass)).toEqual(['rejected']);
+  });
+
+  it('a single re-drive sends immediately under the original key; refused again it is re-stamped failed; a row that is not failed is not_found', async () => {
+    deductResponses.push(billingStatus(401), billingStatus(401));
+    const runId = await seedAgentRun(s);
+    await settleComputeCents(s.orgId, runId, 13, 'platform');
+    const [row] = await listFailedPlatformCreditDebits({ orgId: s.orgId });
+    expect(row).toBeDefined();
+
+    expect(await redriveFailedCreditDebit({ source: 'compute', id: row!.id })).toEqual({ kind: 'attempted', outcome: 'rejected' });
+    expect(await listFailedPlatformCreditDebits({ orgId: s.orgId })).toHaveLength(1);
+
+    expect(await redriveFailedCreditDebit({ source: 'compute', id: row!.id })).toEqual({ kind: 'attempted', outcome: 'debited' });
+    const calls = computeCallsFor(runId);
+    expect(calls).toHaveLength(3);
+    expect(new Set(calls.map((c) => JSON.stringify(c))).size).toBe(1);
+    expect(await redriveFailedCreditDebit({ source: 'compute', id: row!.id })).toEqual({ kind: 'not_found' });
+    expect(await redriveFailedCreditDebit({ source: 'settlement', id: randomUUID() })).toEqual({ kind: 'not_found' });
+  });
+});
+
+describe.skipIf(!RUN)('dead pending settlement replay (#7717 item 3)', () => {
+  let s: SeededRegistryPartner;
+
+  beforeEach(async () => {
+    installBillingStub();
+    s = await seedRegistryPartner('platform');
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.BILLING_SERVICE_URL;
+    delete process.env.BILLING_SERVICE_API_KEY;
+  });
+
+  /** A real turn deferred by lock contention (priced ledger rows persisted), then given up on. */
+  async function deadPending(binding: TurnBinding, over: Partial<SettleInvocationInput> = {}): Promise<string> {
+    const id = await reserve(s, binding);
+    const blocker = await holdOrganizationLock(s.orgId);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await settleInvocation(settleInput(s, binding, id, over))).deferred).toBe(true);
+    } finally {
+      await blocker.release();
+      error.mockRestore();
+    }
+    await fixtureSql`UPDATE ai_budget_reservations SET pending_settlement_attempts = ${MAX_PENDING_SETTLEMENT_REPLAY_ATTEMPTS},
+                     pending_settlement_error = 'boom', pending_settlement_dead_at = now() WHERE id = ${id}`;
+    return id;
+  }
+
+  it('replays a dead settlement once and debits it under its own reservation key', async () => {
+    const binding = await bindingFor(s);
+    const id = await deadPending(binding);
+    expect((await listDeadPendingSettlements(500)).map((r) => r.reservationId)).toContain(id);
+    expect(deductCalls).toHaveLength(0);
+
+    expect(await replayDeadPendingSettlement(id)).toMatchObject({ kind: 'replayed', settlement: 'settled', debit: 'debited' });
+    const amount = Number((await reservationState(id)).actual_cost_cents);
+    expect(amount).toBeCloseTo(priceInvocation(binding.rateSnapshot, T, {}), 6);
+    expect(callsFor(id)).toEqual([{ key: `ai-settlement:${id}`, headerKey: `ai-settlement:${id}`, costCents: amount }]);
+    expect(await q(sql`SELECT 1 FROM ai_invocations WHERE session_id = ${s.chatSessionId}::uuid`)).toHaveLength(1);
+    expect(await reservationState(id)).toMatchObject({ status: 'settled', pending_settlement: null });
+    expect((await listDeadPendingSettlements(500)).map((r) => r.reservationId)).not.toContain(id);
+
+    expect(await replayDeadPendingSettlement(id)).toEqual({ kind: 'not_found' });
+    expect(callsFor(id)).toHaveLength(1);
+  }, 30_000);
+
+  it('refuses an SDK-usage settlement whose usage a later turn of the same session already billed', async () => {
+    const binding = await bindingFor(s);
+    const snapshot: SdkUsageSnapshot = { version: 1, models: { [binding.wireModel]: { tokens: T, webSearchRequests: 0 } } };
+    const id = await deadPending(binding, {
+      sdkUsage: { sessionId: s.chatSessionId, nextSnapshot: snapshot, usageConfirmed: true, usageNote: 'first_result' },
+    });
+    // A later turn settles in the same session: its delta was taken against the
+    // stored snapshot, which never saw the dead turn, so it billed that usage.
+    const later = await reserve(s, binding);
+    await settleInvocation(settleInput(s, binding, later));
+
+    expect(await replayDeadPendingSettlement(id)).toEqual({ kind: 'superseded' });
+    expect(callsFor(id)).toHaveLength(0);
+    expect((await listDeadPendingSettlements(500)).map((r) => r.reservationId)).toContain(id);
+  }, 30_000);
 });

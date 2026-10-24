@@ -135,6 +135,7 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   BREEZE_YARAC_PATH: 'filesystem path (YARA pre-check binary; image default /usr/local/bin/breeze-yarac)',
   BREEZE_YARA_BUILTIN_PACK_DISABLED: 'operator kill switch: disable the built-in YARA rule set at boot and load no pack (#6263 W03b)',
   BREEZE_YARA_LINT_ONLY: 'dev/test-only escape hatch: publish YARA rules without the pre-check (ignored unless NODE_ENV is development/test)',
+  BREEZE_YARA_TEST_UNSANDBOXED: 'dev/test-only escape hatch: run the YARA rule test upload without the Landlock sandbox (ignored unless NODE_ENV is development/test)',
   // CALLER_*
   CALLER_VERIFICATION_ENABLED: 'feature flag',
   CALLER_VERIFICATION_WORKSTATION_ENABLED: 'feature flag (workstation tier, dark by default)',
@@ -317,6 +318,13 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   MCP_SSE_RATE_LIMIT_PER_MINUTE: 'rate limit knob',
   MCP_STATELESS_ENABLED: 'MCP rollout flag',
   MCP_UNATTENDED_TIER3_PRINCIPALS: 'MCP tool policy',
+  MCP_TIER3_INTENTS_ENABLED: 'MCP rollout flag',
+  MCP_INTENT_MAX_LIVE_PER_PRINCIPAL: 'rate limit knob',
+  MCP_INTENT_CREATES_PER_HOUR: 'rate limit knob',
+  MCP_INTENT_CREATES_PER_USER_PER_HOUR: 'rate limit knob',
+  MCP_APPROVAL_WAIT_MS: 'timing knob',
+  MCP_APPROVAL_WAITS_PER_PRINCIPAL: 'rate limit knob',
+  MCP_APPS_ENABLED: 'MCP rollout flag',
   MCP_TOOLS_LIST_PAGE_SIZE: 'paging knob',
   MCP_UNKNOWN_SESSION_ALERT_THRESHOLD: 'alert threshold',
   // METRICS_*
@@ -475,7 +483,6 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   // SCRIPT_*
   SCRIPT_VERIFY_RECONCILE_MIN_AGE_MINUTES: 'timing knob',
   // SECURITY_*
-  SECURITY_POSTURE_ON_DEMAND_DEDUPE_WINDOW_MS: 'timing knob',
   SECURITY_POSTURE_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCAN_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
   SECURITY_SCAN_ORG_CONCURRENCY_CAP: 'worker throughput knob',

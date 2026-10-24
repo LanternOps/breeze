@@ -10,8 +10,8 @@ import (
 
 const sharedInstallTimeoutsPath = "../../../../packages/shared/src/constants/softwareInstallTimeouts.ts"
 
-// TestInstallTimeoutsMatchSharedConstants pins the agent's download and
-// installer ceilings to their TypeScript mirrors (#3578). The web deployment
+// TestInstallTimeoutsMatchSharedConstants pins the agent's download, installer
+// and install-script ceilings to their TypeScript mirrors (#3578). The web deployment
 // view uses those mirrors to decide when an in-flight install has gone quiet
 // for longer than the agent would ever take, so a one-sided edit would make it
 // warn too early or never.
@@ -29,6 +29,9 @@ func TestInstallTimeoutsMatchSharedConstants(t *testing.T) {
 	}{
 		{"SOFTWARE_INSTALL_DOWNLOAD_TIMEOUT_MS", int(downloadTimeout / time.Millisecond)},
 		{"SOFTWARE_INSTALL_INSTALLER_TIMEOUT_MS", int(installTimeout / time.Millisecond)},
+		// #6958: each pre/post-install script's ceiling. The server's 75-min
+		// reaper (SOFTWARE_INSTALL_SERVER_TIMEOUT_MS) is budgeted on it.
+		{"SOFTWARE_INSTALL_SCRIPT_TIMEOUT_MS", int(installScriptTimeout / time.Millisecond)},
 	} {
 		// Anchored on the declaration so doc-comment prose cannot retarget it.
 		re := regexp.MustCompile(`export\s+const\s+` + tc.name + `\s*=\s*([0-9_*\s]+?);`)

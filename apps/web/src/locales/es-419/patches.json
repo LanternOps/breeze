@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Confirmar la aprobación del parche",
-      "selectedOrganization": "la organización seleccionada",
-      "messageOne": "¿Aprobar el parche en el dispositivo {{count}} en {{org}}?",
-      "messageMany": "¿Aprobar el parche en dispositivos {{count}} en {{org}}?"
+      "selectedRing": "(sin nombre)",
+      "messageRingOne": "¿Aprobar el parche en {{count}} dispositivo de todas las organizaciones en el anillo {{ring}}?",
+      "messageRingMany": "¿Aprobar el parche en {{count}} dispositivos de todas las organizaciones en el anillo {{ring}}?",
+      "messagePartnerWide": "¿Aprobar el parche para todas las organizaciones de su partner?"
     },
     "checkingAccess": "Verificando tu acceso..."
   },
@@ -95,6 +96,7 @@
       "statusFilterLabel": "Filtrar por estado de cumplimiento",
       "pendingPatches": "Parches pendientes ({{count}})",
       "critical": "Crítico ({{count}})",
+      "failed": "Instalaciones fallidas ({{count}})",
       "pendingReboot": "Reinicio pendiente ({{count}})",
       "thirdPartyPending": "Pendiente de terceros ({{count}})",
       "compliant": "Cumple ({{count}})"
@@ -159,6 +161,11 @@
       "messageOne": "{{action}} en el dispositivo {{count}} en {{org}}?",
       "messageMany": "{{action}} en dispositivos {{count}} en {{org}}?",
       "messageMultiOrg": "¿{{action}} en dispositivos {{count}} en organizaciones {{orgCount}} ({{orgNames}})?"
+    },
+    "pager": {
+      "range": "{{from}}–{{to}} de {{total}}",
+      "previous": "Página anterior",
+      "next": "Página siguiente"
     }
   },
   "patchInstallHistory": {
@@ -334,6 +341,11 @@
       "showing": "Mostrando {{shown}} de {{total}}",
       "loadMore": "Cargar más",
       "lastChecked": "Última comprobación: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Versión del paquete {{version}}",
+      "id": "ID de catálogo {{id}}",
+      "title": "Otra entrada del catálogo tiene el mismo título. Cada una se aprueba por separado."
     }
   },
   "patchesPage": {
@@ -613,5 +625,24 @@
     "orEnterAPackageIDManually": "O ingrese un paquete ID manualmente",
     "removeRuleFor": "Eliminar regla para {{application}}",
     "scopeNote": "Estas reglas se aplican a todos los dispositivos cuya directiva de configuración vincula este anillo."
+  },
+  "patchDetails": {
+    "unknown": "Desconocido",
+    "source": "Origen",
+    "packageId": "KB / ID de paquete",
+    "severity": "Gravedad",
+    "releaseDate": "Fecha de lanzamiento",
+    "firstSeen": "Visto por primera vez en el catálogo",
+    "rings": {
+      "title": "Anillos de actualización",
+      "note": "Cuándo aprueba automáticamente cada anillo este parche (regla a nivel de anillo; no se muestran las excepciones por categoría).",
+      "none": "No hay anillos de actualización configurados.",
+      "manual": "Sin aprobación automática — requiere aprobación manual",
+      "immediate": "Se aprueba automáticamente de inmediato",
+      "needsDate": "Retenido — sin fecha de lanzamiento para iniciar la ventana de {{count}} días",
+      "autoApproves": "Se aprueba automáticamente el {{date}}",
+      "hold_one": "Retraso de {{count}} día",
+      "hold_other": "Retraso de {{count}} días"
+    }
   }
 }

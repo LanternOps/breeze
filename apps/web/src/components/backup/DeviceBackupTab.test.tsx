@@ -122,6 +122,21 @@ describe('DeviceBackupTab', () => {
     });
   });
 
+  it('adds an Integrity column with a badge per restore point (#9626)', async () => {
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/backup/snapshots?deviceId=device-1') {
+        const payload = await (await base(input, init)).json();
+        return makeJsonResponse({ data: payload.data.map((row: object) => ({ ...row, integrityStatus: 'attested' })) });
+      }
+      return base(input, init);
+    });
+    render(<DeviceBackupTab deviceId="device-1" />);
+    await screen.findByText('Restore Points');
+    const table = (await screen.findByRole('columnheader', { name: 'Integrity' })).closest('table')!;
+    expect(within(table).getByTestId('snapshot-integrity-badge').textContent).toBe('Verified');
+  });
+
   it('shows restore-point protection controls for the selected snapshot', async () => {
     render(<DeviceBackupTab deviceId="device-1" />);
 

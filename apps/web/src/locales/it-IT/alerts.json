@@ -66,8 +66,8 @@
     "alertAcknowledged": "Avviso confermato",
     "failedToResolveAlert": "Impossibile risolvere l'avviso",
     "alertResolved": "Avviso risolto",
-    "alertsBreadcrumb": "Breadcrumb avvisi",
-    "alertFallback": "Avviso di fallback",
+    "alertsBreadcrumb": "Avvisi",
+    "alertFallback": "Avviso",
     "unknownMetric": "Metrica sconosciuta",
     "severity": {
       "critical": "Critica",
@@ -112,6 +112,7 @@
     "close": "Chiudi",
     "createALinkedTicketPreFilledFrom": "Crea un ticket collegato precompilato da questo avviso",
     "createTicket": "Crea ticket",
+    "viewTicket": "Visualizza ticket {{ticket}}",
     "silenceThisAlertStopsNotificationsWithoutResolving": "Metti in silenzio questo avviso - interrompe le notifiche senza risolverlo",
     "suppress": "Sopprimi",
     "dismissPermanentlyHidesThisAlertForGood": "Ignora definitivamente - nasconde questo avviso in modo permanente (la scadenza della garanzia non genererà un nuovo avviso per la stessa data di fine; altre condizioni possono comunque aprire un nuovo avviso se si ripresentano)",
@@ -124,7 +125,7 @@
     "unknownMetric": "Metrica sconosciuta",
     "statusChange": "{{from}} → {{to}}",
     "resolveAlert": "Risolvi avviso",
-    "ticketCreationFailedRetry": "Creazione ticket non riuscita. Riprova",
+    "ticketCreationFailedRetry": "Impossibile creare il ticket. Riprova",
     "ticketCreated": "Ticket {{ticket}} creato",
     "severity": {
       "critical": "Critica",
@@ -457,8 +458,6 @@
     "loadingAlerts": "Caricamento avvisi...",
     "tryAgain": "Riprova",
     "alerts": "Avvisi",
-    "monitorAlertsAcrossYourDevicesRulesAre": "Monitora gli avvisi su tutti i dispositivi. Le regole sono gestite in",
-    "configurationPolicies": "Criteri di configurazione",
     "alert": "avviso",
     "dismissedAlertsAreHiddenForGoodWarranty": "Gli avvisi ignorati vengono nascosti definitivamente. La scadenza della garanzia non genererà un nuovo avviso per la stessa data di fine; altri avvisi possono comunque attivarsi di nuovo se la relativa condizione si ripresenta.",
     "cancel": "Annulla",
@@ -504,7 +503,8 @@
     },
     "bulkConfirmQuestion": "{{action}} {{count}} avviso?",
     "bulkConfirmQuestion_one": "{{action}} {{count}} avviso?",
-    "bulkConfirmQuestion_other": "{{action}} {{count}} avvisi?"
+    "bulkConfirmQuestion_other": "{{action}} {{count}} avvisi?",
+    "subtitle": "Monitora gli avvisi su tutti i dispositivi. Le soglie si definiscono in <monitors>Monitor</monitors>; distribuiscile ai clienti con <policies>Criteri di configurazione</policies>."
   },
   "alertsSummary": {
     "activeAlerts": "Avvisi attivi",
@@ -544,7 +544,8 @@
     "sections": {
       "channels": "Canali",
       "routing": "Instradamento",
-      "escalation": "Criteri di escalation"
+      "escalation": "Criteri di escalation",
+      "inheritedChannels": "Condivisi dal tuo partner"
     },
     "routing": {
       "everythingElse": "Tutto il resto",

@@ -75,7 +75,7 @@
     "fleet": "Orchestration de la flotte",
     "forgotPassword": "Mot de passe oublié",
     "incidentsDetail": "Détail de l'incident",
-    "incidents": "Incidents",
+    "incidents": "Incidents de sécurité",
     "dashboard": "Tableau de bord",
     "integrations": "Intégrations",
     "integrationsPsa": "Intégrations PSA",
@@ -141,6 +141,7 @@
     "settingsBilling": "Paramètres de facturation",
     "settingsCatalog": "Catalogue de produits",
     "settingsConnectedApps": "Applications connectées",
+    "settingsDeliverableTemplates": "Modèles de livrables",
     "settingsCustomFields": "Champs personnalisés",
     "settingsEnrollmentKeys": "Clés d'inscription",
     "settingsFilters": "Filtres enregistrés",
@@ -177,8 +178,11 @@
     "securityScans": "Balayages IOC",
     "devicesTime": "Synchronisation de l’heure",
     "adminAiModels": "Modèles d'IA",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Messages aux terminaux"
+    "billingAutopay": "Paiements automatiques",
+    "endpointMessages": "Messages aux terminaux",
+    "securityDetectionRules": "Règles de détection",
+    "settingsPlan": "Forfait et fonctionnalités",
+    "settingsWispMemory": "Mémoire de Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -261,6 +265,14 @@
       },
       "alertTemplates": {
         "title": "Modèles d’alertes"
+      },
+      "plan": {
+        "title": "Forfait et fonctionnalités",
+        "description": "Votre forfait, les fonctionnalités qu’il comprend et la provenance de chacune."
+      },
+      "wispMemory": {
+        "title": "Mémoire de Wisp",
+        "description": "Examiner, confirmer et retirer ce que Wisp retient."
       }
     },
     "groups": {

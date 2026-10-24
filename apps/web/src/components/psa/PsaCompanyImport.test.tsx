@@ -61,6 +61,16 @@ describe('PsaCompanyImport provider capability gate', () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 
+  it('is a real dialog: named by its heading, closed by Escape', () => {
+    const onClose = vi.fn();
+    render(<PsaCompanyImport connection={CONNECTION} onClose={onClose} />);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAccessibleName(/import/i);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('renders the modal for a capable provider', () => {
     render(<PsaCompanyImport connection={CONNECTION} onClose={vi.fn()} />);
     expect(screen.getByTestId('psa-company-import-modal')).toBeInTheDocument();

@@ -85,8 +85,7 @@ export default function KnownGuestsSettings() {
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <h2 className="text-lg font-semibold">{t('knownGuestsSettings.title')}</h2>
-      <p className="text-sm text-muted-foreground mt-1">
+      <p className="max-w-prose text-sm text-muted-foreground">
         {t('knownGuestsSettings.description')}
       </p>
 
@@ -97,6 +96,7 @@ export default function KnownGuestsSettings() {
       <form onSubmit={handleAdd} className="mt-4 flex flex-wrap gap-3">
         <input
           type="text"
+          aria-label={t('knownGuestsSettings.columns.macAddress')}
           placeholder={t('knownGuestsSettings.placeholders.mac')}
           value={mac}
           onChange={e => setMac(e.target.value)}
@@ -104,6 +104,7 @@ export default function KnownGuestsSettings() {
         />
         <input
           type="text"
+          aria-label={t('knownGuestsSettings.columns.label')}
           placeholder={t('knownGuestsSettings.placeholders.label')}
           value={label}
           onChange={e => setLabel(e.target.value)}
@@ -111,6 +112,7 @@ export default function KnownGuestsSettings() {
         />
         <input
           type="text"
+          aria-label={t('knownGuestsSettings.columns.notes')}
           placeholder={t('knownGuestsSettings.placeholders.notes')}
           value={notes}
           onChange={e => setNotes(e.target.value)}

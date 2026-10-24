@@ -134,6 +134,10 @@ export type EventType =
   // Same id-only posture (`changed` is a list of field NAMES, never values).
   | 'ticket.updated'
   | 'ticket.assigned'
+  // Ticket merge (#8972, spec §3.7): published on the SURVIVOR; ids and
+  // numbers only ({ sourceTicketId, targetTicketId, sourceInternalNumber,
+  // targetInternalNumber }).
+  | 'ticket.merged'
   // Ticket migration windows (#8313). The ONLY event an import produces: one
   // per org in the window, published after the window closes, with the
   // deterministic eventId `${windowId}:${orgId}` so a retry never duplicates.
@@ -150,6 +154,12 @@ export type EventType =
   // only. Payload: codes and ids, never provider text (eventPayload.ts).
   | 'integration.health_opened'
   | 'integration.health_resolved'
+  // Wisp W02 (w00 A29/A33): published from routes/wisp.ts after the grant
+  // create / user-resume commit. Payload { grantId, partnerId, orgId, grantorUserId }
+  // (ids only). The bus is org-keyed, so a partner-wide grant (orgId null)
+  // routes on its partner id. W05's wake subscriber consumes both.
+  | 'wisp.grant.created'
+  | 'wisp.grant.resumed'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -218,6 +228,18 @@ export type EventType =
   | 'ai.agent.circuit.opened'
   // #4388 — an org crossed an AI budget rung; org-level, no device/site.
   | 'ai.budget.threshold_crossed'
+  // Wisp W05 (#9911). Published OUTSIDE any DB context, after the writing
+  // transaction committed. `ai.intent.decided`: an action intent reached a
+  // decision (approved | rejected | expired | cancelled), payload
+  // { intentId, orgId, toolName, decision, requestingAgentRunId, grantId }.
+  // `ai.operator.task.finished`: an operator task reached completed | partial
+  // | handed_off | failed, payload { taskId, orgId, state, outcome, grantId }.
+  // `ticket.stale`: a ticket crossed the staleness threshold with no update,
+  // payload { ticketId, orgId, staleHours, updatedAt }; published with a
+  // deterministic eventId so a re-scan collapses to one logical event.
+  | 'ai.intent.decided'
+  | 'ai.operator.task.finished'
+  | 'ticket.stale'
   // Wave 2 (#3823). Addressed to ONE user, never broadcast — see
   // publishUserEvent, which deliberately does not use the ordinary publish
   // path. Two segments so it stays subscribable under EVENT_TYPE_RE.
@@ -660,12 +682,16 @@ export const EVENT_TYPES = {
   TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
   TICKET_UPDATED: 'ticket.updated' as const,
   TICKET_ASSIGNED: 'ticket.assigned' as const,
+  TICKET_MERGED: 'ticket.merged' as const,
   // Ticket migration windows (#8313) — ids and counts only.
   MIGRATION_WINDOW_CLOSED: 'migration.window_closed' as const,
   // Metric-anomaly incidents (#3828 wave-6-4 task 2)
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   INTEGRATION_HEALTH_OPENED: 'integration.health_opened' as const,
   INTEGRATION_HEALTH_RESOLVED: 'integration.health_resolved' as const,
+  // Wisp W02
+  WISP_GRANT_CREATED: 'wisp.grant.created' as const,
+  WISP_GRANT_RESUMED: 'wisp.grant.resumed' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,
@@ -727,6 +753,10 @@ export const EVENT_TYPES = {
   AI_AGENT_CIRCUIT_OPENED: 'ai.agent.circuit.opened' as const,
   // #4388
   AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' as const,
+  // Wisp W05 (#9911)
+  AI_INTENT_DECIDED: 'ai.intent.decided' as const,
+  AI_OPERATOR_TASK_FINISHED: 'ai.operator.task.finished' as const,
+  TICKET_STALE: 'ticket.stale' as const,
   // Wave 2 (#3823). Addressed to one user via publishUserEvent — never
   // broadcast, never written to the stream or the global channel.
   NOTIFICATION_CREATED: 'notification.created' as const,

@@ -41,12 +41,18 @@ describe('SlaChip', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  // #8973: the chip reads the STORED due/warn the API sends; fixtures carry
+  // the values the write points compute (due = created + target, warn = 80%).
+  const at = (minutesFromNow: number) => new Date(NOW.getTime() + minutesFromNow * 60_000).toISOString();
+
   it('renders the time remaining for an ok SLA', () => {
     // 30 minutes elapsed of a 120-minute SLA (25% = well within ok)
     const ticket = makeTicket({
       id: 'tk-3',
       resolutionSlaMinutes: 120,
-      createdAt: new Date(NOW.getTime() - 30 * 60_000).toISOString(),
+      createdAt: at(-30),
+      resolutionDueAt: at(90),
+      resolutionWarnAt: at(66),
     });
     render(<SlaChip ticket={ticket} />);
     expect(screen.getByTestId('ticket-sla-tk-3')).toBeInTheDocument();
@@ -57,7 +63,9 @@ describe('SlaChip', () => {
     const ticket = makeTicket({
       id: 'tk-4',
       resolutionSlaMinutes: 100,
-      createdAt: new Date(NOW.getTime() - 90 * 60_000).toISOString(),
+      createdAt: at(-90),
+      resolutionDueAt: at(10),
+      resolutionWarnAt: at(-10),
     });
     render(<SlaChip ticket={ticket} />);
     const chip = screen.getByTestId('ticket-sla-tk-4');
@@ -69,7 +77,9 @@ describe('SlaChip', () => {
     const ticket = makeTicket({
       id: 'tk-6',
       resolutionSlaMinutes: 120,
-      createdAt: new Date(NOW.getTime() - 30 * 60_000).toISOString(),
+      createdAt: at(-30),
+      resolutionDueAt: at(90),
+      resolutionWarnAt: at(66),
       slaPausedAt: NOW.toISOString(),
       slaPausedMinutes: 0,
     });

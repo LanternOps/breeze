@@ -51,6 +51,7 @@ Before going live, verify every item:
 - [ ] Roles that should require MFA have **Force MFA** turned on. Users in a force-MFA role get a `428 Precondition Required` response until they enrol an allowed MFA method; the dashboard then redirects them through a forced-enrollment page before any other workflow becomes available. **This enforcement defaults OFF** (`MFA_FORCE_FOR_PARTNER_ADMIN=false`) as of this release — set it to `true` to actually enforce Force MFA roles; see `.env.example`. From v0.113.0 a user who has never enrolled a factor gets a nonrenewable 14-day enrolment window (banner and email notices) before the wall applies — see [Users & Roles](/reference/users-and-roles/).
 - [ ] Registration disabled in production (`ENABLE_REGISTRATION=false`) after initial setup
 - [ ] Rate limiting active on login endpoints
+- [ ] `PUBLIC_SECURITY_CONTACT` and `PUBLIC_ABUSE_CONTACT` set on the `web` container (optionally `PUBLIC_SECURITY_POLICY_URL`, `https` only). They publish an RFC 9116 `/.well-known/security.txt` and a "Security" / "Report abuse" footer on the sign-in pages, so researchers and victims can reach you. Unset, the file answers 404 and no footer is shown. The web container reads these at request time, unlike other `PUBLIC_*` variables, so no image rebuild is needed; use mailboxes that someone reads.
 - [ ] Session lifetime is a fixed 7 days (`SESSION_EXPIRY_DAYS` in `services/session.ts`) — there is no env var to configure it
 - [ ] Session revocation is fail-closed — revoked sessions stay revoked even if Redis is unavailable
 - [ ] Refresh tokens use family-based reuse detection — replaying a previously rotated refresh token immediately revokes every other token in that family, log out included.
@@ -139,6 +140,8 @@ Breeze implements Redis-backed sliding window rate limiting:
 | Agent (per device) | 120 requests | 60 seconds |
 | Agent (per organization) | `max(600, devices × 12)`, capped at 20,000 | 60 seconds |
 | Enrollment (per source IP) | 10 attempts (`AGENT_ENROLL_RATE_LIMIT`) | 60 seconds (`AGENT_ENROLL_RATE_WINDOW_SECONDS`) |
+
+The per-user limit is checked right after authentication, before the request transaction opens and before permission and validation checks, so a limited request never holds a database connection. A request those later checks reject still counts against the budget.
 
 The per-organization agent limit caps total fleet traffic for any single tenant. It scales with the org's enrolled device count between a floor (`AGENT_ORG_RATE_LIMIT_PER_MIN`, default 600) and a hard platform ceiling (`AGENT_ORG_RATE_LIMIT_MAX`, default 20,000), with the per-device allowance set by `AGENT_ORG_RATE_LIMIT_PER_DEVICE` (default 12). A flat ceiling was previously applied to every tenant regardless of fleet size, which silently dropped patch inventory for larger orgs.
 

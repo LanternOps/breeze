@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
+import { entitlementsCache } from '../lib/entitlementsCache';
 import {
   apiAcceptInvite,
   apiConfirmPhone,
@@ -2304,6 +2305,24 @@ describe('fetchAndApplyPreferences locale wiring', () => {
 });
 
 describe('apiRegisterPartner recovery action', () => {
+  it.each([
+    [{ catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual' }, true],
+    [{ catalogVersion: 'launch-2026-10', capacity: 150, billingPeriod: 'annual' }, false],
+    [{ catalogVersion: 'launch-2026-10', capacity: 250, billingPeriod: 'annual', redirect: '//evil.test' }, false],
+  ])('validates purchase preference from sign-in recovery responses', async (purchaseSelection, accepted) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ verified: false, status: 'sign_in', purchaseSelection })));
+    const result = await apiVerifyEmail('token');
+    expect(result.status).toBe('sign_in');
+    if (accepted) expect(result.purchaseSelection).toEqual(purchaseSelection);
+    else expect(result).not.toHaveProperty('purchaseSelection');
+  });
+  it('sends optional approved purchase intent to the registration API', async () => {
+    const doFetch = vi.fn().mockResolvedValue(makeResponse({ success: true, message: 'Check email' }));
+    vi.stubGlobal('fetch', doFetch);
+    const purchaseSelection = { catalogVersion: 'launch-2026-10' as const, capacity: 250, billingPeriod: 'annual' as const };
+    await apiRegisterPartner('Acme', 'jane@acme.test', 'pw', 'Jane', purchaseSelection);
+    expect(JSON.parse(doFetch.mock.calls[0]![1].body)).toEqual({ companyName: 'Acme', email: 'jane@acme.test', password: 'pw', name: 'Jane', acceptTerms: true, purchaseSelection });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -2701,5 +2720,32 @@ describe('fetchWithAuth — a rejected body password never looks like session de
     expect(replace).toHaveBeenCalledWith(
       `/login?next=${encodeURIComponent('/settings/profile')}&reason=session-expired`,
     );
+  });
+});
+
+// #8862: the profile page mirrors its SSO re-auth grant into sessionStorage so
+// a remount can restore it. Signing out must not leave it for the next session
+// on the same tab (the server would reject it, but the page would arm the
+// passkey card with a proof it cannot use).
+describe('logout() and the stashed SSO re-auth grant (#8862)', () => {
+  it('clears the stashed grant', async () => {
+    const { SSO_REAUTH_GRANT_KEY, stashSsoReauthGrant } = await import('@/lib/ssoReauthGrant');
+    sessionStorage.clear();
+    stashSsoReauthGrant('3f2504e0-4f89-41d3-9a0c-0305e82c3301', 'passkey', 'user-1');
+    expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).not.toBeNull();
+
+    useAuthStore.getState().logout();
+
+    expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+  });
+});
+
+describe('logout resets the entitlements cache (#9907)', () => {
+  it('clears a cached snapshot and invalidates in-flight requests', () => {
+    entitlementsCache.value = { plan: 'pro', entitlements: [] };
+    const generation = entitlementsCache.generation;
+    useAuthStore.getState().logout();
+    expect(entitlementsCache.value).toBeNull();
+    expect(entitlementsCache.generation).toBe(generation + 1);
   });
 });

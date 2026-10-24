@@ -33,6 +33,9 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@expo/*"
         update-types: ["version-update:semver-major"]
+      # react-native is pinned by the Expo SDK (bundledNativeModules); bump
+      # with the SDK migration, not via dependabot.
+      - dependency-name: "react-native"
     groups:
       # Expo SDK packages must move together: a solo expo major bump
       # (55→56 on 2026-06-09) left expo-* native modules behind on SDK 55.
@@ -58,6 +61,7 @@ updates:
         exclude-patterns:
           - "react-native-reanimated"
           - "react-native-worklets"
+          - "react-native"
       # Group minor and patch updates together
       typescript-tooling:
         patterns:

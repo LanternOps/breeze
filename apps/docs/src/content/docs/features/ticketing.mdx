@@ -53,7 +53,7 @@ The workbench shows everything you need to resolve a ticket without leaving the 
 - **Subject and description** -- click the subject to rename the ticket in place; the description has an **Edit** (or **Add description**) control. Changes save instantly and are recorded in the ticket's activity.
 - **Category, due date, and tags** -- set the category from a dropdown (including **No category**), pick or clear a due date, and add or remove tags directly on the ticket. Every change is logged in the activity feed.
 - **Requester** -- select or change who the ticket is for, so a ticket that came in under the wrong contact (or with none) can be corrected without recreating it.
-- **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, a **linked device** that links straight to the device's page, and any **linked alerts** with one-click navigation to the alert itself.
+- **Properties rail** -- requester, source, created date, due date, the reason a ticket is waiting, the resolution note, a **linked device** that links straight to the device's page (use **Link device** to attach one to an existing ticket, or **Change device** to swap it, v0.124.0+), and any **linked alerts** with one-click navigation to the alert itself.
 
 Click the expand icon (or press `Enter`) to open the ticket as a full page when you need more room.
 
@@ -91,7 +91,7 @@ For a newly created ticket, the assignment notification is sent on the next noti
 
 If a ticket landed under the wrong customer, use **Move to another org…** in the ticket header to reassign it to a different organization. Pick the target from the dropdown and click **Move**. The ticket — along with its time entries, parts, and linked alerts — follows to the new organization, and the move is recorded in the activity feed and the audit log.
 
-Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee, category, and SLA carry over unchanged.
+Because the attached device belongs to the original organization, moving the ticket **detaches its device** (the ticket becomes device-less; you can link a device from the new org afterward). The assignee and category carry over unchanged. The ticket's business calendar is re-resolved for the target organization, and its response and resolution deadlines that haven't been met yet are recalculated on that calendar (see [Business hours](#business-hours)).
 
 If the two organizations bill in different currencies and the ticket still has **unbilled** time entries or parts with amounts, the move is blocked: the dialog explains how many entries and parts are priced in the old currency and in which currency the target organization bills. The clean path is to invoice that work first (or assemble a draft in the old currency from the ticket), then move. If you need to move regardless, tick the acknowledgement and click **Move anyway** -- those items keep their amounts in the old currency, they are never converted, and they can only be invoiced later on a draft in that currency. "Move anyway" additionally requires invoice edit permission, and the acknowledgement is recorded in the activity feed and the audit log.
 
@@ -142,6 +142,19 @@ Technicians can add attachments from the ticket workbench and from the mobile ap
 Each reply and internal note you wrote has **Edit** and **Delete** controls in its header. Editing opens the text inline with **Save** and **Cancel**; an edited entry is marked **edited** in the feed. Deleting asks you to confirm and leaves a small "deleted" placeholder in its place rather than removing the entry outright, so the conversation history stays intact.
 
 You can edit or delete your **own** comments; technicians with ticket management permission can edit or delete anyone's. System entries — status changes, assignments, and time logs — can't be edited or deleted, and comments that came in from the customer portal aren't editable from the workbench. Editing or deleting a reply does **not** re-notify the customer.
+
+## Checklists
+
+A ticket can carry a **Checklist** of steps to tick off as the work is done. Steps are internal -- never shown to the customer -- and each can carry a note. Resolving a ticket with unticked steps asks you to confirm first. In the queue, a ticket with a checklist shows its progress as **n/m steps** (v0.124.0+).
+
+### Checklist templates
+
+Reusable procedures live under **Settings → Ticketing → Templates**, in **Checklist templates**. A template is available to all organizations or to one, and has a name, a description, internal instructions and its steps; an inactive template stays linked where it is already used but stops appearing in pickers. On a ticket, **Apply template** either adds the template's steps to the existing checklist or replaces the unticked steps while keeping the completed ones.
+
+Two shortcuts arrived in v0.124.0:
+
+- **Save as template** turns the checklist on a ticket into a template. Give it a name and choose whether to make it available to all organizations. Steps created by an AI Operator task and repeated steps are left out, and the confirmation says how many.
+- **Duplicate** copies an existing template so you can adapt it without editing the original.
 
 ## Canned Responses
 
@@ -376,6 +389,19 @@ Categories also carry SLA targets (response and resolution times) and can name a
 <Aside>
   The automated SLA engine is live. Breeze tracks each ticket against its category's response and resolution targets, pauses the clock while a ticket is **On Hold**, monitors for breaches, and notifies the assignee (and escalates to the configured contacts) as a target approaches or is missed.
 </Aside>
+
+## Business hours
+
+SLA deadlines can be counted on business hours instead of the clock. Go to **Settings → Ticketing → Priorities & SLAs** and open the **Business hours** card to manage calendars. A calendar has a time zone, a weekly schedule (each weekday can have several open intervals, such as a split shift), and a list of holidays.
+
+Which calendar a ticket uses is resolved when the ticket is created: the organization's own override if it has one, otherwise the partner's default calendar, otherwise round-the-clock (24×7). A partner-wide calendar is marked **All orgs**; the default is marked **Default**. The calendar and its current hours are then **snapshotted on the ticket**, so later edits don't silently shift deadlines on tickets that already exist.
+
+- **Choosing a calendar for one organization.** In the organization's **Ticketing** settings, the **Business hours** field is blank by default and shows what it inherits (for example "Inherited: Support hours (partner default)"). Pick a calendar to override it for that organization.
+- **Editing hours or the time zone affects new tickets only.** Open tickets keep the hours they were created with.
+- **Holidays.** Adding or removing a holiday dated in the future recomputes the deadlines of open tickets. Holidays dated today or earlier don't change open tickets.
+- **Apply to open tickets.** To move tickets that are already open onto a calendar's current hours, use **Apply to open tickets**. Breeze first shows a preview: how many tickets would be updated, how many of those would become breached immediately, and how many are skipped because they have been paused. Tickets that have ever been paused are never changed. If the hours change between the preview and your confirmation, the apply is rejected and the preview is reloaded so you can review the new counts.
+- **Archiving and deleting.** An archived calendar can't be chosen for new work. A calendar that tickets or organizations still use, or that is the default, can't be deleted.
+- **Customer portal.** The portal shows SLA status only; it doesn't show your calendars or hours.
 
 ## Custom Statuses & SLA Configuration
 

@@ -28,8 +28,25 @@ export type FlowCatalogEntry =
   | { source: 'tenant'; name: string; descriptor: TenantToolDescriptor; validate: ValidateFunction }
   | { source: 'builtin'; name: FlowBuiltinName };
 
-/** The flow authoring tools — a flow never drafts or reads flows. */
-export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>(FLOW_TOOL_NAMES);
+/**
+ * Core tools that are agent-reachable but never flow-eligible:
+ *  - the flow authoring tools — a flow never drafts or reads flows;
+ *  - Wisp W03's `remember` / `recall` — agent-reachable (a grant-bearing
+ *    assessment run needs `recall`), but a flow step never carries a Wisp
+ *    grant (`AuthContext.wispGrant`), so in a flow they would always answer
+ *    `wisp_grant_required`. A flows-only exclusion: the never-agent deny set
+ *    in aiGuardrails.ts is deliberately untouched. `confirm_memory` /
+ *    `retract_memory` are human-only, so already unreachable;
+ *  - Wisp W05a's concern chat tools (`list_concerns`, `raise_concern`,
+ *    `snooze_concern`, `resolve_concern`, `create_watch`) — the same rule:
+ *    each refuses without `auth.wispGrant`. Named here before W05a lands so
+ *    the exclusion holds whichever PR merges first.
+ */
+export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>([
+  ...FLOW_TOOL_NAMES,
+  'remember', 'recall',
+  'list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern', 'create_watch',
+]);
 
 /**
  * Core input fields that name an owned asset other than a device, keyed by

@@ -1203,6 +1203,8 @@ export async function getLatestSecurityPostureForDevice(deviceId: string): Promi
 
 type TrendScoreRow = {
   capturedAt: Date;
+  /** Weight for the daily average (#9643): the snapshot's device count. */
+  devicesAudited: number;
   overallScore: number;
   patchComplianceScore: number;
   encryptionScore: number;
@@ -1257,6 +1259,7 @@ async function listSiteScopedTrendRuns(
   return db
     .select({
       capturedAt: securityPostureSnapshots.capturedAt,
+      devicesAudited: sql<number>`count(*)::int`,
       overallScore: avgScore(securityPostureSnapshots.overallScore),
       patchComplianceScore: avgScore(securityPostureSnapshots.patchComplianceScore),
       encryptionScore: avgScore(securityPostureSnapshots.encryptionScore),
@@ -1298,6 +1301,7 @@ export async function getSecurityPostureTrend(params: {
   const rows = await db
     .select({
       capturedAt: securityPostureOrgSnapshots.capturedAt,
+      devicesAudited: securityPostureOrgSnapshots.devicesAudited,
       overallScore: securityPostureOrgSnapshots.overallScore,
       patchComplianceScore: securityPostureOrgSnapshots.patchComplianceScore,
       encryptionScore: securityPostureOrgSnapshots.encryptionScore,
@@ -1318,6 +1322,12 @@ export async function getSecurityPostureTrend(params: {
 export function computeTrendPoint(
   timestamp: string,
   entries: Array<{
+    /**
+     * Device count behind the snapshot. Entries are weighted by it so the
+     * book-wide trend equals the device-weighted overview score (#9643).
+     * Omitted/zero-total falls back to an equal average.
+     */
+    devicesAudited?: number;
     overallScore: number;
     patchComplianceScore: number;
     encryptionScore: number;
@@ -1345,9 +1355,13 @@ export function computeTrendPoint(
     };
   }
 
+  const weightOf = (entry: (typeof entries)[number]) => Math.max(0, Number(entry.devicesAudited ?? 1));
+  const totalWeight = entries.reduce((sum, entry) => sum + weightOf(entry), 0);
   const avg = (
-    key: keyof (typeof entries)[number]
-  ) => clampScore(entries.reduce((sum, entry) => sum + Number(entry[key] ?? 0), 0) / entries.length);
+    key: Exclude<keyof (typeof entries)[number], 'devicesAudited'>
+  ) => totalWeight > 0
+    ? clampScore(entries.reduce((sum, entry) => sum + Number(entry[key] ?? 0) * weightOf(entry), 0) / totalWeight)
+    : clampScore(entries.reduce((sum, entry) => sum + Number(entry[key] ?? 0), 0) / entries.length);
 
   const overall = avg('overallScore');
   const antivirus = avg('avHealthScore');

@@ -239,6 +239,7 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
       { name: 'BREEZE_AI_SCRIPT_AUTHORING_ENABLED', secret: false },
       { name: 'AI_OPERATOR_TASKS_ENABLED', secret: false },
       { name: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', secret: false },
+      { name: 'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', secret: false },
     ],
     status: {
       kind: 'flags',
@@ -263,6 +264,19 @@ export const CONNECTION_REGISTRY: readonly ConnectionEntry[] = [
     status: {
       kind: 'flags',
       flags: ['BREEZE_AI_WORKSPACE_ENABLED'],
+      requiredWhenOn: [],
+    },
+  }),
+  defineEntry({
+    id: 'wisp',
+    group: 'ai',
+    label: 'Wisp (hosted)',
+    vars: [
+      { name: 'BREEZE_WISP_ENABLED', secret: false },
+    ],
+    status: {
+      kind: 'flags',
+      flags: ['BREEZE_WISP_ENABLED'],
       requiredWhenOn: [],
     },
   }),

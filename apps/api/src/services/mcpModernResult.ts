@@ -11,7 +11,9 @@
  */
 import { API_VERSION } from '../version';
 import { envInt } from '../utils/envInt';
-import { MCP_SERVER_INSTRUCTIONS } from './mcpGuidance';
+import { mcpAppsServerExtensions } from './mcpAppsConfig';
+import { buildMcpServerInstructions } from './mcpGuidance';
+import { mcpTier3IntentsEnabled } from './mcpIntentConfig';
 import type { McpRejectReason } from './mcpModernEnvelope';
 import { supportedMcpProtocolVersions } from './mcpProtocol';
 import { captureMessage } from './sentry';
@@ -48,9 +50,13 @@ export function decorateModernResult(method: string, result: Record<string, unkn
   const existingMeta = typeof result._meta === 'object' && result._meta !== null && !Array.isArray(result._meta)
     ? (result._meta as Record<string, unknown>)
     : {};
+  // B-W04 (#6158, D-B32): a tools/call result may itself be an MRTR
+  // `input_required` (URL-mode approval elicitation); keep it. tools/call is
+  // not cacheable, so no ttlMs/cacheScope is ever added to it.
+  const keepInputRequired = method === 'tools/call' && result.resultType === 'input_required';
   const decorated: Record<string, unknown> = {
     ...result,
-    resultType: 'complete',
+    resultType: keepInputRequired ? 'input_required' : 'complete',
     _meta: { ...existingMeta, [SERVER_INFO_META_KEY]: serverInfo() },
   };
   if (isCacheableMethod(method)) {
@@ -61,11 +67,14 @@ export function decorateModernResult(method: string, result: Record<string, unkn
 }
 
 export function buildDiscoverResult(): Record<string, unknown> {
+  // B-W05 (#6159, D-B40): the MCP Apps extension, only while MCP_APPS_ENABLED.
+  const extensions = mcpAppsServerExtensions();
   return {
     resultType: 'complete',
     supportedVersions: [...supportedMcpProtocolVersions(true)],
-    capabilities: { tools: {}, resources: {}, prompts: {} },
-    instructions: MCP_SERVER_INSTRUCTIONS,
+    capabilities: { tools: {}, resources: {}, prompts: {}, ...(extensions ? { extensions } : {}) },
+    // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
+    instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
     _meta: { [SERVER_INFO_META_KEY]: serverInfo() },
     ttlMs: MCP_CACHE_TTL_MS['server/discover'],
     cacheScope: 'private',

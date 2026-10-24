@@ -53,6 +53,14 @@ export interface CaptureScope {
   orgId: string;
   /** `ai_sessions.id` — what the artifact row's `session_id` FK points at. */
   sessionId: string;
+  /**
+   * Wisp W04 (w00 A24): the `wisp_threads.id` this session is attached to.
+   * READ SIDE ONLY — `executeTool` copies it onto the `read_artifact` anchor so
+   * thread attachments (stored with `session_id` NULL) are readable from every
+   * session on the thread. `captureContextFrom` ignores it: a capture still
+   * anchors on the session. Omit the key entirely when there is no thread.
+   */
+  wispThreadId?: string | null;
 }
 
 export interface CaptureContext {

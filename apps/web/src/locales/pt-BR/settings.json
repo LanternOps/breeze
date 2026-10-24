@@ -254,41 +254,7 @@
       "twelveHour": "12 horas",
       "twentyFourHour": "24 horas",
       "language": "Idioma",
-      "languageDescription": "Idioma padrão das configurações do parceiro.",
-      "businessHours": {
-        "title": "Horário comercial",
-        "description": "Defina seu horário padrão de operação para suporte e alertas.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Sempre disponível"
-          },
-          "business": {
-            "label": "Horário comercial",
-            "description": "Seg-Sex, das 9h às 17h"
-          },
-          "extended": {
-            "label": "Horário estendido",
-            "description": "Seg-Sex, das 7h às 19h; Sáb, das 9h às 13h"
-          },
-          "custom": {
-            "label": "Personalizado",
-            "description": "Defina seu próprio horário"
-          }
-        },
-        "customSchedule": "Horário personalizado",
-        "open": "Aberto",
-        "to": "até"
-      },
-      "days": {
-        "mon": "Segunda-feira",
-        "tue": "Terça-feira",
-        "wed": "Quarta-feira",
-        "thu": "Quinta-feira",
-        "fri": "Sexta-feira",
-        "sat": "Sábado",
-        "sun": "Domingo"
-      }
+      "languageDescription": "Idioma padrão das configurações do parceiro."
     }
   },
   "partnerAiBudgets": {
@@ -700,7 +666,13 @@
         "quality": "Qualidade"
       },
       "failovers": "Acionamentos de backup",
-      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível"
+      "failoversHelp": "Chamadas atendidas por um modelo de backup porque o configurado falhou ou estava indisponível",
+      "titleBy": {
+        "model": "Uso de IA por modelo",
+        "organization": "Uso de IA por organização",
+        "technician": "Uso de IA por técnico",
+        "feature": "Uso de IA por recurso"
+      }
     },
     "link": {
       "summary": "Modelo: {{model}} — definido em Provedores e modelos de IA → Padrões por recurso",
@@ -777,13 +749,10 @@
     "maintenancePlaceholder": "ex.: Dom 02:00-06:00, 02:00-04:00 ou 24/7",
     "maintenanceInvalid": "Use uma janela UTC como <first>Dom 02:00-04:00</first> ou <second>02:00-04:00</second>, ou <always>24/7</always> para sempre ativa. Deixe em branco para as organizações configurarem.",
     "maintenanceHelp": "Janela de tempo (UTC) para atualizações e reinicializações automáticas. Use <always>24/7</always> para sempre ativa ou deixe em branco para cada organização configurar.",
-    "deviceGroup": "Grupo de dispositivos padrão",
-    "alertThreshold": "Limite de alerta padrão",
     "autoEnrollment": {
       "title": "Registro automático",
       "enable": "Ativar registro automático para novos dispositivos",
-      "requireApproval": "Exigir aprovação do administrador",
-      "sendWelcome": "Enviar notificação de boas-vindas"
+      "requireApproval": "Exigir aprovação do administrador"
     },
     "enrollment": {
       "title": "Registro de dispositivos",
@@ -1030,8 +999,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Empresa",
+      "devices": "Dispositivos e agentes",
       "security": "Segurança e acesso",
       "communications": "Comunicações",
+      "ai": "IA",
       "branding": "Identidade visual"
     },
     "aiFeatures": {
@@ -1060,11 +1031,11 @@
       },
       "company": {
         "label": "Empresa",
-        "description": "Nome, endereço, contatos"
+        "description": "Nome, endereço, contatos, assinatura de e-mail"
       },
       "regional": {
         "label": "Regional",
-        "description": "Fuso horário, formatos, horários"
+        "description": "Fuso horário, idioma, formatos, horários"
       },
       "defaults": {
         "label": "Padrões",
@@ -1072,7 +1043,7 @@
       },
       "security": {
         "label": "Segurança",
-        "description": "Lista de IPs e acesso"
+        "description": "Senhas, sessões, MFA e lista de IPs"
       },
       "remoteAccess": {
         "label": "Acesso remoto",
@@ -1080,11 +1051,11 @@
       },
       "eventLogs": {
         "label": "Logs de eventos",
-        "description": "Encaminhamento e retenção"
+        "description": "Encaminhar logs de eventos de dispositivos para o Elasticsearch"
       },
       "notifications": {
         "label": "Notificações",
-        "description": "Alertas por e-mail e webhook"
+        "description": "Endereço do remetente, SMTP e padrões de Slack e Pushover"
       },
       "ticketing": {
         "label": "Chamados",
@@ -1109,7 +1080,7 @@
       },
       "aiFeatures": {
         "label": "Recursos de IA",
-        "description": "Padrões de detecção de anomalias e correções sugeridas"
+        "description": "Política de dados de IA, detecção de anomalias e correções sugeridas"
       },
       "branding": {
         "label": "Identidade visual",
@@ -1126,6 +1097,14 @@
       "aiApprovals": {
         "label": "Tempo limite de aprovação de IA",
         "description": "Quanto tempo o chat de IA aguarda a aprovação de uma ação restrita"
+      },
+      "callerVerification": {
+        "label": "Verificação de chamador",
+        "description": "Verificação de identidade de quem liga nas solicitações de suporte"
+      },
+      "knownGuests": {
+        "label": "Convidados conhecidos",
+        "description": "Dispositivos aprovados de visitantes e técnicos por endereço MAC"
       }
     },
     "saved": "Configurações do parceiro salvas",
@@ -1388,6 +1367,14 @@
     "never": "Nunca",
     "downloadInstaller": "Baixar instalador pré-configurado",
     "downloading": "Baixando...",
+    "installerDialogTitle": "Baixar instalador para \"{{name}}\"",
+    "installerDialogDescription": "O instalador é gerado para um número fixo de dispositivos. Cada dispositivo que o executa usa um.",
+    "installerDeviceCount": "Número de dispositivos",
+    "installerDeviceCountRemaining": "Esta chave ainda tem {{count}} inscrições disponíveis.",
+    "installerDeviceCountRemaining_one": "Esta chave ainda tem {{count}} inscrição disponível.",
+    "installerDeviceCountRemaining_other": "Esta chave ainda tem {{count}} inscrições disponíveis.",
+    "installerDeviceCountUnlimited": "Esta chave não tem limite de uso.",
+    "installerDeviceCountRange": "Digite um número inteiro de 1 a {{max}}.",
     "rotate": "Rotacionar",
     "page": "Página {{current}} de {{total}}",
     "previous": "Anterior",
@@ -1401,7 +1388,10 @@
     "retrySites": "Tentar novamente",
     "createASite": "Criar um local",
     "maxUsage": "Uso máximo (opcional)",
-    "defaultDeviceLimit": "50 (padrão)",
+    "defaultDeviceLimit": "{{count}} (padrão da organização)",
+    "expiresAtHelp": "Deixe em branco para {{duration}} (padrão da organização).",
+    "usageFromDefault": "padrão",
+    "usageFromDefaultTitle": "O limite de dispositivos veio do padrão da organização.",
     "maxUsageHelp": "Número máximo de agentes que podem se registrar com esta chave.",
     "expiresAt": "Expira em (opcional)",
     "creating": "Criando...",
@@ -1457,16 +1447,16 @@
       "inviter_name": "Nome de quem convida",
       "expires_days": "Dias até o convite expirar",
       "cta_button": "Botão",
-      "client_name": "Client name",
-      "setup_link": "Automatic payments setup link",
-      "ach_mode_text": "Available payment methods",
-      "payment_method": "Saved payment method",
-      "schedule_text": "Payment schedule",
-      "fee_text": "Processing fee terms",
-      "stopped_by": "Who stopped automatic payments",
-      "open_invoices_text": "Open invoice summary",
-      "expires_on": "Card expiry date",
-      "update_link": "Payment method update link",
+      "client_name": "Nome do cliente",
+      "setup_link": "Link para configurar pagamentos automáticos",
+      "ach_mode_text": "Formas de pagamento disponíveis",
+      "payment_method": "Forma de pagamento salva",
+      "schedule_text": "Calendário de pagamentos",
+      "fee_text": "Condições da taxa de processamento",
+      "stopped_by": "Quem interrompeu os pagamentos automáticos",
+      "open_invoices_text": "Resumo das faturas em aberto",
+      "expires_on": "Data de vencimento do cartão",
+      "update_link": "Link para atualizar a forma de pagamento",
       "amount_due": "Valor devido",
       "charge_date": "Data da cobrança",
       "fee_amount": "Taxa de processamento",
@@ -1485,22 +1475,24 @@
       "approval_ask": "Solicitação de aprovação",
       "approval_snapshot": "Números da aprovação",
       "approval_expires": "Prazo da aprovação",
-      "approval_status": "Status da aprovação"
+      "approval_status": "Status da aprovação",
+      "merged_into_number": "Número do chamado de destino"
     },
-    "billingPayments": "Billing & payments",
-    "supportPortal": "Support & portal",
+    "billingPayments": "Faturamento e pagamentos",
+    "supportPortal": "Suporte e portal",
     "labels": {
-      "autopay_request": "Automatic payments request",
-      "autopay_enrolled": "Automatic payments confirmed",
-      "autopay_stopped": "Automatic payments stopped",
+      "autopay_request": "Solicitação de pagamentos automáticos",
+      "autopay_enrolled": "Pagamentos automáticos confirmados",
+      "autopay_stopped": "Pagamentos automáticos interrompidos",
       "autopay_paused": "Pagamentos automáticos pausados",
       "autopay_resumed": "Pagamentos automáticos retomados",
-      "card_expiring": "Saved card expiring",
+      "card_expiring": "Cartão salvo próximo do vencimento",
       "payment_receipt": "Recibo de pagamento on-line",
       "payment_failed": "Não foi possível concluir o pagamento",
       "ticket_approval_requested_approver": "Solicitação de aprovação de trabalho (aprovador)",
       "ticket_approval_requested_notify": "Solicitação de aprovação de trabalho (para conhecimento)",
-      "ticket_approval_decided": "Decisão sobre a aprovação de trabalho"
+      "ticket_approval_decided": "Decisão sobre a aprovação de trabalho",
+      "ticket_merged": "Chamado mesclado"
     }
   },
   "inboundEmail": {
@@ -1792,27 +1784,13 @@
     "deviceGroup": {
       "title": "Grupo de dispositivos padrão",
       "description": "Dispositivos recém-cadastrados são adicionados automaticamente a este grupo.",
-      "options": {
-        "AllManagedDevices": "Todos os dispositivos gerenciados",
-        "CriticalInfrastructure": "Infraestrutura crítica",
-        "RemoteStaff": "Equipe remota",
-        "Contractors": "Prestadores de serviço"
-      }
-    },
-    "alertSeverity": {
-      "title": "Severidade padrão dos alertas",
-      "description": "Alertas abaixo desta severidade são enviados apenas ao feed de resumo.",
-      "options": {
-        "critical": "Somente crítica",
-        "high": "Alta e crítica",
-        "medium": "Média e superiores"
-      }
+      "none": "Nenhum",
+      "unavailable": "Grupo selecionado (indisponível)"
     },
     "autoEnrollment": {
       "title": "Cadastro automático",
       "enable": "Ativar cadastro automático",
-      "requireApproval": "Exigir aprovação do administrador",
-      "sendWelcome": "Enviar mensagem de boas-vindas"
+      "requireApproval": "Exigir aprovação do administrador"
     },
     "agentUpdates": {
       "title": "Política de atualização do agente",
@@ -1863,7 +1841,7 @@
     "disabledDescription": "Ative o encaminhamento de logs acima para configurar a conexão.",
     "enable": {
       "title": "Ativar encaminhamento de logs",
-      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs em uma programação recorrente."
+      "description": "Quando ativados, os logs de eventos são encaminhados ao seu armazenamento de logs à medida que cada dispositivo os informa."
     },
     "connection": {
       "title": "Conexão",
@@ -1952,6 +1930,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Visão do cliente",
+      "subtitle": "Pré-visualização: o que {{who}} vê",
+      "whoOrganization": "seu cliente",
+      "pickerLabel": "Ver como",
+      "pickerAll": "Organização inteira",
+      "loading": "Carregando pré-visualização…",
+      "loadFailed": "Não foi possível carregar a visão do cliente.",
+      "on": "Ativado",
+      "off": "Desativado",
+      "notAvailable": "Uma pré-visualização detalhada desta seção ainda não está disponível.",
+      "permissionWithheld": "Não exibido: você precisa de {{permissions}} para visualizar isto.",
+      "tilesWithheld": "Alguns blocos não são exibidos: você precisa de {{permissions}} para visualizá-los.",
+      "noteNoUser": "Os dados de chamados estão ocultos. Escolha um usuário do portal para ver o que essa pessoa vê.",
+      "readinessTitle": "Verificações de prontidão",
+      "readinessNone": "Nenhum problema encontrado.",
+      "fix": "Corrigir",
+      "readiness": {
+        "documents_empty": "Documentos está ativado, mas nenhum documento está marcado como Visível no portal, então seu cliente vê uma biblioteca vazia.",
+        "reports_empty": "Relatórios está ativado, mas ainda não há execuções de relatório, então seu cliente vê uma lista vazia.",
+        "service_one_time_visible": "Serviço está ativado e itens pontuais ainda estão visíveis para seu cliente.",
+        "backups_no_data": "Backups está ativado, mas ainda não há dados de backup para mostrar.",
+        "dashboard_security_no_data": "O painel está ativado, mas a pontuação de segurança ainda não tem dados, então esse bloco fica vazio para seu cliente.",
+        "branding_unset": "A marca do portal nunca foi definida (logotipo, cores, mensagem de boas-vindas ou contato de suporte)."
+      }
+    },
     "loading": "Carregando configurações do portal…",
     "save": "Salvar configurações do portal",
     "toasts": {
@@ -2443,7 +2447,11 @@
     "sourceDefault": "Padrão",
     "selectOrgForEffectiveBudget": "Selecione uma organização para ver seu orçamento vigente, ou edite os valores padrão em todo o parceiro.",
     "editPartnerWideDefaults": "Editar valores padrão em todo o parceiro",
-    "thresholdsOff": "Desativado"
+    "thresholdsOff": "Desativado",
+    "todaysCost": "Custo de hoje",
+    "monthlyCost": "Custo mensal",
+    "messagesToday": "Mensagens de hoje",
+    "tokensThisMonth": "Tokens deste mês"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4355,6 +4363,13 @@
     "commitmentTermRange": "Prazo de compromisso: insira um número inteiro de 1 a 120 meses."
   },
   "catalogItemsTab": {
+    "viewActive": "Ativos",
+    "viewArchived": "Arquivados",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Serviço"
+    },
     "itemArchived": "Item arquivado",
     "itemRestored": "Item restaurado",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "O catálogo de produtos está disponível apenas para contas de parceiros.",
@@ -4472,6 +4487,9 @@
     "notEnabledBody": "O MCP OAuth está desativado neste servidor. Defina MCP_OAUTH_ENABLED=true e reinicie a API para permitir apps conectados.",
     "revokeConfirm": "Revogar acesso para {{name}}? O token de acesso deixará de funcionar em 10 minutos.",
     "revokeFailed": "Falha na revogação ({{status}})",
+    "revokeTitle": "Revogar aplicativo conectado",
+    "revokeSuccess": "Acesso de {{name}} revogado",
+    "revokeFailedGeneric": "Falha na revogação",
     "networkError": "Erro de rede",
     "networkErrorDuringRevoke": "Erro de rede durante a revogação",
     "revoking": "Revogando…",
@@ -4703,6 +4721,7 @@
     "actions": "Ações",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Nenhuma função encontrada. Tente ajustar sua pesquisa ou filtros.",
     "cloneRole": "Clonar função: {{name}}",
+    "cloneDescription": "Cópia de {{name}}",
     "clone": "Clonar",
     "edit": "Editar",
     "delete": "Excluir",
@@ -5751,6 +5770,20 @@
       "sourceOrg": "Substituição da organização",
       "sourcePartner": "Padrão do parceiro",
       "sourceDefault": "Padrão integrado"
+    },
+    "businessCalendar": {
+      "title": "Horário comercial",
+      "description": "O calendário no qual os relógios de SLA desta organização são contados. Deixe em Herdar para seguir o padrão do parceiro.",
+      "label": "Calendário comercial",
+      "inherit": "Herdar",
+      "inheritedDefault": "Herdado: {{name}} (padrão do parceiro)",
+      "inheritedNone": "Herdado: 24×7 (sem padrão do parceiro)",
+      "partnerWideOption": "{{name}} (todas as orgs)",
+      "archivedOverride": "Calendário arquivado (não se aplica mais)",
+      "loadFailed": "Não foi possível carregar o calendário comercial.",
+      "errors": {
+        "save": "Não foi possível salvar o calendário comercial. Tente novamente."
+      }
     }
   },
   "organizationForm": {
@@ -6875,5 +6908,208 @@
     "enabledToast": "Atalhos de tecla única ativados",
     "disabledToast": "Atalhos de tecla única desativados",
     "saveFailed": "Não foi possível salvar os atalhos de tecla única."
+  },
+  "businessHoursCard": {
+    "title": "Horário comercial",
+    "description": "Calendários nos quais os relógios de SLA de resposta e resolução são contados. Um ticket usa o calendário da sua organização ou o calendário padrão; sem nenhum, o relógio corre 24 horas por dia.",
+    "newTicketsOnly": "Editar os horários ou o fuso horário vale apenas para tickets novos. Use \"Aplicar a tickets abertos\" para atualizar os tickets que já estão abertos.",
+    "create": "Novo calendário",
+    "loading": "Carregando horário comercial…",
+    "loadError": "Não foi possível carregar o horário comercial.",
+    "retry": "Tentar novamente",
+    "empty": "Ainda não há calendários de horário comercial. Os tickets correm 24 horas (24×7) até você criar um e defini-lo como padrão.",
+    "allOrgs": "Todas as orgs",
+    "default": "Padrão",
+    "archived": "Arquivado",
+    "edit": "Editar",
+    "setDefault": "Definir como padrão",
+    "clearDefault": "Remover padrão",
+    "applyOpen": "Aplicar a tickets abertos",
+    "archive": "Arquivar",
+    "unarchive": "Restaurar",
+    "delete": "Excluir",
+    "deleteTitle": "Excluir {{name}}?",
+    "deleteMessage": "Isso exclui permanentemente o calendário e seus feriados. Um calendário que ainda é usado por tickets ou organizações não pode ser excluído; arquive-o em vez disso.",
+    "name": "Nome",
+    "timezone": "Fuso horário",
+    "appliesTo": "Aplica-se a",
+    "ownerPartner": "Todas as organizações (em todo o parceiro)",
+    "ownerOrg": "Uma organização",
+    "organization": "Organização",
+    "chooseOrg": "Escolha uma organização",
+    "weeklyHours": "Horário semanal",
+    "closed": "Fechado",
+    "to": "até",
+    "addInterval": "Adicionar horário",
+    "intervalStart": "{{day}} abre às",
+    "intervalEnd": "{{day}} fecha às",
+    "removeInterval": "Remover o horário de {{day}}",
+    "save": "Salvar",
+    "saving": "Salvando…",
+    "cancel": "Cancelar",
+    "holidays": "Feriados",
+    "holidayHint": "Feriados com data de hoje ou anterior não alteram os tickets abertos.",
+    "noHolidays": "Nenhum feriado.",
+    "holidayDate": "Data",
+    "holidayName": "Nome",
+    "holidayAdd": "Adicionar feriado",
+    "holidayRemove": "Remover o feriado {{name}}",
+    "weekdays": {
+      "0": "Domingo",
+      "1": "Segunda-feira",
+      "2": "Terça-feira",
+      "3": "Quarta-feira",
+      "4": "Quinta-feira",
+      "5": "Sexta-feira",
+      "6": "Sábado"
+    },
+    "errors": {
+      "nameRequired": "Informe um nome.",
+      "orgRequired": "Escolha uma organização.",
+      "invalidTime": "Informe os horários como HH:MM (por exemplo 09:00); o fim pode ser 24:00.",
+      "order": "Cada intervalo deve terminar depois de começar.",
+      "overlap": "Os intervalos do mesmo dia não podem se sobrepor.",
+      "empty": "Adicione pelo menos um intervalo de funcionamento.",
+      "timezone": "Escolha um fuso horário válido.",
+      "save": "Não foi possível salvar o calendário. Tente novamente.",
+      "holidayInvalid": "Informe uma data válida e um nome para o feriado.",
+      "holidayAdd": "Não foi possível adicionar o feriado. Tente novamente.",
+      "holidayRemove": "Não foi possível remover o feriado. Tente novamente.",
+      "inUse": "Este calendário é usado por tickets ou organizações e não pode ser excluído. Arquive-o em vez disso.",
+      "isDefault": "Este calendário é o padrão. Remova o padrão antes de excluí-lo.",
+      "default": "Não foi possível alterar o calendário padrão. Tente novamente.",
+      "archive": "Não foi possível alterar o estado de arquivamento. Tente novamente.",
+      "delete": "Não foi possível excluir o calendário. Tente novamente.",
+      "apply": "Não foi possível aplicar o calendário aos tickets abertos. Tente novamente."
+    },
+    "toasts": {
+      "created": "Calendário criado",
+      "updated": "Calendário atualizado",
+      "defaultSet": "Calendário padrão definido",
+      "defaultCleared": "Padrão removido; tickets sem exceção correm 24×7",
+      "archived": "Calendário arquivado",
+      "unarchived": "Calendário restaurado",
+      "deleted": "Calendário excluído",
+      "holidayAdded": "Feriado adicionado",
+      "holidayRemoved": "Feriado removido",
+      "recompute": "Os prazos dos tickets abertos estão sendo atualizados.",
+      "applied": "Aplicado aos tickets abertos: {{count}} atualizados",
+      "appliedPartial": "{{skipped}} tickets estavam sendo editados e mantiveram o horário anterior. Aplique novamente para tentar de novo."
+    },
+    "apply": {
+      "title": "Aplicar {{name}} aos tickets abertos",
+      "explanation": "Os tickets abertos que nunca foram pausados passarão ao horário atual e terão os prazos recalculados. Tickets com histórico de pausa não são alterados.",
+      "loading": "Carregando prévia…",
+      "loadFailed": "Não foi possível carregar a prévia.",
+      "revisionChanged": "O horário mudou desde esta prévia. Revise as contagens atualizadas antes de aplicar.",
+      "eligible": "Tickets que serão atualizados: {{count}}",
+      "breached": "Destes, ficariam em violação imediatamente: {{count}}",
+      "paused": "Ignorados por terem sido pausados: {{count}}",
+      "confirm": "Aplicar a tickets abertos"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plano e recursos",
+    "description": "O que seu plano inclui. Recursos bloqueados continuam visíveis para que você veja o que um upgrade acrescenta.",
+    "currentPlan": "Plano atual",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Ilimitado"
+    },
+    "columns": {
+      "feature": "Recurso",
+      "state": "Situação",
+      "source": "Origem",
+      "expires": "Expira em",
+      "limits": "Limites"
+    },
+    "state": {
+      "enabled": "Incluído",
+      "disabled": "Bloqueado"
+    },
+    "source": {
+      "plan": "Padrão do plano",
+      "billing": "Faturamento",
+      "license": "Licença",
+      "manual": "Atribuição manual"
+    },
+    "graceWarning": "Expirou em {{expiresAt}} — carência até {{graceUntil}}",
+    "noExpiry": "Nunca",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisor de integração",
+        "why": "Um supervisor de IA que diagnostica e corrige falhas de integração sem intervenção."
+      },
+      "verified_library": {
+        "label": "Biblioteca de software verificada",
+        "why": "Pacotes selecionados e verificados que você pode implantar com confiança."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "O Wisp faz a triagem contínua da sua frota e avisa a pessoa certa; disponível a partir do Pro."
+      }
+    },
+    "loadError": "Não foi possível carregar seu plano.",
+    "retry": "Tentar novamente"
+  },
+  "wispMemory": {
+    "title": "Memória do Wisp",
+    "description": "Revise o que o Wisp lembrou para você, um cliente ou toda a equipe, e confirme ou retire.",
+    "tabs": {
+      "mine": "Minha memória",
+      "org": "Cliente",
+      "partner": "Todos os clientes",
+      "users": "Técnicos"
+    },
+    "empty": "Ainda não há blocos de memória aqui.",
+    "loading": "Carregando memória…",
+    "loadFailed": "Falha ao carregar a memória.",
+    "retry": "Tentar novamente",
+    "columns": {
+      "subject": "Assunto",
+      "type": "Tipo",
+      "status": "Status",
+      "confidence": "Confiança",
+      "updated": "Atualizado",
+      "actions": "Ações"
+    },
+    "statusValue": {
+      "unconfirmed": "Não confirmado",
+      "confirmed": "Confirmado",
+      "retracted": "Retirado"
+    },
+    "type": {
+      "preference": "Preferência",
+      "standing_instruction": "Instrução permanente",
+      "fact": "Fato",
+      "decision": "Decisão",
+      "concern_outcome": "Resultado de uma preocupação",
+      "work_summary": "Resumo do trabalho"
+    },
+    "confidenceValue": {
+      "low": "Baixa",
+      "medium": "Média",
+      "high": "Alta"
+    },
+    "confirm": "Confirmar",
+    "retract": "Retirar",
+    "confirmed": "Memória confirmada.",
+    "retracted": "Memória retirada.",
+    "confirmFailed": "Falha ao confirmar a memória.",
+    "retractFailed": "Falha ao retirar a memória.",
+    "fromConversation": "Da conversa",
+    "pickOrg": "Selecione um cliente",
+    "pickUser": "Selecione um técnico",
+    "pickPrompt": "Escolha uma opção acima para ver a memória.",
+    "showContent": "Mostrar conteúdo",
+    "hideContent": "Ocultar conteúdo",
+    "conversationUnavailable": "Esta conversa não está mais disponível.",
+    "usersLoadFailed": "Não foi possível carregar os técnicos."
   }
 }

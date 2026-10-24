@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 const { rows, inserted, updated, generateReportMock, resolveLiveMock, preflightMock, generateManagedEvidenceMock, baselineMock, managedTypes } = vi.hoisted(() => ({
   rows: [] as unknown[], inserted: [] as unknown[], updated: [] as unknown[],
   generateReportMock: vi.fn(), resolveLiveMock: vi.fn(), preflightMock: vi.fn(),
@@ -84,6 +91,8 @@ describe('generateAutoEvidenceForOccurrence (spec D12)', () => {
     expect(inserted[2]).toMatchObject({ ticketId: 't1', commentType: 'internal', isPublic: false, content: AUTO_EVIDENCE_TICKET_NOTE,
       userId: null, originPrincipalKind: 'system' });
     expect(AUTO_EVIDENCE_TICKET_NOTE).toBe('Report attached, review and resolve');
+    // #8972 W0: the ticket row is locked before the evidence/comment writes
+    expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 't1');
   });
 
   it('refuses a system-principal definition instead of inventing a principal', async () => {

@@ -443,6 +443,13 @@ describe('DeliverableTemplatesPage item portal visibility (#9315)', () => {
     return call ? JSON.parse(String((call[1] as RequestInit).body)) : undefined;
   };
 
+  it('exposes test ids on lead/grace days, completion mode and artifact required (#9665)', async () => {
+    await openAddItem();
+    for (const id of ['lead-days', 'grace-days', 'completion-mode', 'artifact-required']) {
+      expect(screen.getByTestId(`deliverable-template-item-${id}`)).toBeInTheDocument();
+    }
+  });
+
   it('defaults the toggle by cadence until the user touches it', async () => {
     await openAddItem();
     expect(portal().checked).toBe(true);

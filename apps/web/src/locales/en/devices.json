@@ -1035,7 +1035,9 @@
       "label": "approval",
       "byRing": "set by the linked update ring",
       "manualOnly": "manual approvals only (no update ring linked)"
-    }
+    },
+    "chainResolutionRule": "Level decides first: Device beats Device Group, then Site, Organization, and Partner. Priority (lower number wins) only breaks ties between policies at the same level. Struck-through features were overridden by a closer policy.",
+    "featureOverriddenBy": "Overridden by {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Failed to fetch activities",
@@ -1360,6 +1362,7 @@
     "drive": "Drive",
     "size": "Size",
     "used": "Used",
+    "usedPercent": "Used %",
     "health": "Health",
     "noDiskInventoryReported": "No disk inventory reported.",
     "networkAdapters": "Network Adapters",
@@ -1947,6 +1950,7 @@
     "title": "Active Network Connections"
   },
   "devicePatchStatusTab": {
+    "released": "Released {{date}}",
     "compliance": {
       "compliant": "{{percent}}% compliant",
       "description": "Pending vs installed updates",
@@ -2495,7 +2499,7 @@
     "showFindings": "Show Findings",
     "stats": {
       "accepted": "Accepted",
-      "kev": "Kev",
+      "kev": "Known exploited",
       "mitigated": "Mitigated",
       "open": "Open",
       "patchReady": "Patch Ready",
@@ -2513,9 +2517,9 @@
     "statusLabel": "Status Label",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
-      "cvss": "Cvss",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risk",
       "severity": "Severity",
       "status": "Status"
@@ -2570,7 +2574,7 @@
       "shutdown": "Shutdown"
     },
     "addDevice": "Add Device",
-    "importFromRmm": "Import from another RMM",
+    "importFromRmm": "Import custom fields from another RMM",
     "bulkPurge": {
       "andMore": "and {{count}} more",
       "confirm": "Delete permanently",
@@ -3481,6 +3485,8 @@
     "health": {
       "empty": {
         "title": "Nothing is being monitored yet",
+        "titleWithCheck": "No SNMP health data",
+        "descriptionWithCheck": "A network check is active for this device, so reachability is still tracked. Turn on SNMP to also collect health data.",
         "action": "Set up monitoring",
         "benefit": {
           "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",

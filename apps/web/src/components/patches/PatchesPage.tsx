@@ -6,6 +6,7 @@ import PatchList, {
   type Patch,
   type PatchApprovalStatus,
 } from './PatchList';
+import PatchDetailsDrawer from './PatchDetailsDrawer';
 import PatchApprovalModal, { type PatchApprovalAction } from './PatchApprovalModal';
 import PatchComplianceView from './PatchComplianceView';
 import PatchJobsList from './PatchJobsList';
@@ -26,15 +27,16 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
 import { runAction, ActionError } from '@/lib/runAction';
 import { asList } from '@/lib/asList';
+import { useHashState } from '@/lib/useHashState';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { replaceUrl } from '../../lib/replaceUrl';
+import { parsePatchesHash, type PatchesTab } from './patchesHash';
 
-type TabKey = 'rings' | 'patches' | 'compliance' | 'jobs';
-const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
+type TabKey = PatchesTab;
 
 // Tab state lives in window.location.hash (`#patches`) per the project
 // convention for transient UI state (CLAUDE.md); DiscoveryPage and DeviceDetails
@@ -42,10 +44,27 @@ const validTabs: TabKey[] = ['rings', 'patches', 'compliance', 'jobs'];
 // on a permission — this page is the only one that does, which is what made the
 // #4010 ordering bug possible here and nowhere else. The default `compliance`
 // tab keeps the hash empty so the URL stays clean.
+//
+// `#patches/<patchId>` deep-links the read-only patch details drawer (#9544): the
+// tab is the segment before the first `/`, the drawer's patch id the rest.
+//
+// Tabs are read through the shared hash grammar (#9791 C, patchesHash.ts), so
+// `#compliance&status=failed` and a bare `#status=failed` (no tab token) both
+// select the default compliance tab and leave the filter to the compliance view.
 function getTabFromHash(): TabKey {
   if (typeof window === 'undefined') return 'compliance';
-  const hash = window.location.hash.replace(/^#/, '');
-  return validTabs.includes(hash as TabKey) ? (hash as TabKey) : 'compliance';
+  return parsePatchesHash(window.location.hash).tab ?? 'compliance';
+}
+
+function parsePatchIdFromHash(hash: string): string | null {
+  const [tab, ...rest] = hash.split('/');
+  const id = rest.join('/');
+  if (tab !== 'patches' || !id) return null;
+  try {
+    return decodeURIComponent(id);
+  } catch {
+    return null; // malformed percent-escape in a hand-edited URL — no drawer
+  }
 }
 
 function setTabInHash(tab: TabKey) {
@@ -95,8 +114,7 @@ export default function PatchesPage() {
   const { can } = usePermissions();
   const canScan = can('devices', 'execute'); // UX gate; POST /patches/scan requires devices.execute
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
-  const { organizations, currentOrgId } = useOrgStore();
-  const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
+  const { organizations } = useOrgStore();
   // Reactive claims, not the one-shot getJwtClaims(): access tokens are never
   // persisted, so on a cold load the store is empty at first paint and only
   // fills once the refresh cookie has been exchanged (#4010).
@@ -183,6 +201,26 @@ export default function PatchesPage() {
   }, [ringAccess, setActiveTab]);
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
+  // Read-only details drawer (#9544): the patch id lives in the hash.
+  const [detailsPatchId, setDetailsPatchId] = useHashState<string | null>(null, parsePatchIdFromHash);
+  const openPatchDetails = useCallback((patch: Patch) => {
+    setDetailsPatchId(patch.id);
+    window.location.hash = `patches/${encodeURIComponent(patch.id)}`;
+  }, [setDetailsPatchId]);
+  // The drawer is gated on the patches tab; drop the id when leaving it so a
+  // return to the tab (tab switches replaceUrl without a hashchange) doesn't
+  // resurrect a drawer the URL no longer names.
+  // Only a patches -> other transition clears: the cold-load default tab is
+  // 'compliance' until the hash syncs, and must not wipe a deep-linked id.
+  const prevTabRef = useRef(activeTab);
+  useEffect(() => {
+    if (prevTabRef.current === 'patches' && activeTab !== 'patches') setDetailsPatchId(null);
+    prevTabRef.current = activeTab;
+  }, [activeTab, setDetailsPatchId]);
+  const closePatchDetails = useCallback(() => {
+    setDetailsPatchId(null);
+    window.location.hash = 'patches';
+  }, [setDetailsPatchId]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   // Which tab the approval modal opens on: 'approve' from Review (the default,
@@ -984,6 +1022,7 @@ export default function PatchesPage() {
             error={patchesError}
             onRetry={fetchPatches}
             onReview={handleReview}
+            onView={openPatchDetails}
             onDeploy={handleDeploy}
             onUnapprove={handleUnapprove}
             onBulkApprove={handleBulkApprove}
@@ -1001,12 +1040,21 @@ export default function PatchesPage() {
       {activeTab === 'jobs' && <PatchJobsList onSelectJob={setSelectedJobId} />}
       {selectedJobId && <PatchJobDetail jobId={selectedJobId} onClose={() => setSelectedJobId(null)} />}
 
+      {/* Read-only patch details (#9544) */}
+      {activeTab === 'patches' && (
+        <PatchDetailsDrawer
+          patch={detailsPatchId ? patches.find((p) => p.id === detailsPatchId) ?? null : null}
+          rings={rings}
+          onClose={closePatchDetails}
+        />
+      )}
+
       {/* Approval modal — passes ringId and org context for confirmation */}
       <PatchApprovalModal
         open={modalOpen}
         patch={selectedPatch}
         ringId={selectedRingId}
-        orgName={currentOrg?.name ?? null}
+        ringName={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.name ?? null) : null}
         ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
         initialAction={modalInitialAction}
         onClose={() => {
@@ -1101,6 +1149,7 @@ export default function PatchesPage() {
           <UpdateRingForm
             key={editingRing?.id ?? 'new'}
             onSubmit={handleRingSubmit}
+            existingRingOrders={rings.map((ring) => ring.ringOrder)}
             onCancel={() => { setRingModalOpen(false); setEditingRing(null); }}
             submitLabel={
               ringSubmitting

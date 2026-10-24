@@ -5,8 +5,10 @@ import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { organizations, devices, partners, partnerUsers } from '../db/schema';
 import { authMiddleware, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
-import { summarizeActiveContractMrrByOrg } from '../services/contractService';
+import { summarizeActiveContractMrrByOrg } from '../services/contractMrr';
 import { getEmailService } from '../services/email';
+import { ENTITLEMENTS, ENTITLEMENT_KEYS } from '@breeze/shared';
+import { EntitlementResolutionError, getEntitlements, type ResolvedEntitlements } from '../services/entitlements';
 
 import { notHiddenOrgType } from '../services/unassignedPool/visibility';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
@@ -34,23 +36,26 @@ const requirePartnerDeviceRead = requirePermission(PERMISSIONS.DEVICES_READ.reso
 
 partnerRoutes.use('*', authMiddleware);
 
+/**
+ * The caller's partner: the JWT claim when present (partner- AND org-scoped
+ * tokens carry it), else the caller's own partner_users row (system-scoped
+ * users). Never client input, so it is safe to pin partner-axis reads to it.
+ */
+async function resolveCallerPartnerId(auth: { partnerId: string | null; user: { id: string } }): Promise<string | null> {
+  if (auth.partnerId) return auth.partnerId;
+  const [assoc] = await db
+    .select({ partnerId: partnerUsers.partnerId })
+    .from(partnerUsers)
+    .where(eq(partnerUsers.userId, auth.user.id))
+    .limit(1);
+  return assoc?.partnerId ?? null;
+}
+
 // GET /partner/me — return the current user's partner
 partnerRoutes.get('/me', async (c) => {
   const auth = c.get('auth');
 
-  // If the token already carries a partnerId, look it up directly
-  let partnerId = auth.partnerId;
-
-  // For system-scoped users, resolve via partner_users table
-  if (!partnerId) {
-    const [assoc] = await db
-      .select({ partnerId: partnerUsers.partnerId })
-      .from(partnerUsers)
-      .where(eq(partnerUsers.userId, auth.user.id))
-      .limit(1);
-    partnerId = assoc?.partnerId ?? null;
-  }
-
+  const partnerId = await resolveCallerPartnerId(auth);
   if (!partnerId) {
     return c.json({ error: 'No partner association' }, 404);
   }
@@ -93,6 +98,53 @@ partnerRoutes.get('/me', async (c) => {
     // Capability flag only (#9256): lets the web say "created but not emailed"
     // instead of promising an email on a server with no transport.
     emailConfigured: !!getEmailService(),
+  });
+});
+
+// GET /partner/me/entitlements — the caller's partner plan + resolved
+// entitlement set (Partner Entitlements W1 §9, #9907). authMiddleware only, no
+// requireScope: org-scoped tokens must be able to read it (FeatureLock renders
+// for every user), and it is exempt from partnerGuard via the /partner/me/
+// prefix. Reads go through services/entitlements.ts, which takes the
+// partner-axis escape (#2822) — an org context sees zero rows directly.
+partnerRoutes.get('/me/entitlements', async (c) => {
+  const auth = c.get('auth');
+  const partnerId = await resolveCallerPartnerId(auth);
+  // `reason` is the operator's free-text note on a manual/licence row (e.g. an
+  // abuse hold). It is MSP-internal: an org-scoped caller — possibly a
+  // customer org's own user — gets the state and source, never the note.
+  const showReason = auth.scope !== 'organization';
+  if (!partnerId) {
+    return c.json({ error: 'No partner association' }, 404);
+  }
+
+  let resolved: ResolvedEntitlements;
+  try {
+    resolved = await getEntitlements(partnerId);
+  } catch (err) {
+    if (err instanceof EntitlementResolutionError) {
+      c.header('Retry-After', '30');
+      return c.json({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable' }, 503);
+    }
+    throw err;
+  }
+
+  return c.json({
+    plan: resolved.plan,
+    entitlements: ENTITLEMENT_KEYS.map((key) => {
+      const e = resolved.entitlements[key];
+      return {
+        key,
+        label: ENTITLEMENTS[key].label,
+        why: ENTITLEMENTS[key].why,
+        state: e.state,
+        source: e.source,
+        limits: e.limits,
+        expiresAt: e.expiresAt ? e.expiresAt.toISOString() : null,
+        graceUntil: e.graceUntil ? e.graceUntil.toISOString() : null,
+        reason: showReason ? e.reason : null,
+      };
+    }),
   });
 });
 

@@ -705,6 +705,8 @@ type RoleFormModalProps = {
   role?: Role | null;
   availableParentRoles?: Role[];
   inheritedPermissions?: EffectivePermission[];
+  /** Called when the user picks a different parent, so the page can load that parent's permissions (#9603). */
+  onParentChange?: (parentRoleId: string | null) => void;
   onSubmit: (data: RoleFormData) => void;
   onCancel: () => void;
   loading?: boolean;
@@ -716,12 +718,19 @@ export function RoleFormModal({
   role,
   availableParentRoles = [],
   inheritedPermissions = [],
+  onParentChange,
   onSubmit,
   onCancel,
   loading = false
 }: RoleFormModalProps) {
+  // #9603: a clone must not inherit the source's description (it can describe
+  // permissions the clone no longer has); pre-fill a localized, editable one.
+  const initialDescription = () =>
+    mode === 'clone'
+      ? i18n.t('settings:roleManager.cloneDescription', { name: role?.name ?? '' })
+      : role?.description || '';
   const [name, setName] = useState(mode === 'clone' ? '' : role?.name || '');
-  const [description, setDescription] = useState(role?.description || '');
+  const [description, setDescription] = useState(initialDescription);
   const [permissions, setPermissions] = useState<Permission[]>(role?.permissions || []);
   const [parentRoleId, setParentRoleId] = useState<string | null>(role?.parentRoleId || null);
   const [forceMfa, setForceMfa] = useState<boolean>(role?.forceMfa === true);
@@ -795,7 +804,7 @@ export function RoleFormModal({
   useEffect(() => {
     if (!isOpen) return;
     setName(mode === 'clone' ? '' : role?.name || '');
-    setDescription(role?.description || '');
+    setDescription(initialDescription());
     setPermissions(role?.permissions || []);
     setParentRoleId(role?.parentRoleId || null);
     // Clone pre-fills from the source: the server copies force_mfa onto the
@@ -857,7 +866,10 @@ export function RoleFormModal({
     setOwnerScope(next);
     setFormError(null);
     const parent = availableParentRoles.find((r) => r.id === parentRoleId);
-    if (parent && parent.scope !== next) setParentRoleId(null);
+    if (parent && parent.scope !== next) {
+      setParentRoleId(null);
+      onParentChange?.(null);
+    }
   };
 
   return (
@@ -926,7 +938,11 @@ export function RoleFormModal({
             <select
               id="role-parent"
               value={parentRoleId || ''}
-              onChange={(e) => setParentRoleId(e.target.value || null)}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                setParentRoleId(next);
+                onParentChange?.(next);
+              }}
               disabled={loading}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             >

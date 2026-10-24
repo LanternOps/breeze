@@ -19,7 +19,8 @@
  */
 
 import { serviceRecoveryRecipe } from './serviceRecovery';
-import type { RecipeDefinition } from './types';
+import { identityOffboardingRecipe } from './identityOffboarding';
+import type { AnyRecipeDefinition, RecipeDefinition } from './types';
 
 export * from './types';
 export { validateRecipeNextStep } from './validateNextStep';
@@ -36,6 +37,7 @@ type RegisteredRecipe = RecipeDefinition<never>;
  */
 export const RECIPES: Readonly<Record<string, RegisteredRecipe>> = Object.freeze({
   [serviceRecoveryRecipe.key]: serviceRecoveryRecipe as unknown as RegisteredRecipe,
+  [identityOffboardingRecipe.key]: identityOffboardingRecipe as unknown as RegisteredRecipe,
 });
 
 /** Sorted, for deterministic error messages and the future library route. */
@@ -103,4 +105,30 @@ export function resolveAdmissionRecipe(
     };
   }
   return { ok: true, recipe };
+}
+
+/**
+ * Consistency problems in a recipe's R1a-0 data fields, as readable strings
+ * (empty = consistent). A pure data check run by `recipes/index.test.ts` over
+ * every registered recipe — not a module-load validator.
+ *
+ * Covers: `planningSnapshotStepKey` and `entryStepKey` name declared steps,
+ * and no `unobservableEffects` tool subsumes itself. Whether each declared
+ * tool is structurally unobservable and each subsumer has a probe needs the
+ * probe registry, which `recipes/` must not import (purity), so that rule is
+ * asserted in `effectProbes/index.test.ts`.
+ */
+export function recipeDataProblems(recipe: AnyRecipeDefinition): string[] {
+  const problems: string[] = [];
+  const steps = Object.keys(recipe.steps);
+  if (recipe.planningSnapshotStepKey !== undefined && !steps.includes(recipe.planningSnapshotStepKey)) {
+    problems.push(`${recipe.key}: planningSnapshotStepKey '${recipe.planningSnapshotStepKey}' is not a declared step`);
+  }
+  if (recipe.entryStepKey !== undefined && !steps.includes(recipe.entryStepKey)) {
+    problems.push(`${recipe.key}: entryStepKey '${recipe.entryStepKey}' is not a declared step`);
+  }
+  for (const [tool, subsumer] of Object.entries(recipe.unobservableEffects ?? {})) {
+    if (tool === subsumer) problems.push(`${recipe.key}: unobservable effect '${tool}' cannot subsume itself`);
+  }
+  return problems;
 }

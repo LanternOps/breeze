@@ -27,6 +27,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { markPermissionGate } from '../middleware/permissionGate';
+import { wispEnabled } from '../config/env';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import {
@@ -84,8 +85,9 @@ import { PG_UUID_REGEX } from '../utils/uuid';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { isAllowedLauncherScheme, isValidIanaTimezone, canonicalizeTimezone, isValidMaintenanceWindow, MAINTENANCE_WINDOW_ERROR_MESSAGE, normalizeVersionPin, PINNABLE_COMPONENTS, agentVersionPinsSchema, enrollmentDefaultsSchema, aiApprovalSettingsSchema, httpUrlField, keptSecretOrHttpUrlValue, SUPPORTED_LOCALES, ticketingInboundSettingsSchema, timeTrackingSessionSuggestionsSchema, EMAIL_TEMPLATE_IDS, isBlankEmailTemplateHtml } from '@breeze/shared';
 import type { IpAllowlistStatus, ResolvedEnrollmentDefaults, SupportedLocale } from '@breeze/shared';
-import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE } from '@breeze/shared';
+import { ERROR_CODES, siteLocationFieldsShape, siteLocationPairIsConsistent, SITE_LOCATION_PAIR_MESSAGE, DEFAULT_LAUNCH_PURCHASE_SELECTION } from '@breeze/shared';
 import { siteLocationRoutes } from './siteLocation';
+import { partnerSettingsInheritanceRoutes } from './partnerSettingsInheritance';
 import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
@@ -109,6 +111,7 @@ import { resolveImportPartnerId } from './importScope';
 import { registerOrgContactsRoutes } from './orgContacts';
 import { registerOrgContactResponsibilitiesRoutes } from './orgContactResponsibilities';
 import { registerOrgPortalSettingsRoutes } from './orgPortalSettings';
+import { registerOrgPortalPreviewRoutes } from './orgPortalPreview';
 import { registerOrgPortalUsersRoutes } from './orgPortalUsers';
 import { registerOrgTicketSettingsRoutes } from './orgTicketSettings';
 import { registerOrgBillingProfileRoutes } from './orgBillingProfile';
@@ -119,6 +122,7 @@ import { isHoldingOrg } from '../services/unassignedPool/protectedOrg';
 import { PROTECTED_ORG_ERROR } from '../services/unassignedPool/orgType';
 
 import { notHiddenOrgType, notInHiddenOrgCondition } from '../services/unassignedPool/visibility';
+import { partnerVisibleOrgConditions } from '../services/partnerVisibleOrgs';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
 /**
  * Fold the legacy `security.allowedMfaMethods` input alias into the canonical
@@ -496,6 +500,9 @@ orgRoutes.use('*', authMiddleware);
 
 // Mounted after authMiddleware so the pin route inherits authentication.
 orgRoutes.route('/', siteLocationRoutes);
+// Partner settings inheritance read model (#9170): after authMiddleware, before
+// /partners/:id. Its middleware is per endpoint, never a wildcard.
+orgRoutes.route('/', partnerSettingsInheritanceRoutes);
 
 // GET / - List organizations accessible to the current user
 orgRoutes.get('/', requireScope('organization', 'partner', 'system'), requireOrgRead, async (c) => {
@@ -661,6 +668,9 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
         slug: data.slug,
         type: data.type,
         maxOrganizations: data.maxOrganizations,
+        // This route bypasses createPartner. Persist the fresh-business offer
+        // here too; existing partners' absent intent remains a legacy commitment.
+        purchaseSelection: { ...DEFAULT_LAUNCH_PURCHASE_SELECTION },
         settings: encryptColumnValueForWrite('partners', 'settings', createSecrets.settings),
         billingEmail: data.billingEmail
       })
@@ -696,12 +706,6 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
 // --- Partner Self-Service (partner-scoped users) ---
 // NOTE: all /partners/me handlers (GET, PATCH) must stay above /partners/:id in this file
 // so Hono's router matches the static segment "me" before the dynamic :id handler.
-
-const dayScheduleSchema = z.object({
-  start: z.string(),
-  end: z.string(),
-  closed: z.boolean().optional()
-});
 
 const supportedLocales = SUPPORTED_LOCALES;
 
@@ -749,10 +753,10 @@ const partnerSettingsSchema = z.object({
   dateFormat: z.enum(['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD']).optional(),
   timeFormat: z.enum(['12h', '24h']).optional(),
   language: z.enum(supportedLocales).optional(),
-  businessHours: z.object({
-    preset: z.enum(['24/7', 'business', 'extended', 'custom']),
-    custom: z.record(z.string(), dayScheduleSchema).optional()
-  }).optional(),
+  // businessHours retired (#8973 W4, Gate B5): business hours are business
+  // calendars now (routes/businessCalendars.ts). Zod strips the key, so a stale
+  // client's value never reaches the shallow merge below and the stored blob
+  // (imported into a calendar by 2027-01-03-160000) is left untouched.
   contact: z.object({
     name: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
@@ -843,12 +847,15 @@ const partnerSettingsSchema = z.object({
   }).optional(),
   defaults: z.object({
     policyDefaults: z.record(z.string(), z.string()).optional(),
+    // #9617: a real device_groups.id (org level only; a partner-level value
+    // cannot name a per-org group). Legacy display strings are accepted so old
+    // clients don't 400, but enrollment ignores anything that isn't a group id.
+    // `alertThreshold` and `autoEnrollment.sendWelcome` were removed (no
+    // consumer); z.object strips them from old clients' payloads rather than 400.
     deviceGroup: z.string().optional(),
-    alertThreshold: z.string().optional(),
     autoEnrollment: z.object({
       enabled: z.boolean(),
       requireApproval: z.boolean(),
-      sendWelcome: z.boolean(),
     }).optional(),
     agentUpdatePolicy: z.string().optional(),
     // Reject malformed windows on the partner (/partners/me) write path at save
@@ -1051,7 +1058,13 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   }
 
   // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
-  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
+  // wispEnabled (Wisp W03): computed per request, not a column — the web nav gate
+  // for the Wisp memory page, sat beside the platform-granted aiForOfficeEnabled.
+  return c.json(withMaskedSettings({
+    ...partner,
+    settings: clampSessionTimeoutInSettings(partner.settings),
+    wispEnabled: wispEnabled(),
+  }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like
@@ -1810,7 +1823,8 @@ orgRoutes.get('/organizations', requireScope('organization', 'partner', 'system'
     // would select the whole table. Fail closed even in dead code.
     conditions = noLiveOrgs
       ? sql`false`
-      : and(inArray(organizations.id, orgIds), notQuickSupport, isNull(organizations.deletedAt), searchCondition);
+      // Shared with the partner settings inheritance counts (#9170).
+      : and(...partnerVisibleOrgConditions(orgIds), searchCondition);
   } else {
     // #4166 — system scope short-circuits every RLS predicate and this branch
     // carries NO status filter, so archive-lifecycle orgs already come back
@@ -2928,6 +2942,8 @@ orgRoutes.put('/organizations/:id', ...updateOrgHandler);
 
 // Customer-portal settings (portal_branding) — see routes/orgPortalSettings.ts
 registerOrgPortalSettingsRoutes(orgRoutes);
+// Staff read-only "Customer view" of the portal read models (#9350)
+registerOrgPortalPreviewRoutes(orgRoutes);
 // Customer-portal users (portal_users invite/manage) — see routes/orgPortalUsers.ts
 registerOrgPortalUsersRoutes(orgRoutes);
 // Org ticketing overrides (org_ticket_settings) — see routes/orgTicketSettings.ts
@@ -2991,7 +3007,58 @@ orgRoutes.delete('/organizations/:id', requireScope('partner', 'system'), requir
 
 // --- Sites (organization-scoped) ---
 
-orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
+/**
+ * Per-site device counts for a set of sites, shared by the Sites list and
+ * `GET /sites/:id` so the number a tile/list shows and the number the site page
+ * shows cannot drift (#9791).
+ *
+ * `deviceCount` excludes ephemeral (Quick Support), parked and decommissioned
+ * rows, so it equals what the agent-class, site-filtered Devices list shows.
+ * `removedDeviceCount` (#7471) counts decommissioned rows, which keep their
+ * site FK and block site deletion.
+ *
+ * Takes no org: the list route spans orgs for a partner-wide read, and
+ * `devices` is org-scoped under RLS, so the grouped query stays
+ * tenant-isolated either way. An empty id list never issues `site_id IN ()`.
+ */
+async function getDeviceCountsBySite(siteIds: string[]): Promise<{
+  deviceCountBySite: Map<string, number>;
+  removedCountBySite: Map<string, number>;
+}> {
+  const deviceCountBySite = new Map<string, number>();
+  const removedCountBySite = new Map<string, number>();
+  if (siteIds.length === 0) return { deviceCountBySite, removedCountBySite };
+
+  const counts = await db
+    .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+    .from(devices)
+    // Removed (decommissioned) devices are excluded alongside the ephemeral
+    // Quick Support ones (#5315): the org record's Devices tab lists
+    // `GET /devices`, which drops decommissioned rows by default, so counting
+    // them here made the Sites table disagree with the tab beside it.
+    .where(and(
+      inArray(devices.siteId, siteIds),
+      eq(devices.isEphemeral, false), notParkedDeviceCondition(),
+      ne(devices.status, 'decommissioned'),
+    ))
+    .groupBy(devices.siteId);
+  for (const row of counts) {
+    deviceCountBySite.set(row.siteId, Number(row.count));
+  }
+  // The DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
+  // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
+  const removedCounts = await db
+    .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
+    .from(devices)
+    .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
+    .groupBy(devices.siteId);
+  for (const row of removedCounts) {
+    removedCountBySite.set(row.siteId, Number(row.count));
+  }
+  return { deviceCountBySite, removedCountBySite };
+}
+
+orgRoutes.get('/sites',requireScope('organization', 'partner', 'system'), requireSiteRead, zValidator('query', listSitesSchema), async (c) => {
   const auth = c.get('auth') as AuthContext;
   const { orgId, organizationId, includeEnrollmentDefaults, ...pagination } = c.req.valid('query');
 
@@ -3079,39 +3146,7 @@ orgRoutes.get('/sites', requireScope('organization', 'partner', 'system'), requi
   // it with a single grouped query over the returned page's site ids —
   // `devices` is org-scoped under RLS so this stays tenant-isolated. Guard on a
   // non-empty page so an empty list never issues a `site_id IN ()` query.
-  const deviceCountBySite = new Map<string, number>();
-  const removedCountBySite = new Map<string, number>();
-  const siteIds = data.map((s) => s.id);
-  if (siteIds.length > 0) {
-    const counts = await db
-      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
-      .from(devices)
-      // Removed (decommissioned) devices are excluded alongside the ephemeral
-      // Quick Support ones (#5315): the org record's Devices tab lists
-      // `GET /devices`, which drops decommissioned rows by default, so counting
-      // them here made the Sites table disagree with the tab beside it.
-      .where(and(
-        inArray(devices.siteId, siteIds),
-        eq(devices.isEphemeral, false), notParkedDeviceCondition(),
-        ne(devices.status, 'decommissioned'),
-      ))
-      .groupBy(devices.siteId);
-    for (const row of counts) {
-      deviceCountBySite.set(row.siteId, Number(row.count));
-    }
-    // `removedDeviceCount` (#7471): decommissioned rows keep their site FK and
-    // block site deletion, so surface them next to the active count — the
-    // DELETE guard (409 SITE_HAS_DEVICES) counts decommissioned rows the same
-    // way. (The guard also counts ephemeral/parked rows that `deviceCount` hides.)
-    const removedCounts = await db
-      .select({ siteId: devices.siteId, count: sql<number>`count(*)` })
-      .from(devices)
-      .where(and(inArray(devices.siteId, siteIds), eq(devices.status, 'decommissioned')))
-      .groupBy(devices.siteId);
-    for (const row of removedCounts) {
-      removedCountBySite.set(row.siteId, Number(row.count));
-    }
-  }
+  const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite(data.map((s) => s.id));
 
   const dataWithCounts = data.map((site) => ({
     ...withMaskedSettings(site),
@@ -3245,7 +3280,15 @@ orgRoutes.get('/sites/:id', requireScope('organization', 'partner', 'system'), r
     return c.json({ error: 'Access to this site denied', code: ERROR_CODES.ACCESS_DENIED }, 403);
   }
 
-  return c.json(withMaskedSettings(site));
+  // Same helper as the list route, so the site page's count and its
+  // "View all devices" link agree with the Sites list (#9791).
+  const { deviceCountBySite, removedCountBySite } = await getDeviceCountsBySite([site.id]);
+
+  return c.json({
+    ...withMaskedSettings(site),
+    deviceCount: deviceCountBySite.get(site.id) ?? 0,
+    removedDeviceCount: removedCountBySite.get(site.id) ?? 0,
+  });
 });
 
 orgRoutes.patch('/sites/:id', requireScope('organization', 'partner', 'system'), requireSiteWrite, requireMfa(), zValidator('json', updateSiteSchema), async (c) => {

@@ -30,6 +30,7 @@ import {
   ChecklistServiceError,
 } from '../../services/ticketChecklistService';
 import { getScopedTicketOr404 } from './tickets';
+import { ticketMergedResponse } from '../../services/ticketMerge/errors';
 
 const idParam = z.object({ id: z.string().guid() });
 const itemIdParam = z.object({ itemId: z.string().guid() });
@@ -46,6 +47,9 @@ const readPerm = requirePermission(PERMISSIONS.TICKETS_READ.resource, PERMISSION
 const writePerm = requirePermission(PERMISSIONS.TICKETS_WRITE.resource, PERMISSIONS.TICKETS_WRITE.action);
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
+  // #8972 W1: a write reached a merged tombstone → 409 with the survivor id.
+  const merged = ticketMergedResponse(c, err);
+  if (merged) return merged;
   if (err instanceof ChecklistServiceError) {
     return c.json(
       { error: err.message, code: err.code, ...(err.details ? { details: err.details } : {}) },

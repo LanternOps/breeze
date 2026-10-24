@@ -122,7 +122,8 @@
     "testDialog": {
       "title": "Bir cihazda test et",
       "selectDevice": "Cihaz",
-      "run": "Testi çalıştır"
+      "run": "Testi çalıştır",
+      "saveToTest": "Değişikliklerinizi test etmek için kaydedin"
     },
     "deliveryPreview": {
       "selectOrg": "Teslimatı önizlemek için bir kuruluş seçin.",

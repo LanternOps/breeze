@@ -645,8 +645,8 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   });
 
   it('consumes the #ssoReauthGrant fragment, calls /auth/mfa/setup with it, and clears the hash', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
-    expect(window.location.hash).toBe('#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
+    expect(window.location.hash).toBe('#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
 
     render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
 
@@ -655,7 +655,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
         ([url]) => String(url) === '/auth/mfa/setup'
       );
       expect(setupCall).toBeDefined();
-      expect(JSON.parse(String(setupCall![1]?.body))).toEqual({ ssoReauthGrantId: 'grant-abc' });
+      expect(JSON.parse(String(setupCall![1]?.body))).toEqual({ ssoReauthGrantId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301' });
     });
 
     // The grant is single-use — leaving it in the address bar invites a
@@ -667,7 +667,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   });
 
   it('sends the grant, not a password, on the terminal /auth/mfa/enable write', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -696,7 +696,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
       );
       expect(enableCall).toBeDefined();
       expect(JSON.parse(String(enableCall![1]?.body)))
-        .toEqual({ code: '123456', ssoReauthGrantId: 'grant-abc' });
+        .toEqual({ code: '123456', ssoReauthGrantId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301' });
     });
   });
 
@@ -803,7 +803,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
   // an unconditional setSsoSetupReady(true) still passed every other test in
   // this file, and production would open a QR view with no QR in it.
   it('stays on the status card when the grant-backed /auth/mfa/setup fails', async () => {
-    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+    window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
     fetchWithAuthMock.mockImplementation(async (url) => {
       if (String(url) === '/auth/passkeys') return makeJsonResponse({ passkeys: [] });
       if (String(url) === '/auth/mfa/setup') {
@@ -884,7 +884,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
 
     it('still opens the QR screen when the trip started from the authenticator card', async () => {
       stashSsoReauthIntent('totp');
-      window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=grant-abc');
+      window.history.replaceState(null, '', '/settings/profile#ssoReauthGrant=3f2504e0-4f89-41d3-9a0c-0305e82c3301');
 
       render(<ProfilePage initialUser={{ ...BASE_USER, hasPassword: false }} />);
 
@@ -893,7 +893,7 @@ describe('ProfilePage — SSO re-authentication enrollment (#4018)', () => {
           ([url]) => String(url) === '/auth/mfa/setup'
         );
         expect(setupCall).toBeDefined();
-        expect(JSON.parse(String(setupCall![1]?.body))).toEqual({ ssoReauthGrantId: 'grant-abc' });
+        expect(JSON.parse(String(setupCall![1]?.body))).toEqual({ ssoReauthGrantId: '3f2504e0-4f89-41d3-9a0c-0305e82c3301' });
       });
       await screen.findByText(/Set up authenticator/i);
       expect(sessionStorage.getItem(SSO_REAUTH_INTENT_KEY)).toBeNull();

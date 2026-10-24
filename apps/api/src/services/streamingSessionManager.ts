@@ -20,7 +20,7 @@ import { aiSessions, aiMessages } from '../db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
-import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiStreamEvent, AiApprovalMode, AiPendingCardEvent } from '@breeze/shared/types/ai';
 // TYPE-ONLY, and it must stay that way: chatRunBridge.ts imports this module at
 // runtime for `streamingSessionManager.get`, so a value import back would be a
 // real runtime cycle. TypeScript erases this one.
@@ -29,6 +29,7 @@ import { AsyncEventQueue } from '../utils/asyncQueue';
 import { prepareSdkChild, sdkModelOptions } from './aiModels/connectionFactory';
 import { takeGatewayFailureNote } from './aiModels/gateway/failureNotes';
 import { PROVIDER_FAILURE_GENERIC_MESSAGE, providerFailureMessage } from './aiModels/providerFailureMessage';
+import { classifySdkAssistantError } from './aiModels/failover';
 import { catalogEndpointOf } from './aiModels/sdkChildEnv';
 import {
   newSdkTurnObservation,
@@ -55,6 +56,7 @@ import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools'
 import type { TopologyTurnRuntime } from './topology/aiInvestigation';
 import { createSessionPreToolUse, createSessionPostToolUse, settleApprovalWaits } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
+import type { WispSessionGrant } from './wisp/chatCeiling';
 import { getTrustedClientIpOrUndefined } from './clientIp';
 import { redactAiToolOutputText, redactSensitiveToolInput } from './aiToolOutput';
 import { markAiBudgetReservationIndeterminate, readSdkUsageSnapshot } from './aiBudgetReservations';
@@ -69,7 +71,6 @@ const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
 const EVICTION_INTERVAL_MS = 60 * 1000; // Check every 60s
 const MAX_ACTIVE_SESSIONS = 200;
-const EVENT_RING_BUFFER_SIZE = 100;
 /**
  * How long a `processing` session may go without stream progress before
  * eviction stops treating it as a live turn.
@@ -165,6 +166,27 @@ export function turnTimeoutMsFor(approvalWaitBudgetMs: number): number {
 const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
+
+/**
+ * Wisp W04 Task 5: recompute the thread summary of each session just retired.
+ * Lazy import keeps wisp code out of this hot module's eager graph (as for
+ * chatCeiling). Never rejects: failures go to Sentry only.
+ */
+async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
+  if (sessionIds.length === 0) return;
+  try {
+    const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
+    for (const id of sessionIds) {
+      await finalizeWispSessionSummary(id).catch((err) => {
+        console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
+        captureException(err);
+      });
+    }
+  } catch (err) {
+    console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
+    captureException(err);
+  }
+}
 
 // The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
 // re-exported so existing importers (scripts, tests) keep working.
@@ -308,68 +330,10 @@ export class StreamInputController {
   }
 }
 
-// ============================================
-// SessionEventBus
-// ============================================
-
-/**
- * Pub/sub for AiStreamEvent. Multiple SSE subscribers can listen.
- * Ring buffer stores last N events for potential reconnection replay.
- */
-export class SessionEventBus {
-  private subscribers = new Map<string, AsyncEventQueue<AiStreamEvent>>();
-  private ringBuffer: AiStreamEvent[] = [];
-
-  /** Subscribe to events. Returns an async iterable. Closes any existing subscription with the same ID. */
-  subscribe(id: string): AsyncIterable<AiStreamEvent> {
-    // Close existing subscriber with same ID to prevent resource leak
-    const existing = this.subscribers.get(id);
-    if (existing) {
-      existing.close();
-    }
-    const queue = new AsyncEventQueue<AiStreamEvent>();
-    this.subscribers.set(id, queue);
-    return queue;
-  }
-
-  /** Unsubscribe and close the subscriber's queue */
-  unsubscribe(id: string): void {
-    const queue = this.subscribers.get(id);
-    if (queue) {
-      queue.close();
-      this.subscribers.delete(id);
-    }
-  }
-
-  /** Publish an event to all subscribers and the ring buffer */
-  publish(event: AiStreamEvent): void {
-    this.ringBuffer.push(event);
-    if (this.ringBuffer.length > EVENT_RING_BUFFER_SIZE) {
-      this.ringBuffer.shift();
-    }
-
-    for (const queue of this.subscribers.values()) {
-      queue.push(event);
-    }
-  }
-
-  /** Get recent events from the ring buffer for reconnection replay */
-  getReplayEvents(fromIndex = 0): AiStreamEvent[] {
-    return this.ringBuffer.slice(fromIndex);
-  }
-
-  /** Close all subscriber queues */
-  closeAll(): void {
-    for (const queue of this.subscribers.values()) {
-      queue.close();
-    }
-    this.subscribers.clear();
-  }
-
-  get subscriberCount(): number {
-    return this.subscribers.size;
-  }
-}
+// SessionEventBus lives in ./sessionEventBus (#9427); re-exported so existing
+// imports from this module keep working.
+import { SessionEventBus } from './sessionEventBus';
+export { SessionEventBus };
 
 // ============================================
 // ActiveSession
@@ -503,6 +467,17 @@ export interface ActiveSession {
   abortController: AbortController;
   inputController: StreamInputController;
   eventBus: SessionEventBus;
+  /**
+   * #9427: identity of this in-memory session — and so of its turn, because
+   * `/messages` replaces the session before every turn. Sent to attaching
+   * clients as `attach_state.turnId`.
+   */
+  readonly turnId: string;
+  /**
+   * #9427: `ai_messages.id` of this turn's user row, set by `/messages` right
+   * after the insert and before the turn is pushed. Null until then.
+   */
+  turnUserMessageId: string | null;
   state: SessionState;
   lastActivityAt: number;
   readonly createdAt: number;
@@ -522,6 +497,16 @@ export interface ActiveSession {
    * `buildChatSessionToolAuth`, refreshed alongside `auth` on every request.
    */
   toolAuth: AuthContext;
+  /**
+   * Wisp W04 Task 4: the delegation grant this session runs under, or null
+   * for an ordinary session. Resolved by `getOrCreate` ITSELF from the
+   * ai_sessions row (`lookupWispGrant`) — never passed in by a route — so no
+   * caller can forget it; immutable for the session's life (the row's grant
+   * columns never change). When set, `createSessionPreToolUse` gates every
+   * tool call on the live ceiling and the tool runs under the per-call
+   * narrowed auth, never under `toolAuth` itself.
+   */
+  readonly wispGrant: WispSessionGrant | null;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
   mcpServer: McpSdkServerConfigWithInstance;
@@ -639,6 +624,13 @@ export interface ActiveSession {
   currentPlanStepIndex: number;
   /** Resolver for the plan approval promise (in-memory, no DB polling) */
   planApprovalResolver: ((approved: boolean) => void) | null;
+  /**
+   * #9427: cards this turn is blocked on and not yet decided, keyed
+   * `approval:<executionId>` / `plan:<planId>`. Maintained only through
+   * services/sessionPendingCards.ts (record + publish, then remove in a
+   * `finally` around the wait); read by the attach route's snapshot.
+   */
+  pendingCards: Map<string, AiPendingCardEvent>;
   /**
    * Results of `analysis` runs associated with this session that have
    * finished but whose summary has not yet been shown to the model
@@ -1023,6 +1015,21 @@ export class StreamingSessionManager {
       }
     }
 
+    // Wisp W04 Task 4 (structural): every ActiveSession for a grant-pinned
+    // ai_sessions row carries its grant, whichever route built it — resolved
+    // HERE from the row, not from a caller argument. A reused session (above)
+    // already carries it. Fails closed: a pinned row that cannot be resolved
+    // (no revision pin, no thread link, lookup error) throws, so the turn is
+    // refused rather than run ungated. A Wisp session runs only on the default
+    // Breeze MCP server, whose handlers execute under the gate's per-call auth;
+    // a custom-factory surface (script builder, helper, client AI, topology)
+    // is refused outright.
+    const { lookupWispGrant, unreachableWispAuth, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
+    const wispGrant = await lookupWispGrant(breezeSessionId);
+    if (wispGrant && mcpServerFactory) {
+      throw new WispSessionUnavailableError('surface_unsupported', breezeSessionId);
+    }
+
     // Create new session components
     const inputController = new StreamInputController();
     const eventBus = new SessionEventBus();
@@ -1114,11 +1121,14 @@ export class StreamingSessionManager {
       abortController,
       inputController,
       eventBus,
+      turnId: crypto.randomUUID(),
+      turnUserMessageId: null,
       state: 'initializing',
       lastActivityAt: now,
       createdAt: now,
       auth: authWithOrigin,
       toolAuth,
+      wispGrant,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
@@ -1145,6 +1155,7 @@ export class StreamingSessionManager {
       approvedPlanSteps: new Map(),
       currentPlanStepIndex: 0,
       planApprovalResolver: null,
+      pendingCards: new Map(),
       pendingRunResults: [],
       tenantTools: tenantToolsByName,
     };
@@ -1163,7 +1174,9 @@ export class StreamingSessionManager {
       mcpServerName = custom.name;
     } else {
       mcpServer = createBreezeMcpServer(
-        () => session.toolAuth,
+        // A Wisp session's handlers run under the gate's per-call auth
+        // (check.toolAuth); this shared fallback reaches no org at all.
+        wispGrant ? () => unreachableWispAuth(session.toolAuth) : () => session.toolAuth,
         preToolUse,
         postToolUse,
         () => session,
@@ -1752,7 +1765,23 @@ export class StreamingSessionManager {
             // #5106: joined with the SAME "\n\n" separator the stream emits
             // at each non-first text content_block_start, so persisted
             // history is byte-for-byte identical to what streamed clients saw.
-            const assistantContent = message.message.content
+            //
+            // #9534: a synthetic API-error message (it carries `error`) is the
+            // CLI's own text, not model output — for a 401 it reads "Invalid
+            // API key · Fix external API key", a Claude Code CTA that points a
+            // hosted user at a BYO-key page. Persist the same fixed,
+            // client-safe text the live turn's error event carries instead, so
+            // a reload explains the empty turn without leaking provider text.
+            // Only a CLI-authored message (`<synthetic>` model) is replaced;
+            // anything the model itself wrote is persisted as streamed.
+            const syntheticErrorText = typeof message.error === 'string' && message.message.model === '<synthetic>'
+              ? providerFailureMessage(
+                classifySdkAssistantError(message.error, null),
+                session.refusalObservation.sawOutput,
+                { platformKey: session.turnBinding.connectionKind === 'platform' },
+              )
+              : null;
+            const assistantContent = syntheticErrorText ?? message.message.content
               .filter((b: { type: string }) => b.type === 'text')
               .map((b: { type: string; text?: string }) => b.text ?? '')
               .join('\n\n');
@@ -1769,11 +1798,13 @@ export class StreamingSessionManager {
                     // raw `input`, so redact those here too — otherwise the same
                     // plaintext secret persisted below in `tool_input` would still
                     // land here in cleartext.
-                    contentBlocks: message.message.content.map((b) =>
-                      b.type === 'tool_use'
-                        ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
-                        : b,
-                    ) as unknown as Record<string, unknown>[],
+                    contentBlocks: (syntheticErrorText !== null
+                      ? [{ type: 'text', text: syntheticErrorText }]
+                      : message.message.content.map((b) =>
+                        b.type === 'tool_use'
+                          ? { ...b, input: redactSensitiveToolInput(b.input as Record<string, unknown>) }
+                          : b,
+                      )) as unknown as Record<string, unknown>[],
                     inputTokens: message.message.usage?.input_tokens ?? 0,
                     outputTokens: message.message.usage?.output_tokens ?? 0,
                   })
@@ -1906,7 +1937,9 @@ export class StreamingSessionManager {
             // text only (providerFailureMessage); the CLI's synthetic assistant
             // text is raw provider output and is never shown.
             const { providerFailure, sawOutput } = session.refusalObservation;
-            const providerMessage = providerFailure?.terminal ? providerFailureMessage(providerFailure.cause, sawOutput) : null;
+            const providerMessage = providerFailure?.terminal
+              ? providerFailureMessage(providerFailure.cause, sawOutput, { platformKey: turnBinding.connectionKind === 'platform' })
+              : null;
             let isErrorSuccessMessage: string | null = null;
 
             if (resultMsg.subtype !== 'success') {
@@ -2416,7 +2449,7 @@ export class StreamingSessionManager {
           // rather than assumed. A partial count is normal (the
           // status='active' guard skips rows the user already closed); zero
           // across a whole batch is the RLS signature.
-          await runOutsideDbContextSafe(() =>
+          const expiredRows = await runOutsideDbContextSafe(() =>
             withDbAccessContext(
               { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
               () => dbWriteExpectingRows(
@@ -2431,6 +2464,11 @@ export class StreamingSessionManager {
               ),
             ),
           );
+          // Wisp W04 T5: only after the org-scoped write has committed and its
+          // context has exited, and only for the rows the UPDATE returned (the
+          // status='active' guard skips sessions the user already closed).
+          // Best effort: a failure is captured, never thrown into the loop.
+          void finalizeWispSummaries(expiredRows.map((r) => r.id));
         } catch (err) {
           // Never abandon the remaining orgs: a failure here strands rows as
           // 'active', which is the very defect this helper exists to fix.

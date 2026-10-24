@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeSnapshotPath, resolveSelectedSnapshotPaths } from './backupSelectedPaths';
+import {
+  MAX_SELECTED_RESTORE_FILES,
+  normalizeSnapshotPath,
+  resolveSelectedSnapshotPaths,
+  selectedSnapshotPathError,
+} from './backupSelectedPaths';
 
 describe('normalizeSnapshotPath', () => {
   it.each([
@@ -87,8 +92,8 @@ describe('resolveSelectedSnapshotPaths', () => {
   it.each([
     ['dot-segment traversal out of a selected root', 'C:/Users/alex/Documents/../../../Windows/System32/config/SAM'],
     ['dot-segment that would re-resolve to a stored file', 'C:/Users/alex/Temp/../Documents/invoice.pdf'],
-    ['a directory prefix of a stored file', 'C:/Users/alex/Documents'],
-    ['a drive root', 'C:/'],
+    ['a partial directory name', 'C:/Users/alex/Docum'],
+    ['a directory with no files under it', 'C:/Users/alex/Empty'],
     ['a path outside the snapshot', 'D:/secrets/keys.txt'],
     ['a case-variant of a stored path', 'c:/users/alex/documents/invoice.pdf'],
     ['a trailing-separator variant', 'C:/Users/alex/Documents/invoice.pdf/'],
@@ -122,5 +127,139 @@ describe('resolveSelectedSnapshotPaths', () => {
     if (result.ok) {
       for (const path of result.paths) expect(windowsStored).toContain(path);
     }
+  });
+});
+
+describe('resolveSelectedSnapshotPaths — directory expansion (#9628)', () => {
+  const stored = [
+    'C:\\Users\\alex\\Documents\\invoice.pdf',
+    'C:\\Users\\alex\\Documents\\sub\\deep.txt',
+    'C:\\Users\\alex\\Documents2\\other.txt',
+    'C:\\Users\\alex\\Documentsx',
+  ];
+  const docsExpected = {
+    ok: true,
+    paths: ['C:\\Users\\alex\\Documents\\invoice.pdf', 'C:\\Users\\alex\\Documents\\sub\\deep.txt'],
+  };
+
+  it('expands a directory to every stored file beneath it (nested included)', () => {
+    expect(resolveSelectedSnapshotPaths(['C:/Users/alex/Documents'], stored)).toEqual(docsExpected);
+  });
+
+  it('accepts the directory with a backslash spelling or trailing separator', () => {
+    expect(resolveSelectedSnapshotPaths(['C:\\Users\\alex\\Documents'], stored)).toEqual(docsExpected);
+    expect(resolveSelectedSnapshotPaths(['C:/Users/alex/Documents/'], stored)).toEqual(docsExpected);
+  });
+
+  it('does not match sibling directories or files sharing a name prefix', () => {
+    expect(resolveSelectedSnapshotPaths(['C:/Users/alex/Documents'], stored)).toEqual(docsExpected);
+  });
+
+  it.each([
+    ['a trailing dot-segment', 'C:/Users/alex/Documents/..'],
+    ['a dot-segment inside the directory', 'C:/Users/alex/Temp/../Documents'],
+    ['a case-variant directory', 'c:/users/alex/documents'],
+  ])('refuses %s as a directory selection', (_label, selection) => {
+    expect(resolveSelectedSnapshotPaths([selection], stored)).toEqual({
+      ok: false,
+      invalidPath: selection,
+      reason: 'not_found',
+    });
+  });
+
+  it('expands a folder that shares its name with a file (b and b/…) instead of dropping the contents', () => {
+    expect(resolveSelectedSnapshotPaths(['/a/b'], ['/a/b', '/a/b/c.txt', '/a/bb/d.txt'])).toEqual({
+      ok: true,
+      paths: ['/a/b', '/a/b/c.txt'],
+    });
+  });
+
+  it('reports too_many when several selections that each fit exceed the cap together', () => {
+    const half = MAX_SELECTED_RESTORE_FILES / 2 + 1;
+    const paths = [
+      ...Array.from({ length: half }, (_, i) => `/x/f${i}`),
+      ...Array.from({ length: half }, (_, i) => `/y/f${i}`),
+    ];
+    expect(resolveSelectedSnapshotPaths(['/x', '/y'], paths)).toMatchObject({
+      ok: false,
+      reason: 'too_many',
+      invalidPath: '/y',
+    });
+  });
+
+  it('does not double count overlapping selections toward the cap', () => {
+    const many = Array.from({ length: MAX_SELECTED_RESTORE_FILES }, (_, i) => `/big/f${i}.txt`);
+    const result = resolveSelectedSnapshotPaths(['/big', '/big/f1.txt'], many);
+    expect(result.ok && result.paths.length).toBe(MAX_SELECTED_RESTORE_FILES);
+  });
+
+  it('expands POSIX directories without partial-name matches (pick.txt vs pick.txtx/)', () => {
+    const posix = ['/data/pick.txtx/a.txt', '/data/pick.txt', '/data/pick.txt.bak'];
+    expect(resolveSelectedSnapshotPaths(['/data/pick.txtx'], posix)).toEqual({
+      ok: true,
+      paths: ['/data/pick.txtx/a.txt'],
+    });
+    expect(resolveSelectedSnapshotPaths(['/data/pick.txt'], posix)).toEqual({ ok: true, paths: ['/data/pick.txt'] });
+  });
+
+  it('expands UNC directories', () => {
+    expect(
+      resolveSelectedSnapshotPaths(
+        ['//fileserver/share/finance'],
+        ['\\\\fileserver\\share\\finance\\q3.xlsx', '\\\\fileserver\\share\\finance2\\x']
+      )
+    ).toEqual({ ok: true, paths: ['\\\\fileserver\\share\\finance\\q3.xlsx'] });
+  });
+
+  it('de-duplicates a directory plus a file already inside it', () => {
+    expect(resolveSelectedSnapshotPaths(['/a/b', '/a/b/c.txt'], ['/a/b/c.txt', '/a/b/d.txt'])).toEqual({
+      ok: true,
+      paths: ['/a/b/c.txt', '/a/b/d.txt'],
+    });
+  });
+
+  it('treats a drive root as a directory (still bounded by its own prefix and the cap)', () => {
+    const result = resolveSelectedSnapshotPaths(['C:/'], [...stored, 'D:\\other.txt']);
+    expect(result).toEqual({ ok: true, paths: stored });
+  });
+
+  it('accepts directory paths exactly as the browse tree returns them (leading slash, UNC without //)', () => {
+    expect(resolveSelectedSnapshotPaths(['/C:/Users/alex/Documents'], stored)).toEqual(docsExpected);
+    expect(
+      resolveSelectedSnapshotPaths(['/fileserver/share/finance'], ['\\\\fileserver\\share\\finance\\q3.xlsx', '\\\\fileserver\\share\\fin\\z'])
+    ).toEqual({ ok: true, paths: ['\\\\fileserver\\share\\finance\\q3.xlsx'] });
+  });
+
+  it('refuses the bare root "/"', () => {
+    expect(resolveSelectedSnapshotPaths(['/'], ['/a/b'])).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  it('refuses an empty selection', () => {
+    expect(resolveSelectedSnapshotPaths([''], ['/a'])).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  it('refuses an expansion above the cap and names the count', () => {
+    const many = Array.from({ length: MAX_SELECTED_RESTORE_FILES + 1 }, (_, i) => `/big/f${i}.txt`);
+    const result = resolveSelectedSnapshotPaths(['/big'], many);
+    expect(result).toEqual({
+      ok: false,
+      invalidPath: '/big',
+      reason: 'too_many',
+      count: MAX_SELECTED_RESTORE_FILES + 1,
+      limit: MAX_SELECTED_RESTORE_FILES,
+    });
+    if (!result.ok) {
+      expect(selectedSnapshotPathError(result)).toContain(String(MAX_SELECTED_RESTORE_FILES + 1));
+    }
+  });
+
+  it('allows exactly the cap', () => {
+    const many = Array.from({ length: MAX_SELECTED_RESTORE_FILES }, (_, i) => `/big/f${i}.txt`);
+    const result = resolveSelectedSnapshotPaths(['/big'], many);
+    expect(result.ok && result.paths.length).toBe(MAX_SELECTED_RESTORE_FILES);
+  });
+
+  it('expands a parent folder to every stored original beneath it, in stored order', () => {
+    expect(resolveSelectedSnapshotPaths(['C:/Users/alex'], stored)).toEqual({ ok: true, paths: stored });
   });
 });

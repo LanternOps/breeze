@@ -95,7 +95,9 @@
     "high": "Alto",
     "medium": "Medio",
     "low": "Bajo",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "unscored": "Sin puntuación",
+    "unscoredTitle": "Todavía no se publicó una puntuación de gravedad de NVD para esta CVE."
   },
   "softwareGroupDrawer": {
     "titleFallback": "grupo de software",
@@ -190,7 +192,8 @@
       "patch": "Parche"
     },
     "help": {
-      "riskAria": "Acerca de la puntuación de riesgo"
+      "riskAria": "Acerca de la puntuación de riesgo",
+      "patchAria": "Acerca de la columna Parche"
     },
     "actions": {
       "openDetailsAria": "Abrir detalles de vulnerabilidad {{name}}"
@@ -314,9 +317,9 @@
       },
       "patchReady": {
         "label": "Parche listo",
-        "detail": "{{count}} hallazgos abiertos con un parche disponible",
-        "detail_one": "{{count}} hallazgo abierto con un parche disponible",
-        "detail_other": "{{count}} hallazgos abiertos con un parche disponible"
+        "detail": "{{count}} hallazgos abiertos con un parche aprobado listo para instalar",
+        "detail_one": "{{count}} hallazgo abierto con un parche aprobado listo para instalar",
+        "detail_other": "{{count}} hallazgos abiertos con un parche aprobado listo para instalar"
       },
       "acceptedExpiring": {
         "label": "Aceptado, expirará pronto.",
@@ -350,13 +353,15 @@
       "cvssAria": "Acerca de la puntuación CVSS",
       "riskAria": "Acerca de la puntuación de riesgo",
       "epssAria": "Acerca de la puntuación EPSS",
-      "kevAria": "Sobre la bandera KEV"
+      "kevAria": "Sobre la bandera KEV",
+      "patchAria": "Acerca de la columna Parche"
     },
     "actions": {
       "openDetailsAria": "Abrir detalles de {{cveId}}"
     },
     "patch": {
-      "ready": "Listo"
+      "ready": "Listo",
+      "update": "Actualizar a la última versión"
     },
     "hasMore": "Mostrando los 500 CVE principales por riesgo: reduzca los filtros para ver el resto."
   }

@@ -20,6 +20,7 @@
     "state": {
       "met": "Respecté",
       "notMet": "Non respecté",
+      "metLate": "Respecté en retard",
       "breached": "Violation",
       "pausedLeft": "En pause · temps restant : {{relative}}",
       "left": "Temps restant : {{relative}}"
@@ -235,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
     "includedMinutes": "{{hours}} h incluses au contrat",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Chaque entrée facture ses minutes arrondies en heures (2 décimales) × son taux.",
     "missingRateCount_one": "1 entrée n'a pas de taux horaire — non comptée dans le montant ci-dessus",
     "missingRateCount_other": "{{count}} entrées n'ont pas de taux horaire — non comptées dans le montant ci-dessus",
     "deleteEntry": "Supprimer l’entrée de temps de {{duration}} de {{tech}}",
@@ -333,6 +336,11 @@
     "selectedCount_other": "{{count}} sélectionnés",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un billet. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le billet {{number}} n’est pas dans cette vue.",
+    "movedToClosed": {
+      "message": "{{status}} — maintenant sous {{tab}}",
+      "view": "Voir dans {{tab}}"
+    },
     "ticketingSettings": "Paramètres de billetterie",
     "assignFailed": "Assignation échouée. Réessayez.",
     "assignedToYou": "Vous a été attribué",
@@ -411,6 +419,7 @@
     "loadFailed": "Impossible de charger le billet.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du billet",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",

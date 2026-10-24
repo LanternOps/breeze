@@ -1175,7 +1175,11 @@ export default function DeviceGroupsPage() {
               // are only shown for rows that have no filter — otherwise a
               // stale stub would misreport the group's membership.
               const membershipChips = group.filterConditions
-                ? describeFilterConditions(group.filterConditions, filterFields)
+                ? describeFilterConditions(group.filterConditions, filterFields, {
+                    orgs: fleet.organizations,
+                    sites: siteOptions,
+                    groups,
+                  })
                 : (group.rules ?? []).map((rule) =>
                     buildRuleLabel(rule, siteNameById),
                   );

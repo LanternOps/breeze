@@ -1,6 +1,7 @@
 import { createRequire } from 'module';
-import { cpSync, existsSync, mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
+import { copyDirWithFallback } from '../src/lib/copyDirWithFallback.ts';
 
 // Copy Monaco's AMD editor bundle (`monaco-editor/min/vs`) into the web app's
 // `public/monaco/vs` so Astro serves it from `'self'`. This is what lets us
@@ -30,6 +31,6 @@ if (!existsSync(src)) {
 
 rmSync(destRoot, { recursive: true, force: true });
 mkdirSync(destRoot, { recursive: true });
-cpSync(src, dest, { recursive: true });
+copyDirWithFallback(src, dest);
 
 console.log(`Copied Monaco editor assets to ${dest}`);

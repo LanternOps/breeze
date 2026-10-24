@@ -564,4 +564,20 @@ describe('PsaConnectionsPage round-trip contract', () => {
     await screen.findByRole('button', { name: /^edit$/i });
     expect(screen.queryByRole('button', { name: /sync now/i })).toBeNull();
   });
+  it('does not promise ticket sync in the page copy or the connection form (#9655)', async () => {
+    const user = userEvent.setup();
+    installFetchRouter({ 'GET /psa/connections': { data: [] } }, []);
+
+    render(<PsaConnectionsPage />);
+
+    expect(await screen.findByText(/import companies as organizations/i)).toBeTruthy();
+    expect(screen.queryByText(/sync tickets/i)).toBeNull();
+    expect(screen.queryByText(/start syncing tickets/i)).toBeNull();
+
+    await user.click(await screen.findByRole('button', { name: /add connection/i }));
+    expect(screen.queryByLabelText(/enable sync/i)).toBeNull();
+    expect(screen.queryByLabelText(/sync interval/i)).toBeNull();
+    expect(screen.queryByLabelText(/sync direction/i)).toBeNull();
+    expect(screen.getByTestId('psa-ticket-sync-unavailable')).toBeTruthy();
+  });
 });

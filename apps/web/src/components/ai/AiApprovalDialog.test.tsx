@@ -464,6 +464,50 @@ describe('intent-backed self-approve (sole operator)', () => {
   });
 });
 
+// #9534: a supervised self-approve runs no WebAuthn ceremony (#5600), yet the
+// button read "Verify & Approve" with a fingerprint icon. It promises a
+// verification only when one is actually required: four_eyes (or an unknown
+// scope, which decides with the ceremony) and fresh-factor tools.
+describe('self-approve button copy matches whether a verification runs (#9534)', () => {
+  const props = (toolName = 'file_operations') => ({
+    toolName,
+    description: 'Read a file',
+    input: {} as Record<string, unknown>,
+    onApprove: vi.fn<() => void>(),
+    onReject: vi.fn<() => void>(),
+    intentBacked: true,
+    selfApprovalRequestId: 'ap-1',
+    onIntentDecided: vi.fn(),
+  });
+
+  it('supervised: plain "Approve", no fingerprint icon', () => {
+    render(<AiApprovalDialog {...props()} approvalScope="supervised" />);
+    const approve = screen.getByTestId('ai-approval-approve');
+    expect(approve).toHaveTextContent(/^Approve$/);
+    expect(approve.querySelector('[class*="lucide-fingerprint"]')).toBeNull();
+  });
+
+  it('supervised: the in-flight label does not claim to wait for a verification', async () => {
+    decideIntentApproval.mockReturnValue(new Promise(() => {}));
+    render(<AiApprovalDialog {...props()} approvalScope="supervised" />);
+    fireEvent.click(screen.getByTestId('ai-approval-approve'));
+    await waitFor(() => expect(screen.getByTestId('ai-approval-approve')).toBeDisabled());
+    expect(screen.getByTestId('ai-approval-approve')).toHaveTextContent(/approving/i);
+    expect(screen.queryByText(/waiting for verification/i)).toBeNull();
+  });
+
+  it.each([
+    ['four_eyes', 'file_operations'],
+    [undefined, 'file_operations'],
+    ['supervised', 'diagnose_connectivity'],
+  ] as const)('scope %s / %s: "Verify & Approve" with the fingerprint icon', (scope, tool) => {
+    render(<AiApprovalDialog {...props(tool)} approvalScope={scope} />);
+    const approve = screen.getByTestId('ai-approval-approve');
+    expect(approve).toHaveTextContent(/verify & approve/i);
+    expect(approve.querySelector('[class*="lucide-fingerprint"]')).not.toBeNull();
+  });
+});
+
 describe('fresh approver factor (topology diagnose_connectivity, M4-D3)', () => {
   const props = () => ({
     toolName: 'diagnose_connectivity',

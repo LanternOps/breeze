@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // #5645: every inline release hands the handler the released intent's decision
 // record (`approvalScope` + `decidedVia`) on the execution context — the same
@@ -15,7 +15,7 @@ import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
-import { APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS } from './aiToolHandoff';
+import { APPROVED_COMPLETED_STATUS, APPROVED_EXECUTING_MESSAGE, APPROVED_EXECUTING_STATUS, APPROVED_FAILED_STATUS } from './aiToolHandoff';
 import { setActionIntentMetricsRecorder } from './actionIntents/metrics';
 import { makeResolvedModel } from './aiModels/__fixtures__/resolvedModel';
 import { CallerVerificationRequiredError } from './callerVerification/errors';
@@ -33,7 +33,11 @@ vi.mock('./aiSessionLiveAuthority', () => ({
 // Mocks
 // ============================================
 
+const finalizeMock = vi.hoisted(() => vi.fn(async (_id: string) => ({ updated: false })));
+vi.mock('./wisp/threadSummary', () => ({ finalizeWispSessionSummary: finalizeMock }));
+
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -91,11 +95,11 @@ vi.mock('./aiModels/sessionModel', () => ({
 }));
 
 const mockCheckAiRateLimit = vi.fn();
-const mockCheckBudget = vi.fn();
+const mockCheckBudgetDetailed = vi.fn();
 const mockGetRemainingBudgetUsd = vi.fn();
 vi.mock('./aiCostTracker', () => ({
   checkAiRateLimit: (...args: unknown[]) => mockCheckAiRateLimit(...args),
-  checkBudget: (...args: unknown[]) => mockCheckBudget(...args),
+  checkBudgetDetailed: (...args: unknown[]) => mockCheckBudgetDetailed(...args),
   getRemainingBudgetUsd: (...args: unknown[]) => mockGetRemainingBudgetUsd(...args),
 }));
 
@@ -173,9 +177,11 @@ vi.mock('./pamToolActionGovernance', () => ({
 const mockCreateActionIntent = vi.fn();
 const mockWaitForIntentDecision = vi.fn();
 const mockTransitionIntent = vi.fn();
+const mockWaitForIntentTerminalOutcome = vi.fn();
 vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: (...args: unknown[]) => mockCreateActionIntent(...args),
   waitForIntentDecision: (...args: unknown[]) => mockWaitForIntentDecision(...args),
+  waitForIntentTerminalOutcome: (...args: unknown[]) => mockWaitForIntentTerminalOutcome(...args),
   transitionIntent: (...args: unknown[]) => mockTransitionIntent(...args),
 }));
 
@@ -266,6 +272,18 @@ vi.mock('./scriptRunContextApproval', async (importOriginal) => {
 
 vi.mock('./sentry', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+}));
+
+// #9854: the pre-tool-use gate validates input against the full tool schema
+// before any approval. Most fixtures in this file use placeholder ids
+// ('d-1', 'device-1') that the real schemas reject, so the validator defaults
+// to "valid" here; the #9854 block below swaps the REAL validator back in.
+const mockValidateToolInput = vi.fn(
+  (..._args: unknown[]): { success: true } | { success: false; error: string } => ({ success: true }),
+);
+vi.mock('./aiToolSchemas', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./aiToolSchemas')>()),
+  validateToolInput: (...args: unknown[]) => mockValidateToolInput(...args),
 }));
 
 // ============================================
@@ -405,7 +423,7 @@ describe('runPreFlightChecks', () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(makeSession());
     mockCheckAiRateLimit.mockResolvedValue(null);
-    mockCheckBudget.mockResolvedValue(null);
+    mockCheckBudgetDetailed.mockResolvedValue(null);
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
@@ -444,7 +462,7 @@ describe('runPreFlightChecks', () => {
     if (result.ok) {
       expect(result.model).toBe(model);
     }
-    expect(mockCheckBudget).toHaveBeenCalledWith('org-session-99', 'partner_key');
+    expect(mockCheckBudgetDetailed).toHaveBeenCalledWith('org-session-99', 'partner_key');
   });
 
   it.each(['model_unavailable', 'not_permitted', 'permission_required', 'plan_required', 'connection_unavailable', 'tools_unsupported', 'unpriced'] as const)(
@@ -460,7 +478,7 @@ describe('runPreFlightChecks', () => {
           ok: false, error: 'Model Opus 5.5 is no longer available — choose another.', status: 409, code: reason,
         });
         expect(mockCheckAiRateLimit).not.toHaveBeenCalled();
-        expect(mockCheckBudget).not.toHaveBeenCalled();
+        expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
         expect(mockSanitizeUserMessage).not.toHaveBeenCalled();
       } finally {
         vi.unstubAllEnvs();
@@ -487,7 +505,7 @@ describe('runPreFlightChecks', () => {
       });
       const result = await runPreFlightChecks('session-1', 'hello', auth);
       expect(result).toEqual({ ok: false, error: 'ai_not_configured', status: 503 });
-      expect(mockCheckBudget).not.toHaveBeenCalled();
+      expect(mockCheckBudgetDetailed).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
     }
@@ -520,7 +538,7 @@ describe('runPreFlightChecks', () => {
       expect(r).not.toHaveProperty('openaiCompatible');
       expect(mockResolveSessionTurn).toHaveBeenCalledWith({ sessionId: 'session-1', surface: 'chat', userId: auth.user.id });
       // Funding is the resolved offering's, never an assumed platform path.
-      expect(mockCheckBudget).toHaveBeenCalledWith('org-1', 'partner_key');
+      expect(mockCheckBudgetDetailed).toHaveBeenCalledWith('org-1', 'partner_key');
     } finally {
       vi.unstubAllEnvs();
     }
@@ -553,13 +571,22 @@ describe('runPreFlightChecks', () => {
   // --- Budget uses session's org ---
 
   it('returns error when budget is exceeded', async () => {
-    mockCheckBudget.mockResolvedValue('Monthly budget exhausted');
+    mockCheckBudgetDetailed.mockResolvedValue({ message: 'Monthly budget exhausted', reason: 'monthly_budget', permanent: false });
     const result = await runPreFlightChecks('session-1', 'hello', auth);
-    expect(result).toEqual({ ok: false, error: 'Monthly budget exhausted' });
+    expect(result).toEqual({ ok: false, error: 'Monthly budget exhausted', status: 402 });
+  });
+
+  it.each([
+    ['credits_exhausted', 'You are out of AI credits. Purchase more credits to continue.', 'credits_exhausted'],
+    ['plan_gate', 'AI assistant requires the Community plan.', 'plan_not_eligible'],
+  ] as const)('a %s denial is a 402 carrying billingCode (#9450)', async (reason, message, billingCode) => {
+    mockCheckBudgetDetailed.mockResolvedValue({ message, reason, permanent: reason === 'plan_gate' });
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toEqual({ ok: false, error: message, status: 402, billingCode });
   });
 
   it('returns error when budget check throws', async () => {
-    mockCheckBudget.mockRejectedValue(new Error('DB error'));
+    mockCheckBudgetDetailed.mockRejectedValue(new Error('DB error'));
     const result = await runPreFlightChecks('session-1', 'hello', auth);
     expect(result).toEqual({ ok: false, error: 'Unable to verify budget. Please try again.' });
   });
@@ -617,6 +644,41 @@ describe('runPreFlightChecks', () => {
       expect(result.error).toContain('24h');
     }
     expect(db.update).toHaveBeenCalled();
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+  });
+
+  it('a rejected thread-summary finalize does not change the expiry result, and is captured + logged', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockGetSession.mockResolvedValue(makeSession({ createdAt, lastActivityAt: new Date() }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('24h');
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('a rejected finalize on the INACTIVITY (2h idle) branch is captured + logged and keeps the expiry result', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockGetSession.mockResolvedValue(makeSession({ lastActivityAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('idle summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('inactivity') });
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
   });
 
   // --- Idle timeout ---
@@ -635,6 +697,7 @@ describe('runPreFlightChecks', () => {
       expect(result.error).toContain('inactivity');
     }
     expect(db.update).toHaveBeenCalled();
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
   });
 
   // --- Input sanitization ---
@@ -1360,6 +1423,141 @@ describe('createSessionPreToolUse', () => {
         input,
         expect.objectContaining({ chatSession: true }),
       );
+    });
+  });
+
+  describe('#9854: input is validated before any approval is requested', () => {
+    const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
+    const HELPER_DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import('./aiToolSchemas')>('./aiToolSchemas');
+      mockValidateToolInput.mockImplementation((toolName, input) =>
+        actual.validateToolInput(toolName as string, input as Record<string, unknown>));
+      mockCreateActionIntent.mockReset();
+      mockWaitForIntentDecision.mockReset();
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+      } as any);
+    });
+
+    afterEach(() => {
+      mockValidateToolInput.mockReset();
+      mockValidateToolInput.mockImplementation(() => ({ success: true }));
+    });
+
+    it('refuses an execute_command file_read on a deny-listed path with no intent, approval card or audit row', async () => {
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('execute_command', {
+        deviceId: DEVICE_ID,
+        commandType: 'file_read',
+        payload: { path: '/proc/1/status' },
+      });
+
+      expect(result).toEqual({
+        allowed: false,
+        error: expect.stringMatching(/^Invalid input: payload\.path: .*blocked/i),
+      });
+      expect(mockCreateActionIntent).not.toHaveBeenCalled();
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(session.eventBus.publish).not.toHaveBeenCalled();
+      expect(mockWaitForIntentDecision).not.toHaveBeenCalled();
+      expect(mockGetUserPushTokens).not.toHaveBeenCalled();
+      // Refused before the guardrail/RBAC/rate-limit gates spend anything.
+      expect(checkGuardrails).not.toHaveBeenCalled();
+      expect(checkToolRateLimit).not.toHaveBeenCalled();
+    });
+
+    it('still creates exactly one intent for a valid Tier-3 execute_command', async () => {
+      mockInsertReturning({ id: 'exec-valid' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-valid', approvalRequestIds: ['appr-v'] }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+      const input = { deviceId: DEVICE_ID, commandType: 'file_read', payload: { path: '/var/log/syslog' } };
+
+      const result = await createSessionPreToolUse(session)('execute_command', input);
+
+      expect(result).toEqual({ allowed: false, error: 'Tool execution was rejected, cancelled, or expired' });
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
+      expect(mockCreateActionIntent).toHaveBeenCalledWith(session.auth, expect.objectContaining({
+        toolName: 'execute_command',
+        input,
+      }));
+    });
+
+    it('validates a helper session call against the helper-scoped input, as executeTool will', async () => {
+      const session = makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: HELPER_DEVICE_ID,
+          user: { id: HELPER_DEVICE_ID, email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+      });
+
+      // No deviceId from the model: the helper scope supplies it, so this is
+      // valid and must reach PAM governance.
+      mockInsertReturning({ id: 'exec-h-valid' });
+      mockDecideHelperToolAction.mockResolvedValue('denied');
+      const allowedShape = await createSessionPreToolUse(session)('execute_command', {
+        commandType: 'file_read',
+        payload: { path: '/var/log/syslog' },
+      });
+      expect(allowedShape).toEqual({ allowed: false, error: 'This action was denied by organization policy' });
+      expect(mockDecideHelperToolAction).toHaveBeenCalledTimes(1);
+
+      // A deny-listed path never reaches PAM.
+      vi.mocked(db.insert).mockClear();
+      mockDecideHelperToolAction.mockClear();
+      const blocked = await createSessionPreToolUse(session)('execute_command', {
+        commandType: 'file_read',
+        payload: { path: '/proc/1/status' },
+      });
+      expect(blocked).toEqual({
+        allowed: false,
+        error: expect.stringMatching(/^Invalid input: payload\.path: .*blocked/i),
+      });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
+    });
+
+    it('refuses a helper session call to a tool the helper scope does not cover, before PAM', async () => {
+      const session = makeActiveSession({
+        auth: makeAuth({
+          scope: 'organization',
+          helperDeviceId: HELPER_DEVICE_ID,
+          user: { id: HELPER_DEVICE_ID, email: 'helper@host-01', name: 'HOST-01' },
+        } as any),
+      });
+
+      // query_devices has a core schema but is org-wide: no HELPER_TOOL_SCOPING entry.
+      const result = await createSessionPreToolUse(session)('query_devices', {});
+
+      expect(result).toEqual({ allowed: false, error: "Tool 'query_devices' is not available in the Helper context" });
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(mockDecideHelperToolAction).not.toHaveBeenCalled();
+      expect(checkGuardrails).not.toHaveBeenCalled();
+    });
+
+    it('leaves a tool with no core input schema to its own handler (session-aware tools)', async () => {
+      mockInsertReturning({ id: 'exec-m365' });
+      mockCreateActionIntent.mockResolvedValue(makeIntentSnapshot({ id: 'intent-m365', actionName: 'm365_reset_password' }));
+      mockWaitForIntentDecision.mockResolvedValue('rejected');
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step' });
+
+      const result = await createSessionPreToolUse(session)('m365_reset_password', { userPrincipalName: 'a@b.test' });
+
+      expect(result).not.toEqual(expect.objectContaining({ error: expect.stringContaining('No input schema') }));
+      expect(mockCreateActionIntent).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -2105,6 +2303,116 @@ describe('createSessionPreToolUse', () => {
       });
 
       expect(details).toMatchObject({ approved: true, approvalMethod: 'action_intent' });
+    });
+
+    // #9530: when the durable release worker wins the approved -> executing
+    // claim, the pre-tool-use gate hands off and returned BEFORE recording the
+    // approval method, so the `ai.tool.<name>` audit row said approved:false /
+    // approvalMethod:'unknown' two seconds after `action_intent.approved`
+    // recorded the human's decision for the same call.
+    for (const scope of [
+      { approvalScope: 'supervised' as const, method: 'supervised_self' },
+      { approvalScope: 'four_eyes' as const, method: 'action_intent' },
+    ]) {
+      it(`audits a HAND-OFF (worker won the claim) as approved:true / ${scope.method}`, async () => {
+        vi.mocked(checkGuardrails).mockReturnValue({
+          allowed: true,
+          tier: 3,
+          requiresApproval: true,
+          description: 'Execute command',
+          approvalScope: scope.approvalScope,
+        } as any);
+        mockInsertReturning({ id: `exec-handoff-${scope.method}` });
+        mockCreateActionIntent.mockResolvedValue(
+          makeIntentSnapshot({ id: `intent-handoff-${scope.method}`, approvalRequestIds: ['appr-h'] }),
+        );
+        mockWaitForIntentDecision.mockResolvedValue('approved');
+        mockTransitionIntent.mockResolvedValue(false); // the worker won the CAS
+        mockWaitForIntentTerminalOutcome.mockResolvedValueOnce({ status: 'completed', errorCode: null, result: null });
+        vi.mocked(db.update).mockReturnValue({
+          set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+        } as any);
+        const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+        const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+          allowed: boolean;
+          error: string;
+          handoff?: string;
+        };
+        expect(pre.allowed).toBe(false);
+        expect(pre.handoff).toBe(APPROVED_COMPLETED_STATUS);
+
+        await createSessionPostToolUse(session)(
+          'execute_command',
+          { deviceId: 'd-1' },
+          JSON.stringify({ status: APPROVED_COMPLETED_STATUS, message: pre.error }),
+          false,
+          0,
+          undefined,
+          APPROVED_COMPLETED_STATUS,
+        );
+
+        const auditCall = mockWriteAuditEvent.mock.calls.find(
+          (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+        );
+        expect((auditCall![1] as any).details).toMatchObject({
+          approved: true,
+          approvalMethod: scope.method,
+          toolOutcome: APPROVED_COMPLETED_STATUS,
+        });
+      });
+    }
+
+    it('audits a HAND-OFF whose worker execution FAILED as approved:true with the failure outcome', async () => {
+      // The human approved; the worker then failed it. The audit row must keep
+      // both facts — approved, and approved_failed / result:failure — rather
+      // than demoting the approval because the action did not take effect.
+      vi.mocked(checkGuardrails).mockReturnValue({
+        allowed: true,
+        tier: 3,
+        requiresApproval: true,
+        description: 'Execute command',
+        approvalScope: 'four_eyes',
+      } as any);
+      mockInsertReturning({ id: 'exec-handoff-failed' });
+      mockCreateActionIntent.mockResolvedValue(
+        makeIntentSnapshot({ id: 'intent-handoff-failed', approvalRequestIds: ['appr-hf'] }),
+      );
+      mockWaitForIntentDecision.mockResolvedValue('approved');
+      mockTransitionIntent.mockResolvedValue(false);
+      mockWaitForIntentTerminalOutcome.mockResolvedValueOnce({
+        status: 'failed',
+        errorCode: 'tool_returned_error',
+        result: { error: 'guardrail refused' },
+      });
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue(undefined) })),
+      } as any);
+      const session = makeActiveSession({ approvalMode: 'per_step', auditSnapshot: {} });
+
+      const pre = (await createSessionPreToolUse(session)('execute_command', { deviceId: 'd-1' })) as {
+        error: string;
+        handoff?: string;
+      };
+      expect(pre.handoff).toBe(APPROVED_FAILED_STATUS);
+
+      await createSessionPostToolUse(session)(
+        'execute_command',
+        { deviceId: 'd-1' },
+        JSON.stringify({ status: APPROVED_FAILED_STATUS, message: pre.error }),
+        true,
+        0,
+        undefined,
+        APPROVED_FAILED_STATUS,
+      );
+
+      const auditCall = mockWriteAuditEvent.mock.calls.find(
+        (c) => (c[1] as any)?.action === 'ai.tool.execute_command',
+      );
+      expect(auditCall![1]).toMatchObject({
+        result: 'failure',
+        details: { approved: true, approvalMethod: 'action_intent', toolOutcome: APPROVED_FAILED_STATUS },
+      });
     });
 
     it('defaults to action_intent when the guardrail carries no approvalScope (never the weaker supervised_self)', async () => {
@@ -3882,6 +4190,53 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
   // must also be re-proved by revalidateApprovedIntentForRelease before the
   // step counts as run. Winning the CAS but failing revalidation must not
   // advance the plan.
+  it('a Wisp release refusal surfaces its own reason, not the generic revalidation copy (W04 Review Focus 2)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-wisp-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-wisp-revalidate-fail', approvalRequestIds: ['appr-wisp-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+      ok: false,
+      errorCode: 'wisp_grant_inactive',
+      details: { wispRefusal: 'inactive', reason: 'Wisp is paused for this grant.', grantId: 'g-1', aiSessionId: 's-1' },
+    });
+    const result = await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' });
+    expect(result).toEqual({ allowed: false, error: 'Wisp is paused for this grant.' });
+  });
+
+  it('a non-Wisp revalidation failure never surfaces details.reason', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-nonwisp-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-nonwisp-revalidate-fail', approvalRequestIds: ['appr-nonwisp-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+      ok: false,
+      errorCode: 'actor_invalid',
+      details: { reason: 'internal detail that must stay private' },
+    });
+    const result = await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' });
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization for this action could no longer be verified; it was not executed.',
+    });
+  });
+
   it('does NOT advance when the release CAS is won but revalidation fails', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,

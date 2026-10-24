@@ -1213,12 +1213,12 @@ roleRoutes.post(
   '/:id/clone',
   requirePermission(PERMISSIONS.USERS_WRITE.resource, PERMISSIONS.USERS_WRITE.action),
   requireMfa(),
-  zValidator('json', z.object({ name: z.string().min(1).max(100) })),
+  zValidator('json', z.object({ name: z.string().min(1).max(100), description: z.string().optional() })),
   async (c) => {
     const auth = c.get('auth');
     const focusedOrgId = c.req.query('orgId');
     const roleId = c.req.param('id')!;
-    const { name } = c.req.valid('json');
+    const { name, description } = c.req.valid('json');
     const callerPermissions = await getCallerPermissions(c, auth);
 
     // Get source role
@@ -1275,7 +1275,9 @@ roleRoutes.post(
       orgId?: string;
     } = {
       name,
-      description: sourceRole.description ? `Cloned from ${sourceRole.name}: ${sourceRole.description}` : `Cloned from ${sourceRole.name}`,
+      // #9603: never the source's text or server-written English; the clone dialog
+      // sends its own localized, editable description (null when none is given).
+      description: description ?? null,
       scope: scopeContext.scope,
       isSystem: false,
       // #5317: a clone keeps the source's MFA requirement — cloning the

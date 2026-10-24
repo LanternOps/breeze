@@ -22,14 +22,14 @@ The integration is **read-only**. Breeze reads backup status from Cove; it never
 
 - **Partner accounts only.** Connections belong to your MSP (partner) account and cover every organization under it. Organization-scoped users cannot see or manage them.
 - **Who can manage a connection.** Adding, editing, testing, syncing, deleting and mapping customers requires a partner user with organization write permission, access to *all* organizations, and MFA. Partner users with access to only selected organizations can view the connection but not change it.
-- **A dedicated Cove login.** Cove has no API key, so Breeze signs in as a console user. Create a dedicated Cove user with a **read-only role**, a unique password, and **no two-factor authentication**.
+- **A Cove API user.** In the Cove Management Console, go to **Management → Users → API Users**, select your **top-level customer** in the Customer list, and click **Add API User**. Give it a login name (for example, `breeze-sync`) and the most restrictive role that can still read customers and backup statistics. Copy the token when it is shown — Cove displays it only once; if you lose it, delete the API user and create a new one. An API user cannot sign in to the console, so two-factor authentication does not apply to it.
 
 ## Connecting Cove
 
 <Steps>
 1. Go to **Integrations** and open the **Backup** tab. (The old address `/settings/integrations/backup` redirects here.)
 2. Click **Add connection** and choose **Cove Data Protection**.
-3. Enter a **Connection name** (for example, *Main Cove account*), your **Cove partner name**, and the **Username** and **Password** of the dedicated console user.
+3. Enter a **Connection name** (for example, *Main Cove account*). For **Cove partner name**, enter the name of the customer the API user was created under, exactly as Cove shows it. Enter the API user's login name as the **Username** and its token as the **Password**.
 4. Optionally turn on **Show the provider name in the client portal**. It is off by default, so customer-facing views use the generic label *Managed cloud backup* instead of the vendor name.
 5. Save. Breeze signs in to Cove before saving anything — if the login fails, nothing is created and the error is shown. On success, the first sync starts right away.
 </Steps>

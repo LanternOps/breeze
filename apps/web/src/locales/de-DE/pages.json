@@ -75,7 +75,7 @@
     "fleet": "Flottenorchestrierung",
     "forgotPassword": "Passwort vergessen",
     "incidentsDetail": "Vorfalldetails",
-    "incidents": "Vorfälle",
+    "incidents": "Sicherheitsvorfälle",
     "dashboard": "Dashboard",
     "integrations": "Integrationen",
     "integrationsPsa": "PSA-Integrationen",
@@ -141,6 +141,7 @@
     "settingsBilling": "Abrechnungseinstellungen",
     "settingsCatalog": "Produktkatalog",
     "settingsConnectedApps": "Verbundene Apps",
+    "settingsDeliverableTemplates": "Leistungsvorlagen",
     "settingsCustomFields": "Benutzerdefinierte Felder",
     "settingsEnrollmentKeys": "Registrierungsschlüssel",
     "settingsFilters": "Gespeicherte Filter",
@@ -177,8 +178,11 @@
     "securityScans": "IOC-Scans",
     "devicesTime": "Zeitsynchronisierung",
     "adminAiModels": "KI-Modelle",
-    "billingAutopay": "Automatic payments",
-    "endpointMessages": "Endpunkt-Nachrichten"
+    "billingAutopay": "Automatische Zahlungen",
+    "endpointMessages": "Endpunkt-Nachrichten",
+    "securityDetectionRules": "Erkennungsregeln",
+    "settingsPlan": "Tarif & Funktionen",
+    "settingsWispMemory": "Wisp-Gedächtnis"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -261,6 +265,14 @@
       },
       "alertTemplates": {
         "title": "Alarmvorlagen"
+      },
+      "plan": {
+        "title": "Tarif & Funktionen",
+        "description": "Ihr Tarif, welche Funktionen er umfasst und woher jede einzelne stammt."
+      },
+      "wispMemory": {
+        "title": "Wisp-Gedächtnis",
+        "description": "Prüfen, bestätigen und widerrufen, was Wisp sich merkt."
       }
     },
     "groups": {

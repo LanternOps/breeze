@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   AlertTriangle,
   CheckSquare,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   FileText,
   Loader2,
@@ -28,16 +30,61 @@ import { runAction, ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { downloadBlob } from '@/lib/downloadBlob';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { useHashState } from '@/lib/useHashState';
+import { replaceUrl } from '@/lib/replaceUrl';
+import { mergePatchesHash, parsePatchesHash, type ComplianceStatusSelection } from './patchesHash';
 
+/**
+ * Every number here comes from GET /patches/compliance (#9791 C), computed over
+ * the whole counted device set, never from the loaded page of rows.
+ */
 type ComplianceSummary = {
   totalDevices: number;
   compliantDevices: number;
+  /** compliant / total, the same figure the dashboard KPI shows. */
+  devicePercent: number;
+  /** Outstanding patch totals across all devices. */
   criticalPatches: number;
-  pendingPatches: number;
-  rebootPending: number;
+  approvedPatches: number;
+  unapprovedPatches: number;
+  failedPatches: number;
   /** W06: distinct container images the registry check could not verify. */
   imagesNotChecked: number;
+  /** Devices per status filter (for the filter option labels). */
+  counts: {
+    all: number;
+    compliant: number;
+    needsPatches: number;
+    failed: number;
+    critical: number;
+    reboot: number;
+    thirdParty: number;
+  };
 };
+
+const EMPTY_SUMMARY: ComplianceSummary = {
+  totalDevices: 0,
+  compliantDevices: 0,
+  devicePercent: 0,
+  criticalPatches: 0,
+  approvedPatches: 0,
+  unapprovedPatches: 0,
+  failedPatches: 0,
+  imagesNotChecked: 0,
+  counts: { all: 0, compliant: 0, needsPatches: 0, failed: 0, critical: 0, reboot: 0, thirdParty: 0 },
+};
+
+type DevicePage = { total: number; limit: number; offset: number };
+
+const SEARCH_DEBOUNCE_MS = 300;
+
+function statusFromHash(hash: string): ComplianceStatusSelection | undefined {
+  return parsePatchesHash(hash).status ?? undefined;
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
 
 type PatchComplianceViewProps = {
   ringId?: string | null;
@@ -94,12 +141,31 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   // ?orgId=; a selected ring also resolves the org. In All-orgs mode with no
   // ring, disable export with a hint instead of firing a request that 400s.
   const canExport = currentOrgId !== null || !!ringId;
+  // One page of rows; the server filters (status, search) and pages (#9791 C).
   const [devices, setDevices] = useState<DevicePatchRow[]>([]);
-  const [summary, setSummary] = useState<ComplianceSummary>({ totalDevices: 0, compliantDevices: 0, criticalPatches: 0, pendingPatches: 0, rebootPending: 0, imagesNotChecked: 0 });
+  const [summary, setSummary] = useState<ComplianceSummary>(EMPTY_SUMMARY);
+  const [page, setPage] = useState<DevicePage>({ total: 0, limit: 0, offset: 0 });
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string>();
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  // The status filter lives in the hash (`#compliance&status=failed` ≡
+  // `#status=failed`) so a dashboard link lands pre-filtered.
+  const [statusFilter, setStatusFilterState] = useHashState<ComplianceStatusSelection>('all', statusFromHash);
+  const setStatusFilter = useCallback((next: ComplianceStatusSelection) => {
+    setStatusFilterState(next);
+    replaceUrl(`${window.location.pathname}${window.location.search}${mergePatchesHash(window.location.hash, { status: next })}`);
+  }, [setStatusFilterState]);
+  // The page offset belongs to one filter combination: a new ring, status or
+  // search derives back to the first page with no extra fetch.
+  const filterKey = `${ringId ?? ''}|${statusFilter}|${search}`;
+  const [pageCursor, setPageCursor] = useState({ key: filterKey, offset: 0 });
+  const offset = pageCursor.key === filterKey ? pageCursor.offset : 0;
+  const goToOffset = useCallback((next: number) => setPageCursor({ key: filterKey, offset: Math.max(0, next) }), [filterKey]);
+  // Only the newest request may write state: the hash-adopted status, a
+  // debounced search or a page click can overlap an in-flight fetch.
+  const requestSeqRef = useRef(0);
   const [exporting, setExporting] = useState(false);
   const reportPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Bumped each time an export starts polling. A poll whose generation is no
@@ -108,96 +174,129 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const reportPollGenerationRef = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const seq = ++requestSeqRef.current;
+    const isCurrent = () => requestSeqRef.current === seq;
+    // A 401 navigates away: keep the spinner up rather than flash an empty view.
+    let redirecting = false;
     try {
       setLoading(true);
       setError(undefined);
+      // Only non-default params are sent; the server's page size comes back in
+      // devicesPage.limit. The org scope is ambient (fetchWithAuth injects it).
       const params = new URLSearchParams();
       if (ringId) params.set('ringId', ringId);
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      if (search) params.set('search', search);
+      if (offset > 0) params.set('offset', String(offset));
       const complianceUrl = params.toString() ? `/patches/compliance?${params}` : '/patches/compliance';
 
-      const [complianceRes, devicesRes] = await Promise.all([
-        fetchWithAuth(complianceUrl),
-        fetchWithAuth('/devices?limit=200')
-      ]);
-      if (!complianceRes.ok || !devicesRes.ok) {
-        if (complianceRes.status === 401 || devicesRes.status === 401) {
+      const complianceRes = await fetchWithAuth(complianceUrl);
+      if (!isCurrent()) return;
+      if (!complianceRes.ok) {
+        if (complianceRes.status === 401) {
+          redirecting = true;
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(stableT('patchComplianceView.errors.fetchData'));
+        throw new Error('compliance request failed');
       }
 
-      const complianceData = (await complianceRes.json()).data ?? {};
-      const needingList = complianceData.devicesNeedingPatches ?? [];
-      const allDevicesPayload = await devicesRes.json();
-      const allDevices = allDevicesPayload.devices ?? allDevicesPayload.data ?? allDevicesPayload.items ?? [];
-
-      const needingMap = new Map<string, Record<string, unknown>>();
-      if (Array.isArray(needingList)) {
-        for (const d of needingList) {
-          const id = String(d.id ?? d.deviceId ?? '');
-          if (id) needingMap.set(id, d);
-        }
+      // A body that isn't the expected JSON (proxy error page, truncated
+      // response) is a load failure, never an empty fleet.
+      const body = await complianceRes.json().catch(() => null);
+      if (!isCurrent()) return;
+      const data = body?.data;
+      if (!data || typeof data !== 'object') throw new Error('compliance response has no data');
+      // Rows are required whenever the scope has devices; an API without the
+      // #9791 C list must read as a failure, not as an empty table.
+      if (!Array.isArray(data.devices) && toNumber(data.totalDevices ?? 0) > 0) {
+        throw new Error('compliance response has no device list');
       }
-
-      const merged: DevicePatchRow[] = [];
-      if (Array.isArray(allDevices)) {
-        for (const raw of allDevices) {
-          const id = String(raw.id ?? '');
-          const n = needingMap.get(id);
-          const pendingPatches = toNumber(n?.missingCount ?? 0);
-          const approvedMissing = toNumber(n?.approvedMissing ?? 0);
-          // Capture orgId from the /devices response so we can derive the true
-          // action scope when the user triggers a bulk scan/install confirmation.
-          const orgId = raw.orgId ? String(raw.orgId) : (raw.org_id ? String(raw.org_id) : undefined);
-          merged.push({
-            id,
-            hostname: String(n?.name ?? n?.hostname ?? raw.hostname ?? stableT('patchComplianceView.unknownDevice')),
-            osType: String(n?.os ?? n?.osType ?? raw.osType ?? raw.os_type ?? 'unknown'),
-            lastSeenAt: (n?.lastSeen ?? raw.lastSeenAt) ? String(n?.lastSeen ?? raw.lastSeenAt) : undefined,
-            pendingPatches,
-            approvedMissing,
-            // The compliance API always returns both approved/unapproved counts.
-            // Read it directly rather than synthesizing from (pending - approved),
-            // which produced a misleading count when the field was absent.
-            unapprovedMissing: toNumber(n?.unapprovedMissing ?? 0),
-            failedMissing: toNumber(n?.failedMissing ?? 0),
-            criticalMissing: toNumber(n?.criticalCount ?? 0),
-            importantMissing: toNumber(n?.importantCount ?? 0),
-            osMissing: toNumber(n?.osMissing ?? 0),
-            thirdPartyMissing: toNumber(n?.thirdPartyMissing ?? 0),
-            lastInstalledAt: n?.lastInstalledAt ? String(n.lastInstalledAt) : undefined,
-            lastScannedAt: n?.lastScannedAt ? String(n.lastScannedAt) : undefined,
-            pendingReboot: Boolean(n?.pendingReboot),
-            staleImages: toNumber(n?.staleImages ?? 0),
-            status: raw.status ? String(raw.status) : undefined,
-            orgId,
-          });
-        }
-      }
-
-      merged.sort((a, b) => b.criticalMissing - a.criticalMissing || b.pendingPatches - a.pendingPatches);
-      setDevices(merged);
-
-      const nonCompliant = merged.filter(deviceNeedsUpdates);
-      setSummary({
-        totalDevices: merged.length,
-        compliantDevices: merged.length - nonCompliant.length,
-        criticalPatches: nonCompliant.reduce((sum, d) => sum + d.criticalMissing, 0),
-        pendingPatches: nonCompliant.reduce((sum, d) => sum + d.pendingPatches, 0),
-        rebootPending: merged.filter(d => d.pendingReboot).length,
-        imagesNotChecked: toNumber(complianceData.containerImages?.unknown ?? 0),
+      const rawRows: unknown[] = Array.isArray(data.devices) ? data.devices : [];
+      const rows: DevicePatchRow[] = rawRows.map((value) => {
+        const raw = (value ?? {}) as Record<string, unknown>;
+        return {
+          id: String(raw.id ?? ''),
+          hostname: str(raw.hostname) ?? stableT('patchComplianceView.unknownDevice'),
+          displayName: typeof raw.displayName === 'string' && raw.displayName.trim() ? raw.displayName : undefined,
+          osType: str(raw.osType) ?? 'unknown',
+          lastSeenAt: str(raw.lastSeenAt),
+          pendingPatches: toNumber(raw.pendingPatches ?? 0),
+          approvedMissing: toNumber(raw.approvedMissing ?? 0),
+          unapprovedMissing: toNumber(raw.unapprovedMissing ?? 0),
+          failedMissing: toNumber(raw.failedMissing ?? 0),
+          criticalMissing: toNumber(raw.criticalMissing ?? 0),
+          importantMissing: toNumber(raw.importantMissing ?? 0),
+          osMissing: toNumber(raw.osMissing ?? 0),
+          thirdPartyMissing: toNumber(raw.thirdPartyMissing ?? 0),
+          lastInstalledAt: str(raw.lastInstalledAt),
+          lastScannedAt: str(raw.lastScannedAt),
+          pendingReboot: Boolean(raw.pendingReboot),
+          staleImages: toNumber(raw.staleImages ?? 0),
+          status: str(raw.status),
+          // Load-bearing: the bulk scan/install confirmation names the
+          // selected rows' orgs from this, not from currentOrgId.
+          orgId: str(raw.orgId),
+        };
       });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : stableT('patchComplianceView.errors.fetchData'));
+      setDevices(rows);
+
+      const counts = data.deviceCounts ?? {};
+      const totals = data.outstandingTotals ?? {};
+      const totalDevices = toNumber(data.totalDevices ?? 0);
+      const compliantDevices = toNumber(data.compliantDevices ?? 0);
+      setSummary({
+        totalDevices,
+        compliantDevices,
+        // Same derivation as the dashboard card's fallback, so the two never
+        // disagree if the field is ever absent.
+        devicePercent: typeof data.devicePercent === 'number'
+          ? data.devicePercent
+          : totalDevices > 0 ? Math.round((compliantDevices / totalDevices) * 100) : 0,
+        criticalPatches: toNumber(totals.critical ?? 0),
+        approvedPatches: toNumber(totals.approved ?? 0),
+        unapprovedPatches: toNumber(totals.unapproved ?? 0),
+        failedPatches: toNumber(totals.failed ?? 0),
+        imagesNotChecked: toNumber(data.containerImages?.unknown ?? 0),
+        counts: {
+          all: toNumber(counts.all ?? data.totalDevices ?? 0),
+          compliant: toNumber(counts.compliant ?? data.compliantDevices ?? 0),
+          needsPatches: toNumber(counts.needsPatches ?? 0),
+          failed: toNumber(counts.failed ?? data.failedDevices ?? 0),
+          critical: toNumber(counts.critical ?? 0),
+          reboot: toNumber(counts.reboot ?? 0),
+          thirdParty: toNumber(counts.thirdParty ?? 0),
+        },
+      });
+      const devicesPage = data.devicesPage ?? {};
+      setPage({
+        total: toNumber(devicesPage.total ?? rows.length),
+        limit: toNumber(devicesPage.limit ?? rows.length),
+        offset: toNumber(devicesPage.offset ?? offset),
+      });
+      setLoaded(true);
+    } catch {
+      if (!isCurrent()) return;
+      // Always the localized message: a raw SyntaxError / TypeError text
+      // ("Unexpected token '<'", "Failed to fetch") means nothing to a user.
+      setError(stableT('patchComplianceView.errors.fetchData'));
     } finally {
-      setLoading(false);
+      if (isCurrent() && !redirecting) setLoading(false);
     }
-  }, [ringId, stableT]);
+  }, [ringId, statusFilter, search, offset, stableT]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Search is a server param; debounce keystrokes into it.
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (trimmed === search) return;
+    const timer = setTimeout(() => setSearch(trimmed), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchQuery, search]);
+
 
   useEffect(() => {
     return () => {
@@ -207,21 +306,6 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       }
     };
   }, []);
-
-  // Filters
-  const filteredDevices = useMemo(() => {
-    let list = devices;
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(d => d.hostname.toLowerCase().includes(q));
-    }
-    if (statusFilter === 'needs-patches') list = list.filter(deviceNeedsUpdates);
-    else if (statusFilter === 'critical') list = list.filter(d => d.criticalMissing > 0);
-    else if (statusFilter === 'reboot') list = list.filter(d => d.pendingReboot);
-    else if (statusFilter === '3rd-party') list = list.filter(d => d.thirdPartyMissing > 0);
-    else if (statusFilter === 'compliant') list = list.filter(d => !deviceNeedsUpdates(d));
-    return list;
-  }, [devices, searchQuery, statusFilter]);
 
   const hasActiveFilters = searchQuery !== '' || statusFilter !== 'all';
 
@@ -260,8 +344,23 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     return { patchIds, skippedPendingApproval };
   }, [t]);
 
-  const filteredIds = useMemo(() => filteredDevices.map(d => d.id), [filteredDevices]);
-  const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(filteredIds);
+  // "Select all" selects the loaded page; the selection is dropped whenever a
+  // different page or filter loads, since bulk actions read each selected
+  // row's counts and orgId from the loaded rows.
+  const pageIds = useMemo(() => devices.map(d => d.id), [devices]);
+  const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(pageIds);
+  // Cleared both when the request changes and when its rows land, so a box
+  // ticked on the old rows during the in-flight window cannot survive.
+  useEffect(() => {
+    clearSelection();
+  }, [filterKey, offset, devices, clearSelection]);
+
+  // A page past the end (the fleet shrank, or a bulk action emptied the last
+  // page) snaps back to the last page that has rows.
+  useEffect(() => {
+    if (!loaded || loading || devices.length > 0 || page.offset === 0 || page.total === 0 || page.limit <= 0) return;
+    goToOffset(Math.floor((page.total - 1) / page.limit) * page.limit);
+  }, [loaded, loading, devices.length, page, goToOffset]);
 
   // Derive org names from the selected devices' actual orgId fields (populated
   // from the /devices API response), NOT from currentOrgId which reflects only
@@ -390,25 +489,6 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     });
   }, [selectedIds, devices]);
   const selectedWithPatches = selectedPatchDeviceIds.length;
-  const approvedPendingPatches = useMemo(
-    () => devices.reduce((sum, d) => sum + d.approvedMissing, 0),
-    [devices]
-  );
-  const unapprovedPendingPatches = useMemo(
-    () => devices.reduce((sum, d) => sum + d.unapprovedMissing, 0),
-    [devices]
-  );
-
-  const failedInstallPatches = useMemo(
-    () => devices.reduce((sum, d) => sum + d.failedMissing, 0),
-    [devices]
-  );
-
-  // Precomputed filter counts
-  const filterCounts = useMemo(() => ({
-    critical: devices.filter(d => d.criticalMissing > 0).length,
-    thirdParty: devices.filter(d => d.thirdPartyMissing > 0).length,
-  }), [devices]);
 
   // Auto-dismiss success banners
   useEffect(() => {
@@ -417,7 +497,9 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     return () => clearTimeout(timer);
   }, [bulkSuccess, setBulkSuccess]);
 
-  if (loading) {
+  // Full-page spinner only before the first load: later refetches (filter,
+  // search, page) keep the controls mounted so the search box keeps focus.
+  if (loading && !loaded) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -425,7 +507,7 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     );
   }
 
-  if (error && devices.length === 0) {
+  if (error && !loaded) {
     return (
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
@@ -436,37 +518,45 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
     );
   }
 
-  const compliancePercent = summary.totalDevices > 0
-    ? Math.round((summary.compliantDevices / summary.totalDevices) * 100)
-    : 100;
   const nonCompliantCount = summary.totalDevices - summary.compliantDevices;
+  const pageFrom = page.total === 0 ? 0 : page.offset + 1;
+  const pageTo = page.offset + devices.length;
+  const hasPrevPage = page.offset > 0;
+  const hasNextPage = page.limit > 0 && page.offset + page.limit < page.total;
 
   return (
     <div className="space-y-4">
       {/* Compact compliance summary */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-          <span className="flex items-center gap-1.5 font-semibold">
-            <Shield className="h-4 w-4 text-muted-foreground" />
-            {t('patchComplianceView.summary.compliantPercent', { percent: compliancePercent })}
-          </span>
-          <span className="text-muted-foreground">
-            {t('patchComplianceView.summary.devices', { compliant: summary.compliantDevices, total: summary.totalDevices })}
-          </span>
+          {/* The device % from the API, the same figure the dashboard KPI
+              shows. An empty fleet has no percentage: the table's empty state
+              speaks instead of claiming 0% or 100% of nothing. */}
+          {summary.totalDevices > 0 && (
+            <>
+              <span className="flex items-center gap-1.5 font-semibold" data-testid="patch-compliance-device-percent">
+                <Shield className="h-4 w-4 text-muted-foreground" />
+                {t('patchComplianceView.summary.compliantPercent', { percent: summary.devicePercent })}
+              </span>
+              <span className="text-muted-foreground">
+                {t('patchComplianceView.summary.devices', { compliant: summary.compliantDevices, total: summary.totalDevices })}
+              </span>
+            </>
+          )}
           {nonCompliantCount > 0 && (
             <span className="flex items-center gap-1 text-orange-600">
               <AlertTriangle className="h-3.5 w-3.5" />
               {t('patchComplianceView.summary.pendingDevices', { count: nonCompliantCount })}
             </span>
           )}
-          {approvedPendingPatches > 0 && (
-            <span className="text-green-700 font-medium">{t('patchComplianceView.summary.approved', { count: approvedPendingPatches })}</span>
+          {summary.approvedPatches > 0 && (
+            <span className="text-green-700 font-medium">{t('patchComplianceView.summary.approved', { count: summary.approvedPatches })}</span>
           )}
-          {unapprovedPendingPatches > 0 && (
-            <span className="text-orange-600 font-medium">{t('patchComplianceView.summary.pendingApproval', { count: unapprovedPendingPatches })}</span>
+          {summary.unapprovedPatches > 0 && (
+            <span className="text-orange-600 font-medium">{t('patchComplianceView.summary.pendingApproval', { count: summary.unapprovedPatches })}</span>
           )}
-          {failedInstallPatches > 0 && (
-            <span className="text-red-600 font-medium">{t('patchComplianceView.summary.failedInstalls', { count: failedInstallPatches })}</span>
+          {summary.failedPatches > 0 && (
+            <span className="text-red-600 font-medium">{t('patchComplianceView.summary.failedInstalls', { count: summary.failedPatches })}</span>
           )}
           {summary.criticalPatches > 0 && (
             <span className="text-red-600 font-medium">{t('patchComplianceView.summary.critical', { count: summary.criticalPatches })}</span>
@@ -474,10 +564,10 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
           {summary.imagesNotChecked > 0 && (
             <span className="text-muted-foreground">{t('patchComplianceView.summary.imagesNotChecked', { count: summary.imagesNotChecked })}</span>
           )}
-          {summary.rebootPending > 0 && (
+          {summary.counts.reboot > 0 && (
             <span className="flex items-center gap-1 text-orange-600">
               <RotateCcw className="h-3.5 w-3.5" />
-              {t('patchComplianceView.summary.reboot', { count: summary.rebootPending })}
+              {t('patchComplianceView.summary.reboot', { count: summary.counts.reboot })}
             </span>
           )}
         </div>
@@ -519,31 +609,56 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
         <select
           aria-label={t('patchComplianceView.filters.statusFilterLabel')}
           value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value)}
+          onChange={e => setStatusFilter(e.target.value as ComplianceStatusSelection)}
           className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
         >
-          <option value="all">{t('patchComplianceView.filters.allDevices', { count: devices.length })}</option>
-          <option value="needs-patches">{t('patchComplianceView.filters.pendingPatches', { count: nonCompliantCount })}</option>
-          <option value="critical">{t('patchComplianceView.filters.critical', { count: filterCounts.critical })}</option>
-          <option value="reboot">{t('patchComplianceView.filters.pendingReboot', { count: summary.rebootPending })}</option>
-          <option value="3rd-party">{t('patchComplianceView.filters.thirdPartyPending', { count: filterCounts.thirdParty })}</option>
-          <option value="compliant">{t('patchComplianceView.filters.compliant', { count: summary.compliantDevices })}</option>
+          <option value="all">{t('patchComplianceView.filters.allDevices', { count: summary.counts.all })}</option>
+          <option value="needs-patches">{t('patchComplianceView.filters.pendingPatches', { count: summary.counts.needsPatches })}</option>
+          <option value="critical">{t('patchComplianceView.filters.critical', { count: summary.counts.critical })}</option>
+          <option value="failed">{t('patchComplianceView.filters.failed', { count: summary.counts.failed })}</option>
+          <option value="reboot">{t('patchComplianceView.filters.pendingReboot', { count: summary.counts.reboot })}</option>
+          <option value="third-party">{t('patchComplianceView.filters.thirdPartyPending', { count: summary.counts.thirdParty })}</option>
+          <option value="compliant">{t('patchComplianceView.filters.compliant', { count: summary.counts.compliant })}</option>
         </select>
         {hasActiveFilters && (
           <button
             type="button"
-            onClick={() => { setSearchQuery(''); setStatusFilter('all'); }}
+            onClick={() => { setSearchQuery(''); setSearch(''); setStatusFilter('all'); }}
             className="h-9 rounded-md px-3 text-sm font-medium text-muted-foreground hover:text-foreground"
           >
             {t('patchComplianceView.actions.clear')}
           </button>
         )}
-        {filteredDevices.length !== devices.length && (
-          <span className="text-xs text-muted-foreground">
-            {t('patchComplianceView.showing', { shown: filteredDevices.length, total: devices.length })}
-          </span>
+        {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />}
+        {page.total > 0 && (
+          <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground" data-testid="patch-compliance-pager">
+            <span>{t('patchComplianceView.pager.range', { from: pageFrom, to: pageTo, total: page.total })}</span>
+            <button
+              type="button"
+              onClick={() => goToOffset(page.offset - page.limit)}
+              disabled={!hasPrevPage || loading}
+              aria-label={t('patchComplianceView.pager.previous')}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border bg-background hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => goToOffset(page.offset + page.limit)}
+              disabled={!hasNextPage || loading}
+              aria-label={t('patchComplianceView.pager.next')}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md border bg-background hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
         )}
       </div>
+      {error && loaded && (
+        <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       {/* Bulk action toolbar */}
       {selectedIds.size > 0 && (
@@ -623,17 +738,21 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
             </tr>
           </thead>
           <tbody className="divide-y">
-            {filteredDevices.length === 0 ? (
+            {devices.length === 0 ? (
               <tr>
                 <td colSpan={12} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   {hasActiveFilters ? t('patchComplianceView.emptyFiltered') : t('patchComplianceView.empty')}
                 </td>
               </tr>
             ) : (
-              filteredDevices.map(device => {
+              devices.map(device => {
                 const isSelected = selectedIds.has(device.id);
                 const isCompliant = !deviceNeedsUpdates(device);
                 const activity = formatLastActivity(device.lastInstalledAt, device.lastScannedAt, t);
+                // #9533: lead with the display name like the rest of the app;
+                // the hostname stays visible as secondary context.
+                const deviceName = device.displayName || device.hostname;
+                const showHostname = !!device.displayName && device.displayName !== device.hostname;
 
                 return (
                   <tr key={device.id} className={cn('text-sm hover:bg-muted/30', isSelected && 'bg-primary/5')}>
@@ -644,8 +763,8 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                         className="flex items-center justify-center text-muted-foreground hover:text-foreground"
                         aria-label={
                           isSelected
-                            ? t('patchComplianceView.selection.deselectDevice', { name: device.hostname })
-                            : t('patchComplianceView.selection.selectDevice', { name: device.hostname })
+                            ? t('patchComplianceView.selection.deselectDevice', { name: deviceName })
+                            : t('patchComplianceView.selection.selectDevice', { name: deviceName })
                         }
                       >
                         {isSelected ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
@@ -661,10 +780,13 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
                             href={`/devices/${device.id}`}
                             className="flex items-center gap-1 text-sm font-medium hover:underline"
                           >
-                            <span className="truncate">{device.hostname}</span>
+                            <span className="truncate" title={deviceName}>{deviceName}</span>
                             <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
                           </a>
                           <div className="text-xs text-muted-foreground">
+                            {showHostname && (
+                              <><span data-testid={`compliance-${device.id}-hostname`} title={device.hostname}>{device.hostname}</span> &middot; </>
+                            )}
                             {device.osType}
                             {device.lastSeenAt && <> &middot; {formatPatchRelativeTime(device.lastSeenAt, t)}</>}
                           </div>

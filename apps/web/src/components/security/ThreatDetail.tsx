@@ -15,10 +15,13 @@ import {
 import { fetchWithAuth } from "@/stores/auth";
 import { formatDateTime as formatUserDateTime } from "@/lib/dateTimeFormat";
 import { friendlyFetchError } from "@/lib/utils";
-import { errorKindOf, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
+import { errorKindOf, HttpError, throwIfNotOk, type LoadErrorKind } from "@/lib/httpError";
 import { runAction, ActionError } from "@/lib/runAction";
+import type { YaraThreatRuleView } from "@breeze/shared";
 import { showToast } from "../shared/Toast";
 import AccessDenied from "../shared/AccessDenied";
+import ThreatRulePanel from "./ThreatRulePanel";
+import { getThreatDetails } from "./detectionRules/ruleSetsApi";
 type ThreatSeverity = "low" | "medium" | "high" | "critical";
 type ThreatStatus = "active" | "quarantined" | "removed";
 type ThreatDetailData = {
@@ -32,12 +35,15 @@ type ThreatDetailData = {
   detectedAt: string;
   filePath: string;
   providerId?: string;
+  provider?: { id?: string; name?: string } | null;
+  removedAt?: string | null;
 };
 type TimelineEvent = {
   id: string;
   title: string;
   description: string;
-  timestamp: string;
+  // Null when the API has no record of when it happened; never invent one.
+  timestamp: string | null;
   icon: ComponentType<{
     className?: string;
   }>;
@@ -58,7 +64,10 @@ export default function ThreatDetail({
 }: ThreatDetailProps) {
   const { t } = useTranslation("security");
   const [threat, setThreat] = useState<ThreatDetailData | null>(null);
-  const [relatedThreats, setRelatedThreats] = useState<ThreatDetailData[]>([]);
+  // null = the related-threats read failed (shown as an error, not as "none").
+  const [relatedThreats, setRelatedThreats] = useState<ThreatDetailData[] | null>([]);
+  const [rule, setRule] = useState<YaraThreatRuleView | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string>();
@@ -67,33 +76,53 @@ export default function ThreatDetail({
     setLoading(true);
     setError(undefined);
     setErrorKind("none");
+    setNotFound(false);
+    // Never show the previous threat (or its rule) under a new load's error.
+    setThreat(null);
+    setRule(null);
+    if (!threatId) {
+      setThreat(null);
+      setRule(null);
+      setRelatedThreats([]);
+      setLoading(false);
+      return;
+    }
+    // The selected threat comes from its own /details read (#6267 W04-5), so
+    // it no longer has to be among the first 100 list items; the list only
+    // feeds "related threats" and is read in parallel.
+    const relatedPromise = fetchWithAuth("/security/threats?limit=100")
+      .then(async (res) => {
+        throwIfNotOk(res);
+        const payload = await res.json();
+        return Array.isArray(payload.data) ? (payload.data as ThreatDetailData[]) : null;
+      })
+      .catch((err: unknown) => {
+        console.error("[ThreatDetail] related threats:", err);
+        return null;
+      });
     try {
-      const listResponse = await fetchWithAuth("/security/threats?limit=100");
-      // HttpError (not a bare Error) so a 403 survives the throw and the render
-      // can tell "you may not see this" from "this broke, try again" (#2472).
-      throwIfNotOk(listResponse);
-      const listPayload = await listResponse.json();
-      const list: ThreatDetailData[] = Array.isArray(listPayload.data)
-        ? listPayload.data
-        : [];
-      const selected = threatId
-        ? list.find((item) => item.id === threatId)
-        : list[0];
-      if (!selected) {
-        setThreat(null);
-        setRelatedThreats([]);
-        return;
-      }
+      const details = await getThreatDetails(threatId);
+      const selected = details.threat as unknown as ThreatDetailData;
       setThreat(selected);
+      setRule(details.rule ?? null);
+      const list = await relatedPromise;
+      // A failed related read is surfaced, never shown as "no related threats".
       setRelatedThreats(
-        list
-          .filter(
-            (item) =>
-              item.id !== selected.id && item.deviceId === selected.deviceId,
-          )
-          .slice(0, 5),
+        list === null
+          ? null
+          : list
+              .filter((item) => item.id !== selected.id && item.deviceId === selected.deviceId)
+              .slice(0, 5),
       );
     } catch (err) {
+      // HttpError keeps the status, so a 403 renders AccessDenied and a 404
+      // is "not found" — never another threat picked from the list (#2472).
+      if (err instanceof HttpError && err.status === 404) {
+        setThreat(null);
+        setRule(null);
+        setNotFound(true);
+        return;
+      }
       const kind = errorKindOf(err);
       setErrorKind(kind);
       // 'denied' renders AccessDenied, which supplies its own copy.
@@ -106,9 +135,9 @@ export default function ThreatDetail({
     fetchThreat();
   }, [fetchThreat]);
   const threatActionSuccessMessage: Record<"quarantine" | "restore" | "remove", string> = {
-    quarantine: t("securityThreatDetail.quarantineSucceeded"),
-    restore: t("securityThreatDetail.restoreSucceeded"),
-    remove: t("securityThreatDetail.removeSucceeded"),
+    quarantine: t("securityThreatDetail.quarantineQueued"),
+    restore: t("securityThreatDetail.restoreQueued"),
+    remove: t("securityThreatDetail.removeQueued"),
   };
   const performThreatAction = async (action: "quarantine" | "restore" | "remove") => {
     if (!threat) return;
@@ -140,6 +169,9 @@ export default function ThreatDetail({
         icon: AlertTriangle,
       },
     ];
+    // Only events with a real record. The API does not stamp quarantine time
+    // (quarantine leaves resolved_at null), so that entry shows the reported
+    // state without a timestamp; removal is stamped by `removedAt`.
     if (threat.status === "quarantined") {
       events.push({
         id: `${threat.id}-quarantined`,
@@ -147,7 +179,7 @@ export default function ThreatDetail({
         description: t(
           "securityThreatDetail.threatWasMovedToQuarantineByPolicy",
         ),
-        timestamp: threat.detectedAt,
+        timestamp: null,
         icon: ShieldOff,
       });
     }
@@ -158,19 +190,10 @@ export default function ThreatDetail({
         description: t(
           "securityThreatDetail.threatFileWasRemovedFromEndpointStorage",
         ),
-        timestamp: threat.detectedAt,
+        timestamp: threat.removedAt ?? null,
         icon: ShieldCheck,
       });
     }
-    events.push({
-      id: `${threat.id}-review`,
-      title: t("securityThreatDetail.analystReview"),
-      description: t(
-        "securityThreatDetail.reviewRemediationCompletenessAndEndpointHealth",
-      ),
-      timestamp: threat.detectedAt,
-      icon: Clock,
-    });
     return events;
   }, [threat]);
   const formatDateTime = (value: string): string => {
@@ -202,9 +225,19 @@ export default function ThreatDetail({
   if (!threat) {
     return (
       <div className="rounded-lg border bg-card p-6 shadow-xs">
-        <p className="text-sm text-muted-foreground">
-          {t("securityThreatDetail.noThreatSelected")}
-        </p>
+        {notFound ? (
+          <p data-testid="security-threat-detail-not-found" className="text-sm text-muted-foreground">
+            {t("securityThreatDetail.notFound")}
+          </p>
+        ) : error ? (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {t("securityThreatDetail.noThreatSelected")}
+          </p>
+        )}
       </div>
     );
   }
@@ -253,7 +286,9 @@ export default function ThreatDetail({
                   {t("securityThreatDetail.provider")}
                 </p>
                 <p className="text-sm font-medium">
-                  {threat.providerId ?? "unknown"}
+                  {threat.provider?.name ??
+                    threat.providerId ??
+                    t("securityThreatDetail.providerUnknown")}
                 </p>
               </div>
               <div>
@@ -335,9 +370,11 @@ export default function ThreatDetail({
                     <p className="text-xs text-muted-foreground">
                       {event.description}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDateTime(event.timestamp)}
-                    </p>
+                    {event.timestamp && (
+                      <p className="text-xs text-muted-foreground">
+                        {formatDateTime(event.timestamp)}
+                      </p>
+                    )}
                   </div>
                 </div>
               ))}
@@ -377,6 +414,8 @@ export default function ThreatDetail({
             </div>
           </div>
 
+          {rule && <ThreatRulePanel rule={rule} />}
+
           <div className="rounded-lg border bg-card p-6 shadow-xs">
             <h2 className="text-lg font-semibold">
               {t("securityThreatDetail.relatedThreats")}
@@ -385,7 +424,11 @@ export default function ThreatDetail({
               {t("securityThreatDetail.otherDetectionsOnThisDevice")}
             </p>
             <div className="mt-4 space-y-3">
-              {relatedThreats.length === 0 ? (
+              {relatedThreats === null ? (
+                <p data-testid="security-threat-related-error" role="alert" className="text-sm text-destructive">
+                  {t("securityThreatDetail.relatedLoadFailed")}
+                </p>
+              ) : relatedThreats.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   {t("securityThreatDetail.noRelatedThreats")}
                 </p>

@@ -21,7 +21,7 @@
     "pendingApprovals_one": "{{count}} aprovação pendente",
     "pendingApprovals_other": "{{count}} aprovações pendentes",
     "tickets": "Chamados",
-    "incidents": "Incidentes",
+    "incidents": "Incidentes de segurança",
     "remoteAccess": "Acesso Remoto",
     "scripts": "Scripts",
     "patches": "Correções",
@@ -111,12 +111,14 @@
     "timeSync": "Sincronização de horário",
     "aiModels": "Modelos de IA",
     "autopay": "Autopay",
-    "payments": "Payments",
+    "payments": "Pagamentos",
     "ticketsIncidents": "Incidentes",
     "ticketsServiceRequests": "Solicitações de serviço",
     "ticketsProblems": "Problemas",
     "ticketsChanges": "Mudanças",
-    "endpointMessages": "Mensagens"
+    "endpointMessages": "Mensagens",
+    "securityDetectionRules": "Regras de detecção",
+    "planAndFeatures": "Plano e recursos"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -427,13 +429,21 @@
       "unratedPending_other": "{{count}} patches não avaliados pendentes (não serão aprovados automaticamente)",
       "empty": "Ainda sem dados de patches",
       "imagesNotChecked_one": "{{count}} imagem de contêiner não verificada",
-      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas"
+      "imagesNotChecked_other": "{{count}} imagens de contêiner não verificadas",
+      "devicesNeedPatches_one": "{{count}} dispositivo precisa de patches",
+      "devicesNeedPatches_other": "{{count}} dispositivos precisam de patches",
+      "viewPendingDevices": "Ver dispositivos com patches pendentes",
+      "viewFailedDevices": "Ver dispositivos com patches com falha",
+      "viewCriticalDevices": "Ver dispositivos com patches críticos"
     },
     "vuln": {
       "title": "Vulnerabilidades",
       "criticalOpen": "Críticas abertas",
       "kev": "Exploração conhecida",
       "patchReady": "Patch disponível",
+      "viewCritical": "Ver CVEs críticas",
+      "viewPatchReady": "Ver CVEs com patch pronto",
+      "viewOpen": "Ver CVEs abertas",
       "totalOpen": "{{count}} descobertas abertas",
       "totalOpen_one": "{{count}} descoberta aberta",
       "totalOpen_other": "{{count}} descobertas abertas",
@@ -771,9 +781,9 @@
     },
     "search": {
       "prompt": "Pesquisar no Breeze",
-      "placeholder": "Pesquisar dispositivos, scripts, alertas, usuários e configurações…",
+      "placeholder": "Pesquisar dispositivos, scripts, alertas e configurações…",
       "searching": "Pesquisando…",
-      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas, usuários e configurações.",
+      "startTyping": "Comece a digitar para pesquisar dispositivos, scripts, alertas e configurações.",
       "noResults": "Nenhum resultado encontrado. Tente outra busca.",
       "navigationHint": "Use as setas para navegar e Enter para abrir",
       "closeHint": "Esc para fechar",
@@ -863,6 +873,8 @@
       "cycleSidebar": "Alternar o modo da barra lateral",
       "help": "Abrir o painel de ajuda",
       "showThis": "Mostrar este cartão",
+      "orgSwitcher": "Abrir o seletor de organização",
+      "aiSidebar": "Mostrar ou ocultar a barra lateral de IA",
       "close": "Fechar uma caixa de diálogo ou menu",
       "typingNote": "Atalhos de uma tecla ficam pausados enquanto você digita em um campo.",
       "create": "Criar",
@@ -1151,27 +1163,10 @@
           "basicInformation": "Informações básicas",
           "connectionDetails": "Detalhes da conexão",
           "credentials": "Credenciais",
-          "syncSettings": "Configurações de sincronização"
+          "syncSettings": "Sincronização de tickets"
         },
         "sync": {
-          "autoClose": "Fechar tickets PSA automaticamente",
-          "autoCloseHelp": "Fechar tickets vinculados quando alertas do Breeze forem resolvidos.",
-          "enable": "Ativar sincronização",
-          "enableHelp": "Manter tickets e vínculos de alertas atualizados em uma programação.",
-          "notes": "Sincronizar notas de alerta",
-          "notesHelp": "Enviar comentários e atualizações do Breeze para a linha do tempo do ticket PSA."
-        },
-        "syncDirections": {
-          "bidirectional": "Bidirecional",
-          "inbound": "PSA → Breeze",
-          "outbound": "Breeze → PSA"
-        },
-        "syncIntervals": {
-          "daily": "Diariamente",
-          "every15Minutes": "A cada 15 minutos",
-          "every30Minutes": "A cada 30 minutos",
-          "every6Hours": "A cada 6 horas",
-          "everyHour": "A cada hora"
+          "unavailable": "A sincronização de tickets ainda não está disponível. As conexões podem ser testadas e usadas para importar empresas como organizações; nenhum dado de ticket é trocado entre o Breeze e o seu PSA."
         },
         "testDirtyHint": "Salve primeiro — o teste verifica as credenciais armazenadas, não suas edições não salvas.",
         "validation": {
@@ -1195,7 +1190,7 @@
         },
         "connectionCount": "{{filtered}} de {{total}} conexões",
         "empty": {
-          "noConnections": "Conecte um provedor PSA para começar a sincronizar tickets.",
+          "noConnections": "Conecte um provedor PSA para testá-lo e importar suas empresas.",
           "noMatches": "Nenhuma conexão corresponde à sua pesquisa ou filtros.",
           "title": "Nenhuma conexão PSA configurada"
         },
@@ -1229,7 +1224,7 @@
           "tryAgain": "Tentar novamente"
         },
         "delete": {
-          "activeWarning": "Esta conexão está ativa. A sincronização de tickets será interrompida imediatamente.",
+          "activeWarning": "Esta conexão está ativa. Ao excluí-la, a conexão é removida imediatamente.",
           "confirm": "Tem certeza de que deseja excluir {{name}}?",
           "irreversible": "Esta ação não pode ser desfeita.",
           "title": "Excluir conexão PSA",
@@ -1248,10 +1243,10 @@
         "modal": {
           "addDescription": "Configure uma nova conexão PSA para sua organização.",
           "addTitle": "Adicionar conexão PSA",
-          "editDescription": "Atualize os detalhes da conexão PSA e as preferências de sincronização.",
+          "editDescription": "Atualize os detalhes da conexão PSA.",
           "editTitle": "Editar conexão PSA"
         },
-        "subtitle": "Conecte seu PSA para sincronizar tickets e vincular alertas.",
+        "subtitle": "Teste conexões PSA e importe empresas como organizações.",
         "test": {
           "failedMessage": "Não foi possível conectar ao provedor PSA.",
           "failedTitle": "Conexão falhou",
@@ -1266,8 +1261,8 @@
       "PsaTicketList": {
         "empty": {
           "noMatches": "Nenhum ticket corresponde à sua pesquisa ou filtros.",
-          "noTickets": "Sincronize sua primeira conexão PSA para ver tickets aqui.",
-          "title": "Nenhum ticket PSA sincronizado"
+          "noTickets": "A sincronização de tickets ainda não está disponível, então os tickets do PSA não são importados.",
+          "title": "Nenhum ticket do PSA"
         },
         "filters": {
           "allStatuses": "Todos os status",
@@ -1275,7 +1270,7 @@
         },
         "headers": {
           "linkedAlert": "Alerta vinculado",
-          "ticket": "Ticket",
+          "ticket": "Chamado",
           "updated": "Atualizado"
         },
         "searchPlaceholder": "Pesquisar tickets",
@@ -1400,6 +1395,12 @@
           "signingSecret": "Use este segredo para verificar assinaturas de webhook."
         },
         "invalidJsonPreview": "JSON inválido no modelo.",
+        "otherEvents": {
+          "allEvents": "Todos os eventos (*)",
+          "allEventsHint": "Este webhook está inscrito em todos os eventos, então os eventos individuais abaixo não são usados. Remova \"Todos os eventos\" para escolher eventos específicos.",
+          "remove": "Remover {{event}}",
+          "title": "Outros eventos assinados"
+        },
         "payload": {
           "previewEmpty": "A prévia aparece quando o JSON estiver válido.",
           "subtitle": "Defina o formato do payload JSON enviado ao seu destino.",
@@ -1413,7 +1414,7 @@
           "name": "Webhook de produção",
           "signingSecret": "Informe um segredo de assinatura"
         },
-        "subtitle": "Defina entrega, autenticação e comportamento do payload.",
+        "subtitle": "Defina o destino, os eventos, a autenticação e os cabeçalhos.",
         "title": "Configuração do webhook",
         "validation": {
           "eventRequired": "Selecione pelo menos um evento",
@@ -1475,7 +1476,7 @@
           "noPayloadTemplate": "Ainda não há modelo de payload salvo.",
           "payloadPreview": "Prévia do modelo de payload",
           "testEvent": "Evento de teste",
-          "testEventHelp": "Os testes usam o evento selecionado e seu modelo de payload.",
+          "testEventHelp": "Envia um payload de exemplo do evento selecionado para este endpoint.",
           "title": "Detalhes do webhook"
         },
         "emptySelection": "Selecione um webhook para ver histórico de entrega e ferramentas de teste.",
@@ -1705,7 +1706,7 @@
         "errors": {
           "stopFailed": "Falha ao parar o cronômetro."
         },
-        "ticketFallback": "ticket",
+        "ticketFallback": "chamado",
         "stopTimer": "Parar cronômetro",
         "descriptionPlaceholder": "Em que você trabalhou?",
         "billable": "Faturável",
@@ -2223,7 +2224,7 @@
         },
         "loading": "Carregando incidentes...",
         "tryAgain": "Tentar novamente",
-        "title": "Incidentes",
+        "title": "Incidentes de segurança",
         "description": "Incidentes acompanhados e achados de EDR em todas as suas organizações.",
         "filters": {
           "tracked": "Acompanhados",
@@ -2253,6 +2254,11 @@
         "genericEdrProvider": "Provedor de EDR"
       },
       "IncidentDetailPage": {
+        "actors": {
+          "brain": "Breeze AI",
+          "user": "Técnico",
+          "system": "Sistema"
+        },
         "errors": {
           "notFound": "Incidente não encontrado",
           "fetchFailed": "Falha ao buscar incidente"
@@ -2385,7 +2391,7 @@
           },
           "search": {
             "title": "Pesquise qualquer coisa",
-            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas, usuários ou configurações instantaneamente."
+            "description": "Pressione Cmd+K para encontrar dispositivos, scripts, alertas ou configurações instantaneamente."
           },
           "switchOrgs": {
             "title": "Troque de organização",
@@ -2778,5 +2784,9 @@
     "title": "Esta seção falhou",
     "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
     "retry": "Tentar novamente"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloqueado",
+    "upgrade": "Ver planos"
   }
 }

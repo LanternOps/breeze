@@ -137,11 +137,12 @@ The audit log list endpoints support the following query parameters for filterin
 |---|---|---|
 | `page` | String (number) | Page number (default: `1`) |
 | `limit` | String (number) | Results per page (default: `50`, max: `100`) |
-| `user` | String | Filter by actor email or user name (ILIKE match) |
+| `userId` | UUID | Filter by actor identity (`actor_id`). Matches every row the user caused, including device-command rows (`agent.command.*`) that carry no actor email. Combined with the org scope, so it only narrows what you can already see. A value that is not a UUID returns `400`. The audit log page's user picker sends this. |
+| `user` | String | Free-text match on the stored actor email, or the joined user's email or name (ILIKE). The joined user is visible only when your session can see that user (an organization-scoped session cannot see MSP staff), so prefer `userId` when you know the user. |
 | `action` | String | Filter by action name (ILIKE match) |
 | `resource` | String | Filter by resource type or resource name (ILIKE match) |
-| `from` | ISO 8601 datetime | Start of date range |
-| `to` | ISO 8601 datetime | End of date range |
+| `from` | ISO 8601 datetime | Start of date range (inclusive) |
+| `to` | ISO 8601 datetime | End of date range (inclusive). The audit log page's **Custom** range sends the start of the first day and the last millisecond of the last day in your browser's time zone, converted to UTC. |
 | `skipCount` | Boolean | When `true`, the list endpoint skips the `count(*)` over the filtered set and returns only the page itself. Use it on high-frequency dashboard widgets where the total isn't displayed. |
 
 The search endpoint (`GET /search`) adds a `q` parameter that performs a full-text ILIKE search across action, actor email, resource type, resource name, and the JSON-cast details field. Search conditions are combined with any active filters using AND logic.
@@ -550,7 +551,7 @@ The export action itself is recorded as an audit event with action `audit_logs.e
 GET /audit-logs/export?from=<iso>&to=<iso>&action=<action>&q=<text>
 ```
 
-CSV-only export endpoint used by the **Export** button on the audit log page. From v0.123.0 it accepts the same filters as the list and search endpoints (`from`, `to`, `user`, `action`, `resource`, `q`, `orgId`, `excludeActions`), so the file contains exactly what the filtered list shows; earlier releases ignored every filter except `userId`. The legacy `userId` parameter still works and is combined with the others. An `orgId` you cannot access returns `403`. Maximum 10,000 rows. The `audit_logs.export` event records the filters that were applied.
+CSV-only export endpoint used by the **Export** button on the audit log page. From v0.123.0 it accepts the same filters as the list and search endpoints (`from`, `to`, `userId`, `user`, `action`, `resource`, `q`, `orgId`, `excludeActions`), so the file contains exactly what the filtered list shows; earlier releases ignored every filter except `userId`. An `orgId` you cannot access returns `403`. Maximum 10,000 rows. The `audit_logs.export` event records the filters that were applied.
 
   </TabItem>
   <TabItem label="Reports">

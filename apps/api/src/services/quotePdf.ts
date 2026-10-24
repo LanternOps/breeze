@@ -602,7 +602,7 @@ async function renderCoverPage(
       doc.save();
       try {
         doc.rect(0, 0, doc.page.width, doc.page.height).clip();
-        doc.image(img.data, 0, 0, { cover: [doc.page.width, doc.page.height] });
+        doc.image(img.data, 0, 0, { cover: [doc.page.width, doc.page.height], align: 'center', valign: 'center' });
         hasBackground = true;
       } catch (e) {
         // A decode-at-draw failure must not be the one silent gap — report it

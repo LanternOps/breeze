@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "i18next";
 import M365Integration from "./M365Integration";
 import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
@@ -249,6 +250,37 @@ describe("M365Integration", () => {
       render(<M365Integration />);
       await screen.findByLabelText(/Tenant ID/i);
       expect(document.body.textContent).toMatch(/All applications/);
+    });
+  });
+
+  describe("legacy card strings are localized", () => {
+    const KEYS = {
+      "m365Integration.savingRequiresMfa": "SENTINEL_MFA",
+      "m365Integration.clientSecretPlaceholder": "SENTINEL_SECRET",
+      "m365Integration.clientSecretStoredPlaceholder": "SENTINEL_STORED",
+    };
+    beforeEach(() => {
+      for (const [k, v] of Object.entries(KEYS)) i18n.addResource("en", "integrations", k, v);
+    });
+
+    it("renders the MFA note and the not-connected secret placeholder from locale keys", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ connected: false }));
+      render(<M365Integration />);
+      expect(await screen.findByText(/SENTINEL_MFA/)).toBeInTheDocument();
+      expect(screen.getByPlaceholderText("SENTINEL_SECRET")).toBeInTheDocument();
+    });
+
+    it("renders the stored-secret placeholder from a locale key when connected", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse({
+        connected: true,
+        tenantId: "44444444-4444-4444-8444-444444444444",
+        clientId: "55555555-5555-4555-8555-555555555555",
+        displayName: "Northwind Traders",
+        status: "active",
+        lastVerifiedAt: "2026-07-10T10:00:00.000Z",
+      }));
+      render(<M365Integration />);
+      expect(await screen.findByPlaceholderText("SENTINEL_STORED")).toBeInTheDocument();
     });
   });
 });

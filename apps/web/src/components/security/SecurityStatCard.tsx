@@ -21,6 +21,8 @@ interface SecurityStatCardProps {
   interactive?: boolean;
   /** Selected treatment when the card's filter preset is currently applied. */
   active?: boolean;
+  /** Stable E2E hook on the card root. */
+  testId?: string;
 }
 export default function SecurityStatCard({
   icon: Icon,
@@ -31,6 +33,7 @@ export default function SecurityStatCard({
   loading = false,
   interactive = false,
   active = false,
+  testId,
 }: SecurityStatCardProps) {
   return (
     <div
@@ -41,6 +44,7 @@ export default function SecurityStatCard({
         active && "border-primary bg-primary/5",
       )}
       data-active={active || undefined}
+      data-testid={testId}
     >
       <div className="flex items-center gap-3">
         <div className="rounded-full border bg-muted/30 p-2">

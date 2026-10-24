@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef, useEffect } from 'react';
+import { useMemo, useState, useRef, useEffect, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 
@@ -49,11 +49,34 @@ export default function OrgAccessFields({
     [organizations, orgIds, orgSearch]
   );
 
+  // #9602: the list opens on explicit intent only (click, typing, ArrowDown),
+  // never on focus. addOrg returns focus to the input so the next pick is one
+  // keystroke away; with an onFocus opener that programmatic focus re-opened
+  // the list in the same update, and the open list sat over the dialog footer
+  // so a click meant for "Send Invite" granted another organization.
   const addOrg = (orgId: string) => {
     onChange(orgAccess, [...orgIds, orgId]);
     setOrgSearch('');
     setOrgDropdownOpen(false);
     orgSearchRef.current?.focus();
+  };
+
+  // On the wrapper, so Escape also works while an option button has focus.
+  const handlePickerKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape' && orgDropdownOpen) {
+      // Close the list only; keep the enclosing dialog open.
+      e.preventDefault();
+      e.stopPropagation();
+      setOrgDropdownOpen(false);
+      orgSearchRef.current?.focus();
+    }
+  };
+
+  const handleSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' && !orgDropdownOpen) {
+      e.preventDefault();
+      setOrgDropdownOpen(true);
+    }
   };
 
   const removeOrg = (orgId: string) => {
@@ -126,7 +149,7 @@ export default function OrgAccessFields({
             </div>
           )}
           {/* Search input + dropdown */}
-          <div ref={orgDropdownRef} className="relative">
+          <div ref={orgDropdownRef} className="relative" onKeyDown={handlePickerKeyDown}>
             <input
               id={`${idPrefix}-org-search`}
               ref={orgSearchRef}
@@ -136,12 +159,18 @@ export default function OrgAccessFields({
                 setOrgSearch(e.target.value);
                 setOrgDropdownOpen(true);
               }}
-              onFocus={() => setOrgDropdownOpen(true)}
+              onClick={() => setOrgDropdownOpen(true)}
+              onKeyDown={handleSearchKeyDown}
               placeholder={t('userInviteForm.orgAccess.searchPlaceholder')}
               className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
             {orgDropdownOpen && (
-              <div className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-md border bg-card shadow-md">
+              // In the document flow, not `absolute`: an overlay could sit over
+              // the dialog's footer buttons (#9602). The dialog scrolls instead.
+              <div
+                data-testid={`${idPrefix}-org-options`}
+                className="mt-1 max-h-48 w-full overflow-auto rounded-md border bg-card shadow-md"
+              >
                 {filteredOrgs.length === 0 ? (
                   <p className="px-3 py-2 text-sm text-muted-foreground">
                     {organizations.length === 0
@@ -153,6 +182,8 @@ export default function OrgAccessFields({
                     <button
                       key={org.id}
                       type="button"
+                      // Keep focus in the search input across the pick.
+                      onMouseDown={e => e.preventDefault()}
                       onClick={() => addOrg(org.id)}
                       className="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors"
                     >

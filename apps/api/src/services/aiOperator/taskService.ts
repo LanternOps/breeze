@@ -27,14 +27,20 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiAgents } from '../../db/schema/aiAgents';
 import { devices } from '../../db/schema/devices';
 import {
+  identityOffboardingCheckpointSchema,
+  identityOffboardingInputSchema,
+  serviceRecoveryCheckpointSchema,
   taskCheckpointSchema,
   TASK_CHECKPOINT_VERSION,
+  type IdentityOffboardingCheckpoint,
+  type IdentityOffboardingInput,
+  type ServiceRecoveryCheckpoint,
   type TaskCheckpoint,
   type ServiceRecoveryInput,
 } from '@breeze/shared';
@@ -44,10 +50,24 @@ import {
   buildServiceRecoveryCriterion,
   parseServiceRecoveryInput,
 } from './recipes/serviceRecovery';
+import { IDENTITY_OFFBOARDING_WORKFLOW_KEY } from './recipes/identityOffboarding';
 import { resolveAdmissionRecipe } from './recipes';
-import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../../config/env';
+import type { AnyRecipeDefinition, TaskPhase } from './recipes/types';
+import {
+  aiOperatorIdentityOffboardingEnabled,
+  aiOperatorServiceRecoveryEnabled,
+  aiOperatorTasksEnabled,
+} from '../../config/env';
 import { admissionFenced } from './taskTransitions';
-import { createTaskTarget } from './targetService';
+import { createTaskTarget, freezeTargetAccount, upsertContactExternalLinks } from './targetService';
+import {
+  createContactForTask,
+  findLiveTaskForContact,
+  identifyTaskPerson,
+  lockContactForRecipe,
+  pinContact,
+  resolveProviderAccounts,
+} from './contactResolution';
 import { openStep, resolveStepKind } from './stepService';
 import { appendTaskEvent } from './eventService';
 import { resolveTaskDeadlineMs } from './taskDeadline';
@@ -72,7 +92,15 @@ export type AdmitTaskRefusal =
    */
   | 'pending_cap_reached'
   /** A task-wide policy ceiling other than capacity refused the task (#6590). */
-  | 'task_limit_exceeded';
+  | 'task_limit_exceeded'
+  /** R1a, contact-targeted recipes. A named contact is not in this org (non-enumerating 404). */
+  | 'contact_not_in_org'
+  /** R1a. The person could not be resolved to exactly one contact; the technician must choose. */
+  | 'contact_ambiguous'
+  /** R1a. Neither provider has an account for the person. */
+  | 'no_provider_account'
+  /** R1a. A task of this recipe is already live for this contact (409). */
+  | 'duplicate_live_task';
 
 export type AdmitTaskResult =
   /**
@@ -82,7 +110,7 @@ export type AdmitTaskResult =
    * conflict — but it must not treat the call as having produced new work.
    */
   | { ok: true; taskId: string; replayed: boolean }
-  | { ok: false; refusal: AdmitTaskRefusal; detail: string };
+  | { ok: false; refusal: AdmitTaskRefusal; detail: string; existingTaskId?: string };
 
 export interface AdmitServiceRecoveryTaskInput {
   orgId: string;
@@ -115,40 +143,153 @@ export interface AdmitServiceRecoveryTaskInput {
    * idempotency" and is what every internal admission passes.
    */
   clientIdempotencyKey?: string | null;
+  /**
+   * Wisp W02 (Wisp design §4.3) — TRUSTED INTERNAL INPUT: the delegation grant
+   * + revision a Wisp-launched task runs under. W07's coordinator is the
+   * producer; `routes/aiOperatorTasks.ts` does not expose it. The requester
+   * gate then checks the live ceiling (with the effect permission) before
+   * each effect, and the coordinator's runs inherit the pin.
+   */
+  grant?: { grantId: string; grantRevisionId: string };
 }
 
 /**
- * Admit one service-recovery task.
+ * Each recipe's feature flag, nested under `AI_OPERATOR_TASKS_ENABLED`. A
+ * third recipe adds one line. A registered recipe with NO entry cannot be
+ * admitted (fail closed).
+ *
+ * The accessors are wrapped, never referenced bare: reading an env accessor
+ * at module load would make every importer of this file depend on it.
+ */
+export const RECIPE_FLAGS: Readonly<Record<string, { name: string; enabled: () => boolean }>> = Object.freeze({
+  [SERVICE_RECOVERY_WORKFLOW_KEY]: {
+    name: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED',
+    enabled: () => aiOperatorServiceRecoveryEnabled(),
+  },
+  [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: {
+    name: 'AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED',
+    enabled: () => aiOperatorIdentityOffboardingEnabled(),
+  },
+});
+
+/** True when tasks are on AND the recipe's own flag is on. Read at call time. */
+export function recipeEnabled(recipeKey: string): boolean {
+  const flag = Object.hasOwn(RECIPE_FLAGS, recipeKey) ? RECIPE_FLAGS[recipeKey] : undefined;
+  return aiOperatorTasksEnabled() && flag !== undefined && flag.enabled();
+}
+
+/**
+ * Admit one service-recovery task — the shipped entry point, unchanged.
+ *
+ * Kept as a named export rather than folded into `admitTask` because two
+ * shipped suites mock it by name (`routes/aiOperatorTasks.test.ts`,
+ * `__tests__/integration/aiOperatorAdmission.integration.test.ts`). It is a
+ * projection, not a second path: every rule lives in `admitTask`.
+ *
+ * It admits `service_recovery` and nothing else. Since R1a the registry holds
+ * a second recipe; a caller naming it HERE gets the refusal it got before that
+ * recipe existed (after the same two flag checks, in the same order), never a
+ * service-recovery-shaped admission under another recipe's key.
+ */
+export async function admitServiceRecoveryTask(
+  input: AdmitServiceRecoveryTaskInput,
+): Promise<AdmitTaskResult> {
+  if (input.workflowKey !== undefined && input.workflowKey !== SERVICE_RECOVERY_WORKFLOW_KEY) {
+    if (!aiOperatorTasksEnabled()) {
+      return { ok: false, refusal: 'tasks_disabled', detail: 'AI_OPERATOR_TASKS_ENABLED is off' };
+    }
+    if (!aiOperatorServiceRecoveryEnabled()) {
+      return { ok: false, refusal: 'recipe_disabled', detail: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED is off' };
+    }
+    return {
+      ok: false,
+      refusal: 'unknown_recipe',
+      detail: `'${input.workflowKey}' is not a supported workflow for service-recovery admission. `
+        + `Supported workflows: ${SERVICE_RECOVERY_WORKFLOW_KEY}.`,
+    };
+  }
+  return admitTask({
+    ...input,
+    workflowKey: SERVICE_RECOVERY_WORKFLOW_KEY,
+    workflowVersion: input.workflowVersion ?? SERVICE_RECOVERY_WORKFLOW_VERSION,
+  });
+}
+
+export interface AdmitTaskInput {
+  orgId: string;
+  agentId: string;
+  objective: string;
+  originKind: AdmitServiceRecoveryTaskInput['originKind'];
+  requesterUserId: string | null;
+  workflowKey: string;
+  workflowVersion: number;
+  recipeInput: unknown;
+  deadlineMs?: number;
+  now?: Date;
+  clientIdempotencyKey?: string | null;
+  /** Wisp W02 grant pin; see `AdmitServiceRecoveryTaskInput.grant`. */
+  grant?: AdmitServiceRecoveryTaskInput['grant'];
+}
+
+type Refusal = Extract<AdmitTaskResult, { ok: false }>;
+const refuse = (refusal: AdmitTaskRefusal, detail: string, extra: { existingTaskId?: string } = {}): Refusal =>
+  ({ ok: false, refusal, detail, ...extra });
+
+/**
+ * How one recipe's targets are resolved and written. The gate skeleton in
+ * `admitTask` is shared; only these four seams differ per recipe.
+ */
+interface AdmissionTargets {
+  /** In the transaction, before the limits: resolve and count the targets. */
+  resolve(): Promise<Refusal | { targetCount: number }>;
+  /** In the transaction, after the deadline is known and before the insert. */
+  beforeInsert(deadlineAt: Date): Promise<Refusal | null>;
+  /** The per-recipe columns of the task row. */
+  row(): {
+    deviceId: string | null;
+    targetLabel: string;
+    phase: TaskPhase;
+    currentStepKey: string;
+    checkpoint: TaskCheckpoint;
+  };
+  /** In the transaction, only when the row was inserted. */
+  afterInsert(taskId: string): Promise<void>;
+}
+
+/**
+ * Admit one task for any registered recipe (Recipe Library W06 R1a; E1
+ * decision 7 deferred this to the second recipe).
  *
  * Both feature flags are checked here and NOT in the coordinator's
  * reconciliation path, which is the whole distinction spec §11.2 draws: "the
  * existing AI kill switches fence new admissions and dispatch claims; the
  * publisher and reconciler keep running so late results still land." Turning
- * the recipe off must stop new tasks, never abandon a task whose restart
- * command is already on a device.
+ * a recipe off must stop new tasks, never abandon one whose effect is already
+ * out.
+ *
+ * THE SHIPPED GATES, IN THE SHIPPED ORDER: flags → recipe resolution → input
+ * parse → (one transaction) agent → targets → policy limits →
+ * `task_limit_exceeded` → `lockOrgTaskAdmission` → idempotent replay →
+ * `pending_cap_reached` → jittered deadline → insert. A contact-targeted
+ * recipe resolves its person and provider accounts BEFORE the transaction
+ * (provider reads never run under admission locks) and inserts its own steps
+ * after the deadline: cutoff ≤ deadline, contact pin/create, the per-(recipe,
+ * contact) advisory lock, and the one-live-task refusal.
  */
-export async function admitServiceRecoveryTask(
-  input: AdmitServiceRecoveryTaskInput,
-): Promise<AdmitTaskResult> {
+export async function admitTask(input: AdmitTaskInput): Promise<AdmitTaskResult> {
   if (!aiOperatorTasksEnabled()) {
     return { ok: false, refusal: 'tasks_disabled', detail: 'AI_OPERATOR_TASKS_ENABLED is off' };
   }
-  if (!aiOperatorServiceRecoveryEnabled()) {
-    return {
-      ok: false,
-      refusal: 'recipe_disabled',
-      detail: 'AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED is off',
-    };
+  const flag = Object.hasOwn(RECIPE_FLAGS, input.workflowKey) ? RECIPE_FLAGS[input.workflowKey] : undefined;
+  if (flag && !flag.enabled()) {
+    return { ok: false, refusal: 'recipe_disabled', detail: `${flag.name} is off` };
   }
 
   // Resolve BEFORE the input parse and before any db work. An unknown workflow
   // cannot be admitted regardless of what the org contains, and reaching
   // Postgres to discover that would hold a connection for a request that can
   // never succeed.
-  const resolution = resolveAdmissionRecipe(
-    input.workflowKey ?? SERVICE_RECOVERY_WORKFLOW_KEY,
-    input.workflowVersion ?? SERVICE_RECOVERY_WORKFLOW_VERSION,
-  );
+  const resolution = resolveAdmissionRecipe(input.workflowKey, input.workflowVersion);
   if (!resolution.ok) {
     return {
       ok: false,
@@ -157,33 +298,47 @@ export async function admitServiceRecoveryTask(
     };
   }
   const recipe = resolution.recipe;
+  if (!flag) {
+    return { ok: false, refusal: 'recipe_disabled', detail: `workflow '${recipe.key}' has no feature flag and cannot be admitted` };
+  }
 
-  let recipeInput: ServiceRecoveryInput;
-  try {
-    recipeInput = parseServiceRecoveryInput(input.recipeInput);
-  } catch (error) {
-    return {
-      ok: false,
-      refusal: 'invalid_input',
-      detail: error instanceof Error ? error.message.slice(0, 400) : 'invalid recipe input',
-    };
+  // Wisp W02: a delegation grant is one person's borrowed authority; the
+  // requester gate re-checks that person before every effect, so a grant
+  // without its requester has nothing to re-check against.
+  if (input.grant && !input.requesterUserId) {
+    return { ok: false, refusal: 'invalid_input', detail: 'a grant-bearing task needs its requester (the grantor)' };
   }
 
   const now = input.now ?? new Date();
-  const criterion = buildServiceRecoveryCriterion(recipeInput);
-
-  const checkpoint: TaskCheckpoint = taskCheckpointSchema.parse({
-    version: TASK_CHECKPOINT_VERSION,
-    recipeInput,
-    criterion,
-    findings: [],
-    satisfiedCriteria: [],
-    unsatisfiedCriteria: ['service_running'],
-    mutationAttempts: 0,
-    lastVerification: null,
-    lastOperationKey: null,
-    fixWatchId: null,
-  });
+  let targets: AdmissionTargets;
+  if (recipe.key === SERVICE_RECOVERY_WORKFLOW_KEY) {
+    let recipeInput: ServiceRecoveryInput;
+    try {
+      recipeInput = parseServiceRecoveryInput(input.recipeInput);
+    } catch (error) {
+      return {
+        ok: false,
+        refusal: 'invalid_input',
+        detail: error instanceof Error ? error.message.slice(0, 400) : 'invalid recipe input',
+      };
+    }
+    targets = serviceRecoveryTargets(input, recipe, recipeInput);
+  } else if (recipe.key === IDENTITY_OFFBOARDING_WORKFLOW_KEY) {
+    const parsed = identityOffboardingInputSchema.safeParse(input.recipeInput);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        refusal: 'invalid_input',
+        detail: parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ').slice(0, 400),
+      };
+    }
+    const prepared = await prepareContactTargets(input, recipe, parsed.data);
+    if ('refusal' in prepared) return prepared;
+    targets = prepared;
+  } else {
+    // A registered recipe this admission has no target plan for.
+    return { ok: false, refusal: 'unknown_recipe', detail: `workflow '${recipe.key}' cannot be admitted by this build` };
+  }
 
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
@@ -206,18 +361,8 @@ export async function admitServiceRecoveryTask(
         };
       }
 
-      const [device] = await db
-        .select({ id: devices.id, hostname: devices.hostname })
-        .from(devices)
-        .where(and(eq(devices.id, recipeInput.deviceId), eq(devices.orgId, input.orgId)))
-        .limit(1);
-      if (!device) {
-        return {
-          ok: false as const,
-          refusal: 'device_not_in_org' as const,
-          detail: `device ${recipeInput.deviceId} is not in org ${input.orgId}`,
-        };
-      }
+      const resolvedTargets = await targets.resolve();
+      if ('refusal' in resolvedTargets) return resolvedTargets;
 
       const taskId = randomUUID();
 
@@ -234,12 +379,8 @@ export async function admitServiceRecoveryTask(
         ? effectiveAgent.effective.limits
         : null;
 
-      // v15 task-wide budget `taskMaxActiveTargets` (#6590). Admission writes
-      // exactly one target, and the validator's floor is 1, so no valid policy
-      // refuses here today; the check exists so the fleet waves inherit an
-      // enforced ceiling instead of a comment.
-      const ADMITTED_TARGET_COUNT = 1;
-      const targetsCheck = checkTaskActiveTargets({ targetCount: ADMITTED_TARGET_COUNT, policyLimits });
+      // v15 task-wide budget `taskMaxActiveTargets` (#6590).
+      const targetsCheck = checkTaskActiveTargets({ targetCount: resolvedTargets.targetCount, policyLimits });
       if (!targetsCheck.ok) {
         return { ok: false as const, refusal: 'task_limit_exceeded' as const, detail: targetsCheck.detail };
       }
@@ -284,7 +425,13 @@ export async function admitServiceRecoveryTask(
         // not create an expiry wave 24 hours later.
         jitter: () => 0.9 + Math.random() * 0.2,
       });
+      // Already jittered and capped by resolveTaskDeadlineMs above.
+      const deadlineAt = new Date(now.getTime() + deadlineMs);
 
+      const blocked = await targets.beforeInsert(deadlineAt);
+      if (blocked) return blocked;
+
+      const row = targets.row();
       const inserted = await db
         .insert(aiOperatorTasks)
         .values({
@@ -301,18 +448,20 @@ export async function admitServiceRecoveryTask(
         mode: 'live',
         originKind: input.originKind,
         requesterUserId: input.requesterUserId,
+        // Wisp W02: both or none (`ai_operator_tasks_grant_link_chk`).
+        grantId: input.grant?.grantId ?? null,
+        grantRevisionId: input.grant?.grantRevisionId ?? null,
         objective: input.objective.slice(0, 4000),
-        deviceId: device.id,
-        targetLabel: (device.hostname ?? recipeInput.deviceId).slice(0, 255),
+        deviceId: row.deviceId,
+        targetLabel: row.targetLabel,
         state: 'queued',
-        phase: 'investigate',
+        phase: row.phase,
         revision: 1,
         leaseEpoch: 0,
         attemptOrdinal: 0,
-        currentStepKey: 'investigate',
-        checkpoint: checkpoint as unknown as Record<string, unknown>,
-        // Already jittered and capped by resolveTaskDeadlineMs above.
-        deadlineAt: new Date(now.getTime() + deadlineMs),
+        currentStepKey: row.currentStepKey,
+        checkpoint: row.checkpoint as unknown as Record<string, unknown>,
+        deadlineAt,
         // Due immediately. The coordinator's `queued_past_wake` scan is what
         // picks it up — admission does NOT enqueue a wake job, because a queued
         // task has no authoritative source row to re-derive a wake FROM, which
@@ -337,53 +486,13 @@ export async function admitServiceRecoveryTask(
         .returning({ id: aiOperatorTasks.id });
 
       if (inserted.length > 0) {
-        // Wave E2 (#6167). The target row is the identity; the inline
-        // device_id / target_label columns written above stay as the read
-        // projection recipe spec §5.5 keeps until P3-5. BOTH are written,
-        // deliberately — this wave is additive, and every existing reader of
-        // the inline columns keeps working unchanged.
-        //
         // Inside the SAME transaction as the task insert (this callback is one
         // withSystemDbAccessContext transaction and the bare `db` proxy joins
         // it), and ONLY on this branch: the idempotent-replay branch below did
         // not create the task, and writing a second target/step/event for a
         // task another request already admitted is exactly the duplicate the
         // client idempotency key exists to prevent.
-        const target = await createTaskTarget(db, {
-          orgId: input.orgId,
-          taskId,
-          targetKind: 'device',
-          deviceId: device.id,
-          targetLabel: (device.hostname ?? recipeInput.deviceId).slice(0, 255),
-          targetOrdinal: 0,
-        });
-
-        await openStep(db, {
-          orgId: input.orgId,
-          taskId,
-          stepKey: 'investigate',
-          stepKind: resolveStepKind(recipe.key, recipe.version, 'investigate'),
-          targetId: target.id,
-          attemptOrdinal: 0,
-          planRevision: 1,
-          checkpoint: checkpoint as unknown as Record<string, unknown>,
-        });
-
-        // ONE event for the whole admission, not three. `createTaskTarget` and
-        // `openStep` are called without an `actor` above precisely so they do
-        // not each write their own — an admission is one transition.
-        await appendTaskEvent(db, {
-          orgId: input.orgId,
-          taskId,
-          eventType: 'task_admitted',
-          actor: input.requesterUserId
-            ? { kind: 'user', userId: input.requesterUserId }
-            : { kind: 'system' },
-          stepKey: 'investigate',
-          targetId: target.id,
-          detail: `${recipe.key} v${recipe.version} admitted against device target ${target.id}`,
-        });
-
+        await targets.afterInsert(taskId);
         return { ok: true as const, taskId, replayed: false };
       }
 
@@ -422,6 +531,235 @@ export async function admitServiceRecoveryTask(
 
       return { ok: true as const, taskId: existing.id, replayed: true };
     }));
+}
+
+/** `service_recovery`: one device target, exactly the shipped writes. */
+function serviceRecoveryTargets(
+  input: AdmitTaskInput,
+  recipe: AnyRecipeDefinition,
+  recipeInput: ServiceRecoveryInput,
+): AdmissionTargets {
+  const criterion = buildServiceRecoveryCriterion(recipeInput);
+  // Admission builds the service-recovery ARM explicitly (R1a-0): the union
+  // would accept it too, but the type here is the arm, not the union.
+  const checkpoint: ServiceRecoveryCheckpoint = serviceRecoveryCheckpointSchema.parse({
+    version: TASK_CHECKPOINT_VERSION,
+    recipeInput,
+    criterion,
+    findings: [],
+    satisfiedCriteria: [],
+    unsatisfiedCriteria: ['service_running'],
+    mutationAttempts: 0,
+    lastVerification: null,
+    lastOperationKey: null,
+    fixWatchId: null,
+  });
+  let device: { id: string; hostname: string | null } | null = null;
+  return {
+    async resolve() {
+      const [found] = await db
+        .select({ id: devices.id, hostname: devices.hostname })
+        .from(devices)
+        .where(and(eq(devices.id, recipeInput.deviceId), eq(devices.orgId, input.orgId)))
+        .limit(1);
+      if (!found) return refuse('device_not_in_org', `device ${recipeInput.deviceId} is not in org ${input.orgId}`);
+      device = found;
+      // Admission writes exactly one target, and the validator's floor is 1,
+      // so no valid policy refuses here today; the check exists so the fleet
+      // waves inherit an enforced ceiling instead of a comment.
+      return { targetCount: 1 };
+    },
+    async beforeInsert() { return null; },
+    row() {
+      return {
+        deviceId: device!.id,
+        targetLabel: (device!.hostname ?? recipeInput.deviceId).slice(0, 255),
+        phase: 'investigate',
+        currentStepKey: 'investigate',
+        checkpoint,
+      };
+    },
+    async afterInsert(taskId) {
+      // Wave E2 (#6167). The target row is the identity; the inline
+      // device_id / target_label columns written above stay as the read
+      // projection recipe spec §5.5 keeps until P3-5. BOTH are written,
+      // deliberately — this wave is additive, and every existing reader of
+      // the inline columns keeps working unchanged.
+      const target = await createTaskTarget(db, {
+        orgId: input.orgId,
+        taskId,
+        targetKind: 'device',
+        deviceId: device!.id,
+        targetLabel: (device!.hostname ?? recipeInput.deviceId).slice(0, 255),
+        targetOrdinal: 0,
+      });
+      await openStep(db, {
+        orgId: input.orgId,
+        taskId,
+        stepKey: 'investigate',
+        stepKind: resolveStepKind(recipe.key, recipe.version, 'investigate'),
+        targetId: target.id,
+        attemptOrdinal: 0,
+        planRevision: 1,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+      });
+      // ONE event for the whole admission, not three. `createTaskTarget` and
+      // `openStep` are called without an `actor` above precisely so they do
+      // not each write their own — an admission is one transition.
+      await appendTaskEvent(db, {
+        orgId: input.orgId,
+        taskId,
+        eventType: 'task_admitted',
+        actor: input.requesterUserId
+          ? { kind: 'user', userId: input.requesterUserId }
+          : { kind: 'system' },
+        stepKey: 'investigate',
+        targetId: target.id,
+        detail: `${recipe.key} v${recipe.version} admitted against device target ${target.id}`,
+      });
+    },
+  };
+}
+
+/**
+ * `identity_offboarding`: a contact target (ordinal 0), one device target per
+ * selected device, and the person's provider accounts frozen onto the contact
+ * target. The person and the accounts are resolved HERE, before the
+ * transaction; nothing here writes until the transaction.
+ */
+async function prepareContactTargets(
+  input: AdmitTaskInput,
+  recipe: AnyRecipeDefinition,
+  recipeInput: IdentityOffboardingInput,
+): Promise<AdmissionTargets | Refusal> {
+  const person = await identifyTaskPerson(input.orgId, {
+    contactId: recipeInput.contactId, personHint: recipeInput.personHint,
+  });
+  if (!person.ok) {
+    return refuse(person.reason === 'contact_not_in_org' ? 'contact_not_in_org' : 'contact_ambiguous', person.detail);
+  }
+  const { accounts, problems } = await resolveProviderAccounts(input.orgId, {
+    contactId: person.kind === 'existing' ? person.contactId : null,
+    email: person.email,
+    label: person.label,
+  });
+  if (accounts.length === 0) {
+    return refuse('no_provider_account',
+      `no Microsoft 365 or Google Workspace account was found for ${person.label}`
+        + (problems.length > 0 ? ` (${problems.join('; ')})` : ''));
+  }
+
+  const entryStepKey = recipe.entryStepKey ?? 'investigate';
+  const phase = recipe.steps[entryStepKey]?.phase ?? 'investigate';
+  const checkpoint: IdentityOffboardingCheckpoint = identityOffboardingCheckpointSchema.parse({
+    version: TASK_CHECKPOINT_VERSION,
+    recipeInput,
+    // An account WAS found, so the task runs — but a provider whose lookup
+    // failed is a gap the technician must see, not a provider quietly skipped.
+    admissionProblems: problems.slice(0, 10).map((p) => p.slice(0, 500)),
+  });
+  let contactId: string | null = person.kind === 'existing' ? person.contactId : null;
+  let selected: Array<{ id: string; hostname: string | null }> = [];
+
+  return {
+    async resolve() {
+      if (recipeInput.deviceIds.length > 0) {
+        const rows = await db
+          .select({ id: devices.id, hostname: devices.hostname })
+          .from(devices)
+          .where(and(eq(devices.orgId, input.orgId), inArray(devices.id, recipeInput.deviceIds)))
+          .limit(recipeInput.deviceIds.length);
+        const found = new Set(rows.map((r) => r.id));
+        const missing = recipeInput.deviceIds.filter((d) => !found.has(d));
+        if (missing.length > 0) return refuse('device_not_in_org', `device ${missing[0]} is not in org ${input.orgId}`);
+        // In the order the technician selected them, so target ordinals are stable.
+        selected = recipeInput.deviceIds.map((d) => rows.find((r) => r.id === d)!);
+      }
+      // `taskMaxActiveTargets` counts the targets an EFFECT can act on. Only
+      // the contact is one: selected devices carry no effect in this recipe
+      // (each becomes a manual item, D2), so they are reference targets — kept
+      // for the requester gate and the completion record, not counted. The
+      // default policy ceiling is 1, which would otherwise refuse every
+      // offboarding that names a laptop.
+      return { targetCount: 1 };
+    },
+    async beforeInsert(deadlineAt) {
+      // A cutoff after the deadline could never dispatch: refuse it now.
+      if (recipeInput.cutoffAt && new Date(recipeInput.cutoffAt).getTime() > deadlineAt.getTime()) {
+        return refuse('invalid_input',
+          `cutoffAt ${recipeInput.cutoffAt} is after this task's deadline ${deadlineAt.toISOString()}`);
+      }
+      if (person.kind === 'existing') {
+        if (!(await pinContact(input.orgId, person.contactId))) {
+          return refuse('contact_not_in_org', 'contact not found in this organization');
+        }
+      } else {
+        const created = await createContactForTask(input.orgId, person.email, input.requesterUserId);
+        if (!created.ok) return refuse('contact_ambiguous', created.detail);
+        contactId = created.contactId;
+      }
+      // D-R1-6: one live task per (contact, recipe), serialized by a
+      // transaction-scoped advisory lock taken AFTER the org admission lock.
+      await lockContactForRecipe(input.orgId, recipe.key, contactId!);
+      const live = await findLiveTaskForContact(input.orgId, recipe.key, contactId!);
+      if (live) {
+        return refuse('duplicate_live_task', `a ${recipe.key} task is already live for this contact: ${live.taskId}`,
+          { existingTaskId: live.taskId });
+      }
+      return null;
+    },
+    row() {
+      return {
+        deviceId: null,
+        targetLabel: person.label.slice(0, 255),
+        phase,
+        currentStepKey: entryStepKey,
+        checkpoint,
+      };
+    },
+    async afterInsert(taskId) {
+      const contactTarget = await createTaskTarget(db, {
+        orgId: input.orgId, taskId, targetKind: 'contact', contactId: contactId!,
+        targetLabel: person.label.slice(0, 255), targetOrdinal: 0,
+      });
+      for (const [i, device] of selected.entries()) {
+        await createTaskTarget(db, {
+          orgId: input.orgId, taskId, targetKind: 'device', deviceId: device.id,
+          targetLabel: (device.hostname ?? device.id).slice(0, 255), targetOrdinal: i + 1,
+        });
+      }
+      for (const account of accounts) {
+        await freezeTargetAccount(db, {
+          orgId: input.orgId, taskId, targetId: contactTarget.id, provider: account.provider,
+          connectionId: account.connectionId, externalId: account.externalId, principalLabel: account.principalLabel,
+        });
+      }
+      const newLinks = accounts.filter((a) => !a.fromLink).map((a) => ({ system: a.provider, externalId: a.externalId }));
+      if (newLinks.length > 0) {
+        await upsertContactExternalLinks(db, { orgId: input.orgId, contactId: contactId!, links: newLinks });
+      }
+      await openStep(db, {
+        orgId: input.orgId,
+        taskId,
+        stepKey: entryStepKey,
+        stepKind: resolveStepKind(recipe.key, recipe.version, entryStepKey),
+        targetId: contactTarget.id,
+        attemptOrdinal: 0,
+        planRevision: 1,
+        checkpoint: checkpoint as unknown as Record<string, unknown>,
+      });
+      await appendTaskEvent(db, {
+        orgId: input.orgId,
+        taskId,
+        eventType: 'task_admitted',
+        actor: input.requesterUserId ? { kind: 'user', userId: input.requesterUserId } : { kind: 'system' },
+        stepKey: entryStepKey,
+        targetId: contactTarget.id,
+        detail: `${recipe.key} v${recipe.version} admitted against contact target ${contactTarget.id}`
+          + ` (${selected.length} device target(s), ${accounts.map((a) => a.provider).join('+')} account(s) frozen)`,
+      });
+    },
+  };
 }
 
 /** The task-row fields a fence check needs. */
@@ -527,13 +865,39 @@ export function parseTaskCheckpointResult(
 ): { ok: true; checkpoint: TaskCheckpoint } | { ok: false; detail: string } {
   const parsed = taskCheckpointSchema.safeParse(value);
   if (parsed.success) return { ok: true, checkpoint: parsed.data };
+  // Describe EVERY arm from its own parse, not from the union's error: zod
+  // reports a union mismatch either as one root `invalid_union` or as the
+  // single arm it judges "non-aborted", and that judgement shifts between zod
+  // releases (4.6 picks the identity arm for a service-recovery row missing
+  // its criterion, dropping the real problem). The arm with the fewest issues
+  // leads (ties keep arm order), so the 400-char cap cuts the farther arms.
+  const perArm = taskCheckpointSchema.options
+    .map((arm) => arm.safeParse(value))
+    .map((r) => (r.success ? [] : describeCheckpointIssues(r.error.issues, [])))
+    .filter((lines) => lines.length > 0)
+    .sort((a, b) => a.length - b.length);
   return {
     ok: false,
-    detail: parsed.error.issues
-      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
-      .join('; ')
-      .slice(0, 400),
+    detail: perArm.flat().join('; ').slice(0, 400),
   };
+}
+
+/**
+ * `taskCheckpointSchema` is a union of per-recipe arms (R1a-0). A mismatch
+ * reported as a single `invalid_union` issue at the root would replace
+ * "recipeInput.serviceName: too small" with "(root): Invalid input" — the one
+ * forensic trail a terminalized task has. Expand a (nested) union's arms
+ * instead, with their full paths.
+ */
+type CheckpointIssue = { path: PropertyKey[]; message: string; code?: string; errors?: CheckpointIssue[][] };
+function describeCheckpointIssues(issues: readonly CheckpointIssue[], prefix: PropertyKey[]): string[] {
+  return issues.flatMap((i) => {
+    const path = [...prefix, ...i.path];
+    if (i.code === 'invalid_union' && Array.isArray(i.errors) && i.errors.length > 0) {
+      return i.errors.flatMap((arm) => describeCheckpointIssues(arm, path));
+    }
+    return [`${path.map(String).join('.') || '(root)'}: ${i.message}`];
+  });
 }
 
 /** Convenience wrapper for callers that only need the value. */

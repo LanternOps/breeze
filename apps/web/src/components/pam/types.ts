@@ -13,6 +13,9 @@ export type ElevationStatus =
 
 export type ElevationFlowType = 'uac_intercept' | 'tech_jit_admin' | 'ai_tool_action';
 
+/** Categories the agent reports for a request it cannot act on (#9517). */
+export type PamDeviceUnableReason = 'helper_unavailable' | 'session_unavailable' | 'helper_start_failed';
+
 export type PamVerdict = 'auto_approve' | 'auto_deny' | 'require_approval' | 'ignore';
 
 export interface ElevationRequest {
@@ -44,6 +47,12 @@ export interface ElevationRequest {
   // seeded with a command-line / parent-image criterion.
   commandLine?: string | null;
   parentImage?: string | null;
+  // #9517: set when the agent reported it could not act on the request (no
+  // SYSTEM helper in the requester's session, ...). A pending request is
+  // closed as 'expired' when this is reported.
+  deviceUnableAt?: string | null;
+  deviceUnableReason?: PamDeviceUnableReason | string | null;
+  deviceUnableDetail?: string | null;
   // Joined by the API
   deviceHostname?: string | null;
   siteName?: string | null;

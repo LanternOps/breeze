@@ -85,7 +85,7 @@ const routeFetch = (trendsResponse: () => Response) => {
  */
 const waitForLoadedPage = async () => {
   await screen.findByText(/^Updated /);
-  expect(screen.getByText('Fleet uptime')).toBeInTheDocument();
+  expect(screen.getByText('Online now')).toBeInTheDocument();
   expect(screen.getByText('Sessions in range')).toBeInTheDocument();
   expect(screen.getByText('99.50%')).toBeInTheDocument();
 };

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 const permState = vi.hoisted(() => ({ canUseAi: true }));
@@ -16,6 +16,7 @@ vi.mock('@/lib/permissions', () => ({
 
 import AiChatSidebar from './AiChatSidebar';
 import { useAiStore } from '@/stores/aiStore';
+import { useFeaturesStore } from '@/stores/featuresStore';
 
 vi.mock('@/stores/aiStore', () => ({ useAiStore: vi.fn() }));
 // Children pull in streaming/fetch concerns irrelevant to the shell test.
@@ -105,5 +106,113 @@ describe('AiChatSidebar pre-session model menu (partner scope)', () => {
     } finally {
       useAiModelPickerStore.setState({ load: original });
     }
+  });
+
+  describe('credits exhausted banner (#9450)', () => {
+    const exhausted = { ...baseState, isOpen: true, error: 'You are out of AI credits. Purchase more credits to continue.', errorCode: 'credits_exhausted' };
+    const setHosted = (billing: boolean) =>
+      useFeaturesStore.setState({ features: { ...useFeaturesStore.getState().features, billing }, loaded: true });
+
+    it('offers a Buy credits link to the billing credits page on hosted', () => {
+      setHosted(true);
+      vi.mocked(useAiStore).mockReturnValue(exhausted);
+      render(<AiChatSidebar />);
+      expect(screen.getByText(/out of AI credits/)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Buy credits' })).toHaveAttribute('href', '/billing/credits');
+    });
+
+    it('shows the error but no Buy credits link when billing is not configured (self-hosted)', () => {
+      setHosted(false);
+      vi.mocked(useAiStore).mockReturnValue(exhausted);
+      render(<AiChatSidebar />);
+      expect(screen.getByText(/out of AI credits/)).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
+    });
+
+    it('does not offer Buy credits for other errors', () => {
+      setHosted(true);
+      vi.mocked(useAiStore).mockReturnValue({ ...exhausted, error: 'Rate limit exceeded', errorCode: null });
+      render(<AiChatSidebar />);
+      expect(screen.queryByRole('link', { name: 'Buy credits' })).toBeNull();
+    });
+  });
+});
+
+// #9613: with Shift held the browser reports KeyboardEvent.key as "A" (capital),
+// so the handler must not compare against lowercase "a" only.
+describe('AiChatSidebar keyboard shortcut (#9613)', () => {
+  function setup() {
+    permState.canUseAi = true;
+    const toggle = vi.fn();
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, toggle, isOpen: false });
+    render(<AiChatSidebar />);
+    return toggle;
+  }
+
+  it.each([
+    ['Ctrl+Shift+A (key "A")', { key: 'A', ctrlKey: true, shiftKey: true }],
+    ['Cmd+Shift+A (key "A")', { key: 'A', metaKey: true, shiftKey: true }],
+    ['Ctrl+Shift+a (key "a")', { key: 'a', ctrlKey: true, shiftKey: true }],
+  ])('toggles on %s', (_label, init) => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { ...init, cancelable: true }));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not toggle without Shift or without a modifier', () => {
+    const toggle = setup();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', shiftKey: true }));
+    expect(toggle).not.toHaveBeenCalled();
+  });
+});
+
+// Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
+// suites cover them; this pins where the sidebar mounts them.
+vi.mock('./WispToggle', () => ({ default: () => <button data-testid="wisp-toggle-stub" /> }));
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
+    <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
+  ),
+}));
+vi.mock('./WispThreadAttachments', () => ({ default: () => <div data-testid="wisp-attachments-stub" /> }));
+
+describe('AiChatSidebar Wisp mode (W04)', () => {
+  const wisp = {
+    grantId: 'g-1', threadId: 't-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active',
+    expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
+  };
+
+  it('renders WispToggle in the header when wisp is null', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('wisp-toggle-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
+    expect(screen.getByText('Breeze AI')).toBeInTheDocument();
+  });
+
+  it('hides WispToggle while the history panel is open', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null, showHistory: true });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+  });
+
+  it('renders WispThreadHeader and the Wisp title when wisp is set', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.getByText('Wisp')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-header-stub')).toHaveAttribute('data-widening', 'true');
+    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+  });
+
+  it('shows the thread attachments behind a disclosure', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-attachments-stub')).toBeNull();
+    const toggle = screen.getByTestId('wisp-attachments-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('wisp-attachments-stub')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 });
