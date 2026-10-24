@@ -19,6 +19,7 @@
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { ENTITLEMENTS } from '@breeze/shared';
 import { wispEnabled } from '../config/env';
 import { runAfterDbContextCommit } from '../db';
 import { zValidator } from '../lib/validation';
@@ -110,6 +111,13 @@ function errorResponse(c: Context, err: unknown): Response {
       return c.json({ error: err.message, code: err.code.toUpperCase() }, 409);
     case 'settings_out_of_bounds':
       return c.json({ error: err.message, code: 'SETTINGS_OUT_OF_BOUNDS' }, 400);
+    // The same bodies as W01's requireEntitlement('wisp'), so mounting that
+    // middleware (W04) changes no client contract.
+    case 'entitlement_required':
+      return c.json({ code: 'entitlement_required', error: ENTITLEMENTS.wisp.label, featureKey: 'wisp' }, 403);
+    case 'entitlement_check_failed':
+      c.header('Retry-After', '30');
+      return c.json({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable', featureKey: 'wisp' }, 503);
   }
 }
 

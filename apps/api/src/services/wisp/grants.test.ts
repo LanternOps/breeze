@@ -45,7 +45,7 @@ const h = vi.hoisted(() => {
     getUserEpochs: vi.fn(),
     computeLiveHumanTerm: vi.fn(),
     createAuditLogAsync: vi.fn(),
-    loadWispEntitlementLimits: vi.fn(),
+    loadWispEntitlement: vi.fn(),
     hasSatisfiedMfa: vi.fn(),
   };
 });
@@ -62,7 +62,7 @@ vi.mock('../mfaStepUpGrant', async (orig) => ({
 }));
 vi.mock('../authEpochs', () => ({ getUserEpochs: h.getUserEpochs }));
 vi.mock('../auditService', () => ({ createAuditLogAsync: h.createAuditLogAsync }));
-vi.mock('./wispEntitlementLimits', () => ({ loadWispEntitlementLimits: h.loadWispEntitlementLimits }));
+vi.mock('./wispEntitlementLimits', () => ({ loadWispEntitlement: h.loadWispEntitlement }));
 vi.mock('../../middleware/auth', () => ({ hasSatisfiedMfa: h.hasSatisfiedMfa }));
 vi.mock('./grantAuthority', async (orig) => ({
   ...(await orig<typeof import('./grantAuthority')>()),
@@ -86,6 +86,7 @@ import {
   GrantLimitReachedError,
 } from './grants';
 import { ceilingSnapshotHash } from './grantAuthority';
+import { EntitlementResolutionError } from '../entitlements';
 import { wispGrantResourceDigest } from '../mfaStepUpGrant';
 import type { AuthContext } from '../../middleware/auth';
 
@@ -131,7 +132,7 @@ beforeEach(() => {
   h.getUserEpochs.mockResolvedValue({ authEpoch: 3, mfaEpoch: 4 });
   h.consumeStepUpGrant.mockResolvedValue(true);
   h.computeLiveHumanTerm.mockResolvedValue(LIVE);
-  h.loadWispEntitlementLimits.mockResolvedValue(null);
+  h.loadWispEntitlement.mockResolvedValue({ enabled: true, limits: null });
 });
 
 describe('createGrant', () => {
@@ -228,7 +229,7 @@ describe('createGrant', () => {
   });
 
   it('throws GrantLimitReachedError when active grants ≥ maxGrants, before consuming the step-up and before any insert', async () => {
-    h.loadWispEntitlementLimits.mockResolvedValue({ maxGrants: 2, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 });
+    h.loadWispEntitlement.mockResolvedValue({ enabled: true, limits: { maxGrants: 2, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 } });
     h.results.push([{ count: 2 }]);
     const err = await createGrant({ auth: auth(), scope, stepUpGrantId: 's' }).catch((e) => e);
     expect(err).toBeInstanceOf(GrantLimitReachedError);
@@ -239,31 +240,58 @@ describe('createGrant', () => {
 
   // Which statuses count is proven against real rows in wispGrantsRls.integration.test.ts.
   it('admits when active count < maxGrants (count 1 of 2)', async () => {
-    h.loadWispEntitlementLimits.mockResolvedValue({ maxGrants: 2, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 });
+    h.loadWispEntitlement.mockResolvedValue({ enabled: true, limits: { maxGrants: 2, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 } });
     h.results.push([{ count: 1 }], [grantRow({ currentRevisionId: null })], [{ id: 'r1' }], [grantRow()]);
     await expect(createGrant({ auth: auth(), scope, stepUpGrantId: 's' })).resolves.toMatchObject({ id: 'g1' });
   });
 
-  it('applies no cap when the limits resolve null or the source throws (W01 not merged)', async () => {
-    for (const impl of [async () => null, async () => { throw new Error('module missing'); }]) {
-      h.results.length = 0; h.calls.length = 0;
-      h.loadWispEntitlementLimits.mockImplementation(impl);
-      h.results.push([grantRow({ currentRevisionId: null })], [{ id: 'r1' }], [grantRow()]);
-      await expect(createGrant({ auth: auth(), scope, stepUpGrantId: 's' })).resolves.toMatchObject({ id: 'g1' });
-    }
+  it('applies no cap when the entitlement is enabled with no limits (A21)', async () => {
+    h.loadWispEntitlement.mockResolvedValue({ enabled: true, limits: null });
+    h.results.push([grantRow({ currentRevisionId: null })], [{ id: 'r1' }], [grantRow()]);
+    await expect(createGrant({ auth: auth(), scope, stepUpGrantId: 's' })).resolves.toMatchObject({ id: 'g1' });
+    // No count(*) was issued: had one run, it would have consumed the grant row queued for the insert.
+  });
+
+  it('fails closed when the wisp entitlement is disabled: entitlement_required, step-up not consumed, nothing inserted', async () => {
+    h.loadWispEntitlement.mockResolvedValue({ enabled: false });
+    const err = await createGrant({ auth: auth(), scope, stepUpGrantId: 's' }).catch((e) => e);
+    expect(err).toBeInstanceOf(WispGrantError);
+    expect(err).toMatchObject({ code: 'entitlement_required' });
+    expect(h.consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(callsOf('insert')).toEqual([]);
+  });
+
+  it('fails closed when entitlements cannot be resolved: entitlement_check_failed, step-up not consumed, nothing inserted', async () => {
+    h.loadWispEntitlement.mockRejectedValue(new EntitlementResolutionError(PARTNER, new Error('db down')));
+    const err = await createGrant({ auth: auth(), scope, stepUpGrantId: 's' }).catch((e) => e);
+    expect(err).toBeInstanceOf(WispGrantError);
+    expect(err).toMatchObject({ code: 'entitlement_check_failed' });
+    expect(h.consumeStepUpGrant).not.toHaveBeenCalled();
+    expect(callsOf('insert')).toEqual([]);
   });
 });
 
 describe('resolveMaxGrants', () => {
-  it('reads limits.maxGrants; null for null / unparseable / throwing sources', async () => {
-    h.loadWispEntitlementLimits.mockResolvedValueOnce({ maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 });
+  it('enabled → limits.maxGrants; enabled with no limits → null (no cap)', async () => {
+    h.loadWispEntitlement.mockResolvedValueOnce({ enabled: true, limits: { maxGrants: 25, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 } });
     expect(await resolveMaxGrants(PARTNER)).toBe(25);
-    h.loadWispEntitlementLimits.mockResolvedValueOnce(null);
+    h.loadWispEntitlement.mockResolvedValueOnce({ enabled: true, limits: { maxGrants: 0, budgetCentsPerDayCeiling: 0, minFloorTickMinutes: 15 } });
+    expect(await resolveMaxGrants(PARTNER)).toBe(0);
+    h.loadWispEntitlement.mockResolvedValueOnce({ enabled: true, limits: null });
     expect(await resolveMaxGrants(PARTNER)).toBeNull();
-    h.loadWispEntitlementLimits.mockResolvedValueOnce({ maxGrants: 'lots' });
-    expect(await resolveMaxGrants(PARTNER)).toBeNull();
-    h.loadWispEntitlementLimits.mockRejectedValueOnce(new Error('boom'));
-    expect(await resolveMaxGrants(PARTNER)).toBeNull();
+  });
+
+  it('disabled → WispGrantError entitlement_required; unresolvable → entitlement_check_failed', async () => {
+    h.loadWispEntitlement.mockResolvedValueOnce({ enabled: false });
+    await expect(resolveMaxGrants(PARTNER)).rejects.toMatchObject({ name: 'WispGrantError', code: 'entitlement_required' });
+    h.loadWispEntitlement.mockRejectedValueOnce(new EntitlementResolutionError(PARTNER, new Error('db down')));
+    await expect(resolveMaxGrants(PARTNER)).rejects.toMatchObject({ name: 'WispGrantError', code: 'entitlement_check_failed' });
+  });
+
+  it('any other error is a bug and propagates as itself (never read as "no cap")', async () => {
+    const bug = new TypeError('fold bug');
+    h.loadWispEntitlement.mockRejectedValueOnce(bug);
+    await expect(resolveMaxGrants(PARTNER)).rejects.toBe(bug);
   });
 });
 
@@ -280,6 +308,13 @@ describe('refreshGrant', () => {
     expect(callsOf('update').map((c) => c.args[0])).toEqual([wispGrants]);
     expect(Object.keys(setsApplied()[0]!).sort()).toEqual(['currentRevisionId', 'expiresAt']);
     expect(setsApplied()[0]).toMatchObject({ currentRevisionId: 'r4', expiresAt: expect.any(Date) });
+  });
+
+  it('never consults the entitlement: an existing grant refreshes even after wisp is disabled for the partner', async () => {
+    h.loadWispEntitlement.mockResolvedValue({ enabled: false });
+    h.results.push([grantRow()], [{ maxRevision: 1 }], [{ id: 'r2' }], [grantRow({ currentRevisionId: 'r2' })]);
+    await expect(refreshGrant({ auth: auth(), grantId: 'g1', stepUpGrantId: 'step-1' })).resolves.toMatchObject({ currentRevisionId: 'r2' });
+    expect(h.loadWispEntitlement).not.toHaveBeenCalled();
   });
 
   it('refreshing a PAUSED grant re-pins it but leaves it paused (no status in the update)', async () => {

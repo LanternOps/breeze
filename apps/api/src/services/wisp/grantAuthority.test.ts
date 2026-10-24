@@ -24,6 +24,13 @@ vi.mock('../../middleware/auth', () => ({
   computeAccessibleOrgIds: shared.computeAccessibleOrgIds,
 }));
 
+// computeLiveHumanTerm imports this lazily; the real module pulls the whole
+// db/schema barrel, whose cold transform on the first case can outlast the 5 s
+// timeout on a loaded host. `db` is a fake here, so the predicate is opaque.
+vi.mock('../unassignedPool/visibility', () => ({
+  notHiddenOrgType: () => ({ __predicate: 'notHiddenOrgType' }),
+}));
+
 import {
   assertWithinCeiling,
   ceilingSnapshotHash,

@@ -172,6 +172,22 @@ describe('POST /wisp/grants', () => {
     expect(await res.json()).toEqual({ error: 'This partner already has 2 active Wisp grants (plan limit 2).', code: 'GRANT_LIMIT_REACHED' });
   });
 
+  // Same bodies as W01's requireEntitlement('wisp'), so W04 mounting the middleware changes no client contract.
+  it('maps entitlement_required to 403 with the W01 body', async () => {
+    h.svc.createGrant.mockRejectedValue(new WispGrantError('entitlement_required', 'Wisp is not enabled for this partner.'));
+    const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ code: 'entitlement_required', error: 'Wisp', featureKey: 'wisp' });
+  });
+
+  it('maps entitlement_check_failed to 503 + Retry-After with the W01 body', async () => {
+    h.svc.createGrant.mockRejectedValue(new WispGrantError('entitlement_check_failed', 'Entitlements unavailable.'));
+    const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect(await res.json()).toEqual({ code: 'entitlement_check_failed', error: 'Entitlement check temporarily unavailable', featureKey: 'wisp' });
+  });
+
   it('returns 201 with a DTO that has no factorProof/ceilingSnapshot keys, scoped to the caller\'s partner', async () => {
     h.svc.createGrant.mockResolvedValue(grant());
     const res = await post(buildApp(), '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP });

@@ -30,6 +30,7 @@ import {
   aiAgentRuns,
   aiAgents,
   devices,
+  partners,
   partnerUsers,
   permissions,
   rolePermissions,
@@ -43,7 +44,15 @@ import { mintStepUpGrant, wispGrantResourceDigest } from '../../services/mfaStep
 import { assertWithinCeiling, resolveGrantCeiling } from '../../services/wisp/grantAuthority';
 import { checkAgentReleaseAuthority } from '../../services/actionIntents/agentReleaseAuthority';
 import type { ActionIntent } from '../../db/schema/actionIntents';
-import { createGrant, previewGrantCeiling, refreshGrant, revokeGrant } from '../../services/wisp/grants';
+import {
+  createGrant,
+  GrantLimitReachedError,
+  previewGrantCeiling,
+  refreshGrant,
+  revokeGrant,
+  WispGrantError,
+} from '../../services/wisp/grants';
+import { invalidateEntitlementCache, upsertEntitlementRow } from '../../services/entitlements';
 import { reconcileActiveGrants, reconcileGrantsForUser } from '../../services/wisp/grantLifecycle';
 import {
   createAndEnqueueAgentRun,
@@ -516,6 +525,64 @@ describe('grant service edge cases against real Postgres', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe('W01 entitlement wiring through the real resolver (A21, fail closed)', () => {
+  const setWisp = (partnerId: string, state: 'enabled' | 'disabled', limits: { maxGrants: number; budgetCentsPerDayCeiling: number; minFloorTickMinutes: number } | null) =>
+    upsertEntitlementRow({ partnerId, featureKey: 'wisp', source: 'manual', state, limits, expiresAt: null, reason: 'wisp W02 integration', updatedBy: null });
+
+  async function createScoped(t: Tenant, sid: string, orgId: string | null) {
+    const auth = grantorAuth(t, sid);
+    const scope = { partnerId: t.partner.id, orgId };
+    const preview = await asGrantor(t, () => previewGrantCeiling({ auth, scope }));
+    return asGrantor(t, async () => createGrant({ auth, scope, stepUpGrantId: await mintWispStepUp(t, sid, orgId, preview.ceilingHash) }));
+  }
+
+  const grantsOf = (partnerId: string) =>
+    withDbAccessContext(SYSTEM_CTX, () => db.select().from(wispGrants).where(eq(wispGrants.partnerId, partnerId)));
+
+  it('enforces the partner\'s maxGrants from partner_entitlements: the second live grant → GrantLimitReachedError, no row', async () => {
+    const t = await seedTenant();
+    await setWisp(t.partner.id, 'enabled', { maxGrants: 1, budgetCentsPerDayCeiling: 1000, minFloorTickMinutes: 15 });
+    const sid = randomUUID();
+    await createScoped(t, sid, null);
+    const err = await createScoped(t, sid, t.org.id).catch((e) => e);
+    expect(err).toBeInstanceOf(GrantLimitReachedError);
+    expect(err).toMatchObject({ maxGrants: 1, active: 1 });
+    expect(await grantsOf(t.partner.id)).toHaveLength(1);
+  });
+
+  it('the plan default applies with no row: a pro partner is enabled and capped at 25, so a create succeeds', async () => {
+    const t = await seedTenant();
+    await expect(createScoped(t, randomUUID(), null)).resolves.toMatchObject({ status: 'active' });
+  });
+
+  it('a disabled wisp entitlement refuses creation (entitlement_required); the existing grant stays active and still refreshes', async () => {
+    const t = await seedTenant();
+    const sid = randomUUID();
+    const existing = await createScoped(t, sid, null);
+    await setWisp(t.partner.id, 'disabled', null);
+
+    const err = await createScoped(t, sid, t.org.id).catch((e) => e);
+    expect(err).toBeInstanceOf(WispGrantError);
+    expect(err).toMatchObject({ code: 'entitlement_required' });
+    expect((await grantsOf(t.partner.id)).map((g) => g.id)).toEqual([existing.id]);
+
+    const auth = grantorAuth(t, sid);
+    const preview = await asGrantor(t, () => previewGrantCeiling({ auth, scope: { partnerId: t.partner.id, orgId: null } }));
+    const refreshed = await asGrantor(t, async () =>
+      refreshGrant({ auth, grantId: existing.id, stepUpGrantId: await mintWispStepUp(t, sid, null, preview.ceilingHash) }));
+    expect(refreshed).toMatchObject({ id: existing.id, status: 'active' });
+    expect(refreshed.currentRevisionId).not.toBe(existing.currentRevisionId);
+  });
+
+  it('a free-plan partner (wisp default-disabled, no row) cannot create a grant', async () => {
+    const t = await seedTenant();
+    await withSystemDbAccessContext(() => db.update(partners).set({ plan: 'free' }).where(eq(partners.id, t.partner.id)));
+    invalidateEntitlementCache(t.partner.id);
+    await expect(createScoped(t, randomUUID(), null)).rejects.toMatchObject({ code: 'entitlement_required' });
+    expect(await grantsOf(t.partner.id)).toHaveLength(0);
+  });
+});
 
 describe('run admission under a grant (Wisp design §4.3, §4.5)', () => {
   beforeEach(() => {

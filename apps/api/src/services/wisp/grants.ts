@@ -17,7 +17,6 @@
  *     every read is equality-keyed on the ids the caller already holds.
  */
 import { and, desc, eq, isNull, max, sql } from 'drizzle-orm';
-import { z } from 'zod';
 import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
 import { db } from '../../db';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
@@ -38,7 +37,8 @@ import {
   wispCeilingSnapshotSchema,
   type LiveHumanTerm,
 } from './grantAuthority';
-import { loadWispEntitlementLimits } from './wispEntitlementLimits';
+import { EntitlementResolutionError } from '../entitlements';
+import { loadWispEntitlement } from './wispEntitlementLimits';
 
 export type { WispGrantStatus } from '../../db/schema/wisp';
 
@@ -71,7 +71,11 @@ export type WispGrantErrorCode =
   | 'already_active'
   | 'not_active'
   | 'settings_out_of_bounds'
-  | 'not_user_paused';
+  | 'not_user_paused'
+  /** The partner's `wisp` entitlement is disabled (plan default, row, or expired past grace). */
+  | 'entitlement_required'
+  /** Entitlements could not be resolved (resolver past its stale ceiling); transient. */
+  | 'entitlement_check_failed';
 
 export class WispGrantError extends Error {
   constructor(public readonly code: WispGrantErrorCode, message: string) {
@@ -231,23 +235,29 @@ async function loadGrantInContext(grantId: string): Promise<WispGrantRow> {
   return row;
 }
 
-const wispLimitsMaxGrantsSchema = z.object({ maxGrants: z.number().int().min(0) }).passthrough();
-
 /**
- * W01 `WispLimits.maxGrants` for the partner; null (no cap) when the
- * entitlements source is absent, returns null, throws, or does not parse.
+ * W01 `WispLimits.maxGrants` for the partner, or null for no cap (the
+ * entitlement is enabled with no limits, w00 A21).
+ *
+ * Fails closed: a disabled `wisp` entitlement throws `entitlement_required`,
+ * an unresolvable one `entitlement_check_failed`. Any other error is a bug and
+ * propagates as itself; none is ever read as "no cap". Only `createGrant`
+ * calls this, so existing grants are unaffected by an entitlement change.
  */
 export async function resolveMaxGrants(partnerId: string): Promise<number | null> {
-  let limits: unknown;
+  let entitlement;
   try {
-    limits = await loadWispEntitlementLimits(partnerId);
+    entitlement = await loadWispEntitlement(partnerId);
   } catch (err) {
-    console.warn('[wisp] entitlement limits unavailable; applying no grant cap', err);
-    return null;
+    if (err instanceof EntitlementResolutionError) {
+      throw new WispGrantError('entitlement_check_failed', 'Entitlement check temporarily unavailable.');
+    }
+    throw err;
   }
-  if (limits == null) return null;
-  const parsed = wispLimitsMaxGrantsSchema.safeParse(limits);
-  return parsed.success ? parsed.data.maxGrants : null;
+  if (!entitlement.enabled) {
+    throw new WispGrantError('entitlement_required', 'Wisp is not enabled for this partner.');
+  }
+  return entitlement.limits?.maxGrants ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,8 +281,8 @@ export async function createGrant(input: { auth: AuthContext; scope: WispGrantSc
   assertInteractivePartnerCaller(auth, scope);
   assertMfa(auth);
 
-  // Commercial cap (spec §10 limits.maxGrants) — checked before the step-up is
-  // consumed so a refused attempt does not burn the proof. Two concurrent
+  // Entitlement gate + commercial cap (spec §10 limits.maxGrants) — checked
+  // before the step-up is consumed so a refused attempt does not burn the proof. Two concurrent
   // creates at max−1 can both pass: the cap is a commercial limit, not an
   // authority term, so a transient +1 is accepted and the next create refuses.
   const maxGrants = await resolveMaxGrants(scope.partnerId);
