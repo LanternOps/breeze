@@ -36,6 +36,7 @@ import { usePartnerSettingsSave } from './partnerSettings/usePartnerSettingsSave
 import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsDraftStore';
 import { useCallerVerificationUnit } from './partnerSettings/units/callerVerificationUnit';
 import { useLoginBrandingUnit } from './partnerSettings/units/loginBrandingUnit';
+import { useTrustCenterUnit } from './partnerSettings/units/trustCenterUnit';
 import PartnerSettingsStatus, { deriveStatus } from './partnerSettings/PartnerSettingsStatus';
 
 // Kept on this module's surface: existing callers and tests import it from here.
@@ -58,9 +59,10 @@ export default function PartnerSettingsPage() {
 
   const callerVerificationUnit = useCallerVerificationUnit();
   const loginBrandingUnit = useLoginBrandingUnit();
+  const trustCenterUnit = useTrustCenterUnit();
   const units: SaveUnit[] = useMemo(
-    () => [me.unit, callerVerificationUnit, loginBrandingUnit],
-    [me.unit, callerVerificationUnit, loginBrandingUnit]
+    () => [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit],
+    [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit]
   );
   const dirtyTabs = useMemo(() => {
     const dirty: Partial<Record<TabKey, boolean>> = { ...me.dirtyTabs };
