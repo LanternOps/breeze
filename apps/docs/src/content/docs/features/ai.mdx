@@ -18,6 +18,73 @@ Six capabilities extend and govern this system:
 
 ---
 
+## Chat surfaces: the side panel and the AI Assistant
+
+You can talk to the assistant in two places:
+
+- **The side panel** — opened from the sparkle button in the header, available on every page. It holds one conversation at a time.
+- **The AI Assistant** — the full page at `/workspace` (**AI Assistant** in the sidebar). It holds up to five conversations, one per tab.
+
+A conversation can move between the two at any time. It is the same conversation on both: the full history, the device it is bound to, its model, any customer binding and any approval card that is waiting all come along. A move never duplicates a conversation and never deletes it.
+
+### Move a conversation to the AI Assistant
+
+<Steps>
+
+1. In the side panel, click **Open in AI Assistant** (the arrow icon in the panel header).
+2. The AI Assistant opens with the conversation in a tab. Anything you had typed but not sent is in the tab's message box.
+3. The side panel closes and lets the conversation go. It stays in your history.
+
+</Steps>
+
+If the AI Assistant already has five tabs, nothing moves and you see **Close a tab in the AI Assistant to open this conversation**. Topology investigations stay in the side panel, so the button does not appear for them.
+
+### Move a conversation back to the side panel
+
+Use either **Continue in side panel** in the chat header, or **Tab options** (the tab's menu) → **Continue in side panel**. The side panel opens with the conversation and your unsent text, then the tab closes. If the side panel already holds a different conversation with unsent text or a reply in progress, you are asked first: **Replace the conversation in the side panel? It stays in your history.**
+
+### A reply that is still being written
+
+You do not have to wait for the assistant to finish. If you move a conversation while a reply is streaming, the destination shows the reply so far and keeps following it to the end. Nothing is sent again.
+
+An approval card that is waiting moves with the conversation and keeps its **original** deadline — moving it does not give you more time. You can approve or deny it from the destination.
+
+For a very long reply you may see **Joined mid-response. The full reply appears when it finishes.** The complete reply appears as soon as the assistant is done.
+
+### Open a past conversation
+
+- In the side panel, click **History** (the clock icon).
+- In the AI Assistant, click **+** on the tab bar → **Open a past conversation**, or use **Open a past conversation** on the empty page.
+
+Both lists show your active conversations from every organization you can access, most recent first, and each has a search box:
+
+- An **organization chip** names the conversation's organization when you work in more than one. It reads **Another organization** until the name loads.
+- A **Device** chip marks a conversation bound to a device.
+- A conversation already open on the other surface is labelled **Open in AI Assistant** (in the side panel's History) or **Open in side panel** (in the AI Assistant's list). Picking it moves it there.
+- Topology investigations are listed in the side panel only. Script-authoring and MCP sessions are not chat conversations and do not appear in either list.
+
+Opening a conversation from another organization does not change the organization switcher.
+
+### Links to a conversation
+
+`/workspace#session=<conversation id>` opens that conversation in the AI Assistant, or switches to its tab if it is already open. The address follows the tab you are on, so you can copy the link or reload the page and land on the same conversation.
+
+| Message | Meaning |
+|---|---|
+| **This conversation isn't available** | The conversation does not exist or you cannot access it. |
+| **This conversation was closed** | The conversation has ended and can no longer be continued. |
+| **Close a tab to open this conversation** | The AI Assistant already has five tabs. Nothing is closed for you. |
+| **Investigations open from the topology map** | Topology investigations live in the side panel; the message offers to open it there. |
+| **Continue in side panel to choose a model** | The next message needs a model choice, which is made in the side panel. |
+
+Both surfaces need the **`ai_sessions:use`** permission (see [Who can approve](#who-can-approve)). Signing out clears both surfaces in that browser: the next sign-in starts with no tabs and an empty side panel.
+
+<Aside type="note" title="For self-hosters">
+The conversation list now shows only chat conversations: script-authoring and MCP sessions no longer appear in the side panel's History, and the mobile app's history list changes the same way. API users: `GET /api/v1/ai/sessions` and `/search` return only chat sessions and now include `orgId`, `type` and `deviceId` (search also `status`), and `GET /api/v1/ai/sessions/:id/stream` is a new read-only route that follows a conversation's current reply. No environment variable, migration or proxy change is needed beyond what `POST …/messages` already requires for streaming.
+</Aside>
+
+---
+
 ## AI Risk Engine
 
 The AI Risk Engine categorises every AI tool into one of four tiers that control how it executes. Navigate to it via **Security → AI Risk** in the sidebar.
