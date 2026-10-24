@@ -58,6 +58,8 @@ import { db } from '../../db';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { persistDeviceCustomFieldValues } from '../../services/customFields/queries';
 import { requestDeviceGroupReevaluationAfterCommit } from '../../jobs/deviceGroupJobs';
+import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
+import { validateCustomFieldMap } from '../../services/customFields/validateValueMap';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 const SITE_A = '77777777-7777-4777-8777-777777777777';
@@ -335,5 +337,166 @@ describe('PATCH /devices/:id site-move guard', () => {
     queueSelects([[device]]);
     expect((await patch({ siteId: SITE_B, siteMoveTrigger: 'auto' })).status).toBe(400);
     expect((await patch({ siteId: SITE_B, expectedSiteId: 'site-a' })).status).toBe(400);
+  });
+});
+
+/**
+ * Characterization of PATCH /devices/:id's site move, pinned BEFORE the move was extracted into
+ * services/deviceSiteMove.ts (#9796 D1). Every assertion here held against the inline PATCH body;
+ * the extraction must leave PATCH's HTTP codes, bodies, write order and side effects unchanged.
+ */
+describe('PATCH /devices/:id site move — characterization (#9796 D1)', () => {
+  const failedValidation = { ok: false, rejected: [{ key: 'assetTag', reason: 'too_long' }] };
+
+  it('moves: 200 with the public projection of the updated row, no credential columns', async () => {
+    moveSelects();
+    updateReturningRows = [{ ...device, siteId: SITE_B, agentTokenHash: 'secret-hash', mtlsCertSerialNumber: 'serial' }];
+    const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_A });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ id: DEVICE_ID, siteId: SITE_B, hostname: 'FRONTDESK-01' });
+    expect(body).not.toHaveProperty('agentTokenHash');
+    expect(body).not.toHaveProperty('mtlsCertSerialNumber');
+  });
+
+  it('target site outside the device org (or missing): 400 with the exact body, no lock, no writes', async () => {
+    queueSelects([[device], []]);
+    const res = await patch({ siteId: SITE_B });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Target site not found or belongs to a different organization' });
+    expect(selectCalls).toHaveLength(2);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('site-scoped caller moving INTO a site outside the allowlist: 403, no lock, no writes', async () => {
+    queueSelects([[device], [{ id: SITE_B, orgId: 'org-123', name: 'Lakeside' }]]);
+    const res = await patch({ siteId: SITE_B }, { 'x-restrict-site-list': SITE_A });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+    expect(selectCalls).toHaveLength(2);
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+  });
+
+  it('site-scoped caller moving OUT OF a site outside the allowlist: 403 before any target lookup', async () => {
+    queueSelects([[device]]);
+    const res = await patch({ siteId: SITE_B }, { 'x-restrict-site-list': SITE_B });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Access to this site denied' });
+    expect(selectCalls).toHaveLength(1);
+  });
+
+  it('unknown device: 404 with the exact body', async () => {
+    queueSelects([[]]);
+    const res = await patch({ siteId: SITE_B });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Device not found' });
+  });
+
+  it('a stale expectedSiteId wins over invalid custom fields (409 before validation)', async () => {
+    queueSelects([[device]]);
+    const res = await patch({ siteId: SITE_B, expectedSiteId: SITE_C, customFields: { assetTag: 'x' } });
+    expect(res.status).toBe(409);
+    expect(validateCustomFieldMap).not.toHaveBeenCalled();
+  });
+
+  it('an invalid target site wins over invalid custom fields (target check before validation)', async () => {
+    queueSelects([[device], []]);
+    const res = await patch({ siteId: SITE_B, customFields: { assetTag: 'x' } });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('Target site not found or belongs to a different organization');
+    expect(validateCustomFieldMap).not.toHaveBeenCalled();
+  });
+
+  it('invalid custom fields on a valid move: 400 INVALID_CUSTOM_FIELD_VALUE before the row lock', async () => {
+    vi.mocked(validateCustomFieldMap).mockResolvedValueOnce(failedValidation as never);
+    moveSelects();
+    const res = await patch({ siteId: SITE_B, customFields: { assetTag: 'x' } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'INVALID_CUSTOM_FIELD_VALUE', fields: failedValidation.rejected });
+    expect(selectCalls).toHaveLength(2); // device lookup + target site; no lock
+    expect(db.transaction).not.toHaveBeenCalled();
+    expect(persistDeviceCustomFieldValues).not.toHaveBeenCalled();
+  });
+
+  it('combined move + displayName + tags + customFields: one savepoint carries all of it', async () => {
+    moveSelects();
+    const sets: unknown[] = [];
+    let insideSavepoint = false;
+    let persistedInsideSavepoint = false;
+    vi.mocked(persistDeviceCustomFieldValues).mockImplementation(async () => { persistedInsideSavepoint = insideSavepoint; return undefined as never; });
+    vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
+      insideSavepoint = true;
+      try {
+        return await cb({
+          update: vi.fn().mockReturnValue({ set: vi.fn().mockImplementation((s: unknown) => { sets.push(s); return {
+            where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue(updateReturningRows) }) }; }) }),
+          execute: vi.fn().mockResolvedValue([]),
+        });
+      } finally { insideSavepoint = false; }
+    });
+    const res = await patch({ siteId: SITE_B, displayName: 'Front desk', tags: ['lobby'], customFields: { assetTag: 'HD-0042' } });
+    expect(res.status).toBe(200);
+    expect(persistedInsideSavepoint).toBe(true);
+    expect(persistDeviceCustomFieldValues).toHaveBeenCalledTimes(1);
+    expect(persistDeviceCustomFieldValues).toHaveBeenCalledWith(DEVICE_ID, 'org-123', [{ definitionId: 'assetTag', value: 'HD-0042' }], 'manual');
+    expect(sets).toHaveLength(1);
+    expect(sets[0]).toMatchObject({ siteId: SITE_B, displayName: 'Front desk', tags: ['lobby'] });
+    expect(sets[0]).toHaveProperty('updatedAt');
+    expect(sets[0]).not.toHaveProperty('customFields');
+    expect(db.update).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledTimes(1);
+    expect(requestDeviceGroupReevaluationAfterCommit).toHaveBeenCalledWith({
+      deviceId: DEVICE_ID, orgId: 'org-123', eventType: 'device.updated', changedFields: ['tags', 'displayName', 'siteId'], reason: 'device_patch',
+    });
+    expect(vi.mocked(writeRouteAudit).mock.calls.map(([, e]) => e.action)).toEqual(['device.update', 'device.site_move']);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'device.update', details: { changedFields: ['displayName', 'siteId', 'tags', 'customFields'] },
+    }));
+  });
+
+  it('site + customFields with a guarded-UPDATE conflict: custom fields were written only inside the rolled-back savepoint, 409', async () => {
+    const order: string[] = [];
+    vi.mocked(persistDeviceCustomFieldValues).mockImplementation(async () => { order.push('persist'); return undefined as never; });
+    vi.mocked(db.transaction).mockImplementation(async (cb: any) => {
+      order.push('savepoint:open');
+      try {
+        return await cb({
+          update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }) }) }),
+          execute: vi.fn().mockResolvedValue([]),
+        });
+      } catch (error) { order.push('savepoint:rollback'); throw error; }
+    });
+    // After the conflict PATCH re-reads the device's current site for the 409 body.
+    queueSelects([[device], [{ id: SITE_B, orgId: 'org-123', name: 'Lakeside' }], [{ siteId: SITE_A }], [{ name: 'Main Office' }], [{ siteId: SITE_C }]]);
+    const res = await patch({ siteId: SITE_B, customFields: { assetTag: 'HD-0042' } });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'device_site_changed', currentSiteId: SITE_C });
+    expect(order).toEqual(['savepoint:open', 'persist', 'savepoint:rollback']);
+    expect(writeRouteAudit).not.toHaveBeenCalled();
+    expect(requestDeviceGroupReevaluationAfterCommit).not.toHaveBeenCalled();
+    expect(schedulePeripheralPolicyDevice).not.toHaveBeenCalled();
+  });
+
+  it('a successful move schedules peripheral reconciliation once; a failure to schedule is logged and swallowed (still 200)', async () => {
+    vi.mocked(schedulePeripheralPolicyDevice).mockRejectedValueOnce(new Error('redis down'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    moveSelects();
+    const res = await patch({ siteId: SITE_B });
+    expect(res.status).toBe(200);
+    expect(schedulePeripheralPolicyDevice).toHaveBeenCalledTimes(1);
+    expect(schedulePeripheralPolicyDevice).toHaveBeenCalledWith(DEVICE_ID, 'device_site_changed');
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining(DEVICE_ID), expect.any(Error));
+    spy.mockRestore();
+  });
+
+  it('a non-move PATCH schedules no peripheral reconciliation and writes only device.update', async () => {
+    queueSelects([[device]]);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([device]) }) }) } as never);
+    const res = await patch({ displayName: 'Front desk' });
+    expect(res.status).toBe(200);
+    expect(schedulePeripheralPolicyDevice).not.toHaveBeenCalled();
+    expect(vi.mocked(writeRouteAudit).mock.calls.map(([, e]) => e.action)).toEqual(['device.update']);
   });
 });
