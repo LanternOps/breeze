@@ -360,7 +360,22 @@
     "moving": "En mouvement...",
     "toADifferentSite": "vers un autre site.",
     "deviceMovedByOther": "Cet appareil a été déplacé par quelqu'un d'autre : rechargez pour voir son site actuel",
-    "policyNote": "Le déplacement modifie les politiques de configuration, les fenêtres de maintenance, le routage des alertes et les rapports du site qui s'appliquent à {{device}}. Breeze ne le remettra pas en place automatiquement."
+    "policyNote": "Le déplacement modifie les politiques de configuration, les fenêtres de maintenance, le routage des alertes et les rapports du site qui s'appliquent à {{device}}. Breeze ne le remettra pas en place automatiquement.",
+    "bulkIntro": "Déplacer les {{count}} appareils sélectionnés vers un autre site de {{org}}.",
+    "bulkIntro_one": "Déplacer l’appareil sélectionné ({{count}}) vers un autre site de {{org}}.",
+    "bulkIntro_other": "Déplacer les {{count}} appareils sélectionnés vers un autre site de {{org}}.",
+    "bulkIntroNoOrg": "Déplacer les {{count}} appareils sélectionnés vers un autre site.",
+    "bulkIntroNoOrg_one": "Déplacer l’appareil sélectionné ({{count}}) vers un autre site.",
+    "bulkIntroNoOrg_other": "Déplacer les {{count}} appareils sélectionnés vers un autre site.",
+    "devicesFromSites": "{{count}} appareils provenant de {{siteCount}} sites",
+    "devicesFromSites_one": "{{count}} appareil provenant de {{siteCount}} sites",
+    "devicesFromSites_other": "{{count}} appareils provenant de {{siteCount}} sites",
+    "selectSite": "Sélectionnez un site",
+    "moveDevices": "Déplacer {{count}} appareils",
+    "moveDevices_one": "Déplacer {{count}} appareil",
+    "moveDevices_other": "Déplacer {{count}} appareils",
+    "bulkPolicyNote": "Le déplacement modifie les politiques de configuration, les fenêtres de maintenance, le routage des alertes et les rapports du site qui s’appliquent à ces appareils. Breeze ne les remettra pas en place automatiquement.",
+    "failedToMoveDevices": "Impossible de déplacer les appareils"
   },
   "createGroupModal": {
     "failedToCreateGroup": "Impossible de créer un groupe",
@@ -1846,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} sur {{count}} appareil",
     "countLine_other": "{{shown}} sur {{count}} appareils",
-    "noMatchesTitle": "Aucun appareil ne correspond à ces filtres"
+    "noMatchesTitle": "Aucun appareil ne correspond à ces filtres",
+    "moveToSite": "Déplacer vers un site",
+    "moveSelectedToSite": "Déplacer vers un site",
+    "moveSiteMixedOrgs": "Les appareils sélectionnés appartiennent à plusieurs organisations",
+    "moveSiteOverCap": "Sélectionnez au maximum {{count}} appareils à déplacer en une fois"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "Impossible de récupérer les journaux des périphériques",
@@ -2690,7 +2709,13 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} appareil avait déjà reçu la désinstallation — l'agent devra peut-être être réinstallé sur cette machine.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} appareils avaient déjà reçu la désinstallation — l'agent devra peut-être être réinstallé sur ces machines.",
       "bulkRestored_one": "{{count}} appareil restauré",
-      "bulkRestored_other": "{{count}} appareils restaurés"
+      "bulkRestored_other": "{{count}} appareils restaurés",
+      "bulkMoveSiteSuccess": "{{count}} appareils déplacés vers {{site}}",
+      "bulkMoveSiteSuccess_one": "{{count}} appareil déplacé vers {{site}}",
+      "bulkMoveSiteSuccess_other": "{{count}} appareils déplacés vers {{site}}",
+      "bulkMoveSiteSomeFailed": "{{moved}} appareils sur {{total}} déplacés vers {{site}}. Non déplacés : {{devices}}",
+      "bulkMoveSiteAllFailed": "Aucun appareil n’a été déplacé vers {{site}}. Non déplacés : {{devices}}",
+      "deviceMovedToSite": "{{hostname}} a été déplacé vers un nouveau site"
     },
     "tryAgain": "Réessayer",
     "unknownDevice": "Inconnu",

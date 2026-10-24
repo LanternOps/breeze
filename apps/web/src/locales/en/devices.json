@@ -375,7 +375,7 @@
     "moveDevices_one": "Move {{count}} device",
     "moveDevices_other": "Move {{count}} devices",
     "bulkPolicyNote": "Moving changes which site's configuration policies, maintenance windows, alert routing and reports apply to these devices. Breeze will not move them back automatically.",
-    "failedToMoveDevices": "Failed to move devices"
+    "failedToMoveDevices": "Couldn't move the devices. Try again."
   },
   "createGroupModal": {
     "failedToCreateGroup": "Failed to create group",

@@ -360,7 +360,22 @@
     "moving": "Moviendo...",
     "toADifferentSite": "a un sitio diferente.",
     "deviceMovedByOther": "Alguien más movió este dispositivo: recarga para ver su sitio actual",
-    "policyNote": "Al moverlo cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a {{device}}. Breeze no lo devolverá automáticamente."
+    "policyNote": "Al moverlo cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a {{device}}. Breeze no lo devolverá automáticamente.",
+    "bulkIntro": "Mover {{count}} dispositivos seleccionados a un sitio diferente dentro de {{org}}.",
+    "bulkIntro_one": "Mover {{count}} dispositivo seleccionado a un sitio diferente dentro de {{org}}.",
+    "bulkIntro_other": "Mover {{count}} dispositivos seleccionados a un sitio diferente dentro de {{org}}.",
+    "bulkIntroNoOrg": "Mover {{count}} dispositivos seleccionados a un sitio diferente.",
+    "bulkIntroNoOrg_one": "Mover {{count}} dispositivo seleccionado a un sitio diferente.",
+    "bulkIntroNoOrg_other": "Mover {{count}} dispositivos seleccionados a un sitio diferente.",
+    "devicesFromSites": "{{count}} dispositivos de {{siteCount}} sitios",
+    "devicesFromSites_one": "{{count}} dispositivo de {{siteCount}} sitios",
+    "devicesFromSites_other": "{{count}} dispositivos de {{siteCount}} sitios",
+    "selectSite": "Seleccione un sitio",
+    "moveDevices": "Mover {{count}} dispositivos",
+    "moveDevices_one": "Mover {{count}} dispositivo",
+    "moveDevices_other": "Mover {{count}} dispositivos",
+    "bulkPolicyNote": "Al moverlos cambian las políticas de configuración, las ventanas de mantenimiento, el enrutamiento de alertas y los informes del sitio que se aplican a estos dispositivos. Breeze no los devolverá automáticamente.",
+    "failedToMoveDevices": "No se pudieron mover los dispositivos"
   },
   "createGroupModal": {
     "failedToCreateGroup": "No se pudo crear el grupo",
@@ -1846,7 +1861,11 @@
     },
     "countLine_one": "{{shown}} de {{count}} dispositivo",
     "countLine_other": "{{shown}} de {{count}} dispositivos",
-    "noMatchesTitle": "Ningún dispositivo coincide con estos filtros"
+    "noMatchesTitle": "Ningún dispositivo coincide con estos filtros",
+    "moveToSite": "Mover a sitio",
+    "moveSelectedToSite": "Mover a sitio",
+    "moveSiteMixedOrgs": "Los dispositivos seleccionados pertenecen a más de una organización",
+    "moveSiteOverCap": "Seleccione como máximo {{count}} dispositivos para mover a la vez"
   },
   "deviceLogsTab": {
     "failedToFetchDeviceLogs": "No se pudieron recuperar los registros del dispositivo",
@@ -2690,7 +2709,13 @@
       "bulkRestoreUninstallAlreadySent_one": "{{count}} dispositivo ya había recibido la desinstalación; puede que haya que reinstalar el agente en esa máquina.",
       "bulkRestoreUninstallAlreadySent_other": "{{count}} dispositivos ya habían recibido la desinstalación; puede que haya que reinstalar el agente en esas máquinas.",
       "bulkRestored_one": "{{count}} dispositivo restaurado",
-      "bulkRestored_other": "{{count}} dispositivos restaurados"
+      "bulkRestored_other": "{{count}} dispositivos restaurados",
+      "bulkMoveSiteSuccess": "Se movieron {{count}} dispositivos a {{site}}",
+      "bulkMoveSiteSuccess_one": "Se movió {{count}} dispositivo a {{site}}",
+      "bulkMoveSiteSuccess_other": "Se movieron {{count}} dispositivos a {{site}}",
+      "bulkMoveSiteSomeFailed": "Se movieron {{moved}} de {{total}} dispositivos a {{site}}. No se movieron: {{devices}}",
+      "bulkMoveSiteAllFailed": "No se movió ningún dispositivo a {{site}}. No se movieron: {{devices}}",
+      "deviceMovedToSite": "{{hostname}} se movió a un nuevo sitio"
     },
     "tryAgain": "Intentar otra vez",
     "unknownDevice": "Desconocido",
