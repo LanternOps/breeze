@@ -89,6 +89,9 @@ function respondWith(w: World) {
     if (o.kind === 'select' && table === 'security_scans' && hasChain(o, 'groupBy') && Object.keys((o.args[0] ?? {}) as object).includes('sweepId')) {
       return w.progress ?? [];
     }
+    if (o.kind === 'select' && table === 'security_scan_sweeps' && hasChain(o, 'for')) {
+      return (w.expired ?? []).map((r) => ({ id: r.id }));
+    }
     if (o.kind === 'select' && table === 'security_scan_sweeps') return w.active ?? [];
     if (o.kind === 'select' && table === 'security_scans' && hasChain(o, 'groupBy') && Object.keys((o.args[0] ?? {}) as object).includes('orgId')) {
       return w.orgRunning ?? [];
@@ -137,10 +140,15 @@ describe('pumpSweeps', () => {
     const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
     expect(result.expired).toBe(1);
 
+    // Lock the expiring rows in id order first (no deadlock with a group cancel), then flip them.
+    const lock = ops().find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps' && hasChain(o, 'for'))!;
+    expect(lock.chain.find(([m]) => m === 'for')![1][0]).toBe('update');
+    expect(render(lock.chain.find(([m]) => m === 'orderBy')![1][0] as never).sql).toContain('"security_scan_sweeps"."id" asc');
+    expect(whereText(lock)).toContain('"security_scan_sweeps"."expires_at" <= $');
+    expect(whereParams(lock)).toEqual(expect.arrayContaining(['active']));
     const expire = ops().find((o) => o.kind === 'update' && tableOf(o) === 'security_scan_sweeps')!;
     expect(expire.chain.find(([m]) => m === 'set')![1][0]).toMatchObject({ state: 'expired' });
-    expect(whereParams(expire)).toEqual(expect.arrayContaining(['active']));
-    expect(whereText(expire)).toContain('"security_scan_sweeps"."expires_at" <= $');
+    expect(whereParams(expire)).toEqual(expect.arrayContaining([SWEEP_A, 'active']));
 
     const queued = ops().find((o) => o.kind === 'update' && tableOf(o) === 'security_scans' && hasChain(o, 'returning'))!;
     expect(queued.chain.find(([m]) => m === 'set')![1][0]).toMatchObject({ status: 'expired' });
@@ -222,7 +230,7 @@ describe('pumpSweeps', () => {
     });
     const result = await pumpSweeps(NOW, { enqueue: h.enqueue });
     expect(result.admitted).toBe(2);
-    const activeQuery = ops().find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps')!;
+    const activeQuery = ops().find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps' && !hasChain(o, 'for'))!;
     expect(render(activeQuery.chain.find(([m]) => m === 'orderBy')![1][0] as never).sql).toContain('"security_scan_sweeps"."created_at" asc');
     const [first] = candidateQueries();
     const text = whereText(first!);

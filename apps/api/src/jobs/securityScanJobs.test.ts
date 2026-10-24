@@ -25,6 +25,10 @@ vi.mock('bullmq', () => ({
   Worker: class {
     on = vi.fn();
     close = vi.fn();
+    __processor: unknown;
+    constructor(_name: string, processor: unknown) {
+      this.__processor = processor;
+    }
   },
   Job: class {},
   DelayedError: class DelayedError extends Error {},
@@ -207,6 +211,21 @@ describe('sweep pump wiring (#6263 W05)', () => {
     ]);
     expect(addMock).toHaveBeenCalledTimes(1);
     expect(addMock.mock.calls[0]![2]).toMatchObject({ jobId: `security-scan-${other}` });
+  });
+
+  it('a pump-sweeps job runs on the wall clock, not its stored tickAt (repeat jobs reuse their data)', async () => {
+    const { createSecurityScanWorker } = await import('./securityScanJobs');
+    // The bullmq mock's Worker keeps the processor it was constructed with.
+    const created = createSecurityScanWorker() as unknown as {
+      __processor?: (job: unknown, token?: string) => Promise<unknown>;
+    };
+    const processor = created.__processor;
+    expect(processor).toBeTypeOf('function');
+    pumpMock.mockResolvedValue({ skipped: false, expired: 0, finalized: 0, completed: 0, admitted: 0 });
+    const before = Date.now();
+    await processor!({ name: 'pump-sweeps', data: { type: 'pump-sweeps', tickAt: '2020-01-01T00:00:00.000Z' }, id: 'j' }, 'tok');
+    const [now] = pumpMock.mock.calls[0]!;
+    expect((now as Date).getTime()).toBeGreaterThanOrEqual(before);
   });
 
   it('initializeSecurityScanWorkers registers the pump-sweeps repeatable, removing a stale one first', async () => {

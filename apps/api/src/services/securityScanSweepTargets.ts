@@ -175,7 +175,9 @@ function ruleSetEligibleForDevice(set: RuleSetRow, device: { orgId: string; part
   return set.partnerId !== null && set.partnerId === device.partnerId;
 }
 
-export async function resolveSweepTargets(auth: AuthContext, input: SweepTargetsInput): Promise<SweepTargetsResult> {
+export async function resolveSweepTargets(auth: AuthContext, rawInput: SweepTargetsInput): Promise<SweepTargetsResult> {
+  // Validators accept any-case UUIDs; rows are stored lower-case.
+  const input = normalizeIds(rawInput);
   const { scope } = input;
 
   // Named / restricting orgs must be reachable at all (RLS + accessibleOrgIds).
@@ -363,6 +365,30 @@ export async function resolveSweepTargets(auth: AuthContext, input: SweepTargets
       scanType: input.scanType,
       paths,
     }),
+  };
+}
+
+function normalizeIds(input: SweepTargetsInput): SweepTargetsInput {
+  const lower = (ids: string[]) => ids.map((id) => id.toLowerCase());
+  const scope: SecuritySweepScope = (() => {
+    switch (input.scope.kind) {
+      case 'all':
+        return input.scope;
+      case 'orgs':
+        return { kind: 'orgs', orgIds: lower(input.scope.orgIds) };
+      case 'sites':
+        return { kind: 'sites', siteIds: lower(input.scope.siteIds) };
+      case 'groups':
+        return { kind: 'groups', groupIds: lower(input.scope.groupIds) };
+      case 'devices':
+        return { kind: 'devices', deviceIds: lower(input.scope.deviceIds) };
+    }
+  })();
+  return {
+    ...input,
+    ruleSetIds: lower(input.ruleSetIds),
+    scope,
+    ...(input.onlyOrgId ? { onlyOrgId: input.onlyOrgId.toLowerCase() } : {}),
   };
 }
 

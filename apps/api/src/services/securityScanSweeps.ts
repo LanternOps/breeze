@@ -43,6 +43,7 @@ import { canonicalizeArguments, computeArgumentDigest } from './actionIntents/ca
 import { createAuditLogAsync, type CreateAuditLogParams, type InitiatedByType } from './auditService';
 import { hasPermission, type UserPermissions } from './permissions';
 import { rateLimiter } from './rate-limit';
+import { captureException } from './sentry';
 import { getRedis } from './redis';
 import { sweepMaxActivePerOrg, sweepMfaDeviceThreshold, sweepTtlHoursDefault } from './securityScanSweepConfig';
 import {
@@ -100,7 +101,7 @@ export type SweepFailure = {
 export type CreateSweepResult = { ok: true; groupId: string; sweeps: SweepSummary[] } | SweepFailure;
 
 export type CancelSweepResult =
-  | { ok: true; sweeps: SweepSummary[]; cancelledQueued: number; cancelledUndelivered: number }
+  | { ok: true; sweeps: SweepSummary[]; cancelledQueued: number; cancelledUndelivered: number; stillRunning: number }
   | { ok: false; status: 403 | 404 };
 
 // ---------------------------------------------------------------------------
@@ -210,6 +211,7 @@ export async function createSweep(
       groupId: outcome.groupId,
       error: error instanceof Error ? error.message : String(error),
     });
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
   return { ok: true, groupId: outcome.groupId, sweeps: outcome.sweeps };
 }
@@ -483,6 +485,7 @@ async function cancelMatching(
     const now = new Date();
     let cancelledQueued = 0;
     let cancelledUndelivered = 0;
+    let stillRunning = 0;
     const audits: CreateAuditLogParams[] = [];
     for (const row of rows) {
       if (row.state !== 'active') continue; // idempotent: already terminal
@@ -501,20 +504,26 @@ async function cancelMatching(
       });
       cancelledQueued += stopped.queued;
       cancelledUndelivered += stopped.undelivered;
+      stillRunning += stopped.stillRunning;
       audits.push({
         orgId: row.orgId,
         ...auditActor(auth),
         action: 'security.scan_sweep.cancel',
         resourceType: 'security_scan_sweep',
         resourceId: row.id,
-        details: { groupId: row.groupId, cancelledQueued: stopped.queued, cancelledUndelivered: stopped.undelivered },
+        details: {
+          groupId: row.groupId,
+          cancelledQueued: stopped.queued,
+          cancelledUndelivered: stopped.undelivered,
+          stillRunning: stopped.stillRunning,
+        },
         ipAddress: opts.requestMeta?.ipAddress,
         userAgent: opts.requestMeta?.userAgent,
         result: 'success',
         initiatedBy: auth.principal?.kind === 'api_key' ? 'integration' : 'manual',
       });
     }
-    return { ok: true as const, ids: rows.map((r) => r.id), cancelledQueued, cancelledUndelivered, audits };
+    return { ok: true as const, ids: rows.map((r) => r.id), cancelledQueued, cancelledUndelivered, stillRunning, audits };
   });
   if (!outcome.ok) return outcome;
 
@@ -527,6 +536,7 @@ async function cancelMatching(
     sweeps,
     cancelledQueued: outcome.cancelledQueued,
     cancelledUndelivered: outcome.cancelledUndelivered,
+    stillRunning: outcome.stillRunning,
   };
 }
 
@@ -726,7 +736,9 @@ async function loadSummaries(
       scanType: row.scanType as SecuritySweepScanType,
       state: row.state as SecuritySweepState,
       targeted: restrictedOrgs.has(row.orgId) ? Number(p?.total ?? 0) : row.targetedCount,
-      skipped: parseSkipped(row.skipped),
+      // A restricted caller sees only its slice; the stored org-wide skip
+      // counts would describe devices it cannot see.
+      skipped: restrictedOrgs.has(row.orgId) ? {} : parseSkipped(row.skipped),
       progress,
       origin: row.origin as SecuritySweepOrigin,
       createdBy: row.createdBy ? { id: row.createdBy, name: row.createdByName ?? null } : null,
@@ -748,11 +760,27 @@ export async function listSweeps(
   if (query.orgId) conditions.push(eq(securityScanSweeps.orgId, query.orgId));
   const fence = auth.orgCondition(securityScanSweeps.orgId);
   if (fence) conditions.push(fence);
+  // Count and page only orgs where the caller holds devices:read, so the
+  // total never counts (or the page never skips over) rows it cannot read.
+  const orgRows = await db
+    .select({ orgId: securityScanSweeps.orgId })
+    .from(securityScanSweeps)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .groupBy(securityScanSweeps.orgId);
+  const permsFor = createOrgPermissionResolver(auth);
+  const readableOrgIds: string[] = [];
+  for (const { orgId } of orgRows) {
+    const perms = await permsFor(orgId);
+    if (perms && hasPermission(perms, 'devices', 'read')) readableOrgIds.push(orgId);
+  }
+  if (readableOrgIds.length === 0) return { data: [], total: 0, page, limit };
+  conditions.push(inArray(securityScanSweeps.orgId, readableOrgIds));
   const [countRow] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(securityScanSweeps)
-    .where(conditions.length ? and(...conditions) : undefined);
-  const data = await loadSummaries(auth, conditions.length ? and(...conditions) : undefined, {
+    .where(and(...conditions));
+  const data = await loadSummaries(auth, and(...conditions), {
+    permsFor,
     page: { limit, offset: (page - 1) * limit },
   });
   return { data, total: Number(countRow?.count ?? 0), page, limit };

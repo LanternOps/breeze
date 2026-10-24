@@ -25,12 +25,15 @@ import { handleSecurityCommandResult } from '../../routes/agents/helpers';
 import { agentYaraRuleSetRoutes } from '../../routes/agents/yaraRuleSets';
 import {
   cancelSweep,
+  cancelSweepGroup,
   createSweep,
   getSweep,
   getSweepGroup,
   listSweeps,
   previewSweep,
 } from '../../services/securityScanSweeps';
+import { cancelDeviceCommands } from '../../services/commandCancelPropagation';
+import { startDeviceScan } from '../../services/securityScanStart';
 import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
 import { cascadeDeleteOrg } from '../../services/tenantCascade';
 import { executeOrgMerge } from '../../services/orgMerge';
@@ -729,5 +732,200 @@ describe('A9 deterministic orderings', () => {
     } as unknown as AuthContext;
     const group = await asAuth(wide, () => getSweepGroup(wide, created.groupId));
     expect(group!.sweeps.map((s) => s.orgId)).toEqual([orgA.id]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review round additions (#10028)
+// ---------------------------------------------------------------------------
+
+describe('review: expiry, cancel propagation, caps, MFA, manual-scan fetch, cross-org cancel', () => {
+  it('pump expire: queued → expired, pending-command running → expired + command cancelled, delivered running survives and its late result lands; once', async () => {
+    const w = await seedSweepWorld({ devices: 3, online: false });
+    // scan 0 stays queued; scan 1 claimed (command pending); scan 2 claimed and delivered.
+    const pending = await claimAndDispatchScan(sweepJob(w, 1));
+    const delivered = await claimAndDispatchScan(sweepJob(w, 2));
+    expect([pending.outcome, delivered.outcome]).toEqual(['dispatched', 'dispatched']);
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'sent', executed_at = now() WHERE id = ${delivered.commandId!}`);
+    await getTestDb().execute(sql`UPDATE security_scan_sweeps SET expires_at = now() - interval '1 minute' WHERE id = ${w.sweepId}`);
+
+    const first = await pumpSweeps(new Date(), { enqueue: async () => {} });
+    expect(first.expired).toBe(1);
+    const [sweep] = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.id, w.sweepId));
+    expect(sweep!.state).toBe('expired');
+    expect((await scanRow(w.scanIds[0]!)).status).toBe('expired');
+    expect((await scanRow(w.scanIds[1]!)).status).toBe('expired');
+    const [cmd] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, pending.commandId!));
+    expect(cmd).toMatchObject({ status: 'cancelled', executedAt: null });
+    expect((await scanRow(w.scanIds[2]!)).status).toBe('running');
+
+    const second = await pumpSweeps(new Date(), { enqueue: async () => {} });
+    expect(second.expired).toBe(0);
+
+    const [deliveredCmd] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, delivered.commandId!));
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        handleSecurityCommandResult(deliveredCmd!, {
+          status: 'completed',
+          stdout: JSON.stringify({ scanRecordId: w.scanIds[2], threatsFound: 0, threats: [], engine: 'yara' }),
+          durationMs: 1000,
+        }),
+      ),
+    );
+    expect((await scanRow(w.scanIds[2]!)).status).toBe('completed');
+  });
+
+  it('a cancelled security_scan command cancels its running scan by command_id; terminal and legacy rows are untouched', async () => {
+    const w = await seedSweepWorld({ devices: 2, online: false });
+    const a = await claimAndDispatchScan(sweepJob(w, 0));
+    const b = await claimAndDispatchScan(sweepJob(w, 1));
+    // b's scan already finished; a legacy running scan has no command_id.
+    await getTestDb().execute(sql`UPDATE security_scans SET status = 'completed' WHERE id = ${w.scanIds[1]!}`);
+    const [legacy] = await getTestDb().execute<{ id: string }>(sql`
+      INSERT INTO security_scans (org_id, device_id, scan_type, status, started_at)
+      VALUES (${w.orgId}, ${w.deviceIds[0]!}, 'quick', 'running', now()) RETURNING id`);
+
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        cancelDeviceCommands({
+          where: inArray(deviceCommands.id, [a.commandId!, b.commandId!]),
+          result: { status: 'cancelled', reason: 'user_cancelled' },
+        }),
+      ),
+    );
+    expect((await scanRow(w.scanIds[0]!)).status).toBe('cancelled');
+    expect((await scanRow(w.scanIds[1]!)).status).toBe('completed');
+    expect((await scanRow(legacy!.id)).status).toBe('running');
+  });
+
+  it('partner running cap: a claim at the cap is throttled and stays queued; the pump admits none for that partner', async () => {
+    const prior = process.env.SECURITY_SWEEP_PARTNER_RUNNING_CAP;
+    process.env.SECURITY_SWEEP_PARTNER_RUNNING_CAP = '2';
+    try {
+      const w = await seedSweepWorld({ devices: 1 });
+      // Two running scans in ANOTHER org of the same partner, from a non-sweep origin.
+      const other = await createOrganization({ partnerId: w.partnerId });
+      const otherSite = await createSite({ orgId: other.id });
+      const otherDevice = await createDevice({ orgId: other.id, siteId: otherSite.id });
+      await getTestDb().execute(sql`INSERT INTO security_scans (org_id, device_id, scan_type, status, started_at)
+                                     SELECT ${other.id}::uuid, ${otherDevice.id}::uuid, 'quick', 'running', now() FROM generate_series(1, 2)`);
+      const pump = await pumpSweeps(new Date(), { enqueue: async () => {} });
+      expect(pump.admitted).toBe(0);
+      const claim = await claimAndDispatchScan(sweepJob(w));
+      expect(claim).toMatchObject({ outcome: 'throttled', throttleReason: expect.stringContaining('partner cap') });
+      expect((await scanRow(w.scanIds[0]!)).status).toBe('queued');
+      expect(await commandsFor(w.deviceIds)).toHaveLength(0);
+    } finally {
+      if (prior === undefined) delete process.env.SECURITY_SWEEP_PARTNER_RUNNING_CAP;
+      else process.env.SECURITY_SWEEP_PARTNER_RUNNING_CAP = prior;
+    }
+  });
+
+  it('above the MFA threshold an API key is refused even with mfaSatisfied; at the threshold it is allowed', async () => {
+    const prior = process.env.SECURITY_SWEEP_MFA_DEVICE_THRESHOLD;
+    process.env.SECURITY_SWEEP_MFA_DEVICE_THRESHOLD = '1';
+    try {
+      const f = await seedPartnerFleet(1); // two orgs, one device each → 2 targets
+      const human = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+      const apiKey = { ...human, principal: { kind: 'api_key', apiKeyId: randomUUID() } } as unknown as AuthContext;
+      const request = { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' as const };
+      const preview = await asAuth(apiKey, () => previewSweep(apiKey, request));
+      if (!preview.ok) throw new Error(preview.code);
+      const body = { ...request, previewDigest: preview.preview.previewDigest };
+      expect(await createSweep(apiKey, body, { origin: 'api', mfaSatisfied: true })).toMatchObject({
+        ok: false, status: 403, code: 'MFA_REQUIRED',
+      });
+      expect(await getTestDb().select().from(securityScanSweeps).where(inArray(securityScanSweeps.orgId, f.orgs.map((o) => o.id)))).toEqual([]);
+      // One device (named) is at the threshold, not above it.
+      const one = { ...request, scope: { kind: 'devices', deviceIds: [f.orgs[0]!.deviceIds[0]!] } as never };
+      const p1 = await asAuth(apiKey, () => previewSweep(apiKey, one));
+      if (!p1.ok) throw new Error(p1.code);
+      expect((await createSweep(apiKey, { ...one, previewDigest: p1.preview.previewDigest }, { origin: 'api', mfaSatisfied: false })).ok).toBe(true);
+    } finally {
+      if (prior === undefined) delete process.env.SECURITY_SWEEP_MFA_DEVICE_THRESHOLD;
+      else process.env.SECURITY_SWEEP_MFA_DEVICE_THRESHOLD = prior;
+    }
+  });
+
+  it('a manual startDeviceScan row (command_id stamped) with dispatched refs authorizes the agent fetch; other device / version / completed → 404', async () => {
+    const tdb = getTestDb();
+    const w = await seedSweepWorld({ devices: 2, online: false });
+    const auth = await platformAdminAuth(w.partnerId);
+    const started = await runOutsideDbContext(() =>
+      withAuthDbAccessContext(auth, () =>
+        startDeviceScan(auth, { deviceId: w.deviceIds[0]!, scanType: 'quick', mfaSatisfied: true }),
+      ),
+    );
+    if (!started.ok) throw new Error(started.error);
+    const [row] = await tdb.select().from(securityScans).where(eq(securityScans.id, started.scan.id));
+    expect(row!.commandId).toMatch(/^[0-9a-f-]{36}$/);
+    const [cmd] = await tdb.select().from(deviceCommands).where(eq(deviceCommands.id, row!.commandId!));
+    expect((cmd!.payload as Record<string, unknown>).scanRecordId).toBe(started.scan.id);
+    // No policy governs the device, so this manual scan planned no sets. Give
+    // the row the refs a policy-backed manual scan records (the shape
+    // startDeviceScan stamps) and mark it running, as an agent picking it up does.
+    await tdb.execute(sql`UPDATE security_scans SET status = 'running',
+                            dispatched_rule_sets = ${JSON.stringify([{ id: w.setId, version: 1, sha256: SHA }])}::jsonb
+                          WHERE id = ${started.scan.id}`);
+
+    const agentFetch = async (deviceIdx: number, version: number) => {
+      const [d] = await tdb.execute<{ agent_id: string }>(sql`SELECT agent_id FROM devices WHERE id = ${w.deviceIds[deviceIdx]!}`);
+      const app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('agent' as never, { role: 'agent', agentId: d!.agent_id, orgId: w.orgId } as never);
+        await next();
+      });
+      app.route('/api/v1/agents', agentYaraRuleSetRoutes);
+      const ctx: DbAccessContext = {
+        scope: 'organization', orgId: w.orgId, accessibleOrgIds: [w.orgId], accessiblePartnerIds: [], userId: null, currentPartnerId: w.partnerId,
+      };
+      return runOutsideDbContext(() =>
+        withDbAccessContext(ctx, async () => (await app.request(`/api/v1/agents/${d!.agent_id}/yara/rule-sets/${w.setId}/${version}`)).status),
+      );
+    };
+    expect(await agentFetch(0, 1)).toBe(200);
+    expect(await agentFetch(1, 1)).toBe(404); // another device of the same org
+    expect(await agentFetch(0, 2)).toBe(404); // a version it was not dispatched with
+    await tdb.execute(sql`UPDATE security_scans SET status = 'completed' WHERE id = ${started.scan.id}`);
+    expect(await agentFetch(0, 1)).toBe(404);
+  });
+
+  it('cross-org cancel: an org-A user cannot cancel an org-B sweep; a partner group cancel stops only rows it may execute in', async () => {
+    const f = await seedPartnerFleet(1);
+    const partner = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const created = await previewAndCreate(partner, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
+    if (!created.ok) throw new Error(created.code);
+    const [orgA, orgB] = f.orgs;
+    const sweepB = created.sweeps.find((s) => s.orgId === orgB!.id)!;
+
+    // Org-A user WITH devices:execute in org A.
+    const user = await createUser({ partnerId: f.partnerId, orgId: orgA!.id, email: `exec-${randomUUID()}@example.com` });
+    const role = await createRole({ scope: 'organization', partnerId: f.partnerId, orgId: orgA!.id });
+    await grantRolePermissions(role.id, EXECUTE_PERMS);
+    await assignUserToOrganization(user.id, orgA!.id, role.id);
+    const orgAExec = {
+      principal: { kind: 'user_session' },
+      user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: false },
+      token: null, partnerId: f.partnerId, orgId: orgA!.id, scope: 'organization', accessibleOrgIds: [orgA!.id],
+      orgCondition: (col: never) => eq(col, orgA!.id), canAccessOrg: (id: string) => id === orgA!.id,
+    } as unknown as AuthContext;
+
+    expect(await cancelSweep(orgAExec, sweepB.id)).toEqual({ ok: false, status: 404 });
+    const group = await cancelSweepGroup(orgAExec, created.groupId);
+    expect(group.ok).toBe(true);
+    const rows = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.groupId, created.groupId));
+    expect(Object.fromEntries(rows.map((r) => [r.orgId, r.state]))).toEqual({ [orgA!.id]: 'cancelled', [orgB!.id]: 'active' });
+    const scansB = await getTestDb().select().from(securityScans).where(eq(securityScans.sweepId, sweepB.id));
+    expect(scansB.every((s) => s.status === 'queued')).toBe(true);
+  });
+
+  it('cancel then pump: a cancelled sweep is never re-stamped completed', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const auth = await platformAdminAuth(w.partnerId);
+    expect((await cancelSweep(auth, w.sweepId)).ok).toBe(true);
+    const pump = await pumpSweeps(new Date(), { enqueue: async () => {} });
+    expect(pump.completed).toBe(0);
+    const [sweep] = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.id, w.sweepId));
+    expect(sweep!.state).toBe('cancelled');
   });
 });

@@ -67,15 +67,23 @@ export type ClaimOutcome = {
 const orgCap = () => parsePositiveIntEnv('SECURITY_SCAN_ORG_CONCURRENCY_CAP', 40);
 const deviceCap = () => parsePositiveIntEnv('SECURITY_SCAN_DEVICE_CONCURRENCY_CAP', 1);
 
-function parsePins(raw: unknown): YaraRuleSetPin[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((p) => {
-    if (!p || typeof p !== 'object') return [];
+/**
+ * The sweep's pins, or null when the stored value is not a non-empty array of
+ * well-formed pins. Strict on purpose: dropping one malformed entry would run
+ * the sweep on a subset of the approved sets and report it as clean.
+ */
+function parsePins(raw: unknown): YaraRuleSetPin[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const pins: YaraRuleSetPin[] = [];
+  for (const p of raw) {
+    if (!p || typeof p !== 'object') return null;
     const { id, version, sha256 } = p as Record<string, unknown>;
-    return typeof id === 'string' && typeof version === 'number' && typeof sha256 === 'string'
-      ? [{ id, version, sha256 }]
-      : [];
-  });
+    if (typeof id !== 'string' || typeof version !== 'number' || !Number.isInteger(version) || typeof sha256 !== 'string') {
+      return null;
+    }
+    pins.push({ id, version, sha256 });
+  }
+  return pins;
 }
 
 const toPins = (refs: readonly YaraRuleSetRef[]): YaraRuleSetPin[] | null =>
@@ -236,10 +244,16 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
   if (sweep) {
     // Detect-only and Defender-free whatever the policy says (W05 Global
     // Constraints): never ask the stored quarantine authority.
+    const pins = parsePins(sweep.ruleSetPins);
+    if (!pins) {
+      console.error(`[securityScanClaim] sweep ${scan.sweepId} has malformed rule_set_pins; failing scan ${scan.id}`);
+      await terminalize(scan.id, 'failed', { engine: 'legacy', ruleSetErrors: [{ id: '*', code: 'pins_corrupt' }] });
+      return { outcome: { outcome: 'failed', commandId: null } };
+    }
     const pinned = await resolvePinnedYaraRefs({
       deviceId: scan.deviceId,
       agentVersion: scan.deviceAgentVersion,
-      pins: parsePins(sweep.ruleSetPins),
+      pins,
     });
     if (!pinned.ok) {
       await terminalize(scan.id, 'failed', { engine: 'legacy', ruleSetErrors: pinned.errors });
@@ -332,7 +346,12 @@ async function claimInTransaction(data: DispatchScanJobData): Promise<{ outcome:
     console.warn(`[securityScanClaim] scan ${scan.id} dispatch refused for device ${scan.deviceId}: ${dispatched.code}`);
     await db
       .update(securityScans)
-      .set({ status: 'failed', completedAt: new Date(), commandId: null })
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        commandId: null,
+        ruleSetErrors: [{ id: '*', code: 'dispatch_refused', detail: dispatched.code }],
+      })
       .where(eq(securityScans.id, scan.id));
     return { outcome: { outcome: 'failed', commandId: null } };
   }

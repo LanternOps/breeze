@@ -38,10 +38,11 @@ import {
 } from '../services/securityScanSweepConfig';
 import { stopSweepChildren } from '../services/securityScanSweepStop';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import type { SecurityScanQueueJobData } from './queueSchemas';
 
 const { db } = dbModule;
 
-export type SweepDispatchJob = { type: 'dispatch-scan'; scanId: string; origin: 'sweep'; sweepId: string };
+export type SweepDispatchJob = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan'; origin: 'sweep' }>;
 
 export interface PumpResult {
   skipped: boolean;
@@ -90,12 +91,22 @@ export async function pumpSweeps(
     )) as unknown as Array<{ locked: boolean }>;
     if (!lock?.locked) return { skipped: true, expired: 0, finalized: 0, completed: 0, admitted: 0 };
 
-    // 1. Expire. The UPDATE's row lock waits for any in-flight claim's FOR SHARE.
-    const expired = await db
-      .update(securityScanSweeps)
-      .set({ state: 'expired', completedAt: now })
+    // 1. Expire. Lock the expiring rows in id order first (a group cancel
+    // locks its rows in id order too, so the two cannot deadlock); the lock
+    // also waits for any in-flight claim's FOR SHARE.
+    const expiring = await db
+      .select({ id: securityScanSweeps.id })
+      .from(securityScanSweeps)
       .where(and(eq(securityScanSweeps.state, 'active'), lte(securityScanSweeps.expiresAt, now)))
-      .returning({ id: securityScanSweeps.id, orgId: securityScanSweeps.orgId, groupId: securityScanSweeps.groupId });
+      .orderBy(asc(securityScanSweeps.id))
+      .for('update');
+    const expired = expiring.length
+      ? await db
+          .update(securityScanSweeps)
+          .set({ state: 'expired', completedAt: now })
+          .where(and(inArray(securityScanSweeps.id, expiring.map((r) => r.id)), eq(securityScanSweeps.state, 'active')))
+          .returning({ id: securityScanSweeps.id, orgId: securityScanSweeps.orgId, groupId: securityScanSweeps.groupId })
+      : [];
     for (const row of expired) {
       const stopped = await stopSweepChildren({
         sweepId: row.id,
@@ -246,6 +257,9 @@ export async function pumpSweeps(
   }, 'securityScanSweepPump');
 
   for (const audit of audits) void createAuditLogAsync(audit);
+  if (result.finalized > 0) {
+    console.warn(`[securityScanSweepPump] finalized ${result.finalized} sweep scan(s) the agent will not answer (undelivered or past the scan ceiling)`);
+  }
   if (jobs.length > 0) await (deps.enqueue ?? defaultEnqueue)(jobs);
   return result;
 }

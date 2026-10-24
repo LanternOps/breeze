@@ -311,18 +311,20 @@ export async function propagateCancelledDeviceCommand(params: {
     });
   }
 
-  // #6263 W05 — a cancelled security_scan leaves its scan row `running`
+  // #6263 W05 — a cancelled security_scan leaves its scan row waiting
   // forever otherwise: no result will ever arrive for a command the agent
   // never received. Bound by `security_scans.command_id` (stamped at
-  // dispatch), never by the payload, which the cancel has just erased. CAS on
-  // `running`, so a scan a sweep cancel or expiry already terminalised keeps
-  // its own status. Rows dispatched before W05 carry no command_id and are
-  // untouched. In the caller's transaction, like every branch above.
+  // dispatch), never by the payload, which the cancel has just erased.
+  // `queued` covers a manual Scan now (it stays queued until its result);
+  // `running` covers a claimed scan. A scan a sweep cancel or expiry already
+  // terminalised keeps its own status. Rows dispatched before W05 carry no
+  // command_id and are untouched. In the caller's transaction, like every
+  // branch above.
   if (type === 'security_scan') {
     await executor
       .update(securityScans)
       .set({ status: 'cancelled', completedAt })
-      .where(and(eq(securityScans.commandId, commandId), eq(securityScans.status, 'running')));
+      .where(and(eq(securityScans.commandId, commandId), inArray(securityScans.status, ['queued', 'running'])));
   }
 
   await executor

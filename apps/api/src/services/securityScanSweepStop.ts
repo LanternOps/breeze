@@ -11,7 +11,7 @@
  *    terminal status. Found by `security_scans.command_id`, never by payload.
  *  - Delivered scans finish: the agent has no cancel wire for a running scan.
  */
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { deviceCommands, securityScans } from '../db/schema';
 import { cancelDeviceCommands } from './commandCancelPropagation';
@@ -23,7 +23,7 @@ export async function stopSweepChildren(input: {
   reason: string;
   cancelledBy?: string | null;
   now: Date;
-}): Promise<{ queued: number; undelivered: number }> {
+}): Promise<{ queued: number; undelivered: number; stillRunning: number }> {
   const { sweepId, orgId, status, now } = input;
   const queued = await db
     .update(securityScans)
@@ -43,7 +43,24 @@ export async function stopSweepChildren(input: {
         eq(deviceCommands.status, 'pending'),
       ),
     );
-  if (pending.length === 0) return { queued: queued.length, undelivered: 0 };
+  let undelivered = 0;
+  if (pending.length > 0) undelivered = await cancelPending(pending, input, now);
+
+  // Delivered scans keep running on the agent (there is no cancel wire); the
+  // caller says so instead of implying the scanning stopped.
+  const [running] = await db
+    .select({ running: sql<number>`count(*)::int` })
+    .from(securityScans)
+    .where(and(eq(securityScans.sweepId, sweepId), eq(securityScans.orgId, orgId), eq(securityScans.status, 'running')));
+  return { queued: queued.length, undelivered, stillRunning: Number(running?.running ?? 0) };
+}
+
+async function cancelPending(
+  pending: Array<{ scanId: string; commandId: string }>,
+  input: { status: 'cancelled' | 'expired'; reason: string; cancelledBy?: string | null },
+  now: Date,
+): Promise<number> {
+  const { status } = input;
 
   const cancelled = await cancelDeviceCommands({
     where: and(inArray(deviceCommands.id, pending.map((p) => p.commandId)), eq(deviceCommands.status, 'pending'))!,
@@ -63,5 +80,5 @@ export async function stopSweepChildren(input: {
         ),
       );
   }
-  return { queued: queued.length, undelivered: cancelled.length };
+  return cancelled.length;
 }

@@ -140,8 +140,8 @@ sweepsRoutes.post(
   async (c) => {
     const result = await cancelSweepGroup(c.get('auth'), c.req.valid('param').groupId, { requestMeta: requestMeta(c) });
     if (!result.ok) return c.json({ error: result.status === 404 ? 'Sweep not found' : 'Permission denied' }, result.status);
-    const { sweeps, cancelledQueued, cancelledUndelivered } = result;
-    return c.json({ data: { sweeps, cancelledQueued, cancelledUndelivered } });
+    const { sweeps, cancelledQueued, cancelledUndelivered, stillRunning } = result;
+    return c.json({ data: { sweeps, cancelledQueued, cancelledUndelivered, stillRunning } });
   },
 );
 
@@ -153,7 +153,8 @@ sweepsRoutes.post(
   async (c) => {
     const result = await cancelSweep(c.get('auth'), c.req.valid('param').id, { requestMeta: requestMeta(c) });
     if (!result.ok) return c.json({ error: result.status === 404 ? 'Sweep not found' : 'Permission denied' }, result.status);
-    const { sweeps, cancelledQueued, cancelledUndelivered } = result;
-    return c.json({ data: { sweeps, cancelledQueued, cancelledUndelivered } });
+    // stillRunning: delivered scans finish on the agent (no cancel wire).
+    const { sweeps, cancelledQueued, cancelledUndelivered, stillRunning } = result;
+    return c.json({ data: { sweeps, cancelledQueued, cancelledUndelivered, stillRunning } });
   },
 );

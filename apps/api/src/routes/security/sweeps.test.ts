@@ -181,12 +181,12 @@ describe('IOC sweep routes', () => {
   });
 
   it('cancel by id and by group', async () => {
-    const done = { ok: true, sweeps: [{ ...summary, state: 'cancelled' }], cancelledQueued: 3, cancelledUndelivered: 1 };
+    const done = { ok: true, sweeps: [{ ...summary, state: 'cancelled' }], cancelledQueued: 3, cancelledUndelivered: 1, stillRunning: 2 };
     svc.cancelSweep.mockResolvedValueOnce(done).mockResolvedValueOnce({ ok: false, status: 404 }).mockResolvedValueOnce({ ok: false, status: 403 });
     const a = app();
     const ok = await a.request(`/security/sweeps/${SWEEP}/cancel`, json('POST'));
     expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ data: { sweeps: done.sweeps, cancelledQueued: 3, cancelledUndelivered: 1 } });
+    expect(await ok.json()).toEqual({ data: { sweeps: done.sweeps, cancelledQueued: 3, cancelledUndelivered: 1, stillRunning: 2 } });
     expect(svc.cancelSweep).toHaveBeenCalledWith(expect.anything(), SWEEP, { requestMeta: expect.any(Object) });
     expect((await a.request(`/security/sweeps/${SWEEP}/cancel`, json('POST'))).status).toBe(404);
     expect((await a.request(`/security/sweeps/${SWEEP}/cancel`, json('POST'))).status).toBe(403);

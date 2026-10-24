@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { SecuritySweepScope } from '../types/securityScanSweep';
 import {
   SECURITY_SCAN_PATH_MAX_CHARS,
   SECURITY_SWEEP_MAX_PATHS,
@@ -22,6 +23,11 @@ export const securitySweepScopeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('groups'), groupIds: idList(50) }).strict(),
   z.object({ kind: z.literal('devices'), deviceIds: idList(1000) }).strict(),
 ]);
+
+// Compile-time: the schema and the hand-written SecuritySweepScope union agree.
+type SchemaScope = z.infer<typeof securitySweepScopeSchema>;
+type ScopeAgrees = SchemaScope extends SecuritySweepScope ? (SecuritySweepScope extends SchemaScope ? true : false) : false;
+true satisfies ScopeAgrees;
 
 const sweepRequestShape = {
   ruleSetIds: z

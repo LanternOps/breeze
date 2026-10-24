@@ -17,7 +17,7 @@ const { updateMock, setSpy, whereSpy } = vi.hoisted(() => {
 vi.mock('drizzle-orm', () => ({
   and: (...conditions: unknown[]) => ({ type: 'and', conditions }),
   eq: (left: unknown, right: unknown) => ({ type: 'eq', left, right }),
-  inArray: vi.fn(),
+  inArray: (left: unknown, right: unknown) => ({ type: 'inArray', left, right }),
 }));
 vi.mock('../db', () => ({
   db: { update: updateMock, select: vi.fn(), insert: vi.fn() },
@@ -63,7 +63,8 @@ describe('security_scan cancel propagation (#6263 W05)', () => {
       type: 'and',
       conditions: [
         { type: 'eq', left: 'scans.commandId', right: 'cmd-1' },
-        { type: 'eq', left: 'scans.status', right: 'running' },
+        // queued: a manual Scan now never moves to running before its result.
+        { type: 'inArray', left: 'scans.status', right: ['queued', 'running'] },
       ],
     });
   });

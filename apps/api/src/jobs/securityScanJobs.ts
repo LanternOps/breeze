@@ -20,6 +20,7 @@ import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPre
 import { parsePositiveIntEnv } from '../services/securityScanSweepConfig';
 import { claimAndDispatchScan, type ClaimOutcome, type DispatchScanJobData } from './securityScanClaim';
 import { pumpSweeps, type SweepDispatchJob } from './securityScanSweepPump';
+import { captureException } from '../services/sentry';
 
 // #6263 W05: the payload builder moved next to the claim, its only queued caller.
 export { buildSecurityScanPayload } from '../services/securityScanPayload';
@@ -60,6 +61,14 @@ export function getSecurityScanQueue(): Queue<SecurityScanQueueJobData> {
 
 const dispatchJobId = (scanId: string) => `security-scan-${scanId}`;
 
+/**
+ * A claim that THROWS (a deadlock, a lost connection) rolls back and leaves
+ * the scan queued; without attempts a scheduled or manual scan would then never
+ * be retried. The claim is a CAS, so a retry is safe. Throttles re-delay via
+ * DelayedError and do not consume attempts.
+ */
+const DISPATCH_RETRY = { attempts: 3, backoff: { type: 'exponential' as const, delay: 5_000 } };
+
 async function addUniqueDispatchJob(
   data: DispatchScanJobData,
   opts: Omit<JobsOptions, 'jobId'> = {},
@@ -77,6 +86,7 @@ async function addUniqueDispatchJob(
   return queue.add('dispatch-scan', data, {
     removeOnComplete: { count: 200 },
     removeOnFail: { count: 500 },
+    ...DISPATCH_RETRY,
     jobId: stableJobId,
     ...opts,
   });
@@ -103,7 +113,20 @@ export async function enqueueSweepPump(): Promise<void> {
 
 /** #6263 W05 — the pump's admissions, each on the stable per-scan job id. */
 export async function enqueueSweepDispatches(jobs: readonly SweepDispatchJob[]): Promise<void> {
-  for (const job of jobs) await addUniqueDispatchJob(job);
+  // One failing add must not starve the rest of the batch: the rows stay
+  // queued and the next tick re-admits whatever did not make it.
+  let failed = 0;
+  for (const job of jobs) {
+    try {
+      await addUniqueDispatchJob(job);
+    } catch (error) {
+      failed++;
+      if (failed === 1) captureException(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  if (failed > 0) {
+    console.error(`[SecurityScanJobs] ${failed}/${jobs.length} sweep dispatch job(s) could not be enqueued; the next pump tick retries`);
+  }
 }
 
 /**
@@ -260,6 +283,7 @@ export async function schedulePolicyScans(
       jobId: dispatchJobId(scan.id),
       removeOnComplete: { count: 200 },
       removeOnFail: { count: 500 },
+      ...DISPATCH_RETRY,
     },
   })));
 
@@ -314,8 +338,10 @@ export function createSecurityScanWorker(): Worker<SecurityScanQueueJobData> {
       }
       if (data.type === 'pump-sweeps') {
         assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'pump-sweeps');
-        const tick = new Date(data.tickAt);
-        return pumpSweeps(Number.isFinite(tick.getTime()) ? tick : new Date(), { enqueue: enqueueSweepDispatches });
+        // The wall clock, never `data.tickAt`: a repeatable job reuses the
+        // data it was registered with, so every repeat would carry boot time
+        // and expiry / the stale-scan ceiling would never advance.
+        return pumpSweeps(new Date(), { enqueue: enqueueSweepDispatches });
       }
       assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'schedule-policies');
       return runWithSystemDbAccess(() => processSchedulePolicies(data));

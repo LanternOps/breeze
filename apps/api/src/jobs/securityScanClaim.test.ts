@@ -281,10 +281,13 @@ describe('claimAndDispatchScan — the locked claim', () => {
     expect(h.dispatch).not.toHaveBeenCalled();
   });
 
-  it('a refused dispatch fails the claimed scan', async () => {
+  it('a refused dispatch fails the claimed scan and records why', async () => {
     h.dispatch.mockResolvedValue({ ok: false, code: 'device_decommissioned', error: 'x' });
     expect((await claimAndDispatchScan(manual)).outcome).toBe('failed');
-    expect(setOf(scanUpdates().at(-1)!)).toMatchObject({ status: 'failed' });
+    expect(setOf(scanUpdates().at(-1)!)).toMatchObject({
+      status: 'failed',
+      ruleSetErrors: [{ id: '*', code: 'dispatch_refused', detail: 'device_decommissioned' }],
+    });
     expect(h.deliver).not.toHaveBeenCalled();
   });
 
@@ -457,6 +460,18 @@ describe('claimAndDispatchScan — sweep branch', () => {
     h.pinned.mockResolvedValue({ ok: false, errors });
     expect(await claimAndDispatchScan(fromSweep)).toEqual({ outcome: 'failed', commandId: null });
     expect(setOf(scanUpdates()[0]!)).toMatchObject({ status: 'failed', engine: 'legacy', ruleSetErrors: errors });
+    expect(h.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['not an array', { bad: true }],
+    ['one malformed pin among valid ones', [PIN, { id: SET, version: '3', sha256: 'a'.repeat(64) }]],
+    ['empty', []],
+  ])('corrupt pins (%s) → failed pins_corrupt, never a partial-set scan', async (_label, pins) => {
+    sweepWorld({ ruleSetPins: pins });
+    expect(await claimAndDispatchScan(fromSweep)).toEqual({ outcome: 'failed', commandId: null });
+    expect(h.pinned).not.toHaveBeenCalled();
+    expect(setOf(scanUpdates()[0]!)).toMatchObject({ status: 'failed', ruleSetErrors: [{ id: '*', code: 'pins_corrupt' }] });
     expect(h.dispatch).not.toHaveBeenCalled();
   });
 

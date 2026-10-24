@@ -318,6 +318,20 @@ describe('resolveSweepTargets', () => {
     expect(r1.previewDigest).toBe(r2.previewDigest);
   });
 
+  it('upper-case ids match lower-case rows (no false 404/403)', async () => {
+    queue('yara_rule_sets', [partnerSet()]);
+    const d = dev(ORG_A);
+    queue('devices', [d], [d]); // the named-device check, then the candidates
+    const result = await resolveSweepTargets(partnerAuth({ canAccessOrg: (id: string) => [ORG_A, ORG_B].includes(id) }), {
+      ...base,
+      ruleSetIds: [SET_PARTNER.toUpperCase()],
+      scope: { kind: 'devices', deviceIds: [d.id.toUpperCase()] },
+    });
+    if (!result.ok) throw new Error(result.code);
+    expect(result.byOrg.get(ORG_A)).toEqual([d.id]);
+    expect(result.pins.map((p) => p.id)).toEqual([SET_PARTNER]);
+  });
+
   it('onlyOrgId excludes other orgs', async () => {
     queue('yara_rule_sets', [partnerSet()]);
     queue('devices', [dev(ORG_A)]);

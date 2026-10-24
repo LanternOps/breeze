@@ -505,13 +505,16 @@ function sweepRow(over: Record<string, unknown> = {}) {
   };
 }
 
-type CancelWorld = { sweeps?: Array<Record<string, unknown>>; queued?: Array<{ id: string }>; pending?: Array<{ scanId: string; commandId: string }> };
+type CancelWorld = { sweeps?: Array<Record<string, unknown>>; queued?: Array<{ id: string }>; pending?: Array<{ scanId: string; commandId: string }>; running?: number };
 function respondForCancel(world: CancelWorld = {}) {
   h.respond = (op) => {
     const o = op as RecordedOp;
     const table = tableOf(o);
     if (o.kind === 'select' && table === 'security_scan_sweeps') return world.sweeps ?? [sweepRow()];
     if (o.kind === 'update' && table === 'security_scans' && hasChain(o, 'returning')) return world.queued ?? [];
+    if (o.kind === 'select' && table === 'security_scans' && Object.keys((o.args[0] ?? {}) as object).includes('running')) {
+      return [{ running: world.running ?? 4 }];
+    }
     if (o.kind === 'select' && table === 'security_scans' && !hasChain(o, 'groupBy')) return world.pending ?? [];
     return [];
   };
@@ -525,7 +528,7 @@ describe('cancelSweep', () => {
     });
     h.cancelDeviceCommands.mockResolvedValue([{ id: 'cmd-1', type: 'security_scan', payload: null }]);
     const result = await cancelSweep(auth(), SWEEP_ID);
-    expect(result).toMatchObject({ ok: true, cancelledQueued: 2, cancelledUndelivered: 1 });
+    expect(result).toMatchObject({ ok: true, cancelledQueued: 2, cancelledUndelivered: 1, stillRunning: 4 });
 
     const lock = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps')!;
     expect(lock.chain.find(([m]) => m === 'for')![1][0]).toBe('update');
@@ -538,7 +541,7 @@ describe('cancelSweep', () => {
     expect(whereParams(queuedUpdate)).toEqual(expect.arrayContaining([SWEEP_ID, ORG_A, 'queued']));
 
     // The undelivered probe: running children whose command is still pending.
-    const pendingProbe = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scans' && !hasChain(o, 'groupBy'))!;
+    const pendingProbe = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scans' && Object.keys((o.args[0] ?? {}) as object).includes('commandId'))!;
     expect(whereText(pendingProbe)).toContain(`"device_commands"."status" = $`);
     expect(whereParams(pendingProbe)).toEqual(expect.arrayContaining([SWEEP_ID, ORG_A, 'running', 'pending']));
 
@@ -612,10 +615,18 @@ describe('cancelSweep', () => {
 // reads
 // ---------------------------------------------------------------------------
 
-function respondForReads(world: { sweeps: Array<Record<string, unknown>>; progress?: Array<Record<string, unknown>>; total?: number }) {
+function respondForReads(world: {
+  sweeps: Array<Record<string, unknown>>;
+  progress?: Array<Record<string, unknown>>;
+  total?: number;
+  orgs?: Array<{ orgId: string }>;
+}) {
   h.respond = (op) => {
     const o = op as RecordedOp;
     const table = tableOf(o);
+    if (o.kind === 'select' && table === 'security_scan_sweeps' && hasChain(o, 'groupBy')) {
+      return world.orgs ?? [{ orgId: ORG_A }];
+    }
     if (o.kind === 'select' && table === 'security_scan_sweeps' && Object.keys((o.args[0] ?? {}) as object).includes('count')) {
       return [{ count: world.total ?? world.sweeps.length }];
     }
@@ -678,6 +689,31 @@ describe('reads', () => {
     h.permsFor.mockResolvedValue({ permissions: [], scope: 'organization' });
     respondForReads({ sweeps: [sweepRow()] });
     expect(await getSweep(auth(), SWEEP_ID)).toBeNull();
+  });
+
+  it('listSweeps counts and pages only orgs where the caller holds devices:read', async () => {
+    h.permsFor.mockImplementation(async (orgId: string) =>
+      orgId === ORG_A ? { permissions: [{ resource: 'devices', action: 'read' }], scope: 'partner' } : { permissions: [], scope: 'partner' },
+    );
+    respondForReads({ sweeps: [sweepRow()], total: 3, orgs: [{ orgId: ORG_A }, { orgId: ORG_B }] });
+    await listSweeps(auth(), { page: 1, limit: 20 });
+    const count = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps' && Object.keys((o.args[0] ?? {}) as object).includes('count'))!;
+    const page = h.recording!.ops.find((o) => o.kind === 'select' && tableOf(o) === 'security_scan_sweeps' && hasChain(o, 'offset'))!;
+    for (const q of [count, page]) {
+      expect(whereParams(q)).toContain(ORG_A);
+      expect(whereParams(q)).not.toContain(ORG_B);
+    }
+    // No readable org: nothing is queried beyond the org probe.
+    h.recording!.ops.length = 0;
+    h.permsFor.mockResolvedValue({ permissions: [], scope: 'partner' });
+    respondForReads({ sweeps: [sweepRow()], total: 3, orgs: [{ orgId: ORG_A }] });
+    expect(await listSweeps(auth(), { page: 1, limit: 20 })).toEqual({ data: [], total: 0, page: 1, limit: 20 });
+  });
+
+  it("a restricted caller does not see the org-wide skip counts", async () => {
+    h.permsFor.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'read' }], scope: 'organization', allowedSiteIds: [SITE_A1] });
+    respondForReads({ sweeps: [sweepRow({ skipped: { agent_too_old: 7 } })] });
+    expect((await getSweep(auth(), SWEEP_ID))?.skipped).toEqual({});
   });
 
   it('listSweeps filters by state and org, newest first, paged', async () => {
