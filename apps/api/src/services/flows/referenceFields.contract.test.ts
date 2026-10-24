@@ -79,6 +79,12 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
     expect(listFlowEligibleCoreTools().filter((name) => !toolInputSchemas[name])).toEqual([]);
   });
 
+  // Full-control W02 (#6756) added the PSA/billing write tools' ids
+  // (manage_tickets, manage_quotes, manage_billing_catalog,
+  // manage_notification_channels, manage_saved_filters, test_webhook): each
+  // handler re-checks org/partner/site reach at run time (see the
+  // aiTools*WritesScope integration suites). Save-time owner checks for them
+  // need new FLOW_OWNED_REFERENCE_FIELDS kinds — a follow-up, flows are flag-off.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -200,6 +206,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_automations.automationId",
         "manage_backup_configs.configId",
         "manage_backup_configs.orgId",
+        "manage_billing_catalog.catalogId",
+        "manage_billing_catalog.orgId",
         "manage_configuration_policy.orgId",
         "manage_configuration_policy.policyId",
         "manage_contracts.contractId",
@@ -242,6 +250,8 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_monitor_definitions.monitorId",
         "manage_monitors.monitorId",
         "manage_monitors.orgId",
+        "manage_notification_channels.channelId",
+        "manage_notification_channels.orgId",
         "manage_org_documents.documentId",
         "manage_org_documents.orgId",
         "manage_org_documents.supersedesDocumentId",
@@ -257,6 +267,13 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_policy_feature_link.configPolicyId",
         "manage_policy_feature_link.featureLinkId",
         "manage_policy_feature_link.featurePolicyId",
+        "manage_quotes.blockId",
+        "manage_quotes.blockIds",
+        "manage_quotes.catalogItemId",
+        "manage_quotes.lineId",
+        "manage_quotes.lineIds",
+        "manage_quotes.quoteId",
+        "manage_saved_filters.filterId",
         "manage_service_monitors.configPolicyId",
         "manage_software_policies.orgId",
         "manage_software_policies.policyId",
@@ -265,6 +282,16 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "manage_ticket_checklist.orgId",
         "manage_ticket_checklist.templateId",
         "manage_ticket_checklist.ticketId",
+        "manage_tickets.alertId",
+        "manage_tickets.assigneeId",
+        "manage_tickets.commentId",
+        "manage_tickets.expectedTicketId",
+        "manage_tickets.linkId",
+        "manage_tickets.orgId",
+        "manage_tickets.targetOrgId",
+        "manage_tickets.targetTicketId",
+        "manage_tickets.ticketId",
+        "manage_tickets.timeEntryId",
         "manage_update_rings.ringId",
         "preview_configuration_change.remove",
         "propose_script.supersedesProposalId",
@@ -288,6 +315,7 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "sync_huntress_data.orgId",
         "system_cleanup.cleanupRunId",
         "system_cleanup.commandId",
+        "test_webhook.webhookId",
         "workspace_run.stdinHandle",
         "workspace_stage.handles",
       ]

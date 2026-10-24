@@ -526,6 +526,16 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
+  // Spec 2026-09-23 W02 (#6756): PSA/billing writes. Per-action classes live
+  // in aiGuardrails (input-aware public comment / resolve / requester edit,
+  // supervised price and channel writes, AGENT_HUMAN_ONLY_ACTIONS for tags).
+  manage_tickets: 1,
+  manage_quotes: 2,
+  manage_billing_catalog: 2,
+  manage_saved_filters: 1,
+  manage_tags: 2,
+  manage_notification_channels: 1,
+  test_webhook: 3,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 /**
@@ -1747,6 +1757,12 @@ export function buildBreezeSdkTools(
       makeHandler('list_time_entries', getAuth, onPreToolUse, onPostToolUse)
     ),
     tool(
+      'manage_tickets',
+      registryDescription('manage_tickets'),
+      inputShape('manage_tickets'),
+      makeHandler('manage_tickets', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
       'get_running_timer',
       registryDescription('get_running_timer'),
       {},
@@ -1873,6 +1889,27 @@ export function buildBreezeSdkTools(
       registryDescription('manage_delivery'),
       deliveryToolShape,
       makeHandler('manage_delivery', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_notification_channels',
+      registryDescription('manage_notification_channels'),
+      inputShape('manage_notification_channels'),
+      makeHandler('manage_notification_channels', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_saved_filters',
+      registryDescription('manage_saved_filters'),
+      inputShape('manage_saved_filters'),
+      makeHandler('manage_saved_filters', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_tags',
+      registryDescription('manage_tags'),
+      inputShape('manage_tags'),
+      makeHandler('manage_tags', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // #6930. No `done`: ticking a checklist step is a human attestation.
@@ -2188,6 +2225,13 @@ export function buildBreezeSdkTools(
       registryDescription('query_webhooks'),
       inputShape('query_webhooks'),
       makeHandler('query_webhooks', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'test_webhook',
+      registryDescription('test_webhook'),
+      inputShape('test_webhook'),
+      makeHandler('test_webhook', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -3901,6 +3945,18 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('list_quotes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'manage_quotes',
+      registryDescription('manage_quotes'),
+      inputShape('manage_quotes'),
+      makeHandler('manage_quotes', getAuth, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'manage_billing_catalog',
+      registryDescription('manage_billing_catalog'),
+      inputShape('manage_billing_catalog'),
+      makeHandler('manage_billing_catalog', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

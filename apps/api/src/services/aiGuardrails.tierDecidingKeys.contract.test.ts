@@ -26,7 +26,8 @@ describe('TIER_DECIDING_INPUT_KEYS', () => {
   });
 
   it('pins the deciding field of each input-aware branch', () => {
-    expect(TIER_DECIDING_INPUT_KEYS.manage_tickets).toEqual(['isPublic']);
+    // W02 (#6756): comment isPublic, update_status status/statusName, update_fields fields.
+    expect([...TIER_DECIDING_INPUT_KEYS.manage_tickets!].sort()).toEqual(['fields', 'isPublic', 'status', 'statusName']);
     expect([...TIER_DECIDING_INPUT_KEYS.manage_policy_feature_link!].sort()).toEqual(['featureType', 'inlineSettings']);
     expect(TIER_DECIDING_INPUT_KEYS.s1_isolate_device).toEqual(['isolate']);
     expect(TIER_DECIDING_INPUT_KEYS.run_script).toEqual(['proposalId']);
@@ -34,7 +35,7 @@ describe('TIER_DECIDING_INPUT_KEYS', () => {
   });
 
   it('tierDecidingInputKeys leads with the action selector and includes every live-read flag', () => {
-    expect(tierDecidingInputKeys('manage_tickets')).toEqual(['action', 'isPublic']);
+    expect(tierDecidingInputKeys('manage_tickets')).toEqual(['action', 'isPublic', 'status', 'statusName', 'fields']);
     const custom = Object.entries(TOOL_ACTION_INPUT_KEYS)[0]!;
     expect(tierDecidingInputKeys(custom[0])[0]).toBe(custom[1]);
     for (const [tool, flag] of Object.entries(LIVE_READ_INPUT_FLAGS)) {

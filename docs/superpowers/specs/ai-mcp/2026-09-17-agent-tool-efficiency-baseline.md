@@ -478,3 +478,28 @@ Prompt-size review for the four flow authoring tools (`draft_flow`, `validate_fl
 | `FLOWS_ENABLED=true` | 6625 (+49) |
 
 Both fit under the existing 6.5 KB (6656 B) ceiling in `aiToolIndex.test.ts`, so the 6.75 KB raise approved for this wave (plan Decision 5, 2026-10-20) was not needed and was not taken. The test now also measures the flag-on index, so a later flag-gated addition cannot grow the prompt unmeasured.
+
+## 12. Full-control W02 (#6756) delta
+
+**Date measured:** 2026-10-22 · **Branch:** `feature/6754-ai-full-control/wave-6756-r2` @ `13e5e61e59` against its base `origin/main` @ `27c9c043d8` · **Plan:** `2026-09-23-ai-full-control-w02-psa-billing-writes.md` (Task 14, gate W02-D10: ≤ +8,000 turn-1 tokens per surface)
+
+Harness: `tool-capture.ts --surface <chat|agent-full> --proxy --tool-search off`, model `claude-sonnet-5-5`, default prompt. Turn-1 tokens are read from the Sonnet `/v1/messages` proxy row that carries the tool list (not the console table) as `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
+
+| Surface | Tools sent (main → branch) | Turn-1 tokens main | Turn-1 tokens branch | Δ tokens | Gate |
+|---|---|---|---|---|---|
+| chat | 210 → 217 (+7) | 105,086 | 112,723 | **+7,637** | pass (≤ 8,000; 363 left) |
+| agent-full | 155 → 159 (+4) | 72,103 | 77,562 | **+5,459** | pass |
+
+- **chat** gains all seven: `manage_tickets`, `manage_quotes`, `manage_billing_catalog`, `manage_saved_filters`, `manage_tags`, `manage_notification_channels`, `test_webhook`. The system prompt grows 18,341 → 18,447 bytes (the tool index).
+- **agent-full** gains four. With an empty agent allowlist, a full-profile run exposes only tools that have a read-only action (`fullRunToolExposure`, #6909). `manage_quotes`, `manage_billing_catalog` and `test_webhook` have no read action, so they reach an agent only when its allowlist names them.
+- **Chat tool index** (`renderToolIndexByDomain(listChatSurfaceToolNames())`), default / `FLOWS_ENABLED=true`:
+
+| State | Default | Flag on |
+|---|---|---|
+| main `27c9c043d8` | 6,576 | 6,625 |
+| + W02 wiring, `MAX_INLINE_ACTIONS` = 8 | 6,919 | 6,968 |
+| + `MAX_INLINE_ACTIONS` = 7 (Todd 2026-10-22, option 2; −245 B) | 6,674 | 6,723 |
+| + `manage_billing_catalog` rename (this branch) | 6,682 | 6,731 |
+
+  The 6,656 B ceiling did not fit after 8 → 7, so the 6.75 KB (6,912 B) raise signed off for Tool Catalog W3 was taken for W02 (Todd 2026-10-22, option 1). Headroom is about 230 B default and 181 B flag-on. At 7, the action lists of `generate_report`, `manage_deployments`, `manage_monitor_definitions` and `manage_billing_catalog` render as `(8 actions)`; the names stay in each tool's schema.
+- **Headroom is now thin on chat.** The next chat write wave cannot fit +8k on top of this without A-W04 tool search or a schema-size pass.

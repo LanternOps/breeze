@@ -6,7 +6,7 @@ import { AI_TOOL_DOMAINS, AI_TOOL_DOMAIN_LABELS } from '@breeze/shared';
 import './aiTools'; // populates the registry
 import { getAllRegisteredToolNames } from './aiTools';
 import { buildBreezeSdkTools, listChatSurfaceToolNames } from './aiAgentSdkTools';
-import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, renderToolIndexByDomain } from './aiToolIndex';
+import { composeStaticSystemPrompt, DOMAIN_NOTES, listToolIndex, MAX_INLINE_ACTIONS, renderToolIndexByDomain } from './aiToolIndex';
 
 const COVERAGE_BURNDOWN_TOOLS = [
   ['Tickets & time', 'list_time_entries'],
@@ -120,6 +120,27 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     expect(renderToolIndexByDomain(['run_script'])).not.toContain('external runs');
   });
 
+  // Full-control W02 (#6756), Todd 2026-10-22 option 2: action lists collapse
+  // to "(N actions)" at 8+ actions so the 7 PSA/billing write tools fit the
+  // index ceiling. Renderer only — the names stay in each tool's schema.
+  it('inlines up to 7 action names and collapses 8+ to a count', () => {
+    expect(MAX_INLINE_ACTIONS).toBe(7);
+    const all = listToolIndex(getAllRegisteredToolNames());
+    // No registered tool has exactly 7 actions today, so pin the largest one
+    // that still inlines; the constant assertion above covers the boundary.
+    const inline = all.filter((e) => e.actions.length > 0 && e.actions.length <= 7)
+      .sort((a, b) => b.actions.length - a.actions.length)[0];
+    const eight = all.find((e) => e.actions.length === 8);
+    expect(inline, 'need a registered tool with 1-7 actions').toBeDefined();
+    expect(eight, 'need a registered tool with exactly 8 actions').toBeDefined();
+    expect(inline!.actions.length).toBeGreaterThanOrEqual(5);
+    expect(eight!.actions).toHaveLength(8);
+    expect(renderToolIndexByDomain([inline!.name])).toContain(`${inline!.name} (${inline!.actions.join('/')})`);
+    const collapsed = renderToolIndexByDomain([eight!.name]);
+    expect(collapsed).toContain(`${eight!.name} (8 actions)`);
+    expect(collapsed).not.toContain(eight!.actions.join('/'));
+  });
+
   it('skips names that have no domain instead of throwing', () => {
     expect(listToolIndex(['query_devices', 'propose_action_plan', 'not_a_tool']).map((e) => e.name)).toEqual(['query_devices']);
   });
@@ -128,8 +149,8 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   // (diagnose_connectivity, get_diagnostic_run, get_link_evidence,
   // get_topology) took it to 5.5 KB (5188 bytes) after the DOMAIN_NOTES prose
   // had already been tightened once.
-  it('stays small: the whole index is under 6.5 KB and every note under 400 chars', () => {
-    // Ceiling raised to 6.5 KB (#6755): W01 wired 32 more chat-callable tools
+  it('stays small: the whole index is under 6.75 KB and every note under 400 chars', () => {
+    // Ceiling raised to 6.5 KB (#6755; raised again to 6.75 KB for W02, below): W01 wired 32 more chat-callable tools
     // (measured 119280 -> 140468 registry bytes, see
     // docs/superpowers/specs/ai-mcp/2026-09-17-agent-tool-efficiency-baseline.md
     // "Full-control W01 (#6755) delta"), which legitimately grows this
@@ -153,6 +174,14 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     // ("Tool Catalog W3 delta"). Both fit under the existing ceiling, so the
     // 6.75 KB raise signed off for W3 was not taken; the flag-on prompt is
     // gated too (below).
+    // Full-control W02 (#6756): 7 PSA/billing write tools (+343 B) paid for in
+    // part by MAX_INLINE_ACTIONS 8 -> 7 (Todd 2026-10-22, option 2; -245 B):
+    // main 6576 / 6625 -> 6674 default / 6723 flag-on, still over 6656. So the
+    // 6.75 KB raise (6912 B) was taken 2026-10-22 for W02 (Todd, option 1);
+    // the W3 sign-off was re-used. Headroom ~238 B default / ~189 B flag-on;
+    // the manage_billing_catalog rename (D3) makes it 6682 / 6731 (~230 / ~181).
+    // Any further raise needs a prompt-size review, not a bump.
+    expect(INDEX_BUDGET_BYTES).toBe(6912);
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(INDEX_BUDGET_BYTES);
     for (const note of Object.values(DOMAIN_NOTES)) expect(note!.length).toBeLessThanOrEqual(400);
   });
@@ -173,7 +202,7 @@ describe('renderToolIndexByDomain (A-W02)', () => {
   });
 });
 
-const INDEX_BUDGET_BYTES = 6.5 * 1024;
+const INDEX_BUDGET_BYTES = 6.75 * 1024;
 
 /** Action tokens are rendered inside parentheses after a tool name; ignore those in the unknown-name check. */
 function isActionToken(text: string, token: string): boolean {

@@ -17,7 +17,7 @@ export const DOMAIN_NOTES: Readonly<Partial<Record<AiToolDomain, string>>> = {
   scripts: 'Compacted output (stdoutTruncation/_chat): page or narrow; don\'t repeat. Listings don\'t page: narrow the path. get_script_execution covers external runs and expired waits; a timeout alone doesn\'t justify edits.',
 };
 
-const MAX_INLINE_ACTIONS = 8;
+export const MAX_INLINE_ACTIONS = 7;
 
 function actionsOf(name: string): string[] {
   const schema = aiTools.get(name)?.definition.input_schema as { properties?: Record<string, { enum?: unknown[] }> } | undefined;
