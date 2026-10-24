@@ -554,6 +554,8 @@ const TARGET_GLOBS = [
   // AI agent may call on customer systems; a silent failure leaves the tech
   // believing the recipe is set up when it is not.
   'src/components/aiOperator/RecipeCard.tsx',
+  // The draft preview and the admission that starts a four-eyes offboarding.
+  'src/components/aiOperator/StartRecipeForm.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -966,8 +968,8 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
     // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
-    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx: 253 → 254.
-    expect(absoluteFiles.length).toBe(254);
+    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 253 → 255.
+    expect(absoluteFiles.length).toBe(255);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

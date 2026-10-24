@@ -9,23 +9,18 @@
 import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { AiOperatorWorkflowDto } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { useHashState } from '@/lib/useHashState';
 import { useOrgStore } from '../../stores/orgStore';
 import OperatorTaskList from './OperatorTaskList';
 import RecipeLibrary from './RecipeLibrary';
+import StartRecipeForm from './StartRecipeForm';
 import { readHashParam, writeHashParam } from './operatorHash';
 
 const TABS = ['tasks', 'library'] as const;
 type Tab = (typeof TABS)[number];
 
-export interface OperatorWorkspaceProps {
-  /** The start surface for a recipe chosen in the Library (Task 19 wires the form). */
-  renderStart?: (workflow: AiOperatorWorkflowDto, orgId: string, close: () => void) => ReactNode;
-}
-
-export default function OperatorWorkspace({ renderStart }: OperatorWorkspaceProps = {}) {
+export default function OperatorWorkspace() {
   const { t } = useTranslation('aiOperator');
   const orgId = useOrgStore((s) => s.currentOrgId);
   const [tab, setTab] = useHashState<Tab>('tasks', (hash) => {
@@ -74,7 +69,9 @@ export default function OperatorWorkspace({ renderStart }: OperatorWorkspaceProp
       {panel('library', (
         <RecipeLibrary
           orgId={orgId}
-          renderStart={renderStart && orgId ? (w, close) => renderStart(w, orgId, close) : undefined}
+          renderStart={orgId
+            ? (w, close) => <StartRecipeForm workflow={w} orgId={orgId} launch={{ kind: 'library' }} onClose={close} />
+            : undefined}
         />
       ))}
     </div>

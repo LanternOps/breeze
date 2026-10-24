@@ -224,5 +224,94 @@
       "serviceRecoveryName": "Restore a stopped service",
       "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up."
     }
+  },
+  "startRecipe": {
+    "title": "Offboard a person",
+    "close": "Close",
+    "person": {
+      "label": "Person leaving",
+      "hintLabel": "Name or email",
+      "hintPlaceholder": "e.g. Dana Smith or dana@example.com",
+      "contactChosen": "Contact: {{name}}",
+      "useHint": "Use a name or email instead",
+      "readOnly": "Started from this contact."
+    },
+    "inheritor": {
+      "label": "Who inherits their mail",
+      "none": "No one",
+      "contact": "A contact",
+      "address": "An email address",
+      "pickContact": "Choose a contact",
+      "addressPlaceholder": "name@example.com",
+      "contactsFailed": "Contacts failed to load.",
+      "loadMore": "Load more contacts"
+    },
+    "autoReply": {
+      "label": "Auto-reply message",
+      "defaultWithInheritor": "Thank you for your email. {{person}} is no longer with the company. Please contact {{inheritor}} for help.",
+      "defaultNoInheritor": "Thank you for your email. {{person}} is no longer with the company, and this mailbox is no longer monitored.",
+      "thePerson": "This person"
+    },
+    "cutoff": {
+      "label": "Last day (cutoff)",
+      "now": "Empty means start now: approved steps run as soon as the plan is approved.",
+      "scheduled": "Approved steps wait until this time before they run."
+    },
+    "keepMailbox": {
+      "label": "Keep the mailbox",
+      "help": "Breeze will leave the Microsoft 365 licence in place and add a manual step to convert the mailbox to shared. Removing the licence first would start the mailbox's 30-day deletion clock."
+    },
+    "effects": {
+      "label": "What to do",
+      "autoReply": "Set an auto-reply",
+      "autoReplyHelp": "Answers new mail with the message above.",
+      "forwarding": "Forward mail",
+      "forwardingHelp": "Forwards new mail to the inheritor.",
+      "mailDelegate": "Give the inheritor mailbox access",
+      "mailDelegateHelp": "Lets the inheritor read the whole mailbox. Choose this deliberately.",
+      "removeGroups": "Remove from groups",
+      "removeGroupsHelp": "Removes the person from groups and distribution lists.",
+      "removeLicenses": "Remove licences",
+      "removeLicensesHelp": "Frees paid licences once mail is handled.",
+      "revokeSessions": "Sign out everywhere",
+      "revokeSessionsHelp": "Ends the person's active sign-in sessions.",
+      "wipeMobile": "Remove work account from phones",
+      "wipeMobileHelp": "Removes the work account from enrolled phones. The device itself is not erased.",
+      "disableAccount": "Block sign-in",
+      "disableAccountHelp": "Disables the account. This comes last, after mail is routed."
+    },
+    "devices": {
+      "label": "Devices to collect or lock",
+      "help": "Optional. Breeze does not act on devices in this recipe: each device you select becomes a checklist item for a technician.",
+      "searchPlaceholder": "Search devices by name",
+      "selectedByYou": "Selected by you",
+      "limit": "You can select up to {{max}} devices.",
+      "loading": "Loading devices...",
+      "loadFailed": "Devices failed to load.",
+      "empty": "No devices match."
+    },
+    "preview": {
+      "button": "Preview",
+      "refresh": "Preview again",
+      "stale": "The form changed since the preview. Preview again before starting.",
+      "failed": "The preview could not be made.",
+      "title": "Preview",
+      "personResolved": "Will offboard: {{name}}",
+      "personUnresolved": "No single contact matches. Choose one below, or change the name.",
+      "personNone": "No contact matches this name or email.",
+      "candidatesLabel": "Possible matches (choose one):",
+      "plannedTitle": "Steps Breeze will run",
+      "orderNote": "Grouped by service, not in order. The exact order is fixed after a technician confirms the identity, and is shown for approval before anything runs.",
+      "plannedEmpty": "No steps will run automatically.",
+      "degradedTitle": "Steps that will be done by hand",
+      "manualTitle": "Checklist items the task will add",
+      "ticketNote": "The task opens its own ticket for these checklist items.",
+      "ticketSourceNote": "Started from a ticket: the task opens its own checklist ticket and does not change this one."
+    },
+    "submit": "Start offboarding",
+    "started": "Offboarding started.",
+    "failed": "The offboarding could not be started.",
+    "duplicate": "An offboarding is already running for this person.",
+    "duplicateLink": "Open the running task"
   }
 }

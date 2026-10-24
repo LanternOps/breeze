@@ -80,6 +80,15 @@ describe('OperatorWorkspace (MOUNT)', () => {
     expect(taskCalls()).toBe(1);
   });
 
+  it('starting a recipe from the Library opens the start form in place, deep-linked by #recipe=', async () => {
+    window.location.hash = 'tab=library';
+    render(<OperatorWorkspace />);
+    fireEvent.click(await screen.findByTestId('recipe-start-identity_offboarding'));
+    expect(await screen.findByTestId('start-recipe-form')).toBeInTheDocument();
+    expect(screen.getByTestId('start-recipe-person-hint')).toBeInTheDocument();
+    await waitFor(() => expect(window.location.hash).toBe('#tab=library&recipe=identity_offboarding'));
+  });
+
   it('the Astro page imports the workspace with an island directive', () => {
     const page = readFileSync(join(here, '../../pages/operator/index.astro'), 'utf8');
     expect(page).toContain("import OperatorWorkspace from '../../components/aiOperator/OperatorWorkspace'");
