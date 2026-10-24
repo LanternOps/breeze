@@ -22,7 +22,7 @@
 import './setup';
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import {
   businessCalendarIntervals,
@@ -176,5 +176,37 @@ describe('ticket create caller contexts (#8883 W5 T5.8, Gate B1)', () => {
     const t = await withDbAccessContext(orgSession(otherOrg.id, otherStaff.id), () =>
       createTicket({ orgId: otherOrg.id, subject: 'other partner', source: 'manual' }, { kind: 'user', userId: otherStaff.id, name: 'O' }));
     expect(await stateOf(t.id)).toMatchObject({ rule: null, priority: 'normal' });
+  });
+
+  // System scope (inbound email, workers) bypasses RLS, so the evaluator's own
+  // partner filter is the ONLY guard there: another partner's ticket must not
+  // pick up these rules.
+  runDb("under system scope another partner's ticket never matches these partner-wide rules", async () => {
+    await fixture();
+    const other = (await createPartner())!;
+    const otherOrg = (await createOrganization({ partnerId: other.id }))!;
+    const t = await withSystemDbAccessContext(() =>
+      createTicket({ orgId: otherOrg.id, subject: 'other partner email', source: 'email', submitterEmail: 'x@example.com' }, { kind: 'system' } as never));
+    expect(await stateOf(t.id)).toMatchObject({ rule: null, priority: 'normal' });
+  });
+
+  runDb('fail closed end to end: once the only listed org is erased, its org_scoped rule fires for no org', async () => {
+    const f = await fixture();
+    const actor = { kind: 'user' as const, userId: f.staff.id, name: 'Staff' };
+    // Drop the every-org catch-all so only the two org_scoped rules remain.
+    await withSystemDbAccessContext(() => db.delete(ticketRoutingRules).where(eq(ticketRoutingRules.id, f.everyOrgId)));
+    // Erase the sibling org: "Sibling only" loses its only link (cascade) and must not widen.
+    await withSystemDbAccessContext(() => db.execute(sql`DELETE FROM organizations WHERE id = ${f.sibling.id}`));
+    const [linksLeft] = await withSystemDbAccessContext(() =>
+      db.select({ n: sql<number>`count(*)::int` }).from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, f.siblingOnlyId)));
+    expect(linksLeft?.n).toBe(0);
+    const third = (await createOrganization({ partnerId: f.partner.id }))!;
+    for (const ctx of [orgSession(third.id, f.staff.id), buildDbAccessContext({ scope: 'partner', orgId: null, accessibleOrgIds: [third.id], partnerId: f.partner.id, userId: f.staff.id })]) {
+      const t = await withDbAccessContext(ctx, () => createTicket({ orgId: third.id, subject: 'third org', source: 'manual' }, actor));
+      expect(await stateOf(t.id)).toMatchObject({ rule: null, priority: 'normal' });
+    }
+    const sysTicket = await withSystemDbAccessContext(() =>
+      createTicket({ orgId: third.id, subject: 'third email', source: 'email', submitterEmail: 'y@example.com' }, { kind: 'system' } as never));
+    expect(await stateOf(sysTicket.id)).toMatchObject({ rule: null });
   });
 });

@@ -162,6 +162,11 @@ export default function TicketRoutingTab() {
           )}
         </div>
 
+        {lookups.loadFailed && (
+          <p className="text-sm text-amber-700 dark:text-amber-400" role="status" data-testid="routing-lookups-error">
+            {t('ticketRouting.lookupsFailed')}
+          </p>
+        )}
         {loading ? (
           <p className="text-sm text-muted-foreground" data-testid="routing-loading">
             {t('common:states.loading')}

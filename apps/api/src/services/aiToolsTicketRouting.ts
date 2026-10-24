@@ -46,7 +46,10 @@ export function registerTicketRoutingTools(aiTools: Map<string, AiTool>): void {
       const { listRoutingRules } = await import('./ticketRouting/service');
       return run('list_ticket_routing_rules', async () => {
         const orgId = typeof input.orgId === 'string' && input.orgId.length > 0 ? input.orgId : undefined;
-        const limit = typeof input.limit === 'number' ? Math.min(Math.max(0, Math.floor(input.limit)), 200) : 100;
+        // A non-finite or non-positive limit falls back / clamps instead of slicing to nothing.
+        const limit = typeof input.limit === 'number' && Number.isFinite(input.limit)
+          ? Math.min(Math.max(1, Math.floor(input.limit)), 200)
+          : 100;
         return { rules: (await listRoutingRules(auth, { orgId })).slice(0, limit) };
       });
     },

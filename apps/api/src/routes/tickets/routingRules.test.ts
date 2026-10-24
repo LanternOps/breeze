@@ -126,6 +126,8 @@ describe('ticket routing rule routes', () => {
       { name: 'x', ownerScope: 'partner', setPriority: 'high', matchSubjectKeywords: ['a'] },
       { name: 'x', ownerScope: 'partner', setPriority: 'high', matchRequesterDomains: ['not a host'] },
       { name: 'x', ownerScope: 'organization', setPriority: 'high' },
+      // An empty org list would mean "limited to no orgs": refused (null = all orgs).
+      { name: 'x', ownerScope: 'partner', setPriority: 'high', orgIds: [] },
     ]) {
       expect((await req('POST', '/', body)).status).toBe(400);
     }

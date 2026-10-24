@@ -7061,6 +7061,7 @@
     "description": "Regeln laufen beim Erstellen eines Tickets und setzen Bearbeiter, Priorität, Kategorie, Status und Tags, die der Ersteller nicht gewählt hat. Zuerst gelten Organisationsregeln, dann partnerweite Regeln. Die erste passende Regel gewinnt.",
     "createRule": "Neue Regel",
     "loadFailed": "Routing-Regeln konnten nicht geladen werden.",
+    "lookupsFailed": "Einige Techniker, Kategorien oder Status konnten nicht geladen werden, daher sind die Auswahllisten möglicherweise unvollständig. Laden Sie die Seite neu, um es erneut zu versuchen.",
     "empty": "Noch keine Routing-Regeln.",
     "groupOrg": "Regeln für {{org}}",
     "groupPartner": "Partnerweite Regeln",

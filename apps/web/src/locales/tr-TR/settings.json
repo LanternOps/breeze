@@ -7061,6 +7061,7 @@
     "description": "Kurallar bir talep oluşturulduğunda çalışır ve oluşturanın seçmediği atanan kişiyi, önceliği, kategoriyi, durumu ve etiketleri doldurur. Önce kuruluş kuralları, sonra iş ortağı genelindeki kurallar uygulanır. İlk eşleşen kazanır.",
     "createRule": "Yeni kural",
     "loadFailed": "Yönlendirme kuralları yüklenemedi.",
+    "lookupsFailed": "Bazı teknisyenler, kategoriler veya durumlar yüklenemedi, bu nedenle listeler eksik olabilir. Yeniden denemek için sayfayı yenileyin.",
     "empty": "Henüz yönlendirme kuralı yok.",
     "groupOrg": "{{org}} kuralları",
     "groupPartner": "İş ortağı geneli kurallar",

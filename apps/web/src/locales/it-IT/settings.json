@@ -7061,6 +7061,7 @@
     "description": "Le regole vengono eseguite alla creazione di un ticket e impostano assegnatario, priorità, categoria, stato e tag non scelti dal creatore. Prima si applicano le regole dell'organizzazione, poi quelle del partner. Vince la prima corrispondenza.",
     "createRule": "Nuova regola",
     "loadFailed": "Impossibile caricare le regole di instradamento.",
+    "lookupsFailed": "Non è stato possibile caricare alcuni tecnici, categorie o stati, quindi gli elenchi potrebbero essere incompleti. Ricarica la pagina per riprovare.",
     "empty": "Nessuna regola di instradamento.",
     "groupOrg": "Regole per {{org}}",
     "groupPartner": "Regole per tutto il partner",

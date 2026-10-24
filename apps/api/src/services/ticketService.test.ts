@@ -6275,4 +6275,37 @@ describe('createTicket — routing rules (#8883 W5 T5.3)', () => {
       .rejects.toMatchObject({ code: 'ASSIGNEE_NOT_ELIGIBLE' });
     expect(routingMocks.evaluate).not.toHaveBeenCalled();
   });
+
+  // Precedence pinned at the insert, not only via the evaluator's explicit
+  // flags: even an outcome that (wrongly) carried a value for a field the
+  // caller set must lose to the caller.
+  it('precedence at the insert: explicit priority, category and assignee beat a conflicting rule outcome', async () => {
+    routeTo({ applied: { priority: 'urgent', categoryId: 'cat-rule', assigneeId: 'u-rule' } });
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }]) // org
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1', status: 'active', email: 'u2@example.com' }]) // explicit assignee
+      .mockResolvedValueOnce([{ id: 'cat-mine', partnerId: 'p-1', responseSlaMinutes: null, resolutionSlaMinutes: null }]); // explicit category
+    await createTicket({ orgId: 'o-1', subject: 'x', source: 'manual', priority: 'low', categoryId: 'cat-mine', assigneeId: 'u-2' }, actor);
+    expect(insertedTicket()).toMatchObject({ priority: 'low', categoryId: 'cat-mine', assignedTo: 'u-2' });
+  });
+
+  it('precedence at the insert: an intake form priority and category beat a conflicting rule outcome', async () => {
+    routeTo({ applied: { priority: 'urgent', categoryId: 'cat-rule' } });
+    formMocks.getTicketFormForOrg.mockResolvedValueOnce({ id: 'f-1' });
+    formMocks.applyIntakeForm.mockReturnValueOnce({ categoryId: 'cat-form', defaultPriority: 'low', subjectFromForm: 'From form', descriptionBlock: null, defaultTags: [], intakeSnapshot: {} });
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'cat-form', partnerId: 'p-1', responseSlaMinutes: null, resolutionSlaMinutes: null }]);
+    await createTicket({ orgId: 'o-1', source: 'manual', formId: 'f-1', formResponses: {} }, actor);
+    expect(insertedTicket()).toMatchObject({ priority: 'low', categoryId: 'cat-form' });
+  });
+
+  // Fail-closed by design: createTicket runs inside the caller's transaction,
+  // and a failed statement there aborts it anyway, so a routing read error is
+  // not swallowed into an unrouted create.
+  it('an unexpected routing error fails the create (no silent unrouted ticket)', async () => {
+    routingMocks.evaluate.mockRejectedValueOnce(new Error('connection reset'));
+    await expect(createTicket({ orgId: 'o-1', subject: 'x', source: 'manual' }, actor)).rejects.toThrow('connection reset');
+    expect(valuesMock).not.toHaveBeenCalled();
+  });
 });

@@ -7061,6 +7061,7 @@
     "description": "Les règles s'exécutent à la création d'un billet et renseignent l'assigné, la priorité, la catégorie, le statut et les étiquettes que le créateur n'a pas choisis. Les règles de l'organisation passent en premier, puis celles du partenaire. La première correspondance l'emporte.",
     "createRule": "Nouvelle règle",
     "loadFailed": "Impossible de charger les règles de routage.",
+    "lookupsFailed": "Certains techniciens, catégories ou statuts n'ont pas pu être chargés; les listes peuvent donc être incomplètes. Rechargez la page pour réessayer.",
     "empty": "Aucune règle de routage pour le moment.",
     "groupOrg": "Règles de {{org}}",
     "groupPartner": "Règles pour tout le partenaire",

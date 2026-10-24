@@ -7061,6 +7061,7 @@
     "description": "Rules run when a ticket is created and fill in the assignee, priority, category, status and tags the creator did not choose. Organization rules run first, then partner-wide rules. The first match wins.",
     "createRule": "New rule",
     "loadFailed": "Could not load routing rules.",
+    "lookupsFailed": "Some technicians, categories or statuses could not be loaded, so the pickers may be incomplete. Reload the page to try again.",
     "empty": "No routing rules yet.",
     "groupOrg": "Rules for {{org}}",
     "groupPartner": "Partner-wide rules",

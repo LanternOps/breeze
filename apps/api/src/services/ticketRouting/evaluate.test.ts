@@ -99,6 +99,15 @@ describe('evaluateRoutingRules — which rules', () => {
     expect(out.ruleName).toBe('printer');
   });
 
+  it('defence in depth: a row of another partner or another org is never applied, even if the read returned it (system scope bypasses RLS)', async () => {
+    const foreignPartner = row({ partner_id: 'p-OTHER', name: 'foreign partner', position: -5 });
+    const foreignOrg = row({ org_id: 'o-OTHER', partner_id: null, name: 'foreign org', position: -5 });
+    const mine = row({ name: 'mine', position: 9 });
+    const out = await evaluateRoutingRules(dbReturning([foreignPartner, foreignOrg, mine]) as never, owner, facts(), NO_EXPLICIT_CHOICES);
+    expect(out.ruleName).toBe('mine');
+    expect((await evaluateRoutingRules(dbReturning([foreignPartner, foreignOrg]) as never, owner, facts(), NO_EXPLICIT_CHOICES)).ruleId).toBeNull();
+  });
+
   it('disabled rules are skipped even if the read returned one', async () => {
     const off = row({ enabled: false, name: 'off' });
     const on = row({ position: 5, name: 'on' });

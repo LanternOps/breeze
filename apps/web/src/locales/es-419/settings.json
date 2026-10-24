@@ -7061,6 +7061,7 @@
     "description": "Las reglas se ejecutan al crear un ticket y completan el asignado, la prioridad, la categoría, el estado y las etiquetas que el creador no eligió. Primero se aplican las reglas de la organización y luego las del socio. Gana la primera coincidencia.",
     "createRule": "Nueva regla",
     "loadFailed": "No se pudieron cargar las reglas de enrutamiento.",
+    "lookupsFailed": "No se pudieron cargar algunos técnicos, categorías o estados, por lo que las listas pueden estar incompletas. Vuelve a cargar la página para intentarlo de nuevo.",
     "empty": "Aún no hay reglas de enrutamiento.",
     "groupOrg": "Reglas de {{org}}",
     "groupPartner": "Reglas para todo el socio",

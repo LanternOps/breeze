@@ -47,9 +47,14 @@ export default function InboundFallbackAssigneeEditor() {
 
   const save = async () => {
     if (!cfg) return;
-    const next: InboundConfig = { ...cfg, defaultAssigneeUserId: value || null };
     setSaving(true);
     try {
+      // The PATCH replaces the whole inbound object, so build it from a FRESH
+      // read: a mount-time snapshot would revert anything saved elsewhere (the
+      // Inbound email card) since this editor loaded. A failed read aborts the
+      // save rather than falling back to the snapshot.
+      const fresh = await fetchInboundConfig();
+      const next: InboundConfig = { ...fresh, defaultAssigneeUserId: value || null };
       await saveInboundConfig(next, {
         errorFallback: t('ticketRouting.fallback.saveFailed'),
         successMessage: t('ticketRouting.fallback.saved'),

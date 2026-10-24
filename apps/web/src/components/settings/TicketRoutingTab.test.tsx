@@ -43,6 +43,7 @@ vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
 import TicketRoutingTab from './TicketRoutingTab';
+import { buildInboundPayload } from './inboundEmailConfig';
 import { i18n } from '@/lib/i18n';
 
 function res(body: unknown, status = 200) {
@@ -171,6 +172,21 @@ afterEach(() => {
 });
 
 describe('TicketRoutingTab — list', () => {
+  it('says so when a picker lookup fails, instead of showing silently empty pickers', async () => {
+    const base = fetchWithAuth.getMockImplementation()!;
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) =>
+      url === '/users' ? Promise.resolve(res({ error: 'boom' }, 500)) : base(url, init));
+    render(<TicketRoutingTab />);
+    expect(await screen.findByTestId('routing-lookups-error')).toBeInTheDocument();
+  });
+
+  it('shows no lookup warning when every lookup loads', async () => {
+    render(<TicketRoutingTab />);
+    await screen.findByTestId('routing-rule-row-a1');
+    await waitFor(() => expect(callsTo('/ticket-config', 'GET').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('routing-lookups-error')).not.toBeInTheDocument();
+  });
+
   it('renders org rules then partner-wide rules with badges and warnings', async () => {
     render(<TicketRoutingTab />);
     await screen.findByTestId('routing-rule-row-a1');
@@ -510,6 +526,52 @@ describe('InboundFallbackAssigneeEditor', () => {
       unknownSenderMode: 'quarantine',
       staffForwardRouting: true,
       autoresponderEnabled: true,
+    });
+  });
+
+  it('builds the PATCH from a FRESH read, so a change saved elsewhere since mount is not reverted', async () => {
+    render(<TicketRoutingTab />);
+    const editor = await screen.findByTestId('routing-fallback-assignee');
+    const select = (await within(editor).findByTestId('routing-fallback-assignee-select')) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe('u-1'));
+    // The Inbound email card saved a new autoresponse + full-message mode meanwhile.
+    const base = fetchWithAuth.getMockImplementation()!;
+    fetchWithAuth.mockImplementation((url: string, init?: { method?: string }) =>
+      url === '/ticket-config' && (init?.method ?? 'GET') === 'GET'
+        ? Promise.resolve(res({ data: { statuses: [], inbound: { ...INBOUND, autoresponseSubject: 'Got it', fullMessageReply: true } } }))
+        : base(url, init));
+    fireEvent.change(select, { target: { value: '' } });
+    fireEvent.click(within(editor).getByTestId('routing-fallback-assignee-save'));
+    await waitFor(() => expect(callsTo('/orgs/partners/me', 'PATCH')).toHaveLength(1));
+    const inbound = bodyOf(callsTo('/orgs/partners/me', 'PATCH')[0]).settings.ticketing.inbound;
+    expect(inbound).toMatchObject({ defaultAssigneeUserId: null, autoresponseSubject: 'Got it', fullMessageReply: true });
+  });
+});
+
+describe('buildInboundPayload (the one serializer of ticketing.inbound)', () => {
+  it('carries every inbound field with its value, plus a real self-hosted address override', () => {
+    const full = {
+      ...INBOUND,
+      addressOverride: 'help@self.example.com',
+      defaultTriageOrgId: 'org-1',
+      dropUnverifiedSenders: true,
+      unknownSenderMode: 'triage' as const,
+      autoresponseSubject: 'Subject',
+      autoresponseBody: 'Body',
+      fullMessageReply: true,
+    };
+    expect(buildInboundPayload(full)).toEqual({
+      enabled: true,
+      defaultTriageOrgId: 'org-1',
+      autoresponderEnabled: true,
+      unknownSenderMode: 'triage',
+      dropUnverifiedSenders: true,
+      staffForwardRouting: true,
+      defaultAssigneeUserId: 'u-1',
+      autoresponseSubject: 'Subject',
+      autoresponseBody: 'Body',
+      fullMessageReply: true,
+      address: 'help@self.example.com',
     });
   });
 });

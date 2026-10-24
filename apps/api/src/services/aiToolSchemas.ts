@@ -102,7 +102,8 @@ export const ticketRoutingManageShape = {
   setStatusId: uuid.nullable().optional().describe('Action: start in this status (UUID; New/Open/Pending/On hold core)'),
   addTags: z.array(z.string().max(50)).max(20).nullable().optional().describe('Action: add these tags (max 20)'),
 };
-export const deliveryToolSchema =z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
+
+export const deliveryToolSchema = z.object(deliveryToolShape).strict().superRefine((v, ctx) => {
   if (v.action === 'resolve' && (!v.severity || !v.orgId)) ctx.addIssue({ code: 'custom', message: 'orgId and severity are required for resolve' });
   if (/^(update|delete)_/.test(v.action) && !v.id) ctx.addIssue({ code: 'custom', path: ['id'], message: 'id is required for update/delete' });
   if ((/^(create|update)_/.test(v.action) || v.action === 'set_default') && !v.data) ctx.addIssue({ code: 'custom', path: ['data'], message: 'data is required for writes' });

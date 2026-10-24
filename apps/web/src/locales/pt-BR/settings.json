@@ -7061,6 +7061,7 @@
     "description": "As regras são executadas quando um ticket é criado e preenchem o responsável, a prioridade, a categoria, o status e as tags que o criador não escolheu. Primeiro valem as regras da organização, depois as do parceiro. A primeira correspondência vence.",
     "createRule": "Nova regra",
     "loadFailed": "Não foi possível carregar as regras de roteamento.",
+    "lookupsFailed": "Não foi possível carregar alguns técnicos, categorias ou status, então as listas podem estar incompletas. Recarregue a página para tentar novamente.",
     "empty": "Ainda não há regras de roteamento.",
     "groupOrg": "Regras de {{org}}",
     "groupPartner": "Regras de todo o parceiro",

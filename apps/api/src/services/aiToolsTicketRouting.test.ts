@@ -54,7 +54,9 @@ describe('ticket routing AI tools (#8883)', () => {
   it('list passes the orgId through', async () => {
     vi.mocked(svc.listRoutingRules).mockResolvedValue([{ id: RULE }] as never);
     expect(await call('list_ticket_routing_rules', { orgId: ORG })).toEqual({ rules: [{ id: RULE }] });
-    expect(await call('list_ticket_routing_rules', { limit: 0 })).toEqual({ rules: [] });
+    // A non-positive or non-finite limit never slices the list to nothing.
+    expect(await call('list_ticket_routing_rules', { limit: 0 })).toEqual({ rules: [{ id: RULE }] });
+    expect(await call('list_ticket_routing_rules', { limit: Number.NaN })).toEqual({ rules: [{ id: RULE }] });
     expect(svc.listRoutingRules).toHaveBeenCalledWith(expect.objectContaining({ scope: 'partner', partnerId: 'p-1' }), { orgId: ORG });
   });
 

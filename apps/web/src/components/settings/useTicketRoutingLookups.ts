@@ -22,14 +22,23 @@ export interface RoutingLookups {
   categories: LookupCategory[];
   /** Active statuses a rule may set (core new / open / pending / on_hold). */
   statuses: LookupStatus[];
+  /** True when any of the three reads failed: the pickers are then incomplete, not empty by design. */
+  loadFailed: boolean;
 }
+
+const FAILED = Symbol('lookup-failed');
 
 async function readJson(url: string): Promise<unknown> {
   try {
     const res = await fetchWithAuth(url);
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
+    if (!res.ok) {
+      console.warn(`[ticket-routing] lookup ${url} failed: HTTP ${res.status}`);
+      return FAILED;
+    }
+    return await res.json();
+  } catch (err) {
+    console.warn(`[ticket-routing] lookup ${url} failed`, err);
+    return FAILED;
   }
 }
 
@@ -37,10 +46,11 @@ async function readJson(url: string): Promise<unknown> {
  * Select options for the rule drawer and the test panel, from the endpoints the
  * other ticket settings use: GET /users, GET /ticket-categories and the
  * `statuses` list of GET /ticket-config. Each degrades independently to an empty
- * list — the pickers then offer only "no change".
+ * list, and `loadFailed` tells the tab to say so (a failed read must not look
+ * like "no users" or make an existing reference look unavailable).
  */
 export function useTicketRoutingLookups(): RoutingLookups {
-  const [lookups, setLookups] = useState<RoutingLookups>({ users: [], categories: [], statuses: [] });
+  const [lookups, setLookups] = useState<RoutingLookups>({ users: [], categories: [], statuses: [], loadFailed: false });
 
   useEffect(() => {
     let cancelled = false;
@@ -51,8 +61,10 @@ export function useTicketRoutingLookups(): RoutingLookups {
         readJson('/ticket-config'),
       ]);
       if (cancelled) return;
+      const loadFailed = [usersBody, catBody, cfgBody].some((b) => b === FAILED);
       const rows = (b: unknown): unknown[] => {
         if (Array.isArray(b)) return b;
+        if (b === FAILED) return [];
         const data = (b as { data?: unknown } | null)?.data;
         return Array.isArray(data) ? data : [];
       };
@@ -60,12 +72,12 @@ export function useTicketRoutingLookups(): RoutingLookups {
       const categories = (rows(catBody) as Array<LookupCategory & { isActive?: boolean }>).filter(
         (c) => c?.id && c.isActive !== false,
       );
-      const rawStatuses = (cfgBody as { data?: { statuses?: Array<LookupStatus & { isActive?: boolean }> } } | null)
+      const rawStatuses = cfgBody === FAILED ? undefined : (cfgBody as { data?: { statuses?: Array<LookupStatus & { isActive?: boolean }> } } | null)
         ?.data?.statuses;
       const statuses = (rawStatuses ?? []).filter(
         (s) => s?.id && s.isActive !== false && ROUTING_SETTABLE_CORE_STATUSES.includes(s.coreStatus),
       );
-      setLookups({ users, categories, statuses });
+      setLookups({ users, categories, statuses, loadFailed });
     })();
     return () => {
       cancelled = true;

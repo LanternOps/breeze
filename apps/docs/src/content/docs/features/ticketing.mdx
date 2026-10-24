@@ -225,7 +225,7 @@ Routing rules set who a new ticket goes to, and how it starts, the moment it is 
 
 A rule has **conditions** and **actions**:
 
-- **Conditions:** where the ticket came from (portal, email, alert, technician, API, AI), its priority, its category, words in the subject, and the requester's email domain. A domain is either exact (`example.com`) or every subdomain (`*.example.com`, which matches `help.example.com` but not `example.com` itself). Within one condition any value can match; every condition you fill in must match. A rule with no conditions matches every ticket, and the editor warns you about it.
+- **Conditions:** where the ticket came from (portal, email, alert, technician, API, AI), its priority, its category, words in the subject, and the requester's email domain. A domain is either exact (`example.com`) or every subdomain (`*.example.com`, which matches `help.example.com` but not `example.com` itself). Within one condition any value can match; every condition you fill in must match. A rule with no conditions matches every ticket, and the editor warns you about it. A priority condition matches only a priority someone chose (the technician, the customer or an intake form); a ticket whose priority was left at the default doesn't match one, even though it is saved as Normal.
 - **Actions:** assign a technician, set the priority, the category or the starting status, and add tags. A rule must have at least one action. The starting status can be a **New**, **Open**, **Pending** or **On hold** status; a ticket that starts Pending or On hold starts with its SLA clock paused.
 
 How rules are applied:
