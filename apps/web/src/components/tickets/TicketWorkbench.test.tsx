@@ -3261,3 +3261,88 @@ describe('TicketWorkbench — ticket type (#7900)', () => {
     expect(linksCardProps.last).toMatchObject({ canWrite: false });
   });
 });
+
+// Operator Recipe Library W06 R1b (#6171) — MOUNT proof for the ticket launch
+// point. The launcher carries the requester into the form and NO source
+// citation: identity_offboarding refuses one and opens its own checklist ticket.
+describe('TicketWorkbench — Offboard a person launcher', () => {
+  const OP_ORG = '11111111-1111-4111-8111-111111111111';
+  const REQUESTER = '33333333-3333-4333-8333-333333333333';
+  const workflow = (readiness: string) => ({
+    recipeKey: 'identity_offboarding', recipeVersion: 4, name: 'Offboard a person', summary: 's',
+    gateClass: 'deterministic', targetKinds: ['contact'], readiness, missingCapabilities: [],
+    alwaysManualCapabilities: [], manualStepCount: 0, degradedEffects: [], agentId: null, agentKind: 'helpdesk',
+  });
+
+  async function resetFeatures() {
+    const { useFeaturesStore } = await import('../../stores/featuresStore');
+    useFeaturesStore.setState({
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
+      loaded: false,
+    });
+  }
+
+  function mockWithOperator(ticket: TicketDetail, opts: { flag: boolean; readiness?: string }) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/config') return makeJsonResponse({ features: { aiOperatorTasks: opts.flag } });
+      if (url.startsWith('/ai/operator/workflows')) return makeJsonResponse({ data: [workflow(opts.readiness ?? 'ready')] });
+      if (url === '/ai/operator/task-drafts') {
+        return makeJsonResponse({ data: {
+          recipeKey: 'identity_offboarding', recipeVersion: 4, input: {}, workflow: workflow('ready'),
+          person: { resolved: { id: REQUESTER, name: 'Pat', email: 'pat@example.com' }, candidates: [] },
+          plannedEffectTools: ['m365_disable_user'], degradedEffectTools: [], manualWork: [],
+        } });
+      }
+      if (url.startsWith('/devices')) return makeJsonResponse({ data: [] });
+      if ((!init?.method || init.method === 'GET') && url === `/tickets/${ticket.id}`) return makeJsonResponse({ data: ticket });
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  beforeEach(async () => { await resetFeatures(); });
+
+  it('renders on the real workbench and opens the form with the requester contact, editable', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER, submitterName: 'Pat' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
+    expect(await screen.findByTestId('start-recipe-form')).toBeInTheDocument();
+    expect(screen.getByTestId('start-recipe-person')).toHaveTextContent('Pat');
+    expect(screen.getByTestId('start-recipe-person-use-hint')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    expect(await screen.findByTestId('start-recipe-preview')).toHaveTextContent('the task opens its own checklist ticket');
+    const draftCall = fetchMock.mock.calls.find(([u]) => String(u) === '/ai/operator/task-drafts');
+    const body = JSON.parse(String((draftCall![1] as RequestInit).body)) as Record<string, any>;
+    expect(body.orgId).toBe(OP_ORG);
+    expect(body.inputs).toMatchObject({ contactId: REQUESTER, personHint: null });
+    expect(body).not.toHaveProperty('sourceKind');
+    expect(body).not.toHaveProperty('sourceId');
+  });
+
+  it('pre-fills the submitter email as a hint when the ticket has no requester contact', async () => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: null, submitterEmail: 'pat@example.com' }), { flag: true });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('offboard-launcher-ticket'));
+    expect((await screen.findByTestId('start-recipe-person-hint') as HTMLInputElement).value).toBe('pat@example.com');
+  });
+
+  it.each([
+    ['the server flag is off', { flag: false }],
+    ['the recipe is unavailable', { flag: true, readiness: 'unavailable' }],
+  ])('is absent when %s', async (_label, opts) => {
+    mockWithOperator(makeTicket({ orgId: OP_ORG, requesterContactId: REQUESTER }), opts);
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-links-card-stub');
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId('offboard-launcher-ticket')).not.toBeInTheDocument();
+  });
+});

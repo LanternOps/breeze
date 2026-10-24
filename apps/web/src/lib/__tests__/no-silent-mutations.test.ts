@@ -558,6 +558,12 @@ const TARGET_GLOBS = [
   // Sweep G4: peripheral policy save + config-policy partner-wide toggle toast their outcome.
   'src/components/peripherals/PeripheralPolicyForm.tsx',
   'src/components/configurationPolicies/OrganizationScopePanel.tsx',
+  // Operator Recipe Library W06 R1b (#6171): "allow these tools" widens what an
+  // AI agent may call on customer systems; a silent failure leaves the tech
+  // believing the recipe is set up when it is not.
+  'src/components/aiOperator/RecipeCard.tsx',
+  // The draft preview and the admission that starts a four-eyes offboarding.
+  'src/components/aiOperator/StartRecipeForm.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -972,7 +978,8 @@ describe('no silent mutations in targeted set', () => {
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
     // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
     // Wisp W05a (#9911) adds WispConcernsPanel/wispConcernsApi (+2 = 259).
-    expect(absoluteFiles.length).toBe(259);
+    // Operator Recipe Library R1b (#6171) adds aiOperator/RecipeCard.tsx and StartRecipeForm.tsx: 259 → 261.
+    expect(absoluteFiles.length).toBe(261);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
