@@ -1751,6 +1751,7 @@
       "actions": "Ações"
     },
     "lastSyncFailedSuffix": " — falhou",
+    "lastSyncPartialSuffix": " — recuperando atraso",
     "never": "Nunca",
     "deletingInBackground": "Excluindo…"
   },

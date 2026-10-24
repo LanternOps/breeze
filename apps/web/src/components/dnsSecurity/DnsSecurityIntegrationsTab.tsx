@@ -185,15 +185,33 @@ export default function DnsSecurityIntegrationsTab() {
                       : it.provider}
                   </td>
                   <td className="px-4 py-2">
+                    {/* 'partial': the last run hit the provider's request budget and the
+                        rest resumes next run (#10018); the unfetched range is on hover. */}
                     {isDeleting(it) ? (
                       <span className="text-muted-foreground">{t('dnsSecurityDnsSecurityIntegrationsTab.deletingInBackground')}</span>
                     ) : it.lastSync ? (
-                      <span className={it.lastSyncStatus === 'error' ? 'text-destructive' : ''}>
+                      <span
+                        className={
+                          it.lastSyncStatus === 'error'
+                            ? 'text-destructive'
+                            : it.lastSyncStatus === 'partial'
+                              ? 'text-warning'
+                              : ''
+                        }
+                        title={it.lastSyncStatus === 'partial' ? it.lastSyncError ?? undefined : undefined}
+                      >
                         {formatDateTime(it.lastSync)}
                         {it.lastSyncStatus === 'error' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncFailedSuffix')}
+                        {it.lastSyncStatus === 'partial' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncPartialSuffix')}
                       </span>
                     ) : (
-                      <span className="text-muted-foreground">{t('dnsSecurityDnsSecurityIntegrationsTab.never')}</span>
+                      <span
+                        className="text-muted-foreground"
+                        title={it.lastSyncStatus === 'partial' ? it.lastSyncError ?? undefined : undefined}
+                      >
+                        {t('dnsSecurityDnsSecurityIntegrationsTab.never')}
+                        {it.lastSyncStatus === 'partial' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncPartialSuffix')}
+                      </span>
                     )}
                   </td>
                   <td className="px-4 py-2">{it.totalEventsProcessed ?? 0}</td>

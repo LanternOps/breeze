@@ -1751,6 +1751,7 @@
       "actions": "Actions"
     },
     "lastSyncFailedSuffix": " — failed",
+    "lastSyncPartialSuffix": " — catching up",
     "never": "Never",
     "deletingInBackground": "Deleting…"
   },

@@ -89,7 +89,7 @@ describe('processPamActuationEvent', () => {
     connectedMock.mockResolvedValue(true);
     claimMock.mockImplementation(async (id: string) => {
       expect(committed.value).toBe(true);
-      return { status: 'claimed', id, executedAt: new Date() };
+      return { status: 'claimed', id, executedAt: new Date(), agentId: current.agent_id };
     });
     dispatchMock.mockResolvedValue({ status: 'sent', via: 'local' });
     vi.useFakeTimers();
@@ -158,6 +158,22 @@ describe('processPamActuationEvent', () => {
     commit();
     await expect(work).resolves.toBe('dispatched');
     expect(dispatchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('pushes to the agent id read in the claim, not the one read with the actuation (#8318 §6.4)', async () => {
+    executeMock.mockResolvedValueOnce({ rows: [current] }).mockResolvedValue({ rows: [] });
+    // A reattach / re-enroll committed between the actuation read and the claim.
+    claimMock.mockImplementation(async (id: string) => ({
+      status: 'claimed', id, executedAt: new Date(), agentId: 'agent-after-reattach',
+    }));
+    await expect(processPamActuationEvent({ actuationId: current.id, generation: 4 }))
+      .resolves.toBe('dispatched');
+    // The pre-claim id only gates whether a claim is worth taking.
+    expect(connectedMock).toHaveBeenCalledWith(current.agent_id);
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledWith('agent-after-reattach', expect.objectContaining({ type: 'pam_apply_v2' }));
+    expect(dispatchMock).not.toHaveBeenCalledWith(current.agent_id, expect.anything());
+    expect(releaseMock).not.toHaveBeenCalled();
   });
 
   it.each(['offline', 'expired', 'owner_mismatch', 'infrastructure_error'])('returns a %s push to heartbeat delivery', async (status) => {

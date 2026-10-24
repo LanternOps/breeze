@@ -78,7 +78,7 @@ import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
-import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate } from '../../stores/featuresStore';
+import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate, useAiOperatorTasksGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
 import { isNavGateVisible } from '../../lib/navGates';
 import { sidebarSettingsEntries } from '../../lib/settingsCatalog';
@@ -217,6 +217,8 @@ type NavItem = {
   /** #5218: gated on the SERVER's FLOWS_ENABLED via /config. */
   requiresFlows?: boolean;
   requiresPreAssignment?: boolean;
+  /** W06 R1b (#6171): gated on the SERVER's `features.aiOperatorTasks` via /config. */
+  requiresAiOperatorTasks?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -303,6 +305,9 @@ export const navSections: NavSection[] = [
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
       { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Operator Recipe Library W06 R1b (#6171): the Operator tasks + recipe
+      // library workspace. Same server flag as "Delegate to Operator".
+      { name: 'Operator', labelKey: 'aiOperator:nav.operator', href: '/operator', icon: ListChecks, requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
       { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
@@ -710,6 +715,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   const { enabled: flowsEnabled } = useFlowsGate();
   const { enabled: preAssignmentEnabled } = usePreAssignmentGate();
+  const { enabled: aiOperatorTasksEnabled } = useAiOperatorTasksGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -935,7 +941,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // matches what actually renders — a section whose items are all filtered out
   // must not show an empty header that expands to nothing.
   const isNavItemVisible = (item: NavItem): boolean =>
-    isNavGateVisible(item, {
+    (!item.requiresAiOperatorTasks || aiOperatorTasksEnabled) && isNavGateVisible(item, {
       isPlatformAdmin,
       permissions,
       getScope: () => jwtScope,

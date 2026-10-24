@@ -1469,6 +1469,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
               // NOT NULL DEFAULT 'auto' today, but a null-safe comparison keeps the
               // carve-out correct if that ever relaxes.
               if (classification) {
+                // own-device-row-allowlisted: discovery-role-propagation
                 await db.update(devices)
                   .set({
                     deviceRole: sql`(select ${discoveredAssets.assetType} from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId})`,

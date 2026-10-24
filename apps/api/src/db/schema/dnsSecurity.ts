@@ -110,6 +110,12 @@ export interface DnsIntegrationConfig {
   // egress on the hosted platform. Enabling it is recorded in the audit log via
   // the integration create/update route.
   allowCarrierNatEgress?: boolean;
+  // Sync state, not a setting: the time-slice width (ms) the last sliced
+  // provider walk (Cisco Umbrella) ended on. Written only by the DNS sync job,
+  // read back as the next run's starting width so a backlog does not pay its
+  // splitting cost again every run (#10018). The create route's schema does
+  // not accept it, so a tenant cannot set it.
+  syncSliceWidthMs?: number;
 }
 
 export interface DnsPolicyDomain {

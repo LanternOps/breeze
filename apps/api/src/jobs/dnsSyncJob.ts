@@ -17,7 +17,13 @@ import {
   type DnsPolicyDomain,
   type DnsThreatCategory
 } from '../db/schema';
-import { createDnsProvider, DnsProviderHttpError, type DnsEvent, type DnsEventSlice } from '../services/dnsProviders';
+import {
+  createDnsProvider,
+  DnsProviderHttpError,
+  type DnsEvent,
+  type DnsEventSlice,
+  type DnsEventSliceWalkEnd
+} from '../services/dnsProviders';
 import { getBullMQConnection } from '../services/redis';
 import { bullmqJobId, isReusableState } from '../services/bullmqUtils';
 import { decryptForColumn } from '../services/secretCrypto';
@@ -481,7 +487,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
 }
 
 // Phase 3 of a DNS event sync: turn the fetched provider events into security
-// event rows + aggregation deltas, prune per retention, and mark the
+// event rows + aggregation deltas, and mark the
 // integration synced — all inside a single DB context. Extracted so the
 // provider fetch in processSyncIntegration runs OUTSIDE any held transaction
 // (#1697); the caller wraps this in runWithSystemDbAccess. Returns the number
@@ -639,9 +645,54 @@ async function persistDnsEventSync(params: {
       totalEventsProcessed: sql`${dnsFilterIntegrations.totalEventsProcessed} + ${insertedCount}`,
       updatedAt: new Date()
     })
-    .where(eq(dnsFilterIntegrations.id, integrationId));
+    // #10019 — never overwrite the 'deleting' marker of a row a DELETE has stopped.
+    .where(and(eq(dnsFilterIntegrations.id, integrationId), eq(dnsFilterIntegrations.isActive, true)));
 
   return insertedCount;
+}
+
+/**
+ * Record how a sliced walk ended (#10018), in one write after its slices are
+ * persisted:
+ *
+ * - Stopped short at the provider's request budget → `lastSyncStatus =
+ *   'partial'` with the unfetched range in `lastSyncError`. `lastSync` is left
+ *   at the last completed slice (or where it was, if none completed), so the
+ *   next run resumes there. Without this the row kept the previous run's
+ *   `success` while it fell days behind. The next run's first completed
+ *   slice writes `success` again, and a run that reaches `until` leaves it.
+ * - A new slice width → merged into `config.syncSliceWidthMs` with jsonb `||`
+ *   (no read-modify-write of the tenant's settings), to seed the next run.
+ */
+async function recordSliceWalkEnd(
+  integrationId: string,
+  config: DnsIntegrationConfig,
+  end: DnsEventSliceWalkEnd
+): Promise<void> {
+  const { stoppedShort, sliceWidthMs } = end;
+  const widthChanged = sliceWidthMs !== undefined && sliceWidthMs !== config.syncSliceWidthMs;
+  if (!stoppedShort && !widthChanged) return;
+
+  await db
+    .update(dnsFilterIntegrations)
+    .set({
+      ...(stoppedShort
+        ? {
+            lastSyncStatus: 'partial',
+            lastSyncError:
+              `Reached the per-run request budget; ${stoppedShort.from.toISOString()}..` +
+              `${stoppedShort.to.toISOString()} not yet fetched, resumes next run`
+          }
+        : {}),
+      ...(widthChanged
+        ? {
+            config: sql`${dnsFilterIntegrations.config} || jsonb_build_object('syncSliceWidthMs', ${sliceWidthMs}::bigint)`
+          }
+        : {}),
+      updatedAt: new Date()
+    })
+    // #10019 — never overwrite the 'deleting' marker of a row a DELETE has stopped.
+    .where(and(eq(dnsFilterIntegrations.id, integrationId), eq(dnsFilterIntegrations.isActive, true)));
 }
 
 // Exported for focused catch-block coverage (#1035 item 2): a unit test mocks
@@ -685,27 +736,32 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
 
     // A provider either hands back its whole window at once (one slice ending
     // at `until`) or yields it in chronological slices (Umbrella, whose API
-    // cannot page past ~10k events per window — #7207).
-    const slices: AsyncIterable<DnsEventSlice> = provider.syncEventSlices
-      ? provider.syncEventSlices(since, until)
-      : (async function* () {
-          yield { events: await provider.syncEvents(since, until), until };
-        })();
-    const iterator = slices[Symbol.asyncIterator]();
+    // cannot page past ~10k events per window — #7207). A sliced walk starts
+    // at the width the previous run ended on and returns how it ended (#10018).
+    const iterator: AsyncGenerator<DnsEventSlice, DnsEventSliceWalkEnd | void, undefined> =
+      provider.syncEventSlices
+        ? provider.syncEventSlices(since, until, { initialSliceMs: config.syncSliceWidthMs })
+        : (async function* () {
+            yield { events: await provider.syncEvents(since, until), until };
+          })();
 
     let fetched = 0;
     let inserted = 0;
+    let walkEnd: DnsEventSliceWalkEnd | undefined;
     try {
       for (;;) {
         // Phase 2 — fetch the next slice with NO DB context held
         // (#1105/#1697). The ~20s-timeout HTTP must not pin a pooled
         // connection, so each resume of the provider's walk runs outside one.
         const step = await dbModule.runOutsideDbContext(() => iterator.next());
-        if (step.done) break;
+        if (step.done) {
+          walkEnd = step.value || undefined;
+          break;
+        }
         const slice = step.value;
 
         // Phase 3 — persist this slice in ONE context (security events,
-        // aggregations, retention prune, and `lastSync` advanced to the
+        // aggregations, and `lastSync` advanced to the
         // slice's end commit together). Per slice, not per run: a failure on
         // a later slice keeps every earlier one, and the next run resumes
         // from the last checkpoint instead of retrying — and re-losing — the
@@ -747,6 +803,11 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
       });
     }
 
+    if (walkEnd) {
+      const end = walkEnd;
+      await runWithSystemDbAccess(() => recordSliceWalkEnd(integration.id, config, end));
+    }
+
     return {
       integrationId: integration.id,
       fetched,
@@ -774,7 +835,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
               lastSyncError: tenantVisibleSyncError(error),
               updatedAt: new Date()
             })
-            .where(eq(dnsFilterIntegrations.id, integration.id))
+            .where(and(eq(dnsFilterIntegrations.id, integration.id), eq(dnsFilterIntegrations.isActive, true)))
         )
       );
       recorded = true;

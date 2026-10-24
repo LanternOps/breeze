@@ -77,6 +77,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // --- org-required ---
   { pattern: /^\/discovery(\/.*)?$/, kind: 'org-required' },
   { pattern: /^\/monitoring(\/.*)?$/, kind: 'org-required' },
+  // AI operator recipe library + task list (#6171 R1b): needs one org. Exact
+  // match only — /operator/tasks/:id (org-or-all, #5205 W07) is registered below.
+  { pattern: /^\/operator\/?$/, kind: 'org-required' },
   // Their APIs 400 without an org (backup dashboard, C2C connections/jobs,
   // DR plans) — the pages render OrgRequiredState in fleet view.
   { pattern: /^\/backup(\/.*)?$/, kind: 'org-required' },

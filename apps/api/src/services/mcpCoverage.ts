@@ -46,6 +46,15 @@ export type McpExemptReason =
    */
   | 'human_only_autopay'
   /**
+   * MSP catalog provisioning of executable, Breeze-pinned packages that agents
+   * run as SYSTEM/root (#6958 D2, the DNS filtering client built-ins). Every
+   * write is an interactive partner-admin session with MFA, `devices.execute`
+   * and partner-wide-manage (`canManagePartnerWidePolicies`); no AI surface by
+   * design. Deploying a provisioned package goes through the ordinary software
+   * deployment and policy surfaces.
+   */
+  | 'human_only_provisioning'
+  /**
    * Partner-level administration of an EXTERNAL VENDOR CONSOLE connection and
    * the tenant bookkeeping it requires: storing/rotating the vendor login,
    * mapping a discovered vendor customer onto a Breeze organization, and
@@ -694,6 +703,7 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'servicePrincipals.ts': { exempt: 'identity' },
   'snmp.ts': { gap: '#6779' },
   'software.ts': { gap: '#6782' },
+  'softwareBuiltinPackages.ts': { exempt: 'human_only_provisioning', note: 'Provisions Breeze-pinned DNS client packages (scripts run as SYSTEM/root); MFA + devices.execute + partner-wide-manage (#6958 D2).' },
   'softwareInstallMethods.ts': { gap: '#6782' },
   'softwareInventory.ts': { gap: '#6782' },
   'softwarePolicies.ts': { tools: ['get_software_compliance', 'manage_software_policy', 'manage_software_policies', 'remediate_software_violation'] },

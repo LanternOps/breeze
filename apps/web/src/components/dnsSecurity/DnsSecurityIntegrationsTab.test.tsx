@@ -118,6 +118,34 @@ describe('DnsSecurityIntegrationsTab', () => {
     });
   });
 
+  it('marks a sync cut short by the request budget as catching up, with the unfetched range on hover (#10018)', async () => {
+    const budgetMessage =
+      'Reached the per-run request budget; 2026-10-22T04:25:27.166Z..2026-10-24T16:00:00.187Z not yet fetched, resumes next run';
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: [{
+          id: 'int-1',
+          orgId: 'org-1',
+          provider: 'umbrella',
+          name: 'Umbrella Prod',
+          enabled: true,
+          lastSync: '2026-10-22T04:25:27.166Z',
+          lastSyncStatus: 'partial',
+          lastSyncError: budgetMessage,
+          totalEventsProcessed: 10,
+          createdAt: '2026-05-01T00:00:00.000Z',
+        }],
+      }),
+    );
+
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+    const cell = screen.getByText(/catching up/);
+    expect(cell).toHaveAttribute('title', budgetMessage);
+    expect(cell).not.toHaveTextContent(/failed/);
+  });
+
   it('surfaces an inline error banner when the list endpoint fails', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ error: 'boom' }, false, 500));
     render(<DnsSecurityIntegrationsTab />);
