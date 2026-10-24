@@ -15,6 +15,7 @@ import {
   withSystemDbAccessContext,
   runOutsideDbContext,
   assertOutsideHeldDbContext,
+  runAfterDbContextCommit,
 } from '../db';
 import { actionIntents } from '../db/schema/actionIntents';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions, approvalRequests } from '../db/schema';
@@ -450,6 +451,20 @@ function unresolvedTurn(turn: ModelUnavailable): Extract<PreFlightResult, { ok: 
   return { ok: false, error: turn.message, status: 409, code: turn.reason };
 }
 
+
+/**
+ * Wisp W04 Task 5: recompute the thread summary of a session just stamped
+ * 'expired'. Deferred until the surrounding request context commits, lazily
+ * imported, best effort: a failure goes to Sentry and never reaches the caller.
+ */
+function scheduleWispSummaryFinalize(sessionId: string): void {
+  runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
+    import('./wisp/threadSummary')
+      .then((m) => m.finalizeWispSessionSummary(sessionId))
+      .catch((err) => captureException(err)),
+  );
+}
+
 /**
  * Validates rate limits, budget, session status, expiration, and sanitizes input.
  * Returns all values needed to proceed with message processing, or an error.
@@ -535,6 +550,7 @@ export async function runPreFlightChecks(
     await db.update(aiSessions)
       .set({ status: 'expired', updatedAt: new Date() })
       .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')));
+    scheduleWispSummaryFinalize(sessionId);
     return { ok: false, error: 'Session has expired (24h max age). Please start a new session.' };
   }
 
@@ -542,6 +558,7 @@ export async function runPreFlightChecks(
     await db.update(aiSessions)
       .set({ status: 'expired', updatedAt: new Date() })
       .where(and(eq(aiSessions.id, sessionId), eq(aiSessions.status, 'active')));
+    scheduleWispSummaryFinalize(sessionId);
     return { ok: false, error: 'Session has expired due to inactivity. Please start a new session.' };
   }
 
@@ -2132,9 +2149,17 @@ function createGatedSessionPreToolUse(session: ActiveSession) {
             console.error(
               `[AI-SDK] inline release revalidation failed for intent ${intent.id}: ${revalidation.errorCode}`,
             );
+            // Wisp W04 (Review Focus 2): a Wisp ceiling refusal at release
+            // (services/wisp/releaseCeiling.ts) carries fixed user-facing copy
+            // in details.reason; only `wisp_*` codes may surface it.
+            const wispReleaseReason =
+              revalidation.errorCode.startsWith('wisp_') && typeof revalidation.details?.reason === 'string'
+                ? revalidation.details.reason
+                : undefined;
             return await failMatchedPlanStep({
               allowed: false,
               error: callerRefusalResult?.error
+                ?? wispReleaseReason
                 ?? 'Authorization for this action could no longer be verified; it was not executed.',
               ...(requiresCallerVerification ? { requiresCallerVerification } : {}),
             });
