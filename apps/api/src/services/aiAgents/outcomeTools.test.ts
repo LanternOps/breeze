@@ -18,6 +18,7 @@ import { sweepToolAllowlist } from './sweepProfile';
 import { narrativeToolAllowlist } from './narrativeProfile';
 import { triageToolAllowlist } from './triageProfile';
 import { designToolAllowlist } from './designProfile';
+import { assessmentToolAllowlist } from './assessmentProfile';
 import { patchToolAllowlist } from './patchProfile';
 import type { FleetDesignOutcomeRefs } from '@breeze/shared';
 
@@ -244,6 +245,8 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       // AI Suggested Fixes W2 — placeholder until Task 10 adds researchProfile.ts's
       // allowlist; Task 10 must replace this literal with the real floor.
       remediation_research: ['submit_suggestions'],
+      // Wisp W05b — read-only drill-down tier plus the five assessment outcome tools.
+      assessment: assessmentToolAllowlist(['manage_services', 'run_script']),
     };
 
     for (const profile of AI_AGENT_RUN_PROFILES) {

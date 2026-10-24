@@ -62,6 +62,7 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
+import { publishEvent } from '../eventBus';
 import {
   isIdentityOffboardingCheckpoint,
   isServiceRecoveryCheckpoint,
@@ -402,13 +403,14 @@ async function settle(args: {
   handoffSummary?: string;
   checkpoint?: TaskCheckpoint;
 }): Promise<boolean> {
+  const terminalState = nextTaskState(args.task.state as string, args.event);
   const committed = await writeLeased({
     orgId: args.task.orgId,
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
     patch: {
-      state: nextTaskState(args.task.state as string, args.event),
+      state: terminalState,
       outcome: args.outcome,
       outcomeDetail: args.detail.slice(0, 4000),
       ...(args.handoffSummary ? { handoffSummary: args.handoffSummary.slice(0, 4000) } : {}),
@@ -457,6 +459,28 @@ async function settle(args: {
   // independently re-derived the same verdict. An alerting metric that
   // over-reports is worse than none: it trains the reader to ignore it.
   if (committed && args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
+  // Wisp W05: tell the triage engine the task reached a terminal state.
+  // `settle`'s `event` is narrowed to complete | partial | hand_off | fail,
+  // whose destinations (completed | partial | handed_off | failed) are all
+  // terminal and are exactly the states the payload type allows; the
+  // stopping-path terminals (cancelled / expired) settle elsewhere and are not
+  // a "finished" signal. Fire-and-forget, after the commit, outside any DB
+  // context (#1105): a bus outage must not fail a settled task.
+  if (committed) {
+    try {
+      void publishEvent('ai.operator.task.finished', args.task.orgId, {
+        taskId: args.task.id,
+        orgId: args.task.orgId,
+        state: terminalState,
+        outcome: args.outcome,
+        grantId: args.task.grantId ?? null,
+      }, 'ai-operator').catch((err: unknown) => {
+        console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+      });
+    } catch (err) {
+      console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+    }
+  }
   return committed;
 }
 

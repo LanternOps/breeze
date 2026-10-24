@@ -16,6 +16,7 @@ import type {
 } from '@breeze/shared';
 import { envFlag, isHosted } from '../../config/env';
 import { agentRunModelRole } from './agentModelRole';
+import { ASSESSMENT_MAX_CONCURRENT_RUNS, ASSESSMENT_MAX_RUNS_PER_HOUR } from './assessmentProfile';
 import { PG_UUID_REGEX } from '../../utils/uuid';
 import {
   db,
@@ -479,6 +480,17 @@ export type AgentRunSkipReason =
   // profileCaps()). Same posture as every pair above: deliberately NOT added
   // to PUBLISHED_SKIP_REASONS — volume guards on a scheduled shape.
   | 'max_concurrent_patch_runs' | 'patch_rate'
+  // Wisp W05 — the assessment-profile equivalents, counted against the
+  // ASSESSMENT_MAX_CONCURRENT_RUNS/ASSESSMENT_MAX_RUNS_PER_HOUR constants
+  // (assessmentProfile.ts; admission rule 6b, via profileCaps()). Same
+  // posture as every pair above: deliberately NOT added to
+  // PUBLISHED_SKIP_REASONS — the wake coordinator's alert-storm coalescing
+  // leans on them, so they are volume guards, not policy events.
+  | 'max_concurrent_assessment_runs' | 'assessment_rate'
+  // Wisp W05 — an assessment admitted without a grant (rule 2a). A caller
+  // bug, surfaced as a skip rather than a throw so the wake coordinator never
+  // wedges on it; not published (nothing an admin can act on).
+  | 'assessment_requires_grant'
   // Execution plane W04 (spec §8). The first four are POLICY events, not
   // volume guards, so unlike every other profile's pair they ARE published:
   // a technician who launched an analysis and got nothing needs to see why.
@@ -1130,6 +1142,18 @@ function profileCaps(
         concurrentSkip: 'max_concurrent_research_runs',
         rateSkip: 'research_rate',
       };
+    // Wisp W05 — per-(agent, org) assessment caps. Module CONSTANTS, not
+    // policy limits (assessmentProfile.ts; W05 planner call 4): no policy
+    // page configures this profile. The hourly cap is what bounds an alert
+    // storm after the wake coordinator's debounce.
+    case 'assessment':
+      return {
+        maxConcurrent: ASSESSMENT_MAX_CONCURRENT_RUNS,
+        maxPerWindow: ASSESSMENT_MAX_RUNS_PER_HOUR,
+        windowMs: 3_600_000,
+        concurrentSkip: 'max_concurrent_assessment_runs',
+        rateSkip: 'assessment_rate',
+      };
     default: {
       const exhaustive: never = profile;
       throw new Error(`[profileCaps] Unknown run profile: ${String(exhaustive)}`);
@@ -1372,6 +1396,13 @@ export async function createAndEnqueueAgentRun(
   // AI Suggested Fixes W2 — same shape as the designer arm: a research agent
   // runs its read-only, zero-action profile or it does not run.
   if (kind === 'research' && (input.profile ?? 'full') !== 'remediation_research') return skip('ownership_mismatch');
+  // Wisp W05 — an assessment is the org's triage agent working under a Wisp
+  // grant, or it does not run: another kind is an ownership mismatch, and a
+  // grant-less assessment would run with no ceiling, no budget accounting and
+  // no grantor (`assessment_requires_grant`, a caller bug surfaced as a skip).
+  if ((input.profile ?? 'full') === 'assessment' && (kind !== 'triage' || !input.grant)) {
+    return skip(kind !== 'triage' ? 'ownership_mismatch' : 'assessment_requires_grant');
+  }
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');

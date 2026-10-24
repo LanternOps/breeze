@@ -205,6 +205,8 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // AI Suggested Fixes W2 — a research run's ONE output channel.
     case 'remediation_research':
       return ['submit_suggestions'];
+    case 'assessment':
+      return []; // W05b Task 6 fills this
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
