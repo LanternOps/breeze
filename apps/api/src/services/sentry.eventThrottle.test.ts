@@ -27,6 +27,49 @@ describe('eventThrottleSignature', () => {
       .not.toBe(eventThrottleSignature(errorEvent('planCanonicalMerge', 396620)));
   });
 
+  function dbErrorEvent(outer: string, extra: Record<string, unknown> = {}, value = '[redacted]') {
+    return {
+      level: 'error',
+      exception: { values: [{ type: 'PostgresError', value, stacktrace: { frames: [
+        { function: outer, lineno: 10, colno: 3 },
+        { function: 'handler', lineno: 1, colno: 1 },
+        { function: 'query', lineno: 2, colno: 2 },
+        { function: 'execute', lineno: 3, colno: 3 },
+      ] } }] },
+      ...extra,
+    };
+  }
+
+  it('separates DB errors sharing innermost frames and type but differing in outer frames', () => {
+    expect(eventThrottleSignature(dbErrorEvent('routeA'))).not.toBe(eventThrottleSignature(dbErrorEvent('routeB')));
+  });
+
+  it('separates identical stacks that differ by transaction or route_template', () => {
+    const base = eventThrottleSignature(dbErrorEvent('r'));
+    expect(eventThrottleSignature(dbErrorEvent('r', { transaction: 'GET /a' }))).not.toBe(eventThrottleSignature(dbErrorEvent('r', { transaction: 'GET /b' })));
+    expect(eventThrottleSignature(dbErrorEvent('r', { tags: { route_template: '/a/:id' } }))).not.toBe(base);
+  });
+
+  it('does not let one saturated DB-error storm throttle an unrelated caller', () => {
+    vi.useFakeTimers();
+    const throttle = createEventThrottle({ burst: 1, refillMs: 300_000 });
+    expect(throttle(dbErrorEvent('routeA'))).not.toBeNull();
+    expect(throttle(dbErrorEvent('routeA'))).toBeNull();
+    expect(throttle(dbErrorEvent('routeB'))).not.toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('collapses messages that differ only by uuid/digits/quoted strings', () => {
+    const a = dbErrorEvent('r', {}, 'duplicate key "x_1" id 6f1c2a3e-1111-4222-8333-444455556666 at 12');
+    const b = dbErrorEvent('r', {}, 'duplicate key "x_2" id aaaaaaaa-1111-4222-8333-444455556666 at 99');
+    expect(eventThrottleSignature(a)).toBe(eventThrottleSignature(b));
+    expect(eventThrottleSignature(dbErrorEvent('r', {}, 'deadlock detected'))).not.toBe(eventThrottleSignature(a));
+  });
+
+  it('produces a bounded key', () => {
+    expect(eventThrottleSignature(dbErrorEvent('r', { transaction: 'x'.repeat(5000) })).length).toBeLessThanOrEqual(80);
+  });
+
   it('keys message events on their event_code', () => {
     const a = eventThrottleSignature({ level: 'warning', tags: { event_code: 'db_context_held_too_long' } });
     const b = eventThrottleSignature({ level: 'warning', tags: { event_code: 'pool_saturated' } });

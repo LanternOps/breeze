@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as Sentry from '@sentry/node';
 import type { Context } from 'hono';
 import { API_VERSION } from '../version';
@@ -713,19 +714,39 @@ export function sentryBreezeRoleTag(): 'all' | 'api' | 'worker' {
 /**
  * Group key for the outbound event throttle. Built from the SCRUBBED event:
  * exception values are all '[redacted]', so the throw site (type plus the
- * innermost frames) and the bounded discriminator tags are what tell two
+ * full stack, transaction and route) and the bounded discriminator tags are what tell two
  * failures apart. Exported for test.
  */
 export function eventThrottleSignature(event: Record<string, any>): string {
   const fingerprint = Array.isArray(event.fingerprint) ? event.fingerprint.filter((p: unknown) => p !== '{{ default }}') : [];
   if (fingerprint.length) return `fp:${fingerprint.join('|')}`;
   const tags = event.tags ?? {};
-  const parts: string[] = [String(event.level ?? 'error'), String(tags.event_code ?? ''), String(tags.worker ?? ''), String(tags.errorId ?? '')];
+  const parts: string[] = [
+    String(event.level ?? 'error'), String(tags.event_code ?? ''), String(tags.worker ?? ''), String(tags.errorId ?? ''),
+    String(event.transaction ?? ''), String(tags.route_template ?? ''),
+  ];
   for (const value of Array.isArray(event.exception?.values) ? event.exception.values : []) {
+    // ALL frames, not just the innermost: a PostgresError / DrizzleQueryError has the
+    // same innermost frames for every DB failure in the process, so the callers are
+    // what separate unrelated errors. Still stable for a true storm (same stack).
     const frames: Record<string, unknown>[] = Array.isArray(value?.stacktrace?.frames) ? value.stacktrace.frames : [];
-    parts.push(String(value?.type ?? ''), ...frames.slice(-3).map(f => `${f.function ?? '?'}:${f.lineno ?? ''}:${f.colno ?? ''}`));
+    parts.push(
+      String(value?.type ?? ''),
+      normalizeThrottleMessage(value?.value),
+      ...frames.map(f => `${f.function ?? '?'}:${f.lineno ?? ''}:${f.colno ?? ''}`),
+    );
   }
-  return parts.join('|');
+  // Hash so the key stays small however long the stack or transaction name is.
+  return createHash('sha1').update(parts.join('\u0000')).digest('hex');
+}
+
+/** Collapse ids so a storm with varying values still shares one key. */
+function normalizeThrottleMessage(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/"[^"]*"|'[^']*'/g, '?')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '?')
+    .replace(/\d+/g, '?');
 }
 
 /**
