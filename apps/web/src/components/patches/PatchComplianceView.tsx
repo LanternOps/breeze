@@ -176,6 +176,8 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   const fetchData = useCallback(async () => {
     const seq = ++requestSeqRef.current;
     const isCurrent = () => requestSeqRef.current === seq;
+    // A 401 navigates away: keep the spinner up rather than flash an empty view.
+    let redirecting = false;
     try {
       setLoading(true);
       setError(undefined);
@@ -192,14 +194,24 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
       if (!isCurrent()) return;
       if (!complianceRes.ok) {
         if (complianceRes.status === 401) {
+          redirecting = true;
           void navigateTo('/login', { replace: true });
           return;
         }
-        throw new Error(stableT('patchComplianceView.errors.fetchData'));
+        throw new Error('compliance request failed');
       }
 
-      const data = (await complianceRes.json()).data ?? {};
+      // A body that isn't the expected JSON (proxy error page, truncated
+      // response) is a load failure, never an empty fleet.
+      const body = await complianceRes.json().catch(() => null);
       if (!isCurrent()) return;
+      const data = body?.data;
+      if (!data || typeof data !== 'object') throw new Error('compliance response has no data');
+      // Rows are required whenever the scope has devices; an API without the
+      // #9791 C list must read as a failure, not as an empty table.
+      if (!Array.isArray(data.devices) && toNumber(data.totalDevices ?? 0) > 0) {
+        throw new Error('compliance response has no device list');
+      }
       const rawRows: unknown[] = Array.isArray(data.devices) ? data.devices : [];
       const rows: DevicePatchRow[] = rawRows.map((value) => {
         const raw = (value ?? {}) as Record<string, unknown>;
@@ -231,10 +243,16 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
 
       const counts = data.deviceCounts ?? {};
       const totals = data.outstandingTotals ?? {};
+      const totalDevices = toNumber(data.totalDevices ?? 0);
+      const compliantDevices = toNumber(data.compliantDevices ?? 0);
       setSummary({
-        totalDevices: toNumber(data.totalDevices ?? 0),
-        compliantDevices: toNumber(data.compliantDevices ?? 0),
-        devicePercent: toNumber(data.devicePercent ?? 0),
+        totalDevices,
+        compliantDevices,
+        // Same derivation as the dashboard card's fallback, so the two never
+        // disagree if the field is ever absent.
+        devicePercent: typeof data.devicePercent === 'number'
+          ? data.devicePercent
+          : totalDevices > 0 ? Math.round((compliantDevices / totalDevices) * 100) : 0,
         criticalPatches: toNumber(totals.critical ?? 0),
         approvedPatches: toNumber(totals.approved ?? 0),
         unapprovedPatches: toNumber(totals.unapproved ?? 0),
@@ -257,11 +275,13 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
         offset: toNumber(devicesPage.offset ?? offset),
       });
       setLoaded(true);
-    } catch (err) {
+    } catch {
       if (!isCurrent()) return;
-      setError(err instanceof Error ? err.message : stableT('patchComplianceView.errors.fetchData'));
+      // Always the localized message: a raw SyntaxError / TypeError text
+      // ("Unexpected token '<'", "Failed to fetch") means nothing to a user.
+      setError(stableT('patchComplianceView.errors.fetchData'));
     } finally {
-      if (isCurrent()) setLoading(false);
+      if (isCurrent() && !redirecting) setLoading(false);
     }
   }, [ringId, statusFilter, search, offset, stableT]);
 
@@ -329,9 +349,18 @@ export default function PatchComplianceView({ ringId }: PatchComplianceViewProps
   // row's counts and orgId from the loaded rows.
   const pageIds = useMemo(() => devices.map(d => d.id), [devices]);
   const { selectedIds, allPageSelected: allSelected, somePageSelected: someSelected, toggleSelect, toggleSelectAll, clearSelection } = usePatchSelection(pageIds);
+  // Cleared both when the request changes and when its rows land, so a box
+  // ticked on the old rows during the in-flight window cannot survive.
   useEffect(() => {
     clearSelection();
-  }, [filterKey, offset, clearSelection]);
+  }, [filterKey, offset, devices, clearSelection]);
+
+  // A page past the end (the fleet shrank, or a bulk action emptied the last
+  // page) snaps back to the last page that has rows.
+  useEffect(() => {
+    if (!loaded || loading || devices.length > 0 || page.offset === 0 || page.total === 0 || page.limit <= 0) return;
+    goToOffset(Math.floor((page.total - 1) / page.limit) * page.limit);
+  }, [loaded, loading, devices.length, page, goToOffset]);
 
   // Derive org names from the selected devices' actual orgId fields (populated
   // from the /devices API response), NOT from currentOrgId which reflects only

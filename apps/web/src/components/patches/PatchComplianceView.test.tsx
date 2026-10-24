@@ -882,4 +882,115 @@ describe('PatchComplianceView server-side list (#9791 C)', () => {
     expect(screen.getByText('from-critical')).toBeInTheDocument();
     expect(screen.queryByText('from-all')).toBeNull();
   });
+
+  it('select-all selects only the loaded page; a filter change clears it', async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (!isComplianceList(url)) return makeJsonResponse({}, false, 404);
+      const rows = [apiRow({ id: 'dev-0', hostname: 'host-0' }), apiRow({ id: 'dev-1', hostname: 'host-1' })];
+      return makeJsonResponse(compliancePayload(rows, {
+        totalDevices: 4,
+        compliantDevices: 4,
+        devicePercent: 100,
+        devicesPage: { status: 'all', search: null, limit: 2, offset: 0, total: 4 },
+      }));
+    });
+    render(<PatchComplianceView ringId={null} />);
+    await screen.findByText('host-0');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Compliance status filter' }), { target: { value: 'reboot' } });
+    await waitFor(() => expect(screen.queryByText('2 selected')).toBeNull());
+  });
+
+  it('a box ticked while the next page is in flight does not survive into it', async () => {
+    let release: (() => void) | undefined;
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (!isComplianceList(url)) return makeJsonResponse({}, false, 404);
+      const offset = Number(new URL(url, 'http://x').searchParams.get('offset') ?? 0);
+      if (offset > 0) await new Promise<void>((resolve) => { release = resolve; });
+      const rows = [apiRow({ id: `dev-${offset}`, hostname: `host-${offset}` }), apiRow({ id: `dev-${offset + 1}`, hostname: `host-${offset + 1}` })];
+      return makeJsonResponse(compliancePayload(rows, {
+        totalDevices: 4, compliantDevices: 4, devicePercent: 100,
+        devicesPage: { status: 'all', search: null, limit: 2, offset, total: 4 },
+      }));
+    });
+    render(<PatchComplianceView ringId={null} />);
+    await screen.findByText('host-0');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    // old rows are still on screen while page 2 loads
+    fireEvent.click(screen.getByRole('button', { name: 'Select host-0' }));
+    await act(async () => { release?.(); });
+
+    expect(await screen.findByText('host-2')).toBeInTheDocument();
+    expect(screen.queryByText('1 selected')).toBeNull();
+  });
+
+  it('a page past the end snaps back to the last page with rows', async () => {
+    let total = 4;
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (!isComplianceList(url)) return makeJsonResponse({}, false, 404);
+      const offset = Number(new URL(url, 'http://x').searchParams.get('offset') ?? 0);
+      const all = Array.from({ length: total }, (_, i) => apiRow({ id: `dev-${i}`, hostname: `host-${i}` }));
+      return makeJsonResponse(compliancePayload(all.slice(offset, offset + 2), {
+        totalDevices: total, compliantDevices: total, devicePercent: 100,
+        devicesPage: { status: 'all', search: null, limit: 2, offset, total },
+      }));
+    });
+    render(<PatchComplianceView ringId={null} />);
+    await screen.findByText('host-0');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    expect(await screen.findByText('host-3')).toBeInTheDocument();
+
+    // the fleet shrinks to 2 (e.g. after a bulk action) and the view refetches page 2
+    total = 2;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh compliance data' }));
+
+    expect(await screen.findByText('host-0')).toBeInTheDocument();
+    expect(screen.getByTestId('patch-compliance-pager')).toHaveTextContent('1–2 of 2');
+    const urls = fetchMock.mock.calls.map((c) => String(c[0])).filter(isComplianceList);
+    expect(urls[urls.length - 1]).toBe('/patches/compliance');
+  });
+
+  it('an API response without the device list is a load failure, not an empty table', async () => {
+    fetchMock.mockImplementation(async (input: unknown) =>
+      isComplianceList(String(input))
+        ? makeJsonResponse({ data: { totalDevices: 3, compliantDevices: 1, devicesNeedingPatches: [] } })
+        : makeJsonResponse({}, false, 404),
+    );
+    render(<PatchComplianceView ringId={null} />);
+    expect(await screen.findByText('Failed to fetch patch data')).toBeInTheDocument();
+    expect(screen.queryByText(/% compliant/)).toBeNull();
+  });
+
+  it('a non-JSON body shows the localized error, never the parser message', async () => {
+    fetchMock.mockImplementation(async (input: unknown) =>
+      isComplianceList(String(input))
+        ? ({ ok: true, status: 200, statusText: 'OK', json: vi.fn().mockRejectedValue(new SyntaxError("Unexpected token '<'")) } as unknown as Response)
+        : makeJsonResponse({}, false, 404),
+    );
+    render(<PatchComplianceView ringId={null} />);
+    expect(await screen.findByText('Failed to fetch patch data')).toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected token/)).toBeNull();
+  });
+
+  it('derives the headline from the counts when devicePercent is absent', async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      if (!isComplianceList(String(input))) return makeJsonResponse({}, false, 404);
+      const payload = compliancePayload([
+        apiRow({ id: 'dev-0', hostname: 'host-0' }),
+        apiRow({ id: 'dev-1', hostname: 'host-1', pendingPatches: 1 }),
+        apiRow({ id: 'dev-2', hostname: 'host-2', pendingPatches: 1 }),
+      ]);
+      delete (payload.data as Record<string, unknown>).devicePercent;
+      return makeJsonResponse(payload);
+    });
+    render(<PatchComplianceView ringId={null} />);
+    expect(await screen.findByText('33% compliant')).toBeInTheDocument();
+  });
 });

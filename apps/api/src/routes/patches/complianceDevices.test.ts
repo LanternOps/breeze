@@ -152,6 +152,19 @@ describe('pageComplianceDevices', () => {
     expect(byHost.total).toBe(1);
   });
 
+  it('combines status and search, and the total is the combined count', () => {
+    const page = pageComplianceDevices(fixture(), { status: 'needs-patches', search: 'HOST-', limit: 1, offset: 1 });
+    expect(page.total).toBe(3);
+    expect(page.devices.map((r) => r.id)).toEqual(['c']);
+    expect(pageComplianceDevices(fixture(), { status: 'compliant', search: 'host-b', limit: 50, offset: 0 }).total).toBe(0);
+  });
+
+  it('an offset past the filtered total returns an empty page with the real total', () => {
+    const page = pageComplianceDevices(fixture(), { status: 'all', limit: 2, offset: 10 });
+    expect(page.devices).toEqual([]);
+    expect(page.total).toBe(5);
+  });
+
   it('treats search text literally (no wildcard semantics)', () => {
     expect(pageComplianceDevices(fixture(), { status: 'all', search: '%', limit: 50, offset: 0 }).total).toBe(0);
     expect(pageComplianceDevices(fixture(), { status: 'all', search: 'host_', limit: 50, offset: 0 }).total).toBe(0);

@@ -80,6 +80,10 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+// The ring path reads approvals on the request connection; no DB context here.
+vi.mock('../../db/partnerAxisRead', () => ({
+  readOwnPartnerAxisRows: (_partnerId: string, fn: () => Promise<unknown>) => fn(),
+}));
 vi.mock('../../jobs/patchComplianceReportWorker', () => ({
   enqueuePatchComplianceReport: vi.fn(),
 }));
@@ -757,5 +761,53 @@ describe('patch compliance device percent + device list (#9791 C)', () => {
   it.each([['?status=bogus'], ['?limit=0'], ['?limit=201'], ['?offset=-1']])('rejects %s', async (qs) => {
     const res = await mountApp().request(`/patches/compliance${qs}`, { method: 'GET', headers: { Authorization: 'Bearer t' } });
     expect(res.status).toBe(400);
+  });
+
+  it('a ring with no approved patches lists every counted device as compliant', async () => {
+    const RING_ID = '66666666-6666-4666-8666-666666666666';
+    const select = vi.mocked(db.select);
+    // ring lookup
+    select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ partnerId: 'partner-1' }]) }),
+      }),
+    } as never);
+    // counted devices
+    select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([detailRow(DEVICE_ID), detailRow(OTHER_DEVICE_ID, { orgId: PARTNER_ORG_B })]),
+      }),
+    } as never);
+    // ring approvals (none), then candidate patch ids (none)
+    for (let i = 0; i < 2; i++) {
+      select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
+      } as never);
+    }
+
+    const data = await get(`?ringId=${RING_ID}`, mountFleetApp());
+    expect(data.ringId).toBe(RING_ID);
+    expect(data.totalDevices).toBe(2);
+    expect(data.compliantDevices).toBe(2);
+    expect(data.devicePercent).toBe(100);
+    expect(data.deviceCounts).toMatchObject({ all: 2, compliant: 2, needsPatches: 0 });
+    expect(data.devices).toHaveLength(2);
+    expect(data.devices.every((d: { compliant: boolean }) => d.compliant)).toBe(true);
+    expect(new Set(data.devices.map((d: { orgId: string }) => d.orgId))).toEqual(new Set([ORG_ID, PARTNER_ORG_B]));
+  });
+
+  it('a device listed only for a stale image is a non-compliant row, from the population rows', async () => {
+    imageTermsMock.mockResolvedValue(new Map([[OTHER_DEVICE_ID, { stale: 1, current: 0, unknown: 0 }]]));
+    mockQueries({ details: [detailRow(DEVICE_ID), detailRow(OTHER_DEVICE_ID, { hostname: 'stale-box' })] });
+
+    const data = await get('?status=needs-patches');
+    expect(data.compliantDevices).toBe(1);
+    expect(data.deviceCounts.compliant + data.deviceCounts.needsPatches).toBe(data.totalDevices);
+    expect(data.devices).toEqual([
+      expect.objectContaining({ id: OTHER_DEVICE_ID, hostname: 'stale-box', compliant: false, pendingPatches: 0, staleImages: 1 }),
+    ]);
+    // the legacy list carries it too, with no second device query
+    expect(data.devicesNeedingPatches).toEqual([expect.objectContaining({ id: OTHER_DEVICE_ID, name: 'stale-box' })]);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(4);
   });
 });
