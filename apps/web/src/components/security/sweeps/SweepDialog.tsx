@@ -61,7 +61,10 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
   const fetchOrganizations = useOrgStore((s) => s.fetchOrganizations);
 
   const [step, setStep] = useState<Step>("scope");
-  const [scopeKind, setScopeKind] = useState<SecuritySweepScopeKind>(prefill.scopeKind ?? "all");
+  // A re-sweep starts with no scope chosen: a sweep never remembers its devices.
+  const [scopeKind, setScopeKind] = useState<SecuritySweepScopeKind | null>(
+    prefill.scopeKind ?? (prefill.rescope ? null : "all"),
+  );
   const [orgIds, setOrgIds] = useState<string[]>([]);
   const [siteIds, setSiteIds] = useState<string[]>([]);
   const [siteOrgId, setSiteOrgId] = useState<string>(currentOrgId ?? "");
@@ -115,6 +118,8 @@ export default function SweepDialog({ prefill, onClose }: { prefill: SweepDialog
 
   const scope: SecuritySweepScope | null = useMemo(() => {
     switch (scopeKind) {
+      case null:
+        return null;
       case "all":
         return { kind: "all" };
       case "orgs":

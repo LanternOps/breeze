@@ -296,5 +296,12 @@ describe('RuleSetEditor Sweep now (#6263 W05 PR C)', () => {
     fireEvent.click(button);
     expect(screen.getByTestId('sweep-dialog')).toBeInTheDocument();
     expect(screen.getByTestId('sweep-dialog-detect-only')).toBeInTheDocument();
+    // The dialog sweeps exactly this set.
+    for (let i = 0; i < 3; i += 1) {
+      fireEvent.click(screen.getByTestId('sweep-dialog-next'));
+      await settle();
+    }
+    const preview = fetchWithAuth.mock.calls.find(([u]) => u === '/security/sweeps/preview');
+    expect(JSON.parse((preview![1] as RequestInit).body as string).ruleSetIds).toEqual([current.id]);
   });
 });

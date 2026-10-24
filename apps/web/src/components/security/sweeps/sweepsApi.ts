@@ -73,6 +73,13 @@ export interface SweepListPage {
   limit: number;
 }
 
+/** A 2xx body without the expected `data` is a failure, never a silent `undefined`. */
+function requireData<T>(body: unknown, ok: (data: unknown) => boolean): { data: T } {
+  const data = body && typeof body === 'object' ? (body as { data?: unknown }).data : undefined;
+  if (!ok(data)) throw new Error('Unexpected sweep response');
+  return body as { data: T };
+}
+
 /** `detail` of an error body (`{ error, code, detail? }`), or `{}`. */
 export function sweepErrorDetail(body: unknown): Record<string, unknown> {
   if (body && typeof body === 'object') {
@@ -182,20 +189,26 @@ export async function previewSweep(request: SweepRequest): Promise<SweepPreview>
     errorFallback: fallback(),
     friendly: sweepsFriendly,
     suppressErrorToast: () => true,
+    parseSuccess: (data) => requireData(data, (d) => typeof (d as SweepPreview | undefined)?.previewDigest === 'string'),
     onUnauthorized,
   });
   return body.data;
 }
 
-/** Codes the dialog renders inline, so a toast on top would say it twice. */
-const INLINE_CREATE_CODES = new Set(['SWEEP_SCOPE_CHANGED', 'SWEEP_ALREADY_RUNNING']);
+/**
+ * The dialog renders every create failure inline (message, running-group link,
+ * fresh preview), so a toast on top would say it twice. `MFA_REQUIRED` keeps its
+ * toast: the brief pairs the shared toast with the inline sign-in message.
+ */
+const TOASTED_CREATE_CODES = new Set(['MFA_REQUIRED']);
 
 export async function createSweep(request: SweepRequest & { previewDigest: string }): Promise<SweepCreated> {
   const body = await runAction<{ data: SweepCreated }>({
     request: () => fetchWithAuth(BASE, { method: 'POST', body: JSON.stringify(request) }),
     errorFallback: fallback(),
     friendly: sweepsFriendly,
-    suppressErrorToast: (_status, code) => code !== undefined && INLINE_CREATE_CODES.has(code),
+    suppressErrorToast: (_status, code) => !(code !== undefined && TOASTED_CREATE_CODES.has(code)),
+    parseSuccess: (data) => requireData(data, (d) => typeof (d as SweepCreated | undefined)?.groupId === 'string'),
     successMessage: i18n.t('security:sweeps.started'),
     onUnauthorized,
   });

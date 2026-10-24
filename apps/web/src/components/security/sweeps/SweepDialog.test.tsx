@@ -304,7 +304,56 @@ describe('SweepDialog', () => {
   it('keeps the prefilled scan type and says the scope must be chosen again', async () => {
     renderDialog({ scanType: 'full', rescope: true });
     expect(screen.getByTestId('sweep-dialog-rescope-note')).toBeInTheDocument();
+    // No scope is preselected: Next stays disabled until one is chosen.
+    expect((screen.getByTestId('sweep-dialog-next') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('sweep-dialog-scope-all'));
     await click('sweep-dialog-next');
     expect((screen.getByTestId('sweep-dialog-scan-type') as HTMLSelectElement).value).toBe('full');
+  });
+
+  it('re-previews after Back and a changed scope, and confirms with the new digest', async () => {
+    renderDialog();
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next'); // preview 1 (DIGEST_1)
+    previewResponse = json(200, { data: preview({ previewDigest: DIGEST_2, targeted: 2, byOrg: [] }) });
+    await click('sweep-dialog-back');
+    await click('sweep-dialog-back');
+    await click('sweep-dialog-back'); // back to scope
+    fireEvent.click(screen.getByTestId('sweep-dialog-scope-orgs'));
+    fireEvent.click(screen.getByTestId('sweep-dialog-org-org-1'));
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-next'); // preview 2 (DIGEST_2)
+    await click('sweep-dialog-next');
+    await click('sweep-dialog-confirm');
+    expect(bodyOf('/security/sweeps')).toMatchObject({
+      scope: { kind: 'orgs', orgIds: ['org-1'] },
+      previewDigest: DIGEST_2,
+    });
+  });
+
+  it('on /security/scans it writes the group hash instead of navigating', async () => {
+    const GROUP = '3f2b8c1e-5a47-4d0e-9c1a-0b7e6d5f4a32';
+    createResponse = json(201, { data: { groupId: GROUP, sweeps: [] } });
+    window.history.pushState({}, '', '/security/scans');
+    try {
+      renderDialog();
+      await walkToConfirm();
+      await click('sweep-dialog-confirm');
+      expect(window.location.hash).toBe(`#sweeps&group=${GROUP}`);
+      expect(navigateTo).not.toHaveBeenCalled();
+    } finally {
+      window.history.pushState({}, '', '/');
+    }
+  });
+
+  it('a 2xx create without a groupId is a failure, not a silent success', async () => {
+    createResponse = json(201, {});
+    renderDialog();
+    await walkToConfirm();
+    await click('sweep-dialog-confirm');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sweep-dialog-error')).toBeInTheDocument();
   });
 });
