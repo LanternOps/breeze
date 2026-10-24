@@ -248,8 +248,8 @@ export function useDraftSlice<T>(id: DraftUnitId, loader: Loader<T>) {
   const ensureLoaded = usePartnerSettingsDraftStore(s => s.ensureLoaded);
   useEffect(() => {
     void ensureLoaded(id, loader);
-    // The loader is a stable module-level function per unit; one load per mount is the contract.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // The loader is a stable module-level function per unit; one load per mount is the contract,
+    // so it is intentionally not a dependency.
   }, [id, ensureLoaded]);
   const setDraft = useCallback(
     (next: T | ((prev: T) => T)) => usePartnerSettingsDraftStore.getState().setDraft<T>(id, next),
