@@ -121,7 +121,8 @@
     "chooseModelInPanel": "Model seçmek için yan panelde devam edin",
     "tabMenu": "Sekme seçenekleri",
     "anotherOrg": "Başka bir kuruluş",
-    "device": "Cihaz"
+    "device": "Cihaz",
+    "newChat": "Yeni sohbet"
   },
   "aiContextBadge": {
     "context": "Bağlam",

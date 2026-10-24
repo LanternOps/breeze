@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Job, type JobsOptions, Queue, Worker } from 'bullmq';
-import { and, eq, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   dnsEventAggregations,
@@ -487,7 +487,7 @@ async function processSyncAll(): Promise<{ queued: number }> {
 }
 
 // Phase 3 of a DNS event sync: turn the fetched provider events into security
-// event rows + aggregation deltas, prune per retention, and mark the
+// event rows + aggregation deltas, and mark the
 // integration synced — all inside a single DB context. Extracted so the
 // provider fetch in processSyncIntegration runs OUTSIDE any held transaction
 // (#1697); the caller wraps this in runWithSystemDbAccess. Returns the number
@@ -632,18 +632,9 @@ async function persistDnsEventSync(params: {
 
   await persistAggregationDeltas(Array.from(aggregationMap.values()));
 
-  const retentionDays = Number(config.retentionDays);
-  if (Number.isFinite(retentionDays) && retentionDays > 0) {
-    const cutoff = new Date(Date.now() - Math.round(retentionDays) * 24 * 60 * 60 * 1000);
-    await db
-      .delete(dnsSecurityEvents)
-      .where(
-        and(
-          eq(dnsSecurityEvents.integrationId, integrationId),
-          lte(dnsSecurityEvents.timestamp, cutoff)
-        )
-      );
-  }
+  // Retention (config.retentionDays) is applied by the daily batched sweep in
+  // jobs/dnsSecurityRetention.ts, to events AND aggregations (#10020) — not
+  // here, where an unbatched DELETE rode on every successful slice.
 
   await db
     .update(dnsFilterIntegrations)
@@ -654,7 +645,8 @@ async function persistDnsEventSync(params: {
       totalEventsProcessed: sql`${dnsFilterIntegrations.totalEventsProcessed} + ${insertedCount}`,
       updatedAt: new Date()
     })
-    .where(eq(dnsFilterIntegrations.id, integrationId));
+    // #10019 — never overwrite the 'deleting' marker of a row a DELETE has stopped.
+    .where(and(eq(dnsFilterIntegrations.id, integrationId), eq(dnsFilterIntegrations.isActive, true)));
 
   return insertedCount;
 }
@@ -699,7 +691,8 @@ async function recordSliceWalkEnd(
         : {}),
       updatedAt: new Date()
     })
-    .where(eq(dnsFilterIntegrations.id, integrationId));
+    // #10019 — never overwrite the 'deleting' marker of a row a DELETE has stopped.
+    .where(and(eq(dnsFilterIntegrations.id, integrationId), eq(dnsFilterIntegrations.isActive, true)));
 }
 
 // Exported for focused catch-block coverage (#1035 item 2): a unit test mocks
@@ -768,7 +761,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
         const slice = step.value;
 
         // Phase 3 — persist this slice in ONE context (security events,
-        // aggregations, retention prune, and `lastSync` advanced to the
+        // aggregations, and `lastSync` advanced to the
         // slice's end commit together). Per slice, not per run: a failure on
         // a later slice keeps every earlier one, and the next run resumes
         // from the last checkpoint instead of retrying — and re-losing — the
@@ -842,7 +835,7 @@ export async function processSyncIntegration(data: SyncIntegrationJobData): Prom
               lastSyncError: tenantVisibleSyncError(error),
               updatedAt: new Date()
             })
-            .where(eq(dnsFilterIntegrations.id, integration.id))
+            .where(and(eq(dnsFilterIntegrations.id, integration.id), eq(dnsFilterIntegrations.isActive, true)))
         )
       );
       recorded = true;

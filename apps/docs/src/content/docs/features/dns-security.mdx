@@ -136,7 +136,7 @@ Authorization: Bearer <token>
 | `config.apiEndpoint` | string | Custom API endpoint URL (required for Pi-hole) |
 | `config.piholeVersion` | string | Pi-hole API version: `v5` or `v6`. **Defaults to `v5` if unset.** Determines whether `apiKey` is treated as the legacy admin token (v5) or the app password (v6) |
 | `config.syncInterval` | integer | Event sync interval in minutes (5-1440, default varies by provider) |
-| `config.retentionDays` | integer | Event retention period in days (1-365) |
+| `config.retentionDays` | integer | Days to keep this integration's security events and daily statistics (1-365). Unset uses the deployment default, 90 days. See [Data retention](#data-retention) |
 | `config.categories` | string[] | Threat categories to sync (max 100 entries) |
 | `config.blocklistId` | string | Provider-specific blocklist identifier for policy sync |
 | `config.allowlistId` | string | Provider-specific allowlist identifier for policy sync |
@@ -156,14 +156,43 @@ The response includes a `jobId` for tracking the sync task in BullMQ.
 
 Each integration records the outcome of its last sync run in `lastSyncStatus`: `success`, `error` (with a reason in `lastSyncError`), or `partial`. Cisco Umbrella can only return a limited number of records per request, so one run makes at most 100 requests to its activity feed and saves the events in time slices as it goes. A run that uses up those requests before reaching the present stops and records `partial`, and `lastSyncError` names the time range that has not been fetched yet, for example `Reached the per-run request budget; 2026-10-22T04:25:27.166Z..2026-10-24T16:00:00.187Z not yet fetched, resumes next run`. `lastSync` then shows how far the data reaches. The dashboard marks the integration as **catching up** and shows that range on hover. Nothing is skipped: the next scheduled run starts where the last one stopped and keeps the slice size that worked, so a backlog left by an outage or a paused integration catches up over the following runs. When a run reaches the present, the status returns to `success`. Each sync covers at most the last 30 days, because the Umbrella reporting API does not return older activity.
 
+### Data retention
+
+A nightly job (22:18 UTC) deletes security events and daily statistics (aggregations) older than each integration's `config.retentionDays`. When an integration has no `retentionDays`, the deployment default applies: 90 days, or the value of `DNS_SECURITY_RETENTION_DAYS_DEFAULT`. Values are clamped to 1–365.
+
+To change the window on an existing integration, open **DNS Security → Integrations** and use the clock button on the integration's row, or call the API:
+
+```bash
+PATCH /dns-security/integrations/:id
+Content-Type: application/json
+
+{ "retentionDays": 30 }
+```
+
+Send `"retentionDays": null` to clear the override and fall back to the default. This requires MFA and the `orgs:write` permission. Only `retentionDays` can be changed after an integration is created.
+
+The job deletes in batches, and each batch commits on its own, so it never holds a long lock on the tables the sync writes to. On a large backlog, the first runs after an upgrade may not reach the window in one night: the job logs a warning, reports the backlog to Sentry, and continues the next night. These environment variables control it:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DNS_SECURITY_RETENTION_DAYS_DEFAULT` | `90` | Retention for integrations without `retentionDays`, in days (1–365) |
+| `DNS_SECURITY_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch |
+| `DNS_SECURITY_RETENTION_MAX_BATCHES` | `400` | Maximum batches per table, per integration, per nightly run |
+
+<Aside type="note">
+  Before this job existed, events were pruned only during a successful sync and only when `retentionDays` was set, and daily statistics were never pruned. The first nightly run after upgrading starts removing everything older than the window.
+</Aside>
+
 ### Deleting an Integration
 
 ```bash
 DELETE /dns-security/integrations/:id
 ```
 
+The request answers `202 Accepted` with `{ "success": true, "id": "<id>", "status": "deleting" }`. The integration stops syncing right away and is shown as **Deleting…**. A background job then removes its daily statistics and security events in batches, then its policies and the integration itself. On a large history this can take minutes to hours; the integration disappears from the list when it is done. Sending the same `DELETE` again while it is deleting re-queues the job without other effect, and the nightly retention job re-queues any delete whose job was lost.
+
 <Aside type="caution">
-  Deleting an integration removes all associated policies, security events, and aggregations in a single transaction. This action requires MFA verification and the `orgs:write` permission.
+  Deleting an integration permanently removes its policies, security events and statistics. This action requires MFA verification and the `orgs:write` permission.
 </Aside>
 
 ---
@@ -401,7 +430,8 @@ Control D endpoints that you delete in the Control D dashboard also uninstall th
 |--------|------|-------------|
 | GET | `/dns-security/integrations` | List all integrations for the organization |
 | POST | `/dns-security/integrations` | Create a new DNS filter integration (requires MFA, `orgs:write`) |
-| DELETE | `/dns-security/integrations/:id` | Delete integration and all associated data (requires MFA, `orgs:write`) |
+| PATCH | `/dns-security/integrations/:id` | Change `retentionDays` (requires MFA, `orgs:write`) |
+| DELETE | `/dns-security/integrations/:id` | Delete the integration and all associated data in the background; answers 202 (requires MFA, `orgs:write`) |
 | POST | `/dns-security/integrations/:id/sync` | Trigger immediate event sync from the provider |
 
 ### Events
@@ -426,7 +456,7 @@ Control D endpoints that you delete in the Control D dashboard also uninstall th
 | PATCH | `/dns-security/policies/:id/domains` | Add or remove domains from a policy (requires `orgs:write`) |
 
 <Aside>
-  All DNS security endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data. Creating and deleting integrations additionally require MFA verification.
+  All DNS security endpoints require authentication and one of these scopes: `organization`, `partner`, or `system`. Organization-scoped tokens are automatically restricted to their own organization's data. Creating, editing and deleting integrations additionally require MFA verification.
 
   DNS policies apply to the whole organization, so creating a policy or changing its domains is refused (`403`) for users limited to specific sites or devices. Ask an administrator without a site or device restriction to make the change.
 </Aside>
@@ -456,7 +486,7 @@ The maximum query window for events and statistics is 90 days. If your `start`-t
 After adding domains to a policy, verify the `syncStatus` is `synced` (not `pending` or `error`). If the sync failed, check the `syncError` field. Domains are normalized to lowercase with trailing dots removed before storage and sync. If the provider requires a specific domain format, verify it matches the normalized form. Note that DNS caching at the client or resolver level may delay enforcement of new rules.
 
 **MFA required error when creating or deleting integrations.**
-Creating and deleting DNS filter integrations require MFA verification. Ensure the authenticated user has completed MFA for the current session. The `requireMfa()` middleware returns a 403 if MFA has not been verified.
+Creating, editing and deleting DNS filter integrations require MFA verification. Ensure the authenticated user has completed MFA for the current session. The `requireMfa()` middleware returns a 403 if MFA has not been verified.
 
 **Pi-hole v6 sync fails with HTTP 429 and `no_seats`.**
 Pi-hole v6's admin API is session-based and only allows a limited number of concurrent API sessions ("seats"). If a sync attempt fails with HTTP 429 and an error body containing `no_seats`, all available session seats are currently in use — this is not a generic rate limit, so retrying immediately usually won't help. This typically happens when other clients (Pi-hole's own admin web UI, another integration, or a stale session that hasn't expired yet) are holding the remaining seats. Wait for existing sessions to expire, close other concurrent connections to the Pi-hole API, and then retry the sync. If this happens repeatedly, consider reducing how many other tools or browser tabs stay logged into the Pi-hole admin interface at the same time.

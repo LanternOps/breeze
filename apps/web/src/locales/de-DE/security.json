@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Integration hinzufügen",
       "syncNow": "Jetzt synchronisieren",
-      "deleteIntegration": "Integration löschen"
+      "deleteIntegration": "Integration löschen",
+      "editRetention": "Aufbewahrungsdauer ändern"
     },
     "messages": {
       "loadHttpError": "Integrationen konnten nicht geladen werden (HTTP {{status}})",
       "loadFailed": "Integrationen konnten nicht geladen werden",
       "syncFailed": "Die Synchronisierung für {{name}} konnte nicht ausgelöst werden",
       "syncQueued": "Die Synchronisierung steht für {{name}} in der Warteschlange",
-      "deleteConfirm": "{{name}} löschen? Gespeicherte Ereignisse werden gemäß der Aufbewahrungsrichtlinie aufbewahrt.",
+      "deleteConfirm": "{{name}} löschen? Richtlinien, Ereignisse und Statistiken werden im Hintergrund entfernt.",
       "deleteFailed": "Fehler beim Löschen von {{name}}",
-      "deleteSuccess": "Gelöscht {{name}}"
+      "deleteSuccess": "{{name}} wird im Hintergrund gelöscht"
     },
     "loading": "Integrationen werden geladen…",
     "empty": {
@@ -1751,7 +1752,24 @@
     },
     "lastSyncFailedSuffix": "– gescheitert",
     "lastSyncPartialSuffix": " – holt auf",
-    "never": "Niemals"
+    "never": "Niemals",
+    "deletingInBackground": "Wird gelöscht…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Datenaufbewahrung",
+    "description": "Ältere Ereignisse und Tagesstatistiken werden von der nächtlichen Bereinigung gelöscht.",
+    "fieldLabel": "DNS-Ereignisse und Statistiken aufbewahren für (Tage)",
+    "fieldHelp": "1–365 Tage. Leer lassen, um den Standardwert der Installation zu verwenden (90 Tage, sofern Ihr Administrator ihn nicht geändert hat).",
+    "invalid": "Geben Sie eine ganze Zahl von 1 bis 365 Tagen ein oder lassen Sie das Feld leer.",
+    "actions": {
+      "dismiss": "Abbrechen",
+      "submit": "Speichern",
+      "saving": "Wird gespeichert…"
+    },
+    "messages": {
+      "saved": "Aufbewahrung für {{name}} aktualisiert",
+      "saveFailed": "Aufbewahrung für {{name}} konnte nicht aktualisiert werden"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Richtlinien blockieren/zulassen",

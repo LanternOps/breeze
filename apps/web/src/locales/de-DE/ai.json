@@ -121,7 +121,8 @@
     "chooseModelInPanel": "In der Seitenleiste fortsetzen, um ein Modell auszuwählen",
     "tabMenu": "Tab-Optionen",
     "anotherOrg": "Andere Organisation",
-    "device": "Gerät"
+    "device": "Gerät",
+    "newChat": "Neuer Chat"
   },
   "aiContextBadge": {
     "context": "Kontext",

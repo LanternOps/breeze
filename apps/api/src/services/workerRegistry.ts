@@ -687,6 +687,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #10019/#10020 — daily prune of DNS security events + aggregations, and
+    // the background delete of a DNS filter integration.
+    name: 'dnsSecurityRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/dnsSecurityRetention');
+      return {
+        init: m.initializeDnsSecurityRetention,
+        shutdown: m.shutdownDnsSecurityRetention,
+      };
+    },
+  },
+  {
     name: 'oauthCleanup',
     placement: 'global',
     load: async () => {

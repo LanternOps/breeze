@@ -42,41 +42,8 @@ describe('ai store', () => {
       pendingApproval: null,
       sessions: [],
       showHistory: false,
-      searchResults: [],
-      isSearching: false,
       isInterrupting: false
     });
-  });
-
-  it('searchConversations short query clears results without request', async () => {
-    useAiStore.setState({ searchResults: [{ id: 's1', title: 'old', matchedContent: 'old', createdAt: 'x' }] });
-
-    await useAiStore.getState().searchConversations('a');
-
-    expect(fetchWithAuthMock).not.toHaveBeenCalled();
-    expect(useAiStore.getState().searchResults).toEqual([]);
-    expect(useAiStore.getState().isSearching).toBe(false);
-  });
-
-  it('searchConversations populates results on success', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeResponse({
-        data: [
-          {
-            id: 'session-1',
-            title: 'Patch rollout',
-            matchedContent: 'check deployment errors',
-            createdAt: '2026-02-07T12:00:00.000Z'
-          }
-        ]
-      })
-    );
-
-    await useAiStore.getState().searchConversations('patch');
-
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/search?q=patch&limit=20');
-    expect(useAiStore.getState().searchResults).toHaveLength(1);
-    expect(useAiStore.getState().isSearching).toBe(false);
   });
 
   it('switchSession loads messages and clears history panel', async () => {

@@ -208,6 +208,13 @@ const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
   'jobs/dnsSyncJob.ts':
     'updates only syncStatus/lastSynced/syncError on a saved DNS policy from the sync worker in system context (runWithSystemDbAccess) — no caller-scoped auth object reaches this path',
 
+  // DNS integration background delete (#10019): removes the policies of an
+  // integration the DELETE route already deactivated. That route is the
+  // caller-facing gate (requireOrgWideIntegrationAccess rejects any site
+  // ceiling); the worker reloads the row by id in system context.
+  'jobs/dnsSecurityRetention.ts':
+    'deletes dns_policies only for an integration already marked deleting by DELETE /dns-security/integrations/:id (site-ceiling gated by requireOrgWideIntegrationAccess); runs in a BullMQ worker in system context — no caller-scoped auth object reaches this path',
+
   'modules/mcpInvites/tools/configureDefaults.ts':
     'creates the default admin-email notification channel during MCP-invite partner bootstrap — the caller is a partner-bootstrap key, not a site-restricted org-scope caller, and the target org is fixed by the bootstrap context, not caller-chosen',
   'modules/mcpInvites/tools/configureDefaults.monitors.ts':
