@@ -1,9 +1,11 @@
 ---
-tracking_issue: LanternOps/breeze#6830
+tracking_issue: LanternOps/breeze#9828
+spec_issue: LanternOps/breeze#6830
 spec: docs/superpowers/specs/reports/2026-10-18-business-reports-phase-2-spec.md
 waves: W1 mrr_renewals · W2 quote_win_rate · W3 client_profitability (one PR each)
 blast_radius: medium (reads money at partner scope; W1 refactors the partner-dashboard MRR rollup; three enum-only migrations; no new table, column, route or job)
 verified_against: main @ 8d20504960 (2026-10-23)
+status: shipped — feature LanternOps/breeze#9828 closed 2026-10-23 with all waves merged
 ---
 
 # Business Reports Phase 2: Client Profitability, MRR & Renewals, Quote Win Rate — Implementation Plan

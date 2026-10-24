@@ -33,6 +33,7 @@ import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { aiOperatorTaskSteps } from '../../db/schema/aiOperatorTaskGraph';
 import { ticketChecklistItems } from '../../db/schema/ticketChecklists';
+import { assertTicketNotMerged } from '../ticketMerge/errors';
 import { lockTicketForWrite } from '../ticketRowLock';
 import { ensureTaskTicket, type HumanWorkDbHandle } from './humanWorkService';
 import { markStepWaiting, openStep } from './stepService';
@@ -144,7 +145,9 @@ export async function ensureManualWorkItems(
   const missing = items.map((_, i) => i).filter((i) => !byIndex.has(i));
   if (missing.length > 0) {
     // Ticket first, before the MAX(position) read and the item writes (#8972 W0).
-    await lockTicketForWrite(dbh, ticketId);
+    // A tombstone is refused under the lock (#8972 W1): the merge re-pointed
+    // the task's target, so the coordinator's retry lands on the survivor.
+    assertTicketNotMerged(await lockTicketForWrite(dbh, ticketId));
     const [agg] = await dbh
       .select({ maxPosition: sql<number | null>`MAX(${ticketChecklistItems.position})` })
       .from(ticketChecklistItems)

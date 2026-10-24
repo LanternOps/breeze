@@ -134,6 +134,10 @@ export type EventType =
   // Same id-only posture (`changed` is a list of field NAMES, never values).
   | 'ticket.updated'
   | 'ticket.assigned'
+  // Ticket merge (#8972, spec §3.7): published on the SURVIVOR; ids and
+  // numbers only ({ sourceTicketId, targetTicketId, sourceInternalNumber,
+  // targetInternalNumber }).
+  | 'ticket.merged'
   // Ticket migration windows (#8313). The ONLY event an import produces: one
   // per org in the window, published after the window closes, with the
   // deterministic eventId `${windowId}:${orgId}` so a retry never duplicates.
@@ -150,6 +154,12 @@ export type EventType =
   // only. Payload: codes and ids, never provider text (eventPayload.ts).
   | 'integration.health_opened'
   | 'integration.health_resolved'
+  // Wisp W02 (w00 A29/A33): published from routes/wisp.ts after the grant
+  // create / user-resume commit. Payload { grantId, partnerId, orgId, grantorUserId }
+  // (ids only). The bus is org-keyed, so a partner-wide grant (orgId null)
+  // routes on its partner id. W05's wake subscriber consumes both.
+  | 'wisp.grant.created'
+  | 'wisp.grant.resumed'
   // Security events
   | 'security.score_changed'
   // CIS compliance events
@@ -660,12 +670,16 @@ export const EVENT_TYPES = {
   TICKET_STATUS_CHANGED: 'ticket.status_changed' as const,
   TICKET_UPDATED: 'ticket.updated' as const,
   TICKET_ASSIGNED: 'ticket.assigned' as const,
+  TICKET_MERGED: 'ticket.merged' as const,
   // Ticket migration windows (#8313) — ids and counts only.
   MIGRATION_WINDOW_CLOSED: 'migration.window_closed' as const,
   // Metric-anomaly incidents (#3828 wave-6-4 task 2)
   ANOMALY_INCIDENT_OPENED: 'anomaly.incident_opened' as const,
   INTEGRATION_HEALTH_OPENED: 'integration.health_opened' as const,
   INTEGRATION_HEALTH_RESOLVED: 'integration.health_resolved' as const,
+  // Wisp W02
+  WISP_GRANT_CREATED: 'wisp.grant.created' as const,
+  WISP_GRANT_RESUMED: 'wisp.grant.resumed' as const,
   // Security
   SECURITY_SCORE_CHANGED: 'security.score_changed' as const,
   CIS_DEVIATION: 'compliance.cis_deviation' as const,

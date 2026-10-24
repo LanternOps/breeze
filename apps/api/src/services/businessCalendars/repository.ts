@@ -215,6 +215,7 @@ export async function listApplyCandidates(
       olderRevisionOf(calendarId, target),
       inArray(tickets.status, [...OPEN_TICKET_STATUSES]),
       isNull(tickets.deletedAt),
+      isNull(tickets.mergedIntoTicketId),
       afterId ? sql`${tickets.id} > ${afterId}::uuid` : undefined,
     ))
     .orderBy(asc(tickets.id))

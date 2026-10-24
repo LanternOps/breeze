@@ -151,6 +151,12 @@ export const aiOperatorTasks = pgTable(
       .$type<'manual' | 'alert' | 'ticket' | 'schedule' | 'anomaly' | 'sweep' | 'chat'>()
       .notNull(),
     requesterUserId: uuid('requester_user_id').references(() => users.id, { onDelete: 'set null' }),
+    // Wisp W02 (Wisp design §4.3): the delegation grant + pinned revision a
+    // Wisp-launched task runs under; both NULL otherwise (both-or-none CHECK).
+    // FKs to wisp_grant_revisions / wisp_grants are SQL-only
+    // (migrations/2027-01-04-100100-wisp-grants.sql), like ai_agent_runs.task_id.
+    grantId: uuid('grant_id'),
+    grantRevisionId: uuid('grant_revision_id'),
 
     // Bounded exportable text. Spec §11: every jsonb column is `excludedOpen`
     // in the export policy without exception, so anything a customer must be

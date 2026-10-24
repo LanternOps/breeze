@@ -5,7 +5,11 @@
  * Behavior is identical to the pre-extraction definitions.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { SOFTWARE_FILE_TYPES } from '@breeze/shared';
+import {
+  SOFTWARE_FILE_TYPES,
+  validateSoftwareVersionInstallSpec,
+  type InstallSpecIssue,
+} from '@breeze/shared';
 import { db } from '../db';
 import { softwareVersions } from '../db/schema';
 
@@ -16,6 +20,71 @@ export const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set(
   SOFTWARE_FILE_TYPES.map((t) => `.${t}`),
 );
 export const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
+
+/**
+ * `supportedOs` as every version write path stores it (#6958): entries
+ * trimmed, duplicates dropped case-insensitively (first spelling kept, order
+ * preserved), empty entries refused. Runs BEFORE the install-spec validator,
+ * so `['windows','windows']` counts as one OS. Case is left as sent: the
+ * chunked-upload UI sends capitalized names ("Windows").
+ */
+export function normalizeSupportedOs(
+  raw: unknown,
+): { ok: true; value: string[] | null | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: raw };
+  if (!Array.isArray(raw)) return { ok: false, error: 'supportedOs must be an array of OS names' };
+  const seen = new Set<string>();
+  const value: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string') return { ok: false, error: 'supportedOs must be an array of OS names' };
+    const trimmed = entry.trim();
+    if (trimmed === '') return { ok: false, error: 'supportedOs entries must not be empty' };
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    value.push(trimmed);
+  }
+  return { ok: true, value };
+}
+
+/** True when either script holds non-blank text (blank counts as absent). */
+export function hasInstallScript(v: {
+  preInstallScript?: string | null;
+  postInstallScript?: string | null;
+}): boolean {
+  const present = (s: string | null | undefined) => typeof s === 'string' && s.trim().length > 0;
+  return present(v.preInstallScript) || present(v.postInstallScript);
+}
+
+/** The OS names an install script can bind to (one interpreter each). */
+const INSTALL_SCRIPT_OS = new Set(['windows', 'macos', 'linux']);
+
+export type VersionInstallSpecIssue = InstallSpecIssue | 'scripts_os_unsupported';
+
+/**
+ * The 400 body for a version write whose install spec is invalid, or null.
+ * The shared validator's rules, plus one route rule: a script's single OS must
+ * be one the dispatcher maps to an interpreter (`scripts_os_unsupported`).
+ */
+export function installSpecError(input: {
+  fileType: string | null | undefined;
+  supportedOs: unknown;
+  silentInstallArgs: string | null | undefined;
+  preInstallScript: string | null | undefined;
+  postInstallScript: string | null | undefined;
+}): { error: string; issues: VersionInstallSpecIssue[] } | null {
+  const issues: VersionInstallSpecIssue[] = validateSoftwareVersionInstallSpec(input);
+  if (
+    !issues.includes('scripts_require_single_os') &&
+    hasInstallScript(input) &&
+    Array.isArray(input.supportedOs) &&
+    !INSTALL_SCRIPT_OS.has(String(input.supportedOs[0]).toLowerCase())
+  ) {
+    issues.push('scripts_os_unsupported');
+  }
+  if (issues.length === 0) return null;
+  return { error: `Invalid install spec: ${issues.join(', ')}`, issues };
+}
 
 export type SoftwareVersionInsert = Omit<typeof softwareVersions.$inferInsert, 'catalogId' | 'isLatest'>;
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];

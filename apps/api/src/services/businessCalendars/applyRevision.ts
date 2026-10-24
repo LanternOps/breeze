@@ -23,8 +23,8 @@
  * LOCKED; a row a concurrent writer holds is retried a few rounds and then
  * reported as skipped.
  *
- * W1 (merged tickets) is not on main: once `merged_into_ticket_id` ships,
- * tombstones must be excluded here too (cross-wave rebase rule).
+ * Merged tombstones (#8972) are excluded from the candidates (cross-wave
+ * rebase rule), on top of the open-status filter they already fail.
  */
 import type { BusinessCalendarApplyPreviewDto } from '@breeze/shared';
 import { db, withDbAccessContext } from '../../db';
