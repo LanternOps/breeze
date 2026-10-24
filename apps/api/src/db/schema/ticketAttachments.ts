@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, integer, char, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, char, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { tickets, ticketComments } from './portal';
 import { organizations } from './orgs';
 import { users, bytea } from './users';
@@ -45,6 +45,19 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   artifactId: uuid('artifact_id').references(() => aiRunArtifacts.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   attachedAt: timestamp('attached_at', { withTimezone: true }),
+  /**
+   * Ticket import (#8313 W1; spec 2026-10-19 §4.2): set only on a row an
+   * import wrote. `migrationWindowId` is the writing window (FK-less, like
+   * tickets.migration_window_id), `originPrincipalId` the window's principal
+   * (FK-less, like ticket_comments.origin_principal_id) and `importSourceId`
+   * the source's attachment id, the resume key, unique per principal.
+   * ticket_attachments_import_shape_chk: the source id and the principal come
+   * together, and an imported row has no uploader, has its window and is
+   * stored in 's3' (2027-01-05-100000-ticket-import-attachments.sql).
+   */
+  migrationWindowId: uuid('migration_window_id'),
+  originPrincipalId: uuid('origin_principal_id'),
+  importSourceId: varchar('import_source_id', { length: 255 }),
 }, (t) => [
   index('ticket_attachments_ticket_idx').on(t.ticketId, t.createdAt),
   // Partial indexes mirror migrations/2026-09-26-ticket-attachments.sql.
@@ -54,6 +67,10 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   index('ticket_attachments_pending_idx').on(t.uploadedByUserId, t.createdAt).where(sql`${t.commentId} IS NULL`),
   index('ticket_attachments_org_idx').on(t.orgId),
   index('ticket_attachments_artifact_idx').on(t.artifactId).where(sql`${t.artifactId} IS NOT NULL`),
+  // Built CONCURRENTLY by 2027-01-05-100100-ticket-import-attachment-indexes.sql.
+  uniqueIndex('ticket_attachments_import_source_uq').on(t.originPrincipalId, t.importSourceId)
+    .where(sql`${t.importSourceId} IS NOT NULL`),
+  index('idx_ticket_attachments_migration_window').on(t.migrationWindowId).where(sql`${t.migrationWindowId} IS NOT NULL`),
 ]);
 
 export type TicketAttachmentRow = typeof ticketAttachments.$inferSelect;

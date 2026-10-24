@@ -928,8 +928,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // row in the SAME org — a tenant identifier, exactly like ticket_id and
   // comment_id beside it. The artifact's own bytes are classified on that
   // table, not here.
+  // migration_window_id, origin_principal_id, import_source_id (ticket import
+  // #8313 W1, spec 2026-10-19 §4.2): two ids and the source's attachment id,
+  // set only on an imported row. Tenant identifiers and a resume key, exactly
+  // like ticket_comments' import columns; nothing secret, nothing open.
   "ticket_attachments": tablePolicy("org_id", {
-    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at", "artifact_id"],
+    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at", "artifact_id", "migration_window_id", "origin_principal_id", "import_source_id"],
     reviewedIncluded: [],
     excludedSensitive: [],
     excludedOpen: ["data"],
