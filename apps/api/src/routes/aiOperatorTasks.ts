@@ -43,6 +43,7 @@ import {
   operatorTaskListQuerySchema,
   type CreateOperatorTaskInput,
   type IdentityOffboardingInput,
+  type AiOperatorIdentityTaskDraftDto,
   type AiOperatorTaskDto,
   type AiOperatorTaskListItemDto,
 } from '@breeze/shared';
@@ -902,7 +903,7 @@ aiOperatorTasksRoutes.post(
         plannedEffectTools: plannedEffectTools.filter((t) => !degraded.has(t)),
         degradedEffectTools: plannedEffectTools.filter((t) => degraded.has(t)),
         manualWork,
-      },
+      } satisfies AiOperatorIdentityTaskDraftDto,
     });
   },
 );
