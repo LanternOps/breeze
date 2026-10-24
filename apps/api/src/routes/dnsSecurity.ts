@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { and, desc, eq, gte, ilike, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { escapeLike } from '../utils/sql';
-import { db } from '../db';
+import { db, runAfterDbContextCommit } from '../db';
 import {
   devices,
   dnsActionEnum,
@@ -20,6 +20,7 @@ import {
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { requireOrgWideIntegrationAccess } from '../middleware/integrationConnectionScope';
 import { scheduleDnsEventSync, schedulePolicySync } from '../jobs/dnsSyncJob';
+import { DNS_INTEGRATION_DELETING_STATUS, enqueueDnsIntegrationDelete } from '../jobs/dnsSecurityRetention';
 import { writeRouteAudit } from '../services/auditEvents';
 import { encryptSecret } from '../services/secretCrypto';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
@@ -456,7 +457,9 @@ dnsSecurityRoutes.delete(
       .select({
         id: dnsFilterIntegrations.id,
         orgId: dnsFilterIntegrations.orgId,
-        name: dnsFilterIntegrations.name
+        name: dnsFilterIntegrations.name,
+        isActive: dnsFilterIntegrations.isActive,
+        lastSyncStatus: dnsFilterIntegrations.lastSyncStatus
       })
       .from(dnsFilterIntegrations)
       .where(and(...conditions))
@@ -466,21 +469,111 @@ dnsSecurityRoutes.delete(
       return c.json({ error: 'Integration not found' }, 404);
     }
 
-    await db.transaction(async (tx) => {
-      await tx.delete(dnsPolicies).where(eq(dnsPolicies.integrationId, integration.id));
-      await tx.delete(dnsSecurityEvents).where(eq(dnsSecurityEvents.integrationId, integration.id));
-      await tx.delete(dnsFilterIntegrations).where(eq(dnsFilterIntegrations.id, integration.id));
-    });
+    // #10019 — two-phase delete. An integration's history can be tens of
+    // millions of event and aggregation rows; deleting them inside this request
+    // ran for minutes and deadlocked with the sync worker still inserting for
+    // the same integration. Here we only stop the integration (the sync job
+    // skips inactive rows) and mark it; the rows go in batches in
+    // jobs/dnsSecurityRetention.ts, which then removes the integration itself.
+    // A repeat DELETE on a row already being deleted just re-queues the job
+    // (which is idempotent) — the way to recover a lost enqueue without
+    // waiting for the nightly sweep to notice it.
+    const alreadyDeleting = !integration.isActive
+      && integration.lastSyncStatus === DNS_INTEGRATION_DELETING_STATUS;
+    if (!alreadyDeleting) {
+      await db
+        .update(dnsFilterIntegrations)
+        .set({ isActive: false, lastSyncStatus: DNS_INTEGRATION_DELETING_STATUS, updatedAt: new Date() })
+        .where(eq(dnsFilterIntegrations.id, integration.id));
+    }
+
+    // Enqueue only once the deactivation has COMMITTED, so the job never reads
+    // the row as still active. Fire-and-forget: if Redis is unavailable the
+    // failure is logged and the nightly retention sweep re-enqueues every row
+    // still marked deleting.
+    runAfterDbContextCommit('dnsSecurity.integrationDelete', () =>
+      enqueueDnsIntegrationDelete(integration.id)
+    );
+
+    if (!alreadyDeleting) {
+      writeRouteAudit(c, {
+        orgId: integration.orgId,
+        action: 'dns.integration.delete',
+        resourceType: 'dns_integration',
+        resourceId: integration.id,
+        resourceName: integration.name,
+        details: { mode: 'background' }
+      });
+    }
+
+    return c.json({ success: true, id: integration.id, status: DNS_INTEGRATION_DELETING_STATUS }, 202);
+  }
+);
+
+const updateIntegrationSchema = z.object({
+  // null clears the override, so the deployment default
+  // (DNS_SECURITY_RETENTION_DAYS_DEFAULT, 90 days) applies.
+  retentionDays: z.number().int().min(1).max(365).nullable()
+}).strict();
+
+// #10020 — the only integration field editable after create today is the
+// retention window. Strict schema: credentials and provider config are not
+// editable here (re-create the integration to change them).
+dnsSecurityRoutes.patch(
+  '/integrations/:id',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action),
+  requireMfa(),
+  requireOrgWideIntegrationAccess,
+  zValidator('json', updateIntegrationSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const integrationId = c.req.param('id')!;
+    const body = c.req.valid('json');
+
+    const conditions: SQL[] = [eq(dnsFilterIntegrations.id, integrationId)];
+    withOrgCondition(conditions, auth.orgCondition(dnsFilterIntegrations.orgId));
+
+    const [integration] = await db
+      .select({
+        id: dnsFilterIntegrations.id,
+        orgId: dnsFilterIntegrations.orgId,
+        name: dnsFilterIntegrations.name,
+        config: dnsFilterIntegrations.config,
+        isActive: dnsFilterIntegrations.isActive,
+        lastSyncStatus: dnsFilterIntegrations.lastSyncStatus
+      })
+      .from(dnsFilterIntegrations)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!integration) {
+      return c.json({ error: 'Integration not found' }, 404);
+    }
+    if (!integration.isActive && integration.lastSyncStatus === DNS_INTEGRATION_DELETING_STATUS) {
+      return c.json({ error: 'Integration is being deleted' }, 409);
+    }
+
+    const { retentionDays: previous, ...rest } = (integration.config ?? {}) as DnsIntegrationConfig;
+    const config: DnsIntegrationConfig = body.retentionDays === null
+      ? rest
+      : { ...rest, retentionDays: body.retentionDays };
+
+    await db
+      .update(dnsFilterIntegrations)
+      .set({ config, updatedAt: new Date() })
+      .where(eq(dnsFilterIntegrations.id, integration.id));
 
     writeRouteAudit(c, {
       orgId: integration.orgId,
-      action: 'dns.integration.delete',
+      action: 'dns.integration.update',
       resourceType: 'dns_integration',
       resourceId: integration.id,
-      resourceName: integration.name
+      resourceName: integration.name,
+      details: { retentionDays: { from: previous ?? null, to: body.retentionDays } }
     });
 
-    return c.json({ success: true });
+    return c.json({ id: integration.id, retentionDays: body.retentionDays });
   }
 );
 
@@ -498,7 +591,9 @@ dnsSecurityRoutes.post(
     const [integration] = await db
       .select({
         id: dnsFilterIntegrations.id,
-        orgId: dnsFilterIntegrations.orgId
+        orgId: dnsFilterIntegrations.orgId,
+        isActive: dnsFilterIntegrations.isActive,
+        lastSyncStatus: dnsFilterIntegrations.lastSyncStatus
       })
       .from(dnsFilterIntegrations)
       .where(and(...conditions))
@@ -506,6 +601,9 @@ dnsSecurityRoutes.post(
 
     if (!integration) {
       return c.json({ error: 'Integration not found' }, 404);
+    }
+    if (!integration.isActive && integration.lastSyncStatus === DNS_INTEGRATION_DELETING_STATUS) {
+      return c.json({ error: 'Integration is being deleted' }, 409);
     }
 
     const jobId = await scheduleDnsEventSync(integration.id);

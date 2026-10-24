@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { Job, type JobsOptions, Queue, Worker } from 'bullmq';
-import { and, eq, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   dnsEventAggregations,
@@ -626,18 +626,9 @@ async function persistDnsEventSync(params: {
 
   await persistAggregationDeltas(Array.from(aggregationMap.values()));
 
-  const retentionDays = Number(config.retentionDays);
-  if (Number.isFinite(retentionDays) && retentionDays > 0) {
-    const cutoff = new Date(Date.now() - Math.round(retentionDays) * 24 * 60 * 60 * 1000);
-    await db
-      .delete(dnsSecurityEvents)
-      .where(
-        and(
-          eq(dnsSecurityEvents.integrationId, integrationId),
-          lte(dnsSecurityEvents.timestamp, cutoff)
-        )
-      );
-  }
+  // Retention (config.retentionDays) is applied by the daily batched sweep in
+  // jobs/dnsSecurityRetention.ts, to events AND aggregations (#10020) — not
+  // here, where an unbatched DELETE rode on every successful slice.
 
   await db
     .update(dnsFilterIntegrations)

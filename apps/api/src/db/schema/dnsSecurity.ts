@@ -148,7 +148,7 @@ export const dnsFilterIntegrations = pgTable('dns_filter_integrations', {
 export const dnsSecurityEvents = pgTable('dns_security_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id),
+  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').references(() => devices.id),
   timestamp: timestamp('timestamp').notNull(),
   domain: varchar('domain', { length: 500 }).notNull(),
@@ -175,7 +175,7 @@ export const dnsSecurityEvents = pgTable('dns_security_events', {
 export const dnsPolicies = pgTable('dns_policies', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
-  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id),
+  integrationId: uuid('integration_id').notNull().references(() => dnsFilterIntegrations.id, { onDelete: 'cascade' }),
   name: varchar('name', { length: 200 }).notNull(),
   description: text('description'),
   type: dnsPolicyTypeEnum('type').notNull(),
@@ -197,7 +197,7 @@ export const dnsEventAggregations = pgTable('dns_event_aggregations', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   date: date('date').notNull(),
-  integrationId: uuid('integration_id').references(() => dnsFilterIntegrations.id),
+  integrationId: uuid('integration_id').references(() => dnsFilterIntegrations.id, { onDelete: 'cascade' }),
   deviceId: uuid('device_id').references(() => devices.id),
   domain: varchar('domain', { length: 500 }),
   category: dnsThreatCategoryEnum('category'),

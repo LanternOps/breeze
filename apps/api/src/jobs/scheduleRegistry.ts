@@ -232,6 +232,10 @@ export const JOB_SCHEDULES = {
   // WEBHOOK_DELIVERY_RETENTION_DAYS (default 90). :13 keeps the daily = 3
   // (mod 5) lane in hour 22.
   'webhook-delivery-retention': '13 22 * * *',
+  // #10020 — daily prune of dns_security_events + dns_event_aggregations past
+  // each integration's retentionDays (default DNS_SECURITY_RETENTION_DAYS_DEFAULT,
+  // 90). :18 keeps the daily = 3 (mod 5) lane in hour 22.
+  'dns-security-retention': '18 22 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

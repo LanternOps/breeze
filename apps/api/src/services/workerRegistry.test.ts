@@ -58,6 +58,8 @@ const EXPECTED_WORKER_NAMES = [
   'restorePointAttemptRetention',
   // #9128 — daily prune of terminal webhook_deliveries rows.
   'webhookDeliveryRetention',
+  // #10019/#10020 — DNS events/aggregations retention + background integration delete.
+  'dnsSecurityRetention',
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',

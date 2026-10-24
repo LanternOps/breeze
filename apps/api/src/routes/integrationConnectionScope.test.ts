@@ -16,6 +16,7 @@ vi.mock('../services', () => ({}));
 vi.mock('../db', () => ({
   db: mocks,
   runOutsideDbContext: (fn: () => unknown) => fn(),
+  runAfterDbContextCommit: (_label: string, work: () => unknown) => { void work(); },
   withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
@@ -42,6 +43,9 @@ vi.mock('../services/auditEvents', () => ({ writeRouteAudit: mocks.audit }));
 vi.mock('../jobs/dnsSyncJob', () => ({
   scheduleDnsEventSync: mocks.scheduleSync, schedulePolicySync: mocks.schedulePolicy,
 }));
+vi.mock('../jobs/dnsSecurityRetention', () => ({
+  DNS_INTEGRATION_DELETING_STATUS: 'deleting', enqueueDnsIntegrationDelete: mocks.scheduleSync,
+}));
 
 import { psaRoutes } from './psa';
 import { dnsSecurityRoutes } from './dnsSecurity';
@@ -58,7 +62,9 @@ const operations = [
   { name: 'PSA test', method: 'POST', path: `/psa/connections/${CONNECTION}/test`, status: 200 },
   { name: 'PSA status', method: 'POST', path: `/psa/connections/${CONNECTION}/status`, body: { status: 'paused' }, status: 200 },
   { name: 'DNS create', method: 'POST', path: '/dns-security/integrations', body: { orgId: ORG, provider: 'cloudflare', name: 'DNS', apiKey: 'synthetic-key', config: { accountId: 'synthetic-account' } }, status: 201 },
-  { name: 'DNS delete', method: 'DELETE', path: `/dns-security/integrations/${CONNECTION}`, status: 200 },
+  { name: 'DNS update', method: 'PATCH', path: `/dns-security/integrations/${CONNECTION}`, body: { retentionDays: 30 }, status: 200 },
+  // #10019 — the delete is queued and answered 202; the rows go in a background job.
+  { name: 'DNS delete', method: 'DELETE', path: `/dns-security/integrations/${CONNECTION}`, status: 202 },
 ];
 type Operation = typeof operations[number];
 
