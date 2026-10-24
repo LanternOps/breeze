@@ -132,5 +132,97 @@
     "confirmLabel": "Delegate",
     "queued": "Task delegated to the Operator.",
     "failed": "Failed to delegate to the Operator."
+  },
+  "nav": {
+    "operator": "Operator"
+  },
+  "provider": {
+    "google": "Google Workspace",
+    "m365": "Microsoft 365",
+    "breeze": "Breeze"
+  },
+  "effectTool": {
+    "googleSetVacation": "Set the Gmail auto-reply",
+    "googleSetForwarding": "Forward Gmail to the inheritor",
+    "googleAddMailDelegate": "Give the inheritor access to the Gmail mailbox",
+    "googleRemoveFromGroup": "Remove from Google groups",
+    "googleRemoveLicense": "Remove Google Workspace licences",
+    "googleAccountWipeMobileDevice": "Remove the work account from enrolled phones",
+    "googleSignout": "Sign out of Google sessions",
+    "googleSuspendUser": "Suspend the Google account",
+    "m365SetAutoReply": "Set the Outlook auto-reply",
+    "m365RemoveFromGroup": "Remove from Microsoft 365 groups",
+    "m365RemoveLicense": "Remove Microsoft 365 licences",
+    "m365RetireIntuneDevice": "Retire Intune-managed phones",
+    "m365RevokeSessions": "Revoke Microsoft 365 sign-in sessions",
+    "m365DisableUser": "Block Microsoft 365 sign-in"
+  },
+  "workspace": {
+    "tabs": {
+      "label": "Operator sections",
+      "tasks": "Tasks",
+      "library": "Library"
+    },
+    "noOrg": "Select an organization to see which recipes it can run."
+  },
+  "taskList": {
+    "loading": "Loading tasks...",
+    "loadFailed": "Tasks failed to load.",
+    "empty": "No Operator tasks yet.",
+    "emptyHint": "Tasks you start from the Library, a ticket, a contact or an alert appear here.",
+    "loadMore": "Load more",
+    "loadMoreFailed": "More tasks failed to load."
+  },
+  "recipeLibrary": {
+    "loading": "Loading recipes...",
+    "loadFailed": "The recipe library failed to load.",
+    "empty": "No recipes are available for this organization yet.",
+    "readiness": {
+      "ready": "Ready",
+      "setupRequired": "Setup required",
+      "unavailable": "Not available"
+    },
+    "setupBlock": {
+      "title": "Setup required",
+      "description": "Until these are fixed, the steps behind them are done by hand."
+    },
+    "manualSteps": {
+      "count_one": "1 step will be done by hand",
+      "count_other": "{{count}} steps will be done by hand",
+      "expand": "See which steps",
+      "collapse": "Hide these steps",
+      "explainer": "Breeze does not automate these yet. The task will add them to the ticket as checklist items."
+    },
+    "degraded": {
+      "title": "What will be done by hand",
+      "description": "For this organization, these steps become checklist items on the task's ticket instead of running automatically."
+    },
+    "action": {
+      "reconsentM365": "Grant the updated Microsoft 365 permissions in this organization's integration settings.",
+      "connectGoogle": "Connect Google Workspace for this organization from its integrations.",
+      "connectM365": "Connect Microsoft 365 for this organization from its integrations.",
+      "open": "Open",
+      "allowTools_one": "Allow {{count}} tool for {{agent}}",
+      "allowTools_other": "Allow {{count}} tools for {{agent}}",
+      "allowToolsScope": "This changes {{agent}} everywhere it is used, not only for this recipe.",
+      "allowToolsScopeAllOrgs": "This changes {{agent}} everywhere it is used, in every organization it serves, not only for this recipe.",
+      "allowToolsList": "Tools to allow:",
+      "agentFallback": "the helpdesk agent",
+      "allowToolsSuccess": "Tools allowed for {{agent}}.",
+      "allowToolsFailed": "The tools could not be allowed.",
+      "mfaRequired": "Changing an agent's tools needs a session signed in with multi-factor authentication. Sign out, sign in again with MFA, then retry.",
+      "allowlistFull": "This agent's tool list is full ({{limit}} tools). Remove tools it no longer needs in Settings → AI Agents, then retry."
+    },
+    "start": {
+      "offboard": "Offboard a person",
+      "notEnabled": "This recipe is not enabled for this deployment.",
+      "fromDeviceOrAlert": "Start this recipe from a device or an alert."
+    },
+    "recipe": {
+      "identityOffboardingName": "Offboard a person",
+      "identityOffboardingSummary": "Confirm who is leaving, route their mail, and remove their access across Microsoft 365 and Google Workspace in a safe order with one approval. Hand work is tracked on the ticket.",
+      "serviceRecoveryName": "Restore a stopped service",
+      "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up."
+    }
   }
 }
