@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  reliabilityScoringWindow,
   deviceEventLogHash,
   deviceEventLogHref,
   eventLogFilterFromHash,
@@ -48,13 +49,52 @@ describe('deviceEventLogLink', () => {
     expect(eventLogFilterFromHash('')).toBeUndefined();
   });
 
-  it('does not throw on a malformed escape', () => {
-    expect(() => eventLogFilterFromHash('eventlog/%E0%A4%A&from=x&to=y')).not.toThrow();
+  it('does not throw on a malformed escape and keeps the raw selection', () => {
+    const q = `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    expect(eventLogFilterFromHash(`eventlog/%E0%A4%A&${q}`)).toEqual({ source: '%E0%A4%A', from, to });
+  });
+
+  it('accepts from === to', () => {
+    expect(eventLogFilterFromHash(deviceEventLogHash({ from, to: from }))).toEqual({ from, to: from });
   });
 
   it('builds a full href', () => {
     expect(deviceEventLogHref('dev 1', { from, to })).toBe(
       `/devices/dev%201#${deviceEventLogHash({ from, to })}`,
     );
+  });
+});
+
+describe('reliabilityScoringWindow', () => {
+  const computedAt = '2026-10-24T12:30:45.000Z';
+  const dayStart = '2026-09-24T00:00:00.000Z';
+
+  it('starts at UTC midnight 30 days before computedAt and ends at computedAt', () => {
+    expect(reliabilityScoringWindow({ computedAt })).toEqual({ from: dayStart, to: computedAt });
+  });
+
+  it('computedAt exactly at midnight starts exactly 30 days earlier', () => {
+    expect(reliabilityScoringWindow({ computedAt: '2026-10-24T00:00:00.000Z' })?.from).toBe(dayStart);
+  });
+
+  it('clamps to the later of baselineAt and enrolledAt', () => {
+    const baselineAt = '2026-10-01T00:00:00.000Z';
+    const enrolledAt = '2026-10-10T00:00:00.000Z';
+    expect(reliabilityScoringWindow({ computedAt, baselineAt, enrolledAt })?.from).toBe(enrolledAt);
+    expect(
+      reliabilityScoringWindow({ computedAt, baselineAt: enrolledAt, enrolledAt: baselineAt })?.from,
+    ).toBe(enrolledAt);
+  });
+
+  it('ignores floors earlier than the window start, and null/unparseable floors', () => {
+    expect(
+      reliabilityScoringWindow({ computedAt, baselineAt: '2026-01-01T00:00:00.000Z', enrolledAt: '2025-01-01T00:00:00.000Z' })?.from,
+    ).toBe(dayStart);
+    expect(reliabilityScoringWindow({ computedAt, baselineAt: 'junk', enrolledAt: null })?.from).toBe(dayStart);
+  });
+
+  it('returns null for an unparseable computedAt or a floor after computedAt', () => {
+    expect(reliabilityScoringWindow({ computedAt: 'nope' })).toBeNull();
+    expect(reliabilityScoringWindow({ computedAt, enrolledAt: '2026-10-25T00:00:00.000Z' })).toBeNull();
   });
 });

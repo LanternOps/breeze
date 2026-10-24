@@ -2,9 +2,10 @@
  * Wave F (#9791) — `#eventlog[/<source>]&from=&to=` selects the Event log tab
  * and hands the decoded filter to DeviceLogsTab (pattern: #4886 scripts).
  */
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import DeviceDetails from './DeviceDetails';
+import DeviceDetails, { tabFromHash } from './DeviceDetails';
+import { deviceEventLogHash } from '@/lib/deviceEventLogLink';
 import type { Device } from './DeviceList';
 
 const fetchWithAuthMock = vi.hoisted(() => vi.fn());
@@ -106,5 +107,54 @@ describe('DeviceDetails #eventlog sub-hash (#9791 F1)', () => {
     render(<DeviceDetails device={device} />);
     expect(screen.queryByTestId('device-logs-tab-stub')).not.toBeInTheDocument();
     expect(screen.queryByTestId('device-script-history-stub')).not.toBeInTheDocument();
+  });
+});
+
+describe('tabFromHash tolerates &k=v after the tab segment (#9791 F1)', () => {
+  it.each([
+    ['eventlog&from=a', 'eventlog'],
+    ['eventlog/disk&from=a&to=b', 'eventlog'],
+    ['scripts/abc&x=1', 'scripts'],
+    ['scripts/abc', 'scripts'],
+    ['anomalies/abc', 'anomalies'],
+    ['ext:foo-bar:tab', 'ext:foo-bar:tab'],
+    ['bogus&x=1', undefined],
+    ['', undefined],
+  ])('%s -> %s', (hash, expected) => {
+    expect(tabFromHash(hash)).toBe(expected);
+  });
+});
+
+describe('DeviceDetails #eventlog live navigation (#9791 F1)', () => {
+  it('reads what the encoder writes, and picks up a hashchange while mounted', async () => {
+    window.location.hash = '#overview';
+    render(<DeviceDetails device={device} />);
+    expect(screen.queryByTestId('device-logs-tab-stub')).not.toBeInTheDocument();
+
+    await act(async () => {
+      window.location.hash = `#${deviceEventLogHash({ source: 'Service Control Manager', from, to })}`;
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    const stub = await screen.findByTestId('device-logs-tab-stub');
+    expect(stub.dataset.source).toBe('Service Control Manager');
+    expect(stub.dataset.from).toBe(from);
+  });
+
+  it('leaving the tab clears the linked filter', async () => {
+    window.location.hash = `#${deviceEventLogHash({ source: 'disk', from, to })}`;
+    render(<DeviceDetails device={device} />);
+    await screen.findByTestId('device-logs-tab-stub');
+
+    // Switch away through the tab bar, then back via the plain tab hash.
+    await act(async () => {
+      window.location.hash = '#overview';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(screen.queryByTestId('device-logs-tab-stub')).not.toBeInTheDocument();
+    await act(async () => {
+      window.location.hash = '#eventlog';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect((await screen.findByTestId('device-logs-tab-stub')).dataset.hasFilter).toBe('no');
   });
 });

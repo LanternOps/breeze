@@ -125,6 +125,42 @@ describe('DeviceReliabilityPanel event-log links (#9791 F2)', () => {
     expect(screen.queryByTestId('reliability-factor-link-serviceFailures')).toBeNull();
   });
 
+  it('aria-label starts with the visible text and names the row; title names the filter', async () => {
+    route(snapshot());
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    const scm = await screen.findByTestId('reliability-factor-link-serviceFailures');
+    expect(scm.getAttribute('aria-label')).toBe('View in event log: serviceFailures');
+    expect(scm.getAttribute('title')).toContain('Service Control Manager');
+    const crashes = screen.getByTestId('reliability-factor-link-crashes');
+    expect(crashes.getAttribute('aria-label')).toBe('Open event log: crashes');
+    expect(crashes.getAttribute('title')).not.toContain('Service Control Manager');
+  });
+
+  it.each([
+    ['crashes', 'crashCount30d'],
+    ['hangs', 'hangCount30d'],
+    ['serviceFailures', 'serviceFailureCount30d'],
+    ['hardwareErrors', 'hardwareErrorCount30d'],
+  ])('unweighted %s links only when its 30d count is non-zero', async (factor, countKey) => {
+    route(snapshot({ drivers: [driver(factor, 0, 0)], [countKey]: 2 }));
+    const { unmount } = render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    expect(await screen.findByTestId(`reliability-factor-link-${factor}`)).toBeInTheDocument();
+    unmount();
+    route(snapshot({ drivers: [driver(factor, 0, 0)], [countKey]: 0 }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    await screen.findByTestId(`reliability-factor-${factor}`);
+    expect(screen.queryByTestId(`reliability-factor-link-${factor}`)).toBeNull();
+  });
+
+  it('unknown OS: service offenders are window-only and read "Open event log"', async () => {
+    route(snapshot({ osType: undefined }));
+    render(<DeviceReliabilityPanel deviceId="dev-1" />);
+    fireEvent.click(await screen.findByTestId('reliability-offenders-toggle'));
+    const spooler = await screen.findByTestId('reliability-offender-link-Spooler');
+    expect(filterOf(spooler)).toEqual({ from: WINDOW_FROM, to: COMPUTED_AT });
+    expect(spooler).toHaveTextContent('Open event log');
+  });
+
   it('macOS serviceFailures is window-only', async () => {
     route(snapshot({ osType: 'macos' }));
     render(<DeviceReliabilityPanel deviceId="dev-1" />);

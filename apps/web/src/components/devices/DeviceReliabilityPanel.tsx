@@ -251,7 +251,7 @@ type OffenderGroupKey = keyof ReliabilityOffenders;
 // factor-level source that can be named (R2).
 const WINDOWS_SCM_SOURCE = 'Service Control Manager';
 
-type EventLogLink = { href: string; label: string; title: string };
+type EventLogLink = { href: string; label: string; title: string; ariaLabel: string };
 
 // Which single event-log `source` a row's link carries, and whether that
 // filter is exactly the row's subject. Only an exact filter may read "View in
@@ -331,7 +331,7 @@ function OffenderGroup({
                   <a
                     href={link.href}
                     title={link.title}
-                    aria-label={link.title}
+                    aria-label={link.ariaLabel}
                     data-testid={`reliability-offender-link-${offender.key}`}
                     className={EVENT_LOG_LINK_CLASS}
                   >
@@ -605,14 +605,19 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
   });
   const buildEventLogLink = (
     row: { factor: string } | { group: OffenderGroupKey; key: string },
+    subject: string,
   ): EventLogLink | null => {
     if (!scoringWindow) return null;
     const { source, exact } = eventLogSource(snapshot.osType, row);
     const fmt = (iso: string) => formatDateTime(new Date(iso), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     const range = { from: fmt(scoringWindow.from), to: fmt(scoringWindow.to) };
+    const label = exact ? t('deviceReliabilityPanel.eventLogLinkExact') : t('deviceReliabilityPanel.eventLogLinkWindow');
     return {
       href: `#${deviceEventLogHash({ source, ...scoringWindow })}`,
-      label: exact ? t('deviceReliabilityPanel.eventLogLinkExact') : t('deviceReliabilityPanel.eventLogLinkWindow'),
+      label,
+      // Starts with the visible text (WCAG 2.5.3) and names the row so the
+      // identical per-row links are distinguishable in a link list.
+      ariaLabel: `${label}: ${subject}`,
       title: source
         ? t('deviceReliabilityPanel.eventLogLinkTitleWithSource', { source, ...range })
         : t('deviceReliabilityPanel.eventLogLinkTitle', range),
@@ -817,13 +822,13 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
               const factorLink =
                 LINKED_FACTORS.has(driver.factor) &&
                 (problem || (unweighted && (factorCount30d(snapshot, driver.factor) ?? 0) > 0))
-                  ? buildEventLogLink({ factor: driver.factor })
+                  ? buildEventLogLink({ factor: driver.factor }, driver.label)
                   : null;
               const eventLogLinkEl = factorLink ? (
                 <a
                   href={factorLink.href}
                   title={factorLink.title}
-                  aria-label={factorLink.title}
+                  aria-label={factorLink.ariaLabel}
                   data-testid={`reliability-factor-link-${driver.factor}`}
                   className={EVENT_LOG_LINK_CLASS}
                 >
@@ -950,21 +955,21 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
                       title={t('deviceReliabilityPanel.offenders.topServices')}
                       Icon={Settings}
                       offenders={offenders.services}
-                      linkFor={(offender) => buildEventLogLink({ group: 'services', key: offender.key })}
+                      linkFor={(offender) => buildEventLogLink({ group: 'services', key: offender.key }, offender.label)}
                     />
                     <OffenderGroup
                       testId="reliability-offenders-hardware"
                       title={t('deviceReliabilityPanel.offenders.topHardware')}
                       Icon={Cpu}
                       offenders={offenders.hardware}
-                      linkFor={(offender) => buildEventLogLink({ group: 'hardware', key: offender.key })}
+                      linkFor={(offender) => buildEventLogLink({ group: 'hardware', key: offender.key }, offender.label)}
                     />
                     <OffenderGroup
                       testId="reliability-offenders-hangs"
                       title={t('deviceReliabilityPanel.offenders.topProcesses')}
                       Icon={Activity}
                       offenders={offenders.hangs}
-                      linkFor={(offender) => buildEventLogLink({ group: 'hangs', key: offender.key })}
+                      linkFor={(offender) => buildEventLogLink({ group: 'hangs', key: offender.key }, offender.label)}
                     />
                     <p className="text-xs text-muted-foreground">
                       {t('deviceReliabilityPanel.distinctEvents', { window: offenderWindowText })}

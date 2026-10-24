@@ -4,7 +4,7 @@
  * on /devices/:id/eventlogs. (The plan calls this DeviceEventLog.hash.test;
  * the `#eventlog` tab's component is DeviceLogsTab.)
  */
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DeviceLogsTab from './DeviceLogsTab';
@@ -97,6 +97,55 @@ describe('DeviceLogsTab linked filter (#9791 F1)', () => {
     await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
     expect(window.location.hash).toBe('#eventlog');
     expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['source input', async (user: ReturnType<typeof userEvent.setup>) =>
+      user.type(screen.getByTestId('device-logs-source-input'), 'x')],
+    ['category select', async (user: ReturnType<typeof userEvent.setup>) =>
+      user.selectOptions(screen.getByTestId('device-logs-category-select'), 'system')],
+    ['start date', async () =>
+      fireEvent.change(screen.getByTestId('device-logs-start-date'), { target: { value: '2026-10-01T00:00' } })],
+    ['end date', async () =>
+      fireEvent.change(screen.getByTestId('device-logs-end-date'), { target: { value: '2026-10-02T00:00' } })],
+  ])('a manual edit of the %s drops the linked state and hash', async (_name, edit) => {
+    const user = userEvent.setup();
+    window.location.hash = `#${deviceEventLogHash({ source: 'disk', from, to })}`;
+    render(<DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await edit(user);
+    expect(window.location.hash).toBe('#eventlog');
+    expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
+    // The other bound is still sent (as the input's own local value).
+    await waitFor(() => expect(lastParams().has('startDate')).toBe(true));
+    expect(lastParams().has('endDate')).toBe(true);
+  });
+
+  it('re-clicking the same link after an edit re-seeds it', async () => {
+    const user = userEvent.setup();
+    const filter = { source: 'disk', from, to };
+    window.location.hash = `#${deviceEventLogHash(filter)}`;
+    const { rerender } = render(<DeviceLogsTab deviceId="d1" linkedFilter={filter} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await user.selectOptions(screen.getByTestId('device-logs-level-select'), 'error');
+    expect(screen.queryByTestId('device-logs-linked-filter')).not.toBeInTheDocument();
+    // hashchange to the bare tab, then the same link again
+    await act(async () => rerender(<DeviceLogsTab deviceId="d1" linkedFilter={undefined} />));
+    await act(async () => rerender(<DeviceLogsTab deviceId="d1" linkedFilter={{ ...filter }} />));
+    expect(screen.getByTestId('device-logs-linked-filter')).toBeInTheDocument();
+    await waitFor(() => expect(lastParams().get('source')).toBe('disk'));
+    expect(lastParams().has('level')).toBe(false);
+    expect(lastParams().get('page')).toBe('1');
+  });
+
+  it('a window-only link after a sourced one clears the source', async () => {
+    const { rerender } = render(
+      <DeviceLogsTab deviceId="d1" linkedFilter={{ source: 'disk', from, to }} />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await act(async () => rerender(<DeviceLogsTab deviceId="d1" linkedFilter={{ from, to }} />));
+    await waitFor(() => expect(lastParams().has('source')).toBe(false));
+    expect(screen.getByTestId('device-logs-source-input')).toHaveValue('');
   });
 
   it('re-seeds when the linked filter changes while mounted', async () => {
