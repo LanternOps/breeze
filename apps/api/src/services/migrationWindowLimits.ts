@@ -1,3 +1,5 @@
+import { positiveIntEnv } from '../config/env';
+
 /**
  * Limits of ticket migration windows (#8313; spec
  * docs/superpowers/specs/api-platform/2026-10-10-ticket-migration-windows-design.md
@@ -67,8 +69,11 @@ export function migrationWindowLimits(): MigrationWindowLimits {
  * The per-window byte bucket of an import (#8313 W1; spec 2026-10-19 §4.5):
  * attachment bytes a window may download and store per hour,
  * `TICKET_IMPORT_MAX_BYTES_PER_HOUR` (default 2 GiB). Never below the 10 MiB
- * attachment cap, so every file can pass.
+ * attachment cap, so every file can pass. Read through the repo's knob
+ * parser (`positiveIntEnv`): only a plain positive integer counts, and
+ * anything else (`2e9`, `2GiB`, `2_147_483_648`, `12abc`) falls back to the
+ * default, which config/validate.ts reports once at boot.
  */
 export function ticketImportMaxBytesPerHour(): number {
-  return Math.max(MIN_IMPORT_BYTES_PER_HOUR, positiveEnvInt('TICKET_IMPORT_MAX_BYTES_PER_HOUR', DEFAULT_IMPORT_BYTES_PER_HOUR));
+  return positiveIntEnv('TICKET_IMPORT_MAX_BYTES_PER_HOUR', DEFAULT_IMPORT_BYTES_PER_HOUR, MIN_IMPORT_BYTES_PER_HOUR, Number.MAX_SAFE_INTEGER);
 }

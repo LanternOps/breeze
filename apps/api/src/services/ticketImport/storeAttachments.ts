@@ -65,12 +65,15 @@ function transient(attachmentSourceId: string, stage: 'fetch' | 'store', cause: 
 /**
  * Stores one reserved file (§4.3 step 2): charges the byte bucket with the
  * declared size (the cap when none is declared), downloads the original with
- * `maxBytes` = 10 MiB, sniffs it (§4.4), hashes it and puts it to the
- * reserved key `ticket-attachments/<id>`, overwriting any earlier put of a
- * crashed pass. A permanent failure returns the skip and puts nothing; a
- * transient one throws `503 TICKET_IMPORT_ATTACHMENT_UNAVAILABLE`, and a
- * refused byte charge `429 MIGRATION_WINDOW_RATE_LIMITED`. Either way the
- * reservation stays for the next run, or for the reaper.
+ * `maxBytes` = 10 MiB, charges the difference when the bytes outnumber the
+ * declared size (the source's figure is not trusted, review finding 5),
+ * sniffs them (§4.4), hashes them and puts them to the reserved key
+ * `ticket-attachments/<id>`, overwriting any earlier put of a crashed pass.
+ * A permanent failure returns the skip and puts nothing; a transient one
+ * throws `503 TICKET_IMPORT_ATTACHMENT_UNAVAILABLE`, and a refused byte
+ * charge `429 MIGRATION_WINDOW_RATE_LIMITED` (the bytes downloaded are then
+ * not stored). Either way the reservation stays for the next run, or for the
+ * reaper.
  */
 export async function storeReservedAttachment(input: {
   id: string;
@@ -82,7 +85,8 @@ export async function storeReservedAttachment(input: {
   stillPending: () => Promise<boolean>;
 }): Promise<StoreOutcome> {
   const declared = input.declaredBytes;
-  await input.chargeBytes(declared !== undefined && declared > 0 ? Math.min(declared, IMPORT_ATTACHMENT_MAX_BYTES) : IMPORT_ATTACHMENT_MAX_BYTES);
+  const charged = declared !== undefined && declared > 0 ? Math.min(declared, IMPORT_ATTACHMENT_MAX_BYTES) : IMPORT_ATTACHMENT_MAX_BYTES;
+  await input.chargeBytes(charged);
 
   let bytes: Uint8Array;
   try {
@@ -96,6 +100,9 @@ export async function storeReservedAttachment(input: {
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const sizeSkip = fetchedBytesSkip(buf.length);
   if (sizeSkip) return { kind: 'skipped', reason: sizeSkip };
+  // More bytes than the source declared: the rest is charged too, before
+  // anything is stored (fails closed like the first charge).
+  if (buf.length > charged) await input.chargeBytes(buf.length - charged);
   const sniffed = sniffImportedAttachment(buf);
   if (sniffed.blocked) return { kind: 'skipped', reason: 'blocked_type' };
 

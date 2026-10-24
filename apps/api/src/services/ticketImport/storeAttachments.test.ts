@@ -56,6 +56,27 @@ describe('storeReservedAttachment', () => {
     expect(putBytesMock.mock.calls[0]![1]).toEqual(ZIP);
   });
 
+  it('charges the difference when the bytes outnumber the declared size (the source is not trusted)', async () => {
+    const { promise, chargeBytes } = run(async () => PNG, 10);
+    expect(await promise).toMatchObject({ kind: 'stored', claim: { byteSize: PNG.length } });
+    expect(chargeBytes.mock.calls).toEqual([[10], [PNG.length - 10]]);
+  });
+
+  it('a refused charge for the difference fails closed: the downloaded bytes are not stored', async () => {
+    const chargeBytes = vi.fn(async (bytes: number) => {
+      if (bytes !== 10) throw new MigrationWindowError('MIGRATION_WINDOW_RATE_LIMITED', 'limit', 429, { kind: 'bytes', retryAfterSeconds: 9 });
+    });
+    await expect(storeReservedAttachment({ id: ID, sourceId: 's', declaredBytes: 10, fetchAttachment: async () => PNG, chargeBytes, stillPending: async () => true }))
+      .rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', status: 429, details: { kind: 'bytes' } });
+    expect(putBytesMock).not.toHaveBeenCalled();
+  });
+
+  it('charges nothing more when the bytes match or undercut the declared size', async () => {
+    const { promise, chargeBytes } = run(async () => PNG, PNG.length + 100);
+    await promise;
+    expect(chargeBytes.mock.calls).toEqual([[PNG.length + 100]]);
+  });
+
   it('charges the cap when the source declared no size', async () => {
     const { promise, chargeBytes } = run(async () => ZIP);
     await promise;

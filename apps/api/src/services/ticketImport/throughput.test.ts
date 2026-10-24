@@ -87,6 +87,22 @@ describe('the import byte bucket (spec 2026-10-19 §4.5)', () => {
     expect(evalMock).toHaveBeenLastCalledWith(BYTE_BUCKET_LUA, 1, expect.any(String), String(10 * MIB), String(10 * MIB), expect.any(String));
   });
 
+  // Review finding 6: only a plain positive integer counts (the repo's
+  // positiveIntEnv); anything else is the 2 GiB default.
+  it.each(['2e9', '2GiB', '2_147_483_648', '12abc', '-5', '0', '1.5', ' '])('ignores TICKET_IMPORT_MAX_BYTES_PER_HOUR=%j: the 2 GiB default applies', async (value) => {
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = value;
+    evalMock.mockResolvedValueOnce([1, 0]);
+    await chargeWindowBytes(WINDOW, MIB);
+    expect(evalMock).toHaveBeenLastCalledWith(BYTE_BUCKET_LUA, 1, expect.any(String), String(2 * GIB), String(MIB), expect.any(String));
+  });
+
+  it('takes a plain integer with surrounding spaces', async () => {
+    process.env.TICKET_IMPORT_MAX_BYTES_PER_HOUR = ' 52428800 ';
+    evalMock.mockResolvedValueOnce([1, 0]);
+    await chargeWindowBytes(WINDOW, MIB);
+    expect(evalMock).toHaveBeenLastCalledWith(BYTE_BUCKET_LUA, 1, expect.any(String), String(50 * MIB), String(MIB), expect.any(String));
+  });
+
   it('fails closed with no Redis, and on a Redis error', async () => {
     mocks.getRedis.mockReturnValueOnce(null);
     await expect(chargeWindowBytes(WINDOW, MIB)).rejects.toMatchObject({ code: 'MIGRATION_WINDOW_RATE_LIMITED', details: { kind: 'bytes', retryAfterSeconds: 60 } });
