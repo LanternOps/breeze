@@ -388,4 +388,108 @@ describe('wisp_thread_attachments RLS (shape 1)', () => {
       expect(await db.select({ id: aiRunArtifacts.id }).from(aiRunArtifacts).where(eq(aiRunArtifacts.id, art2))).toHaveLength(1);
     });
   });
+
+  it('an attachment uploaded in session 1 is found by findArtifactForCaller from session 2 of the same thread, and NOT from a session on another thread in the same org', async () => {
+    const { findArtifactForCaller } = await import('../../services/artifacts/artifactService');
+    const f = await seed();
+    const grantor = await asSystem(async () => (await db.select({ u: wispGrants.grantorUserId }).from(wispGrants)
+      .where(eq(wispGrants.id, f.grantA.grantId)))[0]!.u);
+    // A second live grant (hence a second thread) in the same partner needs a
+    // second grantor (one live grant per grantor and scope).
+    const otherUser = await createUser({ partnerId: f.partnerA, email: `wisp-thread-a2-${randomUUID()}@wisp.test` });
+    const otherGrant = await seedGrant(f.partnerA, otherUser.id, [f.orgA1, f.orgA2]);
+    const thread = await insertThread(f.grantA.grantId, f.partnerA, { focusOrgId: f.orgA1 });
+    const otherThread = await insertThread(otherGrant.grantId, f.partnerA, { focusOrgId: f.orgA1 });
+    const session1 = await insertSession(f.orgA1);
+    const session2 = await insertSession(f.orgA1);
+    const sessionOther = await insertSession(f.orgA1);
+    await asSystem(() => db.insert(wispThreadSessions).values([
+      { threadId: thread.id, sessionId: session1, partnerId: f.partnerA, orgId: f.orgA1 },
+      { threadId: thread.id, sessionId: session2, partnerId: f.partnerA, orgId: f.orgA1 },
+      { threadId: otherThread.id, sessionId: sessionOther, partnerId: f.partnerA, orgId: f.orgA1 },
+    ]));
+    // What addThreadAttachment writes: a session-less, redacted input_capture
+    // artifact plus the attachment row (uploaded while session 1 was live).
+    const artifactId = await insertArtifact(f.orgA1);
+    await asSystem(() => db.insert(wispThreadAttachments).values({
+      threadId: thread.id, partnerId: f.partnerA, orgId: f.orgA1, artifactId, label: 'notes', addedByUserId: grantor,
+    }));
+
+    // The read_artifact path runs in the caller's org-scoped request context.
+    await withDbAccessContext(orgContext(f.orgA1, f.partnerA), async () => {
+      const fromSession2 = await findArtifactForCaller(artifactId, { orgId: f.orgA1, sessionId: session2, wispThreadId: thread.id });
+      expect(fromSession2?.id).toBe(artifactId);
+      const fromSession1 = await findArtifactForCaller(artifactId, { orgId: f.orgA1, sessionId: session1, wispThreadId: thread.id });
+      expect(fromSession1?.id).toBe(artifactId);
+
+      // Another thread of the same partner and org: not a match.
+      expect(await findArtifactForCaller(artifactId, { orgId: f.orgA1, sessionId: sessionOther, wispThreadId: otherThread.id })).toBeNull();
+      // No thread pointer: the exact-session rule still refuses (session_id is NULL).
+      expect(await findArtifactForCaller(artifactId, { orgId: f.orgA1, sessionId: session2 })).toBeNull();
+      // The org predicate still binds: the right thread from another org's anchor is refused.
+      expect(await findArtifactForCaller(artifactId, { orgId: f.orgA2, sessionId: session2, wispThreadId: thread.id })).toBeNull();
+    });
+  });
+
+  it('addThreadAttachment stores a redacted artifact + row under the thread lock, lists it newest first, and refuses the 21st live attachment', async () => {
+    const { createMemoryBlobStorage, setBlobStorageForTests } = await import('../../services/artifacts/blobStorage');
+    const { addThreadAttachment, listThreadAttachments, ThreadAttachmentError } = await import('../../services/wisp/threadAttachments');
+    const blobs = createMemoryBlobStorage();
+    setBlobStorageForTests(blobs);
+    try {
+      const f = await seed();
+      const row = await insertThread(f.grantA.grantId, f.partnerA, { focusOrgId: f.orgA1 });
+      const grantor = await asSystem(async () => (await db.select({ u: wispGrants.grantorUserId }).from(wispGrants)
+        .where(eq(wispGrants.id, f.grantA.grantId)))[0]!.u);
+      const thread = { ...row, summary: row.summary ?? '' };
+      const ceiling = {
+        grantId: f.grantA.grantId, revisionId: f.grantA.revisionId, partnerId: f.partnerA, grantorUserId: grantor,
+        scopeOrgId: null, partnerWide: true, orgIds: new Set([f.orgA1, f.orgA2]), siteIds: null,
+        permissionKeys: new Set(['ai_sessions:use']), toolAllowlist: null, deniedTools: new Set<string>(),
+        orgTerms: new Map(), status: 'active' as const,
+      };
+
+      const added = await addThreadAttachment({
+        thread, ceiling, orgId: f.orgA1, label: 'creds.txt', text: 'password=hunter2\nok', addedByUserId: grantor,
+      });
+      const [artifact] = await asSystem(() => db.select().from(aiRunArtifacts).where(eq(aiRunArtifacts.id, added.artifactId)));
+      expect(artifact).toMatchObject({ orgId: f.orgA1, sessionId: null, runId: null, kind: 'input_capture', name: 'creds.redacted.txt', createdByTool: 'wisp_thread_attachment' });
+      const stored = await new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        void blobs.openStream(artifact!.blobKey).then((s) => s
+          .on('data', (c: Buffer) => chunks.push(Buffer.from(c)))
+          .on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+          .on('error', reject));
+      });
+      expect(stored).not.toContain('hunter2');
+
+      expect((await listThreadAttachments(thread.id)).map((a) => a.id)).toEqual([added.id]);
+
+      // 19 more live attachments (direct rows), then the 21st is refused before any blob write.
+      for (let i = 0; i < 19; i++) {
+        const art = await insertArtifact(f.orgA1);
+        await asSystem(() => db.insert(wispThreadAttachments).values({
+          threadId: thread.id, partnerId: f.partnerA, orgId: f.orgA1, artifactId: art, label: `n${i}`,
+        }));
+      }
+      const listed = await listThreadAttachments(thread.id);
+      expect(listed).toHaveLength(20);
+      expect(listed[listed.length - 1]!.id).toBe(added.id);
+      const before = await asSystem(() => db.select({ id: aiRunArtifacts.id }).from(aiRunArtifacts).where(eq(aiRunArtifacts.orgId, f.orgA1)));
+      const err = await addThreadAttachment({ thread, ceiling, orgId: f.orgA1, label: 'x.txt', text: 'x', addedByUserId: grantor })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ThreadAttachmentError);
+      expect((err as InstanceType<typeof ThreadAttachmentError>).code).toBe('too_many');
+      const after = await asSystem(() => db.select({ id: aiRunArtifacts.id }).from(aiRunArtifacts).where(eq(aiRunArtifacts.orgId, f.orgA1)));
+      expect(after).toHaveLength(before.length);
+
+      // An expired artifact frees its slot.
+      await asSystem(() => db.update(aiRunArtifacts).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(aiRunArtifacts.id, listed[0]!.artifactId)));
+      expect(await listThreadAttachments(thread.id)).toHaveLength(19);
+      await expect(addThreadAttachment({ thread, ceiling, orgId: f.orgA1, label: 'y.csv', text: 'a,b', addedByUserId: grantor }))
+        .resolves.toMatchObject({ contentType: 'text/csv', label: 'y.csv' });
+    } finally {
+      setBlobStorageForTests(null);
+    }
+  });
 });

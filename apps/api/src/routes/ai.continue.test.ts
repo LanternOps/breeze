@@ -440,6 +440,27 @@ describe('POST /ai/sessions/:id/continue (W05)', () => {
     expect(chooseSessionModel).not.toHaveBeenCalled();
   });
 
+  // Wisp W04 (w00 A10; Review Focus 3): the new chat would be inserted without
+  // the grant columns and so would run outside the delegation ceiling.
+  it('refuses continuation of a Wisp session with continuation_unsupported', async () => {
+    vi.mocked(getSessionMessages).mockResolvedValueOnce({
+      session: {
+        ...DB_SESSION,
+        wispGrantId: '22222222-2222-4222-8222-222222222222',
+        wispGrantRevisionId: '33333333-3333-4333-8333-333333333333',
+      },
+      messages: [{ role: 'user', content: 'hi', toolName: null }],
+    } as never);
+    const res = await post(app, { model: { offeringId: OFF } });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'This chat cannot be continued in a new chat.',
+      code: 'continuation_unsupported',
+    });
+    expect(chooseSessionModel).not.toHaveBeenCalled();
+    expect(reserveAiBudget).not.toHaveBeenCalled();
+  });
+
   it('a chat with a reply still running → 409 turn_in_progress', async () => {
     vi.mocked(streamingSessionManager.get).mockReturnValueOnce({ state: 'processing' } as never);
     const res = await post(app, { model: { offeringId: OFF } });

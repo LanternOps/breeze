@@ -17,6 +17,7 @@ import {
   withAuthDbAccessContext,
 } from '../middleware/auth';
 import { aiScriptAuthoringEnabled } from '../config/env';
+import { WispSessionError } from '../services/wisp/sessionGrant';
 import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
   createSession,
@@ -164,7 +165,10 @@ const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   deviceId: z.string().guid().optional(),
   // Let the caller pick the approval posture (e.g. plan-first for open-ended
   // device tasks). Defaults to the column default (per_step) when omitted.
-  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional()
+  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+  // Wisp W04: open the session under the caller's own delegation grant.
+  // Validated (flag, ownership, status, entitlement, scope) in createSession.
+  wispGrantId: z.string().guid().optional()
 });
 
 /**
@@ -254,6 +258,7 @@ aiRoutes.post(
       });
       return c.json(session, 201);
     } catch (err) {
+      if (err instanceof WispSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code }, 400);
       if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);

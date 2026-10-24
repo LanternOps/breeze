@@ -684,7 +684,13 @@ export async function executeTool(
   // existing identity — `aiTools.executeToolGate.test.ts` asserts a
   // caller-supplied context is passed through with `toBe` (reference)
   // equality, and a context rebuilt for every call would break that.
-  const captureAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  //
+  // Wisp W04 (w00 A24): a chat session attached to a thread also reads that
+  // thread's attachments — the key is added ONLY when the capture scope
+  // carries one, so every other anchor keeps its exact shape.
+  const writeAnchor = toolName === 'read_artifact' ? captureContextFrom(auth, opts, toolName) : null;
+  const wispThreadId = opts?.capture?.wispThreadId;
+  const captureAnchor = writeAnchor && wispThreadId ? { ...writeAnchor, wispThreadId } : writeAnchor;
   let handlerContext = captureAnchor ? { ...opts?.context, captureAnchor } : opts?.context;
 
   // Topology M4-D1 (#6000): every topology tool runs only against the site a

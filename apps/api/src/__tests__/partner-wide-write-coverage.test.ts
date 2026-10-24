@@ -68,6 +68,9 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // (pause/expire) or lifts a pause it set itself; the caller-facing
   // create/refresh/revoke/settings gates live in services/wisp/grants.ts.
   'services/wisp/grantLifecycle.ts': 'worker/system path: only ever TIGHTENS a grant (pause/expire) or restores a pause it caused itself; the caller-facing create/refresh/revoke gates live in services/wisp/grants.ts',
+  // Wisp W04 (#9910): a wisp_threads row is the conversation state of ONE
+  // grant, not partner-wide configuration pushed into every org.
+  'services/wisp/threads.ts': 'per-grant conversation state (one row per wisp_grants id), not partner-wide config; writes run in system context on ids the caller already authorised (validateWispGrantForSession / the grant-owner thread routes), and setThreadFocus is keyed by the ceiling\'s own grant + partner after assertWithinCeiling',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
   // `network_check` monitor definition — the compiler is its only writer, and
