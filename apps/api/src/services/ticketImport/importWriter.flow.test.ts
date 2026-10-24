@@ -1,6 +1,7 @@
 /**
- * importTicket's transactions without a database (#8313 W0; the #8884 review
- * findings 3, 5, 6 and 7): how many transactions a ticket takes, what each is
+ * importTicket's transactions without a database (#8313 W0: the #8884 review
+ * findings 3, 5, 6 and 7, the reads behind the resume report, and a ticket
+ * merged in Breeze): how many transactions a ticket takes, what each is
  * charged, and what the result reports. The window lock, the bucket and the
  * ticketService writes are mocked; every read goes through a scripted fake of
  * `db.select`, answered by what the query reads. The same paths run against
