@@ -62,6 +62,7 @@ const ceiling: GrantCeiling = {
   permissionKeys: new Set(['ai_sessions:use']),
   toolAllowlist: null,
   deniedTools: new Set(),
+  orgTerms: new Map(),
   status: 'active',
 };
 

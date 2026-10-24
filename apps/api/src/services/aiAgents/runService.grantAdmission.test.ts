@@ -141,7 +141,7 @@ function ceiling(o: Partial<GrantCeiling> = {}): GrantCeiling {
   return {
     grantId: 'g1', revisionId: 'r1', partnerId: PARTNER_ID, grantorUserId: 'u1', scopeOrgId: null, partnerWide: true,
     orgIds: new Set([ORG_ID]), siteIds: null, permissionKeys: new Set(['*:*']), toolAllowlist: null,
-    deniedTools: new Set(['manage_ai_agents', 'get_user_risk_scores']), status: 'active', ...o,
+    deniedTools: new Set(['manage_ai_agents', 'get_user_risk_scores']), orgTerms: new Map(), status: 'active', ...o,
   };
 }
 

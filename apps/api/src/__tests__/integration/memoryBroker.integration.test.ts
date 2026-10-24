@@ -38,6 +38,7 @@ const ceiling = (f: MemoryFixture, over: Partial<GrantCeiling> = {}): GrantCeili
   permissionKeys: new Set(),
   toolAllowlist: null,
   deniedTools: new Set(),
+  orgTerms: new Map(),
   status: 'active',
   ...over,
 });
@@ -80,7 +81,7 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
     await insertBlock(f.partnerB, { kind: 'org', orgId: f.orgB1 });
     await insertBlock(f.partnerB, { kind: 'user', userId: f.uB1 });
 
-    const got = await recallForGrant(ceiling(f), {});
+    const got = await recallForGrant(ceiling(f, { partnerWide: true }), {});
     expect(ids(got)).toEqual([own.id, orgIn.id, partner.id].sort());
     expect(got.every((b) => b.tenantPartnerId === f.partnerA)).toBe(true);
 
@@ -90,9 +91,34 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
     expect(ids(await recallForGrant(wide, { owners: ['org'], orgId: f.orgA1 }))).toEqual([orgIn.id]);
 
     // An empty org set yields no org rows (and no SQL error).
-    const noOrgs = ceiling(f, { orgIds: new Set() });
+    const noOrgs = ceiling(f, { partnerWide: true, orgIds: new Set() });
     expect(ids(await recallForGrant(noOrgs, {}))).toEqual([own.id, partner.id].sort());
     expect(await recallForGrant(noOrgs, { owners: ['org'] })).toEqual([]);
+  });
+
+  it('narrowed grant recalls zero partner blocks', async () => {
+    // Partner memory is context for EVERY org of the partner; a grant narrowed
+    // to some orgs (org-scoped, or a grantor on org_access 'selected') must not
+    // read it, exactly as it may not write it.
+    const f = await seedMemoryFixture();
+    const own = await insertBlock(f.partnerA, { kind: 'user', userId: f.uA1 });
+    const orgIn = await insertBlock(f.partnerA, { kind: 'org', orgId: f.orgA1 });
+    const partner = await insertBlock(f.partnerA, { kind: 'partner' });
+
+    const narrowed = [
+      ceiling(f, { scopeOrgId: f.orgA1, partnerWide: false }), // org-scoped grant
+      ceiling(f, { scopeOrgId: null, partnerWide: false }), // partner grant, grantor narrowed to 'selected'
+    ];
+    for (const c of narrowed) {
+      expect(await recallForGrant(c, { owners: ['partner'] })).toEqual([]);
+      const all = await recallForGrant(c, {});
+      expect(all.filter((b) => b.owner.kind === 'partner')).toEqual([]);
+      expect(ids(all)).toEqual([own.id, orgIn.id].sort());
+    }
+
+    // control: a partner-wide grant with full reach reads it
+    const wide = ceiling(f, { scopeOrgId: null, partnerWide: true });
+    expect(ids(await recallForGrant(wide, {}))).toEqual([own.id, orgIn.id, partner.id].sort());
   });
 
   it('never returns retracted or superseded blocks', async () => {
@@ -102,7 +128,7 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
     await insertBlock(f.partnerA, { kind: 'user', userId: f.uA1 }, { status: 'retracted' });
     await insertBlock(f.partnerA, { kind: 'org', orgId: f.orgA1 }, { supersededById: live.id });
 
-    expect(ids(await recallForGrant(ceiling(f), {}))).toEqual([live.id]);
+    expect(ids(await recallForGrant(ceiling(f, { partnerWide: true }), {}))).toEqual([live.id]);
   });
 
   it('throws GrantInactiveError when the ceiling is paused', async () => {
@@ -139,7 +165,7 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
     await insertBlock(f.partnerB, { kind: 'user', userId: f.uB1 });
     await insertBlock(f.partnerA, { kind: 'user', userId: f.uA1 });
     const partnerA = await insertBlock(f.partnerA, { kind: 'partner' });
-    const forged = ceiling(f, { grantorUserId: f.uB1 });
+    const forged = ceiling(f, { grantorUserId: f.uB1, partnerWide: true });
 
     expect(await recallForGrant(forged, { owners: ['user'] })).toEqual([]);
     const all = await recallForGrant(forged, {});
@@ -328,7 +354,7 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
 
   it('honours limit (default 50, max 200) and subjectKeyPrefix / blockTypes / owners filters', async () => {
     const f = await seedMemoryFixture();
-    const c = ceiling(f);
+    const c = ceiling(f, { partnerWide: true });
     // 205 partner blocks in one insert, staggered updated_at.
     const base = Date.UTC(2026, 0, 1);
     const bulk = Array.from({ length: 205 }, (_, i) => blockValues(f.partnerA, { kind: 'partner' }, {

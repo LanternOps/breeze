@@ -5,8 +5,8 @@
  * Agents never hold a user identity (agent DB contexts carry `userId: null`), so
  * the broker reads and writes under the SYSTEM DB context and does the
  * isolation itself, from the pinned W02 `GrantCeiling`: the grantor's own user
- * blocks, org blocks inside the ceiling, and the anchor partner's blocks —
- * nothing else. Memory is context, never authority (§8.3): nothing here widens
+ * blocks, org blocks inside the ceiling, and — for a partner-wide ceiling only
+ * — the anchor partner's blocks; nothing else. Memory is context, never authority (§8.3): nothing here widens
  * what a grant may do.
  *
  * Contract (w00 "Memory (W03)", A23): recallForGrant, rememberForGrant,
@@ -133,8 +133,13 @@ function clampLimit(limit: number | undefined): number {
  *              structural, not a check that could be forgotten;
  *   - org:     `q.orgId` (asserted inside the ceiling) or every ceiling org;
  *              an empty set contributes no rows;
- *   - partner: the anchor partner's shared memory (partner-wide context, like
- *              partner config — readable by any active grant in the partner).
+ *   - partner: the anchor partner's shared memory — ONLY for a partner-wide
+ *              ceiling (`ceiling.partnerWide`: a partner grant whose grantor
+ *              still reaches every org). Partner memory is context for every
+ *              org of the partner, so a grant narrowed to some orgs (org-scoped,
+ *              or a grantor on org_access 'selected') reads user + in-ceiling
+ *              org blocks only — the same bar rememberForGrant sets for writing
+ *              a partner block (assertWithinCeiling with orgId null).
  * Retracted and superseded blocks are never returned. Confirmed first, then
  * most recently updated. An explicit empty `owners` / `blockTypes` list
  * selects nothing.
@@ -154,7 +159,10 @@ export async function recallForGrant(ceiling: GrantCeiling, q: RecallQuery): Pro
       branches.push(and(eq(aiMemoryBlocks.ownerKind, 'org'), inArray(aiMemoryBlocks.ownerOrgId, orgIds))!);
     }
   }
-  if (owners.has('partner')) branches.push(eq(aiMemoryBlocks.ownerKind, 'partner'));
+  // Same predicate as the partner-owner write gate; never on a narrowed grant.
+  if (owners.has('partner') && ceiling.partnerWide === true && ceiling.scopeOrgId === null) {
+    branches.push(eq(aiMemoryBlocks.ownerKind, 'partner'));
+  }
   if (branches.length === 0) return [];
   if (q.blockTypes !== undefined && q.blockTypes.length === 0) return [];
 
