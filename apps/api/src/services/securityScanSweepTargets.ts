@@ -65,6 +65,8 @@ export interface SweepTargetsResolved {
   orgNames: Map<string, string>;
   targeted: number;
   skipped: SweepSkipCounts;
+  /** The same counts split by device org (orgs with no target included). */
+  skippedByOrg: Map<string, SweepSkipCounts>;
   /** Sorted by id. */
   pins: YaraRuleSetPin[];
   ruleSetNames: Map<string, string>;
@@ -309,17 +311,24 @@ export async function resolveSweepTargets(auth: AuthContext, input: SweepTargets
     .where(and(...conditions));
 
   const skipped = emptySkipCounts();
+  const skippedByOrg = new Map<string, SweepSkipCounts>();
+  const skip = (orgId: string, reason: SecuritySweepSkipReason) => {
+    skipped[reason]++;
+    const counts = skippedByOrg.get(orgId) ?? emptySkipCounts();
+    counts[reason]++;
+    skippedByOrg.set(orgId, counts);
+  };
   const byOrg = new Map<string, string[]>();
   const orgNames = new Map<string, string>();
   for (const device of candidates) {
     const perms = await canExecuteIn(device.orgId);
     if (!perms || !deviceWithinCeiling(auth, perms, device)) continue; // silently out of reach
     if (!setRows.every((set) => ruleSetEligibleForDevice(set, device))) {
-      skipped.rule_set_not_eligible++;
+      skip(device.orgId, 'rule_set_not_eligible');
       continue;
     }
     if (!agentSupportsYaraScan(device.agentVersion)) {
-      skipped.agent_too_old++;
+      skip(device.orgId, 'agent_too_old');
       continue;
     }
     const list = byOrg.get(device.orgId) ?? [];
@@ -344,6 +353,7 @@ export async function resolveSweepTargets(auth: AuthContext, input: SweepTargets
     orgNames,
     targeted,
     skipped,
+    skippedByOrg,
     pins,
     ruleSetNames,
     paths,

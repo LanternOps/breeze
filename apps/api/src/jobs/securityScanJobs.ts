@@ -94,6 +94,20 @@ export async function enqueueSecurityScan(scanId: string): Promise<string | null
   return typeof job.id === 'string' ? job.id : job.id ? String(job.id) : null;
 }
 
+/**
+ * #6263 W05 — nudge the sweep pump right after a create commits. One
+ * coalescing job id: a burst of creates queues at most one immediate pump
+ * (BullMQ ignores an add whose id already exists), and the repeatable tick
+ * admits anything this misses.
+ */
+export async function enqueueSweepPump(): Promise<void> {
+  await getSecurityScanQueue().add(
+    'pump-sweeps',
+    { type: 'pump-sweeps', tickAt: new Date().toISOString() },
+    { jobId: 'security-sweep-pump-now', removeOnComplete: true, removeOnFail: true },
+  );
+}
+
 async function getOrgRunningScans(orgId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
@@ -422,6 +436,10 @@ export function createSecurityScanWorker(): Worker<SecurityScanQueueJobData> {
       if (data.type === 'dispatch-scan') {
         assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'dispatch-scan');
         return processDispatchScan(data);
+      }
+      if (data.type === 'pump-sweeps') {
+        assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'pump-sweeps');
+        return { skipped: true };
       }
       assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'schedule-policies');
       return processSchedulePolicies(data);
