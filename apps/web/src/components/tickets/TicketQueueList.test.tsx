@@ -117,3 +117,20 @@ describe('TicketQueueList org label and row activation (#9564)', () => {
     expect(screen.queryByTestId('ticket-org-tk-2')).toBeNull();
   });
 });
+
+describe('TicketQueueList merged chip (#8972)', () => {
+  it('marks a merged tombstone row "Merged" and leaves live rows alone', () => {
+    render(
+      <TicketQueueList
+        tickets={[
+          makeTicket({ id: 'tk-m', status: 'closed', mergedIntoTicketId: 'tk-surv', mergedAt: '2026-10-20T12:00:00.000Z' }),
+          makeTicket({ id: 'tk-l', mergedIntoTicketId: null }),
+        ]}
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+    expect(screen.getByTestId('ticket-row-merged-tk-m')).toHaveTextContent('Merged');
+    expect(screen.queryByTestId('ticket-row-merged-tk-l')).toBeNull();
+  });
+});
