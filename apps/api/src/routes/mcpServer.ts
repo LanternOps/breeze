@@ -69,15 +69,17 @@ import { isToolEnvGatedOff } from '../services/aiToolEnvGates';
 import { buildWhoamiResult, MCP_WHOAMI_TOOL_LIST_ENTRY } from '../services/mcpWhoami';
 import { applyInsufficientScopeChallenge, buildBearerChallenge } from '../services/mcpAuthChallenge';
 import { isMfaGatedToolAction, isToolWhollyMfaGated, mfaGateRefusesCaller, mfaGatedActionsForTool } from '../services/aiToolMfaGate';
-import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpMessageRateLimitPerMinute, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
+import { mcpAppBaseUrl, mcpApprovalWaitMs, mcpApprovalWaitsPerPrincipal, mcpMessageRateLimitPerMinute, mcpTaskPendingPollIntervalMs, mcpTaskPollIntervalMs, mcpTaskTtlGraceMs, mcpTasksEffective, mcpTier3IntentsEnabled } from '../services/mcpIntentConfig';
 import { mcpAppsEnabled, mcpAppsServerExtensions } from '../services/mcpAppsConfig';
 import {
   NO_MCP_CLIENT_EXTENSIONS,
   parseMcpClientExtensions,
   readLegacySessionExtensions,
+  toLegacyClientExtensions,
   writeLegacySessionExtensions,
   type McpClientExtensions,
 } from '../services/mcpClientExtensions';
+import { buildCreateTaskResult, toMcpTask, type McpTask, type McpTaskIntentRow } from '../services/mcpTasks';
 import {
   MCP_APPS,
   findMcpAppByTool,
@@ -94,6 +96,7 @@ import type * as McpIntentCreation from '../services/mcpIntentCreation';
 import {
   buildApprovalInputRequiredResult,
   buildPendingApprovalResult,
+  buildTerminalActionResult,
   MCP_CANCEL_ACTION_TOOL_LIST_ENTRY,
   MCP_CANCEL_ACTION_TOOL_NAME,
   MCP_GET_ACTION_STATUS_TOOL_LIST_ENTRY,
@@ -746,8 +749,12 @@ type McpDispatchContext = {
   auditExtras: McpAuditExtras;
 };
 
-/** B-W05 (#6159, D-B44): bounded, server-chosen audit additions (never caller text). */
-type McpAuditExtras = { mcpApp?: string };
+/**
+ * B-W05 (#6159, D-B44): bounded, server-chosen audit additions (never caller text).
+ * B-W06 (#6160, D-B53): `taskId` only when it is a UUID; `taskResult` on a
+ * tools/call that returned a CreateTaskResult.
+ */
+type McpAuditExtras = { mcpApp?: string; taskId?: string; taskResult?: true };
 
 /** Legacy-era methods that may read the negotiated-extension side key (D-B42). */
 const MCP_SIDE_KEY_METHODS: ReadonlySet<string> = new Set(['tools/list', 'resources/read', 'tools/call']);
@@ -809,6 +816,8 @@ async function dispatchAndAudit(
       // queries are unchanged. `mcpApp` is a registry key, never caller text.
       ...(clientExtensions.ui ? { uiExtension: true } : {}),
       ...(ctx.auditExtras.mcpApp ? { mcpApp: ctx.auditExtras.mcpApp } : {}),
+      ...(ctx.auditExtras.taskId ? { taskId: ctx.auditExtras.taskId } : {}),
+      ...(ctx.auditExtras.taskResult ? { taskResult: true } : {}),
       ...correlationAuditDetails(ctx.correlation),
     },
     result: response.error ? 'failure' : 'success',
@@ -1062,6 +1071,8 @@ mcpServerRoutes.post(
       headers: readMcpRequestHeaders(c),
       statelessEnabled: mcpStatelessEnabled(),
       endpoint: 'streamable',
+      // B-W06 (#6160, D-B51): tasks/* mirror Mcp-Name only while effective.
+      tasksEffective: mcpTasksEffective(),
     });
     if (decision.era === 'reject') return mcpRejectionResponse(c, pre.body, decision.rejection);
     if (decision.era === 'modern') return handleModernStreamableRequest(c, pre.body, decision.meta);
@@ -1090,8 +1101,9 @@ mcpServerRoutes.post(
 
     // B-W05 (#6159, D-B42): the legacy era declares extensions once, on
     // initialize. Parsed only while the flag is on; otherwise nothing is kept.
+    // B-W06 (#6160): legacy keeps `ui` only (Tasks are modern-only, D-B47).
     const initializeExtensions = isInitialize && mcpAppsEnabled()
-      ? parseMcpClientExtensions(pre.body.params?.capabilities)
+      ? toLegacyClientExtensions(parseMcpClientExtensions(pre.body.params?.capabilities))
       : NO_MCP_CLIENT_EXTENSIONS;
 
     let trustedSessionId: string | undefined;
@@ -1293,9 +1305,16 @@ async function handleModernStreamableRequest(
     clientCapabilities: meta.clientCapabilities,
     transport: 'streamable',
     // B-W05 (#6159, D-B42): declared per request; nothing is stored.
-    resolveClientExtensions: memoizeClientExtensions(async () => (
-      mcpAppsEnabled() ? parseMcpClientExtensions(meta.clientCapabilities) : NO_MCP_CLIENT_EXTENSIONS
-    )),
+    // B-W06 (#6160): each extension counts only while its own flag is on, so
+    // a flag-off server sees exactly what it saw before.
+    resolveClientExtensions: memoizeClientExtensions(async () => {
+      const apps = mcpAppsEnabled();
+      const tasks = mcpTasksEffective();
+      if (!apps && !tasks) return NO_MCP_CLIENT_EXTENSIONS;
+      const declared = parseMcpClientExtensions(meta.clientCapabilities);
+      if (!(apps && declared.ui) && !(tasks && declared.tasks)) return NO_MCP_CLIENT_EXTENSIONS;
+      return { ui: apps && declared.ui, tasks: tasks && declared.tasks };
+    }),
     auditExtras: {},
   }, auth, apiKey);
   const status = resolveMcpHttpStatus('modern', response, applyInsufficientScopeChallenge(c, apiKey, response));
@@ -1370,9 +1389,14 @@ async function handleJsonRpc(
       case 'tools/list':
         return await handleToolsList(req.id, scopes, auth, req.params, apiKey, await ctx.resolveClientExtensions());
 
-      case 'tools/call':
+      case 'tools/call': {
         noteMcpAppToolCall(req.params, ctx.auditExtras);
-        return await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null);
+        // B-W06 (#6160, D-B47): Tasks are modern-only and declared per request.
+        const tasksDeclared = ctx.era === 'modern' && (await ctx.resolveClientExtensions()).tasks;
+        const response = await handleToolsCall(req.id, req.params ?? {}, auth, scopes, apiKey, c, ctx.correlation, ctx.clientCapabilities ?? null, tasksDeclared);
+        if (tasksDeclared && isCreateTaskResponse(response)) ctx.auditExtras.taskResult = true;
+        return response;
+      }
 
       case 'resources/list':
         return handleResourcesList(req.id, parseStoredMcpDomains(apiKey?.mcpDomains));
@@ -2026,6 +2050,8 @@ async function handleToolsCall(
   c: Context | undefined,
   correlation: McpRequestCorrelation,
   clientCapabilities: Record<string, unknown> | null = null,
+  /** B-W06 (#6160): this modern request declared the Tasks extension (and Tasks are effective). */
+  tasksDeclared = false,
 ): Promise<JsonRpcResponse> {
   const requestedToolName = params.name as string;
   const toolInput = (params.arguments ?? {}) as Record<string, unknown>;
@@ -2039,7 +2065,7 @@ async function handleToolsCall(
   // ai:read preflight (already passed) and the always-granted core domain —
   // `decline` additionally needs ai:write, checked inside.
   if (correlation.era === 'modern' && params.requestState !== undefined) {
-    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName));
+    return handleToolsCallContinuation(id, params, auth, scopes, apiKey, c, resolveDeprecatedToolAlias(requestedToolName), tasksDeclared);
   }
 
   // B-W02 (#6156): parsed once per call; a missing value fails closed.
@@ -2305,7 +2331,7 @@ async function handleToolsCall(
     if (!executionOrgId || !apiKey) {
       return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
     }
-    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities });
+    return fileMcpActionIntent(id, { auth, apiKey, toolName, toolInput, executionOrgId, correlation, clientCapabilities }, tasksDeclared);
   }
   // Shared Tier 3 lifecycle (MCP-OAUTH-12): ledger (fail closed) → handler →
   // complete + uniform audit. The callback owns executeTool + the MCP response
@@ -2445,6 +2471,8 @@ async function fileMcpActionIntent(
     correlation: McpRequestCorrelation;
     clientCapabilities?: Record<string, unknown> | null;
   },
+  /** B-W06 (#6160, D-B47): a live intent is answered with a CreateTaskResult. */
+  tasksDeclared = false,
 ): Promise<JsonRpcResponse> {
   let outcome: Awaited<ReturnType<typeof McpIntentCreation.createMcpActionIntent>>;
   try {
@@ -2490,12 +2518,51 @@ async function fileMcpActionIntent(
       return jsonRpcResult(id, buildApprovalInputRequiredResult(outcome.status, requestState));
     } catch (err) {
       // The intent is already filed: never turn that into an error. The
-      // client still gets the pollable pending result.
+      // client still gets the pollable pending result (or its task).
       console.error('[MCP] Failed to seal approval requestState; answering pending_approval:', err);
       captureException(err);
     }
   }
+  // B-W06 (#6160, D-B51): a Tasks-declaring modern client gets a task handle
+  // for the live intent — no URL elicitation applies, an approved/executing
+  // replay, or a sealing failure. Built from the committed row (reloaded), so
+  // tasks/get already resolves; a failed or empty reload keeps the pending
+  // result: a filed intent never becomes an error.
+  if (tasksDeclared && args.correlation.era === 'modern') {
+    try {
+      const task = await loadOwnedMcpTask(args.auth, outcome.status.actionId);
+      if (task) return jsonRpcResult(id, buildCreateTaskResult(task));
+    } catch (err) {
+      console.error('[MCP] Failed to build the task for a filed intent; answering pending_approval:', err);
+      captureException(err);
+    }
+  }
   return jsonRpcResult(id, buildPendingApprovalResult(outcome.status));
+}
+
+/** B-W06 (#6160, D-B52): the knobs for one projection, budgeted on the caller's live count. */
+async function mcpTaskKnobsFor(auth: AuthContext): Promise<Parameters<typeof toMcpTask>[2]> {
+  const { countLiveMcpIntentsForOrigin } = await liveMcpIntentCreation();
+  return {
+    pendingPollMs: mcpTaskPendingPollIntervalMs(),
+    runningPollMs: mcpTaskPollIntervalMs(),
+    ttlGraceMs: mcpTaskTtlGraceMs(),
+    liveCount: await countLiveMcpIntentsForOrigin(auth),
+    perMinuteLimit: mcpMessageRateLimitPerMinute(),
+  };
+}
+
+/** B-W06 (#6160, D-B48): the caller's own task (ownership = loadOwnedMcpIntent), or null. */
+async function loadOwnedMcpTask(auth: AuthContext, taskId: unknown): Promise<McpTask | null> {
+  const { loadOwnedMcpIntent } = await liveMcpIntentCreation();
+  const intent = await loadOwnedMcpIntent(auth, taskId);
+  if (!intent) return null;
+  return toMcpTask(intent, mcpAppBaseUrl(), await mcpTaskKnobsFor(auth));
+}
+
+function isCreateTaskResponse(response: JsonRpcResponse): boolean {
+  const result = response.result as Record<string, unknown> | undefined;
+  return !!result && result.resultType === 'task';
 }
 
 /** URL mode only: `elicitation: {}` (form-only) or anything else never qualifies. */
@@ -2526,6 +2593,8 @@ async function handleToolsCallContinuation(
   apiKey: McpApiKeyContext | undefined,
   c: Context | undefined,
   toolName: string,
+  /** B-W06 (#6160, D-B51): a still-live outcome is answered with a CreateTaskResult. */
+  tasksDeclared = false,
 ): Promise<JsonRpcResponse> {
   const callerRef = canOwnMcpIntents(auth, apiKey) ? mcpOriginRef(auth.principal) : null;
   const invalid = () => jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_request_state' });
@@ -2579,6 +2648,7 @@ async function handleToolsCallContinuation(
       return mcpActionStatusResult(id, outcome.status, { outcome: outcome.kind });
     }
 
+    let row: McpTaskIntentRow = intent;
     let current = toMcpActionStatus(intent, base);
     if (action === 'accept' && (current.status === 'pending_approval' || current.status === 'in_progress')) {
       const inFlight = approvalWaitsByOrigin.get(callerRef) ?? 0;
@@ -2602,26 +2672,21 @@ async function handleToolsCallContinuation(
         if (!signal?.aborted) {
           const fresh = await loadOwnedMcpIntent(auth, intent.id);
           if (!fresh) return jsonRpcError(id, -32602, 'Action not found', MCP_ACTION_NOT_FOUND);
+          row = fresh;
           current = toMcpActionStatus(fresh, base);
         }
       }
     }
 
     if (current.status === 'pending_approval' || current.status === 'in_progress') {
-      // The MRTR cycle ends here; the model polls get_action_status.
+      // The MRTR cycle ends here: a Tasks-declaring client gets the task
+      // (built from the same row), everyone else polls get_action_status.
+      if (tasksDeclared) {
+        return jsonRpcResult(id, buildCreateTaskResult(toMcpTask(row, base, await mcpTaskKnobsFor(auth))));
+      }
       return jsonRpcResult(id, buildPendingApprovalResult(current));
     }
-    if (current.status === 'completed') {
-      return jsonRpcResult(id, {
-        content: [{ type: 'text', text: current.result ?? JSON.stringify(current) }],
-        structuredContent: current,
-      });
-    }
-    return jsonRpcResult(id, {
-      content: [{ type: 'text', text: JSON.stringify(current) }],
-      structuredContent: current,
-      isError: true,
-    });
+    return jsonRpcResult(id, buildTerminalActionResult(current));
   } catch (err) {
     console.error('[MCP] approval continuation failed:', err);
     captureException(err);
