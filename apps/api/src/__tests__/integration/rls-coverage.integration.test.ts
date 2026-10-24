@@ -1106,6 +1106,7 @@ const DEVICE_ID_JOIN_POLICY_TABLES: ReadonlySet<string> = new Set<string>([
   'deployment_results',
   'patch_job_results',
   'patch_rollbacks',
+  'software_compliance_status',
 ]);
 
 // Tables that reach their tenant through a PARENT FK (no device_id, no
@@ -1374,7 +1375,6 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
   // column / catalog facts that a reviewer needs, nothing more.
   ['device_software', 'device_id-keyed inventory rows, no RLS; candidate shape 5 (device-join) or denormalised org_id.'],
   ['mobile_sessions', 'user_id / refresh-token session rows, no RLS; candidate shape 6 (breeze_current_user_id). Deferred in 2026-04-11-bucket-c-dead-cleanup-rls.sql.'],
-  ['software_compliance_status', 'device_id + policy_id rows, no RLS; candidate shape 5 (device-join).'],
   ['agent_versions', 'Global agent release reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
   ['cis_check_catalog', 'Global CIS benchmark check catalog; RLS OFF, so its 3 system-only write policies are inert; candidate INTENTIONAL_UNSCOPED after review.'],
   ['patches', 'Global patch reference data, no RLS; candidate INTENTIONAL_UNSCOPED after review.'],
@@ -1395,11 +1395,10 @@ const UNREVIEWED_RLS_CLASSIFICATION_DEBT: ReadonlyMap<string, string> = new Map<
 // classified into a real bucket (see the D5 failure message), not parked
 // here. Both constants are asserted by 'the unreviewed classification debt
 // bucket only shrinks' below.
-const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 11;
+const UNREVIEWED_RLS_CLASSIFICATION_DEBT_CEILING = 10;
 const UNREVIEWED_RLS_CLASSIFICATION_DEBT_FROZEN_NAMES: ReadonlySet<string> = new Set<string>([
   'device_software',
   'mobile_sessions',
-  'software_compliance_status',
   'agent_versions',
   'cis_check_catalog',
   'patches',

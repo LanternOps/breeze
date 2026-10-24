@@ -66,6 +66,13 @@ export type SoftwareComplianceUpsertInput = {
   remediationStatus?: SoftwarePolicyRemediationStatus;
   installRemediationStatus?: SoftwarePolicyInstallRemediationStatus;
   installRemediationAttempts?: number;
+  /**
+   * #6958 PR E: the derived `service_running` watch names. The compliance pass
+   * always passes it (an array, or null when the policy derives no names for
+   * the device) so a rule edit clears stale watches within one cycle; other
+   * writers leave it undefined and the column untouched.
+   */
+  serviceWatches?: Array<{ name: string }> | null;
 };
 
 type DeviceSoftwareInventoryRow = SoftwareInventoryRow & {
@@ -414,7 +421,21 @@ export function evaluateSoftwareInventory(
   rules: SoftwarePolicyRulesDefinition,
   inventory: SoftwareInventoryRow[]
 ): SoftwarePolicyViolation[] {
+  return evaluateSoftwareInventoryDetailed(mode, rules, inventory).violations;
+}
+
+/**
+ * evaluateSoftwareInventory plus the names of the rules some inventory row
+ * matched (#6958 PR E: the service_running bridge needs "inventory matched"
+ * per rule, which the violation list only implies for allowlist rules).
+ */
+export function evaluateSoftwareInventoryDetailed(
+  mode: typeof softwarePolicies.$inferSelect.mode,
+  rules: SoftwarePolicyRulesDefinition,
+  inventory: SoftwareInventoryRow[]
+): { violations: SoftwarePolicyViolation[]; matchedRuleNames: Set<string> } {
   const violations: SoftwarePolicyViolation[] = [];
+  const matchedRuleNames = new Set<string>();
   const detectedAt = new Date().toISOString();
   const softwareRules = rules.software ?? [];
   const allowUnknown = rules.allowUnknown === true;
@@ -438,6 +459,7 @@ export function evaluateSoftwareInventory(
 
     for (const rule of softwareRules) {
       const found = inventory.some((installed) => matchesSoftwareRule(installed, rule));
+      if (found) matchedRuleNames.add(rule.name);
       if (!found) {
         violations.push({
           type: 'missing',
@@ -457,13 +479,14 @@ export function evaluateSoftwareInventory(
       }
     }
 
-    return violations;
+    return { violations, matchedRuleNames };
   }
 
   // Audit mode uses blocklist-style detection but does not auto-remediate.
   for (const installed of inventory) {
     const matchedRule = softwareRules.find((rule) => matchesSoftwareRule(installed, rule));
     if (!matchedRule) continue;
+    matchedRuleNames.add(matchedRule.name);
 
     violations.push({
       type: 'unauthorized',
@@ -483,7 +506,7 @@ export function evaluateSoftwareInventory(
     });
   }
 
-  return violations;
+  return { violations, matchedRuleNames };
 }
 
 export function evaluateSoftwarePolicyAgainstInventory(
@@ -569,12 +592,13 @@ export async function evaluateSoftwarePolicyForDevice(
  * SQL objects, so each generated statement gets its own fragment.
  */
 type ComplianceUpsertOptionalKey = keyof SoftwareComplianceUpsertInput
-  & ('remediationStatus' | 'installRemediationStatus' | 'installRemediationAttempts');
+  & ('remediationStatus' | 'installRemediationStatus' | 'installRemediationAttempts' | 'serviceWatches');
 
 const COMPLIANCE_UPSERT_OPTIONAL_COLUMNS: Record<ComplianceUpsertOptionalKey, () => SQL> = {
   remediationStatus: () => sql`excluded.remediation_status`,
   installRemediationStatus: () => sql`excluded.install_remediation_status`,
   installRemediationAttempts: () => sql`excluded.install_remediation_attempts`,
+  serviceWatches: () => sql`excluded.service_watches`,
 };
 
 const COMPLIANCE_UPSERT_OPTIONAL_KEYS = Object.keys(
