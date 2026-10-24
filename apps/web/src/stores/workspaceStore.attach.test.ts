@@ -309,6 +309,21 @@ describe('sendMessage refusals (Gate B #7, classifySendRefusal)', () => {
     expect(callsTo('/ai/sessions/sa/stream')).toHaveLength(0);
   });
 
+  it('a stale send (logout since it started) writes nothing even to a tab that exists again under the same id', async () => {
+    setup();
+    let release!: () => void;
+    on('/ai/sessions/sa/messages', () => new Promise<Response>((r) => { release = () => r(sse(frame({ type: 'done' }))); }));
+    const p = useWorkspaceStore.getState().sendMessage('a', 'late');
+    await vi.waitFor(() => expect(callsTo('/ai/sessions/sa/messages')).toHaveLength(1));
+    useWorkspaceStore.getState().resetForLogout();
+    const reborn = tab({ id: 'a', sessionId: 'sa', isStreaming: true, messages: [] });
+    useWorkspaceStore.setState({ tabs: [reborn], activeTabId: 'a' });
+    release();
+    await p;
+    await flush();
+    expect(tabOf('a')).toBe(reborn);
+  });
+
   it('a send whose fetch resolves after resetForLogout writes nothing (no re-persist, Codex finding 1)', async () => {
     setup();
     let release!: () => void;
