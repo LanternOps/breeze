@@ -222,6 +222,8 @@ The installer parses this block at runtime using a regex search anywhere in the 
   If you rename the MSI before deploying it, preserve the `(TOKEN@HOST)` block exactly as downloaded. Removing the block causes the installer to fall back to requiring the enrollment key and server URL entered manually during setup.
 </Aside>
 
+**Running a new installer on a device that already has an agent** re-enrolls it, as long as the installer came from the same Breeze server the agent is enrolled with. For an installer generated for the device's current organization and site, the server re-enrolls the existing device record in place while the agent's credential is still valid, and otherwise creates a new record linked to the old one with a *possible replacement* banner and one-click cleanup. An installer for a different site or organization creates a separate, unlinked record and the old one goes offline; decommission it afterwards. Each download carries its own token, so every fresh installer counts as "new". Re-running the *same* downloaded file (for example to upgrade) leaves the existing enrollment alone and does not spend a token use. If the new installer's token has expired, or it was downloaded from a different Breeze server, the install completes, the existing enrollment is kept, and a warning is written to `enroll-last-error.txt` and the Windows event log.
+
 ### Linux/macOS One-Liner (CLI Commands Tab)
 
 There is no downloadable pre-configured installer for Linux, so the **Add Device** dialog's **CLI Commands** tab generates a copy-paste install command instead.

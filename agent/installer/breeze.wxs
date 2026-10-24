@@ -810,10 +810,14 @@
            upgrade, and a `NOT Installed` gate made that retry a silent no-op
            on a box whose agent never enrolled (#4127). Running them there is
            safe because the agent is idempotent: `enroll` (without the force
-           flag, which this CA never passes) and `bootstrap` both exit 0
-           WITHOUT contacting the server when agent.yaml already has an
-           agent_id, so an enrolled agent is never re-enrolled and a
-           single-use bootstrap token is never burned. A maintenance run
+           flag, which this CA never passes) exits 0 WITHOUT contacting the
+           server when agent.yaml already has an agent_id, and `bootstrap`
+           does the same whenever the file carries no token or the token
+           that enrolled this host (secrets.yaml bootstrap_token_fingerprint),
+           so a re-run of the same MSI never burns a token use. Only a
+           DIFFERENT token from the same server re-enrolls (#9540); a token
+           for another server, or one that no longer redeems, keeps the
+           existing enrollment and still exits 0. A maintenance run
            launched from the Windows Installer cache (Apps repair) has a
            tokenless OriginalDatabase and takes the soft no-token path. -->
       <Custom Action="Set_EnrollAgent" Before="EnrollAgent" Condition="NOT REMOVE AND SERVER_URL AND ENROLLMENT_KEY" />
