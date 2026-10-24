@@ -78,10 +78,11 @@ describe('AI_AGENT_LIMIT_DEFAULTS (triage-profile limits, phase 2 P2-4)', () => 
   });
 });
 
-describe('AI_AGENT_RUN_PROFILES (analysis profile, execution plane W04 #5715)', () => {
-  it('equals full, verdict, sweep, narrative, triage, design, patch, analysis, remediation_research', () => {
+describe('AI_AGENT_RUN_PROFILES (analysis profile, execution plane W04 #5715; assessment, Wisp W05)', () => {
+  it('equals full, verdict, sweep, narrative, triage, design, patch, analysis, remediation_research, assessment', () => {
     expect(AI_AGENT_RUN_PROFILES).toEqual([
       'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis', 'remediation_research',
+      'assessment',
     ]);
   });
 });

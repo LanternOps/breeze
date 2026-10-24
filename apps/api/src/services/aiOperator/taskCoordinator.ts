@@ -62,6 +62,8 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
+import { publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
 import {
   isIdentityOffboardingCheckpoint,
   isServiceRecoveryCheckpoint,
@@ -402,13 +404,14 @@ async function settle(args: {
   handoffSummary?: string;
   checkpoint?: TaskCheckpoint;
 }): Promise<boolean> {
+  const terminalState = nextTaskState(args.task.state as string, args.event);
   const committed = await writeLeased({
     orgId: args.task.orgId,
     taskId: args.task.id,
     revision: args.task.revision,
     leaseEpoch: args.leaseEpoch,
     patch: {
-      state: nextTaskState(args.task.state as string, args.event),
+      state: terminalState,
       outcome: args.outcome,
       outcomeDetail: args.detail.slice(0, 4000),
       ...(args.handoffSummary ? { handoffSummary: args.handoffSummary.slice(0, 4000) } : {}),
@@ -457,7 +460,35 @@ async function settle(args: {
   // independently re-derived the same verdict. An alerting metric that
   // over-reports is worse than none: it trains the reader to ignore it.
   if (committed && args.outcome === 'unknown_effect') recordAiOperatorUnknownEffectHandoff();
+  // Wisp W05: tell the triage engine the task reached a terminal state.
+  // `settle`'s `event` is narrowed to complete | partial | hand_off | fail,
+  // whose destinations (completed | partial | handed_off | failed) are all
+  // terminal and are exactly the states the payload type allows; the
+  // stopping-path terminals (cancelled / expired) settle elsewhere and are not
+  // a "finished" signal. Fire-and-forget, after the commit, outside any DB
+  // context (#1105): a bus outage must not fail a settled task.
+  // publishEvent is `async`, so in production it only ever rejects; the outer
+  // catch covers a non-async stand-in (test doubles) that throws.
+  if (committed) {
+    try {
+      void publishEvent('ai.operator.task.finished', args.task.orgId, {
+        taskId: args.task.id,
+        orgId: args.task.orgId,
+        state: terminalState,
+        outcome: args.outcome,
+        grantId: args.task.grantId ?? null,
+      }, 'ai-operator').catch(reportTaskFinishedPublishFailure);
+    } catch (err) {
+      reportTaskFinishedPublishFailure(err);
+    }
+  }
   return committed;
+}
+
+/** A lost `ai.operator.task.finished` is a lost Wisp wake: report it, never fail the settle. */
+function reportTaskFinishedPublishFailure(err: unknown): void {
+  console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'aiOperator', op: 'publish_task_finished' });
 }
 
 /**
@@ -579,6 +610,13 @@ async function admitReasoningRun(args: {
       agentId: task.agentId,
       promptVersion: args.recipe.promptVersion,
     },
+    // Wisp W02 (Wisp design §4.3, §4.5): runs the coordinator creates for a
+    // grant-bearing task inherit the task's pinned ceiling. No
+    // requestedByRunId: these are the coordinator's own deterministic steps,
+    // not a run spawning a run.
+    ...(task.grantId && task.grantRevisionId
+      ? { grant: { grantId: task.grantId, grantRevisionId: task.grantRevisionId } }
+      : {}),
   });
 
   if (!result.created) {
@@ -872,6 +910,9 @@ export async function advanceTask(task: AiOperatorTaskRow, leaseEpoch: number): 
   // the task's live target rows. For every recipe that declares an arm,
   // `checkpointMatchesRecipe` above already guarantees the arm belongs to it.
   if (stepNeedsRequesterAccessRecheck(recipe.steps[stepKey])) {
+    // Wisp W02: the device-keyed gate re-checks a grant-bearing task for
+    // `devices:execute` (its default effect — it only ever guards a device
+    // command) inside the pinned ceiling.
     const accessCheck = isServiceRecoveryCheckpoint(checkpoint)
       ? await requesterAccessLost(task, checkpoint.recipeInput.deviceId)
       : await requesterAccessLostForTargets(task);

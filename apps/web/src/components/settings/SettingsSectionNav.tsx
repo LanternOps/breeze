@@ -61,6 +61,36 @@ export default function SettingsSectionNav({ groups, activeKey, onNavigate, sele
     }
   }, [activeKey]);
 
+  // The CSS max-height below only fits once the rail is stuck at top-6. Before
+  // that it sits under the page title, and its bottom ran past the viewport,
+  // hiding the last sections. Bound it from its real top instead, keeping the
+  // same 1.5rem gap as <main>'s bottom padding. The class stays as the
+  // pre-hydration fallback. A banner that mounts above the rail pushes it down
+  // without a scroll or resize; it also grows one of the rail's ancestors,
+  // which is what the ResizeObserver watches.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const main = rail.closest('main');
+    const scroller: HTMLElement | Window = main ?? window;
+    const fit = () => {
+      rail.style.maxHeight = `${Math.max(0, window.innerHeight - rail.getBoundingClientRect().top - 24)}px`;
+    };
+    fit();
+    scroller.addEventListener('scroll', fit, { passive: true });
+    window.addEventListener('resize', fit);
+    let observer: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(fit);
+      for (let el = rail.parentElement; el && el !== main && el !== document.body; el = el.parentElement) observer.observe(el);
+    }
+    return () => {
+      scroller.removeEventListener('scroll', fit);
+      window.removeEventListener('resize', fit);
+      observer?.disconnect();
+    };
+  }, []);
+
   return (
     <div>
       <div className="lg:hidden">

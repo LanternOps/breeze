@@ -1,8 +1,9 @@
 ---
-tracking_issue: LanternOps/breeze#6721
+tracking_issue: LanternOps/breeze#9791
+spec_issue: LanternOps/breeze#6721
 co_issue: LanternOps/breeze#6720
 spec: docs/superpowers/specs/web-ui/2026-10-18-dashboard-clickthrough-and-sites-visibility-spec.md
-status: draft — awaiting Gate B
+status: approved (Gate B) — waves tracked on LanternOps/breeze#9791
 ---
 
 # Dashboard Click-Through + Sites Visibility Implementation Plan

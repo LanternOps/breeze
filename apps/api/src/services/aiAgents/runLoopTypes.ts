@@ -1,5 +1,6 @@
-import type { AnalysisOutcome, RemediationTriggerKind, ResearchOutcome } from '@breeze/shared';
+import type { AnalysisOutcome, AssessmentOutcome, RemediationTriggerKind, ResearchOutcome } from '@breeze/shared';
 import type { ResearchRunContext } from './researchContext';
+import type { AssessmentRunContext } from '../wisp/assessmentTypes';
 import type { RunProvenFixes } from '../fixMemory/runMemory';
 /**
  * The run loop's internal shape contracts, split out of `runLoop.ts` (issue
@@ -42,6 +43,19 @@ import type { SweepProposalRecord } from './sweepFindings';
 import type { TicketRunContext } from './ticketContext';
 import type { WorkspaceService } from '../workspace/workspaceService';
 import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
+
+// Wisp W05b — the assessment run's shapes live in `wisp/assessmentTypes.ts`
+// (type-only, shared with `wisp/assessment.ts` and `wisp/readiness.ts`);
+// re-exported so run-loop code names them from here like every other
+// per-profile context.
+export type {
+  AssessmentDigest,
+  AssessmentReason,
+  AssessmentRunContext,
+  OrgReadiness,
+  ReadinessCheck,
+  WispAssessmentTriggerRef,
+} from '../wisp/assessmentTypes';
 
 export interface OutcomeProposedAction {
   tool: string;
@@ -316,6 +330,25 @@ export interface AgentRunOutcome {
   analysis?: AnalysisOutcome;
   /** AI Suggested Fixes W2 — the validated research submission (accepted items + recorded rejections). */
   research?: ResearchOutcome;
+  /**
+   * Wisp W05b — every assessment outcome-tool call of an `assessment`-profile
+   * run, captured by the post-tool-use hook. Unlike the single-shot `submit_*`
+   * outcomes above, each tool may be called many times, so each call APPENDS
+   * to its list. Model-supplied ids inside are untrusted:
+   * `finalizeAssessment` (assessmentFinalizer.ts) re-reads every concern
+   * under the grant ceiling, pins it to the run's org and applies the calls.
+   * `specialistRequests` are kept untouched for W07's audit. Absent for every
+   * other profile and for an assessment that stayed quiet.
+   */
+  assessment?: AssessmentOutcome;
+  /**
+   * Wisp W05b — why `finalizeAssessment` did not apply part of `assessment`
+   * (`raise_cap`, `concern_not_in_org`, `nudge_backoff`, `nudge_snoozed`,
+   * `nudge_digest_only`, `nudge_dismissed`, `propose_tier1_refused`, …), one
+   * entry per skipped call — the same idiom as `ticketTriageSkipped`. Absent
+   * when nothing was skipped.
+   */
+  assessmentSkipped?: string[];
   /** Sandbox compute charged to this run, in cents (spec §5.6). */
   computeCents?: number;
   /**
@@ -362,6 +395,14 @@ export interface RunRow {
   taskId: string | null;
   taskStepKey: string | null;
   taskAttemptOrdinal: number | null;
+  /**
+   * Wisp W02 — the delegation grant + revision admission pinned (both or
+   * none, `ai_agent_runs_grant_link_chk`). When set, the pre-tool hook checks
+   * EVERY tool call against the live ceiling. Optional so fixtures that
+   * predate W02 stay valid rows.
+   */
+  grantId?: string | null;
+  grantRevisionId?: string | null;
   /**
    * Execution plane W04 — the admission-frozen inputs of an `analysis` run
    * (`ai_agent_runs.staged_inputs`), `null` for every other profile. jsonb:
@@ -491,6 +532,15 @@ export interface RunContext {
   } | null;
   /** AI Suggested Fixes W2 — set only for a `remediation_research` run. Optional like `patch`. */
   research?: ResearchRunContext | null;
+  /**
+   * Wisp W05b — the grant-scoped context of an `assessment`-profile run
+   * (`loadAssessmentContext`, wisp/assessment.ts): thread summary, the org's
+   * live concerns with this grant's recipient state, the changes digest, the
+   * requesting watch, readiness and nudge feedback. `null` for every other
+   * profile AND for an assessment whose grant is no longer active — the run
+   * loop then skips the run with `grant_inactive` before any model call.
+   */
+  assessment: AssessmentRunContext | null;
   /**
    * AI Suggested Fixes W3 — proven fixes for this run's alert or correlation
    * group. Set only for `verdict`/`full` runs whose org-pinned alert or group

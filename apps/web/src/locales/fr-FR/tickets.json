@@ -423,6 +423,7 @@
     "loadFailed": "Le ticket n’a pas fonctionné.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du ticket",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",

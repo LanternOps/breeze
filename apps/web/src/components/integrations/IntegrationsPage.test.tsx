@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let scope: "system" | "partner" | "organization" | null = "partner";
@@ -205,6 +205,13 @@ vi.mock("../../stores/helpStore", () => ({
 }));
 
 import IntegrationsPage from "./IntegrationsPage";
+
+// Entries in the page's navigation list (desktop). The select that replaces it
+// below md carries the same entries.
+const navLink = (name: string | RegExp) =>
+  within(screen.getByTestId("integrations-nav")).getByRole("link", { name });
+const queryNavLink = (name: string | RegExp) =>
+  within(screen.getByTestId("integrations-nav")).queryByRole("link", { name });
 
 const PUBLIC_RESULTS = [
   "active",
@@ -495,25 +502,28 @@ describe("IntegrationsPage — Distributors tab", () => {
     window.location.hash = "";
   });
 
-  it("shows a Distributors top-level tab", () => {
+  it("lists each distributor under a Distributors group", () => {
     render(<IntegrationsPage />);
-    expect(screen.getByRole("button", { name: /Distributors/i })).toBeTruthy();
+    expect(within(screen.getByTestId("integrations-nav")).getByText("Distributors")).toBeTruthy();
+    expect(navLink("Pax8")).toBeTruthy();
+    expect(navLink("TD SYNNEX EC Express")).toBeTruthy();
+    expect(navLink("TD SYNNEX SFTP")).toBeTruthy();
   });
 
-  it("renders Pax8 by default and TD SYNNEX Pricing when the sub-tab is selected (partner scope)", () => {
+  it("renders Pax8 by default and TD SYNNEX EC Express when its entry is selected (partner scope)", () => {
+    window.location.hash = "#distributors";
     render(<IntegrationsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /Distributors/i }));
 
     // pax8 is the default sub-tab
     expect(screen.getByTestId("stub-pax8")).toBeTruthy();
     expect(screen.queryByTestId("stub-tdsynnex-ec")).toBeNull();
 
     // The legacy Digital Bridge "TD SYNNEX" tab is hidden; EC Express
-    // "TD SYNNEX Pricing" is the surfaced TD SYNNEX connector.
-    expect(screen.queryByRole("button", { name: "TD SYNNEX" })).toBeNull();
+    // is the surfaced TD SYNNEX connector.
+    expect(queryNavLink("TD SYNNEX")).toBeNull();
     expect(screen.queryByTestId("stub-tdsynnex")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "TD SYNNEX Pricing" }));
+    fireEvent.click(navLink("TD SYNNEX EC Express"));
     expect(screen.getByTestId("stub-tdsynnex-ec")).toBeTruthy();
     expect(screen.queryByTestId("stub-pax8")).toBeNull();
   });
@@ -521,7 +531,7 @@ describe("IntegrationsPage — Distributors tab", () => {
   it("lets a system-scope user use the Distributors tab", () => {
     scope = "system";
     render(<IntegrationsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /Distributors/i }));
+    fireEvent.click(navLink("Pax8"));
     expect(screen.getByTestId("stub-pax8")).toBeTruthy();
     expect(screen.queryByTestId("distributors-org-scope")).toBeNull();
   });
@@ -529,13 +539,13 @@ describe("IntegrationsPage — Distributors tab", () => {
   it("gates the Distributors tab for org-scope users with a partner-only message", () => {
     scope = "organization";
     render(<IntegrationsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /Distributors/i }));
+    fireEvent.click(navLink("Distributors"));
 
     expect(screen.getByTestId("distributors-org-scope")).toBeTruthy();
-    // No panels and no sub-tab bar for org-scope users.
+    // No panels and no per-distributor entries for org-scope users.
     expect(screen.queryByTestId("stub-pax8")).toBeNull();
     expect(screen.queryByTestId("stub-tdsynnex")).toBeNull();
-    expect(screen.queryByRole("button", { name: "TD SYNNEX" })).toBeNull();
+    expect(queryNavLink("Pax8")).toBeNull();
   });
 });
 
@@ -586,17 +596,20 @@ describe("IntegrationsPage — URL hash deep-linking", () => {
     expect(screen.queryByTestId("stub-security")).toBeNull();
   });
 
-  it("falls back to the default tab when the hash is unknown", () => {
+  it("falls back to the connection-health overview when the hash is unknown", () => {
     window.location.hash = "#bogus";
     render(<IntegrationsPage />);
-    expect(screen.getByTestId("stub-webhooks")).toBeTruthy();
+    expect(screen.getByTestId("connection-health-loading")).toBeTruthy();
+    expect(screen.queryByTestId("stub-webhooks")).toBeNull();
     expect(screen.queryByTestId("stub-psa")).toBeNull();
   });
 
-  it("labels the Google Workspace / Microsoft 365 tab 'Cloud tenants'", () => {
+  it("lists Google Workspace and Microsoft 365 by name under 'Cloud tenants'", () => {
     render(<IntegrationsPage />);
-    expect(screen.getByRole("button", { name: "Cloud tenants" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Identity" })).toBeNull();
+    expect(within(screen.getByTestId("integrations-nav")).getByText("Cloud tenants")).toBeTruthy();
+    expect(navLink("Google Workspace")).toBeTruthy();
+    expect(navLink("Microsoft 365")).toBeTruthy();
+    expect(queryNavLink("Identity")).toBeNull();
   });
 
   it.each(["#cloud-tenants", "#identity"])(
@@ -657,15 +670,16 @@ describe("IntegrationsPage — writing & syncing the URL hash", () => {
 
   it("writes the tab id to the hash when a top-level tab is clicked", () => {
     render(<IntegrationsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /Monitoring/i }));
+    fireEvent.click(navLink(/Monitoring/i));
     expect(window.location.hash).toBe("#monitoring");
+    expect(navLink(/Monitoring/i)).toHaveAttribute("aria-current", "page");
   });
 
-  it("writes #cloud-tenants when the Cloud tenants tab is clicked and keeps its docs page", () => {
+  it("writes #google when Google Workspace is selected and keeps the Cloud tenants docs page", () => {
     openMock.mockClear();
     render(<IntegrationsPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Cloud tenants" }));
-    expect(window.location.hash).toBe("#cloud-tenants");
+    fireEvent.click(navLink("Google Workspace"));
+    expect(window.location.hash).toBe("#google");
     expect(screen.getByTestId("stub-google")).toBeTruthy();
     fireEvent.click(screen.getByTestId("integrations-docs-link"));
     expect(openMock).toHaveBeenLastCalledWith(
@@ -675,15 +689,14 @@ describe("IntegrationsPage — writing & syncing the URL hash", () => {
 
   it("writes the sub-tab id to the hash when a sub-tab is clicked", () => {
     render(<IntegrationsPage />);
-    fireEvent.click(screen.getByRole("button", { name: /Security/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Huntress" }));
+    fireEvent.click(navLink("Huntress"));
     expect(window.location.hash).toBe("#huntress");
     expect(screen.getByTestId("stub-huntress")).toBeTruthy();
   });
 
   it("re-syncs the active tab when the hash changes externally (back/forward)", () => {
     render(<IntegrationsPage />);
-    expect(screen.getByTestId("stub-webhooks")).toBeTruthy();
+    expect(screen.queryByTestId("stub-psa")).toBeNull();
 
     window.location.hash = "#psa";
     fireEvent(window, new HashChangeEvent("hashchange"));
@@ -706,20 +719,20 @@ describe("IntegrationsPage — per-tab documentation link", () => {
 
   it("opens the active tab's dedicated doc page", () => {
     render(<IntegrationsPage />);
-    // Default tab is Webhooks.
+    // The default view is the connection-health overview.
     fireEvent.click(screen.getByTestId("integrations-docs-link"));
     expect(openMock).toHaveBeenLastCalledWith(
-      "https://docs.breezermm.com/features/webhooks/",
+      "https://docs.breezermm.com/features/integrations/",
     );
 
-    // Switching tabs points the link at that tab's doc.
-    fireEvent.click(screen.getByRole("button", { name: /Security/i }));
+    // Switching entries points the link at that tab's doc.
+    fireEvent.click(navLink("SentinelOne"));
     fireEvent.click(screen.getByTestId("integrations-docs-link"));
     expect(openMock).toHaveBeenLastCalledWith(
       "https://docs.breezermm.com/features/edr-integrations/",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /UniFi/i }));
+    fireEvent.click(navLink(/UniFi/i));
     fireEvent.click(screen.getByTestId("integrations-docs-link"));
     expect(openMock).toHaveBeenLastCalledWith(
       "https://docs.breezermm.com/features/unifi-integration/",
@@ -878,10 +891,14 @@ describe("IntegrationsPage — accounting provider cards (Xero W01)", () => {
     expect(await screen.findByTestId("accounting-provider-card-quickbooks")).toBeTruthy();
     expect(screen.queryByTestId("accounting-provider-card-xero")).toBeNull();
     expect(await screen.findByTestId("stub-quickbooks")).toBeTruthy();
-    // The Stripe payments sub-tab stays reachable beside the cards.
-    fireEvent.click(screen.getByRole("button", { name: /payments/i }));
+    // Stripe payments is its own entry, not a card among the bookkeeping
+    // providers, and the two are peers rather than a group named after one.
+    expect(within(screen.getByTestId("integrations-nav")).getAllByText("Accounting")).toHaveLength(1);
+    fireEvent.click(navLink(/payments/i));
     expect(await screen.findByTestId("stub-stripe-payments")).toBeTruthy();
     expect(screen.queryByTestId("stub-quickbooks")).toBeNull();
+    expect(screen.queryByTestId("accounting-provider-card-quickbooks")).toBeNull();
+    expect(window.location.hash).toBe("#stripe");
   });
 
   it("does not open an unconfigured provider's panel through its hash", async () => {
@@ -1042,6 +1059,10 @@ describe("IntegrationsPage — scope bar (#9318)", () => {
     scope = "partner";
     orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
     orgState.jwtOrgId = null;
+    // The bar sits above org-level integrations; PSA is one.
+    window.history.replaceState({}, "", "/integrations#psa");
+  });
+  afterEach(() => {
     window.history.replaceState({}, "", "/integrations");
   });
 
@@ -1085,5 +1106,127 @@ describe("IntegrationsPage — scope bar (#9318)", () => {
     render(<IntegrationsPage />);
     expect(screen.getByTestId("integrations-scope-org")).toHaveTextContent("Fabrikam Inc");
     expect(screen.queryByTestId("integrations-scope-change")).not.toBeInTheDocument();
+  });
+});
+
+describe("IntegrationsPage — health overview, status badges, scope (critique 10-20)", () => {
+  const incident = (over: Record<string, unknown>) => ({
+    id: "i1",
+    sourceKind: "huntress",
+    orgId: null,
+    condition: "sync_failed",
+    severity: "permanent",
+    detail: null,
+    displayName: "Huntress",
+    fixHref: "/integrations#huntress",
+    firstFailedAt: new Date().toISOString(),
+    openedAt: new Date().toISOString(),
+    lastObservedAt: new Date().toISOString(),
+    resolvedAt: null,
+    resolution: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    scope = "partner";
+    orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
+    orgState.jwtOrgId = null;
+    fetchWithAuthMock.mockReset();
+    fetchWithAuthMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify(
+            url.includes("/connection-health/incidents?status=open")
+              ? {
+                  data: [
+                    incident({ id: "a" }),
+                    incident({
+                      id: "b",
+                      orgId: "11111111-1111-4111-8111-111111111111",
+                      sourceKind: "m365_connection",
+                      severity: "transient",
+                      displayName: "Microsoft 365",
+                      fixHref: "/integrations#m365",
+                    }),
+                    incident({ id: "c", displayName: "Claude", fixHref: "/settings/connected-apps" }),
+                  ],
+                  truncated: false,
+                }
+              : { data: [], truncated: false },
+          ),
+          { status: 200 },
+        ),
+      ),
+    );
+    window.history.replaceState({}, "", "/integrations");
+  });
+  afterEach(() => {
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("opens on the connection-health overview, with the notification settings beside it", async () => {
+    render(<IntegrationsPage />);
+    expect(await screen.findAllByTestId("connection-health-open-row")).toHaveLength(3);
+    expect(navLink(/Connection health/)).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByTestId("stub-webhooks")).toBeNull();
+    // Overview has no single scope: incidents carry their own.
+    expect(screen.queryByTestId("integrations-scope-bar")).toBeNull();
+    expect(screen.queryByTestId("integrations-scope-partner")).toBeNull();
+    expect(screen.getAllByTestId("connection-health-row-scope").map((el) => el.textContent)).toEqual([
+      "Partner-wide",
+      "Contoso Ltd",
+      "Partner-wide",
+    ]);
+  });
+
+  it("badges each entry with its open problems, colored by the worst severity", async () => {
+    render(<IntegrationsPage />);
+    const huntress = await screen.findByTestId("integrations-nav-status-huntress");
+    expect(huntress).toHaveTextContent("1");
+    expect(huntress.className).toContain("text-red-700");
+    const m365 = screen.getByTestId("integrations-nav-status-m365");
+    expect(m365.className).toContain("text-amber-700");
+    // The overview counts every open incident, including fixes off this page.
+    expect(screen.getByTestId("integrations-nav-status-overview")).toHaveTextContent("3");
+    expect(screen.queryByTestId("integrations-nav-status-psa")).toBeNull();
+    // Accessible name carries the count, not a bare number.
+    expect(navLink(/Huntress/)).toHaveAccessibleName(/Open problems: 1/);
+  });
+
+  it("carries the same entries and counts in the narrow-screen select", async () => {
+    render(<IntegrationsPage />);
+    await screen.findByTestId("integrations-nav-status-huntress");
+    const select = screen.getByTestId("integrations-nav-select") as HTMLSelectElement;
+    expect(within(select).getByRole("option", { name: "Huntress (Open problems: 1)" })).toBeTruthy();
+    fireEvent.change(select, { target: { value: "huntress" } });
+    expect(window.location.hash).toBe("#huntress");
+    expect(screen.getByTestId("stub-huntress")).toBeTruthy();
+  });
+
+  it("marks partner-level integrations as partner-wide instead of naming the org", () => {
+    window.history.replaceState({}, "", "/integrations#huntress");
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("integrations-scope-partner")).toHaveTextContent("Partner-wide");
+    expect(screen.queryByTestId("integrations-scope-bar")).toBeNull();
+  });
+
+  it("names the org above org-level integrations", () => {
+    window.history.replaceState({}, "", "/integrations#m365");
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("integrations-scope-org")).toHaveTextContent("Contoso Ltd");
+    expect(screen.queryByTestId("integrations-scope-partner")).toBeNull();
+  });
+
+  it("starts an organization-scoped session on its first integration, not the partner-only overview", () => {
+    scope = "organization";
+    render(<IntegrationsPage />);
+    expect(queryNavLink(/Connection health/)).toBeNull();
+    expect(screen.getByTestId("stub-psa")).toBeTruthy();
+    expect(fetchWithAuthMock).not.toHaveBeenCalledWith("/connection-health/incidents?status=open");
+  });
+
+  it("renders a single h1 for the page", () => {
+    render(<IntegrationsPage />);
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
   });
 });

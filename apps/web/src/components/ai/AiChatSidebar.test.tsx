@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 const permState = vi.hoisted(() => ({ canUseAi: true }));
@@ -164,5 +164,55 @@ describe('AiChatSidebar keyboard shortcut (#9613)', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', ctrlKey: true }));
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', shiftKey: true }));
     expect(toggle).not.toHaveBeenCalled();
+  });
+});
+
+// Wisp W04 Task 8: the panel's Wisp mode. Children are stubbed — their own
+// suites cover them; this pins where the sidebar mounts them.
+vi.mock('./WispToggle', () => ({ default: () => <button data-testid="wisp-toggle-stub" /> }));
+vi.mock('./WispThreadHeader', () => ({
+  default: (p: { wideningAvailable: boolean; orgName: string | null }) => (
+    <div data-testid="wisp-header-stub" data-widening={String(p.wideningAvailable)} data-org={p.orgName ?? ''} />
+  ),
+}));
+vi.mock('./WispThreadAttachments', () => ({ default: () => <div data-testid="wisp-attachments-stub" /> }));
+
+describe('AiChatSidebar Wisp mode (W04)', () => {
+  const wisp = {
+    grantId: 'g-1', threadId: 't-1', scopeOrgId: null, focusOrgId: null, focusOrgName: null, status: 'active',
+    expiresAt: '2027-01-01T00:00:00.000Z', summary: '', budgetCentsPerDay: 200, floorTickMinutes: 30, wideningAvailable: true,
+  };
+
+  it('renders WispToggle in the header when wisp is null', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('wisp-toggle-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('wisp-header-stub')).toBeNull();
+    expect(screen.getByText('Breeze AI')).toBeInTheDocument();
+  });
+
+  it('hides WispToggle while the history panel is open', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp: null, showHistory: true });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+  });
+
+  it('renders WispThreadHeader and the Wisp title when wisp is set', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.getByText('Wisp')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-header-stub')).toHaveAttribute('data-widening', 'true');
+    expect(screen.queryByTestId('wisp-toggle-stub')).toBeNull();
+  });
+
+  it('shows the thread attachments behind a disclosure', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, wisp });
+    render(<AiChatSidebar />);
+    expect(screen.queryByTestId('wisp-attachments-stub')).toBeNull();
+    const toggle = screen.getByTestId('wisp-attachments-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('wisp-attachments-stub')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 });

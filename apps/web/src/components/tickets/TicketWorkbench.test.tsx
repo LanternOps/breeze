@@ -1956,19 +1956,63 @@ describe('TicketWorkbench subject inline edit', () => {
     }
   });
 
-  it('renders an editable subject input with testid ticket-workbench-subject-edit', async () => {
+  const grantWrite = () => { authState.permissions = [{ resource: 'tickets', action: 'write' }]; };
+  const subjectPatches = () =>
+    fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'));
+  // A save applies the patch optimistically and then reloads in the background;
+  // the static mock would hand the stale subject back, so this one applies PATCH
+  // bodies to the stored detail the way the server does.
+  const mockPatchableTicket = (ticket: TicketDetail) => {
+    const detail = { ...ticket };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if ((!init?.method || init.method === 'GET') && url === '/tickets/tk-1') return makeJsonResponse({ data: detail });
+      if (init?.method === 'PATCH' && url === '/tickets/tk-1') Object.assign(detail, JSON.parse(String(init.body)));
+      return makeJsonResponse({ success: true });
+    });
+  };
+
+  it('renders the subject as a heading, not a form field, until an edit is requested', async () => {
+    grantWrite();
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    await screen.findByTestId('ticket-workbench-subject-edit');
-    expect(screen.getByTestId('ticket-workbench-subject-edit')).toBeInTheDocument();
+    const heading = await screen.findByTestId('ticket-workbench-subject');
+    expect(heading.tagName).toBe('H2');
+    expect(heading).toHaveTextContent('Printer is down');
+    // Truncated titles stay readable on hover.
+    expect(heading).toHaveAttribute('title', 'Printer is down');
+    expect(screen.queryByTestId('ticket-workbench-subject-edit')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-subject-edit-btn')).toHaveAttribute('aria-label', 'Edit subject');
   });
 
-  it('saves an edited subject via PATCH /tickets/:id on blur', async () => {
+  it('hides the edit affordance without tickets:write', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    await screen.findByTestId('ticket-workbench-subject');
+    expect(screen.queryByTestId('ticket-workbench-subject-edit-btn')).not.toBeInTheDocument();
+  });
+
+  it('opens a focused input holding the current subject when the edit button is pressed', async () => {
+    grantWrite();
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit') as HTMLInputElement;
+    expect(input.value).toBe('Printer is down');
+    expect(input).toHaveFocus();
+    expect(screen.queryByTestId('ticket-workbench-subject')).not.toBeInTheDocument();
+  });
+
+  it('saves an edited subject via PATCH /tickets/:id on blur and returns to the heading', async () => {
+    grantWrite();
+    mockPatchableTicket(makeTicket({ subject: 'Printer is down' }));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
     fireEvent.change(input, { target: { value: 'Printer is broken' } });
     fireEvent.blur(input);
 
@@ -1978,13 +2022,19 @@ describe('TicketWorkbench subject inline edit', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ subject: 'Printer is broken' }) })
       );
     });
+    // The heading is back immediately; the new text lands once the PATCH resolves.
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is broken'));
+    expect(screen.queryByTestId('ticket-workbench-subject-edit')).not.toBeInTheDocument();
   });
 
-  it('saves an edited subject via PATCH on Enter key', async () => {
-    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+  it('saves exactly once on Enter even though the input then loses focus', async () => {
+    grantWrite();
+    mockPatchableTicket(makeTicket({ subject: 'Printer is down' }));
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
+    input.focus();
     fireEvent.change(input, { target: { value: 'Network outage' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -1994,33 +2044,55 @@ describe('TicketWorkbench subject inline edit', () => {
         expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ subject: 'Network outage' }) })
       );
     });
+    await waitFor(() => expect(screen.getByTestId('ticket-workbench-subject')).toHaveTextContent('Network outage'));
+    // Leaving edit mode blurs the input; that must not re-send the same patch.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(subjectPatches()).toHaveLength(1);
+  });
+
+  it('Escape discards the draft and returns to the heading without a PATCH', async () => {
+    grantWrite();
+    mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
+    input.focus();
+    fireEvent.change(input, { target: { value: 'Something else' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(await screen.findByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is down');
+    expect(screen.queryByTestId('ticket-workbench-subject-edit')).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(subjectPatches()).toHaveLength(0);
   });
 
   it('does NOT PATCH when subject is unchanged on blur', async () => {
+    grantWrite();
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
-    fireEvent.blur(input); // blur without changing value
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    fireEvent.blur(screen.getByTestId('ticket-workbench-subject-edit')); // blur without changing value
 
+    expect(await screen.findByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is down');
     await new Promise((r) => setTimeout(r, 50));
-    expect(
-      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'))
-    ).toHaveLength(0);
+    expect(subjectPatches()).toHaveLength(0);
   });
 
   it('does NOT PATCH when subject is cleared (empty) on blur', async () => {
+    grantWrite();
     mockTicketApi({ 'tk-1': makeTicket({ subject: 'Printer is down' }) });
     render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
 
-    const input = await screen.findByTestId('ticket-workbench-subject-edit');
+    fireEvent.click(await screen.findByTestId('ticket-workbench-subject-edit-btn'));
+    const input = screen.getByTestId('ticket-workbench-subject-edit');
     fireEvent.change(input, { target: { value: '' } });
     fireEvent.blur(input);
 
+    expect(await screen.findByTestId('ticket-workbench-subject')).toHaveTextContent('Printer is down');
     await new Promise((r) => setTimeout(r, 50));
-    expect(
-      fetchMock.mock.calls.filter(([url, init]) => init?.method === 'PATCH' && String(url) === '/tickets/tk-1' && (init?.body as string | undefined)?.includes('subject'))
-    ).toHaveLength(0);
+    expect(subjectPatches()).toHaveLength(0);
   });
 });
 

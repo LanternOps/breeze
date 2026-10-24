@@ -433,3 +433,107 @@ describe('requesterAccessLostForTargets — review-round fixes (R1a-0)', () => {
     expect(shared.canAccessSite.mock.calls).toEqual([[perms, 'site-A'], [perms, 'site-C']]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Wisp W02 — a task launched under a delegation grant re-checks the pinned
+// ceiling WITH the effect's permission (Wisp design §4.3: "permissions, not
+// only access"). Appended; nothing above changes.
+// ---------------------------------------------------------------------------
+const grantGate = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn(), assertWithinCeiling: vi.fn() }));
+vi.mock('../wisp/grantAuthority', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../wisp/grantAuthority')>();
+  grantGate.assertWithinCeiling.mockImplementation(actual.assertWithinCeiling);
+  return { ...actual, resolveGrantCeiling: grantGate.resolveGrantCeiling, assertWithinCeiling: grantGate.assertWithinCeiling };
+});
+
+describe('requesterAccessLost — delegation grant (Wisp W02)', () => {
+  const grantCeiling = (o: Record<string, unknown> = {}) => ({
+    grantId: 'g1', revisionId: 'r1', partnerId: 'p1', grantorUserId: USER_ID, scopeOrgId: null, partnerWide: true,
+    orgIds: new Set([ORG_ID]), siteIds: null, permissionKeys: new Set(['devices:execute']), toolAllowlist: null,
+    deniedTools: new Set<string>(), orgTerms: new Map(), status: 'active', ...o,
+  });
+  const grantTask = { orgId: ORG_ID, requesterUserId: USER_ID, grantId: 'g1', grantRevisionId: 'r1' };
+  const primeAccessOk = () => {
+    queueSelect([{ id: USER_ID, partnerId: 'p1', status: 'active' }]);
+    shared.getUserPermissions.mockResolvedValue({ scope: 'partner', partnerId: 'p1' });
+    queueSelect([{ id: DEVICE_ID, siteId: 'site-A' }]);
+  };
+
+  beforeEach(() => {
+    grantGate.resolveGrantCeiling.mockReset();
+    grantGate.assertWithinCeiling.mockClear();
+  });
+
+  it('a task without a grant never resolves a ceiling (unchanged behaviour)', async () => {
+    primeAccessOk();
+    await expect(requesterAccessLost({ orgId: ORG_ID, requesterUserId: USER_ID }, DEVICE_ID, { permission: 'devices:execute' }))
+      .resolves.toEqual({ lost: false, detail: null });
+    expect(grantGate.resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
+  it('a task with a grant whose ceiling lacks devices:execute is lost with a ceiling detail', async () => {
+    primeAccessOk();
+    grantGate.resolveGrantCeiling.mockResolvedValue(grantCeiling({ permissionKeys: new Set(['devices:read']) }));
+    const result = await requesterAccessLost(grantTask, DEVICE_ID, { permission: 'devices:execute' });
+    expect(result.lost).toBe(true);
+    expect(result.detail).toMatch(/delegation ceiling \(permission\)/);
+  });
+
+  it('GrantInactiveError reads as lost: "the delegation grant is no longer active"', async () => {
+    const { GrantInactiveError } = await import('../wisp/grantAuthority');
+    primeAccessOk();
+    grantGate.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'paused'));
+    await expect(requesterAccessLost(grantTask, DEVICE_ID, { permission: 'devices:execute' }))
+      .resolves.toEqual({ lost: true, detail: 'the delegation grant is no longer active' });
+  });
+
+  it('the ceiling check receives the device site, not null', async () => {
+    primeAccessOk();
+    grantGate.resolveGrantCeiling.mockResolvedValue(grantCeiling());
+    await expect(requesterAccessLost(grantTask, DEVICE_ID, { permission: 'devices:execute' }))
+      .resolves.toEqual({ lost: false, detail: null });
+    expect(grantGate.resolveGrantCeiling).toHaveBeenCalledWith('g1', 'r1');
+    expect(grantGate.assertWithinCeiling).toHaveBeenCalledWith(
+      expect.objectContaining({ grantId: 'g1' }),
+      { orgId: ORG_ID, siteId: 'site-A', permission: 'devices:execute' },
+    );
+  });
+
+  it('without an explicit effect the device-keyed gate checks devices:execute (the device command it guards)', async () => {
+    primeAccessOk();
+    grantGate.resolveGrantCeiling.mockResolvedValue(grantCeiling({ permissionKeys: new Set(['devices:read']) }));
+    await expect(requesterAccessLost(grantTask, DEVICE_ID)).resolves.toMatchObject({
+      lost: true, detail: expect.stringMatching(/\(permission\)/),
+    });
+    expect(grantGate.assertWithinCeiling).toHaveBeenCalledWith(
+      expect.anything(), { orgId: ORG_ID, siteId: 'site-A', permission: 'devices:execute' },
+    );
+  });
+
+  it('a task whose requester is not the grantor is lost (no running on someone else\'s grant)', async () => {
+    primeAccessOk();
+    grantGate.resolveGrantCeiling.mockResolvedValue(grantCeiling({ grantorUserId: 'someone-else' }));
+    await expect(requesterAccessLost(grantTask, DEVICE_ID)).resolves.toMatchObject({
+      lost: true, detail: expect.stringMatching(/not the delegation grant's grantor/),
+    });
+  });
+
+  it('a grant-bearing task with no requester is lost (a grant is always a person\'s)', async () => {
+    await expect(requesterAccessLost({ ...grantTask, requesterUserId: null }, DEVICE_ID, { permission: 'devices:execute' }))
+      .resolves.toMatchObject({ lost: true });
+  });
+
+  it('requesterAccessLostForTargets also checks the ceiling (org + each target device site)', async () => {
+    const forTargets = (gate as unknown as {
+      requesterAccessLostForTargets: (t: Record<string, unknown>) => Promise<{ lost: boolean; detail: string | null }>;
+    }).requesterAccessLostForTargets;
+    queueRead([{ id: USER_ID, partnerId: 'p1', status: 'active' }]);
+    shared.getUserPermissions.mockResolvedValue(orgUser());
+    queueRead([target('device')]);
+    queueRead([{ id: DEVICE_ID, siteId: 'site-A' }]);
+    grantGate.resolveGrantCeiling.mockResolvedValue(grantCeiling({ orgIds: new Set(['another-org']) }));
+    const result = await forTargets({ ...TASK, grantId: 'g1', grantRevisionId: 'r1' });
+    expect(result).toMatchObject({ lost: true, detail: expect.stringMatching(/delegation ceiling \(org\)/) });
+    expect(grantGate.assertWithinCeiling).toHaveBeenCalledWith(expect.anything(), { orgId: ORG_ID, siteId: 'site-A' });
+  });
+});

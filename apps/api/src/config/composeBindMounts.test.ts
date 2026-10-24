@@ -32,14 +32,16 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 // Compose's own merge tags. js-yaml throws on unknown tags, so declare them as
 // pass-throughs — we never inspect their values, we just need the file to parse.
 const passthroughTag = (tag: string) => [
-  defineScalarTag(tag, { resolve: (source: string) => source }),
+  defineScalarTag(tag, { resolve: (source: string) => source, identify: () => false }),
   defineSequenceTag<unknown[]>(tag, {
+    identify: () => false,
     create: () => [],
     addItem: (items, value) => {
       items.push(value);
     },
   }),
   defineMappingTag<Map<unknown, unknown>>(tag, {
+    identify: () => false,
     create: () => new Map(),
     addPair: (map, key, value) => {
       map.set(key, value);

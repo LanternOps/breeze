@@ -423,6 +423,7 @@
     "loadFailed": "El ticket no se pudo cargar.",
     "backToQueue": "volver a la cola",
     "ticketSubject": "Asunto del ticket",
+    "subjectEditButton": "Editar asunto",
     "openFullPage": "Abrir página completa",
     "priorityLabel": "Prioridad",
     "categoryLabel": "Categoría",

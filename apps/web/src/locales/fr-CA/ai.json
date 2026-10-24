@@ -555,5 +555,128 @@
   },
   "buyCredits": {
     "link": "Acheter des crédits"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Activer Wisp",
+      "turningOn": "Activation de Wisp…"
+    },
+    "locked": {
+      "why": "Wisp est offert avec les forfaits Pro et supérieurs."
+    },
+    "modal": {
+      "title": "Activer Wisp",
+      "refreshTitle": "Renouveler l’autorisation de Wisp",
+      "scopeLabel": "Wisp peut travailler sur",
+      "scopeOrg": "Cette organisation",
+      "scopePartner": "Toutes les organisations",
+      "explain": "Wisp agit dans la limite de vos propres droits. Confirmez que c’est bien vous pour continuer.",
+      "code": "Code d’authentification",
+      "passkey": "Vous confirmerez avec votre clé d’accès.",
+      "noFactor": "Wisp a besoin d’une clé d’accès ou d’une application d’authentification. Configurez-en une d’abord dans votre profil.",
+      "noOrg": "Sélectionnez d’abord une organisation dans l’en-tête.",
+      "confirm": "Confirmer",
+      "cancel": "Annuler",
+      "stepUpUnavailable": "Impossible de vérifier votre facteur. Réessayez.",
+      "reverify": "Votre accès a changé pendant la confirmation. Entrez un nouveau code pour continuer.",
+      "invalidCode": "Ce code n’a pas été accepté. Réessayez."
+    },
+    "header": {
+      "scopeAll": "Toutes les organisations",
+      "status": {
+        "active": "Actif",
+        "paused": "En pause",
+        "revoked": "Révoqué",
+        "expired": "Expiré"
+      },
+      "refresh": "Renouveler l’autorisation",
+      "revoke": "Désactiver Wisp",
+      "revokeConfirm": "Désactiver Wisp pour cette portée? Les fils ouverts restent consultables.",
+      "widening": "Vous pouvez faire plus que ce que cette autorisation permet; renouvelez-la pour que Wisp suive."
+    },
+    "settings": {
+      "title": "Budget et suivi",
+      "budget": "Budget quotidien (¢)",
+      "tick": "Suivi toutes les (minutes)",
+      "save": "Enregistrer"
+    },
+    "focus": {
+      "label": "Travaille sur",
+      "none": "Aucun client ciblé",
+      "pick": "Cibler un client…",
+      "clear": "Retirer le ciblage"
+    },
+    "attachments": {
+      "title": "Joint à ce fil",
+      "drop": "Déposez ici un fil de courriel, un fichier .eml ou CSV, ou collez du texte",
+      "paste": "Coller du texte",
+      "label": "Étiquette",
+      "add": "Joindre",
+      "empty": "Rien n’est joint pour l’instant",
+      "expires": "Expire le {{date}}",
+      "limits": "Jusqu’à 20 fichiers, 5 Mo chacun, texte seulement",
+      "focusRequired": "Ciblez un client avant de joindre un élément",
+      "loadFailed": "Impossible de charger les pièces jointes"
+    },
+    "toast": {
+      "on": "Wisp est activé",
+      "onFailed": "Impossible d’activer Wisp",
+      "off": "Wisp est désactivé",
+      "offFailed": "Impossible de désactiver Wisp",
+      "refreshed": "Autorisation renouvelée",
+      "refreshFailed": "Impossible de renouveler l’autorisation",
+      "settingsSaved": "Paramètres de Wisp enregistrés",
+      "settingsFailed": "Impossible d’enregistrer les paramètres de Wisp",
+      "focusSet": "Wisp travaille maintenant sur {{org}}",
+      "focusCleared": "Ciblage du client retiré",
+      "focusFailed": "Impossible de modifier le ciblage",
+      "attached": "Joint au fil",
+      "attachFailed": "Impossible de joindre l’élément",
+      "attachTooLarge": "Ce fichier dépasse 5 Mo",
+      "attachUnsupported": "Seuls les fichiers texte peuvent être joints",
+      "threadFailed": "Wisp est activé, mais son fil n’a pas pu être ouvert. Réactivez Wisp pour le rouvrir."
+    }
+  },
+  "wispConcerns": {
+    "title": "Préoccupations",
+    "empty": "Rien sur le radar de Wisp pour l'instant.",
+    "snooze": "Reporter",
+    "snoozeOneHour": "1 heure",
+    "snoozeTomorrow": "Jusqu'à demain 9 h",
+    "snoozeWeek": "7 jours",
+    "dismiss": "Ignorer",
+    "resolve": "Résoudre",
+    "resolveOutcomePlaceholder": "Qu'est-il arrivé?",
+    "resolveSubmit": "Marquer comme résolu",
+    "snoozed": "Reporté",
+    "dismissed": "Ignoré",
+    "resolved": "Résolu",
+    "quietUntil": "en sourdine jusqu'à {{when}}",
+    "digestOnly": "résumé seulement",
+    "showAll": "Tout afficher",
+    "showLive": "Afficher les ouvertes",
+    "loadFailed": "Impossible de charger les préoccupations",
+    "actionFailed": "Ça n'a pas fonctionné. Réessayez.",
+    "severity": {
+      "high": "Élevée",
+      "medium": "Moyenne",
+      "low": "Faible",
+      "info": "Information"
+    },
+    "subject": {
+      "ticket": "Billet",
+      "device": "Appareil",
+      "alert": "Alerte",
+      "org": "Client",
+      "integration": "Intégration",
+      "run": "Exécution",
+      "task": "Tâche",
+      "incident": "Événement",
+      "quote": "Soumission",
+      "invoice": "Facture",
+      "contract": "Contrat",
+      "site": "Emplacement"
+    }
   }
 }

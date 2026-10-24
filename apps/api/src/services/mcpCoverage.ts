@@ -807,4 +807,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'webhooks/quickbooks.ts': { exempt: 'inbound_integration' },
   'webhooks/stripe.ts': { exempt: 'inbound_integration' },
   'webhooks/xero.ts': { exempt: 'inbound_integration' },
+  'wisp.ts': { exempt: 'human_only_ai_governance', note: 'Wisp delegation grants (Wisp design §4.2): a human lends their own authority on a fresh step-up proof -- the AI must never mint, widen, resume or reconfigure its own grant.' },
+  'wisp/memory.ts': { tools: ['recall', 'remember'] },
+  'wispConcerns.ts': { tools: ['list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern'] },
+  'wispWatches.ts': { tools: ['create_watch'] },
+  'wispThreads.ts': { exempt: 'human_only_ai_governance', note: 'Wisp thread surface (W04): the human reads their grant\'s thread, picks its customer focus and attaches context; focus and attachments decide what Wisp sees, so the AI never sets them. The model reads attachments through read_artifact.' },
 };

@@ -11,6 +11,7 @@
  */
 import { API_VERSION } from '../version';
 import { envInt } from '../utils/envInt';
+import { mcpAppsServerExtensions } from './mcpAppsConfig';
 import { buildMcpServerInstructions } from './mcpGuidance';
 import { mcpTier3IntentsEnabled } from './mcpIntentConfig';
 import type { McpRejectReason } from './mcpModernEnvelope';
@@ -66,10 +67,12 @@ export function decorateModernResult(method: string, result: Record<string, unkn
 }
 
 export function buildDiscoverResult(): Record<string, unknown> {
+  // B-W05 (#6159, D-B40): the MCP Apps extension, only while MCP_APPS_ENABLED.
+  const extensions = mcpAppsServerExtensions();
   return {
     resultType: 'complete',
     supportedVersions: [...supportedMcpProtocolVersions(true)],
-    capabilities: { tools: {}, resources: {}, prompts: {} },
+    capabilities: { tools: {}, resources: {}, prompts: {}, ...(extensions ? { extensions } : {}) },
     // B-W04 (#6158, D-B34): the approval rules follow MCP_TIER3_INTENTS_ENABLED.
     instructions: buildMcpServerInstructions(mcpTier3IntentsEnabled()),
     _meta: { [SERVER_INFO_META_KEY]: serverInfo() },

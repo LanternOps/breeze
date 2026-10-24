@@ -423,6 +423,7 @@
     "loadFailed": "Ticket failed to load.",
     "backToQueue": "Back to queue",
     "ticketSubject": "Ticket subject",
+    "subjectEditButton": "Edit subject",
     "openFullPage": "Open full page",
     "priorityLabel": "Priority",
     "categoryLabel": "Category",

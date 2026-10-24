@@ -562,6 +562,11 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
   // for the same reason every effect inside it is: the set can destroy a
   // person's access across two providers.
   'operator_plan',
+  // Wisp memory (W03 #9909): human-only (HUMAN_ONLY_TOOLS) and never declared to
+  // chat, Helper or agents — a person confirms/retracts on the memory page. Tier 3
+  // with operator_plan so the external MCP never advertises them; four_eyes is
+  // the conservative classification should any approval path ever reach them.
+  'confirm_memory', 'retract_memory',
   // Identity / account control — Google Workspace. Every mutating Google tool
   // acts on a human identity/mailbox/account, not a device, so the whole
   // mutating surface is classified four_eyes (categorical reading of spec
@@ -1188,6 +1193,20 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_flows: { resource: 'automations', action: 'read' },
   // #8973 W4: business-hours calendars read with the ticket permission.
   list_business_calendars: { resource: 'tickets', action: 'read' },
+  // Wisp W03 memory (services/wisp/memoryTools.ts): the chat-use permission
+  // (routes/ai.ts), same as the /wisp/memory routes. confirm/retract are
+  // HUMAN_ONLY_TOOLS; mapped so a direct dispatch still carries an RBAC gate.
+  recall: { resource: 'ai_sessions', action: 'use' },
+  remember: { resource: 'ai_sessions', action: 'use' },
+  confirm_memory: { resource: 'ai_sessions', action: 'use' },
+  retract_memory: { resource: 'ai_sessions', action: 'use' },
+  // Wisp W05a concerns/watches (services/wisp/concernTools.ts), w00 A1: the
+  // chat-use permission, same as the /wisp/concerns and /wisp/watches routes.
+  list_concerns: { resource: 'ai_sessions', action: 'use' },
+  raise_concern: { resource: 'ai_sessions', action: 'use' },
+  snooze_concern: { resource: 'ai_sessions', action: 'use' },
+  resolve_concern: { resource: 'ai_sessions', action: 'use' },
+  create_watch: { resource: 'ai_sessions', action: 'use' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
@@ -1386,25 +1405,18 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // mapping exists so the chat path reports that typed error rather than
   // "No RBAC permission mapping".
   //
-  // LANDMINE (2026-09-17 AI tool ROLE audit §2.7). Flat `ai_agents:read` is a
-  // LOW-BAR grant — seeded Org Admin holds it — and `workspace_run` executes
-  // arbitrary bash / python / node. It is safe ONLY because no chat or MCP
-  // caller can ever reach a workspace: `resolveWorkspace`
-  // (workspace/workspaceTools.ts) derives the run id from the caller identity
-  // alone (`auth.principal.kind === 'ai_agent'` + `runId`), there is no
-  // `runId` tool input, and chat-initiated launch is withdrawn (#6086,
-  // `workspace_launch_analysis` in AGENT_HUMAN_ONLY_TOOLS below). Agent
-  // principals bypass this table entirely, so it is never the control for a
-  // legitimate run.
-  //
-  // RE-ENABLING chat-initiated launch hands a CHAT caller a run-bearing
-  // principal, and at that moment this table becomes the ONLY gate. These four
-  // entries MUST be raised to an execute-class permission in the same change.
-  // Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
-  workspace_stage: { resource: 'ai_agents', action: 'read' },
-  workspace_run: { resource: 'ai_agents', action: 'read' },
-  workspace_collect: { resource: 'ai_agents', action: 'read' },
-  workspace_cancel: { resource: 'ai_agents', action: 'read' },
+  // CLOSED (2026-09-17 AI tool ROLE audit §2.7 landmine): raised to the
+  // execute-class `ai_workspace:execute` by Wisp W02 (spec §4.6) — the old
+  // flat `ai_agents:read` was a low-bar grant seeded Org Admin holds, while
+  // `workspace_run` executes arbitrary bash / python / node. Partner Admin
+  // holds the new key through `*:*`; no other role is seeded with it.
+  // `resolveWorkspace` (workspace/workspaceTools.ts) still answers non-agent
+  // principals with `workspace_requires_run`, and agent principals still
+  // bypass this table. Pinned by aiGuardrails.workspaceToolSurface.contract.test.ts.
+  workspace_stage: { resource: 'ai_workspace', action: 'execute' },
+  workspace_run: { resource: 'ai_workspace', action: 'execute' },
+  workspace_collect: { resource: 'ai_workspace', action: 'execute' },
+  workspace_cancel: { resource: 'ai_workspace', action: 'execute' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
@@ -2857,7 +2869,7 @@ type ToolPermissionResolution =
   | { ok: true; requirements: ToolPermissionRequirement[] }
   | { ok: false; denial: string };
 
-function resolveToolPermissionRequirements(
+export function resolveToolPermissionRequirements(
   toolName: string,
   input: Record<string, unknown>,
 ): ToolPermissionResolution {

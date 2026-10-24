@@ -423,6 +423,7 @@
     "loadFailed": "Impossible de charger le billet.",
     "backToQueue": "Retour à la file d’attente",
     "ticketSubject": "Sujet du billet",
+    "subjectEditButton": "Modifier le sujet",
     "openFullPage": "Ouvrir la page entière",
     "priorityLabel": "Priorité",
     "categoryLabel": "Catégorie",

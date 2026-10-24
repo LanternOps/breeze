@@ -62,6 +62,22 @@ describe('mcpModernResult', () => {
     expect(decorateModernResult('tools/list', { resultType: 'input_required' }).resultType).toBe('complete');
   });
 
+  it('B-W05: buildDiscoverResult advertises the MCP Apps extension only when MCP_APPS_ENABLED', () => {
+    const prev = process.env.MCP_APPS_ENABLED;
+    try {
+      delete process.env.MCP_APPS_ENABLED;
+      const off = buildDiscoverResult();
+      expect(off.capabilities).toEqual({ tools: {}, resources: {}, prompts: {} });
+      expect(JSON.stringify(off.capabilities)).toBe('{"tools":{},"resources":{},"prompts":{}}');
+      process.env.MCP_APPS_ENABLED = 'true';
+      expect(buildDiscoverResult().capabilities).toEqual({
+        tools: {}, resources: {}, prompts: {}, extensions: { 'io.modelcontextprotocol/ui': {} },
+      });
+    } finally {
+      if (prev === undefined) delete process.env.MCP_APPS_ENABLED; else process.env.MCP_APPS_ENABLED = prev;
+    }
+  });
+
   it('buildDiscoverResult advertises every supported version, private 5-minute cache', () => {
     expect(buildDiscoverResult()).toEqual({
       resultType: 'complete',
