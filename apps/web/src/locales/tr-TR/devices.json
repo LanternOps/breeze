@@ -2312,8 +2312,8 @@
       "clearNotFound": "Bu işaretçi artık mevcut değil.",
       "clearAlreadyCleared": "Bu işaretçi zaten devre dışı bırakılmış."
     },
-    "viewInEventLog": "Olay günlüğünde görüntüle",
-    "openEventLog": "Olay günlüğünü aç",
+    "eventLogLinkExact": "Olay günlüğünde görüntüle",
+    "eventLogLinkWindow": "Olay günlüğünü aç",
     "eventLogLinkTitle": "Olay günlüğü, {{from}} – {{to}}",
     "eventLogLinkTitleWithSource": "{{source}} için olay günlüğü, {{from}} – {{to}}"
   },

@@ -2312,8 +2312,8 @@
       "clearNotFound": "This marker no longer exists.",
       "clearAlreadyCleared": "This marker was already cleared."
     },
-    "viewInEventLog": "View in event log",
-    "openEventLog": "Open event log",
+    "eventLogLinkExact": "View in event log",
+    "eventLogLinkWindow": "Open event log",
     "eventLogLinkTitle": "Event log, {{from}} – {{to}}",
     "eventLogLinkTitleWithSource": "Event log for {{source}}, {{from}} – {{to}}"
   },

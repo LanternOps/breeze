@@ -2312,8 +2312,8 @@
       "clearNotFound": "Este marcador ya no existe.",
       "clearAlreadyCleared": "Este marcador ya estaba anulado."
     },
-    "viewInEventLog": "Ver en el registro de eventos",
-    "openEventLog": "Abrir registro de eventos",
+    "eventLogLinkExact": "Ver en el registro de eventos",
+    "eventLogLinkWindow": "Abrir registro de eventos",
     "eventLogLinkTitle": "Registro de eventos, {{from}} – {{to}}",
     "eventLogLinkTitleWithSource": "Registro de eventos de {{source}}, {{from}} – {{to}}"
   },

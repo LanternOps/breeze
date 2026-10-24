@@ -2312,8 +2312,8 @@
       "clearNotFound": "Este marcador não existe mais.",
       "clearAlreadyCleared": "Este marcador já foi desativado."
     },
-    "viewInEventLog": "Ver no log de eventos",
-    "openEventLog": "Abrir log de eventos",
+    "eventLogLinkExact": "Ver no log de eventos",
+    "eventLogLinkWindow": "Abrir log de eventos",
     "eventLogLinkTitle": "Log de eventos, {{from}} – {{to}}",
     "eventLogLinkTitleWithSource": "Log de eventos de {{source}}, {{from}} – {{to}}"
   },

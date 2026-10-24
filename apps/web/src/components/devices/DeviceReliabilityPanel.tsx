@@ -612,7 +612,7 @@ export default function DeviceReliabilityPanel({ deviceId }: DeviceReliabilityPa
     const range = { from: fmt(scoringWindow.from), to: fmt(scoringWindow.to) };
     return {
       href: `#${deviceEventLogHash({ source, ...scoringWindow })}`,
-      label: exact ? t('deviceReliabilityPanel.viewInEventLog') : t('deviceReliabilityPanel.openEventLog'),
+      label: exact ? t('deviceReliabilityPanel.eventLogLinkExact') : t('deviceReliabilityPanel.eventLogLinkWindow'),
       title: source
         ? t('deviceReliabilityPanel.eventLogLinkTitleWithSource', { source, ...range })
         : t('deviceReliabilityPanel.eventLogLinkTitle', range),

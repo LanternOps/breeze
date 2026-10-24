@@ -2312,8 +2312,8 @@
       "clearNotFound": "Diese Markierung existiert nicht mehr.",
       "clearAlreadyCleared": "Diese Markierung wurde bereits aufgehoben."
     },
-    "viewInEventLog": "Im Ereignisprotokoll anzeigen",
-    "openEventLog": "Ereignisprotokoll öffnen",
+    "eventLogLinkExact": "Im Ereignisprotokoll anzeigen",
+    "eventLogLinkWindow": "Ereignisprotokoll öffnen",
     "eventLogLinkTitle": "Ereignisprotokoll, {{from}} – {{to}}",
     "eventLogLinkTitleWithSource": "Ereignisprotokoll für {{source}}, {{from}} – {{to}}"
   },

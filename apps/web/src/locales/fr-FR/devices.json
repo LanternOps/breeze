@@ -2312,8 +2312,8 @@
       "clearNotFound": "Ce marqueur n’existe plus.",
       "clearAlreadyCleared": "Ce marqueur a déjà été désactivé."
     },
-    "viewInEventLog": "Voir dans le journal des événements",
-    "openEventLog": "Ouvrir le journal des événements",
+    "eventLogLinkExact": "Voir dans le journal des événements",
+    "eventLogLinkWindow": "Ouvrir le journal des événements",
     "eventLogLinkTitle": "Journal des événements, {{from}} – {{to}}",
     "eventLogLinkTitleWithSource": "Journal des événements pour {{source}}, {{from}} – {{to}}"
   },
