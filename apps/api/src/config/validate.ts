@@ -730,6 +730,11 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // Recipe Library W06. Gates the identity_offboarding recipe, read at
+    // runtime by aiOperatorIdentityOffboardingEnabled() in env.ts. Validated
+    // here for boolean format only. Default off; nothing enables it.
+    AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED: z.string().optional(),
+
     // Task A7 (tool-catalog W1). Platform kill switch for tool sources, read
     // at runtime by toolSourcesEnabled() in env.ts. Validated here for
     // boolean format only, same class as AGENT_AUTO_PROMOTE above.

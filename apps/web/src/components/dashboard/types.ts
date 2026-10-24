@@ -71,6 +71,7 @@ export interface SecurityOverview {
 /** GET /vulnerabilities/stats — apps/api/src/routes/vulnerabilities.ts */
 export interface VulnerabilityStats {
   criticalOpen: number;
+  openFindings: number;
   kevCveCount: number;
   kevDeviceCount: number;
   patchReadyFindingCount: number;

@@ -34,6 +34,10 @@ export * from './aiConnectionKinds';
 // the web readiness views. Leaf module, no imports.
 export * from './backupReadiness';
 
+// AI budget platform defaults: the single owner the API merge, the web and the
+// partner settings catalog all import. Leaf module, no imports.
+export * from './aiBudgetDefaults';
+
 // OS Types
 export const OS_TYPES = ['windows', 'macos', 'linux'] as const;
 

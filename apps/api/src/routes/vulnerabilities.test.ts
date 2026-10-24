@@ -1040,6 +1040,7 @@ describe('POST /vulnerabilities/remediate — all-skipped surfacing', () => {
 describe('GET /vulnerabilities/stats', () => {
   const STATS = {
     criticalOpen: 1,
+    openFindings: 1,
     openBySeverity: { critical: 1, high: 0, medium: 0, low: 0 },
     kevCveCount: 1,
     kevDeviceCount: 1,

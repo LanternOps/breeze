@@ -315,6 +315,16 @@ export function aiOperatorServiceRecoveryEnabled(): boolean {
 }
 
 /**
+ * Recipe-level gate for `identity_offboarding` (Recipe Library W06; spec §9's
+ * `deterministic` class ships behind its own flag). Nests under
+ * AI_OPERATOR_TASKS_ENABLED, exactly as the service-recovery flag does. Stays
+ * OFF until the R1c lab run passes; nothing in the repo enables it.
+ */
+export function aiOperatorIdentityOffboardingEnabled(): boolean {
+  return envFlag('AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED', false);
+}
+
+/**
  * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
  *
  * THREE conditions, all read at CALL time so a test can flip one without

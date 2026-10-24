@@ -23,8 +23,8 @@ import { RECIPE_GATE_CLASSES, STEP_KINDS, TARGET_KINDS } from './types';
 import { AI_OPERATOR_TASK_PHASES } from '../../../db/schema/aiOperatorTasks';
 
 describe('RECIPES registry', () => {
-  it('contains service_recovery and nothing E1 did not ship', () => {
-    expect(RECIPE_KEYS).toEqual(['service_recovery']);
+  it('contains exactly the released recipes: identity_offboarding (R1a) and service_recovery', () => {
+    expect(RECIPE_KEYS).toEqual(['identity_offboarding', 'service_recovery']);
   });
 
   it('every map key equals its recipe own key, so a lookup can never return a different recipe', () => {
@@ -106,8 +106,8 @@ describe('getRecipe / getRecipeByKey', () => {
   });
 
   it('returns null for an unknown key', () => {
-    expect(getRecipe('identity_offboarding', 1)).toBeNull();
-    expect(getRecipeByKey('identity_offboarding')).toBeNull();
+    expect(getRecipe('no_such_recipe', 1)).toBeNull();
+    expect(getRecipeByKey('no_such_recipe')).toBeNull();
   });
 
   it('returns null for a version that is not the released one — a task is NEVER upgraded', () => {
@@ -128,10 +128,11 @@ describe('resolveAdmissionRecipe', () => {
   });
 
   it('refuses an unknown key with unknown_recipe and NAMES the supported keys', () => {
-    const resolved = resolveAdmissionRecipe('identity_offboarding', 1);
+    const resolved = resolveAdmissionRecipe('no_such_recipe', 1);
     expect(resolved).toMatchObject({ ok: false, reason: 'unknown_recipe', releasedVersion: null });
-    expect((resolved as { detail: string }).detail).toContain('identity_offboarding');
+    expect((resolved as { detail: string }).detail).toContain('no_such_recipe');
     expect((resolved as { detail: string }).detail).toContain('service_recovery');
+    expect((resolved as { detail: string }).detail).toContain('identity_offboarding');
   });
 
   it('refuses a wrong version with version_mismatch and reports the released version', () => {

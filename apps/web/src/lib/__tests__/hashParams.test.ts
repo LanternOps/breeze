@@ -68,3 +68,32 @@ describe('writeHashKeys', () => {
     expect(writeHashKeys('', { severity: ['critical', 'high'] }, [])).toBe('#severity=critical,high');
   });
 });
+
+describe('parseHashGrammar prototype safety', () => {
+  const hostile = [
+    '#__proto__[polluted]=1',
+    '#__proto__=1,2',
+    '#constructor.prototype.x=1',
+    '#constructor=1&prototype=2&status=open',
+    '#cves/abc&__proto__=polluted',
+  ];
+
+  it.each(hostile)('%s neither throws nor pollutes Object.prototype', (hash) => {
+    let p!: ReturnType<typeof parseHashGrammar>;
+    expect(() => {
+      p = parseHashGrammar(hash, ['cves']);
+    }).not.toThrow();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).x).toBeUndefined();
+    expect(Object.getPrototypeOf(p.params)).toBeNull();
+    for (const bad of ['__proto__', 'constructor', 'prototype']) {
+      expect(Object.keys(p.params)).not.toContain(bad);
+    }
+  });
+
+  it('still parses normal keys next to forbidden ones', () => {
+    const p = parseHashGrammar('#__proto__=x&constructor=y&status=open', []);
+    expect(p.params.status).toEqual(['open']);
+    expect(Object.keys(p.params)).toEqual(['status']);
+  });
+});
