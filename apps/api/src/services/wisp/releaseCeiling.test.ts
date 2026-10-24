@@ -11,6 +11,12 @@ const shared = vi.hoisted(() => ({
   lookupWispGrant: vi.fn(),
   writeAuditEvent: vi.fn(),
   captureException: vi.fn(),
+  wispEnabled: vi.fn(() => true),
+}));
+
+vi.mock('../../config/env', async (orig) => ({
+  ...(await orig<typeof import('../../config/env')>()),
+  wispEnabled: shared.wispEnabled,
 }));
 
 vi.mock('../../db', () => ({
@@ -162,7 +168,16 @@ describe('checkWispCeilingForRelease', () => {
     expect(shared.resolveGrantCeiling).not.toHaveBeenCalled();
   });
 
-  it('a deleted session row is not a Wisp session (no grant can be read): passes unchanged', async () => {
+  it('a deleted session row fails closed while Wisp is enabled (its grant can no longer be proven absent)', async () => {
+    shared.wispEnabled.mockReturnValue(true);
+    shared.lookupWispGrant.mockRejectedValue(new WispSessionUnavailableError('session_not_found', SESSION));
+    const r = await checkWispCeilingForRelease(intent(), releaseAuth());
+    expect(r).toMatchObject({ ok: false, errorCode: 'wisp_gate_unavailable' });
+    expect(shared.resolveGrantCeiling).not.toHaveBeenCalled();
+  });
+
+  it('a deleted session row passes unchanged while Wisp is disabled (flag off = no behaviour change)', async () => {
+    shared.wispEnabled.mockReturnValue(false);
     shared.lookupWispGrant.mockRejectedValue(new WispSessionUnavailableError('session_not_found', SESSION));
     const auth = releaseAuth();
     await expect(checkWispCeilingForRelease(intent(), auth)).resolves.toEqual({ ok: true, auth });

@@ -32,6 +32,7 @@
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import type { AuthContext } from '../../middleware/auth';
 import { requestLikeFromSnapshot, writeAuditEvent } from '../auditEvents';
+import { wispEnabled } from '../../config/env';
 import { captureException } from '../sentry';
 import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import {
@@ -98,10 +99,14 @@ export async function checkWispCeilingForRelease(intent: ReleaseIntent, auth: Au
     try {
       grant = await lookupWispGrant(sessionId);
     } catch (err) {
-      // A session row that no longer exists carries no grant to check (the
-      // intent row deliberately has no FK to it). Every other unavailable
-      // shape is a Wisp session that cannot be gated: fail closed below.
-      if (err instanceof WispSessionUnavailableError && err.reason === 'session_not_found') return { ok: true, auth };
+      // A session row that no longer exists (the intent row deliberately has
+      // no FK to it) can no longer prove it was NOT pinned to a grant. While
+      // Wisp is off no grant can be honoured anyway, so the release path is
+      // unchanged; while it is on, fail closed below like every other
+      // unavailable shape.
+      if (err instanceof WispSessionUnavailableError && err.reason === 'session_not_found' && !wispEnabled()) {
+        return { ok: true, auth };
+      }
       throw err;
     }
     if (!grant) return { ok: true, auth };
