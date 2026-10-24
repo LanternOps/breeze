@@ -139,14 +139,18 @@ describe('movers carry merged tombstones (#8972 W1, spec §3.9)', () => {
   runDb('moveTicketOrg: a carried tombstone never keeps the source org\'s calendar', async () => {
     const s = await seed();
     const revA = await orgCalendar(s.orgA.id);
+    const revB = await orgCalendar(s.orgB.id);
     const dst = await insertTicket(s.orgA.id, s.partner.id);
     const src = await insertTicket(s.orgA.id, s.partner.id);
     await getTestDb().execute(sql`UPDATE tickets SET sla_calendar_revision_id = ${revA}::uuid WHERE id IN (${dst}::uuid, ${src}::uuid)`);
     await merge(s, src, dst);
     await sys(() => moveTicketOrg(dst, s.orgB.id, s.actor));
     expect(await q(sql`SELECT id FROM tickets WHERE sla_calendar_revision_id = ${revA}::uuid`)).toEqual([]);
-    expect(await one(sql`SELECT org_id, merged_into_ticket_id FROM tickets WHERE id = ${src}::uuid`))
-      .toEqual({ org_id: s.orgB.id, merged_into_ticket_id: dst });
+    // Re-resolved (onto the target org's own override), not merely cleared.
+    expect(await one(sql`SELECT org_id, merged_into_ticket_id, sla_calendar_revision_id FROM tickets WHERE id = ${src}::uuid`))
+      .toEqual({ org_id: s.orgB.id, merged_into_ticket_id: dst, sla_calendar_revision_id: revB });
+    expect(await one(sql`SELECT sla_calendar_revision_id FROM tickets WHERE id = ${dst}::uuid`))
+      .toEqual({ sla_calendar_revision_id: revB });
   }, T);
 
   runDb('device mover: a carried tombstone never keeps the source org\'s calendar', async () => {

@@ -390,6 +390,8 @@ describe('mergeTickets (#8972 W1, spec §3.3)', () => {
     const t = await one<{ sla_paused_minutes: number; sla_paused_business_minutes: number; sla_calendar_revision_id: string }>(sql`
       SELECT sla_paused_minutes, sla_paused_business_minutes, sla_calendar_revision_id FROM tickets WHERE id = ${s.src}::uuid`);
     expect(t.sla_paused_minutes).toBeGreaterThanOrEqual(39);
+    // Kept the 10 already accrued, added at most the one business minute.
+    expect(t.sla_paused_business_minutes).toBeGreaterThanOrEqual(10);
     expect(t.sla_paused_business_minutes).toBeLessThanOrEqual(11);
     expect(t.sla_calendar_revision_id).toBe(revId);
   }, T);
