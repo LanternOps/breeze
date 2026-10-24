@@ -544,7 +544,17 @@ func (h *Heartbeat) startDesktopOnDemand(sessionID, targetSession string, req ip
 // session is disconnected, iterates all capable sessions looking for a
 // non-disconnected one (preferring the console). Falls back to a disconnected
 // session only when allowDisconnected is true.
+//
+// The sign-in-console-to-RDP preference (#8434) applies only to a start that
+// had no target from the outset. A targeted start whose session vanished
+// (#434 below) keeps the console-first choice: its banner and notice still go
+// to the session the caller named (afterDesktopStart), so landing it on another
+// user's RDP desktop would capture that user with no indicator.
 func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...bool) *sessionbroker.Session {
+	return h.findActiveHelperWithPreference(targetSession, targetSession == "", allowDisconnected...)
+}
+
+func (h *Heartbeat) findActiveHelperWithPreference(targetSession string, preferActiveRDPOverSignInConsole bool, allowDisconnected ...bool) *sessionbroker.Session {
 	session := h.sessionBroker.FindCapableSession("capture", targetSession)
 	if runtime.GOOS == "darwin" {
 		if preferred := h.sessionBroker.PreferredDesktopSession(); preferred != nil {
@@ -565,7 +575,7 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 		if !winSessionStillExists(targetSession) {
 			log.Warn("findActiveHelper: target WTS session no longer exists, falling back to any capable helper",
 				"targetSession", targetSession)
-			return h.findActiveHelper("", allowDisconnected...)
+			return h.findActiveHelperWithPreference("", false, allowDisconnected...)
 		}
 	}
 
@@ -577,9 +587,12 @@ func (h *Heartbeat) findActiveHelper(targetSession string, allowDisconnected ...
 		consoleID := sessionbroker.GetConsoleSessionID()
 
 		// A console at the sign-in screen loses to an active, signed-in RDP
-		// session that has a capable helper (#8434).
-		if alt := h.activeRemoteHelperOverSignInConsole(consoleID); alt != nil {
-			return alt
+		// session that has a capable helper (#8434), but only for a start that
+		// had no target from the outset (see findActiveHelper).
+		if preferActiveRDPOverSignInConsole {
+			if alt := h.activeRemoteHelperOverSignInConsole(consoleID); alt != nil {
+				return alt
+			}
 		}
 
 		// If the best session IS the console and it's not disconnected, use it.
