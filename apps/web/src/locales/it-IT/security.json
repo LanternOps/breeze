@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Aggiungi integrazione",
       "syncNow": "Sincronizza ora",
-      "deleteIntegration": "Elimina integrazione"
+      "deleteIntegration": "Elimina integrazione",
+      "editRetention": "Modifica periodo di conservazione"
     },
     "messages": {
       "loadHttpError": "Impossibile caricare le integrazioni (HTTP {{status}})",
       "loadFailed": "Impossibile caricare le integrazioni",
       "syncFailed": "Impossibile attivare la sincronizzazione per {{name}}",
       "syncQueued": "Sincronizzazione accodata per {{name}}",
-      "deleteConfirm": "Eliminare {{name}}? Gli eventi archiviati vengono conservati secondo il criterio di retention.",
+      "deleteConfirm": "Eliminare {{name}}? Criteri, eventi e statistiche vengono rimossi in background.",
       "deleteFailed": "Impossibile eliminare {{name}}",
-      "deleteSuccess": "{{name}} eliminata"
+      "deleteSuccess": "Eliminazione di {{name}} in background"
     },
     "loading": "Caricamento integrazioni…",
     "empty": {
@@ -1750,7 +1751,24 @@
       "actions": "Azioni"
     },
     "lastSyncFailedSuffix": " — fallita",
-    "never": "Mai"
+    "never": "Mai",
+    "deletingInBackground": "Eliminazione in corso…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Conservazione dei dati",
+    "description": "Gli eventi e le statistiche giornaliere più vecchi vengono eliminati dalla pulizia notturna.",
+    "fieldLabel": "Conserva eventi e statistiche DNS per (giorni)",
+    "fieldHelp": "Da 1 a 365 giorni. Lascia vuoto per usare il valore predefinito dell’installazione (90 giorni, salvo modifiche dell’amministratore).",
+    "invalid": "Inserisci un numero intero di giorni da 1 a 365 oppure lascia il campo vuoto.",
+    "actions": {
+      "dismiss": "Annulla",
+      "submit": "Salva",
+      "saving": "Salvataggio…"
+    },
+    "messages": {
+      "saved": "Conservazione aggiornata per {{name}}",
+      "saveFailed": "Impossibile aggiornare la conservazione per {{name}}"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Criteri Block / Allow",

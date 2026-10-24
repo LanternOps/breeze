@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { Plug, RefreshCw, Trash2, Plus } from 'lucide-react';
+import { Plug, RefreshCw, Trash2, Plus, Clock } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 import AddDnsIntegrationModal from './AddDnsIntegrationModal';
+import EditDnsRetentionModal from './EditDnsRetentionModal';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 
 type Provider =
@@ -32,13 +33,22 @@ type Integration = {
   orgId: string;
   provider: Provider;
   name: string;
-  enabled: boolean;
+  isActive?: boolean;
+  config?: { retentionDays?: number } | null;
   lastSync: string | null;
   lastSyncStatus: string | null;
   lastSyncError: string | null;
   totalEventsProcessed: number | null;
   createdAt: string;
 };
+
+// #10019 — DELETE marks the row inactive + 'deleting' and answers 202; a
+// background job removes its history and then the row itself.
+const DELETING_STATUS = 'deleting';
+
+function isDeleting(it: Integration): boolean {
+  return it.isActive === false && it.lastSyncStatus === DELETING_STATUS;
+}
 
 export default function DnsSecurityIntegrationsTab() {
   const { t } = useTranslation('security');
@@ -47,6 +57,7 @@ export default function DnsSecurityIntegrationsTab() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [retentionTarget, setRetentionTarget] = useState<Integration | null>(null);
 
   const fetchIntegrations = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -174,7 +185,9 @@ export default function DnsSecurityIntegrationsTab() {
                       : it.provider}
                   </td>
                   <td className="px-4 py-2">
-                    {it.lastSync ? (
+                    {isDeleting(it) ? (
+                      <span className="text-muted-foreground">{t('dnsSecurityDnsSecurityIntegrationsTab.deletingInBackground')}</span>
+                    ) : it.lastSync ? (
                       <span className={it.lastSyncStatus === 'error' ? 'text-destructive' : ''}>
                         {formatDateTime(it.lastSync)}
                         {it.lastSyncStatus === 'error' && t('dnsSecurityDnsSecurityIntegrationsTab.lastSyncFailedSuffix')}
@@ -188,8 +201,17 @@ export default function DnsSecurityIntegrationsTab() {
                     <div className="inline-flex items-center gap-1">
                       <button
                         type="button"
+                        onClick={() => setRetentionTarget(it)}
+                        disabled={busyId === it.id || isDeleting(it)}
+                        title={t('dnsSecurityDnsSecurityIntegrationsTab.actions.editRetention')}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        <Clock className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => handleSync(it)}
-                        disabled={busyId === it.id}
+                        disabled={busyId === it.id || isDeleting(it)}
                         title={t('dnsSecurityDnsSecurityIntegrationsTab.actions.syncNow')}
                         className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
                       >
@@ -198,7 +220,7 @@ export default function DnsSecurityIntegrationsTab() {
                       <button
                         type="button"
                         onClick={() => handleDelete(it)}
-                        disabled={busyId === it.id}
+                        disabled={busyId === it.id || isDeleting(it)}
                         title={t('dnsSecurityDnsSecurityIntegrationsTab.actions.deleteIntegration')}
                         className="inline-flex h-7 w-7 items-center justify-center rounded text-destructive hover:bg-destructive/10 disabled:opacity-50"
                       >
@@ -211,6 +233,18 @@ export default function DnsSecurityIntegrationsTab() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {retentionTarget && (
+        <EditDnsRetentionModal
+          integration={{
+            id: retentionTarget.id,
+            name: retentionTarget.name,
+            retentionDays: retentionTarget.config?.retentionDays ?? null,
+          }}
+          onClose={() => setRetentionTarget(null)}
+          onSaved={() => void fetchIntegrations()}
+        />
       )}
 
       {showAddModal && (

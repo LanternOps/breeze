@@ -476,6 +476,9 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   WEBHOOK_DELIVERY_RETENTION_DAYS: 'data retention window',
   WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  DNS_SECURITY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
+  DNS_SECURITY_RETENTION_DAYS_DEFAULT: 'data retention window',
+  DNS_SECURITY_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
   // S1_*
   S1_SYNC_MAX_PAGES: 'sync paging limit',
   // S3_*

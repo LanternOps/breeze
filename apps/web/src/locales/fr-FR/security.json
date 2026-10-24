@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Ajouter une intégration",
       "syncNow": "Synchronisez maintenant",
-      "deleteIntegration": "Supprimer l’intégration"
+      "deleteIntegration": "Supprimer l’intégration",
+      "editRetention": "Modifier la durée de conservation"
     },
     "messages": {
       "loadHttpError": "Impossible de charger les intégrations (HTTP {{status}})",
       "loadFailed": "Impossible de charger les intégrations",
       "syncFailed": "Impossible de déclencher la synchronisation pour {{name}}",
       "syncQueued": "Synchronisé pour {{name}}",
-      "deleteConfirm": "Supprimer {{name}} ? Les événements stockés sont conservés selon la politique de rétention.",
+      "deleteConfirm": "Supprimer {{name}} ? Ses stratégies, événements et statistiques sont supprimés en arrière-plan.",
       "deleteFailed": "Impossible de supprimer {{name}}",
-      "deleteSuccess": "Supprimé {{name}}"
+      "deleteSuccess": "Suppression de {{name}} en arrière-plan"
     },
     "loading": "Chargement des intégrations...",
     "empty": {
@@ -1750,7 +1751,24 @@
       "actions": "Actions"
     },
     "lastSyncFailedSuffix": " — échoué",
-    "never": "Jamais"
+    "never": "Jamais",
+    "deletingInBackground": "Suppression en cours…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Conservation des données",
+    "description": "Les événements et statistiques quotidiennes plus anciens sont supprimés par la purge nocturne.",
+    "fieldLabel": "Conserver les événements et statistiques DNS pendant (jours)",
+    "fieldHelp": "De 1 à 365 jours. Laissez vide pour utiliser la valeur par défaut du déploiement (90 jours, sauf si votre administrateur l’a modifiée).",
+    "invalid": "Saisissez un nombre entier de jours entre 1 et 365, ou laissez le champ vide.",
+    "actions": {
+      "dismiss": "Annuler",
+      "submit": "Enregistrer",
+      "saving": "Enregistrement…"
+    },
+    "messages": {
+      "saved": "Conservation mise à jour pour {{name}}",
+      "saveFailed": "Impossible de mettre à jour la conservation de {{name}}"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Politiques de blocage et d’autorisation",

@@ -1726,16 +1726,17 @@
     "actions": {
       "addIntegration": "Add integration",
       "syncNow": "Sync now",
-      "deleteIntegration": "Delete integration"
+      "deleteIntegration": "Delete integration",
+      "editRetention": "Change retention period"
     },
     "messages": {
       "loadHttpError": "Failed to load integrations (HTTP {{status}})",
       "loadFailed": "Failed to load integrations",
       "syncFailed": "Failed to trigger sync for {{name}}",
       "syncQueued": "Sync queued for {{name}}",
-      "deleteConfirm": "Delete {{name}}? Stored events are retained per the retention policy.",
+      "deleteConfirm": "Delete {{name}}? Its policies, events and statistics are removed in the background.",
       "deleteFailed": "Failed to delete {{name}}",
-      "deleteSuccess": "Deleted {{name}}"
+      "deleteSuccess": "Deleting {{name}} in the background"
     },
     "loading": "Loading integrations…",
     "empty": {
@@ -1750,7 +1751,24 @@
       "actions": "Actions"
     },
     "lastSyncFailedSuffix": " — failed",
-    "never": "Never"
+    "never": "Never",
+    "deletingInBackground": "Deleting…"
+  },
+  "dnsSecurityEditDnsRetentionModal": {
+    "title": "Data retention",
+    "description": "Events and daily statistics older than this are deleted by the nightly retention sweep.",
+    "fieldLabel": "Keep DNS events and statistics for (days)",
+    "fieldHelp": "1–365 days. Leave empty to use the deployment default (90 days unless your administrator changed it).",
+    "invalid": "Enter a whole number of days from 1 to 365, or leave it empty.",
+    "actions": {
+      "dismiss": "Cancel",
+      "submit": "Save",
+      "saving": "Saving…"
+    },
+    "messages": {
+      "saved": "Retention updated for {{name}}",
+      "saveFailed": "Failed to update retention for {{name}}"
+    }
   },
   "dnsSecurityDnsSecurityPoliciesTab": {
     "title": "Block / Allow policies",

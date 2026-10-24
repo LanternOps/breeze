@@ -125,4 +125,117 @@ describe('DnsSecurityIntegrationsTab', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(/Failed to load integrations/);
     });
   });
+  // #10019 / #10020 — background delete and the retention edit.
+  const umbrellaRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'int-1',
+    orgId: 'org-1',
+    provider: 'umbrella',
+    name: 'Umbrella Prod',
+    isActive: true,
+    config: { organizationId: '42' },
+    lastSync: '2026-05-22T19:00:00.000Z',
+    lastSyncStatus: 'success',
+    lastSyncError: null,
+    totalEventsProcessed: 10,
+    createdAt: '2026-05-01T00:00:00.000Z',
+    ...overrides,
+  });
+
+  it('Delete queues a background delete (202) and says so instead of claiming it is done', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow()] }));
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ success: true, id: 'int-1', status: 'deleting' }, true, 202));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow({ isActive: false, lastSyncStatus: 'deleting' })] }));
+
+    fireEvent.click(screen.getByTitle('Delete integration'));
+
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: 'Deleting Umbrella Prod in the background' }),
+      );
+    });
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/dns-security/integrations/int-1', expect.objectContaining({ method: 'DELETE' }));
+    expect(confirmSpy.mock.calls[0]![0]).toMatch(/removed in the background/);
+    await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+    confirmSpy.mockRestore();
+  });
+
+  it('shows a row being deleted as such and disables its actions', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [umbrellaRow({ isActive: false, lastSyncStatus: 'deleting' })],
+    }));
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Deleting…')).toBeInTheDocument());
+    expect(screen.getByTitle('Sync now')).toBeDisabled();
+    expect(screen.getByTitle('Delete integration')).toBeDisabled();
+    expect(screen.getByTitle('Change retention period')).toBeDisabled();
+  });
+
+  it('edits retentionDays with PATCH, prefilled from the integration config', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [umbrellaRow({ config: { organizationId: '42', retentionDays: 7 } })],
+    }));
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Change retention period'));
+    const input = await screen.findByLabelText('Keep DNS events and statistics for (days)');
+    expect(input).toHaveValue(7);
+
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ id: 'int-1', retentionDays: 30 }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow()] }));
+    fireEvent.change(input, { target: { value: '30' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/dns-security/integrations/int-1', expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ retentionDays: 30 }),
+      }));
+    });
+    await waitFor(() => {
+      expect(showToastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'success', message: 'Retention updated for Umbrella Prod' }),
+      );
+    });
+  });
+
+  it('an empty retention field sends null so the deployment default applies', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({
+      data: [umbrellaRow({ config: { retentionDays: 7 } })],
+    }));
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Change retention period'));
+    const input = await screen.findByLabelText('Keep DNS events and statistics for (days)');
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ id: 'int-1', retentionDays: null }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow()] }));
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(fetchWithAuthMock).toHaveBeenCalledWith('/dns-security/integrations/int-1', expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ retentionDays: null }),
+      }));
+    });
+  });
+
+  it('rejects an out-of-range retention value without calling the API', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: [umbrellaRow()] }));
+    render(<DnsSecurityIntegrationsTab />);
+    await waitFor(() => expect(screen.getByText('Umbrella Prod')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTitle('Change retention period'));
+    const input = await screen.findByLabelText('Keep DNS events and statistics for (days)');
+    fireEvent.change(input, { target: { value: '400' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Enter a whole number of days from 1 to 365, or leave it empty.')).toBeInTheDocument();
+    expect(fetchWithAuthMock).toHaveBeenCalledTimes(1);
+  });
 });

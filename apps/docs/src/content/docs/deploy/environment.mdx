@@ -340,6 +340,9 @@ Breeze prunes its own operational tables nightly so a long-running instance does
 | `WEBHOOK_DELIVERY_RETENTION_DAYS` | `90` | Days to keep delivered and failed webhook delivery records, clamped to 1–365. Pending and retrying deliveries are never deleted. Runs daily at 22:13 UTC; the first run after upgrading to v0.124.0 removes every delivered or failed record older than the window |
 | `WEBHOOK_DELIVERY_RETENTION_BATCH_SIZE` | `1000` | Rows deleted per batch |
 | `WEBHOOK_DELIVERY_RETENTION_MAX_BATCHES` | `100` | Maximum batches per nightly run |
+| `DNS_SECURITY_RETENTION_DAYS_DEFAULT` | `90` | Days to keep DNS security events and daily statistics for an integration that has no `retentionDays` of its own, clamped to 1–365. Runs daily at 22:18 UTC; the first run after upgrading removes every event and statistic older than the window. See [DNS Security](/features/dns-security/#data-retention) |
+| `DNS_SECURITY_RETENTION_BATCH_SIZE` | `5000` | Rows deleted per batch (also used by the background integration delete) |
+| `DNS_SECURITY_RETENTION_MAX_BATCHES` | `400` | Maximum batches per table, per integration, per nightly run (and per background-delete job before it re-queues itself) |
 | `PAM_EVIDENCE_RETENTION_ENABLED` | on when empty | **v0.124.0+.** Nightly deletion of PAM request chains on **held organization-merge shells** only, never on a live organization, so a hold can release once its evidence has aged out. `false` skips the job |
 | `PAM_EVIDENCE_RETENTION_DAYS` | `400` | Days a held shell's PAM evidence is kept, measured from its newest activity. Values below 30 are clamped to 30 |
 | `AI_TOOL_OUTPUT_RETENTION_CRON` | `33 4 * * *` | **v0.124.0+.** When the nightly AI tool-output scrub runs (UTC). The window itself is not set here: it is the per-partner (and per-organization) **Keep AI tool outputs for** setting under AI Features, 30 days by default and blank for "keep forever". See [AI](/features/ai/) |
