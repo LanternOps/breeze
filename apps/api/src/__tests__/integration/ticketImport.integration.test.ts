@@ -505,6 +505,10 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(ra).toMatchObject({ outcome: 'resumed', commentsWritten: 1, statusSkipped: true });
     expect(rc).toMatchObject({ outcome: 'resumed', statusSkipped: true });
     expect(rb).toMatchObject({ outcome: 'resumed', statusSkipped: false });
+    // Why each was kept: who owns the status, and both statuses.
+    expect(ra.statusSkip).toEqual({ statusOwner: { kind: 'user', principalId: null }, sourceStatus: 'closed', currentStatus: 'pending' });
+    expect(rc.statusSkip).toEqual({ statusOwner: { kind: 'user', principalId: null }, sourceStatus: 'closed', currentStatus: 'open' });
+    expect(rb).not.toHaveProperty('statusSkip');
     const statusOf = async (id: string) => (await getTestDb().select().from(tickets).where(eq(tickets.id, id)))[0]!;
     expect(await statusOf(a.ticketId)).toMatchObject({ status: 'pending', closedAt: null });
     expect(await statusOf(c.ticketId)).toMatchObject({ status: 'open', closedAt: null });
@@ -520,8 +524,10 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect(await outboxFor(b.ticketId)).toEqual([]);
     expect(queued).toEqual([]);
     expect(audited).toEqual([]);
-    // Charged: A's note, B's two status writes; nothing for C.
-    expect(await bucketSize(second.id)).toBe(3);
+    // Charged: A's note plus its two status steps (planned as a skip, still
+    // charged because its transaction decides again under the lock), B's two
+    // status writes; nothing for C, whose predicted skip opens no transaction.
+    expect(await bucketSize(second.id)).toBe(5);
 
     // A technician changes D's status after the plan, just before its status
     // transaction: decided again under the lock, the Breeze status is kept.
@@ -532,10 +538,36 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const rd = await importTicket(second.id, { ...raced, ...closed }, { partnerId: fx.partner.id });
     chargeHook.before = null;
     expect(rd).toMatchObject({ outcome: 'resumed', statusSkipped: true });
+    expect(rd.statusSkip).toEqual({ statusOwner: { kind: 'user', principalId: null }, sourceStatus: 'closed', currentStatus: 'on_hold' });
     expect(await statusOf(d.ticketId)).toMatchObject({ status: 'on_hold', closedAt: null });
     expect(await viaSecond([d.ticketId])).toEqual([]);
     // Charged as planned: a status kept under the lock overcharges, never undercharges.
-    expect(await bucketSize(second.id)).toBe(5);
+    expect(await bucketSize(second.id)).toBe(7);
+  });
+
+  runDb('a first import reports statusSkipped when a Breeze change lands between its header and its last transaction', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const ticket = source(fx, { assigneeUserId: undefined });
+    // Transactions: header (create + ref), then the three comments and the
+    // final status. A technician puts the new ticket on hold in between.
+    const tech = { kind: 'user' as const, userId: fx.owner.id, name: 'Owner' };
+    chargeHook.before = async (call) => {
+      if (call !== 2) return;
+      const [created] = await getTestDb().select({ id: tickets.id }).from(tickets).where(eq(tickets.migrationWindowId, window.id));
+      await withDbAccessContext(fx.ownerContext(), () => changeTicketStatus(created!.id, { status: 'on_hold' }, {}, tech));
+    };
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
+    chargeHook.before = null;
+
+    expect(result).toMatchObject({ outcome: 'created', commentsWritten: 3, statusSkipped: true });
+    expect(result.statusSkip).toEqual({ statusOwner: { kind: 'user', principalId: null }, sourceStatus: 'closed', currentStatus: 'on_hold' });
+    const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, result.ticketId));
+    expect(row).toMatchObject({ status: 'on_hold', resolvedAt: null, closedAt: null });
+    // The import wrote no status row of its own.
+    const statusRows = await getTestDb().select().from(ticketComments)
+      .where(and(eq(ticketComments.ticketId, result.ticketId), eq(ticketComments.commentType, 'status_change')));
+    expect(statusRows.map((r) => [r.newValue, r.originPrincipalKind])).toEqual([['on_hold', 'user']]);
   });
 
   runDb('a comment another ticket already holds is skipped mid-chunk on resume, and the rest of the chunk commits', async () => {

@@ -78,11 +78,30 @@ export type ImportTicketResult = {
    * transactions.
    */
   statusSkipped: boolean;
+  /** Why, when `statusSkipped` is true (absent otherwise): see `StatusSkip`. */
+  statusSkip?: StatusSkip;
+};
+
+/**
+ * Why a source status was not applied (#8884 review, finding 1), for the run
+ * report's `status_kept` issue: who wrote the ticket's latest status_change
+ * row (the Breeze change that owns the status), the source's final status,
+ * and the ticket's status when the writer decided.
+ */
+export type StatusSkip = {
+  statusOwner: { kind: string; principalId: string | null };
+  sourceStatus: TicketStatus;
+  currentStatus: TicketStatus;
 };
 
 export type ImportTicketOptions = {
   /** Comments per transaction, 1..100 (tests use a smaller one). */
   chunkSize?: number;
+  /**
+   * Comment content per transaction in UTF-8 bytes, 1..IMPORT_COMMENT_CHUNK_BYTES
+   * (tests use a smaller one, like `chunkSize`).
+   */
+  chunkBytes?: number;
   /**
    * The partner the caller acts for. Required: the window is read in system
    * scope by its id AND this partner, so a job can only write through its own
@@ -359,18 +378,37 @@ export function finalStatusSteps(current: TicketStatus, t: ImportedTicket): Stat
  * nothing. Like the assignee rule, this assumes the API's clock and the
  * database's agree. Assigning a `new` ticket opens it without a status_change
  * row, so that implicit open does not own the status.
+ *
+ * One limit (#8884 review, finding 2): a live row's created_at defaults to
+ * now(), the START of its transaction, not its commit. A source edit that
+ * lands inside a live request's lifetime can therefore sort before it: a
+ * technician's request that starts at T0 and is still open when an import
+ * commits a row stamped with a source time S > T0 leaves the technician's row
+ * sorting first, and a later pass treats the import as owning the status.
+ * That needs a source edit inside one request's lifetime during a live delta
+ * pass.
+ *
+ * `skip` says why a source status was not applied (`StatusSkip`); it is null
+ * when the steps apply or there is nothing to do.
  */
 export function statusSteps(
   current: TicketStatus,
   lastStatusChange: FeedAuthor | null,
   t: ImportedTicket,
   principalId: string,
-): { steps: StatusStep[]; skipped: boolean } {
+): { steps: StatusStep[]; skip: StatusSkip | null } {
   const steps = finalStatusSteps(current, t);
   if (steps.length === 0 || lastStatusChange === null || writtenByImport(lastStatusChange, principalId)) {
-    return { steps, skipped: false };
+    return { steps, skip: null };
   }
-  return { steps: [], skipped: true };
+  return {
+    steps: [],
+    skip: {
+      statusOwner: { kind: lastStatusChange.kind, principalId: lastStatusChange.principalId },
+      sourceStatus: t.finalStatus as TicketStatus,
+      currentStatus: current,
+    },
+  };
 }
 
 /**
@@ -389,18 +427,18 @@ async function assertStillImportable(ticketId: string, sourceId: string): Promis
 }
 
 /**
- * Applies `statusSteps` under the lock; returns whether a Breeze change kept
- * the status. The plan's status may be stale, so the ticket is re-read FOR NO
+ * Applies `statusSteps` under the lock; returns why a Breeze change kept the
+ * status, or null. The plan's status may be stale, so the ticket is re-read FOR NO
  * KEY UPDATE: a concurrent status change either committed first, and its feed
  * row is seen below, or waits for this transaction. Not FOR UPDATE: that
  * would conflict with the KEY SHARE lock a concurrent comment insert's
  * foreign-key check takes, and deadlock with its parent-touch trigger.
  */
-async function applyFinalStatus(scope: WriteScope, ticketId: string, t: ImportedTicket): Promise<boolean> {
+async function applyFinalStatus(scope: WriteScope, ticketId: string, t: ImportedTicket): Promise<StatusSkip | null> {
   const [row] = await db.select({ status: tickets.status }).from(tickets).where(eq(tickets.id, ticketId)).limit(1).for('no key update');
   if (!row) throw new Error(`imported ticket ${ticketId} is not visible to its window`);
   const lastStatusChange = await lastFeedRowBy(ticketId, 'status_change');
-  const { steps, skipped } = statusSteps(row.status as TicketStatus, lastStatusChange, t, scope.window.principalId);
+  const { steps, skip } = statusSteps(row.status as TicketStatus, lastStatusChange, t, scope.window.principalId);
   for (const step of steps) {
     await changeTicketStatus(
       ticketId,
@@ -410,7 +448,7 @@ async function applyFinalStatus(scope: WriteScope, ticketId: string, t: Imported
       scope.at(step.at),
     );
   }
-  return skipped;
+  return skip;
 }
 
 /** Charge the bucket, open the narrowed context, lock the window FOR SHARE, run `fn`. */
@@ -517,6 +555,7 @@ export async function importTicket(
     throw new Error('importTicket opens its own transactions; call it outside any DB context');
   }
   const chunkSize = Math.min(IMPORT_COMMENT_CHUNK_SIZE, Math.max(1, Math.floor(options.chunkSize ?? IMPORT_COMMENT_CHUNK_SIZE)));
+  const chunkBytes = Math.min(IMPORT_COMMENT_CHUNK_BYTES, Math.max(1, Math.floor(options.chunkBytes ?? IMPORT_COMMENT_CHUNK_BYTES)));
   const t = parseImportedTicket(input);
   const descriptor = await readWindowDescriptor(windowId, options.partnerId);
   const context = windowWriteContext(descriptor);
@@ -529,7 +568,10 @@ export async function importTicket(
     const ref = await readRef(principalId, t.sourceId);
     if (!ref) return { kind: 'create' as const, missing: inSourceOrder(t.comments), present: 0 };
     const stored = await readStoredTicket(ref.ticketId);
-    if (!stored || !stored.migrationWindowId) throw inUse(t.sourceId, { reason: 'live_ticket', ticketId: ref.ticketId });
+    // A ref whose ticket the window's RLS hides: the same reason code the
+    // locked re-check gives (assertStillImportable).
+    if (!stored) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: ref.ticketId });
+    if (!stored.migrationWindowId) throw inUse(t.sourceId, { reason: 'live_ticket', ticketId: ref.ticketId });
     if (stored.deletedAt) throw inUse(t.sourceId, { reason: 'deleted', ticketId: stored.id });
     if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
     const presentIds = await presentCommentSourceIds(principalId, t.comments.map((c) => c.sourceId));
@@ -543,8 +585,13 @@ export async function importTicket(
       missing,
       present: t.comments.length - missing.length,
       headerCost: headerCost(changes),
-      statusCost: status.steps.length,
-      statusSkipped: status.skipped,
+      // Charged whenever the source status differs, even when the plan
+      // predicts a skip (#8884 review, finding 3): the last transaction
+      // decides again under the lock, and only units already charged may be
+      // written. At most 2.
+      statusCost: finalStatusSteps(statusAfterHeader, t).length,
+      statusApplies: status.steps.length > 0,
+      statusSkip: status.skip,
     };
   });
 
@@ -558,7 +605,7 @@ export async function importTicket(
   }
 
   const orgId = plan.kind === 'create' ? t.orgId : plan.stored.orgId;
-  const chunks = chunkComments(plan.missing, chunkSize, IMPORT_COMMENT_CHUNK_BYTES);
+  const chunks = chunkComments(plan.missing, chunkSize, chunkBytes);
   const statusCost = plan.kind === 'create'
     ? finalStatusSteps(t.assigneeUserId ? 'open' : 'new', t).length
     : plan.statusCost;
@@ -566,12 +613,16 @@ export async function importTicket(
   let fieldsUpdated = 0;
   let commentsWritten = 0;
   let commentsSkipped = plan.present;
-  // The last transaction decides the status again under the lock; its answer
-  // is the one reported. A transaction that fails throws, so a rolled-back
-  // answer is never returned.
-  let statusSkipped = plan.kind === 'resume' && plan.statusSkipped;
+  // Which answer is reported (#8884 review, finding 4). When a transaction
+  // runs, the last one decides the status again under the lock, and its
+  // answer is reported; a transaction that fails throws, so a rolled-back
+  // answer is never returned. When there is nothing to write, no transaction
+  // opens, and the reported skip is the plan's answer, read without the lock.
+  // Only another run of this principal can turn that skip into an apply, and
+  // that run applies the status itself.
+  let statusSkip: StatusSkip | null = plan.kind === 'resume' ? plan.statusSkip : null;
   const finalStatus = async (scope: WriteScope, id: string) => {
-    statusSkipped = await applyFinalStatus(scope, id, t);
+    statusSkip = await applyFinalStatus(scope, id, t);
   };
 
   // The header: a create (create + ref + assign), or a resume's re-applied
@@ -641,8 +692,9 @@ export async function importTicket(
     commentsSkipped += result.skipped;
   }
 
-  // A resume with nothing but a status change still needs its transaction.
-  if (!headerRuns && chunks.length === 0 && statusCost > 0) {
+  // A resume with nothing but a status change still needs its transaction. A
+  // predicted skip with nothing else to write opens none (see above).
+  if (!headerRuns && chunks.length === 0 && plan.kind === 'resume' && plan.statusApplies) {
     await inImportTransaction(descriptor, context, orgId, statusCost, async (scope) => {
       await assertStillImportable(ticketId, t.sourceId);
       await finalStatus(scope, ticketId);
@@ -655,6 +707,7 @@ export async function importTicket(
     commentsWritten,
     commentsSkipped,
     fieldsUpdated,
-    statusSkipped,
+    statusSkipped: statusSkip !== null,
+    ...(statusSkip ? { statusSkip } : {}),
   };
 }

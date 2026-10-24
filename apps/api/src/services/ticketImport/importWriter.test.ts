@@ -111,7 +111,7 @@ describe('statusSteps — the source status applies only while the import set it
   it('applies the source status when the ticket has no status_change row: a first import, or a pass stopped before its status', () => {
     expect(statusSteps('new', null, closedInSource, PRINCIPAL)).toEqual({
       steps: [{ status: 'resolved', at: at(100), resolutionNote: 'Fixed' }, { status: 'closed', at: at(200) }],
-      skipped: false,
+      skip: null,
     });
   });
 
@@ -120,23 +120,46 @@ describe('statusSteps — the source status applies only while the import set it
     // A reopen-then-resolve pair is applied whole.
     expect(statusSteps('closed', ourAssignment, ticket({ finalStatus: 'resolved', resolvedAt: at(250) }), PRINCIPAL)).toEqual({
       steps: [{ status: 'open', at: at(250) }, { status: 'resolved', at: at(250) }],
-      skipped: false,
+      skip: null,
     });
   });
 
   it.each([
     ['a technician', { kind: 'user', principalId: null }],
+    // The inbound pipeline reopens as a system actor whose feed row carries a
+    // user origin and no principal; the integration suite drives a real one.
     ["the inbound pipeline's requester reopen (system actor, user origin)", { kind: 'user', principalId: null }],
     ['an AI agent', { kind: 'ai_agent', principalId: 'agent-1' }],
     ['another integration', { kind: 'service_principal', principalId: 'other-principal' }],
-  ])('keeps the Breeze status, whole, when %s changed it last', (_label, last) => {
-    expect(statusSteps('resolved', last, closedInSource, PRINCIPAL)).toEqual({ steps: [], skipped: true });
-    expect(statusSteps('pending', last, ticket({ finalStatus: 'resolved', resolvedAt: at(50) }), PRINCIPAL)).toEqual({ steps: [], skipped: true });
+  ])('keeps the Breeze status, whole, when %s changed it last, and says who and from what', (_label, last) => {
+    expect(statusSteps('resolved', last, closedInSource, PRINCIPAL)).toEqual({
+      steps: [],
+      skip: { statusOwner: last, sourceStatus: 'closed', currentStatus: 'resolved' },
+    });
+    expect(statusSteps('pending', last, ticket({ finalStatus: 'resolved', resolvedAt: at(50) }), PRINCIPAL)).toEqual({
+      steps: [],
+      skip: { statusOwner: last, sourceStatus: 'resolved', currentStatus: 'pending' },
+    });
+  });
+
+  // #8884 review, finding 8: the kind is part of the match, not just the id.
+  it.each([
+    ['a user', 'user'],
+    ['an AI agent', 'ai_agent'],
+    ['a system note', 'system'],
+  ])("is not the import's row when %s carries the import principal's id", (_label, kind) => {
+    const impostor = { kind, principalId: PRINCIPAL };
+    expect(statusSteps('resolved', impostor, closedInSource, PRINCIPAL)).toEqual({
+      steps: [],
+      skip: { statusOwner: impostor, sourceStatus: 'closed', currentStatus: 'resolved' },
+    });
+    // The assignee rule uses the same match.
+    expect(headerChanges(stored({ assignedTo: AGENT }), ref, impostor, ticket({ assigneeUserId: OTHER_AGENT }), PRINCIPAL).assign).toBeNull();
   });
 
   it('reports nothing skipped when the status already matches the source', () => {
-    expect(statusSteps('closed', { kind: 'user', principalId: null }, closedInSource, PRINCIPAL)).toEqual({ steps: [], skipped: false });
-    expect(statusSteps('open', { kind: 'user', principalId: null }, ticket({ finalStatus: 'new' }), PRINCIPAL)).toEqual({ steps: [], skipped: false });
+    expect(statusSteps('closed', { kind: 'user', principalId: null }, closedInSource, PRINCIPAL)).toEqual({ steps: [], skip: null });
+    expect(statusSteps('open', { kind: 'user', principalId: null }, ticket({ finalStatus: 'new' }), PRINCIPAL)).toEqual({ steps: [], skip: null });
   });
 });
 
