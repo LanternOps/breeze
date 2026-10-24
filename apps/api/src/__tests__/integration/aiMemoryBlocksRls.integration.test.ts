@@ -6,9 +6,13 @@
  */
 import './setup';
 import { afterEach, describe, expect, it } from 'vitest';
-import { eq, inArray } from 'drizzle-orm';
-import { db, withDbAccessContext } from '../../db';
-import { aiMemoryBlocks, aiSessions, organizations, partners, users } from '../../db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
+import { db, withDbAccessContext, type DbAccessContext } from '../../db';
+import { aiMemoryBlocks, aiSessions, auditLogs, organizations, partners, users } from '../../db/schema';
+import type { AuthContext } from '../../middleware/auth';
+import {
+  MemoryServiceError, confirmBlock, listBlocksForUser, listUserBlocksForPartnerAdmin, recordHumanBlock, retractBlock,
+} from '../../services/wisp/memoryService';
 import {
   SYSTEM_CTX, blockValues, cleanupMemoryBlocks, expectSqlState, insertAiSession, insertBlock,
   orgContext, partnerContext, seedMemoryFixture, userContext,
@@ -206,3 +210,147 @@ describe('ai_memory_blocks RLS (owner_kind-branched)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// memoryService (Task 4 / Task 12) under real RLS. The DbAccessContext and the
+// AuthContext are built from the same facts, the way authMiddleware builds both.
+// ---------------------------------------------------------------------------
+
+type Session = { auth: AuthContext; ctx: DbAccessContext };
+
+/** A signed-in MSP technician (partner scope, interactive session). */
+function partnerSession(userId: string, partnerId: string, orgIds: string[], partnerOrgAccess: 'all' | 'selected'): Session {
+  return {
+    auth: {
+      principal: { kind: 'user_session' },
+      user: { id: userId, email: `${userId}@example.com`, name: 'Tech', isPlatformAdmin: false },
+      token: null, partnerId, orgId: null, scope: 'partner', accessibleOrgIds: orgIds, partnerOrgAccess,
+      orgCondition: () => undefined, canAccessOrg: (id: string) => orgIds.includes(id),
+    } as AuthContext,
+    ctx: { ...partnerContext(partnerId, orgIds), userId },
+  };
+}
+
+/** An organization-session user: org JWTs carry no partnerId (middleware/auth.ts). */
+function orgSession(userId: string, orgId: string): Session {
+  return {
+    auth: {
+      principal: { kind: 'user_session' },
+      user: { id: userId, email: `${userId}@example.com`, name: 'Org tech', isPlatformAdmin: false },
+      token: null, partnerId: null, orgId, scope: 'organization', accessibleOrgIds: [orgId],
+      orgCondition: () => undefined, canAccessOrg: (id: string) => id === orgId,
+    } as AuthContext,
+    ctx: { ...orgContext(orgId, null), userId },
+  };
+}
+
+const as = <T>(s: Session, fn: (auth: AuthContext) => Promise<T>) => withDbAccessContext(s.ctx, () => fn(s.auth));
+
+async function serviceCode(p: Promise<unknown>): Promise<string | undefined> {
+  try { await p; } catch (err) {
+    expect(err).toBeInstanceOf(MemoryServiceError);
+    return (err as MemoryServiceError).code;
+  }
+  return undefined;
+}
+
+async function readBlock(id: string) {
+  const [row] = await withDbAccessContext(SYSTEM_CTX, () => db.select().from(aiMemoryBlocks).where(eq(aiMemoryBlocks.id, id)));
+  return row;
+}
+
+describe('memoryService under RLS', () => {
+  it('memoryService: user A confirms their own block; user B’s confirm of it is not_found', async () => {
+    const f = await seedMemoryFixture();
+    const row = await insertBlock(f.partnerA, { kind: 'user', userId: f.uA1 });
+    const a = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2], 'selected');
+    const b = partnerSession(f.uA2, f.partnerA, [f.orgA1, f.orgA2], 'all');
+
+    expect(await serviceCode(as(b, (auth) => confirmBlock(auth, row.id)))).toBe('not_found');
+    expect(await serviceCode(as(b, (auth) => retractBlock(auth, row.id)))).toBe('not_found');
+    expect((await readBlock(row.id))!.status).toBe('unconfirmed');
+
+    const confirmed = await as(a, (auth) => confirmBlock(auth, row.id));
+    expect(confirmed.status).toBe('confirmed');
+    expect(confirmed.updatedAt.getTime()).toBeGreaterThanOrEqual(row.updatedAt.getTime());
+    // Review Focus 3: once retracted, a confirm cannot resurrect it.
+    await as(a, (auth) => retractBlock(auth, row.id));
+    expect(await serviceCode(as(a, (auth) => confirmBlock(auth, row.id)))).toBe('retracted');
+    expect((await readBlock(row.id))!.status).toBe('retracted');
+  });
+
+  it('memoryService: org member retracts an org block; a sibling-org member gets not_found', async () => {
+    const f = await seedMemoryFixture();
+    const row = await insertBlock(f.partnerA, { kind: 'org', orgId: f.orgA1 });
+    expect(await serviceCode(as(orgSession(f.uA2, f.orgA2), (auth) => retractBlock(auth, row.id)))).toBe('not_found');
+    expect((await readBlock(row.id))!.status).toBe('unconfirmed');
+
+    const retracted = await as(orgSession(f.uA1, f.orgA1), (auth) => retractBlock(auth, row.id));
+    expect(retracted.status).toBe('retracted');
+    expect((await readBlock(row.id))!.status).toBe('retracted');
+  });
+
+  it('memoryService: partner admin (partnerOrgAccess all) lists another user’s blocks with one audit row; a selected-access admin is refused', async () => {
+    const f = await seedMemoryFixture();
+    const live = await insertBlock(f.partnerA, { kind: 'user', userId: f.uA2 });
+    const retracted = await insertBlock(f.partnerA, { kind: 'user', userId: f.uA2 }, { status: 'retracted' });
+    const superseded = await insertBlock(f.partnerA, { kind: 'user', userId: f.uA2 }, { supersededById: live.id });
+    await insertBlock(f.partnerA, { kind: 'user', userId: f.uA1 }); // the admin's own: not in the view
+    await insertBlock(f.partnerB, { kind: 'user', userId: f.uB1 });
+    const orgs = [f.orgA1, f.orgA2];
+
+    const auditRows = (resourceId: string) => withDbAccessContext(SYSTEM_CTX, () => db.select().from(auditLogs).where(and(
+      eq(auditLogs.action, 'wisp.memory.user_blocks_viewed'), eq(auditLogs.resourceId, resourceId),
+    )));
+
+    // Without the admin view, RLS hides the colleague's private blocks.
+    expect(await as(partnerSession(f.uA1, f.partnerA, orgs, 'all'), () =>
+      db.select().from(aiMemoryBlocks).where(eq(aiMemoryBlocks.id, live.id)))).toEqual([]);
+
+    const viewed = await as(partnerSession(f.uA1, f.partnerA, orgs, 'all'), (auth) => listUserBlocksForPartnerAdmin(auth, f.uA2));
+    expect(viewed.map((b) => b.id).sort()).toEqual([live.id, retracted.id].sort());
+    expect(viewed.map((b) => b.id)).not.toContain(superseded.id);
+    const audits = await auditRows(f.uA2);
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ actorId: f.uA1, partnerId: f.partnerA, orgId: null, resourceType: 'ai_memory_blocks', details: { count: 2 } });
+
+    expect(await serviceCode(as(partnerSession(f.uA1, f.partnerA, orgs, 'selected'), (auth) =>
+      listUserBlocksForPartnerAdmin(auth, f.uA2)))).toBe('partner_wide_write_denied');
+    // Review Focus 5: a user in another partner is refused even for a full-access admin.
+    expect(await serviceCode(as(partnerSession(f.uA1, f.partnerA, orgs, 'all'), (auth) =>
+      listUserBlocksForPartnerAdmin(auth, f.uB1)))).toBe('cross_partner');
+    expect(await auditRows(f.uA2)).toHaveLength(1);
+    expect(await auditRows(f.uB1)).toHaveLength(0);
+  });
+
+  it('memoryService.recordHumanBlock: user A records (confirmed, supersedes the prior same-key block); user B in the same partner cannot see it', async () => {
+    const f = await seedMemoryFixture();
+    const a = partnerSession(f.uA1, f.partnerA, [f.orgA1], 'selected');
+    const b = partnerSession(f.uA2, f.partnerA, [f.orgA1], 'all');
+    const subjectKey = 'nudge_feedback:device:high';
+    const grantId = '99999999-9999-4999-8999-999999999999';
+    const input = (verdict: string) => ({
+      owner: { kind: 'user' as const }, blockType: 'preference' as const, subjectKey,
+      content: { verdict }, confidence: 'high' as const, authoredByGrantId: grantId,
+    });
+
+    const first = await as(a, (auth) => recordHumanBlock(auth, input('noisy')));
+    const second = await as(a, (auth) => recordHumanBlock(auth, input('useful')));
+
+    expect(second).toMatchObject({
+      status: 'confirmed', tenantPartnerId: f.partnerA, owner: { kind: 'user', userId: f.uA1 },
+      authoredByGrantId: grantId, authoredByGrantRevisionId: null, supersededById: null,
+    });
+    expect((await readBlock(first.id))!.supersededById).toBe(second.id);
+    expect((await as(a, (auth) => listBlocksForUser(auth))).map((x) => x.id)).toEqual([second.id]);
+
+    // User B (even a full-access admin) sees neither through RLS, and cannot record into A's memory.
+    expect(await as(b, () => db.select().from(aiMemoryBlocks).where(inArray(aiMemoryBlocks.id, [first.id, second.id])))).toEqual([]);
+    expect(await as(b, (auth) => listBlocksForUser(auth))).toEqual([]);
+    expect(await serviceCode(as(b, (auth) => recordHumanBlock(auth, { ...input('forged'), owner: { kind: 'user', userId: f.uA1 } }))))
+      .toBe('owner_mismatch');
+
+    await withDbAccessContext(SYSTEM_CTX, () => db.delete(aiMemoryBlocks).where(inArray(aiMemoryBlocks.id, [first.id, second.id])));
+  });
+});
+
