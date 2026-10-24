@@ -8,6 +8,13 @@ interface AiChatInputProps {
   disabled?: boolean;
   isStreaming?: boolean;
   isInterrupting?: boolean;
+  /**
+   * Controlled text (#9427): the side panel keeps its draft in aiStore so a
+   * refused send can put it back. Pass both or neither; without them the
+   * input keeps its own state.
+   */
+  value?: string;
+  onValueChange?: (value: string) => void;
 }
 
 export default function AiChatInput({
@@ -16,9 +23,14 @@ export default function AiChatInput({
   disabled,
   isStreaming,
   isInterrupting,
+  value: controlledValue,
+  onValueChange,
 }: AiChatInputProps) {
   const { t } = useTranslation("ai");
-  const [value, setValue] = useState("");
+  const [localValue, setLocalValue] = useState("");
+  const controlled = controlledValue !== undefined && onValueChange !== undefined;
+  const value = controlled ? controlledValue : localValue;
+  const setValue = controlled ? onValueChange : setLocalValue;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSubmit = useCallback(() => {
@@ -29,7 +41,7 @@ export default function AiChatInput({
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, disabled, isStreaming, onSend]);
+  }, [value, setValue, disabled, isStreaming, onSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {

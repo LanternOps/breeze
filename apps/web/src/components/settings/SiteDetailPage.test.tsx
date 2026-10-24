@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SiteDetailPage from './SiteDetailPage';
@@ -101,14 +101,34 @@ describe('SiteDetailPage — address/contact round-trip', () => {
     expect(screen.getByPlaceholderText('alex@company.com')).toHaveValue('alex@company.com');
   });
 
-  it('gives the icon-only back-to-organizations link an accessible name (#7158 a11y)', async () => {
+  it('gives the icon-only back link an accessible name and returns to the Sites page (#7158 a11y, #9794)', async () => {
     mockApi();
     render(<SiteDetailPage siteId={SITE_ID} />);
 
-    expect(await screen.findByRole('link', { name: 'Back to organizations' })).toHaveAttribute(
-      'href',
-      `/organizations/${ORG_ID}`
-    );
+    expect(await screen.findByRole('link', { name: 'Back to sites' })).toHaveAttribute('href', '/settings/sites');
+    expect(screen.queryByRole('link', { name: 'Back to organizations' })).toBeNull();
+  });
+
+  it('breadcrumbs read Settings → Sites → site, and the org name still links to its record (#9794)', async () => {
+    mockApi();
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    const crumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' });
+    await waitFor(() => expect(crumbs).toHaveTextContent('Main Office'));
+    const links = within(crumbs).getAllByRole('link');
+    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Settings', '/settings'],
+      ['Sites', '/settings/sites'],
+    ]);
+    expect(crumbs).not.toHaveTextContent('Organizations');
+    expect(await screen.findByTestId('site-detail-org-link')).toHaveAttribute('href', `/organizations/${ORG_ID}`);
+  });
+
+  it('the not-found state also returns to the Sites page (#9794)', async () => {
+    fetchMock.mockResolvedValue(makeJsonResponse({ error: 'nope' }, false));
+    render(<SiteDetailPage siteId={SITE_ID} />);
+
+    expect(await screen.findByRole('link', { name: 'Back to sites' })).toHaveAttribute('href', '/settings/sites');
   });
 
   it('links the site name input to its label (#7158 a11y)', async () => {

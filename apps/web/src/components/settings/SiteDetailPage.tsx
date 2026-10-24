@@ -182,7 +182,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       setSite(data);
       populateForm(data);
 
-      // Fetch org name for breadcrumbs — isolated so failure doesn't crash page load
+      // Fetch the org name for the header's org link — isolated so failure doesn't crash page load
       if (data.orgId) {
         try {
           const orgRes = await fetchWithAuth(`/orgs/organizations/${data.orgId}`);
@@ -191,7 +191,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
             setOrg({ id: orgData.id, name: orgData.name });
           }
         } catch (orgErr) {
-          console.warn('Failed to fetch org for breadcrumbs:', orgErr);
+          console.warn('Failed to fetch org for the site header:', orgErr);
         }
       }
     } catch (err) {
@@ -371,10 +371,10 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{error}</p>
         <a
-          href="/organizations"
+          href="/settings/sites"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          {t('siteDetailPage.backToOrganizations')}
+          {t('siteDetailPage.backToSites')}
         </a>
       </div>
     );
@@ -385,10 +385,10 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
         <p className="text-sm text-destructive">{t('siteDetailPage.errors.notFound')}</p>
         <a
-          href="/organizations"
+          href="/settings/sites"
           className="mt-4 inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
         >
-          {t('siteDetailPage.backToOrganizations')}
+          {t('siteDetailPage.backToSites')}
         </a>
       </div>
     );
@@ -409,8 +409,7 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <Breadcrumbs
         items={[
           { label: t('siteDetailPage.breadcrumbs.settings'), href: '/settings' },
-          { label: t('siteDetailPage.breadcrumbs.organizations'), href: '/organizations' },
-          ...(org ? [{ label: org.name, href: `/organizations/${org.id}` }] : []),
+          { label: t('siteDetailPage.breadcrumbs.sites'), href: '/settings/sites' },
           { label: site.name },
         ]}
       />
@@ -419,9 +418,9 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-4">
           <a
-            href={org ? `/organizations/${org.id}` : '/organizations'}
+            href="/settings/sites"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
-            aria-label={t('siteDetailPage.backToOrganizations')}
+            aria-label={t('siteDetailPage.backToSites')}
           >
             <ArrowLeft className="h-4 w-4" />
           </a>
@@ -440,7 +439,15 @@ export default function SiteDetailPage({ siteId }: { siteId: string }) {
             {org && (
               <p className="mt-1 text-sm text-muted-foreground">
                 <Building2 className="mr-1 inline h-3.5 w-3.5" />
-                {org.name}
+                {/* The breadcrumb now leads to Sites (#9794); the org record
+                    stays one click away from here. */}
+                <a
+                  href={`/organizations/${org.id}`}
+                  data-testid="site-detail-org-link"
+                  className="rounded-sm hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {org.name}
+                </a>
               </p>
             )}
           </div>

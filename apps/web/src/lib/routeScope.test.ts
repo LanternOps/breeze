@@ -82,6 +82,11 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/monitoring')).toBe('org-required');
     expect(getRouteScope('/settings/organizations')).toBe('partner-settings');
     expect(getRouteScope('/settings/organizations/abc-123')).toBe('org-required');
+    // #9794: the Sites list and a site's detail work fleet-wide or in one org,
+    // not as MSP-level settings (which would hide the fleet scope line).
+    expect(getRouteScope('/settings/sites')).toBe('org-or-all');
+    expect(getRouteScope('/settings/sites/abc')).toBe('org-or-all');
+    expect(getRouteScope('/settings/sites/abc/extra')).toBe('partner-settings');
     expect(getRouteScope('/settings/users')).toBe('partner-settings');
     expect(getRouteScope('/integrations')).toBe('partner-settings');
     expect(getRouteScope('/remote/terminal/dev-1')).toBe('device');

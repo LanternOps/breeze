@@ -1120,7 +1120,6 @@
     "title": "Configurações do parceiro",
     "description": "Configure os padrões de {{name}}.",
     "yourMsp": "seu MSP",
-    "selfSaving": "Esta seção salva as próprias alterações.",
     "saveSettings": "Salvar configurações",
     "enforcedDescription": "Os valores definidos aqui são aplicados a todas as organizações. Deixe os campos vazios para cada organização configurar individualmente.",
     "ticketingDescription": "Configure status de chamados, padrões de SLA por prioridade, categorias e exportações de faturamento. Eles se aplicam a todas as suas organizações.",
@@ -1149,6 +1148,27 @@
       "topologyAiDescription": "Permitir que a Breeze AI resuma o mapa e sinalize mudanças incomuns na topologia de um local.",
       "saved": "Módulos atualizados",
       "saveFailed": "Falha ao atualizar os módulos"
+    },
+    "status": {
+      "clean": "Todas as alterações salvas · {{time}}",
+      "cleanNoTime": "Todas as alterações salvas",
+      "dirty": "Alterações não salvas em <tabs></tabs>.",
+      "invalid_one": "Corrija {{count}} campo em {{tab}} para salvar.",
+      "invalid_other": "Corrija {{count}} campos em {{tab}} para salvar.",
+      "saving": "Salvando…",
+      "partial": "Não foi possível salvar <tabs></tabs>. As outras alterações foram salvas.",
+      "failed": "Não foi possível salvar <tabs></tabs>.",
+      "autosaved": "Salvo · {{time}}",
+      "autosaveFailed": "Não foi possível salvar — tente novamente",
+      "readOnly": "Salvar exige acesso total de parceiro"
+    },
+    "validation": {
+      "retentionDays": "Informe um número inteiro de dias entre 1 e 3650."
+    },
+    "unsavedConfirm": "Você tem alterações não salvas. Sair desta página e descartá-las?",
+    "knownGuests": {
+      "added": "Convidado conhecido adicionado",
+      "removed": "Convidado conhecido removido"
     }
   },
   "partnerSendingDomains": {
@@ -6004,8 +6024,10 @@
   "siteDetailPage": {
     "loading": "Carregando site...",
     "backToOrganizations": "Voltar para organizações",
+    "backToSites": "Voltar para sites",
     "breadcrumbs": {
       "settings": "Configurações",
+      "sites": "Sites",
       "organizations": "Organizações"
     },
     "errors": {
@@ -6091,6 +6113,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Contato principal"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locais onde seus dispositivos ficam. Abra um site para ver os detalhes e os dispositivos.",
+      "organizationColumn": "Organização",
+      "pickOrg": "Organização",
+      "pickOrgPlaceholder": "Escolha uma organização",
+      "pickOrgRequired": "Escolha a organização à qual este site pertence.",
+      "fleetAddDescription": "Adicione um novo site e escolha a organização à qual ele pertence.",
+      "empty": "Nenhum site ainda. Adicione um site a uma organização para começar.",
+      "viewDevicesAt": "ver dispositivos em {{name}}"
+    }
   },
   "siteList": {
     "title": "Sites",

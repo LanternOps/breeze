@@ -1120,7 +1120,6 @@
     "title": "Partner Settings",
     "description": "Configure defaults for {{name}}.",
     "yourMsp": "your MSP",
-    "selfSaving": "This section saves its own changes.",
     "saveSettings": "Save Settings",
     "enforcedDescription": "Values you set here are enforced across all organizations. Leave fields empty to let each organization configure individually.",
     "ticketingDescription": "Configure ticket statuses, priority SLA defaults, categories, and billing exports. These apply across all of your organizations.",
@@ -1149,6 +1148,27 @@
       "topologyAiDescription": "Let Breeze AI summarise the map and flag unusual changes in a site's topology.",
       "saved": "Modules updated",
       "saveFailed": "Failed to update modules"
+    },
+    "status": {
+      "clean": "All changes saved · {{time}}",
+      "cleanNoTime": "All changes saved",
+      "dirty": "Unsaved changes in <tabs></tabs>.",
+      "invalid_one": "Fix {{count}} field in {{tab}} to save.",
+      "invalid_other": "Fix {{count}} fields in {{tab}} to save.",
+      "saving": "Saving…",
+      "partial": "Couldn't save <tabs></tabs>. Other changes saved.",
+      "failed": "Couldn't save <tabs></tabs>.",
+      "autosaved": "Saved · {{time}}",
+      "autosaveFailed": "Couldn't save — try again",
+      "readOnly": "Saving needs full partner access"
+    },
+    "validation": {
+      "retentionDays": "Enter a whole number of days from 1 to 3650."
+    },
+    "unsavedConfirm": "You have unsaved changes. Leave this page and discard them?",
+    "knownGuests": {
+      "added": "Known guest added",
+      "removed": "Known guest removed"
     }
   },
   "partnerSendingDomains": {
@@ -5999,8 +6019,10 @@
   "siteDetailPage": {
     "loading": "Loading site...",
     "backToOrganizations": "Back to organizations",
+    "backToSites": "Back to sites",
     "breadcrumbs": {
       "settings": "Settings",
+      "sites": "Sites",
       "organizations": "Organizations"
     },
     "errors": {
@@ -6086,6 +6108,19 @@
       "contactPhone": "+1 (555) 123-4567"
     },
     "primaryContact": "Primary contact"
+  },
+  "sites": {
+    "page": {
+      "title": "Sites",
+      "description": "Locations where your devices live. Open a site to see its details and devices.",
+      "organizationColumn": "Organization",
+      "pickOrg": "Organization",
+      "pickOrgPlaceholder": "Choose an organization",
+      "pickOrgRequired": "Choose the organization this site belongs to.",
+      "fleetAddDescription": "Add a new site and choose the organization it belongs to.",
+      "empty": "No sites yet. Add a site to an organization to get started.",
+      "viewDevicesAt": "view devices at {{name}}"
+    }
   },
   "siteList": {
     "title": "Sites",
