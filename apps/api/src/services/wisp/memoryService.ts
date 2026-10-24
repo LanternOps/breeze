@@ -90,20 +90,54 @@ async function loadForChange(auth: AuthContext, id: string): Promise<AiMemoryBlo
 }
 
 /**
+ * The per-key advisory lock shared with memoryBroker.rememberForGrant and
+ * recordHumanBlock (namespace + JSON key byte-identical; JSON, not a NUL-joined
+ * string: Postgres text rejects NUL, 22021).
+ */
+function memoryKeyLock(row: Pick<AiMemoryBlockRow, 'tenantPartnerId' | 'ownerKind' | 'ownerUserId' | 'ownerOrgId' | 'blockType' | 'subjectKey'>): SQL {
+  const lockKey = JSON.stringify([row.tenantPartnerId, row.ownerKind, row.ownerUserId ?? row.ownerOrgId, row.blockType, row.subjectKey]);
+  return sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`;
+}
+
+/**
  * unconfirmed → confirmed. Already confirmed: returned unchanged. Retracted:
  * refused (`retracted`) — a confirm must never resurrect something a human
  * withdrew, so the UPDATE itself carries `status <> 'retracted'` and a retract
  * that lands between the read and the write still wins.
+ *
+ * Confirming is the human choosing this block for its key: in the same
+ * transaction it supersedes every other live (non-retracted, non-superseded)
+ * block with the same (tenant, owner, block_type, subject_key) — including an
+ * older confirmed one, which an agent write alone can never replace
+ * (memoryBroker.rememberForGrant).
  */
 export async function confirmBlock(auth: AuthContext, id: string): Promise<MemoryBlock> {
   const row = await loadForChange(auth, id);
   if (row.status === 'retracted') throw new MemoryServiceError('retracted', 'A retracted memory block cannot be confirmed');
   if (row.status === 'confirmed') return toMemoryBlock(row);
 
-  const [updated] = await db.update(aiMemoryBlocks)
-    .set({ status: 'confirmed', updatedAt: new Date() })
-    .where(and(eq(aiMemoryBlocks.id, id), ne(aiMemoryBlocks.status, 'retracted')))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    await tx.execute(memoryKeyLock(row));
+    const [confirmed] = await tx.update(aiMemoryBlocks)
+      .set({ status: 'confirmed', updatedAt: new Date() })
+      .where(and(eq(aiMemoryBlocks.id, id), ne(aiMemoryBlocks.status, 'retracted')))
+      .returning();
+    if (!confirmed) return undefined;
+    await tx.update(aiMemoryBlocks)
+      .set({ supersededById: confirmed.id, updatedAt: new Date() })
+      .where(and(
+        eq(aiMemoryBlocks.tenantPartnerId, confirmed.tenantPartnerId),
+        eq(aiMemoryBlocks.ownerKind, confirmed.ownerKind),
+        confirmed.ownerUserId === null ? isNull(aiMemoryBlocks.ownerUserId) : eq(aiMemoryBlocks.ownerUserId, confirmed.ownerUserId),
+        confirmed.ownerOrgId === null ? isNull(aiMemoryBlocks.ownerOrgId) : eq(aiMemoryBlocks.ownerOrgId, confirmed.ownerOrgId),
+        eq(aiMemoryBlocks.blockType, confirmed.blockType),
+        eq(aiMemoryBlocks.subjectKey, confirmed.subjectKey),
+        ne(aiMemoryBlocks.id, confirmed.id),
+        ne(aiMemoryBlocks.status, 'retracted'),
+        isNull(aiMemoryBlocks.supersededById),
+      ));
+    return confirmed;
+  });
   if (updated) return toMemoryBlock(updated);
 
   const current = await selectBlock(id);

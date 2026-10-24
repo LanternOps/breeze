@@ -244,9 +244,15 @@ function assertOwnerWithinCeiling(ceiling: GrantCeiling, owner: MemoryOwner): vo
 /**
  * Write one block for the grant: status 'unconfirmed', stamped with the grant
  * and revision that authored it, anchored on the ceiling's partner. Then, in
- * the same transaction, supersede the previous live block with the same
- * (owner, blockType, subjectKey). A per-key advisory lock serialises
+ * the same transaction, supersede the previous live UNCONFIRMED block with the
+ * same (owner, blockType, subjectKey). A per-key advisory lock serialises
  * concurrent writers so two racing writes cannot both stay live.
+ *
+ * An agent write never supersedes a human-confirmed block (spec §8.3: a person
+ * confirms, Wisp proposes): the confirmed block stays live beside the new
+ * proposal and recalls first; only a human confirm of the proposal
+ * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
+ * `remember` could silently drop a technician's confirmed preference.
  */
 export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<MemoryBlock> {
   assertActive(ceiling);
@@ -286,7 +292,7 @@ export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInp
         eq(aiMemoryBlocks.blockType, block.blockType),
         eq(aiMemoryBlocks.subjectKey, block.subjectKey),
         ne(aiMemoryBlocks.id, inserted.id),
-        ne(aiMemoryBlocks.status, 'retracted'),
+        eq(aiMemoryBlocks.status, 'unconfirmed'),
         isNull(aiMemoryBlocks.supersededById),
       ));
     return inserted;

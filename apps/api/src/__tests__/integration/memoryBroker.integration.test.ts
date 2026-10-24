@@ -277,6 +277,24 @@ describe('memoryBroker (system context, ceiling-filtered)', () => {
     expect((await rowById(first.id))!.supersededById).toBe(second.id);
   });
 
+  it('an agent write never supersedes a human-confirmed block: both stay live and the confirmed one recalls first', async () => {
+    const f = await seedMemoryFixture();
+    const c = ceiling(f);
+    const owner = { kind: 'user', userId: f.uA1 } as const;
+    const human = await insertBlock(f.partnerA, owner, { blockType: 'preference', subjectKey: 'ticket.notify', status: 'confirmed', content: { channel: 'sms' } });
+    const proposal = await rememberForGrant(c, remember({ owner, blockType: 'preference', subjectKey: 'ticket.notify', content: { channel: 'email' } }));
+
+    expect((await rowById(human.id))!.supersededById).toBeNull();
+    expect((await rowById(human.id))!.status).toBe('confirmed');
+    const recalled = await recallForGrant(c, { subjectKeyPrefix: 'ticket.notify' });
+    expect(recalled.map((b) => b.id)).toEqual([human.id, proposal.id]);
+
+    // A second agent write replaces the earlier unconfirmed proposal only.
+    const proposal2 = await rememberForGrant(c, remember({ owner, blockType: 'preference', subjectKey: 'ticket.notify', content: { channel: 'push' } }));
+    expect((await rowById(proposal.id))!.supersededById).toBe(proposal2.id);
+    expect((await rowById(human.id))!.supersededById).toBeNull();
+  });
+
   it('rememberForGrant rejects content over MEMORY_CONTENT_MAX_BYTES and a subjectKey over 280 chars', async () => {
     const f = await seedMemoryFixture();
     const c = ceiling(f);

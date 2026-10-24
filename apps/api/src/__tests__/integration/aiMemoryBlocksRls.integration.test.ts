@@ -279,6 +279,27 @@ describe('memoryService under RLS', () => {
     expect((await readBlock(row.id))!.status).toBe('retracted');
   });
 
+  it('memoryService: confirming a block supersedes the other live blocks with the same key (the human choice replaces the old confirmed one)', async () => {
+    const f = await seedMemoryFixture();
+    const owner = { kind: 'user', userId: f.uA1 } as const;
+    const key = { blockType: 'preference', subjectKey: 'ticket.notify' } as const;
+    const oldConfirmed = await insertBlock(f.partnerA, owner, { ...key, status: 'confirmed' });
+    const proposalA = await insertBlock(f.partnerA, owner, { ...key, status: 'unconfirmed' });
+    const proposalB = await insertBlock(f.partnerA, owner, { ...key, status: 'unconfirmed' });
+    const retracted = await insertBlock(f.partnerA, owner, { ...key, status: 'retracted' });
+    const otherKey = await insertBlock(f.partnerA, owner, { blockType: 'preference', subjectKey: 'ticket.other', status: 'confirmed' });
+    const a = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2], 'selected');
+
+    const confirmed = await as(a, (auth) => confirmBlock(auth, proposalB.id));
+    expect(confirmed.status).toBe('confirmed');
+    expect(confirmed.supersededById).toBeNull();
+    expect((await readBlock(oldConfirmed.id))!.supersededById).toBe(proposalB.id);
+    expect((await readBlock(proposalA.id))!.supersededById).toBe(proposalB.id);
+    expect((await readBlock(retracted.id))!.supersededById).toBeNull();
+    expect((await readBlock(otherKey.id))!.supersededById).toBeNull();
+    expect(idsOf(await as(a, (auth) => listBlocksForUser(auth)))).toEqual(idsOf([proposalB, retracted, otherKey]));
+  });
+
   it('memoryService: org member retracts an org block; a sibling-org member gets not_found', async () => {
     const f = await seedMemoryFixture();
     const row = await insertBlock(f.partnerA, { kind: 'org', orgId: f.orgA1 });

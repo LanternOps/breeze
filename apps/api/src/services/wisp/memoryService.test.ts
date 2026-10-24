@@ -136,12 +136,14 @@ describe('memoryService', () => {
     h.updateReturning.push([row({ status: 'confirmed', updatedAt: new Date('2026-10-23T00:00:00Z') })]);
     const out = await confirmBlock(userSession(P1, U1), B1);
     expect(out.status).toBe('confirmed');
-    expect(h.updates).toHaveLength(1);
+    // 1: the guarded confirm; 2: supersede the other live blocks of the same key (the human's choice wins).
+    expect(h.updates).toHaveLength(2);
     expect(h.updates[0]!.set.status).toBe('confirmed');
     expect(h.updates[0]!.set.updatedAt).toBeInstanceOf(Date);
     const where = sqlOf(h.updates[0]!.where);
     expect(where.text).toMatch(/"status" <> \$\d/);
     expect(where.params).toContain('retracted');
+    expect(h.updates[1]!.set.supersededById).toBe(B1);
   });
 
   it('confirmBlock: already confirmed is idempotent (returns the row, no update)', async () => {
