@@ -424,6 +424,8 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // Ticketing — move_org is a tenant-shape mutation and requires approval.
   // log_time_entry/start_timer/stop_timer downgraded to Tier 2 (2026-07-20).
   manage_tickets: ['move_org', 'merge'],
+  // #8883 W5: ticket routing rule writes (partner-wide gate enforced in the service).
+  manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // Money-authoring drafts vs money-moving actions (#2551): this boundary
   // tracks reversibility/external-commitment, not dollar amount. Drafting —
   // create_draft, add_manual_line, add_catalog_line, update, etc. — only
@@ -606,6 +608,8 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
   // irreversible, which is why it needs approval at all; it is not tenant-
   // shaping like move_org (four_eyes), so one approver suffices.
   manage_tickets: ['merge'],
+  // #8883 W5: routing rules are config objects, not externally binding: one approver.
+  manage_ticket_routing_rules: ['create', 'update', 'reorder', 'delete'],
   // complement of TIER3_FOUR_EYES_ACTIONS within TIER3_ACTIONS.
   file_operations: ['read', 'write', 'delete', 'mkdir', 'rename'],
   manage_services: ['start', 'stop', 'restart'],
@@ -1006,6 +1010,12 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     list: { resource: 'endpoint_messages', action: 'read' },
     get: { resource: 'endpoint_messages', action: 'read' },
   },
+  manage_ticket_routing_rules: {
+    create: { resource: 'tickets', action: 'write' },
+    update: { resource: 'tickets', action: 'write' },
+    reorder: { resource: 'tickets', action: 'write' },
+    delete: { resource: 'tickets', action: 'write' },
+  },
   manage_tickets: {
     list: { resource: 'tickets', action: 'read' },
     get: { resource: 'tickets', action: 'read' },
@@ -1188,6 +1198,9 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   list_flows: { resource: 'automations', action: 'read' },
   // #8973 W4: business-hours calendars read with the ticket permission.
   list_business_calendars: { resource: 'tickets', action: 'read' },
+  // #8883 W5: ticket routing rules (reads here; manage_ticket_routing_rules is per-action below).
+  list_ticket_routing_rules: { resource: 'tickets', action: 'read' },
+  test_ticket_routing_rule: { resource: 'tickets', action: 'read' },
   list_sites: { resource: 'sites', action: 'read' },
   get_site: { resource: 'sites', action: 'read' },
   list_org_contacts: { resource: 'organizations', action: 'read' },
