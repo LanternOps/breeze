@@ -313,5 +313,117 @@
     "failed": "The offboarding could not be started.",
     "duplicate": "An offboarding is already running for this person.",
     "duplicateLink": "Open the running task"
+  },
+  "taskPanels": {
+    "tabsLabel": "Task views",
+    "tabs": {
+      "steps": "Steps",
+      "plan": "Plan",
+      "events": "Timeline"
+    },
+    "steps": {
+      "empty": "No steps have started yet.",
+      "current": "Current step",
+      "started": "Started {{time}}",
+      "settled": "Finished {{time}}",
+      "waitingApproval": "Waiting for approval of the plan.",
+      "waitingMaintenanceWindow": "Waiting for the maintenance window before the next change runs.",
+      "waitingExecution": "Running: waiting for the current change to finish.",
+      "waitingOther": "Waiting: {{reason}}.",
+      "waitingHumanWork": "Waiting for a technician to tick the checklist item on the ticket.",
+      "openTicket": "Open the checklist ticket",
+      "stepKey": {
+        "intake": "Understand the request",
+        "confirmIdentity": "Confirm who is leaving",
+        "discover": "Look up their accounts",
+        "review": "Review what was found",
+        "effects": "Approve and make the changes",
+        "manualWork": "Checklist work",
+        "verifyOutcome": "Verify the outcome",
+        "document": "Write the record"
+      },
+      "kind": {
+        "reason": "Reasoning",
+        "effect": "Changes",
+        "probe": "Check",
+        "wait": "Wait",
+        "humanWork": "Human work",
+        "document": "Record"
+      },
+      "state": {
+        "pending": "Not started",
+        "running": "Running",
+        "waiting": "Waiting",
+        "succeeded": "Done",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      }
+    },
+    "plan": {
+      "unavailable": "This server did not send the plan for this task.",
+      "empty": "No plan has been proposed yet.",
+      "revision": "Revision {{n}}",
+      "effectCount_one": "{{count}} change",
+      "effectCount_other": "{{count}} changes",
+      "approvedAt": "Approved {{time}}",
+      "proposedAt": "Proposed {{time}}",
+      "supersededBy": "Superseded by revision {{n}}. Kept here as the record of what was approved and then replaced.",
+      "orderNote": "Changes run one at a time in the numbered order, across services.",
+      "target": "For: {{label}}",
+      "principal": "Account: {{label}}",
+      "noop": "Already in place: nothing was sent.",
+      "state": {
+        "pending": "Waiting for approval",
+        "approved": "Approved",
+        "rejected": "Rejected",
+        "expired": "Expired",
+        "superseded": "Superseded"
+      },
+      "idempotency": {
+        "idempotent": "Safe to repeat",
+        "idempotentByProbe": "Checked before repeating",
+        "nonIdempotent": "Never repeated automatically"
+      },
+      "operation": {
+        "none": "Not started / unknown",
+        "pending": "In progress",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "unknown": "Result unknown",
+        "superseded": "Superseded"
+      }
+    },
+    "events": {
+      "empty": "No events recorded yet.",
+      "showAll": "Show all {{count}} events",
+      "showRecent": "Show only the most recent {{count}}",
+      "hiddenOlder_one": "{{count}} older event is hidden.",
+      "hiddenOlder_other": "{{count}} older events are hidden.",
+      "capped": "Showing the most recent {{count}} events. Older events are not shown here.",
+      "actor": {
+        "coordinator": "Coordinator",
+        "reconciler": "Reconciler",
+        "user": "Person",
+        "agent": "AI agent",
+        "system": "System"
+      },
+      "type": {
+        "taskAdmitted": "Task admitted",
+        "leaseClaimed": "Work picked up",
+        "stepOpened": "Step started",
+        "stepSettled": "Step finished",
+        "waitEntered": "Waiting",
+        "waitResolved": "Wait ended",
+        "targetAttached": "Target attached",
+        "targetDetached": "Target detached",
+        "targetAccountFrozen": "Account recorded",
+        "operationReserved": "Change reserved",
+        "operationSettled": "Change finished",
+        "verificationRecorded": "Verification recorded",
+        "planRevisionBumped": "Plan revision changed",
+        "humanWorkUnticked": "Checklist item unticked",
+        "taskSettled": "Task finished"
+      }
+    }
   }
 }
