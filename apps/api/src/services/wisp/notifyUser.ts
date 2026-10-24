@@ -41,6 +41,7 @@ import { deliverInApp } from './deliver';
 import { webDeepLink } from './nudgeLinks';
 import { loadNudgePrefs } from './nudgePreferences';
 import { loadUrgentCapableSeverities } from './partnerNudgeSettings';
+import { incWispNudge } from '../wispMetrics';
 
 export type NudgePayload = {
   userId: string;
@@ -169,6 +170,12 @@ function assertPayloadShape(p: NudgePayload): void {
 const sameInstant = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
 
 export async function notifyUser(p: NudgePayload): Promise<NotifyUserResult> {
+  const result = await deliverNudge(p);
+  incWispNudge(result.suppressed ? (`suppressed_${result.suppressed}` as const) : 'sent');
+  return result;
+}
+
+async function deliverNudge(p: NudgePayload): Promise<NotifyUserResult> {
   assertPayloadShape(p);
   const now = new Date();
 

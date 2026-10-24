@@ -45,6 +45,7 @@ import { enqueueAssessment } from '../services/wisp/assessment';
 import { assessableOrgIds } from '../services/wisp/assessableOrgs';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce } from '../services/wisp/budget';
 import { pauseGrant, resumeGrant } from '../services/wisp/grants';
+import { setWispGrantsActive } from '../services/wispMetrics';
 import { correlateIncidents } from '../services/wisp/incidentCorrelator';
 import { pollStaleTickets, pollTicketClusters } from '../services/wisp/pollers';
 import { claimDueWatches, stopWatchesForInactiveGrants } from '../services/wisp/watches';
@@ -114,7 +115,7 @@ type ReconcileRow = { id: string; partner_id: string; status: string; paused_rea
  * `entitlement_lost`; a row of any other shape is skipped even if it appears.
  * A partner whose lookup fails is left untouched this tick.
  */
-export async function reconcileEntitlements(now: Date): Promise<{ paused: number; resumed: number }> {
+export async function reconcileEntitlements(now: Date): Promise<{ paused: number; resumed: number; active: number }> {
   const nowIso = now.toISOString();
   const grants = await sys(() => rows<ReconcileRow>(sql`
     SELECT id, partner_id, status, paused_reason
@@ -153,7 +154,9 @@ export async function reconcileEntitlements(now: Date): Promise<{ paused: number
       report(err, { op: 'reconcile_grant_update' });
     }
   }
-  return { paused, resumed };
+  // Active grants after this reconcile: the gauge's value, from rows already loaded.
+  const active = grants.filter((g) => g.status === 'active').length - paused;
+  return { paused, resumed, active: active + resumed };
 }
 
 // A35 reconcilePartnerDisabled goes here (wisp_partner_settings.enabled = false
@@ -290,6 +293,7 @@ async function section(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 export async function processWakeTick(now: Date = new Date()): Promise<WakeTickResult> {
+  let activeGrants: number | null = null;
   const result: WakeTickResult = {
     grantsTicked: 0,
     watchesFired: 0,
@@ -306,6 +310,7 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
     const r = await reconcileEntitlements(now);
     result.grantsPaused = r.paused;
     result.grantsResumed = r.resumed;
+    activeGrants = r.active;
   });
   await section('stopWatchesForInactiveGrants', async () => {
     result.watchesStopped = (await stopWatchesForInactiveGrants(now)).stopped;
@@ -325,7 +330,8 @@ export async function processWakeTick(now: Date = new Date()): Promise<WakeTickR
   await section('correlateIncidents', async () => {
     result.incidentsOpened = (await correlateIncidents(now)).partnerIncidentsOpened;
   });
-  // W07 Task 8 adds setWispGrantsActive(count) here.
+  // null when the reconcile section failed: leave the gauge at its last value.
+  if (activeGrants !== null) setWispGrantsActive(activeGrants);
   return result;
 }
 

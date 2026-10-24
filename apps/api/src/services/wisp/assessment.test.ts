@@ -706,3 +706,36 @@ describe('loadAssessmentContext', () => {
     for (const line of ctx!.nudgeFeedback) expect(line).not.toContain('\n');
   });
 });
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('enqueueAssessment metrics', () => {
+  it('maps results to wisp_assessments_total outcomes', async () => {
+    const input = { grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } } as const;
+    wm.incWispAssessment.mockClear();
+    h.results.push([grantRow()]);
+    await enqueueAssessment({ ...input, orgId: OTHER_ORG });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_grant');
+
+    h.results.push([grantRow()]);
+    h.chargeableUnderGrant.mockResolvedValue({ ok: false, reason: 'budget_exhausted' });
+    await enqueueAssessment({ ...input });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_budget');
+
+    h.chargeableUnderGrant.mockResolvedValue({ ok: true });
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    await enqueueAssessment({ ...input });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_admission');
+
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: RUN } });
+    await enqueueAssessment({ ...input });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('admitted');
+  });
+});

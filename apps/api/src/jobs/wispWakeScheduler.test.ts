@@ -590,3 +590,27 @@ describe('worker lifecycle', () => {
     await shutdownWispWakeScheduler();
   });
 });
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../services/wispMetrics', () => wm);
+
+describe('processWakeTick metrics', () => {
+  it('sets wisp_grants_active to the active grants left after the reconcile (no extra query)', async () => {
+    wm.setWispGrantsActive.mockClear();
+    useFixtures({
+      reconcile: [
+        { id: G1, partner_id: P1, status: 'active', paused_reason: null },
+        { id: G3, partner_id: P1, status: 'active', paused_reason: null },
+        { id: G2, partner_id: P2, status: 'paused', paused_reason: 'entitlement_lost' },
+      ],
+    });
+    h.hasEntitlement.mockImplementation(async (partnerId: unknown) => partnerId === P2);
+    await processWakeTick(NOW);
+    // G1 + G3 paused (P1 lost the entitlement), G2 resumed => 1 active.
+    expect(wm.setWispGrantsActive).toHaveBeenCalledExactlyOnceWith(1);
+  });
+});
