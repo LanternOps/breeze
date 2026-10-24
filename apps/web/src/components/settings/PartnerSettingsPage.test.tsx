@@ -177,6 +177,14 @@ describe('PartnerSettingsPage language control', () => {
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   });
 
+  it('uses the full content width, not a centred max-width column', async () => {
+    await renderPartner();
+    const heading = screen.getByRole('heading', { name: /Partner Settings/i });
+    const root = heading.closest('header')!.parentElement!;
+    expect(root.className).not.toMatch(/\bmax-w-/);
+    expect(root.className).not.toMatch(/\bmx-auto\b/);
+  });
+
   it('renders an active selector with exactly the supported locales', async () => {
     await renderPartner();
 

@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Web gate: the Webhooks tab requires `webhooks:read`. Without it the tab is
- * not listed and the page opens on the first tab the user can see instead of
- * defaulting to Webhooks. A deep link to `#webhooks` still opens the webhooks
+ * Web gate: the Webhooks entry requires `webhooks:read`. Without it the entry
+ * is not listed, and a page whose default is Webhooks opens on the first entry
+ * the user can see instead. A deep link to `#webhooks` still opens the webhooks
  * panel, which renders its own access-denied state.
  */
 type Perm = { resource: string; action: string };
@@ -67,11 +67,10 @@ vi.mock("./AccountingConnectionPanel", () => ({
 import IntegrationsPage from "./IntegrationsPage";
 import { fetchWithAuth } from "../../stores/auth";
 
-// Top-level tab buttons only (the docs button also names the active tab).
+// Entries in the page's navigation list.
 const tabLabels = () =>
-  screen.getAllByRole("button")
-    .map((b) => (b.textContent ?? "").trim())
-    .filter((label) => !/documentation/i.test(label));
+  within(screen.getByTestId("integrations-nav")).getAllByRole("link")
+    .map((link) => (link.textContent ?? "").trim());
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -83,23 +82,22 @@ beforeEach(() => {
 });
 
 describe("IntegrationsPage webhooks:read gate", () => {
-  it("hides the Webhooks tab and opens the first visible tab without webhooks:read", () => {
+  it("hides the Webhooks entry and leaves a Webhooks default for the first visible entry without webhooks:read", () => {
     state.permissions = [{ resource: "organizations", action: "read" }];
 
-    render(<IntegrationsPage />);
+    render(<IntegrationsPage initialTab="webhooks" />);
 
     expect(screen.queryByTestId("stub-webhooks")).toBeNull();
-    expect(screen.getByTestId("stub-notifications")).toBeTruthy();
+    expect(screen.getByTestId("connection-health-loading")).toBeTruthy();
     expect(tabLabels().some((label) => /webhook/i.test(label))).toBe(false);
   });
 
-  it("lists the Webhooks tab and opens it by default with webhooks:read", () => {
+  it("lists the Webhooks entry with webhooks:read, without making it the landing view", () => {
     state.permissions = [{ resource: "webhooks", action: "read" }];
 
     render(<IntegrationsPage />);
 
-    expect(screen.getByTestId("stub-webhooks")).toBeTruthy();
-    expect(screen.queryByTestId("stub-notifications")).toBeNull();
+    expect(screen.queryByTestId("stub-webhooks")).toBeNull();
     expect(tabLabels().some((label) => /webhook/i.test(label))).toBe(true);
   });
 
@@ -117,7 +115,7 @@ describe("IntegrationsPage webhooks:read gate", () => {
   it("does not switch away from Webhooks while permissions are still loading", () => {
     state.permissions = undefined;
 
-    render(<IntegrationsPage />);
+    render(<IntegrationsPage initialTab="webhooks" />);
 
     expect(screen.getByTestId("stub-webhooks")).toBeTruthy();
     expect(screen.queryByTestId("stub-notifications")).toBeNull();

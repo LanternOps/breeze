@@ -19,13 +19,32 @@
  * is compared. Permission keys are matched with the wildcard-aware
  * `permissionGrantMatches`, never by set membership: a Partner Admin's ceiling
  * is the literal `*:*` (w00 A3).
+ *
+ * Org-axis precedence ("Wisp never exceeds its human", §4). The human
+ * permission resolver (permissions.ts getUserPermissions) resolves the ORG axis
+ * first: in an org where the user has an `organization_users` row, that row's
+ * role and `site_ids` govern, not the partner role. The live term therefore
+ * reads the grantor's org memberships for every org in reach, and:
+ *   - an org whose membership role lacks `ai_sessions:use` leaves the ceiling
+ *     (the human cannot use AI there), and the grantor no longer counts as
+ *     reaching the whole partner (`partnerOrgAccess` drops to 'selected', so
+ *     partner-level subjects close);
+ *   - every other membership becomes a per-org term (`GrantCeiling.orgTerms`):
+ *     role keys ∩ the ceiling's keys and the row's site allowlist ∩ the
+ *     ceiling's. It only ever NARROWS: an org role wider than the partner role
+ *     does not widen that org (narrowest faithful reading — the partner role is
+ *     what the grant was taken under, and a membership can only take away);
+ *   - an org without a membership keeps the partner-axis term.
+ * A permission check bound to an org uses that org's term; an UNBOUND or
+ * partner-level permission check (orgId undefined / null) must hold in the
+ * ceiling AND in every per-org term — it could be exercised in any of them.
  */
 import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { organizations } from '../../db/schema/orgs';
-import { users } from '../../db/schema/users';
+import { organizationUsers, permissions, rolePermissions, users } from '../../db/schema/users';
 import { wispEnabled } from '../../config/env';
 import { wispGrantRevisions, wispGrants } from '../../db/schema/wisp';
 import type { WispCeilingSnapshot, WispGrantStatus } from '../../db/schema/wisp';
@@ -58,8 +77,25 @@ export type GrantCeiling = {
   toolAllowlist: ReadonlySet<string> | null;
   /** AGENT_HUMAN_ONLY_TOOLS ∪ AGENT_DENIED_READ_TOOLS ∪ snapshot denies. */
   deniedTools: ReadonlySet<string>;
+  /**
+   * Per-org narrowing from the grantor's `organization_users` rows (org-axis
+   * precedence; see the file header). Only orgs inside `orgIds` that have a
+   * membership appear; an org without an entry is governed by the ceiling-wide
+   * terms alone. Entries never widen the ceiling.
+   */
+  orgTerms: ReadonlyMap<string, OrgCeilingTerm>;
   status: WispGrantStatus;
 };
+
+export type OrgCeilingTerm = {
+  /** The membership role's keys ∩ `permissionKeys`; may contain wildcards. */
+  permissionKeys: ReadonlySet<string>;
+  /** null = no site restriction from the membership. */
+  siteIds: ReadonlySet<string> | null;
+};
+
+/** One `organization_users` row of the grantor (duplicates for one org already intersected). */
+export type LiveOrgMembership = { orgId: string; permissionKeys: string[]; siteIds: string[] | null };
 
 export type CeilingCheck = {
   toolName?: string;
@@ -111,7 +147,15 @@ export class CeilingViolationError extends Error {
 }
 
 export type LiveHumanTerm =
-  | { ok: true; permissionKeys: string[]; orgIds: string[]; siteIds: string[] | null; partnerOrgAccess: 'all' | 'selected' | 'none' }
+  | {
+    ok: true;
+    permissionKeys: string[];
+    orgIds: string[];
+    siteIds: string[] | null;
+    partnerOrgAccess: 'all' | 'selected' | 'none';
+    /** The grantor's org memberships for orgs in `orgIds` (each holds `ai_sessions:use`). */
+    orgMemberships: LiveOrgMembership[];
+  }
   | { ok: false; reason: 'grantor_suspended' | 'grantor_access_lost' };
 
 type LiveOk = Extract<LiveHumanTerm, { ok: true }>;
@@ -173,16 +217,27 @@ export function assertWithinCeiling(ceiling: GrantCeiling, check: CeilingCheck):
     }
   }
 
-  if (ceiling.siteIds !== null && (check.orgId !== undefined || check.siteId !== undefined)) {
-    // An unknown site never widens a site-restricted ceiling.
-    if (check.siteId == null || !ceiling.siteIds.has(check.siteId)) {
-      throw new CeilingViolationError('site', `site ${check.siteId ?? '(unknown)'} is outside the delegation ceiling`);
+  // The org's own term (org-axis precedence), when the check is bound to an org.
+  const orgTerm = typeof check.orgId === 'string' ? ceiling.orgTerms.get(check.orgId) : undefined;
+
+  if (check.orgId !== undefined || check.siteId !== undefined) {
+    // An unknown site never widens a site-restricted ceiling — nor a
+    // site-restricted org membership.
+    for (const siteIds of [ceiling.siteIds, orgTerm?.siteIds ?? null]) {
+      if (siteIds !== null && (check.siteId == null || !siteIds.has(check.siteId))) {
+        throw new CeilingViolationError('site', `site ${check.siteId ?? '(unknown)'} is outside the delegation ceiling`);
+      }
     }
   }
 
   if (check.permission !== undefined) {
     const required = parsePermissionKey(check.permission);
-    if (!required || !keyMatches(ceiling.permissionKeys, required.resource, required.action)) {
+    // Always the ceiling-wide keys (an org term never widens them), plus the
+    // bound org's term — or, unbound / partner-level, EVERY org term.
+    const termKeys: Array<ReadonlySet<string>> = [ceiling.permissionKeys];
+    if (orgTerm) termKeys.push(orgTerm.permissionKeys);
+    else if (typeof check.orgId !== 'string') for (const t of ceiling.orgTerms.values()) termKeys.push(t.permissionKeys);
+    if (!required || termKeys.some((keys) => !keyMatches(keys, required.resource, required.action))) {
       throw new CeilingViolationError('permission', `permission ${check.permission} is outside the delegation ceiling`);
     }
   }
@@ -276,6 +331,35 @@ export function intersectSnapshotWithLive(
   return { orgIds, siteIds, permissionKeys: intersectPermissionKeys(snapshot.permissionKeys, live.permissionKeys) };
 }
 
+/** Two optional site allowlists → the narrower one (null = unrestricted). */
+function intersectSiteAllowlists(a: Iterable<string> | null, b: Iterable<string> | null): Set<string> | null {
+  if (a === null) return b === null ? null : new Set(b);
+  if (b === null) return new Set(a);
+  const right = new Set(b);
+  return new Set([...a].filter((id) => right.has(id)));
+}
+
+/**
+ * Per-org terms for the orgs inside the ceiling that carry a grantor
+ * membership: role keys ∩ ceiling keys (never wider than the ceiling), and the
+ * membership's sites ∩ the ceiling's.
+ */
+export function buildOrgTerms(
+  ceiling: Pick<GrantCeiling, 'orgIds' | 'siteIds' | 'permissionKeys'>,
+  memberships: ReadonlyArray<LiveOrgMembership>,
+): Map<string, OrgCeilingTerm> {
+  const out = new Map<string, OrgCeilingTerm>();
+  for (const m of memberships) {
+    if (!ceiling.orgIds.has(m.orgId)) continue;
+    const prior = out.get(m.orgId);
+    out.set(m.orgId, {
+      permissionKeys: intersectPermissionKeys(prior?.permissionKeys ?? ceiling.permissionKeys, m.permissionKeys),
+      siteIds: intersectSiteAllowlists(prior ? prior.siteIds : ceiling.siteIds, m.siteIds),
+    });
+  }
+  return out;
+}
+
 /** Both agent deny registries — the floor every ceiling carries. */
 export function agentDeniedToolNames(): string[] {
   return [...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()];
@@ -300,7 +384,9 @@ export function inSystemContext<T>(fn: () => Promise<T>): Promise<T> {
  * The grantor's LIVE authority inside `partnerId`, read in system context
  * (no ambient request context is required or used). `ok: false` when the user
  * is missing / not `active` (suspended), no longer a member of the partner, no
- * longer holds `ai_sessions:use`, or reaches zero orgs (access lost).
+ * longer holds `ai_sessions:use`, or reaches zero orgs (access lost). Orgs
+ * where the grantor's `organization_users` role lacks `ai_sessions:use` do not
+ * count as reached; the other memberships come back as `orgMemberships`.
  */
 export async function computeLiveHumanTerm(userId: string, partnerId: string): Promise<LiveHumanTerm> {
   // Lazy: run admission, the run loop and release import this module, and the
@@ -342,14 +428,80 @@ export async function computeLiveHumanTerm(userId: string, partnerId: string): P
       .map((o) => o.id);
     if (orgIds.length === 0) return { ok: false, reason: 'grantor_access_lost' };
 
+    // Org-axis precedence: where the grantor holds an org membership, that
+    // role governs. An org whose role cannot use AI leaves the term.
+    const memberships = await readOrgMemberships(userId, orgIds);
+    const noAi = new Set(memberships.filter((m) => !keyMatches(m.permissionKeys, 'ai_sessions', 'use')).map((m) => m.orgId));
+    const usableOrgIds = [...new Set(orgIds)].filter((id) => !noAi.has(id));
+    if (usableOrgIds.length === 0) return { ok: false, reason: 'grantor_access_lost' };
+
+    const partnerOrgAccess = reach.partnerOrgAccess ?? 'none';
     return {
       ok: true,
       permissionKeys: sortedUnique(perms.permissions.map((p) => `${p.resource}:${p.action}`)),
-      orgIds: [...new Set(orgIds)],
+      orgIds: usableOrgIds,
       siteIds: perms.allowedSiteIds ? [...new Set(perms.allowedSiteIds)] : null,
-      partnerOrgAccess: reach.partnerOrgAccess ?? 'none',
+      // An org carved out above means the grantor no longer reaches the whole
+      // partner, so partner-level (cross-org) subjects must close.
+      partnerOrgAccess: partnerOrgAccess === 'all' && noAi.size > 0 ? 'selected' : partnerOrgAccess,
+      orgMemberships: memberships.filter((m) => !noAi.has(m.orgId)),
     };
   });
+}
+
+/** `site_ids` as the resolver reads it: NULL = unrestricted, an array as-is, anything else fails closed to none. */
+function normalizeMembershipSites(raw: unknown): string[] | null {
+  if (raw === null || raw === undefined) return null;
+  return Array.isArray(raw) ? [...new Set(raw as string[])] : [];
+}
+
+/**
+ * The grantor's `organization_users` rows for `orgIds`, with their role keys
+ * (the role → permissions read of permissions.ts buildPerms, batched). The
+ * table has no (org_id, user_id) unique key; the resolver would pick one row
+ * arbitrarily, so several rows for one org INTERSECT here (fail closed).
+ * Must run inside the caller's system context.
+ */
+async function readOrgMemberships(userId: string, orgIds: string[]): Promise<LiveOrgMembership[]> {
+  const rows = await db
+    .select({ orgId: organizationUsers.orgId, roleId: organizationUsers.roleId, siteIds: organizationUsers.siteIds })
+    .from(organizationUsers)
+    .where(and(eq(organizationUsers.userId, userId), inArray(organizationUsers.orgId, orgIds)));
+  // A row without a role is "nothing on this axis" to the resolver (it falls
+  // through to the partner role); mirror that.
+  const withRole = rows.filter((r) => typeof r.roleId === 'string' && r.roleId.length > 0);
+  if (withRole.length === 0) return [];
+
+  const roleIds = [...new Set(withRole.map((r) => r.roleId))];
+  const rolePerms = await db
+    .select({ roleId: rolePermissions.roleId, resource: permissions.resource, action: permissions.action })
+    .from(rolePermissions)
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(inArray(rolePermissions.roleId, roleIds));
+  const keysByRole = new Map<string, string[]>();
+  for (const p of rolePerms) {
+    const keys = keysByRole.get(p.roleId) ?? [];
+    keys.push(`${p.resource}:${p.action}`);
+    keysByRole.set(p.roleId, keys);
+  }
+
+  const byOrg = new Map<string, LiveOrgMembership>();
+  for (const r of withRole) {
+    const keys = sortedUnique(keysByRole.get(r.roleId) ?? []);
+    const siteIds = normalizeMembershipSites(r.siteIds);
+    const prior = byOrg.get(r.orgId);
+    if (!prior) {
+      byOrg.set(r.orgId, { orgId: r.orgId, permissionKeys: keys, siteIds });
+      continue;
+    }
+    const sites = intersectSiteAllowlists(prior.siteIds, siteIds);
+    byOrg.set(r.orgId, {
+      orgId: r.orgId,
+      permissionKeys: sortedUnique(intersectPermissionKeys(prior.permissionKeys, keys)),
+      siteIds: sites === null ? null : [...sites],
+    });
+  }
+  return [...byOrg.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +591,7 @@ export async function resolveGrantCeiling(grantId: string, revisionId: string): 
     orgIds,
     toolAllowlist: snapshot.toolAllowlist === null ? null : new Set(snapshot.toolAllowlist),
     deniedTools: new Set([...snapshot.deniedTools, ...agentDeniedToolNames()]),
+    orgTerms: buildOrgTerms({ ...reach, orgIds }, live.orgMemberships),
     status: 'active',
   };
 }

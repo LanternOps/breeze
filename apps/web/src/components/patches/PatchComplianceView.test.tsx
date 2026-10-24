@@ -108,6 +108,12 @@ const compliancePayload = (rows: ApiRow[], extra: Record<string, unknown> = {}) 
   };
 };
 
+// The view clears its selection in a passive effect keyed on the loaded rows.
+// `findBy*` can resolve on the commit before that effect has run (under CPU
+// load it runs later), and the late clear then wipes a box the test just
+// ticked. Flush it before the first interaction so the order is deterministic.
+const settleLoadedRows = () => act(async () => { await Promise.resolve(); });
+
 const isComplianceList = (url: string) =>
   url.startsWith('/patches/compliance') && !url.startsWith('/patches/compliance/report');
 
@@ -401,6 +407,7 @@ describe('PatchComplianceView', () => {
 
     await screen.findByText('Workstation-1');
 
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
     fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
     fireEvent.click(screen.getByTestId('confirm-fleet-action'));
@@ -467,6 +474,7 @@ describe('PatchComplianceView', () => {
 
     await screen.findByText('Workstation-1');
 
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
     fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
     fireEvent.click(screen.getByTestId('confirm-fleet-action'));
@@ -528,6 +536,7 @@ describe('PatchComplianceView', () => {
     await screen.findByText('Globex-Device');
 
     // Select both devices
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select Acme-Device' }));
     fireEvent.click(screen.getByRole('button', { name: 'Select Globex-Device' }));
 
@@ -660,6 +669,7 @@ describe('PatchComplianceView', () => {
 
     await screen.findByText('Workstation-1');
 
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select Workstation-1' }));
     fireEvent.click(screen.getByRole('button', { name: /Install \(1\)/i }));
     fireEvent.click(screen.getByTestId('confirm-fleet-action'));
@@ -850,6 +860,7 @@ describe('PatchComplianceView server-side list (#9791 C)', () => {
     render(<PatchComplianceView ringId={null} />);
 
     await screen.findByText('host-0');
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select host-0' }));
     expect(screen.getByText('1 selected')).toBeInTheDocument();
 
@@ -898,6 +909,7 @@ describe('PatchComplianceView server-side list (#9791 C)', () => {
     render(<PatchComplianceView ringId={null} />);
     await screen.findByText('host-0');
 
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
     expect(screen.getByText('2 selected')).toBeInTheDocument();
 
@@ -923,6 +935,7 @@ describe('PatchComplianceView server-side list (#9791 C)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     // old rows are still on screen while page 2 loads
+    await settleLoadedRows();
     fireEvent.click(screen.getByRole('button', { name: 'Select host-0' }));
     await act(async () => { release?.(); });
 

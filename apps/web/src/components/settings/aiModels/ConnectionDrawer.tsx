@@ -318,7 +318,7 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
       dataTestId="ai-connection-drawer"
       closeDisabled={busy}
     >
-      <div className="space-y-5">
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4" data-testid="ai-connection-drawer-body">
         {connection?.status === 'error' && (
           <div role="alert" className="space-y-1 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
             <p className="flex items-center gap-2 font-medium">
@@ -408,36 +408,36 @@ export default function ConnectionDrawer({ connection, catalog, catalogEnabled, 
           </p>
         )}
         </>)}
+      </div>
 
-        <div className="flex items-center justify-between gap-2 border-t pt-4">
-          <div className="flex flex-wrap gap-2">
-            {canRefresh && (
-              <button type="button" data-testid="ai-connection-refresh" onClick={() => { void handleRefresh(); }} disabled={busy}
-                className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
-                {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                {t('aiModels.drawer.refresh')}
-              </button>
-            )}
-            {/* A released env connection is read-only, but the partner may still remove it. */}
-            {connection !== null && (connection.managedBy !== 'env' || connection.envReleased) && (
-              <button type="button" data-testid="ai-connection-disconnect" onClick={() => setConfirmDisconnect(true)} disabled={busy}
-                className="inline-flex items-center gap-2 rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">
-                <Unplug className="h-4 w-4" />
-                {t('aiModels.drawer.disconnect')}
-              </button>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <button type="button" data-testid="ai-connection-cancel" onClick={onClose} disabled={busy}
-              className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
-              {t('common:actions.cancel')}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t px-5 py-4" data-testid="ai-connection-drawer-footer">
+        <div className="flex flex-wrap gap-2">
+          {canRefresh && (
+            <button type="button" data-testid="ai-connection-refresh" onClick={() => { void handleRefresh(); }} disabled={busy}
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+              {refreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {t('aiModels.drawer.refresh')}
             </button>
-            <button type="button" data-testid="ai-connection-save" onClick={() => { void handleSave(); }} disabled={!canSave || busy}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {saving ? t('common:states.saving') : t('common:actions.save')}
+          )}
+          {/* A released env connection is read-only, but the partner may still remove it. */}
+          {connection !== null && (connection.managedBy !== 'env' || connection.envReleased) && (
+            <button type="button" data-testid="ai-connection-disconnect" onClick={() => setConfirmDisconnect(true)} disabled={busy}
+              className="inline-flex items-center gap-2 rounded-md border border-destructive/60 px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50">
+              <Unplug className="h-4 w-4" />
+              {t('aiModels.drawer.disconnect')}
             </button>
-          </div>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button type="button" data-testid="ai-connection-cancel" onClick={onClose} disabled={busy}
+            className="rounded-md border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50">
+            {t('common:actions.cancel')}
+          </button>
+          <button type="button" data-testid="ai-connection-save" onClick={() => { void handleSave(); }} disabled={!canSave || busy}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {saving ? t('common:states.saving') : t('common:actions.save')}
+          </button>
         </div>
       </div>
 

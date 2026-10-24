@@ -273,6 +273,7 @@ describe('bodyLimitForPath', () => {
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
       'agent-workloads': '/api/v1/agents/agent-1/workloads',
       'edr-webhook': '/api/v1/webhooks/edr/7d2b1c4e-0a3f-4b5c-9d6e-1f2a3b4c5d6e',
+      'wisp-thread-attachment': '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments',
     };
     for (const [rule, path] of Object.entries(sampled)) {
       expect({ path, rule: bodyLimitForPath(path).rule }).toEqual({ path, rule });
@@ -419,6 +420,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 1 * MB,
     note: 'route limit (32KB) is TIGHTER than the global default, so it applies as written.',
   },
+  'wispThreads.ts': {
+    paths: ['/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments'],
+    globalMaxSize: 6 * MB,
+    note: 'carved out — Wisp thread attachment (5 MiB text + 1 MiB envelope/JSON escaping); route and gate agree at 6MB.',
+  },
   'agents/processSample.ts': {
     paths: ['/api/v1/agents/agent-1/process-sample'],
     globalMaxSize: 1 * MB,
@@ -484,6 +490,27 @@ describe('route-level bodyLimit registrations vs the global gate', () => {
           `${file} (${note})`,
         ).toEqual({ file, path, maxSize: expected });
       }
+    }
+  });
+});
+
+describe('Wisp thread attachment carve-out (W04 6b)', () => {
+  it('gives POST /wisp/thread/:id/attachments 5 MiB + 1 MiB of headroom', () => {
+    expect(bodyLimitForPath('/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments')).toEqual({
+      rule: 'wisp-thread-attachment',
+      maxSize: 6 * MB,
+      error: 'Attachment too large (max 5 MiB)',
+    });
+  });
+
+  it('does NOT widen the sibling thread routes', () => {
+    for (const path of [
+      '/api/v1/wisp/thread',
+      '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/focus',
+      '/api/v1/wisp/thread/11111111-1111-4111-8111-111111111111/attachments/x',
+      '/api/v1/wisp/grants',
+    ]) {
+      expect(bodyLimitForPath(path).rule, path).toBe('default');
     }
   });
 });

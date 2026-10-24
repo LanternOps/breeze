@@ -309,6 +309,10 @@ const ORG_ID_COLUMN_UPDATE_REPOINT_TABLES: Readonly<Record<string, string>> = {
 
 /** BENIGN = fires on the repoint but does not obstruct it. Reason per entry. */
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
+  // Wisp W04 (#9910, 2027-01-04-110200): BEFORE INSERT OR UPDATE OF
+  // wisp_grant_id, wisp_grant_revision_id only — a merge's org_id repoint does
+  // not name those columns, so the trigger never fires on it.
+  'ai_sessions.ai_sessions_wisp_grant_tenant_guard': 'fires only on UPDATE OF wisp_grant_id/wisp_grant_revision_id; an org_id repoint never runs it',
   // Caller verification W05 (#6354, 2026-12-30-220000): BEFORE UPDATE guard on
   // the three pinned caller-target columns only. It never reads or reverts
   // org_id, so a merge repoint of action_intents passes.

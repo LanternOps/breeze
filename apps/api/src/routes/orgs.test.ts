@@ -6992,6 +6992,39 @@ describe('org routes', () => {
       expect(body.name).toBe('Acme MSP');
     });
 
+    describe('wispEnabled (Wisp W03 web gate — computed, not a column)', () => {
+      const mockPartnerRow = () => vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'Acme MSP', settings: {} }])
+          })
+        })
+      } as any);
+      afterEach(() => { vi.unstubAllEnvs(); });
+
+      it('is false by default (flags unset)', async () => {
+        vi.stubEnv('IS_HOSTED', '');
+        vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', '');
+        vi.stubEnv('BREEZE_WISP_ENABLED', '');
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockPartnerRow();
+        const body = await (await app.request('/orgs/partners/me')).json();
+        expect(body.wispEnabled).toBe(false);
+      });
+
+      it('is true when wispEnabled() is (hosted + AI agents + Wisp flags), and is never selected from the table', async () => {
+        vi.stubEnv('IS_HOSTED', 'true');
+        vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
+        vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+        setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+        mockPartnerRow();
+        const body = await (await app.request('/orgs/partners/me')).json();
+        expect(body.wispEnabled).toBe(true);
+        const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+        expect(Object.keys(projection)).not.toContain('wispEnabled');
+      });
+    });
+
     it('returns 404 when the partner record is not found (soft-deleted)', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       vi.mocked(db.select).mockReturnValue({

@@ -9,6 +9,7 @@ import { attachAiSession, attachBackoffMs, shouldReattach, trackAttach, type Att
 import { extractApiError } from '@/lib/apiError';
 import { i18n } from '@/lib/i18n';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
+import { showToast } from '@/components/shared/Toast';
 import {
   attachAnchorMissing,
   processStreamEvent,
@@ -32,6 +33,31 @@ interface M365Connection {
   customerLabel: string;
   customerDisplayName: string;
 }
+
+export type WispGrantStatus = 'active' | 'paused' | 'revoked' | 'expired';
+
+/**
+ * Wisp mode (W04, spec §5/§6): the delegation grant this chat runs under and
+ * the durable thread for that grant. Null = ordinary chat. The server is the
+ * authority (every session created while this is set carries `wispGrantId`
+ * and is ceiling-gated per tool call); this is the panel's mirror of it.
+ * `focus*` is the customer the thread is working on (w00 A24).
+ */
+export type WispState = {
+  grantId: string;
+  threadId: string;
+  /** The grant's org; null for a partner-wide ("All organizations") grant. */
+  scopeOrgId: string | null;
+  focusOrgId: string | null;
+  focusOrgName: string | null;
+  status: WispGrantStatus;
+  expiresAt: string;
+  summary: string;
+  budgetCentsPerDay: number;
+  floorTickMinutes: number;
+  /** Live reach exceeds the grant's snapshot (W02 `wideningAvailable`, spec §4.4). */
+  wideningAvailable: boolean;
+} | null;
 
 interface AiState {
   isOpen: boolean;
@@ -107,6 +133,8 @@ interface AiState {
    * refused send can put its text back and a move can carry a draft.
    */
   composerDraft: string;
+  /** Wisp mode (W04); null = ordinary chat. Not persisted. */
+  wisp: WispState;
 
   // Actions
   toggle: () => void;
@@ -118,7 +146,15 @@ interface AiState {
    * (topology "Explain this", M4 #6000). A topology context is sent alone: the
    * server pins the session to its site and refuses a device or M365 binding.
    */
-  createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?: AiModelChoice }) => Promise<void>;
+  createSession: (opts?: { deviceId?: string; pageContext?: AiPageContext; model?: AiModelChoice; wispGrantId?: string; orgId?: string }) => Promise<void>;
+  /** Turn Wisp mode on for a granted thread and open a fresh session under the grant. */
+  enterWispMode: (w: NonNullable<WispState>) => Promise<void>;
+  /** Change the thread's customer focus (PATCH /wisp/thread/:id/focus); the next turn runs in a new session anchored to it. */
+  setWispFocus: (orgId: string | null, orgName: string | null) => Promise<void>;
+  /** Merge server-confirmed grant fields (refresh / settings) into the Wisp state. */
+  updateWisp: (patch: Partial<NonNullable<WispState>>) => void;
+  /** Close the current session and leave Wisp mode. */
+  exitWispMode: () => Promise<void>;
   startDeviceTask: (deviceId: string, ctx: AiPageContext, initialMessage?: string) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
@@ -226,6 +262,47 @@ const SWITCHED_TURN_STATE = {
   pendingPlan: null,
   activePlan: null,
 } as const;
+
+/**
+ * Wisp mode survives loading a session only when that session runs under the
+ * same grant. A session the API reports without `wispGrantId` (a plain chat,
+ * or an API that predates W04) drops the Wisp header rather than showing a
+ * ceiling the server is not applying.
+ */
+function wispForLoadedSession(wisp: WispState, session: Record<string, unknown> | undefined): WispState {
+  if (!wisp) return null;
+  return session?.wispGrantId === wisp.grantId ? wisp : null;
+}
+
+/**
+ * A loaded session that runs under a grant the panel is not showing (a page
+ * reload — `wisp` is not persisted — or a pick from history) gets its Wisp
+ * state back from that grant's thread, so the header (scope, focus, revoke)
+ * matches the ceiling the server is enforcing. A grant that is no longer live
+ * for the session's scope stays headerless: its tool calls are refused anyway.
+ */
+async function rehydrateWispForSession(sessionId: string, session: Record<string, unknown> | undefined): Promise<void> {
+  const grantId = typeof session?.wispGrantId === 'string' ? session.wispGrantId : null;
+  if (!grantId || useAiStore.getState().wisp?.grantId === grantId) return;
+  const orgId = typeof session?.orgId === 'string' ? session.orgId : null;
+  try {
+    // Lazy: the step-up/WebAuthn graph stays out of every page's chat bundle.
+    const { fetchWispThread } = await import('@/lib/wispGrant');
+    // An org grant is keyed by the session's org; a partner-wide one by none.
+    for (const scope of orgId ? [orgId, null] : [null]) {
+      const state = await fetchWispThread(scope).catch(() => null);
+      if (state?.grantId === grantId) {
+        if (useAiStore.getState().sessionId === sessionId) useAiStore.setState({ wisp: state });
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('[AiStore] Could not restore Wisp mode for the session:', err);
+  }
+}
+
+/** Session-create refusals that mean the grant cannot carry a session at all. */
+const WISP_GRANT_UNUSABLE = new Set(['grant_inactive', 'grant_not_found', 'grant_not_yours', 'wisp_disabled', 'entitlement_required']);
 
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
@@ -597,6 +674,7 @@ export const useAiStore = create<AiState>()(
   refusalAlternatives: [],
   joinedMidResponse: false,
   composerDraft: '',
+  wisp: null,
 
   toggle: () => {
     const opening = !get().isOpen;
@@ -678,8 +756,17 @@ export const useAiStore = create<AiState>()(
       }
       return;
     }
+    // Wisp (W04): while Wisp mode is on, every new conversation stays on the
+    // grant, anchored to the thread's focus org (else the grant's org) — the
+    // server refuses an explicit org that differs from the focus (409
+    // focus_mismatch) rather than re-anchoring silently.
+    const wisp = get().wisp;
+    const wispGrantId = opts?.wispGrantId ?? wisp?.grantId;
+    const wispOrgId = opts?.wispGrantId ? null : wisp ? (wisp.focusOrgId ?? wisp.scopeOrgId) : null;
     try {
-      const orgId = pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId();
+      const orgId = opts?.orgId
+        ?? wispOrgId
+        ?? (pageContext?.type === 'device' || opts?.deviceId ? null : await readSelectedOrgId());
       const res = await fetchWithAuth('/ai/sessions', {
         method: 'POST',
         body: JSON.stringify({
@@ -688,6 +775,7 @@ export const useAiStore = create<AiState>()(
           // server anchor to the device's org instead (#5593), and no
           // selection (All organizations) sends nothing.
           orgId: orgId ?? undefined,
+          ...(wispGrantId ? { wispGrantId } : {}),
           pageContext: pageContext ?? undefined,
           delegantM365ConnectionId: selectedM365ConnectionId ?? undefined,
           deviceId: opts?.deviceId ?? undefined,
@@ -699,10 +787,25 @@ export const useAiStore = create<AiState>()(
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
+        // A refused Wisp create (grant_inactive, focus_mismatch, …) keeps its
+        // machine code so the panel can tell it apart; plain chat is unchanged.
+        if (wispGrantId && ownsSession()) {
+          const code = typeof data?.code === 'string' ? data.code : null;
+          // A dead grant must not keep the Wisp header up over a panel with no
+          // session; the error banner keeps the server's reason.
+          set({ errorCode: code, ...(code && WISP_GRANT_UNUSABLE.has(code) ? { wisp: null } : {}) });
+        }
         throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
       if (!ownsSession()) return;
+      // w00 A24: the server clears a focus that fell outside the live ceiling
+      // and reports `wispFocusOrgId: null`; mirror it and say so.
+      const current = get().wisp;
+      if (wispGrantId && current?.grantId === wispGrantId && current.focusOrgId && data.wispFocusOrgId === null) {
+        set({ wisp: { ...current, focusOrgId: null, focusOrgName: null } });
+        showToast({ message: i18n.t('ai:wisp.toast.focusCleared'), type: 'warning' });
+      }
       set({
         sessionId: data.id,
         sessionOrgId: data.orgId ?? null,
@@ -800,10 +903,12 @@ export const useAiStore = create<AiState>()(
         thinking: false,
         refusalAlternatives: [],
         ...topologyFieldsOf(data.session),
+        wisp: wispForLoadedSession(get().wisp, data.session),
       });
       adoptSessionModelPicker(sessionId);
       // #9427: a successful, still-owned hydrate — join the turn if one runs.
       void get().attachCurrent();
+      void rehydrateWispForSession(sessionId, data.session);
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -1206,10 +1311,12 @@ export const useAiStore = create<AiState>()(
         thinking: false,
         refusalAlternatives: [],
         ...topologyFieldsOf(data.session),
+        wisp: wispForLoadedSession(get().wisp, data.session),
       });
       adoptSessionModelPicker(sessionId);
       // #9427: a successful, still-owned hydrate — join the turn if one runs.
       void get().attachCurrent();
+      void rehydrateWispForSession(sessionId, data.session);
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -1349,6 +1456,57 @@ export const useAiStore = create<AiState>()(
     // attach: the loop unbinds it like loadSession's 404 path.
     const ready = await startAttach(set, get).ready;
     return ready === 'not_found' ? 'not_found' : 'ok';
+  },
+
+  enterWispMode: async (w) => {
+    // A Wisp conversation starts fresh on the grant's thread; the plain chat
+    // that was open stays in history (not closed — it is not the thread's).
+    set({ wisp: w, ...CLEARED_SESSION });
+    await get().createSession({ wispGrantId: w.grantId, orgId: w.focusOrgId ?? w.scopeOrgId ?? undefined });
+  },
+
+  setWispFocus: async (orgId, orgName) => {
+    const w = get().wisp;
+    if (!w) return;
+    const errorFallback = i18n.t('ai:wisp.toast.focusFailed');
+    let focus: { focusOrgId: string | null; focusOrgName: string | null };
+    try {
+      const body = await runAction<{ data?: { focusOrgId?: string | null; focusOrgName?: string | null } }>({
+        request: () => fetchWithAuth(`/wisp/thread/${w.threadId}/focus`, { method: 'PATCH', body: JSON.stringify({ orgId }) }),
+        errorFallback,
+        successMessage: (res) => {
+          const name = res?.data?.focusOrgName ?? orgName;
+          return orgId ? i18n.t('ai:wisp.toast.focusSet', { org: name ?? '' }) : i18n.t('ai:wisp.toast.focusCleared');
+        },
+      });
+      // The server's answer wins; an older body without `data` keeps what was asked for.
+      focus = {
+        focusOrgId: body?.data?.focusOrgId !== undefined ? body.data.focusOrgId : orgId,
+        focusOrgName: body?.data?.focusOrgName !== undefined ? body.data.focusOrgName : orgName,
+      };
+    } catch (err) {
+      handleActionError(err, errorFallback);
+      return;
+    }
+    const live = get().wisp;
+    if (!live || live.threadId !== w.threadId) return;
+    set({ wisp: { ...live, ...focus } });
+    // Switching focus is a chat action on the same thread, not a new thread
+    // (spec §6.1): close the current session so its summary lands on the
+    // thread, then anchor the next turn's session to the new focus.
+    if (get().sessionId) await get().closeSession();
+    set({ ...CLEARED_SESSION });
+    await get().createSession({ wispGrantId: w.grantId, orgId: focus.focusOrgId ?? live.scopeOrgId ?? undefined });
+  },
+
+  updateWisp: (patch) => set((s) => (s.wisp ? { wisp: { ...s.wisp, ...patch } } : {})),
+
+  exitWispMode: async () => {
+    // Best-effort close: a session left open idles out and the server
+    // finalizes its thread summary on expiry, so a failed close is not
+    // surfaced over the plain chat the user is returning to.
+    if (get().sessionId) await get().closeSession();
+    set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
   },
     }),
     {

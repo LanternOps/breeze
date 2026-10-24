@@ -6,7 +6,8 @@
  * via streamingSessionManager.ts and aiAgentSdkTools.ts.
  */
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, runAfterDbContextCommit } from '../db';
+import { captureException } from './sentry';
 import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -95,8 +96,18 @@ export async function createSession(
     delegantM365ConnectionId?: string;
     deviceId?: string;
     approvalMode?: AiApprovalMode;
+    /** Wisp W04: open the session under this delegation grant (validated here). */
+    wispGrantId?: string;
   }
-): Promise<{ id: string; orgId: string; delegantM365ConnectionId: string | null }> {
+): Promise<{
+  id: string;
+  orgId: string;
+  delegantM365ConnectionId: string | null;
+  /** Wisp W04: the thread the session was attached to; null for a non-Wisp session. */
+  wispThreadId: string | null;
+  /** Wisp W04 (w00 A24): the thread focus the session was anchored to; null when unfocused / cleared / non-Wisp. */
+  wispFocusOrgId: string | null;
+}> {
   let sanitizedPageContext: AiPageContext | undefined;
   if (options.pageContext) {
     const pageContextFlags: string[] = [];
@@ -154,21 +165,35 @@ export async function createSession(
       ? undefined
       : await resolvePageContextOrgId(auth, sanitizedPageContext);
 
-  const orgId =
+  // Anchor to the device's org when the caller can reach it; otherwise fall
+  // through so the opaque device check below rejects without leaking the
+  // device's existence to callers outside its org.
+  const deviceAnchorOrgId = deviceRow && auth.canAccessOrg(deviceRow.orgId) ? deviceRow.orgId : undefined;
+  const chainOrgId =
     topologySite?.orgId ??
     options.orgId ??
-    // Anchor to the device's org when the caller can reach it; otherwise fall
-    // through so the opaque device check below rejects without leaking the
-    // device's existence to callers outside its org.
-    (deviceRow && auth.canAccessOrg(deviceRow.orgId) ? deviceRow.orgId : undefined) ??
+    deviceAnchorOrgId ??
     pageContextOrgId ??
     auth.orgId ??
     auth.accessibleOrgIds?.[0] ??
     null;
-  if (!orgId) throw new Error('Organization context required');
-  if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
+  if (!chainOrgId) throw new Error('Organization context required');
+  if (chainOrgId !== auth.orgId && !auth.canAccessOrg(chainOrgId)) {
     throw new Error('Access denied to this organization');
   }
+
+  // Wisp W04: validate the grant and apply the thread's focus BEFORE anything
+  // below reads the org, so the page-anchor flag, the M365 / device bindings,
+  // the model choice, the budget and the insert all use the FINAL org. Absent
+  // `wispGrantId`, nothing Wisp is loaded or called and the org is the chain's.
+  const wisp = options.wispGrantId === undefined
+    ? null
+    : await anchorWispSession(auth, options.wispGrantId, {
+      chainOrgId,
+      // The caller's explicit org choices; a focus never silently overrides them.
+      explicitOrgId: topologySite?.orgId ?? options.orgId ?? deviceAnchorOrgId,
+    });
+  const orgId = wisp?.orgId ?? chainOrgId;
   // #6675: record, server-side, that the page chose this org, so org-scoped
   // AI writes can default to it. Only when the page anchor is what won the
   // chain above — never for an explicit orgId, a bound device, or a fallback.
@@ -253,12 +278,133 @@ export async function createSession(
       maxTurns: budget.maxTurnsPerSession,
       ...(topologySite ? { type: 'topology', topologySiteId: topologySite.siteId } : {}),
       ...(options.approvalMode ? { approvalMode: options.approvalMode } : {}),
-      systemPrompt: await buildSystemPrompt(auth, sanitizedPageContext)
+      ...(wisp ? { wispGrantId: wisp.grantId, wispGrantRevisionId: wisp.revisionId } : {}),
+      systemPrompt: wisp
+        ? [await buildSystemPrompt(auth, sanitizedPageContext), wisp.seed].filter(Boolean).join('\n')
+        : await buildSystemPrompt(auth, sanitizedPageContext)
     })
     .returning();
 
   if (!session) throw new Error('Failed to create session');
-  return { id: session.id, orgId, delegantM365ConnectionId };
+  if (wisp) {
+    const { attachSession } = await import('./wisp/threads');
+    await attachSession(wisp.threadId, session.id);
+  }
+  return {
+    id: session.id,
+    orgId,
+    delegantM365ConnectionId,
+    wispThreadId: wisp?.threadId ?? null,
+    wispFocusOrgId: wisp?.focusOrgId ?? null,
+  };
+}
+
+type WispSessionAnchor = {
+  grantId: string;
+  revisionId: string;
+  threadId: string;
+  /** The session org after focus anchoring. */
+  orgId: string;
+  focusOrgId: string | null;
+  /** Thread seed appended to the system prompt ('' when empty). */
+  seed: string;
+};
+
+/**
+ * Wisp W04 Task 3: validate the grant, find the grant's thread, resolve the
+ * live ceiling and apply the thread focus (w00 A24, spec §6.1 "effects default
+ * to that org").
+ *
+ * Anchor-org convention (unchanged for an unfocused thread): a partner-wide
+ * grant's session org is whatever the ordinary chain picked (explicit orgId,
+ * device, page anchor, auth.orgId, first accessible); reads stay partner-wide
+ * through `toolAuth`, and writes default through `resolveWritableToolOrgId`
+ * (services/aiToolWriteOrg.ts) exactly as today. An org token therefore anchors
+ * to the token's org (Review Focus 4).
+ *
+ * A focused thread whose focus is still inside the live ceiling anchors the
+ * session to the focus org: it overrides the page anchor / auth.orgId /
+ * first-accessible defaults, but never an explicit choice (orgId, a bound
+ * device, a topology site) — a different explicit org is `focus_mismatch`
+ * (a stale tab gets a typed 409, never a silently re-anchored session), and so
+ * is a focus the current sign-in cannot reach (an org token focused elsewhere).
+ * A focus that fell outside the ceiling (the grant was tightened) is cleared
+ * and the ordinary chain stands; `focusOrgId: null` tells the client.
+ */
+async function anchorWispSession(
+  auth: AuthContext,
+  wispGrantId: string,
+  input: { chainOrgId: string; explicitOrgId: string | undefined },
+): Promise<WispSessionAnchor> {
+  // Lazy: only a Wisp session loads the Wisp graph.
+  const [
+    { validateWispGrantForSession, assertGrantCoversSessionOrg, WispSessionError },
+    { getOrCreateThread, seedContextForSession, setThreadFocus },
+    { resolveGrantCeiling, assertWithinCeiling, CeilingViolationError, GrantInactiveError },
+  ] = await Promise.all([
+    import('./wisp/sessionGrant'),
+    import('./wisp/threads'),
+    import('./wisp/grantAuthority'),
+  ]);
+
+  const validated = await validateWispGrantForSession(auth, wispGrantId, input.chainOrgId);
+  const thread = await getOrCreateThread(validated.grantId);
+
+  let ceiling: Awaited<ReturnType<typeof resolveGrantCeiling>>;
+  try {
+    ceiling = await resolveGrantCeiling(validated.grantId, validated.revisionId);
+  } catch (err) {
+    // The grantor's live standing can lapse between the row read and here.
+    if (err instanceof GrantInactiveError) {
+      if (err.kind !== 'corrupt') throw new WispSessionError('grant_inactive', 409);
+      // A broken pin is data damage, not a lapsed grant (grantAuthority's contract: log + capture).
+      console.error(`[AI] Wisp grant ${err.grantId} has a corrupt ceiling pin at session create: ${err.message}`);
+      captureException(err, undefined, { grantId: err.grantId });
+      throw new WispSessionError('grant_corrupt', 500);
+    }
+    throw err;
+  }
+
+  let orgId = input.chainOrgId;
+  let focusOrgId: string | null = null;
+  if (thread.focusOrgId) {
+    let focusInCeiling = true;
+    try {
+      assertWithinCeiling(ceiling, { orgId: thread.focusOrgId });
+    } catch (err) {
+      if (!(err instanceof CeilingViolationError)) throw err;
+      if (err.code === 'inactive') throw new WispSessionError('grant_inactive', 409);
+      focusInCeiling = false;
+    }
+    if (focusInCeiling) {
+      if (input.explicitOrgId !== undefined && input.explicitOrgId !== thread.focusOrgId) {
+        throw new WispSessionError('focus_mismatch', 409);
+      }
+      if (thread.focusOrgId !== auth.orgId && !auth.canAccessOrg(thread.focusOrgId)) {
+        throw new WispSessionError(
+          'focus_mismatch',
+          409,
+          'This Wisp conversation is focused on an organization your current sign-in cannot reach. Change the focus or sign in with partner access.',
+        );
+      }
+      orgId = thread.focusOrgId;
+      focusOrgId = thread.focusOrgId;
+    } else {
+      await setThreadFocus(thread.id, null, ceiling);
+    }
+  }
+
+  // The scope was validated against the chain org; re-check the FINAL org.
+  assertGrantCoversSessionOrg(validated, orgId);
+
+  return {
+    grantId: validated.grantId,
+    revisionId: validated.revisionId,
+    threadId: thread.id,
+    orgId,
+    focusOrgId,
+    seed: await seedContextForSession(thread.id, ceiling),
+  };
 }
 
 /**
@@ -378,6 +524,17 @@ export async function closeSession(sessionId: string, auth: AuthContext): Promis
     .update(aiSessions)
     .set({ status: 'closed', updatedAt: new Date() })
     .where(eq(aiSessions.id, sessionId));
+
+  // Wisp W04 T5: recompute the thread summary once the close has committed.
+  // Best effort — never fails or delays the close.
+  runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
+    import('./wisp/threadSummary')
+      .then((m) => m.finalizeWispSessionSummary(sessionId))
+      .catch((err) => {
+        console.error(`[AI] Wisp thread summary finalize failed for closed session ${sessionId}:`, err);
+        captureException(err);
+      }),
+  );
 
   return { orgId: session.orgId };
 }

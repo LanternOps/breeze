@@ -79,6 +79,10 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
     expect(listFlowEligibleCoreTools().filter((name) => !toolInputSchemas[name])).toEqual([]);
   });
 
+  // recall / remember (Wisp W03) and the W05a concern tools (list_concerns, raise_concern,
+  // snooze_concern, resolve_concern, create_watch) are absent: they refuse outright without
+  // auth.wispGrant, which a flow step never carries, so W05 excludes them from flows
+  // (FLOW_EXCLUDED_CORE_TOOLS).
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [

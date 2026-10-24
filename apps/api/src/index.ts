@@ -203,6 +203,7 @@ import { fleetDesignRoutes } from './routes/fleetDesign';
 import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { wispRoutes } from './routes/wisp';
+import { wispMemoryRoutes } from './routes/wisp/memory';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
 import { mountInviteLandingRoutes } from './modules/mcpInvites';
@@ -1105,6 +1106,12 @@ api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
+// Wisp W03 (#9909): memory page routes. MUST stay above '/wisp': wispRoutes'
+// use('*') gates (partner scope only) match /wisp/memory/* too, and Hono runs
+// matching handlers in registration order. Registered first, a matched memory
+// handler answers before those gates are reached (pinned in
+// routes/wisp/memory.test.ts). Its own gates: auth → wispEnabled() → ai_sessions:use.
+api.route('/wisp/memory', wispMemoryRoutes);
 // Wisp W02 (#9908): delegation grants. Every route 404s while
 // BREEZE_WISP_ENABLED is off (checked per request inside wispRoutes).
 api.route('/wisp', wispRoutes);

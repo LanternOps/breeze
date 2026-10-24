@@ -88,6 +88,9 @@ export const aiRunArtifacts = pgTable(
     // Sweeper scan is cross-org under system scope; the (org_id, expires_at)
     // index cannot serve `WHERE expires_at < now()` on its own.
     index('ai_run_artifacts_expires_idx').on(t.expiresAt),
+    // Target of wisp_thread_attachments_artifact_fk (Wisp W04,
+    // 2027-01-04-110200-wisp-threads.sql).
+    uniqueIndex('ai_run_artifacts_id_org_uq').on(t.id, t.orgId),
   ]
 );
 

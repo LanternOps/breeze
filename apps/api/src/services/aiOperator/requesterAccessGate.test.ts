@@ -450,7 +450,7 @@ describe('requesterAccessLost — delegation grant (Wisp W02)', () => {
   const grantCeiling = (o: Record<string, unknown> = {}) => ({
     grantId: 'g1', revisionId: 'r1', partnerId: 'p1', grantorUserId: USER_ID, scopeOrgId: null, partnerWide: true,
     orgIds: new Set([ORG_ID]), siteIds: null, permissionKeys: new Set(['devices:execute']), toolAllowlist: null,
-    deniedTools: new Set<string>(), status: 'active', ...o,
+    deniedTools: new Set<string>(), orgTerms: new Map(), status: 'active', ...o,
   });
   const grantTask = { orgId: ORG_ID, requesterUserId: USER_ID, grantId: 'g1', grantRevisionId: 'r1' };
   const primeAccessOk = () => {

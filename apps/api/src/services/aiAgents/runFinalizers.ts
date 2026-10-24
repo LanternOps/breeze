@@ -44,6 +44,10 @@ import { isTriageProfile } from './triageProfile';
 import { isVerdictProfile } from './verdictProfile';
 import type { LoopResult, RunContext } from './runLoopTypes';
 
+// Wisp W05b — the assessment finalizer lives in its own file (this one is
+// already > 600 lines); re-exported so `executeAgentRun` keeps one import path.
+export { ASSESSMENT_MAX_RAISES_PER_RUN, finalizeAssessment } from './assessmentFinalizer';
+
 /**
  * Same skip-if-already-system shape as `runLoop.inSystemDbContext` (and
  * `runService`'s, and `resolveEffectiveAgentSystem`'s): a bare system wrapper

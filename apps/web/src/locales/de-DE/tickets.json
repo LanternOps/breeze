@@ -419,6 +419,7 @@
     "loadFailed": "Das Laden des Tickets ist fehlgeschlagen.",
     "backToQueue": "Zurück zur Warteschlange",
     "ticketSubject": "Betreff des Tickets",
+    "subjectEditButton": "Betreff bearbeiten",
     "openFullPage": "Ganze Seite öffnen",
     "priorityLabel": "Priorität",
     "categoryLabel": "Kategorie",
