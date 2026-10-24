@@ -103,6 +103,9 @@ describe('software dependency identity', () => {
       .not.toBe(withScript);
     expect(fingerprintSoftwareVersionDependency({ ...enabled, preInstallScript: 'Write-Output 0' }, catalog))
       .not.toBe(withScript);
+    // The one OS picks the script's interpreter, so it is pinned too.
+    expect(fingerprintSoftwareVersionDependency({ ...enabled, supportedOs: ['windows'] }, catalog))
+      .not.toBe(fingerprintSoftwareVersionDependency({ ...enabled, supportedOs: ['macos'] }, catalog));
   });
 
   it('fails legacy and changed dependencies closed while allowing an exact match', () => {

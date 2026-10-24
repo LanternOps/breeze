@@ -37,6 +37,7 @@ import {
   getManagedSoftwarePolicyMode,
 } from './managedSoftwareDispatchPolicy';
 import { getEffectiveSoftwareDownloadPolicy } from './softwareDownloadPolicy';
+import { captureException } from './sentry';
 import { sendCommandToAgent, type AgentCommand } from '../routes/agentWs';
 import {
   fingerprintSoftwareInstallMethodDependency,
@@ -954,22 +955,36 @@ export async function buildAndDispatchSoftwareInstalls(
     }
   }
   let variableFailureCount = 0;
-  let agentGateFailureCount = 0;
+  // #6958 gates, counted apart so the batch message names the real cause.
+  let agentVersionFailureCount = 0;
+  let scriptOsFailureCount = 0;
   let policyDenialCount = 0;
   // Bounded reasons only (see managedSoftwareDispatchPolicy) — safe to
   // interpolate into the aggregate message, unlike a URL or host.
   const policyDenialReasons = new Set<ManagedSoftwareDispatchDenialReason>();
   // One per-device failure write + result, shared by the #6958 gates below.
+  // Isolated per device: a failed write here must not abort the fan-out and
+  // strand every later device's row as `pending` (the silent-death shape the
+  // dispatch try/catch below guards against). Nothing was enqueued for this
+  // device either way.
   const failDevice = async (deviceId: string, errorMessage: string) => {
-    await db
-      .update(deploymentResults)
-      .set({ status: 'failed', errorMessage, completedAt: new Date() })
-      .where(
-        and(
-          eq(deploymentResults.deploymentId, deploymentId),
-          eq(deploymentResults.deviceId, deviceId),
-        ),
+    try {
+      await db
+        .update(deploymentResults)
+        .set({ status: 'failed', errorMessage, completedAt: new Date() })
+        .where(
+          and(
+            eq(deploymentResults.deploymentId, deploymentId),
+            eq(deploymentResults.deviceId, deviceId),
+          ),
+        );
+    } catch (err) {
+      console.error(
+        `[software-deploy] could not record a gate failure for device ${deviceId} in deployment ${deploymentId}:`,
+        err,
       );
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
     const result = fanoutDeviceResult(input, deviceId, 'failed', null, errorMessage);
     if (result) deviceResults.push(result);
   };
@@ -980,7 +995,7 @@ export async function buildAndDispatchSoftwareInstalls(
     // version is not sticky across a downgrade.)
     if (needsScriptAgent && !agentSupportsInstallScripts(device.agentVersion)) {
       await failDevice(device.id, agentUpdateRequiredInstallMessage());
-      agentGateFailureCount++;
+      agentVersionFailureCount++;
       continue;
     }
     // A script runs in the language of the version's one OS; a device on any
@@ -992,7 +1007,7 @@ export async function buildAndDispatchSoftwareInstalls(
           ? 'Install scripts require a version with exactly one supported OS'
           : `Install scripts on this version target ${scriptOs}; this device runs ${device.osType ?? 'an unknown OS'}`,
       );
-      agentGateFailureCount++;
+      scriptOsFailureCount++;
       continue;
     }
 
@@ -1098,7 +1113,7 @@ export async function buildAndDispatchSoftwareInstalls(
         // Unreachable past the OS check above; kept so a future OS value can
         // never fall through to a script with no interpreter.
         await failDevice(device.id, `Install scripts cannot run on ${device.osType ?? 'an unknown OS'}`);
-        agentGateFailureCount++;
+        scriptOsFailureCount++;
         continue;
       }
       const unresolved = [
@@ -1247,15 +1262,20 @@ export async function buildAndDispatchSoftwareInstalls(
   // the caller.
   if (
     dispatchedDeviceIds.length === 0 &&
-    (variableFailureCount > 0 || agentGateFailureCount > 0 || policyDenialCount > 0 || missingDeviceCount > 0)
+    (variableFailureCount > 0 || agentVersionFailureCount > 0 || scriptOsFailureCount > 0 ||
+      policyDenialCount > 0 || missingDeviceCount > 0)
   ) {
     return {
       status: 'failed',
       message:
         variableFailureCount > 0
           ? 'All target devices failed installer variable resolution'
-          : agentGateFailureCount > 0
-            ? `No target device can run this version: ${agentUpdateRequiredInstallMessage()}, on the version's one supported OS`
+          : agentVersionFailureCount > 0 && scriptOsFailureCount === 0
+            ? `No target device runs a new enough agent: ${agentUpdateRequiredInstallMessage()}`
+          : scriptOsFailureCount > 0 && agentVersionFailureCount === 0
+            ? `No target device runs this version's supported OS (${scriptOs ?? 'none declared'})`
+          : agentVersionFailureCount > 0
+            ? `No target device can run this version's install scripts (agent too old or wrong OS; see each device)`
           : policyDenialCount > 0
             ? 'All target devices denied by the managed software network policy: ' +
               [...policyDenialReasons].sort().join(', ')

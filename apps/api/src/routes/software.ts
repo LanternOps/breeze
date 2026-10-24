@@ -1577,9 +1577,20 @@ softwareRoutes.patch(
         }
       }
     }
-    // New silent-install args on a type whose installer ignores them are
-    // rejected rather than silently dropped (same rule as create).
-    if (typeof payload.silentInstallArgs === 'string' && payload.silentInstallArgs.trim() !== '') {
+    // A script-enabled version's download and args are what its SYSTEM/root
+    // script operates on, so editing one needs devices.execute too.
+    if (existingVersion.installScriptsEnabled && hasInstallScript(existingVersion)) {
+      const executeDenied = await denyUnlessDevicesExecute(c);
+      if (executeDenied) return executeDenied;
+    }
+    // NEW silent-install args on a type whose installer ignores them are
+    // rejected rather than silently dropped (same rule as create). Re-sending
+    // the value a legacy version already stores is not a new write.
+    if (
+      typeof payload.silentInstallArgs === 'string' &&
+      payload.silentInstallArgs.trim() !== '' &&
+      payload.silentInstallArgs !== existingVersion.silentInstallArgs
+    ) {
       const specError = installSpecError({
         fileType: existingVersion.fileType,
         supportedOs: null,

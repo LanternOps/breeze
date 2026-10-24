@@ -2742,6 +2742,36 @@ describe('buildAndDispatchSoftwareInstalls — install scripts, zip and agent ga
     expect(updateSetCalls.find((c) => c.status === 'failed')?.errorMessage).toMatch(/^agent_update_required/);
   });
 
+  it('every device on the wrong OS → the batch message names the OS, not an agent update', async () => {
+    mockDeviceReads([{ ...winDevice('dev-mac', NEW), osType: 'macos' }, { ...winDevice('dev-null', NEW), osType: null }]);
+    const result = await run(
+      { ...baseVersion, installScriptsEnabled: true, postInstallScript: 'Write-Output hi' },
+      ['dev-mac', 'dev-null'],
+    );
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe("No target device runs this version's supported OS (windows)");
+    expect(updateSetCalls.filter((c) => c.status === 'failed').map((c) => c.errorMessage)).toEqual([
+      'Install scripts on this version target windows; this device runs macos',
+      'Install scripts on this version target windows; this device runs an unknown OS',
+    ]);
+  });
+
+  it('every device too old → the batch message is the agent-update reason', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD)]);
+    const result = await run({ ...baseVersion, installScriptsEnabled: true, postInstallScript: 'x' }, ['dev-old']);
+    expect(result.message).toBe(`No target device runs a new enough agent: agent_update_required (minimum agent ${NEW})`);
+  });
+
+  it('a failed gate write for one device does not abort the fan-out for the rest', async () => {
+    mockDeviceReads([winDevice('dev-old', OLD), winDevice('dev-new', NEW)]);
+    updateMock.mockImplementationOnce(() => ({
+      set: vi.fn(() => ({ where: vi.fn().mockRejectedValue(new Error('statement timeout')) })),
+    }));
+    const result = await run({ ...baseVersion, installScriptsEnabled: true, postInstallScript: 'x' }, ['dev-old', 'dev-new']);
+    expect(result.dispatchedDeviceIds).toEqual(['dev-new']);
+    expect(result.deviceResults.find((r) => r.deviceId === 'dev-old')).toMatchObject({ status: 'failed' });
+  });
+
   it('matches the version OS case-insensitively (the chunked-upload UI stores "Windows")', async () => {
     mockDeviceReads([winDevice('dev-win', NEW)]);
     const result = await run(

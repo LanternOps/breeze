@@ -429,6 +429,32 @@ describe('software_catalog.builtin_package_key (#6958)', () => {
     expect(after!.builtinPackageKey).toBeNull();
   });
 
+  it('GET /catalog returns builtinPackageKey and the latest version\'s installScriptsEnabled (real SQL)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [keyed] = await seedKeyed(partner.id, 'controld_windows');
+    await getTestDb().insert(softwareVersions).values([
+      { catalogId: keyed!.id, version: '1.0.0', fileType: 'zip', isLatest: false, installScriptsEnabled: false },
+      { catalogId: keyed!.id, version: '1.5.8', fileType: 'zip', isLatest: true, installScriptsEnabled: true, postInstallScript: 'x' },
+    ]);
+    const { catalog: plain } = await seedOrgOwned(org.id); // latest version, scripts not enabled
+    const [empty] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: org.id, name: 'No versions yet' })
+      .returning();
+
+    activeAuth = { scope: 'partner', orgId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
+    const app = await buildApp();
+    const res = await app.request(`/software/catalog?orgId=${org.id}&limit=100`, { headers: { Authorization: 'Bearer token' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data as Array<Record<string, unknown>>;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    expect(byId.get(keyed!.id)).toMatchObject({ builtinPackageKey: 'controld_windows', installScriptsEnabled: true });
+    expect(byId.get(plain.id)).toMatchObject({ builtinPackageKey: null, installScriptsEnabled: false });
+    expect(byId.get(empty!.id)).toMatchObject({ builtinPackageKey: null, installScriptsEnabled: null });
+  });
+
   it('a route write can never set it: POST /catalog drops the key, version create on a keyed row is 403', async () => {
     const { eq } = await import('drizzle-orm');
     const partner = await createPartner();

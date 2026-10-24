@@ -153,7 +153,7 @@ const authDbContexts = vi.hoisted(() => ({
 const { permissionGate, mfaGate, siteAccessGate, authState } = vi.hoisted(() => ({
   // `denied` withholds single grants (e.g. 'devices:execute', #6958) while the
   // others pass; `deny` denies every permission gate.
-  permissionGate: { deny: false, denied: new Set<string>() },
+  permissionGate: { deny: false, denied: new Set<string>(), thrown: new Set<string>() },
   mfaGate: { deny: false },
   siteAccessGate: { deny: false },
   authState: {
@@ -183,6 +183,11 @@ vi.mock('../middleware/auth', () => ({
   requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
     if (permissionGate.deny || permissionGate.denied.has(`${resource}:${action}`)) {
       return c.json({ error: 'Permission denied' }, 403);
+    }
+    // The real gate THROWS HTTPException(403) rather than returning a response.
+    if (permissionGate.thrown.has(`${resource}:${action}`)) {
+      const { HTTPException } = await import('hono/http-exception');
+      throw new HTTPException(403, { message: 'Permission denied' });
     }
     return next();
   }),
@@ -3707,6 +3712,7 @@ describe('software version install spec (#6958)', () => {
     vi.mocked(authMiddleware).mockClear();
     permissionGate.deny = false;
     permissionGate.denied.clear();
+    permissionGate.thrown.clear();
     mfaGate.deny = false;
     authState.scope = 'organization';
     authState.orgId = 'org-123';
@@ -3718,6 +3724,14 @@ describe('software version install spec (#6958)', () => {
   });
 
   describe('JSON POST /catalog/:id/versions', () => {
+    it('(b) a THROWING devices.execute gate (the real middleware shape) still refuses with 403, nothing written', async () => {
+      permissionGate.thrown.add('devices:execute');
+      const { res, captured } = await createVersion({ supportedOs: ['windows'], postInstallScript: 'Write-Output 1' });
+      expect(res.status).toBe(403);
+      expect(captured.values).toBeUndefined();
+    });
+
+
     it.each([
       [{ fileType: 'zip', downloadUrl: 'https://dl.example/c.zip' }, ['zip_requires_post_install_script']],
       [{ supportedOs: ['windows', 'macos'], postInstallScript: 'x' }, ['scripts_require_single_os']],
@@ -3879,6 +3893,37 @@ describe('software version install spec (#6958)', () => {
       const { res, setSpy } = await patch({ supportedOs: [''] });
       expect(res.status).toBe(400);
       expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([[null], [[]]])('(c) clearing supportedOs (%j) on a script-enabled version → 400', async (supportedOs) => {
+      const { res, setSpy } = await patch({ supportedOs });
+      expect(res.status).toBe(400);
+      expect((await res.json()).issues).toEqual(['scripts_require_single_os']);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('editing a script-enabled version needs devices.execute (its download is what the script runs on)', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res, setSpy } = await patch({ downloadUrl: 'https://dl.example/other.exe' });
+      expect(res.status).toBe(403);
+      expect(setSpy).not.toHaveBeenCalled();
+    });
+
+    it('editing a version WITHOUT enabled scripts needs no devices.execute', async () => {
+      permissionGate.denied.add('devices:execute');
+      const { res } = await patch(
+        { downloadUrl: 'https://dl.example/other.exe' },
+        { ...scriptVersion, installScriptsEnabled: false },
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it('re-sending the args a legacy pkg version already stores is not a new write (no 400)', async () => {
+      const { res } = await patch(
+        { silentInstallArgs: '/legacy', releaseNotes: 'n' },
+        { ...scriptVersion, fileType: 'pkg', installScriptsEnabled: false, silentInstallArgs: '/legacy' },
+      );
+      expect(res.status).toBe(200);
     });
 
     it('a version without enabled scripts may still target several OSes', async () => {

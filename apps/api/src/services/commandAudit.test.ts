@@ -219,6 +219,14 @@ describe('commandAudit', () => {
     }
   });
 
+  it('fails closed on a malformed (non-object) script value: metadata only, never the body', () => {
+    const payload = { deploymentId: 'dep-1', preInstallScript: 'rm -rf / --no-preserve-root', postInstallScript: ['x'] };
+    const out = commandAuditDetails('cmd-bad', 'software_install', payload).payload as Record<string, any>;
+    expect(out.preInstallScript).toMatchObject({ content: { redacted: true } });
+    expect(out.postInstallScript).toMatchObject({ content: { redacted: true } });
+    expect(JSON.stringify(out)).not.toContain('no-preserve-root');
+  });
+
   it('leaves a software_install payload without scripts as the generic sanitizer produced it', () => {
     const payload = { deploymentId: 'dep-1', downloadUrl: 'https://dl.example/a.msi', silentInstallArgs: '/qn' };
     expect(commandAuditDetails('cmd-a', 'software_install', payload).payload)

@@ -77,14 +77,21 @@ export function sanitizeCommandPayloadForAudit(type: string, rawPayload: Command
     // #6958: pre/post-install scripts run as SYSTEM/root. Like a `script`
     // command, the body is reduced to contentMetadata and the parameters go
     // through the audit sanitizer; the rest of the payload stays as before.
-    const scripts = INSTALL_SCRIPT_KEYS.filter((key) => isRecord(payload[key]));
+    // Any non-null value counts: a malformed (non-object) script must not fall
+    // through to the generic sanitizer with its body intact.
+    const scripts = INSTALL_SCRIPT_KEYS.filter((key) => payload[key] != null);
     if (scripts.length === 0) return sanitizeAuditPayload(payload);
     const rest: Record<string, unknown> = { ...payload };
     for (const key of scripts) delete rest[key];
     const out = sanitizeAuditPayload(rest);
     const sanitized: Record<string, unknown> = isRecord(out) ? { ...out } : {};
     for (const key of scripts) {
-      const script = payload[key] as Record<string, unknown>;
+      const value = payload[key];
+      if (!isRecord(value)) {
+        sanitized[key] = { content: contentMetadata(typeof value === 'string' ? value : JSON.stringify(value)) };
+        continue;
+      }
+      const script = value;
       sanitized[key] = {
         language: sanitizeAuditPayload(script.language),
         timeoutSeconds: script.timeoutSeconds,

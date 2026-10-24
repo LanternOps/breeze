@@ -39,12 +39,20 @@ vi.mock('./scriptSecretDelivery', () => ({
 
 // #6958: the software_install refresher reads the device's agent version for
 // a script/zip install. Only `db.select` is replaced; the context helpers stay real.
-const { deviceAgentRowsMock } = vi.hoisted(() => ({ deviceAgentRowsMock: vi.fn() }));
+const { deviceAgentRowsMock, deviceWhereArgs } = vi.hoisted(() => ({
+  deviceAgentRowsMock: vi.fn(),
+  deviceWhereArgs: [] as unknown[],
+}));
 vi.mock('../db', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../db')>()),
   db: {
     select: () => ({
-      from: () => ({ where: () => ({ limit: () => deviceAgentRowsMock() }) }),
+      from: () => ({
+        where: (arg: unknown) => {
+          deviceWhereArgs.push(arg);
+          return { limit: () => deviceAgentRowsMock() };
+        },
+      }),
     }),
   },
 }));
@@ -696,6 +704,18 @@ describe('software_install claim-time agent gate (#6958)', () => {
     failClaimedSecretCommandsMock.mockImplementation(async (claimed: unknown[]) => claimed);
     isS3ConfiguredMock.mockReturnValue(false);
     deviceAgentRowsMock.mockReset();
+    deviceWhereArgs.length = 0;
+  });
+
+  it('reads the agent version of the claimed command\'s OWN device', async () => {
+    deviceAgentRowsMock.mockResolvedValue([{ agentVersion: MIN_AGENT_VERSION_INSTALL_SCRIPTS }]);
+    const otherDevice = '88888888-8888-4888-8888-888888888888';
+    await prepareClaimedCommandsForDelivery([{ ...claim(scriptPayload), deviceId: otherDevice }]);
+    expect(deviceWhereArgs).toHaveLength(1);
+    const { PgDialect } = await import('drizzle-orm/pg-core');
+    const query = new PgDialect().sqlToQuery(deviceWhereArgs[0] as never);
+    expect(query.sql).toContain('"devices"."id"');
+    expect(query.params).toEqual([otherDevice]);
   });
 
   it('(m) a queued script/zip install claimed while the device reports an old agent is refused, expired, never delivered', async () => {
