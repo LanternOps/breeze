@@ -1,9 +1,12 @@
-import { useMemo } from 'react';
-import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { radii, spacing, type, useApprovalTheme } from '../../theme';
 import type { WispConcern } from '../../services/wisp';
-import { severityLabel, snoozeOptions, statusLabel } from './wispConcernCopy';
+import { concernFeedbackState, severityLabel, snoozeOptions, statusLabel } from './wispConcernCopy';
+
+/** Server cap on the feedback note (CONCERN_FEEDBACK_NOTE_MAX). */
+const FEEDBACK_NOTE_MAX = 200;
 import { approvalOpenTarget } from './wispThreadState';
 
 interface Props {
@@ -14,6 +17,8 @@ interface Props {
   onDismiss: () => void;
   /** Opens the approval takeover over the thread; only offered for an open concern with a card. */
   onReviewApproval: (intentId: string) => void;
+  /** w00 A34: one-tap "useful / not useful" on a concern Wisp nudged this user about. */
+  onFeedback: (useful: boolean, note?: string) => void;
 }
 
 /**
@@ -26,8 +31,24 @@ interface Props {
  * (node-tested); this file is layout. Resolved and dismissed concerns show
  * their terminal status and no actions (Review Focus 3).
  */
-export function WispConcernSheet({ concern, busy, onClose, onSnooze, onDismiss, onReviewApproval }: Props) {
+export function WispConcernSheet({
+  concern,
+  busy,
+  onClose,
+  onSnooze,
+  onDismiss,
+  onReviewApproval,
+  onFeedback,
+}: Props) {
   const theme = useApprovalTheme('dark');
+  const feedback = concern ? concernFeedbackState(concern) : null;
+  // "Not useful" asks for an optional one-line note before sending.
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
+  useEffect(() => {
+    setNoteOpen(false);
+    setNote('');
+  }, [concern?.id]);
   // Recomputed per open so "1 hour" is an hour from when the sheet appeared.
   const options = useMemo(() => (concern ? snoozeOptions(new Date()) : []), [concern?.id]);
   const live = concern?.status === 'open' || concern?.status === 'snoozed';
@@ -71,6 +92,66 @@ export function WispConcernSheet({ concern, busy, onClose, onSnooze, onDismiss, 
                   disabled={busy}
                   onPress={() => onReviewApproval(approvalTarget)}
                 />
+              ) : null}
+
+              {feedback?.show ? (
+                <View style={{ marginTop: spacing[5] }}>
+                  <Text style={[type.metaCaps, { color: theme.textLo }]}>WAS THIS NUDGE USEFUL?</Text>
+                  {feedback.chosen ? (
+                    <Text style={[type.meta, { color: theme.textMd, marginTop: spacing[2] }]}>
+                      {feedback.chosen === 'useful'
+                        ? 'You marked this useful.'
+                        : 'You marked this not useful. Wisp will nudge less like this.'}
+                    </Text>
+                  ) : noteOpen ? (
+                    <>
+                      <TextInput
+                        testID="wisp-concern-feedback-note"
+                        value={note}
+                        onChangeText={setNote}
+                        placeholder="What would have been better? (optional)"
+                        placeholderTextColor={theme.textLo}
+                        editable={!busy}
+                        maxLength={FEEDBACK_NOTE_MAX}
+                        style={[
+                          type.body,
+                          {
+                            color: theme.textHi,
+                            backgroundColor: theme.bg2,
+                            borderRadius: radii.md,
+                            padding: spacing[3],
+                            marginTop: spacing[3],
+                          },
+                        ]}
+                      />
+                      <SheetButton
+                        testID="wisp-concern-feedback-send"
+                        label="Send"
+                        disabled={busy}
+                        onPress={() => onFeedback(false, note.trim() || undefined)}
+                      />
+                    </>
+                  ) : (
+                    <View style={{ flexDirection: 'row', gap: spacing[3] }}>
+                      <View style={{ flex: 1 }}>
+                        <SheetButton
+                          testID="wisp-concern-feedback-useful"
+                          label="👍 Useful"
+                          disabled={busy || !feedback.canChange}
+                          onPress={() => onFeedback(true)}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <SheetButton
+                          testID="wisp-concern-feedback-not-useful"
+                          label="👎 Not useful"
+                          disabled={busy || !feedback.canChange}
+                          onPress={() => setNoteOpen(true)}
+                        />
+                      </View>
+                    </View>
+                  )}
+                </View>
               ) : null}
 
               {live ? (

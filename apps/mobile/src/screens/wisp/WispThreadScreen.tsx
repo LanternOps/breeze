@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { useToast } from '../../components/toast/ToastHost';
@@ -18,10 +19,15 @@ import type { HomeStackParamList } from '../../navigation/MainNavigator';
 import { createAiSession, streamChat, type AiStreamEvent, type SseStreamHandle } from '../../services/aiChat';
 import {
   dismissWispConcern,
+  getWispActivity,
   getWispThread,
   listWispConcerns,
+  pauseWispGrant,
+  resumeWispGrant,
+  sendWispConcernFeedback,
   snoozeWispConcern,
   type WispConcern,
+  type WispCurrentActivity,
   type WispThread,
 } from '../../services/wisp';
 import { store, useAppDispatch } from '../../store';
@@ -30,8 +36,24 @@ import { radii, spacing, type, useApprovalTheme } from '../../theme';
 import { Composer } from '../chat/components/Composer';
 import { ConversationList } from '../chat/components/ConversationList';
 import { WispConcernSheet } from './WispConcernSheet';
-import { concernActionFailureCopy, severityLabel, statusLabel } from './wispConcernCopy';
-import { grantBannerCopy, replyEnabled, threadSummaryCopy } from './wispThreadCopy';
+import {
+  concernActionFailureCopy,
+  feedbackFailureCopy,
+  severityLabel,
+  statusLabel,
+} from './wispConcernCopy';
+import {
+  grantBannerCopy,
+  liveLineCopy,
+  pauseControlState,
+  pauseFailureCopy,
+  pauseResultCopy,
+  replyEnabled,
+  spendMeterCopy,
+  spendMeterState,
+  threadSummaryCopy,
+  type PauseAction,
+} from './wispThreadCopy';
 import {
   approvalOpenTarget,
   approvalRequestIdForIntent,
@@ -44,6 +66,9 @@ import {
 type Props = NativeStackScreenProps<HomeStackParamList, 'WispThread'>;
 
 type Phase = 'loading' | 'ready' | 'notFound' | 'error';
+
+/** w00 A31: the live "Wisp is checking …" line refreshes this often while the screen is focused. */
+const LIVE_LINE_POLL_MS = 30_000;
 
 const statusOf = (err: unknown): number | undefined => {
   const s = (err as { statusCode?: unknown; status?: unknown } | null)?.statusCode
@@ -66,7 +91,7 @@ const statusOf = (err: unknown): number | undefined => {
  * technician had open on Home. Every decision lives in a node-tested sibling
  * module; this file is wiring and layout.
  */
-export function WispThreadScreen({ route }: Props): React.JSX.Element {
+export function WispThreadScreen({ route, navigation }: Props): React.JSX.Element {
   const params = route.params;
   const theme = useApprovalTheme('dark');
   const insets = useSafeAreaInsets();
@@ -83,6 +108,8 @@ export function WispThreadScreen({ route }: Props): React.JSX.Element {
   const [sheetId, setSheetId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [session, dispatchSession] = useReducer(wispSessionReducer, INITIAL_WISP_SESSION);
+  const [current, setCurrent] = useState<WispCurrentActivity | null>(null);
+  const [pausing, setPausing] = useState(false);
 
   const sessionIdRef = useRef<string | null>(null);
   const streamRef = useRef<SseStreamHandle | null>(null);
@@ -154,6 +181,70 @@ export function WispThreadScreen({ route }: Props): React.JSX.Element {
     if (mounted.current) setRefreshing(false);
   }, [load]);
 
+  // w00 A31 live line: what Wisp is assessing right now. Best-effort — a
+  // failed poll just hides the line; it never blocks the thread.
+  useFocusEffect(
+    useCallback(() => {
+      let stopped = false;
+      const poll = async () => {
+        try {
+          const page = await getWispActivity(params.threadId, { limit: 1 });
+          if (!stopped && mounted.current) setCurrent(page.current);
+        } catch {
+          if (!stopped && mounted.current) setCurrent(null);
+        }
+      };
+      void poll();
+      const timer = setInterval(() => void poll(), LIVE_LINE_POLL_MS);
+      return () => {
+        stopped = true;
+        clearInterval(timer);
+      };
+    }, [params.threadId]),
+  );
+
+  /** w00 A29: the grantor's own pause / resume (POST /wisp/grants/:id/pause|resume). */
+  const togglePause = useCallback(
+    async (action: PauseAction) => {
+      if (!thread || pausing) return;
+      setPausing(true);
+      try {
+        const next = await (action === 'pause' ? pauseWispGrant : resumeWispGrant)(thread.grant.id);
+        if (!mounted.current) return;
+        setThread((t) => (t ? { ...t, grant: { ...t.grant, status: next.status, pausedReason: next.pausedReason } } : t));
+        showToast({ kind: 'success', text: pauseResultCopy(action) });
+      } catch (err) {
+        const status = statusOf(err);
+        if (mounted.current) showToast({ kind: 'error', text: pauseFailureCopy(action, status) });
+        if (status !== 403 && status !== 404 && status !== 409) safeReport(err, 'wisp-grant-pause');
+      } finally {
+        if (mounted.current) setPausing(false);
+      }
+    },
+    [thread, pausing, showToast],
+  );
+
+  const pauseControl = thread ? pauseControlState(thread.grant) : null;
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: pauseControl
+        ? () => (
+            <Pressable
+              testID="wisp-thread-pause"
+              accessibilityRole="button"
+              disabled={pausing}
+              onPress={() => void togglePause(pauseControl.action)}
+              hitSlop={8}
+            >
+              <Text style={[type.bodyMd, { color: theme.brand, opacity: pausing ? 0.5 : 1 }]}>
+                {pauseControl.action === 'pause' ? 'Pause' : 'Resume'}
+              </Text>
+            </Pressable>
+          )
+        : undefined,
+    });
+  }, [navigation, pauseControl?.action, pausing, togglePause, theme.brand]);
+
   /**
    * Map the concern's INTENT id onto this user's pending approval row and hand
    * it to ApprovalGate. Nothing is focused when the card was decided elsewhere
@@ -217,6 +308,25 @@ export function WispThreadScreen({ route }: Props): React.JSX.Element {
       }
     },
     [loadConcerns, showToast],
+  );
+
+  const onFeedback = useCallback(
+    async (concernId: string, useful: boolean, note?: string) => {
+      setBusy(true);
+      try {
+        await sendWispConcernFeedback(concernId, params.grantId, { useful, note });
+        if (mounted.current) showToast({ kind: 'success', text: 'Thanks — Wisp will use this.' });
+      } catch (err) {
+        const status = statusOf(err);
+        if (mounted.current) showToast({ kind: 'error', text: feedbackFailureCopy(status) });
+        if (status !== 404 && status !== 409) safeReport(err, 'wisp-concern-feedback');
+      } finally {
+        if (mounted.current) setBusy(false);
+        // Keep the sheet open: the refetched row now shows the recorded choice.
+        await loadConcerns();
+      }
+    },
+    [params.grantId, loadConcerns, showToast],
   );
 
   const onSend = useCallback(
@@ -354,6 +464,14 @@ export function WispThreadScreen({ route }: Props): React.JSX.Element {
   const banner = grantBannerCopy(thread.grant);
   const sheetConcern = sheetId ? concerns.find((c) => c.id === sheetId) ?? null : null;
   const hasMessages = session.messages.length > 0;
+  const liveLine = thread.grant.status === 'active' ? liveLineCopy(current) : null;
+  const spend = spendMeterState(thread.grant.spentTodayCents, thread.grant.budgetCentsPerDay);
+  const spendCopy = spendMeterCopy(
+    thread.grant.spentTodayCents,
+    thread.grant.budgetCentsPerDay,
+    thread.grant.budgetResetsAt,
+    new Date(),
+  );
 
   return (
     <KeyboardAvoidingView
@@ -376,6 +494,27 @@ export function WispThreadScreen({ route }: Props): React.JSX.Element {
           <Text style={[type.body, { color: theme.textHi, marginTop: spacing[2] }]}>
             {threadSummaryCopy(thread.summary)}
           </Text>
+          {liveLine ? (
+            <Text testID="wisp-thread-live" style={[type.meta, { color: theme.brand, marginTop: spacing[3] }]}>
+              {liveLine}
+            </Text>
+          ) : null}
+          {spendCopy ? (
+            <Text
+              testID="wisp-thread-spend"
+              style={[
+                type.meta,
+                {
+                  marginTop: spacing[3],
+                  color:
+                    spend?.level === 'exhausted' ? theme.deny : spend?.level === 'warn' ? theme.warning : theme.textMd,
+                },
+              ]}
+            >
+              {spendCopy}
+              {spend?.level === 'exhausted' ? ' · Wisp is sending a digest only until the reset.' : ''}
+            </Text>
+          ) : null}
           {banner ? (
             <Text testID="wisp-thread-banner" style={[type.meta, { color: theme.warning, marginTop: spacing[3] }]}>
               {banner}
@@ -450,6 +589,7 @@ export function WispThreadScreen({ route }: Props): React.JSX.Element {
           void runConcernAction(() => dismissWispConcern(sheetConcern.id, params.grantId), 'Dismissed.')
         }
         onReviewApproval={(intentId) => void openApproval(intentId)}
+        onFeedback={(useful, note) => sheetConcern && void onFeedback(sheetConcern.id, useful, note)}
       />
     </KeyboardAvoidingView>
   );
