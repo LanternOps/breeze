@@ -84,6 +84,7 @@ import { aiOperatorTasks } from '../../db/schema/aiOperatorTasks';
 import { aiOperatorTaskSteps } from '../../db/schema/aiOperatorTaskGraph';
 import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import type { RecipeDefinition } from './recipes/types';
+import { TicketMergedError } from '../ticketMerge/errors';
 
 const recipe = identityOffboardingRecipe as unknown as RecipeDefinition<never>;
 const ORG = '00000000-0000-4000-8000-0000000000aa';
@@ -542,6 +543,16 @@ describe('advanceManualWork', () => {
     }));
     await advanceManualWork(args('manual_work', mwCp()));
     expect(h.ensureManualWorkItems).toHaveBeenCalledTimes(1);
+    expect(h.settle).not.toHaveBeenCalled();
+  });
+
+  it('a merged-tombstone refusal (#8972 W1) is rethrown for the coordinator retry, never settled', async () => {
+    // The merge re-pointed the task's ticket target to the survivor, so the
+    // retry's fresh read lands there; settling would fail the task for a race.
+    h.selectQueue = [[], [{ id: CONTACT_TARGET }]];
+    h.readManualWork.mockResolvedValue([row(0, { stepState: 'running', checklistItemId: null, itemLabel: null })]);
+    h.ensureManualWorkItems.mockRejectedValue(new TicketMergedError('t', 'survivor-1'));
+    await expect(advanceManualWork(args('manual_work', mwCp()))).rejects.toBeInstanceOf(TicketMergedError);
     expect(h.settle).not.toHaveBeenCalled();
   });
 

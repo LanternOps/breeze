@@ -30,6 +30,7 @@ vi.mock('./stepService', () => ({
 }));
 vi.mock('../ticketRowLock', () => ({ lockTicketForWrite: (...a: unknown[]) => h.lockTicketForWrite(...a) }));
 
+import { TicketMergedError } from '../ticketMerge/errors';
 import { clipLabel, ensureManualWorkItems, nextOpenManualItem, type ManualWorkRow } from './manualWork';
 import type { IdentityManualWorkItem } from './recipes/identityOffboarding';
 
@@ -139,6 +140,18 @@ describe('ensureManualWorkItems', () => {
     const r = await ensureManualWorkItems(f.dbh, task, items('A', 'B', 'C'));
     expect(r.itemIds).toEqual(['item-1', 'i1', 'item-2']);
     expect(h.openStep.mock.calls.map((c) => c[1].attemptOrdinal)).toEqual([0, 2]);
+  });
+
+  it('REFUSES a merged tombstone under the lock (#8972 W1) — no item, no step row', async () => {
+    // ensureTaskTicket read the target unlocked; a merge that commits before
+    // the lock re-points the target, so the coordinator's retry lands on the survivor.
+    h.lockTicketForWrite.mockResolvedValueOnce({ id: 'ticket-1', orgId: ORG, mergedIntoTicketId: 'survivor-1' });
+    const f = fakeDb(new Map());
+    f.setTask('task-A');
+    await expect(ensureManualWorkItems(f.dbh, task, items('Collect laptop'))).rejects.toBeInstanceOf(TicketMergedError);
+    expect(h.lockTicketForWrite).toHaveBeenCalledWith(f.dbh, 'ticket-1');
+    expect(f.inserts).toEqual([]);
+    expect(h.openStep).not.toHaveBeenCalled();
   });
 
   it('refuses more than 64 items before writing anything', async () => {
