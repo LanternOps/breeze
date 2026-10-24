@@ -781,7 +781,7 @@ describe('checkAgentReleaseAuthority', () => {
     const ceiling = (o: Record<string, unknown> = {}) => ({
       grantId: 'g1', revisionId: 'r1', partnerId: 'partner-1', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true,
       orgIds: new Set(['org-1']), siteIds: null, permissionKeys: new Set(['*:*']), toolAllowlist: null,
-      deniedTools: new Set(['manage_ai_agents']), status: 'active', ...o,
+      deniedTools: new Set(['manage_ai_agents']), orgTerms: new Map(), status: 'active', ...o,
     });
 
     it('a run with no grant never calls resolveGrantCeiling', async () => {

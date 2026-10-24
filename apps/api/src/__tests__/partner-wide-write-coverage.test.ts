@@ -68,6 +68,11 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // (pause/expire) or lifts a pause it set itself; the caller-facing
   // create/refresh/revoke/settings gates live in services/wisp/grants.ts.
   'services/wisp/grantLifecycle.ts': 'worker/system path: only ever TIGHTENS a grant (pause/expire) or restores a pause it caused itself; the caller-facing create/refresh/revoke gates live in services/wisp/grants.ts',
+  // Wisp W04 (#9910): a wisp_threads row is the conversation state of ONE
+  // grant, not partner-wide configuration pushed into every org.
+  'services/wisp/concerns.ts': 'Wisp W05a triage facts (wisp_concerns / wisp_concern_recipients): per-subject concerns and per-grant recipient state, not partner-wide config; every write runs in system context on ids the caller already authorised (grant-owner routes, chat tools under auth.wispGrant after assertWithinCeiling, the assessment finalizer)',
+  'services/wisp/watches.ts': 'Wisp W05a standing checks (wisp_watches): one grant\'s own rows, not partner-wide config; createWatch runs assertWithinCeiling and stamps grant/owner from the ceiling, deleteWatch is keyed by the ceiling\'s grant, the scheduler functions run in system context',
+  'services/wisp/threads.ts': 'per-grant conversation state (one row per wisp_grants id), not partner-wide config; writes run in system context on ids the caller already authorised (validateWispGrantForSession / the grant-owner thread routes), and setThreadFocus is keyed by the ceiling\'s own grant + partner after assertWithinCeiling',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
   // `network_check` monitor definition — the compiler is its only writer, and

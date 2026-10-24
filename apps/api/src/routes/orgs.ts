@@ -27,6 +27,7 @@ import { ORG_SLUG_UNIQUE_INDEX } from '../db/schema/orgs';
 import { psaConnections } from '../db/schema/integrations';
 import { authMiddleware, requireMfa, requirePermission, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { markPermissionGate } from '../middleware/permissionGate';
+import { wispEnabled } from '../config/env';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
 import {
@@ -1057,7 +1058,13 @@ orgRoutes.get('/partners/me', requireScope('partner'), requirePartner, requireOr
   }
 
   // #6111 — a session timeout stored above the 720-minute ceiling reads back clamped.
-  return c.json(withMaskedSettings({ ...partner, settings: clampSessionTimeoutInSettings(partner.settings) }));
+  // wispEnabled (Wisp W03): computed per request, not a column — the web nav gate
+  // for the Wisp memory page, sat beside the platform-granted aiForOfficeEnabled.
+  return c.json(withMaskedSettings({
+    ...partner,
+    settings: clampSessionTimeoutInSettings(partner.settings),
+    wispEnabled: wispEnabled(),
+  }));
 });
 
 // Candidates for the Inbound email card's default-assignee picker. Gated like

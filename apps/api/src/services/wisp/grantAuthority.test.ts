@@ -32,6 +32,7 @@ vi.mock('../unassignedPool/visibility', () => ({
 }));
 
 import {
+  assertToolCallWithinCeiling,
   assertWithinCeiling,
   ceilingSnapshotHash,
   computeLiveHumanTerm,
@@ -47,7 +48,7 @@ import type { WispCeilingSnapshot } from '../../db/schema/wisp';
 const ceiling = (o: Partial<GrantCeiling> = {}): GrantCeiling => ({
   grantId: 'g', revisionId: 'r', partnerId: 'p', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true, status: 'active',
   orgIds: new Set(['org-a']), siteIds: null, permissionKeys: new Set(['devices:read', 'tickets:write']),
-  toolAllowlist: null, deniedTools: new Set([...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]), ...o,
+  toolAllowlist: null, deniedTools: new Set([...AGENT_HUMAN_ONLY_TOOLS, ...AGENT_DENIED_READ_TOOLS.keys()]), orgTerms: new Map(), ...o,
 });
 
 describe('assertWithinCeiling', () => {
@@ -124,7 +125,7 @@ describe('ceilingSnapshotHash / intersectSnapshotWithLive', () => {
   it('intersectSnapshotWithLive never widens any term', () => {
     const out = intersectSnapshotWithLive(
       { version: 1, permissionKeys: ['devices:read', 'tickets:write'], orgIds: ['o1', 'o2'], siteIds: null, toolAllowlist: null, deniedTools: [] },
-      { ok: true, permissionKeys: ['devices:read'], orgIds: ['o2', 'o3'], siteIds: ['s1'], partnerOrgAccess: 'selected' },
+      { ok: true, permissionKeys: ['devices:read'], orgIds: ['o2', 'o3'], siteIds: ['s1'], partnerOrgAccess: 'selected', orgMemberships: [] },
     );
     expect([...out.orgIds]).toEqual(['o2']);
     expect([...out.permissionKeys]).toEqual(['devices:read']);
@@ -133,7 +134,7 @@ describe('ceilingSnapshotHash / intersectSnapshotWithLive', () => {
   it('a demoted wildcard grantor keeps only the concrete keys they still hold', () => {
     const out = intersectSnapshotWithLive(
       { version: 1, permissionKeys: ['*:*'], orgIds: ['o1'], siteIds: null, toolAllowlist: null, deniedTools: [] },
-      { ok: true, permissionKeys: ['devices:read', 'tickets:*'], orgIds: ['o1'], siteIds: null, partnerOrgAccess: 'all' },
+      { ok: true, permissionKeys: ['devices:read', 'tickets:*'], orgIds: ['o1'], siteIds: null, partnerOrgAccess: 'all', orgMemberships: [] },
     );
     expect([...out.permissionKeys].sort()).toEqual(['devices:read', 'tickets:*']);
     expect(out.siteIds).toBeNull();
@@ -141,7 +142,7 @@ describe('ceilingSnapshotHash / intersectSnapshotWithLive', () => {
   it('a live wildcard never widens a concrete snapshot', () => {
     const out = intersectSnapshotWithLive(
       { version: 1, permissionKeys: ['devices:read'], orgIds: ['o1'], siteIds: ['s1', 's2'], toolAllowlist: null, deniedTools: [] },
-      { ok: true, permissionKeys: ['*:*'], orgIds: ['o1'], siteIds: ['s2', 's3'], partnerOrgAccess: 'all' },
+      { ok: true, permissionKeys: ['*:*'], orgIds: ['o1'], siteIds: ['s2', 's3'], partnerOrgAccess: 'all', orgMemberships: [] },
     );
     expect([...out.permissionKeys]).toEqual(['devices:read']);
     expect([...out.siteIds!]).toEqual(['s2']);
@@ -149,17 +150,24 @@ describe('ceilingSnapshotHash / intersectSnapshotWithLive', () => {
   it('crossing wildcards meet on the concrete key (devices:* ∩ *:read = devices:read)', () => {
     const out = intersectSnapshotWithLive(
       { version: 1, permissionKeys: ['devices:*'], orgIds: ['o1'], siteIds: null, toolAllowlist: null, deniedTools: [] },
-      { ok: true, permissionKeys: ['*:read'], orgIds: ['o1'], siteIds: null, partnerOrgAccess: 'all' },
+      { ok: true, permissionKeys: ['*:read'], orgIds: ['o1'], siteIds: null, partnerOrgAccess: 'all', orgMemberships: [] },
     );
     expect([...out.permissionKeys]).toEqual(['devices:read']);
   });
 });
 
-/** One `db.select(...).from(...).where(...).limit(1)` call resolving to `rows`. */
+/**
+ * One `db.select(...)` call resolving to `rows`, whatever the chain
+ * (`.from().where().limit()`, `.from().innerJoin().where()`, ...).
+ */
+function selectChain(rows: unknown[]) {
+  const c: Record<string, unknown> = {};
+  for (const m of ['from', 'innerJoin', 'where', 'limit']) c[m] = () => c;
+  c.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(rows).then(res, rej);
+  return c;
+}
 function queueSelect(rows: unknown[]) {
-  shared.selectMock.mockReturnValueOnce({
-    from: () => ({ where: () => ({ limit: () => Promise.resolve(rows) }) }),
-  } as never);
+  shared.selectMock.mockReturnValueOnce(selectChain(rows) as never);
 }
 
 const PARTNER = 'partner-1';
@@ -171,6 +179,8 @@ const livePerms = (permissions: Array<{ resource: string; action: string }>, ext
 beforeEach(() => {
   vi.clearAllMocks();
   shared.selectMock.mockReset();
+  // A select nobody queued (e.g. the grantor's org memberships) finds no rows.
+  shared.selectMock.mockImplementation(() => selectChain([]) as never);
   shared.wispEnabled.mockReturnValue(true);
 });
 
@@ -212,7 +222,7 @@ describe('computeLiveHumanTerm', () => {
     shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1', 'o2'], partnerOrgAccess: 'all' });
     queueSelect([{ id: 'o1' }, { id: 'o2' }]); // non-Quick-Support filter
     expect(await computeLiveHumanTerm(USER, PARTNER)).toEqual({
-      ok: true, permissionKeys: ['*:*'], orgIds: ['o1', 'o2'], siteIds: ['s1'], partnerOrgAccess: 'all',
+      ok: true, permissionKeys: ['*:*'], orgIds: ['o1', 'o2'], siteIds: ['s1'], partnerOrgAccess: 'all', orgMemberships: [],
     });
     expect(shared.computeAccessibleOrgIds).toHaveBeenCalledWith('partner', PARTNER, null, USER);
   });
@@ -349,5 +359,167 @@ describe('resolveGrantCeiling', () => {
     await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'corrupt' });
     queueSelect([grantRow({ status: 'paused' })]); queueSelect([revisionRow()]);
     await expect(resolveGrantCeiling('g1', 'r1')).rejects.toMatchObject({ kind: 'paused' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Org-axis precedence: the grantor's organization_users rows narrow the
+// ceiling per org (permissions.ts getUserPermissions resolves org first).
+// ---------------------------------------------------------------------------
+
+describe('assertWithinCeiling — per-org terms (organization_users precedence)', () => {
+  const twoOrgs = (o: Partial<GrantCeiling> = {}) => ceiling({
+    orgIds: new Set(['org-a', 'org-b']),
+    permissionKeys: new Set(['devices:read', 'devices:execute']),
+    orgTerms: new Map([['org-a', { permissionKeys: new Set(['devices:read']), siteIds: null }]]),
+    ...o,
+  });
+
+  it('a permission the ceiling holds is refused in an org whose term lacks it and allowed in an org without a term', () => {
+    const c = twoOrgs();
+    expect(() => assertWithinCeiling(c, { permission: 'devices:execute', orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'permission' }));
+    expect(() => assertWithinCeiling(c, { permission: 'devices:execute', orgId: 'org-b' })).not.toThrow();
+    expect(() => assertWithinCeiling(c, { permission: 'devices:read', orgId: 'org-a' })).not.toThrow();
+  });
+
+  it('assertToolCallWithinCeiling applies the org term to every required permission', () => {
+    const c = twoOrgs();
+    expect(() => assertToolCallWithinCeiling(c, { toolName: 'get_device', orgId: 'org-a', siteId: null }, [{ resource: 'devices', action: 'execute' }]))
+      .toThrow(expect.objectContaining({ code: 'permission' }));
+    expect(() => assertToolCallWithinCeiling(c, { toolName: 'get_device', orgId: 'org-b', siteId: null }, [{ resource: 'devices', action: 'execute' }]))
+      .not.toThrow();
+  });
+
+  it('an org term\'s site allowlist binds checks in that org only; an unknown site never widens it', () => {
+    const c = twoOrgs({ orgTerms: new Map([['org-a', { permissionKeys: new Set(['devices:read', 'devices:execute']), siteIds: new Set(['s1']) }]]) });
+    expect(() => assertWithinCeiling(c, { orgId: 'org-a', siteId: 's2' })).toThrow(expect.objectContaining({ code: 'site' }));
+    expect(() => assertWithinCeiling(c, { orgId: 'org-a', siteId: null })).toThrow(expect.objectContaining({ code: 'site' }));
+    expect(() => assertWithinCeiling(c, { orgId: 'org-a', siteId: 's1' })).not.toThrow();
+    expect(() => assertWithinCeiling(c, { orgId: 'org-b', siteId: 's2' })).not.toThrow();
+  });
+
+  it('an org term never relaxes the ceiling-wide site allowlist', () => {
+    const c = twoOrgs({
+      siteIds: new Set(['s1']),
+      orgTerms: new Map([['org-a', { permissionKeys: new Set(['devices:read']), siteIds: new Set(['s1', 's2']) }]]),
+    });
+    expect(() => assertWithinCeiling(c, { orgId: 'org-a', siteId: 's2' })).toThrow(expect.objectContaining({ code: 'site' }));
+  });
+
+  it('an unbound or partner-level permission must hold in EVERY org term (narrowest reading)', () => {
+    const c = twoOrgs();
+    for (const orgId of [undefined, null] as const) {
+      expect(() => assertWithinCeiling(c, { permission: 'devices:execute', orgId }), String(orgId)).toThrow(expect.objectContaining({ code: 'permission' }));
+      expect(() => assertWithinCeiling(c, { permission: 'devices:read', orgId }), String(orgId)).not.toThrow();
+    }
+  });
+
+  it('an org term wider than the ceiling does not widen it', () => {
+    const c = twoOrgs({ orgTerms: new Map([['org-a', { permissionKeys: new Set(['*:*']), siteIds: null }]]) });
+    expect(() => assertWithinCeiling(c, { permission: 'scripts:execute', orgId: 'org-a' })).toThrow(expect.objectContaining({ code: 'permission' }));
+    expect(() => assertWithinCeiling(c, { permission: 'devices:execute', orgId: 'org-a' })).not.toThrow();
+  });
+});
+
+describe('computeLiveHumanTerm / resolveGrantCeiling — org memberships', () => {
+  const SNAPSHOT: WispCeilingSnapshot = {
+    version: 1, permissionKeys: ['devices:read', 'devices:execute', 'tickets:write'], orgIds: ['o1', 'o2', 'o3'],
+    siteIds: null, toolAllowlist: null, deniedTools: [], partnerWide: true,
+  };
+  const grantRow = { id: 'g1', partnerId: PARTNER, orgId: null, grantorUserId: USER, status: 'active', expiresAt: new Date(Date.now() + 86_400_000) };
+  const BROAD = [
+    { resource: 'ai_sessions', action: 'use' }, { resource: 'devices', action: 'read' },
+    { resource: 'devices', action: 'execute' }, { resource: 'tickets', action: 'write' },
+  ];
+
+  /** grant, revision, user, [getUserPermissions], [reach], org filter, memberships, role permissions. */
+  function queueResolve(memberships: unknown[], rolePerms: unknown[], orgAccess: 'all' | 'selected' = 'all') {
+    queueSelect([grantRow]);
+    queueSelect([{ id: 'r1', grantId: 'g1', ceilingSnapshot: SNAPSHOT }]);
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms(BROAD));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1', 'o2', 'o3'], partnerOrgAccess: orgAccess });
+    queueSelect([{ id: 'o1' }, { id: 'o2' }, { id: 'o3' }]);
+    queueSelect(memberships);
+    if (memberships.length > 0) queueSelect(rolePerms);
+  }
+
+  it('computeLiveHumanTerm reports each in-reach org membership with its role keys and sites', async () => {
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms(BROAD));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1', 'o2'], partnerOrgAccess: 'selected' });
+    queueSelect([{ id: 'o1' }, { id: 'o2' }]);
+    queueSelect([{ orgId: 'o1', roleId: 'narrow', siteIds: ['s1'] }]);
+    queueSelect([{ roleId: 'narrow', resource: 'ai_sessions', action: 'use' }, { roleId: 'narrow', resource: 'devices', action: 'read' }]);
+    expect(await computeLiveHumanTerm(USER, PARTNER)).toEqual({
+      ok: true, permissionKeys: ['ai_sessions:use', 'devices:execute', 'devices:read', 'tickets:write'], orgIds: ['o1', 'o2'], siteIds: null,
+      partnerOrgAccess: 'selected',
+      orgMemberships: [{ orgId: 'o1', permissionKeys: ['ai_sessions:use', 'devices:read'], siteIds: ['s1'] }],
+    });
+  });
+
+  it('an org whose membership role lacks ai_sessions:use leaves orgIds; none left → grantor_access_lost', async () => {
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms(BROAD));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: 'selected' });
+    queueSelect([{ id: 'o1' }]);
+    queueSelect([{ orgId: 'o1', roleId: 'readonly', siteIds: null }]);
+    queueSelect([{ roleId: 'readonly', resource: 'devices', action: 'read' }]);
+    expect(await computeLiveHumanTerm(USER, PARTNER)).toEqual({ ok: false, reason: 'grantor_access_lost' });
+  });
+
+  it('a membership with a malformed (non-array) site_ids fails closed to no sites', async () => {
+    queueSelect([{ status: 'active', partnerId: PARTNER }]);
+    shared.getUserPermissions.mockResolvedValueOnce(livePerms(BROAD));
+    shared.computeAccessibleOrgIds.mockResolvedValueOnce({ orgIds: ['o1'], partnerOrgAccess: 'selected' });
+    queueSelect([{ id: 'o1' }]);
+    queueSelect([{ orgId: 'o1', roleId: 'r', siteIds: 'garbage' }]);
+    queueSelect([{ roleId: 'r', resource: '*', action: '*' }]);
+    const live = await computeLiveHumanTerm(USER, PARTNER);
+    expect(live.ok && live.orgMemberships).toEqual([{ orgId: 'o1', permissionKeys: ['*:*'], siteIds: [] }]);
+  });
+
+  it('resolveGrantCeiling builds a per-org term (role keys ∩ ceiling, sites) and drops an org without ai_sessions:use', async () => {
+    queueResolve(
+      [{ orgId: 'o1', roleId: 'narrow', siteIds: ['s1'] }, { orgId: 'o2', roleId: 'noai', siteIds: null }],
+      [
+        { roleId: 'narrow', resource: 'ai_sessions', action: 'use' }, { roleId: 'narrow', resource: 'devices', action: 'read' },
+        { roleId: 'noai', resource: 'devices', action: '*' },
+      ],
+    );
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect([...c.orgIds].sort()).toEqual(['o1', 'o3']);
+    expect([...c.orgTerms.keys()]).toEqual(['o1']);
+    expect([...c.orgTerms.get('o1')!.permissionKeys]).toEqual(['devices:read']);
+    expect([...c.orgTerms.get('o1')!.siteIds!]).toEqual(['s1']);
+    // The org the human cannot use AI in is outside the ceiling ...
+    expect(() => assertWithinCeiling(c, { orgId: 'o2' })).toThrow(expect.objectContaining({ code: 'org' }));
+    // ... devices:execute is refused in o1, allowed in o3 (no membership: partner role governs).
+    expect(() => assertWithinCeiling(c, { orgId: 'o1', siteId: 's1', permission: 'devices:execute' })).toThrow(expect.objectContaining({ code: 'permission' }));
+    expect(() => assertWithinCeiling(c, { orgId: 'o3', permission: 'devices:execute' })).not.toThrow();
+    // A dropped org means the grantor no longer reaches the whole partner: no partner-level subjects.
+    expect(c.partnerWide).toBe(false);
+  });
+
+  it('an org role WIDER than the partner role does not widen the ceiling in that org', async () => {
+    queueResolve([{ orgId: 'o1', roleId: 'admin', siteIds: null }], [{ roleId: 'admin', resource: '*', action: '*' }]);
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect([...c.orgTerms.get('o1')!.permissionKeys].sort()).toEqual(['devices:execute', 'devices:read', 'tickets:write']);
+    expect(() => assertWithinCeiling(c, { orgId: 'o1', permission: 'scripts:execute' })).toThrow(expect.objectContaining({ code: 'permission' }));
+    expect(c.orgTerms.get('o1')!.siteIds).toBeNull();
+    expect(c.partnerWide).toBe(true);
+  });
+
+  it('two membership rows for one org intersect (fail closed, never the wider row)', async () => {
+    queueResolve(
+      [{ orgId: 'o1', roleId: 'wide', siteIds: null }, { orgId: 'o1', roleId: 'narrow', siteIds: ['s1'] }],
+      [
+        { roleId: 'wide', resource: '*', action: '*' },
+        { roleId: 'narrow', resource: 'ai_sessions', action: 'use' }, { roleId: 'narrow', resource: 'devices', action: 'read' },
+      ],
+    );
+    const c = await resolveGrantCeiling('g1', 'r1');
+    expect([...c.orgTerms.get('o1')!.permissionKeys]).toEqual(['devices:read']);
+    expect([...c.orgTerms.get('o1')!.siteIds!]).toEqual(['s1']);
   });
 });

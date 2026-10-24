@@ -117,6 +117,14 @@ export const aiSessions = pgTable('ai_sessions', {
   // NULL (continued_from_session_id), DEFERRABLE INITIALLY IMMEDIATE, and a
   // not-self CHECK — declared in 2026-11-29-100200-ai-sessions-continued-from.sql.
   continuedFromSessionId: uuid('continued_from_session_id'),
+  // Wisp W04 (#9910): the delegation grant + the revision this session was
+  // created under (both-or-none CHECK ai_sessions_wisp_grant_pair_chk). The FK
+  // (wisp_grant_revision_id, wisp_grant_id) -> wisp_grant_revisions(id,
+  // grant_id) ON DELETE SET NULL is SQL-only (same rule as agent_id) —
+  // declared in 2027-01-04-110200-wisp-threads.sql. Server-owned: written only
+  // by createSession, never from a request body.
+  wispGrantId: uuid('wisp_grant_id'),
+  wispGrantRevisionId: uuid('wisp_grant_revision_id'),
 }, (table) => ({
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   topologySiteIdx: index('ai_sessions_topology_site_idx').on(table.topologySiteId, table.orgId).where(sql`${table.topologySiteId} IS NOT NULL`),

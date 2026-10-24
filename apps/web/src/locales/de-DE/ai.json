@@ -555,5 +555,128 @@
   },
   "buyCredits": {
     "link": "Credits kaufen"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Wisp aktivieren",
+      "turningOn": "Wisp wird aktiviert…"
+    },
+    "locked": {
+      "why": "Wisp ist in Pro und höheren Tarifen verfügbar."
+    },
+    "modal": {
+      "title": "Wisp aktivieren",
+      "refreshTitle": "Wisp-Berechtigung erneuern",
+      "scopeLabel": "Wisp kann arbeiten für",
+      "scopeOrg": "Diese Organisation",
+      "scopePartner": "Alle Organisationen",
+      "explain": "Wisp arbeitet im Rahmen Ihrer eigenen Berechtigungen. Bestätigen Sie Ihre Identität, um fortzufahren.",
+      "code": "Authentifizierungscode",
+      "passkey": "Sie bestätigen mit Ihrem Passkey.",
+      "noFactor": "Wisp benötigt einen Passkey oder eine Authenticator-App. Richten Sie zuerst einen in Ihrem Profil ein.",
+      "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
+      "confirm": "Bestätigen",
+      "cancel": "Abbrechen",
+      "stepUpUnavailable": "Ihr Faktor konnte nicht verifiziert werden. Versuchen Sie es erneut.",
+      "reverify": "Ihre Zugriffsrechte haben sich während der Bestätigung geändert. Geben Sie einen neuen Code ein, um fortzufahren.",
+      "invalidCode": "Dieser Code wurde nicht akzeptiert. Versuchen Sie es erneut."
+    },
+    "header": {
+      "scopeAll": "Alle Organisationen",
+      "status": {
+        "active": "Aktiv",
+        "paused": "Pausiert",
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
+      },
+      "refresh": "Berechtigung erneuern",
+      "revoke": "Wisp deaktivieren",
+      "revokeConfirm": "Wisp für diesen Bereich deaktivieren? Offene Threads bleiben lesbar.",
+      "widening": "Sie dürfen mehr, als diese Berechtigung erlaubt – erneuern Sie sie, damit Wisp Schritt halten kann."
+    },
+    "settings": {
+      "title": "Budget und Check-in",
+      "budget": "Tagesbudget (¢)",
+      "tick": "Check-in alle (Minuten)",
+      "save": "Speichern"
+    },
+    "focus": {
+      "label": "Arbeitet an",
+      "none": "Kein Kundenfokus",
+      "pick": "Auf einen Kunden fokussieren…",
+      "clear": "Fokus aufheben"
+    },
+    "attachments": {
+      "title": "An diesen Thread angehängt",
+      "drop": "E-Mail-Thread, .eml oder CSV hier ablegen oder Text einfügen",
+      "paste": "Text einfügen",
+      "label": "Bezeichnung",
+      "add": "Anhängen",
+      "empty": "Noch nichts angehängt",
+      "expires": "Läuft ab am {{date}}",
+      "limits": "Bis zu 20 Dateien, je 5 MB, nur Text",
+      "focusRequired": "Wählen Sie vor dem Anhängen einen Kundenfokus",
+      "loadFailed": "Anhänge konnten nicht geladen werden"
+    },
+    "toast": {
+      "on": "Wisp ist aktiviert",
+      "onFailed": "Wisp konnte nicht aktiviert werden",
+      "off": "Wisp ist deaktiviert",
+      "offFailed": "Wisp konnte nicht deaktiviert werden",
+      "refreshed": "Berechtigung erneuert",
+      "refreshFailed": "Die Berechtigung konnte nicht erneuert werden",
+      "settingsSaved": "Wisp-Einstellungen gespeichert",
+      "settingsFailed": "Wisp-Einstellungen konnten nicht gespeichert werden",
+      "focusSet": "Wisp arbeitet jetzt für {{org}}",
+      "focusCleared": "Kundenfokus aufgehoben",
+      "focusFailed": "Der Fokus konnte nicht geändert werden",
+      "attached": "An den Thread angehängt",
+      "attachFailed": "Anhängen fehlgeschlagen",
+      "attachTooLarge": "Diese Datei ist größer als 5 MB",
+      "attachUnsupported": "Es können nur Textdateien angehängt werden",
+      "threadFailed": "Wisp ist aktiv, aber der Thread konnte nicht geöffnet werden. Aktivieren Sie Wisp erneut, um ihn wieder zu öffnen."
+    }
+  },
+  "wispConcerns": {
+    "title": "Anliegen",
+    "empty": "Im Moment ist bei Wisp nichts auf dem Radar.",
+    "snooze": "Zurückstellen",
+    "snoozeOneHour": "1 Stunde",
+    "snoozeTomorrow": "Bis morgen 9:00",
+    "snoozeWeek": "7 Tage",
+    "dismiss": "Verwerfen",
+    "resolve": "Lösen",
+    "resolveOutcomePlaceholder": "Was ist passiert?",
+    "resolveSubmit": "Als gelöst markieren",
+    "snoozed": "Zurückgestellt",
+    "dismissed": "Verworfen",
+    "resolved": "Gelöst",
+    "quietUntil": "ruhig bis {{when}}",
+    "digestOnly": "nur Zusammenfassung",
+    "showAll": "Alle anzeigen",
+    "showLive": "Offene anzeigen",
+    "loadFailed": "Anliegen konnten nicht geladen werden",
+    "actionFailed": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+    "severity": {
+      "high": "Hoch",
+      "medium": "Mittel",
+      "low": "Niedrig",
+      "info": "Hinweis"
+    },
+    "subject": {
+      "ticket": "Supportanfrage",
+      "device": "Gerät",
+      "alert": "Warnung",
+      "org": "Kunde",
+      "integration": "Anbindung",
+      "run": "Ausführung",
+      "task": "Aufgabe",
+      "incident": "Vorfall",
+      "quote": "Angebot",
+      "invoice": "Rechnung",
+      "contract": "Vertrag",
+      "site": "Standort"
+    }
   }
 }

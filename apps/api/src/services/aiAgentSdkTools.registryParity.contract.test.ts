@@ -248,6 +248,10 @@ const ALL_FLAGS_ON = {
   BREEZE_AI_SCRIPT_AUTHORING_ENABLED: 'true',
   FLOWS_ENABLED: 'true',
   DELEGANT_BASE_URL: 'https://delegant.example.com',
+  // Wisp W03 memory tools are declared only when wispEnabled() (all three).
+  IS_HOSTED: 'true',
+  BREEZE_AI_AGENTS_ENABLED: 'true',
+  BREEZE_WISP_ENABLED: 'true',
 };
 
 function declaredOnMainServer(): Set<string> {

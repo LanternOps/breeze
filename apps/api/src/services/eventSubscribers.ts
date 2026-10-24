@@ -236,6 +236,41 @@ export function registerAllEventSubscribers(deps: WebhookFanoutDeps): void {
     handler: handleDnsThreatBlockedEvent,
     retry: { attempts: 3, backoffMs: 30_000 },
   });
+
+  registerEventSubscriber({
+    id: 'wisp-wake',
+    // Wisp W05b Task 9 (#9917). Each event asks for ONE debounced (60 s)
+    // assessment per active grant covering the event's org; the grant events
+    // onboard a new grant / tick a resumed one. Dark when wispEnabled() is
+    // false (the handler returns first thing). An assessment run's own
+    // ai.agent.run.* event never wakes Wisp again (no self-wake).
+    //
+    // Lazy for the same worker-closure reason as the subscribers above:
+    // wisp/wake.ts reaches grantAuthority and the BullMQ queue.
+    eventTypes: [
+      'alert.triggered',
+      'alert.resolved',
+      'ticket.sla_breached',
+      'ticket.stale',
+      'ticket.status_changed',
+      'monitoring.check_failed',
+      'integration.health_opened',
+      'anomaly.incident_opened',
+      'vulnerability.critical_detected',
+      'edr.detection_detected',
+      'ai.agent.run.completed',
+      'ai.agent.run.failed',
+      'ai.operator.task.finished',
+      'ai.intent.decided',
+      'wisp.grant.created',
+      'wisp.grant.resumed',
+    ],
+    handler: async (event: BreezeEvent) => {
+      const { handleWispWakeEvent } = await import('./wisp/wake');
+      return handleWispWakeEvent(event);
+    },
+    retry: { attempts: 3, backoffMs: 30_000 },
+  });
 }
 
 /** Test-only: allow a fresh test run to call registerAllEventSubscribers again. */

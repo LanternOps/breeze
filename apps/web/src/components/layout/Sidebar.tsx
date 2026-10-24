@@ -702,6 +702,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  const [wispEnabled, setWispEnabled] = useState(false);
   // #5216 W01 — the server kill switch, read from /config through the shared
   // features store (the same one registration/aiOperatorTasks use).
   const autopayEnabled = useAutopayEnabled();
@@ -757,6 +758,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         return r.json() as Promise<{
           name?: string;
           aiForOfficeEnabled?: boolean;
+          wispEnabled?: boolean;
           serviceManagementMode?: ServiceManagementMode;
           settings?: { branding?: { logoUrl?: string } };
         }>;
@@ -766,6 +768,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
         setBrandName(data.name ?? null);
         setBrandLogoUrl(data.settings?.branding?.logoUrl ?? null);
         setAiForOfficeEnabled(data.aiForOfficeEnabled === true);
+        setWispEnabled(data.wispEnabled === true);
         // Fail OPEN on anything unexpected: an older API that does not send the
         // field, or a value this build does not know, falls back to `native`
         // rather than withdrawing a module the partner is paying for. A failed
@@ -939,6 +942,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       flowsEnabled,
       preAssignmentEnabled,
       aiForOfficeEnabled,
+      wispEnabled,
       serviceManagementMode,
       canManagePartnerWide,
     });

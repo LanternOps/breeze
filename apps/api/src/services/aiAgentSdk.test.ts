@@ -33,7 +33,11 @@ vi.mock('./aiSessionLiveAuthority', () => ({
 // Mocks
 // ============================================
 
+const finalizeMock = vi.hoisted(() => vi.fn(async (_id: string) => ({ updated: false })));
+vi.mock('./wisp/threadSummary', () => ({ finalizeWispSessionSummary: finalizeMock }));
+
 vi.mock('../db', () => ({
+  runAfterDbContextCommit: vi.fn((_label: string, work: () => unknown) => { void work(); }),
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -640,6 +644,41 @@ describe('runPreFlightChecks', () => {
       expect(result.error).toContain('24h');
     }
     expect(db.update).toHaveBeenCalled();
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+  });
+
+  it('a rejected thread-summary finalize does not change the expiry result, and is captured + logged', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockGetSession.mockResolvedValue(makeSession({ createdAt, lastActivityAt: new Date() }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('24h');
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('a rejected finalize on the INACTIVITY (2h idle) branch is captured + logged and keeps the expiry result', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockGetSession.mockResolvedValue(makeSession({ lastActivityAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('idle summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('inactivity') });
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
   });
 
   // --- Idle timeout ---
@@ -658,6 +697,7 @@ describe('runPreFlightChecks', () => {
       expect(result.error).toContain('inactivity');
     }
     expect(db.update).toHaveBeenCalled();
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
   });
 
   // --- Input sanitization ---
@@ -4150,6 +4190,53 @@ describe('Task 2: plan index advances only once the step is authorized', () => {
   // must also be re-proved by revalidateApprovedIntentForRelease before the
   // step counts as run. Winning the CAS but failing revalidation must not
   // advance the plan.
+  it('a Wisp release refusal surfaces its own reason, not the generic revalidation copy (W04 Review Focus 2)', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-wisp-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-wisp-revalidate-fail', approvalRequestIds: ['appr-wisp-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+      ok: false,
+      errorCode: 'wisp_grant_inactive',
+      details: { wispRefusal: 'inactive', reason: 'Wisp is paused for this grant.', grantId: 'g-1', aiSessionId: 's-1' },
+    });
+    const result = await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' });
+    expect(result).toEqual({ allowed: false, error: 'Wisp is paused for this grant.' });
+  });
+
+  it('a non-Wisp revalidation failure never surfaces details.reason', async () => {
+    vi.mocked(checkGuardrails).mockReturnValue({
+      allowed: true,
+      tier: 3,
+      requiresApproval: true,
+      description: 'Execute command',
+    } as any);
+    mockInsertReturning({ id: 'exec-nonwisp-revalidate-fail' });
+    mockCreateActionIntent.mockResolvedValue(
+      makeIntentSnapshot({ id: 'intent-nonwisp-revalidate-fail', approvalRequestIds: ['appr-nonwisp-revalidate-fail'] }),
+    );
+    mockWaitForIntentDecision.mockResolvedValue('approved');
+    mockTransitionIntent.mockResolvedValue(true);
+    mockRevalidateApprovedIntentForRelease.mockResolvedValue({
+      ok: false,
+      errorCode: 'actor_invalid',
+      details: { reason: 'internal detail that must stay private' },
+    });
+    const result = await createSessionPreToolUse(makeActiveSession())('execute_command', { command: 'whoami' });
+    expect(result).toEqual({
+      allowed: false,
+      error: 'Authorization for this action could no longer be verified; it was not executed.',
+    });
+  });
+
   it('does NOT advance when the release CAS is won but revalidation fails', async () => {
     vi.mocked(checkGuardrails).mockReturnValue({
       allowed: true,

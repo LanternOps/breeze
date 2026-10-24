@@ -195,10 +195,13 @@ function exemptByPattern(file: string): boolean {
 
 /** Cannot reach a parked device, or must (removal and retention). */
 const EXEMPT: Record<string, string> = {
+  'services/wisp/concernTools.ts': 'Wisp W05a raise_concern (#9911): one existence check (id, org_id) for a device the user named, AFTER assertWithinCeiling — the org must be in GrantCeiling.orgIds, which already excludes hidden orgs (notHiddenOrgType in grantAuthority), so a parked device never matches; selects no targets and runs nothing',
+  'services/wisp/readiness.ts': 'Wisp readiness inventory (#9917): per-org "can Wisp watch X here" booleans for the orgs of a grant ceiling (hidden orgs already out); joins devices only to map a device-level patch-policy assignment to its org; selects no targets',
   'services/wisp/grantAuthority.ts': 'Wisp delegation ceiling (#9908): computes which orgs a grant may reach and only NARROWS it (hidden orgs out of the live reach); selects no devices or targets',
   'services/backupRestoreIntegrity.ts': 'reinstall reattach (#8318 §5.4): reads the ONE device that took a snapshot, to date the snapshot against its install incarnation; selects no targets',
   'services/deviceInstallBoundary/index.ts': 'reinstall reattach (#8318 §5): locks the ONE device row a reattach confirm names (a reattach target is never parked); selects no targets',
-  'services/yaraScanRefs.ts': 'YARA rule-set refs (#6263 W03a): looks up the ONE device (by id) of a scan the caller already created; selects no targets, and a security_scan to a parked device is refused by command delivery',
+  'services/commandDelivery.ts': 'claim-time install-script gate (#6958): reads the agent version of the ONE device an already-claimed software_install belongs to; selects no targets, and a command to a parked device is refused by command delivery',
+  'services/yaraScanRefs.ts':'YARA rule-set refs (#6263 W03a): looks up the ONE device (by id) of a scan the caller already created; selects no targets, and a security_scan to a parked device is refused by command delivery',
   'services/endpointMessaging/chat.ts': 'request path (#8743): opens/messages ONE device the caller named and reached under RLS + the site axis; selects no targets, and chat_open/chat_message to a parked device is refused by command delivery',
   'services/endpointMessaging/chatReads.ts': 'read model (#8743): conversations and messages of one device or one conversation the caller already reaches; selects no targets',
   'services/endpointMessaging/retract.ts': 'request path (#8742): retracts the live deliveries of ONE existing message by id in the caller\'s RLS context; selects no new targets, and a retract_message queued to a parked device is refused by command delivery',

@@ -37,8 +37,10 @@ import {
   wispCeilingSnapshotSchema,
   type LiveHumanTerm,
 } from './grantAuthority';
-import { EntitlementResolutionError } from '../entitlements';
+import { EntitlementResolutionError, getEntitlements } from '../entitlements';
 import { loadWispEntitlement } from './wispEntitlementLimits';
+// budget.ts imports only types from this module, so this is not a runtime cycle.
+import { WISP_BUDGET_DEFAULT_BY_PLAN } from './budget';
 
 export type { WispGrantStatus } from '../../db/schema/wisp';
 
@@ -99,7 +101,6 @@ export type GrantSettingsBounds = { budgetCentsPerDayMax: number; minFloorTickMi
 const DEFAULT_SETTINGS_BOUNDS: GrantSettingsBounds = { budgetCentsPerDayMax: 5000, minFloorTickMinutes: 15 };
 const MAX_FLOOR_TICK_MINUTES = 240;
 const GRANT_LIFETIME_MS = 90 * 24 * 60 * 60 * 1000;
-const DEFAULT_BUDGET_CENTS_PER_DAY = 200;
 const DEFAULT_FLOOR_TICK_MINUTES = 30;
 const ONE_LIVE_PER_SCOPE_INDEX = 'wisp_grants_one_live_per_scope_uq';
 
@@ -260,6 +261,23 @@ export async function resolveMaxGrants(partnerId: string): Promise<number | null
   return entitlement.limits?.maxGrants ?? null;
 }
 
+/**
+ * Spec §16 plan default for a new grant's `budget_cents_per_day` (W05). Same
+ * failure mapping as resolveMaxGrants: unresolvable → entitlement_check_failed,
+ * any other error propagates. Called right after resolveMaxGrants, so the
+ * resolver's 60 s cache answers it without a second DB read.
+ */
+async function resolvePlanBudgetDefault(partnerId: string): Promise<number> {
+  try {
+    return WISP_BUDGET_DEFAULT_BY_PLAN[(await getEntitlements(partnerId)).plan];
+  } catch (err) {
+    if (err instanceof EntitlementResolutionError) {
+      throw new WispGrantError('entitlement_check_failed', 'Entitlement check temporarily unavailable.');
+    }
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // caller-facing
 // ---------------------------------------------------------------------------
@@ -294,6 +312,7 @@ export async function createGrant(input: { auth: AuthContext; scope: WispGrantSc
     const active = Number(row?.count ?? 0);
     if (active >= maxGrants) throw new GrantLimitReachedError(scope.partnerId, maxGrants, active);
   }
+  const budgetCentsPerDay = await resolvePlanBudgetDefault(scope.partnerId);
 
   const live = liveOrThrow(await computeLiveHumanTerm(auth.user.id, scope.partnerId));
   const snapshot = buildGrantSnapshot(live, scope);
@@ -312,7 +331,7 @@ export async function createGrant(input: { auth: AuthContext; scope: WispGrantSc
           currentRevisionId: null,
           status: 'active',
           expiresAt: new Date(Date.now() + GRANT_LIFETIME_MS),
-          budgetCentsPerDay: DEFAULT_BUDGET_CENTS_PER_DAY,
+          budgetCentsPerDay,
           floorTickMinutes: DEFAULT_FLOOR_TICK_MINUTES,
         })
         .returning();

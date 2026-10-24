@@ -6,6 +6,7 @@ import { loadTopologyFlags } from '../services/topology/flags';
 import { captureException } from '../services/sentry';
 import { retryableTopologyTransaction } from '../services/topology/transactionRetry';
 import { runTopologyBootstrapPass, TOPOLOGY_BOOTSTRAP_INTERVAL_MS } from './topologyBootstrapPass';
+import { createTopologySiteBackoff, TOPOLOGY_SITE_BACKOFF } from './topologySiteBackoff';
 
 export const TOPOLOGY_REPAIR_INTERVAL_MS = 2000;
 const SITE_BATCH = 25;
@@ -14,6 +15,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let activeDrain: Promise<void> | null = null;
 let lastAlertAt = 0;
 let lastBootstrapAt = 0;
+const backoff = createTopologySiteBackoff(TOPOLOGY_SITE_BACKOFF);
 
 export { retryableTopologyTransaction };
 
@@ -32,6 +34,7 @@ export async function runTopologyRepairTick(): Promise<void> {
     LIMIT ${SITE_BATCH}
   `), 'topology repair candidates'));
   for (const row of sites) {
+    if (!backoff.ready(row)) continue;
     const scope = { orgId: row.org_id, siteId: row.site_id };
     if (row.oldest && new Date(row.oldest).getTime() < Date.now() - 15 * 60_000 && Date.now() - lastAlertAt > 5 * 60_000) {
       lastAlertAt = Date.now();
@@ -48,6 +51,7 @@ export async function runTopologyRepairTick(): Promise<void> {
           await drainTopologyOutbox(scope, { batchSize: EVENT_BATCH });
           await pruneDeliveredTopologyOutbox(scope);
         }, 'topology outbox replay'));
+        backoff.succeeded(row);
         break;
       } catch (error) {
         if (retryableTopologyTransaction(error) && attempt < 2) {
@@ -56,16 +60,17 @@ export async function runTopologyRepairTick(): Promise<void> {
         }
         // Keep the full accepted event for repair. Never acknowledge a failed
         // canonical/layout transaction; safe error metadata carries no payload.
+        const retryInMs = backoff.failed(row);
         await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
           WITH rotated AS (
             UPDATE topology_site_state SET updated_at=now()
             WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid RETURNING site_id
           )
           UPDATE topology_change_outbox SET attempt_count=attempt_count+1,last_attempt_at=now(),
-            next_attempt_at=now()+interval '2 seconds',last_error='replay_failed',updated_at=now()
+            next_attempt_at=now()+${retryInMs}::int*interval '1 millisecond',last_error='replay_failed',updated_at=now()
           WHERE id=(SELECT id FROM topology_change_outbox WHERE org_id=${scope.orgId}::uuid AND site_id=${scope.siteId}::uuid AND delivered_at IS NULL ORDER BY source_revision LIMIT 1)
         `), 'topology outbox retry evidence'));
-        captureException(error);
+        captureException(error, undefined, { worker: 'topologyOutbox' });
         break;
       }
     }
@@ -102,4 +107,5 @@ export async function shutdownTopologyOutboxWorker(): Promise<void> {
   if (timer) { clearInterval(timer); timer = null; }
   await activeDrain;
   lastBootstrapAt = 0;
+  backoff.clear();
 }

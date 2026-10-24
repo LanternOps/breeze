@@ -228,6 +228,18 @@ export type EventType =
   | 'ai.agent.circuit.opened'
   // #4388 — an org crossed an AI budget rung; org-level, no device/site.
   | 'ai.budget.threshold_crossed'
+  // Wisp W05 (#9911). Published OUTSIDE any DB context, after the writing
+  // transaction committed. `ai.intent.decided`: an action intent reached a
+  // decision (approved | rejected | expired | cancelled), payload
+  // { intentId, orgId, toolName, decision, requestingAgentRunId, grantId }.
+  // `ai.operator.task.finished`: an operator task reached completed | partial
+  // | handed_off | failed, payload { taskId, orgId, state, outcome, grantId }.
+  // `ticket.stale`: a ticket crossed the staleness threshold with no update,
+  // payload { ticketId, orgId, staleHours, updatedAt }; published with a
+  // deterministic eventId so a re-scan collapses to one logical event.
+  | 'ai.intent.decided'
+  | 'ai.operator.task.finished'
+  | 'ticket.stale'
   // Wave 2 (#3823). Addressed to ONE user, never broadcast — see
   // publishUserEvent, which deliberately does not use the ordinary publish
   // path. Two segments so it stays subscribable under EVENT_TYPE_RE.
@@ -741,6 +753,10 @@ export const EVENT_TYPES = {
   AI_AGENT_CIRCUIT_OPENED: 'ai.agent.circuit.opened' as const,
   // #4388
   AI_BUDGET_THRESHOLD_CROSSED: 'ai.budget.threshold_crossed' as const,
+  // Wisp W05 (#9911)
+  AI_INTENT_DECIDED: 'ai.intent.decided' as const,
+  AI_OPERATOR_TASK_FINISHED: 'ai.operator.task.finished' as const,
+  TICKET_STALE: 'ticket.stale' as const,
   // Wave 2 (#3823). Addressed to one user via publishUserEvent — never
   // broadcast, never written to the stream or the global channel.
   NOTIFICATION_CREATED: 'notification.created' as const,

@@ -143,6 +143,11 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
   // increment the streak. Added BY HAND, same as `patch` above — the
   // per-profile row in agentCircuit.test.ts is the guard.
   'analysis',
+  // Wisp W05: an assessment that reports `needs_attention` is doing its job
+  // (raising concerns), not failing, and it executes nothing itself
+  // (`maxActionsPerRun: 0`; every write is an outcome tool → intent). Added
+  // BY HAND; assessmentProfile.test.ts's classifyTerminal case is the guard.
+  'assessment',
 ]);
 
 /**

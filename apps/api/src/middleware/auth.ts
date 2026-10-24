@@ -154,6 +154,21 @@ export interface AuthContext {
    */
   aiWriteDefaultOrgId?: string;
 
+  /**
+   * Wisp (w00 A2, A23): the delegation grant this call runs under. Defined and
+   * read by W03 (the memory tools refuse without it, `services/wisp/memoryTools.ts`);
+   * populated by W04 (`narrowAuthToCeiling`, a chat turn under a grant) and by
+   * W05/W02 (an agent run carrying a grant id). Absent everywhere else, so
+   * no other caller can reach grant-scoped memory.
+   *
+   * - `grantId` / `grantRevisionId` pin the ceiling (`resolveGrantCeiling`).
+   * - `sessionId` is the `ai_sessions.id` of the calling turn (W04 stamps
+   *   `session.breezeSessionId`; W05 stamps `run.sessionId ?? null`). Optional
+   *   so populators without a session compile unchanged; `remember` records it
+   *   as the block's `sourceSessionId` and the model can never supply it.
+   */
+  wispGrant?: { grantId: string; grantRevisionId: string; sessionId?: string | null };
+
   user: {
     id: string;
     email: string;

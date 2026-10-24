@@ -17,6 +17,7 @@ import {
   withAuthDbAccessContext,
 } from '../middleware/auth';
 import { aiScriptAuthoringEnabled } from '../config/env';
+import { WispSessionError } from '../services/wisp/sessionGrant';
 import { loadScriptProposalReviewerDisagreements } from '../services/scriptProposals/metrics';
 import {
   createSession,
@@ -164,7 +165,10 @@ const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   deviceId: z.string().guid().optional(),
   // Let the caller pick the approval posture (e.g. plan-first for open-ended
   // device tasks). Defaults to the column default (per_step) when omitted.
-  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional()
+  approvalMode: z.enum(['per_step', 'action_plan', 'auto_approve', 'hybrid_plan']).optional(),
+  // Wisp W04: open the session under the caller's own delegation grant.
+  // Validated (flag, ownership, status, entitlement, scope) in createSession.
+  wispGrantId: z.string().guid().optional()
 });
 
 /**
@@ -254,6 +258,7 @@ aiRoutes.post(
       });
       return c.json(session, 201);
     } catch (err) {
+      if (err instanceof WispSessionError) return c.json({ error: err.message, code: err.code }, err.status);
       if (err instanceof LlmNotConfiguredError) return c.json(AI_NOT_CONFIGURED_BODY, 503);
       if (err instanceof InvalidSessionModelError) return c.json({ error: err.message, code: err.code }, 400);
       if (err instanceof LlmUnavailableError) return c.json(llmUnavailableBody(err), 503);
@@ -1132,6 +1137,13 @@ aiRoutes.post(
       // own system transaction never runs beside a held request connection.
       await abortTopology();
       await releaseUnusedTurn(dbSession.orgId, budgetDispatch);
+      // Wisp W04: getOrCreate refuses a grant-pinned session it cannot gate
+      // (services/wisp/chatCeiling.ts WispSessionUnavailableError) — a typed
+      // 409, never a 500 and never an ungated turn. Matched on `code` so this
+      // route does not load the Wisp graph.
+      if (dispatch.kind === 'failed' && (dispatch.error as { code?: unknown } | null)?.code === 'wisp_session_unavailable') {
+        return c.json({ error: (dispatch.error as Error).message, code: 'wisp_session_unavailable' }, 409);
+      }
       if (dispatch.kind === 'failed') throw dispatch.error;
       return dispatch.response;
     }

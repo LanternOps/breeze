@@ -182,7 +182,8 @@
     "billingAutopay": "Paiements automatiques",
     "endpointMessages": "Messages aux terminaux",
     "securityDetectionRules": "Règles de détection",
-    "settingsPlan": "Forfait et fonctionnalités"
+    "settingsPlan": "Forfait et fonctionnalités",
+    "settingsWispMemory": "Mémoire de Wisp"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -269,6 +270,10 @@
       "plan": {
         "title": "Forfait et fonctionnalités",
         "description": "Votre forfait, les fonctionnalités qu’il comprend et la provenance de chacune."
+      },
+      "wispMemory": {
+        "title": "Mémoire de Wisp",
+        "description": "Examiner, confirmer et retirer ce que Wisp retient."
       }
     },
     "groups": {

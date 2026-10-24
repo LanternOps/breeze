@@ -15,9 +15,20 @@ import { EntitlementResolutionError, hasEntitlement } from '../services/entitlem
  * `code`: `entitlement_required` (403, upsell) vs `entitlement_check_failed`
  * (503 + Retry-After, transient — the resolver is past its staleness ceiling).
  *
- * No route uses this in W1; Wisp W04 is the first consumer.
+ * Wisp W04 is the first consumer (every `/api/v1/wisp/*` route).
+ *
+ * `options.partnerIdOf` replaces the default `auth.partnerId` lookup for a
+ * router whose callers may be organization-scoped: an organization session
+ * carries `partnerId: null` by design (auth.ts), so the router names the
+ * org's OWNING partner instead (W03's memory routes). It must derive the id
+ * from the verified auth context only — never from client input — and return
+ * null when it cannot, which fails closed exactly like a partner-less caller.
  */
-export function requireEntitlement(key: EntitlementKey): MiddlewareHandler {
+export type RequireEntitlementOptions = {
+  partnerIdOf?: (c: Context) => Promise<string | null>;
+};
+
+export function requireEntitlement(key: EntitlementKey, options: RequireEntitlementOptions = {}): MiddlewareHandler {
   const label = ENTITLEMENTS[key].label;
   return async (c: Context, next: Next) => {
     const auth = c.get('auth') as { partnerId?: string | null } | undefined;
@@ -25,7 +36,7 @@ export function requireEntitlement(key: EntitlementKey): MiddlewareHandler {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
-    const partnerId = auth.partnerId ?? null;
+    const partnerId = options.partnerIdOf ? await options.partnerIdOf(c) : auth.partnerId ?? null;
     if (!partnerId) {
       return c.json({ code: 'entitlement_required', error: label, featureKey: key }, 403);
     }

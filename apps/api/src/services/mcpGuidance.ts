@@ -5,7 +5,7 @@ import { buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
 // module stays decoupled from the heavy tool registry — mcpGuidancePromptTools
 // .test.ts asserts it stays within tolerance of the live count and fails loudly
 // if the two drift apart.
-export const MCP_TOOL_COUNT_APPROX = 250;
+export const MCP_TOOL_COUNT_APPROX = 260;
 
 /** Server instructions; approval wording follows the action-intents flag (D-B34). */
 export function buildMcpServerInstructions(intentsEnabled: boolean): string {

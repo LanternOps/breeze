@@ -106,6 +106,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'ai-usage', name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, group: 'ai', partnerScopeOnly: true },
   { id: 'ai-models', name: 'AI Providers & Models', labelKey: 'nav.aiProvidersModels', href: '/settings/partner#ai-provider', icon: Cpu, group: 'ai', partnerScopeOnly: true, requiredPermission: { resource: 'billing', action: 'manage' } },
   { id: 'ai-script-authoring', name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, group: 'ai', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+  { id: 'wisp-memory', name: 'Wisp memory', labelKey: card('wispMemory', 'title'), descriptionKey: card('wispMemory', 'description'), href: '/settings/wisp-memory', icon: BrainCircuit, group: 'ai', requiresWisp: true, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
   { id: 'tool-sources', name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, group: 'ai', requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
 
   // Integrations

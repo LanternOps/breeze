@@ -7072,5 +7072,59 @@
     },
     "loadError": "Impossible de charger votre forfait.",
     "retry": "Réessayer"
+  },
+  "wispMemory": {
+    "title": "Mémoire de Wisp",
+    "description": "Examinez ce que Wisp a retenu pour vous, un client ou toute votre équipe, puis confirmez-le ou retirez-le.",
+    "tabs": {
+      "mine": "Ma mémoire",
+      "org": "Client",
+      "partner": "Tous les clients",
+      "users": "Techniciens"
+    },
+    "empty": "Aucun bloc de mémoire pour le moment.",
+    "loading": "Chargement de la mémoire…",
+    "loadFailed": "Échec du chargement de la mémoire.",
+    "retry": "Réessayer",
+    "columns": {
+      "subject": "Sujet",
+      "type": "Type",
+      "status": "Statut",
+      "confidence": "Confiance",
+      "updated": "Mis à jour",
+      "actions": "Actions"
+    },
+    "statusValue": {
+      "unconfirmed": "Non confirmé",
+      "confirmed": "Confirmé",
+      "retracted": "Retiré"
+    },
+    "type": {
+      "preference": "Préférence",
+      "standing_instruction": "Consigne permanente",
+      "fact": "Fait",
+      "decision": "Décision",
+      "concern_outcome": "Résultat d’une préoccupation",
+      "work_summary": "Résumé du travail"
+    },
+    "confidenceValue": {
+      "low": "Faible",
+      "medium": "Moyenne",
+      "high": "Élevée"
+    },
+    "confirm": "Confirmer",
+    "retract": "Retirer",
+    "confirmed": "Mémoire confirmée.",
+    "retracted": "Mémoire retirée.",
+    "confirmFailed": "Échec de la confirmation de la mémoire.",
+    "retractFailed": "Échec du retrait de la mémoire.",
+    "fromConversation": "Depuis la conversation",
+    "pickOrg": "Sélectionner un client",
+    "pickUser": "Sélectionner un technicien",
+    "pickPrompt": "Faites un choix ci-dessus pour voir sa mémoire.",
+    "showContent": "Afficher le contenu",
+    "hideContent": "Masquer le contenu",
+    "conversationUnavailable": "Cette conversation n'est plus disponible.",
+    "usersLoadFailed": "Impossible de charger les techniciens."
   }
 }
