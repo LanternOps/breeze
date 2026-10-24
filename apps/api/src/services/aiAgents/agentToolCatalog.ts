@@ -189,6 +189,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- security_response (tone: high) ----
   security_scan: 'security_response',
+  // #6268: mapped because every registered tool must be; unreachable for
+  // agents through AGENT_HUMAN_ONLY_TOOLS (Gate B 10).
+  ioc_hunt: 'security_response',
   s1_isolate_device: 'security_response',
   s1_threat_action: 'security_response',
   get_s1_status: 'security_response',

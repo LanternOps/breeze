@@ -12,6 +12,19 @@ import { z } from 'zod';
 import { isIP } from 'node:net';
 import { MEMORY_BLOCK_TYPES, MEMORY_CONFIDENCES, MEMORY_OWNER_KINDS } from '@breeze/shared';
 import {
+  SECURITY_SWEEP_MAX_PATHS,
+  SECURITY_SWEEP_SCAN_TYPES,
+  SECURITY_SWEEP_TTL_HOURS_MAX,
+  YARA_IOC_KINDS,
+  YARA_IOC_LABEL_MAX,
+  YARA_IOC_MAX_PER_BATCH,
+  YARA_IOC_VALUE_MAX_CHARS,
+  YARA_MAX_RULE_SETS_PER_POLICY,
+  YARA_RULE_SEVERITIES,
+  securityScanPathSchema,
+  securitySweepScopeSchema,
+} from '@breeze/shared';
+import {
   createWatchInputSchema,
   listConcernsToolSchema,
   raiseConcernChatSchema,
@@ -88,6 +101,46 @@ export const deliveryToolShape = {
 };
 const routingSource = z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']);
 const routingPriority = z.enum(['low', 'normal', 'high', 'urgent']);
+/**
+ * ioc_hunt (#6263 W05, #6268): one flat shape over seven actions; the
+ * per-action required keys are enforced by the superRefine on
+ * `toolInputSchemas.ioc_hunt`. Shared with the SDK `tool()` declaration so the
+ * advertised and enforced shapes cannot drift.
+ */
+export const IOC_HUNT_ACTION_VALUES = ['list_rule_sets', 'preview_sweep', 'list_sweeps', 'sweep_status', 'sweep', 'cancel_sweep', 'import_iocs'] as const;
+export const iocHuntShape = {
+  action: z.enum(IOC_HUNT_ACTION_VALUES),
+  orgId: uuid.optional(),
+  ruleSetIds: z.array(uuid).min(1).max(YARA_MAX_RULE_SETS_PER_POLICY).optional(),
+  scope: securitySweepScopeSchema.optional(),
+  scanType: z.enum(SECURITY_SWEEP_SCAN_TYPES).optional(),
+  paths: z.array(securityScanPathSchema).min(1).max(SECURITY_SWEEP_MAX_PATHS).optional(),
+  ttlHours: z.number().int().min(1).max(SECURITY_SWEEP_TTL_HOURS_MAX).optional(),
+  expectedDeviceCount: z.number().int().min(0).optional(),
+  previewDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  sweepId: uuid.optional(),
+  ruleSetId: uuid.optional(),
+  iocs: z
+    .array(z.object({ kind: z.enum(YARA_IOC_KINDS), value: z.string().min(1).max(YARA_IOC_VALUE_MAX_CHARS) }).strict())
+    .min(1)
+    .max(YARA_IOC_MAX_PER_BATCH)
+    .optional(),
+  label: z.string().trim().min(1).max(YARA_IOC_LABEL_MAX).optional(),
+  severity: z.enum(YARA_RULE_SEVERITIES).optional(),
+  page: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+};
+
+const IOC_HUNT_REQUIRED: Record<(typeof IOC_HUNT_ACTION_VALUES)[number], readonly (keyof typeof iocHuntShape)[]> = {
+  list_rule_sets: [],
+  preview_sweep: ['orgId', 'ruleSetIds', 'scope', 'scanType'],
+  list_sweeps: [],
+  sweep_status: ['sweepId'],
+  sweep: ['orgId', 'ruleSetIds', 'scope', 'scanType', 'expectedDeviceCount', 'previewDigest'],
+  cancel_sweep: ['sweepId'],
+  import_iocs: ['ruleSetId', 'iocs', 'label'],
+};
+
 /** manage_ticket_routing_rules (#8883 W5): flat, nullable-where-clearable shape; the handler validates per action. */
 export const ticketRoutingManageShape = {
   action: z.enum(['create', 'update', 'reorder', 'delete']),
@@ -1855,6 +1908,11 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   }),
   manage_ticket_routing_rules: z.object(ticketRoutingManageShape),
+  ioc_hunt: z.object(iocHuntShape).superRefine((data, ctx) => {
+    for (const key of IOC_HUNT_REQUIRED[data.action]) {
+      if (data[key] === undefined) ctx.addIssue({ code: 'custom', path: [key], message: `${key} is required for ${data.action}` });
+    }
+  }),
 
   export_dataset: z.object({
     dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),

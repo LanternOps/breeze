@@ -174,6 +174,9 @@ export const TIER2_ACTIONS: Record<string, string[]> = {
   // scan downgraded from Tier 3 (2026-07-20): discovery, not mutation —
   // consistent with approve/decline/defer here. install/rollback stay Tier 3.
   manage_patches: ['approve', 'decline', 'defer', 'bulk_approve', 'scan'],
+  // #6268: stopping an IOC sweep is the safe direction (queued scans are
+  // cancelled, running ones finish), so it auto-executes with an audit row.
+  ioc_hunt: ['cancel_sweep'],
   manage_groups: ['add_devices', 'remove_devices'],
   // manage_maintenance_windows mutations disabled — managed via configuration policies
   manage_automations: ['enable', 'disable'],
@@ -287,6 +290,8 @@ export const TIER1_READ_ACTIONS: Record<string, readonly string[]> = {
   // changes no device state. Reclassifying it is W04's call (spec W01-D3).
   disk_cleanup: ['preview'],
   generate_report: ['list', 'data', 'history', 'download'],
+  // #6268 (base Tier 1): reads over PR A's sweep services; preview writes nothing.
+  ioc_hunt: ['list_rule_sets', 'preview_sweep', 'list_sweeps', 'sweep_status'],
   get_dns_security: ['allowed', 'blocked', 'redirected'],
   get_service_monitoring_status: ['status', 'summary', 'results', 'known_services'],
   manage_alert_rules: ['list_rules', 'get_rule', 'test_rule', 'list_channels', 'alert_summary'],
@@ -358,6 +363,10 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // through configuration policies"), so the gate costs no live workflow —
   // it is here so re-enabling the handler cannot silently reopen the hole.
   manage_patches: ['install', 'rollback', 'setup_auto_approval'],
+  // #6268: a fleet IOC sweep (detect-only, single org; scope input-aware in
+  // resolveApprovalScope) and an IOC rule import (publishes a rule set every
+  // policy using it then scans with).
+  ioc_hunt: ['sweep', 'import_iocs'],
   manage_groups: ['create', 'update', 'delete'],
   // create/update/delete added W01-D3 (#6755): handler-disabled today
   // (aiToolsFleet.ts:2041, managed via configuration policies), same pattern
@@ -606,6 +615,10 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
 // near the top of this file so every existing importer keeps working.
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
+  // #6268 Gate B 8: an IOC import authors detection rules (a set with
+  // auto-quarantine on is refused in the handler, under the set lock).
+  // ioc_hunt:sweep is NOT here: its scope is input-aware (expectedDeviceCount).
+  ioc_hunt: ['import_iocs'],
   // Supervised, not four_eyes: same class as a public ticket reply. list/get
   // resolve to Tier 1 (TIER1_ACTIONS) and never reach tier 3.
   send_endpoint_message: ['send'],
@@ -745,6 +758,9 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
  */
 export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'manage_organizations:update_org',
+  // #6268 Gate B 6: supervised up to IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD
+  // expected devices, four_eyes above it or when the count is missing.
+  'ioc_hunt:sweep',
   // A customer-visible ticket reply is a different class of act from an
   // internal note — the note stays at the tool's base Tier 2 (auto-execute
   // + audit), but an AI-composed comment that will be shown to the ticket
@@ -846,6 +862,8 @@ export const TIER_DECIDING_INPUT_KEYS: Readonly<Record<string, readonly string[]
   run_script: ['proposalId'],
   // resolveApprovalScope: update_org with a `status` key is four-eyes.
   manage_organizations: ['status'],
+  // resolveApprovalScope: sweep above the four-eyes device threshold (or with no count) is four-eyes.
+  ioc_hunt: ['expectedDeviceCount'],
 };
 
 /** The action selector, the input-aware keys, and the live-read flag, in that order. */
@@ -1248,6 +1266,17 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     remove: { resource: 'devices', action: 'execute' },
     restore: { resource: 'devices', action: 'execute' },
     vulnerabilities: { resource: 'devices', action: 'read' },
+  },
+  // #6268: mirrors routes/security/sweeps.ts (reads devices:read, create/cancel
+  // devices:execute) and routes/security/yaraIocImport.ts (devices:write).
+  ioc_hunt: {
+    list_rule_sets: { resource: 'devices', action: 'read' },
+    preview_sweep: { resource: 'devices', action: 'read' },
+    list_sweeps: { resource: 'devices', action: 'read' },
+    sweep_status: { resource: 'devices', action: 'read' },
+    sweep: { resource: 'devices', action: 'execute' },
+    cancel_sweep: { resource: 'devices', action: 'execute' },
+    import_iocs: { resource: 'devices', action: 'write' },
   },
   // Stored snapshot read. `refresh: true` scans the device live and requires
   // devices:execute instead (LIVE_READ_INPUT_FLAGS; POST
