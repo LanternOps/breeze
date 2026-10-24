@@ -38,6 +38,8 @@ vi.mock('../wisp/concerns', () => concerns);
 
 const deliverInApp = vi.hoisted(() => vi.fn());
 vi.mock('../wisp/deliver', () => ({ deliverInApp }));
+const notifyUser = vi.hoisted(() => vi.fn());
+vi.mock('../wisp/notifyUser', () => ({ notifyUser }));
 
 const createActionIntent = vi.hoisted(() => vi.fn());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
@@ -144,6 +146,7 @@ beforeEach(() => {
   concerns.recordNudge.mockResolvedValue({ nudgeCount: 1, nextEligibleNudgeAt: new Date() });
   concerns.getConcernForCeiling.mockResolvedValue(concern());
   deliverInApp.mockResolvedValue({ created: true });
+  notifyUser.mockResolvedValue({ inApp: true, pushed: 1, suppressed: null });
   createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
   rollupPartnerPicture.mockResolvedValue('picture');
   renderReadinessSummary.mockReturnValue("I can watch tickets here. I can't watch backups (no backup integration configured).");
@@ -224,37 +227,51 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       answeredAt: null, digestOnly: false, feedback: null, ...o,
     });
 
-    it('a fresh concern: deliverInApp to the grantor with the exact dedupeKey and link, then recordNudge', async () => {
+    it('a fresh concern: notifyUser to the grantor with the mobile deep link and the card (W06 T4); no direct deliverInApp / recordNudge', async () => {
       concerns.getConcernForCeiling.mockResolvedValue(concern({ severity: 'high', approvalIntentId: 'intent-9', recipient: recipient({ nudgeCount: 1 }) }));
       await finalizeAssessment(makeCtx(), makeResult(calls({ nudges: [NUDGE] })));
-      expect(deliverInApp).toHaveBeenCalledTimes(1);
-      expect(deliverInApp).toHaveBeenCalledWith({
+      expect(notifyUser).toHaveBeenCalledTimes(1);
+      expect(notifyUser).toHaveBeenCalledWith({
         userId: GRANTOR,
-        orgId: ORG_ID,
+        category: 'wisp_nudge',
+        kind: 'concern',
         title: `Wisp: ${concern().summary.slice(0, 80)}`,
         body: NUDGE.nextStep,
-        link: `/ai/wisp/thread/${THREAD_ID}#concern=${C1}`,
-        priority: 'high',
+        deepLink: `breeze://wisp/thread/${THREAD_ID}?concern=${C1}`,
         concernId: C1,
         approvalIntentId: 'intent-9',
         threadId: THREAD_ID,
         grantId: GRANT_ID,
-        dedupeKey: `wisp-nudge-${C1}-${GRANT_ID}-1`,
       });
-      expect(concerns.recordNudge).toHaveBeenCalledWith(C1, GRANT_ID, expect.any(Date));
-      expect(deliverInApp.mock.invocationCallOrder[0]!).toBeLessThan(concerns.recordNudge.mock.invocationCallOrder[0]!);
+      // notifyUser writes the in-app row through deliverInApp and counts the nudge itself.
+      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(concerns.recordNudge).not.toHaveBeenCalled();
+    });
+
+    it('notifyUser reporting backoff with nothing delivered → nudge_backoff', async () => {
+      notifyUser.mockResolvedValue({ inApp: false, pushed: 0, suppressed: 'backoff' });
+      const result = makeResult(calls({ nudges: [NUDGE] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(result.outcome.assessmentSkipped).toEqual(['nudge_backoff']);
+    });
+
+    it('a throttled push with the in-app row written is not reported as skipped', async () => {
+      notifyUser.mockResolvedValue({ inApp: true, pushed: 0, suppressed: 'backoff' });
+      const result = makeResult(calls({ nudges: [NUDGE] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(result.outcome.assessmentSkipped).toBeUndefined();
     });
 
     it('grantorUserId (from the assessment context) is the nudge recipient, never the model or the ceiling', async () => {
       await finalizeAssessment(makeCtx(), makeResult(calls({ nudges: [NUDGE] })));
-      expect(deliverInApp.mock.calls[0]![0]).toMatchObject({ userId: GRANTOR, priority: 'normal', dedupeKey: `wisp-nudge-${C1}-${GRANT_ID}-0` });
+      expect(notifyUser.mock.calls[0]![0]).toMatchObject({ userId: GRANTOR });
     });
 
     it('nextEligibleNudgeAt in the future → no delivery, nudge_backoff', async () => {
       concerns.getConcernForCeiling.mockResolvedValue(concern({ recipient: recipient({ nudgeCount: 1, nextEligibleNudgeAt: new Date(Date.now() + 60_000).toISOString() }) }));
       const result = makeResult(calls({ nudges: [NUDGE] }));
       await finalizeAssessment(makeCtx(), result);
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(concerns.recordNudge).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['nudge_backoff']);
     });
@@ -263,7 +280,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       concerns.getConcernForCeiling.mockResolvedValue(concern({ recipient: recipient({ nudgeCount: 2, digestOnly: true }) }));
       const result = makeResult(calls({ nudges: [NUDGE] }));
       await finalizeAssessment(makeCtx(), result);
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['nudge_digest_only']);
     });
 
@@ -273,7 +290,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       }));
       const result = makeResult(calls({ nudges: [NUDGE] }));
       await finalizeAssessment(makeCtx(), result);
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['nudge_snoozed']);
     });
 
@@ -281,7 +298,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       concerns.getConcernForCeiling.mockResolvedValue(concern({ recipient: recipient({ dismissedAt: '2026-10-21T10:00:00.000Z' }) }));
       const result = makeResult(calls({ nudges: [NUDGE] }));
       await finalizeAssessment(makeCtx(), result);
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['nudge_dismissed']);
     });
 
@@ -289,7 +306,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       concerns.getConcernForCeiling.mockResolvedValue(concern({ orgId: OTHER_ORG }));
       const result = makeResult(calls({ nudges: [NUDGE] }));
       await finalizeAssessment(makeCtx(), result);
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['concern_not_in_org']);
     });
 
@@ -299,13 +316,13 @@ describe('finalizeAssessment (Wisp W05b)', () => {
         proposedActions: [{ toolName: 'run_script', input: { scriptId: 's-1' }, reason: 'clear the spooler', concernId: C1 }],
       }));
       await finalizeAssessment(makeCtx(), result);
-      expect(createActionIntent.mock.invocationCallOrder[0]!).toBeLessThan(deliverInApp.mock.invocationCallOrder[0]!);
-      expect(deliverInApp.mock.calls[0]![0]).toMatchObject({ approvalIntentId: 'intent-1' });
+      expect(createActionIntent.mock.invocationCallOrder[0]!).toBeLessThan(notifyUser.mock.invocationCallOrder[0]!);
+      expect(notifyUser.mock.calls[0]![0]).toMatchObject({ approvalIntentId: 'intent-1' });
     });
 
     it('a model-supplied approvalIntentId the run did not mint is not trusted', async () => {
       await finalizeAssessment(makeCtx(), makeResult(calls({ nudges: [{ ...NUDGE, approvalIntentId: '00000000-0000-4000-8000-0000000000ee' }] })));
-      expect(deliverInApp.mock.calls[0]![0]).toMatchObject({ approvalIntentId: null });
+      expect(notifyUser.mock.calls[0]![0]).toMatchObject({ approvalIntentId: null });
     });
   });
 
@@ -389,8 +406,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     concerns.upsertConcern.mockRejectedValue(new Error('db down'));
     const result = makeResult(calls({ concernsRaised: [RAISE], nudges: [{ concernId: C1, nextStep: 'Call them' }] }));
     expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
-    expect(deliverInApp).toHaveBeenCalledTimes(1);
-    expect(concerns.recordNudge).toHaveBeenCalledTimes(1);
+    expect(notifyUser).toHaveBeenCalledTimes(1);
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
   });
 
@@ -410,7 +426,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(await finalizeAssessment(bookkeepingCtx(), result)).toBeNull();
       expect(concerns.upsertConcern).not.toHaveBeenCalled();
       expect(concerns.updateConcern).not.toHaveBeenCalled();
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['grant_inactive', 'grant_inactive']);
       // The rollup resolves its own ceiling and fails closed.
       expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
@@ -443,7 +459,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(await finalizeAssessment(bookkeepingCtx(), result)).toBe('assessment_partially_applied');
       expect(concerns.upsertConcern).not.toHaveBeenCalled();
       expect(concerns.updateConcern).not.toHaveBeenCalled();
-      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['ceiling_read_failed', 'ceiling_read_failed']);
     });
 
@@ -471,8 +487,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     it('nudge', async () => {
       const result = makeResult(calls({ nudges: [{ concernId: C1, nextStep: 'Call them' }] }));
       await finalizeAssessment(makeCtx(), result);
-      expect(deliverInApp).not.toHaveBeenCalled();
-      expect(concerns.recordNudge).not.toHaveBeenCalled();
+      expect(notifyUser).not.toHaveBeenCalled();
       expect(result.outcome.assessmentSkipped).toEqual(['concern_not_in_org']);
     });
 
@@ -493,15 +508,13 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(concerns.upsertConcern.mock.calls[1]![0]).toMatchObject({ summary: 'second' });
     });
 
-    it('two nudges where the first delivery throws: the second is still delivered and counted', async () => {
-      deliverInApp.mockRejectedValueOnce(new Error('notify down'));
+    it('two nudges where the first delivery throws: the second is still delivered', async () => {
+      notifyUser.mockRejectedValueOnce(new Error('notify down'));
       concerns.getConcernForCeiling.mockImplementation(async (_c: unknown, id: string) => concern({ id }));
       const result = makeResult(calls({ nudges: [{ concernId: C1, nextStep: 'first' }, { concernId: C2, nextStep: 'second' }] }));
       expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
-      expect(deliverInApp).toHaveBeenCalledTimes(2);
-      expect(deliverInApp.mock.calls[1]![0]).toMatchObject({ concernId: C2, body: 'second' });
-      expect(concerns.recordNudge).toHaveBeenCalledTimes(1);
-      expect(concerns.recordNudge).toHaveBeenCalledWith(C2, GRANT_ID, expect.any(Date));
+      expect(notifyUser).toHaveBeenCalledTimes(2);
+      expect(notifyUser.mock.calls[1]![0]).toMatchObject({ concernId: C2, body: 'second' });
     });
   });
 
