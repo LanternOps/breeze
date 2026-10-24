@@ -79,6 +79,10 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
     expect(listFlowEligibleCoreTools().filter((name) => !toolInputSchemas[name])).toEqual([]);
   });
 
+  // recall.orgId / remember.orgId (Wisp W03): authorized at runtime against the delegation
+  // grant's ceiling (assertWithinCeiling — an org outside it throws CeilingViolationError before
+  // any read or write), and both tools refuse outright without auth.wispGrant, which a flow step
+  // never carries. Like every other *.orgId here, not a flow-owned asset reference.
   it('matches the frozen list of id fields left to the tool\'s own runtime authorization', () => {
     expect(unclassifiedIdFields()).toMatchInlineSnapshot(`
       [
@@ -275,7 +279,9 @@ describe('flow-eligible core tools: id-typed inputs are classified', () => {
         "query_devices.siteId",
         "query_psa_status.connectionId",
         "read_artifact.handle",
+        "recall.orgId",
         "remediate_vulnerability.deviceVulnerabilityIds",
+        "remember.orgId",
         "remove_configuration_policy_assignment.assignmentId",
         "reset_monitor_escalation.monitorId",
         "resolve_device_context.contextId",
