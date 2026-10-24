@@ -163,6 +163,11 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/onedrive$/, kind: 'org-or-all' },
   { pattern: /^\/workspace$/, kind: 'org-or-all' },
 
+  // The Sites list and a site's detail (#9794) list/show sites fleet-wide or
+  // in the selected org — not MSP-level settings — so they sit above the
+  // /settings catch-all, which would hide the fleet scope line.
+  { pattern: /^\/settings\/sites(\/[^/]+)?$/, kind: 'org-or-all' },
+
   // --- partner-settings ---
   { pattern: /^\/settings(\/.*)?$/, kind: 'partner-settings' },
   { pattern: /^\/integrations(\/.*)?$/, kind: 'partner-settings' },

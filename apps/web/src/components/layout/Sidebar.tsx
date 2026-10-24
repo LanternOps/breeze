@@ -59,6 +59,7 @@ import {
   Bug,
   Puzzle,
   LayoutGrid,
+  MapPin,
   Cpu,
   TrendingUp,
   BookCheck,
@@ -323,6 +324,7 @@ export const navSections: NavSection[] = [
     // Everything here reads/writes device state, gated on devices:read server-side.
     items: [
       { name: 'Device Groups', labelKey: 'nav.deviceGroups', href: '/devices/groups', icon: LayoutGrid, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Sites', labelKey: 'nav.sites', href: '/settings/sites', icon: MapPin, testId: 'nav-sites', requiredPermission: { resource: 'sites', action: 'read' } },
       // Parked devices waiting for assignment — full partner admins only; the
       // pre-assignment routes also require devices:write and organizations:write.
       { name: 'Unassigned Devices', labelKey: 'nav.unassignedDevices', href: '/devices/unassigned', icon: Inbox, partnerScopeOnly: true, requiresPreAssignment: true, requiresPartnerWideAdmin: true, requiredPermission: { resource: 'devices', action: 'write' }, alsoRequiredPermissions: [{ resource: 'organizations', action: 'write' }] },

@@ -5999,8 +5999,10 @@
   "siteDetailPage": {
     "loading": "Loading site...",
     "backToOrganizations": "Back to organizations",
+    "backToSites": "Back to sites",
     "breadcrumbs": {
       "settings": "Settings",
+      "sites": "Sites",
       "organizations": "Organizations"
     },
     "errors": {
