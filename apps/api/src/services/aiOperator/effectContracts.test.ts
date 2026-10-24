@@ -1,0 +1,692 @@
+/**
+ * Spec §9(a) — the deterministic gate's per-effect contract for
+ * `identity_offboarding` (wave #6171, PR R1c, plan Task 24).
+ *
+ * For every effect in the recipe's CLOSED catalog, against recorded provider
+ * fixtures (`__fixtures__/providers/<toolName>.json`):
+ *
+ *   1. PRE-PROBE SHORT-CIRCUITS. When the pre-probe observes the desired end
+ *      state, NO write is dispatched: an idempotent effect settles `succeeded`
+ *      with `result.noop = true`, a `non_idempotent` one hands off. This is
+ *      what makes replay safe without an idempotency key, which neither Graph
+ *      nor the Directory API offers (spec §6.6).
+ *   2. WRITE IS DISPATCHED when the pre-probe does not observe it, and the
+ *      provider write itself (the headless executor the release worker calls)
+ *      succeeds on the recorded `writeOk` response — and fails, never
+ *      "succeeds", on the recorded refusal.
+ *   3. POST-PROBE IS THE VERIFICATION. A successful write call never implies a
+ *      successful effect (Operator spec §13).
+ *   4. REPLAY IS A NO-OP BY OBSERVATION. Dispatching the same effect twice
+ *      performs the write once; the second pass is property 1.
+ *   5. Each tool declares an idempotency class, and a `non_idempotent` one is
+ *      never auto-retried.
+ *
+ * WHAT IS REAL AND WHAT IS MOCKED. A fixture is only evidence if it is read by
+ * the production code that reads the provider, so:
+ *   - the PROBES are the real ones (`registerAllEffectProbes`, `probeEffect`,
+ *     the Google probes and the M365 control-plane `probeM365Effect`);
+ *   - the DISPATCH half is the real `dispatchPlannedEffect` /
+ *     `verifyDispatchedEffect`; membership, the mint (`createActionIntent`),
+ *     the approver re-proof and the operation-row insert are mocked exactly as
+ *     `effectDispatch.test.ts` mocks them. "Write dispatched" means the mint
+ *     was called; the real-row form of replay is
+ *     `__tests__/integration/aiOperatorEffectDispatchReplay.integration.test.ts`;
+ *   - the WRITE is the real headless executor (`executeGoogleToolHeadless`,
+ *     `executeM365ToolHeadless`) with only the provider boundary mocked: the
+ *     googleapis clients (`googleClient`), the org connection lookup, and the
+ *     M365 control-plane read/write services;
+ *   - the PLANNED EFFECTS come from the real `buildIdentityOffboardingPlan`, so
+ *     the arguments each probe and executor sees are the recipe's, never the
+ *     fixture's.
+ * Every mocked provider call answers ONLY from the fixture phase in play; a
+ * call the fixture does not record throws, and every property asserts that no
+ * probe swallowed such a throw into `unknown` (`captureException` unused). A
+ * fixture that lies about its phase therefore fails here.
+ *
+ * `m365_disable_user` is caller-protected: its executor routes through
+ * `executeProtectedM365Headless`, whose pinned-intent loader
+ * (`aiToolsM365.loadM365MutationContext`) is mocked to a control-plane pin, so
+ * its write response is tested at the `executeM365WriteActionByOrg` boundary.
+ *
+ * GATE MODE. `BREEZE_GATE_SIGNOFF=1` enables the tripwire that fails while any
+ * fixture is still a `reference` shape (deviation G1: a permanently red case
+ * in `test-api` would block the merge queue). `BREEZE_RECORD_PROVIDER_FIXTURES=1`
+ * prints the provider-call capture plan the lab operator records against
+ * (README). Both are read ONLY in this file (envInventory, G8).
+ */
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+
+const GATE_SIGNOFF = process.env.BREEZE_GATE_SIGNOFF === '1';
+const RECORD_CAPTURE_PLAN = process.env.BREEZE_RECORD_PROVIDER_FIXTURES === '1';
+
+// ---------------------------------------------------------------------------
+// The provider boundary: every call answers from the fixture phase in play.
+// ---------------------------------------------------------------------------
+
+const h = vi.hoisted(() => {
+  type World = Record<string, unknown>;
+  const state = {
+    world: null as World | null,
+    phase: '' as string,
+    tool: '' as string,
+    calls: [] as { key: string; args: unknown }[],
+  };
+  class FixtureGapError extends Error {}
+  /** Answer `key` from the current fixture phase; a Google `{ error }` entry throws like googleapis does. */
+  function answer(key: string, args: unknown): unknown {
+    state.calls.push({ key, args });
+    const world = state.world;
+    if (!world || !Object.prototype.hasOwnProperty.call(world, key)) {
+      throw new FixtureGapError(`fixture ${state.tool}.${state.phase} records no response for ${key}`);
+    }
+    const r = world[key] as { error?: { code: number; message: string } };
+    if (r && typeof r === 'object' && 'error' in r && r.error && typeof r.error.code === 'number') {
+      throw Object.assign(new Error(r.error.message), { code: r.error.code, status: r.error.code });
+    }
+    return r;
+  }
+  const g = (key: string) => async (args: unknown) => answer(key, args);
+  return {
+    state,
+    FixtureGapError,
+    answer,
+    directory: {
+      users: { get: g('directory.users.get'), update: g('directory.users.update'), signOut: g('directory.users.signOut') },
+      groups: { list: g('directory.groups.list') },
+      members: { delete: g('directory.members.delete') },
+      mobiledevices: { list: g('directory.mobiledevices.list'), action: g('directory.mobiledevices.action') },
+    },
+    licensing: {
+      licenseAssignments: {
+        listForProduct: g('licensing.licenseAssignments.listForProduct'),
+        delete: g('licensing.licenseAssignments.delete'),
+      },
+    },
+    gmail: {
+      users: {
+        settings: {
+          getVacation: g('gmail.settings.getVacation'),
+          updateVacation: g('gmail.settings.updateVacation'),
+          getAutoForwarding: g('gmail.settings.getAutoForwarding'),
+          updateAutoForwarding: g('gmail.settings.updateAutoForwarding'),
+          forwardingAddresses: {
+            get: g('gmail.settings.forwardingAddresses.get'),
+            create: g('gmail.settings.forwardingAddresses.create'),
+          },
+          delegates: { list: g('gmail.settings.delegates.list'), create: g('gmail.settings.delegates.create') },
+        },
+      },
+    },
+    captureException: vi.fn(),
+    checkPlanEffectMembershipSystem: vi.fn(),
+    createActionIntent: vi.fn(),
+    buildTaskActorAuthContext: vi.fn(async () => ({ user: { id: 'u-approver' } })),
+    appendTaskEvent: vi.fn(),
+    loadM365MutationContext: vi.fn(),
+    inserted: [] as Record<string, unknown>[],
+  };
+});
+
+vi.mock('../googleClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../googleClient')>()),
+  getDirectoryClient: () => h.directory,
+  getLicensingClient: () => h.licensing,
+  getGmailClient: () => h.gmail,
+}));
+vi.mock('../aiToolsGoogle', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../aiToolsGoogle')>()),
+  resolveContextByOrg: async () => ({ conn: { adminEmail: 'admin@customer.example' }, keyJson: '{}' }),
+}));
+vi.mock('../m365ControlPlane/readActionService', () => ({
+  executeM365ReadActionByOrg: async (_orgId: string, action: { type: string }) => h.answer(`read:${action.type}`, action),
+  executeM365ReadAction: vi.fn(),
+}));
+vi.mock('../m365ControlPlane/writeActionService', () => ({
+  executeM365WriteActionByOrg: async (_orgId: string, action: { type: string }) => h.answer(`write:${action.type}`, action),
+}));
+vi.mock('../aiToolsM365', () => ({
+  loadM365MutationContext: h.loadM365MutationContext,
+  m365DisableUserHandler: vi.fn(),
+  m365ResetPasswordHandler: vi.fn(),
+}));
+vi.mock('../sentry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../sentry')>()),
+  captureException: h.captureException,
+}));
+vi.mock('./planApproval', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./planApproval')>()),
+  checkPlanEffectMembershipSystem: h.checkPlanEffectMembershipSystem,
+}));
+vi.mock('../actionIntents/intentService', () => ({
+  createActionIntent: h.createActionIntent,
+  ActionIntentError: class ActionIntentError extends Error {
+    constructor(message: string, public code: string) { super(message); }
+  },
+}));
+vi.mock('../actionIntents/actorContext', () => ({
+  buildTaskActorAuthContext: h.buildTaskActorAuthContext,
+  buildAuthContextForIntent: vi.fn(),
+}));
+vi.mock('./eventService', () => ({ appendTaskEvent: h.appendTaskEvent }));
+vi.mock('../../db', () => ({
+  db: {
+    insert: () => ({
+      values: (v: Record<string, unknown>) => {
+        h.inserted.push(v);
+        return { onConflictDoNothing: () => ({ returning: async () => [{ id: 'op-1' }] }) };
+      },
+    }),
+  },
+  runOutsideDbContext: (fn: () => unknown) => fn(),
+  withDbAccessContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  withSystemDbAccessContext: (fn: () => unknown) => fn(),
+}));
+
+import { writeActionFailureCodeSchema, writeActionResultSchema } from '@breeze/shared/m365';
+import {
+  IDENTITY_OFFBOARDING_EFFECT_TOOLS,
+  IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS,
+  buildIdentityOffboardingPlan,
+  identityOffboardingRecipe,
+} from './recipes/identityOffboarding';
+import type { PlannedEffect } from './recipes/types';
+import { registerAllEffectProbes } from './effectProbes/bootstrap';
+import { isStructurallyUnobservable, listProbedTools, probeEffect } from './effectProbes';
+import { classifyEffectIdempotency, dispatchPlannedEffect, verifyDispatchedEffect } from './effectDispatch';
+import { planEffectOperationKey } from './planApproval';
+import { executeGoogleToolHeadless } from '../googleToolsHeadless';
+import { M365_HEADLESS_ACTIONS, M365ConnectionUnavailableError, executeM365ToolHeadless } from '../m365ToolsHeadless';
+
+registerAllEffectProbes();
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const FIXTURE_DIR = fileURLToPath(new URL('./__fixtures__/providers/', import.meta.url));
+
+const worldSchema = z.record(z.string(), z.unknown());
+const fixtureSchema = z.object({
+  _source: z.string().regex(/^(reference|lab-run-\d{4}-\d{2}-\d{2})$/),
+  _recordedFrom: z.string().min(1),
+  _notes: z.string().optional(),
+  toolName: z.string(),
+  provider: z.enum(['google', 'm365']),
+  preSatisfied: worldSchema.nullable(),
+  /** Why the real probe can never answer `satisfied` before this write. Present iff preSatisfied is null. */
+  preSatisfiedUnreachable: z.string().min(1).optional(),
+  preUnsatisfied: worldSchema,
+  writeOk: worldSchema,
+  postSatisfied: worldSchema,
+  writeRefusal: worldSchema.optional(),
+}).strict().refine((f) => (f.preSatisfied === null) === (f.preSatisfiedUnreachable !== undefined), {
+  message: 'preSatisfiedUnreachable must be given exactly when preSatisfied is null',
+});
+type Fixture = z.infer<typeof fixtureSchema>;
+
+/** readFileSync + JSON.parse, never `import`: the fixture check must not depend on module resolution (G2). */
+function loadFixture(toolName: string): Fixture {
+  const raw = readFileSync(join(FIXTURE_DIR, `${toolName}.json`), 'utf8');
+  const parsed = fixtureSchema.parse(JSON.parse(raw));
+  if (parsed.toolName !== toolName) throw new Error(`${toolName}.json declares toolName ${parsed.toolName}`);
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// The plan: one effect per catalog tool, built by the REAL recipe.
+// ---------------------------------------------------------------------------
+
+/** The synthetic identities every fixture uses (README). */
+const ID = Object.freeze({
+  googleEmail: 'dana@customer.example',
+  googleId: '101',
+  googleGroup: 'all@customer.example',
+  googleProduct: 'Google-Apps',
+  googleSku: '1010020020',
+  destination: 'manager@customer.example',
+  m365Oid: '00000000-0000-4000-8000-0000000a0001',
+  m365Group: '00000000-0000-4000-8000-0000000b0001',
+  m365Sku: '00000000-0000-4000-8000-0000000c0001',
+  m365Device: '00000000-0000-4000-8000-0000000d0001',
+  contactTarget: '00000000-0000-4000-8000-0000000e0001',
+  message: 'Dana has left the organization. Please contact office@customer.example for help.',
+});
+
+const PLAN_INPUT = identityOffboardingRecipe.inputSchema.parse({
+  contactId: '00000000-0000-4000-8000-000000000001',
+  forwardTo: ID.destination,
+  autoReplyMessage: ID.message,
+  effects: {
+    autoReply: true, forwarding: true, mailDelegate: true, removeGroups: true,
+    removeLicenses: true, revokeSessions: true, wipeMobile: true, disableAccount: true,
+  },
+});
+const PLAN_FACTS = {
+  google: {
+    present: true, externalId: ID.googleId, primaryEmail: ID.googleEmail,
+    groups: [{ id: 'g1', email: ID.googleGroup, name: 'All Staff', ownership: 'shared', dynamic: false, roleAssignable: false }],
+    licenses: [{ productId: ID.googleProduct, skuId: ID.googleSku, name: 'Workspace Business Standard' }],
+    mobileDevices: [{ id: 'md1', model: 'Pixel 8', status: 'APPROVED' }],
+  },
+  m365: {
+    present: true, externalId: ID.m365Oid, userPrincipalName: ID.googleEmail,
+    groups: [{ id: ID.m365Group, name: 'Marketing', ownership: 'unknown', dynamic: false, roleAssignable: false }],
+    licenses: [{ skuId: ID.m365Sku, skuPartNumber: 'STANDARDPACK' }],
+    intuneDevices: [{ id: ID.m365Device, deviceName: 'DANA-IPHONE' }],
+  },
+  breeze: { suggestedDevices: [] },
+  flags: [],
+  targets: { contactTargetId: ID.contactTarget, contactLabel: 'Dana Whitfield' },
+  degradedTools: [],
+};
+const PLAN = buildIdentityOffboardingPlan(PLAN_INPUT, PLAN_FACTS);
+const EFFECT_FOR = new Map<string, PlannedEffect>(PLAN.map((e) => [e.toolName, e]));
+
+const NOW = new Date('2026-09-17T10:00:00.000Z');
+const ORG = '00000000-0000-4000-8000-0000000f0001';
+const TASK = { id: '00000000-0000-4000-8000-0000000f00a1', orgId: ORG, attemptOrdinal: 0 };
+const APPROVAL = { id: 'p1', planRevision: 1, approverUserId: 'u-approver' };
+const STEP_KEY = 'effects';
+
+/** Spec §6.6 classes this recipe's gate expects; the code must agree (property 5). */
+const EXPECTED_CLASS: Readonly<Record<string, 'idempotent' | 'idempotent_by_probe' | 'non_idempotent'>> = {
+  google_set_vacation: 'idempotent_by_probe',
+  google_set_forwarding: 'idempotent_by_probe',
+  google_add_mail_delegate: 'idempotent_by_probe',
+  m365_revoke_sessions: 'idempotent_by_probe',
+  m365_set_auto_reply: 'idempotent_by_probe',
+  google_remove_from_group: 'idempotent',
+  google_remove_license: 'idempotent',
+  google_suspend_user: 'idempotent',
+  google_signout: 'idempotent',
+  m365_disable_user: 'idempotent',
+  m365_remove_license: 'idempotent',
+  m365_remove_from_group: 'idempotent',
+  m365_retire_intune_device: 'idempotent',
+  // Unclassified in EFFECT_IDEMPOTENCY, so the strictest default (deviation G9).
+  google_account_wipe_mobile_device: 'non_idempotent',
+};
+
+/**
+ * The provider WRITE call each tool's executor must make, by fixture key. The
+ * test states this, not the fixture: a fixture that recorded a different call
+ * would not make the executor issue it.
+ */
+const WRITE_CALL: Readonly<Record<string, string>> = {
+  google_set_vacation: 'gmail.settings.updateVacation',
+  google_set_forwarding: 'gmail.settings.updateAutoForwarding',
+  google_add_mail_delegate: 'gmail.settings.delegates.create',
+  google_remove_from_group: 'directory.members.delete',
+  google_remove_license: 'licensing.licenseAssignments.delete',
+  google_account_wipe_mobile_device: 'directory.mobiledevices.action',
+  google_signout: 'directory.users.signOut',
+  google_suspend_user: 'directory.users.update',
+  ...Object.fromEntries(Object.entries(M365_HEADLESS_ACTIONS).map(([tool, actionId]) => [tool, `write:${actionId}`])),
+};
+
+/**
+ * Tools whose replay, observing the already-done world, re-requests the same
+ * operation rather than settling noop. Stated here, not derived from the
+ * fixture: three have no pre-write `satisfied` at all, and a retired Intune
+ * device whose record Intune has since DELETED (`graph_not_found`) is post-write
+ * evidence only — before a write a 404 can also mean a wrong id.
+ */
+const REPLAY_REQUESTS_SAME_OPERATION: ReadonlySet<string> = new Set([
+  'google_signout', 'm365_set_auto_reply', 'm365_remove_from_group', 'm365_retire_intune_device',
+]);
+
+// ---------------------------------------------------------------------------
+// Drivers
+// ---------------------------------------------------------------------------
+
+const capturePlan: Record<string, Record<string, string[]>> = {};
+
+function use(fixture: Fixture, phase: 'preSatisfied' | 'preUnsatisfied' | 'writeOk' | 'postSatisfied' | 'writeRefusal'): void {
+  const world = phase === 'preSatisfied' ? fixture.preSatisfied : fixture[phase];
+  if (!world) throw new Error(`fixture ${fixture.toolName} has no ${phase} shape`);
+  h.state.world = world;
+  h.state.phase = phase;
+  h.state.tool = fixture.toolName;
+}
+
+/** Collect the calls made under the current phase, for the capture plan and for assertions. */
+function drainCalls(): { key: string; args: unknown }[] {
+  const calls = h.state.calls.splice(0);
+  const perTool = (capturePlan[h.state.tool] ??= {});
+  const keys = (perTool[h.state.phase] ??= []);
+  for (const c of calls) if (!keys.includes(c.key)) keys.push(c.key);
+  return calls;
+}
+
+function effectFor(toolName: string): PlannedEffect {
+  const e = EFFECT_FOR.get(toolName);
+  if (!e) throw new Error(`the recipe's plan does not contain ${toolName}`);
+  return e;
+}
+
+function dispatch(effect: PlannedEffect) {
+  return dispatchPlannedEffect({ task: TASK, stepKey: STEP_KEY, approval: APPROVAL, effect, partnerId: null, now: NOW });
+}
+
+function verify(effect: PlannedEffect) {
+  return verifyDispatchedEffect({
+    task: TASK, planRevision: APPROVAL.planRevision, effect,
+    idempotencyClass: classifyEffectIdempotency(effect.toolName), effectRequestedAt: NOW,
+  });
+}
+
+function runWrite(effect: PlannedEffect): Promise<string> {
+  const args = effect.canonicalArguments as Record<string, unknown>;
+  return effect.provider === 'google'
+    ? executeGoogleToolHeadless(effect.toolName, args, ORG)
+    : executeM365ToolHeadless(effect.toolName, args, ORG, 'intent-1');
+}
+
+function parsedError(result: string): string | null {
+  try {
+    const v = JSON.parse(result) as { error?: unknown };
+    return typeof v?.error === 'string' ? v.error : null;
+  } catch {
+    return null; // Google success results are prose, not JSON.
+  }
+}
+
+const unobservable = (tool: string) => Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, tool);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.inserted.length = 0;
+  h.state.calls.length = 0;
+  h.state.world = null;
+  h.checkPlanEffectMembershipSystem.mockImplementation(async (input: { toolName: string }) => ({
+    ok: true, approvalId: APPROVAL.id, approverUserId: APPROVAL.approverUserId, approvedAssuranceLevel: 3,
+    planRevision: APPROVAL.planRevision,
+    // The approval row stores the class `proposePlanApproval` derived from this same function.
+    idempotencyClass: classifyEffectIdempotency(input.toolName),
+  }));
+  h.createActionIntent.mockImplementation(async () => ({ id: 'i1', status: 'approved' }));
+  h.loadM365MutationContext.mockImplementation(async () => ({
+    intent: { id: 'intent-1', requestedByUserId: null },
+    ctx: { backend: 'controlPlane', orgId: ORG, connectionId: 'conn-1' },
+    userId: ID.m365Oid,
+  }));
+});
+
+afterAll(() => {
+  if (!RECORD_CAPTURE_PLAN) return;
+  // The lab operator captures exactly these provider responses (README, "Recording").
+  console.log(`[effect-contract capture plan]\n${JSON.stringify(capturePlan, null, 2)}`);
+});
+
+// ---------------------------------------------------------------------------
+// The suite, driven off the catalog constant
+// ---------------------------------------------------------------------------
+
+describe('the catalog drives the suite', () => {
+  it('the recipe plans exactly one effect per catalog tool for the full-catalog facts', () => {
+    expect(PLAN.map((e) => e.toolName).sort()).toEqual([...IDENTITY_OFFBOARDING_EFFECT_TOOLS].sort());
+    expect(IDENTITY_OFFBOARDING_EFFECT_TOOLS.length).toBeGreaterThan(0);
+  });
+
+  it('there is exactly one fixture file per catalog tool, and no orphan', () => {
+    const files = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.json')).sort();
+    expect(files).toEqual([...IDENTITY_OFFBOARDING_EFFECT_TOOLS].map((t) => `${t}.json`).sort());
+  });
+
+  it('every fixture labels its provenance honestly (reference shape or a dated lab run)', () => {
+    for (const tool of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
+      const f = loadFixture(tool);
+      if (f._source === 'reference') expect(f._recordedFrom, tool).toMatch(/^reference: /);
+      else expect(f._recordedFrom, tool).toBe(f._source);
+      expect(f.provider, tool).toBe(effectFor(tool).provider);
+    }
+  });
+});
+
+for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
+  describe(`effect contract: ${toolName}`, () => {
+    it('pre-probe satisfied → dispatches NO write (noop when idempotent, hand-off when not)', async () => {
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+      if (f.preSatisfied === null) {
+        // The fixture claims the probe can never certify this effect before the
+        // write. Prove the claim against the REAL probe with the already-done
+        // world: it must not answer `satisfied`, so the write is never skipped.
+        use(f, 'postSatisfied');
+        const pre = await probeEffect(effect, {
+          orgId: ORG, taskId: TASK.id, planRevision: 1, effectRequestedAt: NOW, phase: 'pre',
+        });
+        drainCalls();
+        expect(pre.state, `${toolName}: ${f.preSatisfiedUnreachable}`).not.toBe('satisfied');
+        expect(h.captureException).not.toHaveBeenCalled();
+        return;
+      }
+      use(f, 'preSatisfied');
+      const out = await dispatch(effect);
+      drainCalls();
+      expect(h.captureException).not.toHaveBeenCalled();
+      expect(h.createActionIntent).not.toHaveBeenCalled();
+      if (classifyEffectIdempotency(toolName) === 'non_idempotent') {
+        expect(out.kind).toBe('handoff');
+        expect(h.inserted).toHaveLength(0);
+      } else {
+        expect(out.kind).toBe('noop');
+        expect(h.inserted).toHaveLength(1);
+        expect(h.inserted[0]).toMatchObject({
+          intentId: null, resultState: 'succeeded', result: expect.objectContaining({ noop: true }),
+          taskStepKey: STEP_KEY,
+        });
+      }
+    });
+
+    it('pre-probe unsatisfied → dispatches the write, and the provider write succeeds on writeOk', async () => {
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+      use(f, 'preUnsatisfied');
+      const out = await dispatch(effect);
+      drainCalls();
+      expect(h.captureException).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ kind: 'dispatching', intentId: 'i1' });
+      expect(h.createActionIntent).toHaveBeenCalledTimes(1);
+      expect(h.createActionIntent.mock.calls[0]![1]).toMatchObject({
+        toolName, input: effect.canonicalArguments,
+        task: { taskId: TASK.id, taskStepKey: STEP_KEY },
+        planApproval: { approvalId: APPROVAL.id, ordinal: effect.ordinal },
+      });
+
+      // The write the release worker performs for this intent.
+      use(f, 'writeOk');
+      const result = await runWrite(effect);
+      const calls = drainCalls();
+      expect(parsedError(result), `${toolName} write returned: ${result}`).toBeNull();
+      expect(calls.filter((c) => c.key === WRITE_CALL[toolName]).length, `${toolName} must issue ${WRITE_CALL[toolName]}`)
+        .toBeGreaterThanOrEqual(1);
+      if (effect.provider === 'm365') {
+        const writes = calls.filter((c) => c.key.startsWith('write:'));
+        expect(writes).toHaveLength(1);
+        expect(writes[0]!.key).toBe(WRITE_CALL[toolName]);
+        // The recorded success is a well-formed executor result.
+        expect(writeActionResultSchema.safeParse((f.writeOk[WRITE_CALL[toolName]!] as { result: unknown }).result).success).toBe(true);
+        if (toolName === 'm365_disable_user') {
+          // Caller-protected: dispatches to the PINNED object id, never by UPN.
+          expect(writes[0]!.args).toMatchObject({ type: 'm365.user.disable', oid: ID.m365Oid });
+        }
+      }
+    });
+
+    it('the provider write fails closed or returns an error on the recorded refusal — never a success', async () => {
+      const f = loadFixture(toolName);
+      if (!f.writeRefusal) return;
+      const effect = effectFor(toolName);
+      use(f, 'writeRefusal');
+      if (effect.provider === 'google') {
+        const result = await runWrite(effect);
+        drainCalls();
+        expect(parsedError(result), `${toolName} refusal returned: ${result}`).not.toBeNull();
+        return;
+      }
+      const refusal = f.writeRefusal[WRITE_CALL[toolName]!] as { ok: false; code: string };
+      expect(refusal.ok).toBe(false);
+      if (refusal.code === 'consent_upgrade_required') {
+        // Refused before any Graph call: fail closed as connection-unavailable.
+        await expect(runWrite(effect)).rejects.toBeInstanceOf(M365ConnectionUnavailableError);
+      } else {
+        expect(writeActionFailureCodeSchema.safeParse(refusal.code).success, refusal.code).toBe(true);
+        const result = await runWrite(effect);
+        expect(parsedError(result), `${toolName} refusal returned: ${result}`).not.toBeNull();
+      }
+      drainCalls();
+    });
+
+    it('post-probe unsatisfied → the effect is NOT verified even though the write returned 200', async () => {
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+      use(f, 'writeOk');
+      expect(parsedError(await runWrite(effect))).toBeNull();
+      drainCalls();
+      // The world did not change: the post-probe sees the pre-write state.
+      use(f, 'preUnsatisfied');
+      const out = await verify(effect);
+      drainCalls();
+      expect(h.captureException).not.toHaveBeenCalled();
+      expect(out.kind).not.toBe('verified');
+      expect(out.kind).toBe(isStructurallyUnobservable(toolName) ? 'handoff' : 'unverified');
+    });
+
+    it('post-probe satisfied → verified (a declared unobservable effect is never verified)', async () => {
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+      use(f, 'postSatisfied');
+      const out = await verify(effect);
+      drainCalls();
+      expect(h.captureException).not.toHaveBeenCalled();
+      if (unobservable(toolName)) {
+        expect(isStructurallyUnobservable(toolName)).toBe(true);
+        expect(out.kind).toBe('handoff');
+      } else {
+        expect(out).toMatchObject({ kind: 'verified' });
+      }
+    });
+
+    it('replay performs the write exactly once', async () => {
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+      use(f, 'preUnsatisfied');
+      expect((await dispatch(effect)).kind).toBe('dispatching');
+      drainCalls();
+      // The write landed; a replayed tick observes the done world.
+      use(f, 'postSatisfied');
+      const second = await dispatch(effect);
+      drainCalls();
+      expect(h.captureException).not.toHaveBeenCalled();
+      const key = planEffectOperationKey({
+        stepKey: STEP_KEY, planRevision: APPROVAL.planRevision, toolName, targetId: effect.targetId, ordinal: effect.ordinal,
+      });
+      if (REPLAY_REQUESTS_SAME_OPERATION.has(toolName)) {
+        // The pre-probe cannot certify the done world before a write, so the
+        // replay re-requests the SAME operation: at-most-once is the permanent
+        // (org, task, operation_key) index `createActionIntent` reserves in,
+        // proven on real rows by aiOperatorEffectDispatchReplay.integration.test.ts.
+        expect(second.kind).toBe('dispatching');
+        const keys = h.createActionIntent.mock.calls.map((c) => (c[1] as { task: { operationKey: string } }).task.operationKey);
+        expect(keys).toEqual([key, key]);
+      } else {
+        expect(second.kind).toBe(classifyEffectIdempotency(toolName) === 'non_idempotent' ? 'handoff' : 'noop');
+        expect(h.createActionIntent).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('declares an idempotency class, and a non_idempotent one is never auto-retried', async () => {
+      const cls = classifyEffectIdempotency(toolName);
+      expect(['idempotent', 'idempotent_by_probe', 'non_idempotent']).toContain(cls);
+      expect(cls).toBe(EXPECTED_CLASS[toolName]);
+      if (cls !== 'non_idempotent') return;
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+      // An unknown pre-state hands off: nothing is sent.
+      h.state.calls.length = 0;
+      h.state.world = {};
+      h.state.phase = 'unknown';
+      h.state.tool = toolName;
+      h.captureException.mockImplementation(() => undefined);
+      const handed = await dispatch(effect);
+      expect(handed.kind).toBe('handoff');
+      expect(h.createActionIntent).not.toHaveBeenCalled();
+      h.state.calls.length = 0;
+      // A post-write unsatisfied is never retryable.
+      use(f, 'preUnsatisfied');
+      const out = await verify(effect);
+      drainCalls();
+      expect(out).toMatchObject({ kind: 'unverified', retryable: false });
+    });
+  });
+}
+
+describe('the unobservable exceptions are explicit, not accidental', () => {
+  it('google_signout probes `unknown` in BOTH phases and names its subsuming criterion', async () => {
+    const effect = effectFor('google_signout');
+    h.state.world = {};
+    for (const phase of ['pre', 'post'] as const) {
+      const r = await probeEffect(effect, { orgId: ORG, taskId: TASK.id, planRevision: 1, effectRequestedAt: NOW, phase });
+      expect(r.state).toBe('unknown');
+    }
+    expect(h.state.calls).toHaveLength(0); // structurally: no provider call at all
+    expect(isStructurallyUnobservable('google_signout')).toBe(true);
+    expect(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS.google_signout).toBe('google_suspend_user');
+    expect(IDENTITY_OFFBOARDING_EFFECT_TOOLS).toContain('google_suspend_user');
+  });
+
+  it('every tool in the catalog either has a probe registered or is declared unobservable', () => {
+    const probed = new Set(listProbedTools());
+    for (const t of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
+      const declared = Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, t);
+      expect(probed.has(t) || declared, `${t} has neither a probe nor an unobservable declaration`).toBe(true);
+    }
+    // And no OTHER catalog tool is quietly structurally unobservable.
+    for (const t of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
+      if (!Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, t)) expect(isStructurallyUnobservable(t), t).toBe(false);
+    }
+  });
+});
+
+describe('the recording harness never reaches production', () => {
+  const API_SRC = fileURLToPath(new URL('../../', import.meta.url));
+  const TEST_ONLY_ENV = ['BREEZE_RECORD_PROVIDER_FIXTURES', 'BREEZE_EVAL_LIVE', 'BREEZE_GATE_SIGNOFF'];
+
+  function walk(dir: string): string[] {
+    const out: string[] = [];
+    for (const name of readdirSync(dir).sort()) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) {
+        if (name === '__tests__' || name === 'node_modules') continue;
+        out.push(...walk(full));
+        continue;
+      }
+      if (name.endsWith('.ts') && !name.endsWith('.test.ts')) out.push(full);
+    }
+    return out;
+  }
+
+  it('the gate\'s test-only env vars are read only by *.test.ts files', () => {
+    const files = walk(API_SRC);
+    expect(files.length).toBeGreaterThan(100); // the walker really walked apps/api/src
+    const hits = files.flatMap((file) => {
+      const text = readFileSync(file, 'utf8');
+      return TEST_ONLY_ENV.filter((name) => text.includes(name)).map((name) => `${file}: ${name}`);
+    });
+    expect(hits).toEqual([]);
+  });
+});
+
+describe('every fixture is a recording, not a guess', () => {
+  it.skipIf(!GATE_SIGNOFF)('GATE TRIPWIRE (BREEZE_GATE_SIGNOFF=1): no fixture is still marked _source: "reference"', () => {
+    // RED until the lab run (Task 27, spec §9(e)) re-records every fixture.
+    // That failure IS the gate. Do not edit `_source` to make it pass.
+    const stillReference = IDENTITY_OFFBOARDING_EFFECT_TOOLS.filter((t) => loadFixture(t)._source === 'reference');
+    expect(stillReference).toEqual([]);
+  });
+});
