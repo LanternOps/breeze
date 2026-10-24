@@ -28,7 +28,10 @@ export const PATH_FIELDS: Record<string, Classification> = {
   'analyze_disk_usage.path': SAFE,
   'disk_cleanup.path': SAFE,
   'remediate_sensitive_data.quarantineDir': SAFE,
-  'ioc_hunt.paths': SAFE,
+  'ioc_hunt.paths': {
+    kind: 'exempt',
+    why: 'Scan roots of an approval-gated (tier 3), detect-only IOC sweep across one org\'s devices (#6268): no single device to bind the per-device data policy to at call time (no deviceArgs; targets resolve inside createSweep), and no file content returns to the model, only rule-hit counts. Still typed safePath, so the default AI path restriction refuses sensitive stores.',
+  },
 
   'execute_command.payload.path': {
     kind: 'checkedByToolSchema',
