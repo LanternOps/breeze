@@ -1458,8 +1458,13 @@ export const useAiStore = create<AiState>()(
       turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
       ...topologyFieldsOf(data.session),
       composerDraft: opts?.draft ?? '',
+      // #10032: as loadSession/switchSession — Wisp mode survives only for a
+      // session under the same grant; a session under another grant gets its
+      // header back below.
+      wisp: wispForLoadedSession(get().wisp, data.session),
     });
     adoptSessionModelPicker(sessionId);
+    void rehydrateWispForSession(sessionId, data.session);
     get().open();
     // An attach 404 here means the session went away between the read and the
     // attach: the loop unbinds it like loadSession's 404 path.
