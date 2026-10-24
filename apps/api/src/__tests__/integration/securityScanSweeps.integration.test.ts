@@ -7,20 +7,52 @@
  * races    — the locked claim, cancel vs claim, finalize by command id, late
  *            results and pump re-admission, against real Postgres with the
  *            claim and the pump each in their own transaction.
+ * A9       — the service under real per-org RBAC (partner and org users), the
+ *            concurrent create, the agent fetch under its own RLS, the device
+ *            mover, a republish, org erasure and org merge.
  */
 import './setup';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { Hono } from 'hono';
 import { eq, inArray, sql } from 'drizzle-orm';
-import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { deviceCommands, securityScans, securityScanSweeps } from '../../db/schema';
-import type { AuthContext } from '../../middleware/auth';
+import { withAuthDbAccessContext, type AuthContext } from '../../middleware/auth';
 import { claimAndDispatchScan } from '../../jobs/securityScanClaim';
 import { pumpSweeps, type SweepDispatchJob } from '../../jobs/securityScanSweepPump';
 import { handleSecurityCommandResult } from '../../routes/agents/helpers';
-import { cancelSweep } from '../../services/securityScanSweeps';
-import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { agentYaraRuleSetRoutes } from '../../routes/agents/yaraRuleSets';
+import {
+  cancelSweep,
+  createSweep,
+  getSweep,
+  getSweepGroup,
+  listSweeps,
+  previewSweep,
+} from '../../services/securityScanSweeps';
+import { moveDeviceOrgInTransaction } from '../../services/deviceOrgMove/moveDeviceOrgInTransaction';
+import { cascadeDeleteOrg } from '../../services/tenantCascade';
+import { executeOrgMerge } from '../../services/orgMerge';
+import {
+  assignUserToOrganization,
+  assignUserToPartner,
+  createDevice,
+  createOrganization,
+  createPartner,
+  createRole,
+  createSite,
+  createUser,
+  grantRolePermissions,
+} from './db-utils';
 import { getTestDb } from './setup';
+
+// The pump nudge after a create is a BullMQ add; the tick itself is driven by
+// the tests (pumpSweeps with an explicit enqueue), so no queue is opened here.
+vi.mock('../../jobs/securityScanJobs', () => ({
+  enqueueSweepPump: vi.fn(async () => {}),
+  enqueueSweepDispatches: vi.fn(async () => {}),
+}));
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -330,5 +362,372 @@ describe('races', () => {
     expect(delivered).toEqual([{ type: 'dispatch-scan', scanId: w.scanIds[0], origin: 'sweep', sweepId: w.sweepId }]);
     expect((await claimAndDispatchScan(delivered[0]!)).outcome).toBe('dispatched');
     expect((await scanRow(w.scanIds[0]!)).status).toBe('running');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A9 — service-level tenancy, create race, pump + agent fetch, lifecycle
+// ---------------------------------------------------------------------------
+
+const EXECUTE_PERMS = [
+  { resource: 'devices', action: 'execute' },
+  { resource: 'devices', action: 'read' },
+];
+
+async function partnerUserAuth(partnerId: string, orgIds: string[]): Promise<AuthContext> {
+  const user = await createUser({ partnerId, email: `tech-${randomUUID()}@example.com` });
+  const role = await createRole({ scope: 'partner', partnerId });
+  await grantRolePermissions(role.id, EXECUTE_PERMS);
+  await assignUserToPartner(user.id, partnerId, role.id, 'all');
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: false },
+    token: null,
+    partnerId,
+    orgId: null,
+    scope: 'partner',
+    accessibleOrgIds: orgIds,
+    partnerOrgAccess: 'all',
+    orgCondition: (col: never) => inArray(col, orgIds),
+    canAccessOrg: (id: string) => orgIds.includes(id),
+  } as unknown as AuthContext;
+}
+
+async function orgUserAuth(partnerId: string, orgId: string): Promise<AuthContext> {
+  const user = await createUser({ partnerId, orgId, email: `org-${randomUUID()}@example.com` });
+  const role = await createRole({ scope: 'organization', partnerId, orgId });
+  await grantRolePermissions(role.id, [{ resource: 'devices', action: 'read' }]);
+  await assignUserToOrganization(user.id, orgId, role.id);
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: false },
+    token: null,
+    partnerId,
+    orgId,
+    scope: 'organization',
+    accessibleOrgIds: [orgId],
+    orgCondition: (col: never) => eq(col, orgId),
+    canAccessOrg: (id: string) => id === orgId,
+  } as unknown as AuthContext;
+}
+
+/** Two orgs of one partner, `perOrg` online YARA-capable devices each, one published partner-wide set. */
+async function seedPartnerFleet(perOrg = 2) {
+  const tdb = getTestDb();
+  const partner = await createPartner();
+  const orgs: Array<{ id: string; siteId: string; deviceIds: string[] }> = [];
+  for (let o = 0; o < 2; o++) {
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const deviceIds: string[] = [];
+    for (let i = 0; i < perOrg; i++) deviceIds.push((await createDevice({ orgId: org.id, siteId: site.id })).id);
+    for (const id of deviceIds) {
+      await tdb.execute(sql`UPDATE devices SET agent_version = '0.124.0', status = 'online' WHERE id = ${id}`);
+    }
+    orgs.push({ id: org.id, siteId: site.id, deviceIds });
+  }
+  const [set] = await tdb.execute<{ id: string }>(sql`
+    INSERT INTO yara_rule_sets (partner_id, name, current_version, published_version, published_bundle, published_sha256)
+    VALUES (${partner.id}, 'MSP hunt pack', 1, 1, decode('00', 'hex'), ${SHA}) RETURNING id`);
+  return { partnerId: partner.id, orgs, setId: set!.id };
+}
+
+const asAuth = <T>(auth: AuthContext, fn: () => Promise<T>) => withAuthDbAccessContext(auth, fn);
+
+async function previewAndCreate(auth: AuthContext, request: { ruleSetIds: string[]; scope: never; scanType: 'quick' }) {
+  const preview = await asAuth(auth, () => previewSweep(auth, request));
+  if (!preview.ok) throw new Error(`preview failed: ${preview.code}`);
+  return createSweep(auth, { ...request, previewDigest: preview.preview.previewDigest }, { origin: 'web', mfaSatisfied: true });
+}
+
+describe('A9 tenancy', () => {
+  it('partner user sweeps a partner-wide set across two orgs → two rows, one groupId', async () => {
+    const f = await seedPartnerFleet(2);
+    const auth = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const created = await previewAndCreate(auth, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
+    if (!created.ok) throw new Error(created.code);
+    expect(created.sweeps).toHaveLength(2);
+    const rows = await getTestDb().select().from(securityScanSweeps).where(eq(securityScanSweeps.groupId, created.groupId));
+    expect(rows.map((r) => r.orgId).sort()).toEqual(f.orgs.map((o) => o.id).sort());
+    expect(new Set(rows.map((r) => r.groupId)).size).toBe(1);
+    expect(rows.every((r) => r.targetedCount === 2 && r.state === 'active')).toBe(true);
+    const scans = await getTestDb().select().from(securityScans).where(inArray(securityScans.sweepId, rows.map((r) => r.id)));
+    expect(scans).toHaveLength(4);
+    for (const scan of scans) {
+      const sweep = rows.find((r) => r.id === scan.sweepId)!;
+      expect(scan.orgId).toBe(sweep.orgId);
+      expect(scan.status).toBe('queued');
+      expect(scan.initiatedBy).toBe(auth.user.id);
+    }
+  });
+
+  it("org A user sees only org A's row and progress", async () => {
+    const f = await seedPartnerFleet(2);
+    const partner = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const created = await previewAndCreate(partner, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
+    if (!created.ok) throw new Error(created.code);
+    const [orgA, orgB] = f.orgs;
+    // One org-A scan completes with 2 threats and a legacy fallback (degraded).
+    await getTestDb().execute(sql`UPDATE security_scans SET status = 'completed', threats_found = 2, engine = 'legacy'
+                                   WHERE device_id = ${orgA!.deviceIds[0]!}`);
+    const orgAUser = await orgUserAuth(f.partnerId, orgA!.id);
+
+    const group = await asAuth(orgAUser, () => getSweepGroup(orgAUser, created.groupId));
+    expect(group!.sweeps.map((s) => s.orgId)).toEqual([orgA!.id]);
+    expect(group!.progress).toMatchObject({ queued: 1, completed: 1, degraded: 1, threatsFound: 2 });
+    const sweepB = created.sweeps.find((s) => s.orgId === orgB!.id)!;
+    expect(await asAuth(orgAUser, () => getSweep(orgAUser, sweepB.id))).toBeNull();
+    const list = await asAuth(orgAUser, () => listSweeps(orgAUser, { page: 1, limit: 25 }));
+    expect(list.data.map((s) => s.orgId)).toEqual([orgA!.id]);
+    expect(list.total).toBe(1);
+  });
+});
+
+describe('A9 races', () => {
+  it('two concurrent identical creates → one created, one SWEEP_ALREADY_RUNNING', async () => {
+    const f = await seedPartnerFleet(2);
+    const auth = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const request = { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' as const };
+    const preview = await asAuth(auth, () => previewSweep(auth, request));
+    if (!preview.ok) throw new Error(preview.code);
+    const body = { ...request, previewDigest: preview.preview.previewDigest };
+    const results = await Promise.all([
+      createSweep(auth, body, { origin: 'web', mfaSatisfied: true }),
+      createSweep(auth, body, { origin: 'web', mfaSatisfied: true }),
+    ]);
+    const ok = results.filter((r) => r.ok);
+    const refused = results.filter((r) => !r.ok);
+    expect(ok).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ status: 409, code: 'SWEEP_ALREADY_RUNNING' });
+    const scans = await getTestDb().select().from(securityScans)
+      .where(inArray(securityScans.deviceId, f.orgs.flatMap((o) => o.deviceIds)));
+    expect(scans).toHaveLength(4);
+  });
+});
+
+describe('A9 pump and fetch', () => {
+  it('pump under breeze_app system context admits and the claim stamps dispatched_rule_sets + command_id', async () => {
+    const w = await seedSweepWorld({ devices: 1 });
+    const jobs: SweepDispatchJob[] = [];
+    const pump = await pumpSweeps(new Date(), { enqueue: async (j) => { jobs.push(...j); } });
+    expect(pump).toMatchObject({ skipped: false, admitted: 1 });
+    const claim = await claimAndDispatchScan(jobs[0]!);
+    expect(claim.outcome).toBe('dispatched');
+    const scan = await scanRow(w.scanIds[0]!);
+    expect(scan.status).toBe('running');
+    expect(scan.dispatchedRuleSets).toEqual([{ id: w.setId, version: 1, sha256: SHA }]);
+    expect(scan.commandId).toBe(claim.commandId);
+    const [cmd] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, claim.commandId!));
+    expect(cmd!.type).toBe('security_scan');
+    const payload = cmd!.payload as Record<string, unknown>;
+    expect(payload).toMatchObject({ scanRecordId: w.scanIds[0], autoQuarantine: false, triggerDefender: false });
+    expect((payload.ruleSets as Array<{ id: string }>).map((r) => r.id)).toEqual([w.setId]);
+  });
+
+  it('fetch under agent RLS: dispatched ref 200, after the scan completes 404', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const [device] = await getTestDb().execute<{ agent_id: string }>(sql`SELECT agent_id FROM devices WHERE id = ${w.deviceIds[0]!}`);
+    const claim = await claimAndDispatchScan(sweepJob(w));
+    expect(claim.outcome).toBe('dispatched');
+
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('agent' as never, { role: 'agent', agentId: device!.agent_id, orgId: w.orgId } as never);
+      await next();
+    });
+    app.route('/api/v1/agents', agentYaraRuleSetRoutes);
+    const agentCtx: DbAccessContext = {
+      scope: 'organization',
+      orgId: w.orgId,
+      accessibleOrgIds: [w.orgId],
+      accessiblePartnerIds: [],
+      userId: null,
+      currentPartnerId: w.partnerId,
+    };
+    const fetchBundle = () =>
+      runOutsideDbContext(() =>
+        withDbAccessContext(agentCtx, async () => {
+          const res = await app.request(`/api/v1/agents/${device!.agent_id}/yara/rule-sets/${w.setId}/1`);
+          return res.status;
+        }),
+      );
+
+    // The set is attached to no policy: only the running scan's dispatched ref authorizes it.
+    expect(await fetchBundle()).toBe(200);
+    await getTestDb().execute(sql`UPDATE security_scans SET status = 'completed' WHERE id = ${w.scanIds[0]!}`);
+    expect(await fetchBundle()).toBe(404);
+  });
+});
+
+async function moveDevice(deviceId: string, fromOrg: string, toOrg: string, toSite: string, actorPartnerId: string) {
+  const user = await createUser({ partnerId: actorPartnerId, email: `mover-${randomUUID()}@example.com` });
+  await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db.transaction((tx) =>
+        moveDeviceOrgInTransaction(tx, {
+          deviceId,
+          sourceOrgId: fromOrg,
+          targetOrgId: toOrg,
+          targetSiteId: toSite,
+          targetOrgName: 'target',
+          deviceLinkGroupId: null,
+          acceptCurrencyMismatch: false,
+          actor: { userId: user.id, allowedSiteIds: undefined },
+          stepUp: null,
+          via: 'generic_move',
+        }),
+      ),
+    ),
+  );
+}
+
+describe('A9 lifecycle', () => {
+  it('device moved before command creation → scan cancelled, never dispatched', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const target = await createOrganization({ partnerId: w.partnerId });
+    const targetSite = await createSite({ orgId: target.id });
+    await moveDevice(w.deviceIds[0]!, w.orgId, target.id, targetSite.id, w.partnerId);
+
+    const moved = await scanRow(w.scanIds[0]!);
+    expect(moved).toMatchObject({ status: 'cancelled', sweepId: null, orgId: target.id });
+    expect((await claimAndDispatchScan(sweepJob(w))).outcome).toBe('skipped');
+    expect(await commandsFor(w.deviceIds)).toHaveLength(0);
+  }, 120_000);
+
+  it('device moved after command creation → sweep_id NULL, result still ingests in the new org', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const claim = await claimAndDispatchScan(sweepJob(w));
+    expect(claim.outcome).toBe('dispatched');
+    // Delivered before the move (the mover only cancels still-pending commands).
+    await getTestDb().execute(sql`UPDATE device_commands SET status = 'sent', executed_at = now() WHERE id = ${claim.commandId!}`);
+    const target = await createOrganization({ partnerId: w.partnerId });
+    const targetSite = await createSite({ orgId: target.id });
+    await moveDevice(w.deviceIds[0]!, w.orgId, target.id, targetSite.id, w.partnerId);
+
+    const moved = await scanRow(w.scanIds[0]!);
+    expect(moved).toMatchObject({ status: 'running', sweepId: null, orgId: target.id });
+
+    const [command] = await getTestDb().select().from(deviceCommands).where(eq(deviceCommands.id, claim.commandId!));
+    await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() =>
+        handleSecurityCommandResult(command!, {
+          status: 'completed',
+          stdout: JSON.stringify({ scanRecordId: w.scanIds[0], threatsFound: 0, threats: [], engine: 'yara' }),
+          durationMs: 1000,
+        }),
+      ),
+    );
+    expect(await scanRow(w.scanIds[0]!)).toMatchObject({ status: 'completed', orgId: target.id, sweepId: null });
+  }, 120_000);
+
+  it('republish after approval → rule_set_changed', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    await getTestDb().execute(sql`UPDATE yara_rule_sets SET current_version = 2, published_version = 2,
+                                   published_sha256 = ${'b'.repeat(64)} WHERE id = ${w.setId}`);
+    expect(await claimAndDispatchScan(sweepJob(w))).toEqual({ outcome: 'failed', commandId: null });
+    const scan = await scanRow(w.scanIds[0]!);
+    expect(scan.status).toBe('failed');
+    expect(scan.ruleSetErrors).toEqual([{ id: w.setId, version: 1, code: 'rule_set_changed' }]);
+    expect(await commandsFor(w.deviceIds)).toHaveLength(0);
+  });
+
+  it('org cascade delete removes sweeps and scans; org merge repoints', async () => {
+    const tdb = getTestDb();
+    const doomed = await seedSweepWorld({ devices: 1, online: false });
+    const actor = await createUser({ partnerId: doomed.partnerId, email: `erase-${randomUUID()}@example.com` });
+    await cascadeDeleteOrg(doomed.orgId, actor.id);
+    expect(await tdb.select().from(securityScanSweeps).where(eq(securityScanSweeps.id, doomed.sweepId))).toEqual([]);
+    expect(await tdb.select().from(securityScans).where(inArray(securityScans.id, doomed.scanIds))).toEqual([]);
+
+    const priorDrain = process.env.ORG_MERGE_FENCE_DRAIN_MS;
+    process.env.ORG_MERGE_FENCE_DRAIN_MS = '0';
+    try {
+      const loser = await seedSweepWorld({ devices: 1, online: false });
+      const survivor = await createOrganization({ partnerId: loser.partnerId });
+      const mergeActor = await createUser({ partnerId: loser.partnerId, email: `merge-${randomUUID()}@example.com` });
+      await executeOrgMerge({
+        loserOrgId: loser.orgId,
+        survivorOrgId: survivor.id,
+        partnerId: loser.partnerId,
+        performedBy: mergeActor.id,
+        performedByEmail: mergeActor.email,
+      });
+      const [sweep] = await tdb.select().from(securityScanSweeps).where(eq(securityScanSweeps.id, loser.sweepId));
+      expect(sweep!.orgId).toBe(survivor.id);
+      const [scan] = await tdb.select().from(securityScans).where(eq(securityScans.id, loser.scanIds[0]!));
+      expect(scan).toMatchObject({ orgId: survivor.id, sweepId: loser.sweepId });
+    } finally {
+      if (priorDrain === undefined) delete process.env.ORG_MERGE_FENCE_DRAIN_MS;
+      else process.env.ORG_MERGE_FENCE_DRAIN_MS = priorDrain;
+    }
+  }, 120_000);
+});
+
+describe('A9 deterministic orderings', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('create serializes on the per-org advisory lock', async () => {
+    const f = await seedPartnerFleet(1);
+    const auth = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const request = { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' as const };
+    const preview = await asAuth(auth, () => previewSweep(auth, request));
+    if (!preview.ok) throw new Error(preview.code);
+
+    // An in-flight create elsewhere holds org A's lock.
+    let release!: () => void;
+    let taken!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const lockTaken = new Promise<void>((r) => { taken = r; });
+    const holder = runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`security-sweep-org:${f.orgs[0]!.id}`}))`);
+        taken();
+        await held;
+      }),
+    );
+    await lockTaken;
+    let settled = false;
+    const create = createSweep(auth, { ...request, previewDigest: preview.preview.previewDigest }, { origin: 'web', mfaSatisfied: true })
+      .finally(() => { settled = true; });
+    await sleep(1500);
+    expect(settled).toBe(false);
+    release();
+    await holder;
+    expect((await create).ok).toBe(true);
+  }, 60_000);
+
+  it('claimed then cancelled: the undelivered command is cancelled with the sweep', async () => {
+    const w = await seedSweepWorld({ devices: 1, online: false });
+    const claim = await claimAndDispatchScan(sweepJob(w));
+    expect(claim.outcome).toBe('dispatched');
+    const auth = await platformAdminAuth(w.partnerId);
+    const cancel = await cancelSweep(auth, w.sweepId);
+    expect(cancel).toMatchObject({ ok: true, cancelledQueued: 0, cancelledUndelivered: 1 });
+    const [cmd] = await commandsFor(w.deviceIds);
+    expect(cmd).toMatchObject({ id: claim.commandId, status: 'cancelled', executedAt: null });
+    expect((await scanRow(w.scanIds[0]!)).status).toBe('cancelled');
+    // Idempotent.
+    expect(await cancelSweep(auth, w.sweepId)).toMatchObject({ ok: true, cancelledQueued: 0, cancelledUndelivered: 0 });
+  });
+
+  it('a caller whose DB context reaches both orgs sees only orgs where it holds devices:read', async () => {
+    const f = await seedPartnerFleet(1);
+    const partner = await partnerUserAuth(f.partnerId, f.orgs.map((o) => o.id));
+    const created = await previewAndCreate(partner, { ruleSetIds: [f.setId], scope: { kind: 'all' } as never, scanType: 'quick' });
+    if (!created.ok) throw new Error(created.code);
+    const orgA = f.orgs[0]!;
+    const orgOnly = await orgUserAuth(f.partnerId, orgA.id);
+    // Partner-wide visibility at the DB layer, but the user's only membership is in org A.
+    const wide = {
+      ...orgOnly,
+      scope: 'partner',
+      orgId: null,
+      accessibleOrgIds: f.orgs.map((o) => o.id),
+      orgCondition: (col: never) => inArray(col, f.orgs.map((o) => o.id)),
+      canAccessOrg: () => true,
+    } as unknown as AuthContext;
+    const group = await asAuth(wide, () => getSweepGroup(wide, created.groupId));
+    expect(group!.sweeps.map((s) => s.orgId)).toEqual([orgA.id]);
   });
 });
