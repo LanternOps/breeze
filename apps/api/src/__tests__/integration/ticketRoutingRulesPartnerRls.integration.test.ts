@@ -224,20 +224,37 @@ describe(`ticket routing rules partner RLS (#8883 W5 Task 5.1, ${MIGRATION})`, (
       expect(await links(orgScopeContext(orgB1.id, partnerB.id))).toEqual([]);
     });
 
-    runDb("the links of a partner-wide rule are readable under BOTH org contexts (the evaluator's allowlist read)", async () => {
+    runDb("an org context reads its OWN org's link of a partner-wide rule (the evaluator's allowlist read), never a sibling's", async () => {
       const { partnerA, orgA1, orgA2 } = await fixture();
-      const wide = await seedRule({ orgId: null, partnerId: partnerA.id });
+      const wide = await seedRule({ orgId: null, partnerId: partnerA.id }, { orgScoped: true });
+      const l1 = await seedLink(wide.id, orgA1.id);
       const l2 = await seedLink(wide.id, orgA2.id);
       const links = (ctx: DbAccessContext) => withDbAccessContext(ctx, async () =>
         (await db.select({ id: ticketRoutingRuleOrgLinks.id, orgId: ticketRoutingRuleOrgLinks.orgId })
           .from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, wide.id))));
-      // orgA1 is NOT listed — it must still see the link to know the rule is not for it.
-      expect(await links(orgScopeContext(orgA1.id, partnerA.id))).toEqual([{ id: l2.id, orgId: orgA2.id }]);
-      expect(await links(orgSessionContext(orgA1.id))).toEqual([{ id: l2.id, orgId: orgA2.id }]);
-      // And the org contexts cannot delete them.
+      expect(await links(orgScopeContext(orgA1.id, partnerA.id))).toEqual([{ id: l1.id, orgId: orgA1.id }]);
+      expect(await links(orgSessionContext(orgA1.id))).toEqual([{ id: l1.id, orgId: orgA1.id }]);
+      expect(await links(orgSessionContext(orgA2.id))).toEqual([{ id: l2.id, orgId: orgA2.id }]);
+      // And the org contexts cannot delete their own link.
       const del = await withDbAccessContext(orgSessionContext(orgA1.id), async () =>
-        (await db.delete(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.id, l2.id)).returning()).length);
+        (await db.delete(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.id, l1.id)).returning()).length);
       expect(del).toBe(0);
+    });
+
+    runDb('only a partner-wide rule can be org_scoped (ticket_routing_rules_org_scoped_chk, 23514)', async () => {
+      const { orgA1 } = await fixture();
+      expect(await constraintName(() => seedRule({ orgId: orgA1.id, partnerId: null }, { orgScoped: true }))).toBe('ticket_routing_rules_org_scoped_chk');
+    });
+
+    runDb('deleting the only listed org leaves an org_scoped rule with no links — it stays limited (fail closed), never widened', async () => {
+      const { partnerA } = await fixture();
+      const doomed = await createOrganization({ partnerId: partnerA.id });
+      const wide = await seedRule({ orgId: null, partnerId: partnerA.id }, { orgScoped: true });
+      await seedLink(wide.id, doomed!.id);
+      await sys(() => db.execute(sql`DELETE FROM organizations WHERE id = ${doomed!.id}`));
+      const [after] = await sys(() => db.select().from(ticketRoutingRules).where(eq(ticketRoutingRules.id, wide.id)));
+      expect(after?.orgScoped).toBe(true);
+      expect(await sys(() => db.select().from(ticketRoutingRuleOrgLinks).where(eq(ticketRoutingRuleOrgLinks.ruleId, wide.id)))).toEqual([]);
     });
 
     runDb('duplicate (rule_id, org_id) violates ticket_routing_rule_org_links_rule_org_uq; deleting the rule cascades its links', async () => {

@@ -48,6 +48,10 @@ export const ticketRoutingRules = pgTable(
     setCategoryId: uuid('set_category_id').references(() => ticketCategories.id, { onDelete: 'restrict' }),
     setStatusId: uuid('set_status_id').references(() => ticketStatuses.id, { onDelete: 'restrict' }),
     addTags: text('add_tags').array(),
+    // Partner-wide rules only (ticket_routing_rules_org_scoped_chk): true =
+    // applies to the orgs in ticket_routing_rule_org_links and nothing else.
+    // Explicit so a cascaded link delete can never widen a rule (fail closed).
+    orgScoped: boolean('org_scoped').notNull().default(false),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -64,11 +68,10 @@ export const ticketRoutingRules = pgTable(
 );
 
 /**
- * Org allowlist for partner-wide routing rules. No link rows = every org of
- * the owning partner; rows present = only the linked orgs. This table's own
- * `org_id` is the ALLOWLISTED org, NOT the tenancy axis: RLS joins through
+ * Org allowlist of an `org_scoped` partner-wide routing rule. This table's
+ * own `org_id` is the ALLOWLISTED org, NOT the tenancy axis: RLS joins through
  * the parent rule (template ticket_form_org_links), plus a SELECT-only branch
- * that admits any link whose parent the caller can read.
+ * that admits a caller's own org's link of a rule it can read.
  */
 export const ticketRoutingRuleOrgLinks = pgTable(
   'ticket_routing_rule_org_links',

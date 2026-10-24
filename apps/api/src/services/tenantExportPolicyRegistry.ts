@@ -975,7 +975,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // Ticket routing rules (#8883 W5): typed columns and typed arrays only, no
   // jsonb, so every column is `included`.
   "ticket_routing_rule_org_links": tablePolicy("org_id", {"included":["id","rule_id","org_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ticket_routing_rules": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","enabled","position","match_sources","match_priorities","match_category_id","match_subject_keywords","match_requester_domains","set_assignee_user_id","set_priority","set_category_id","set_status_id","add_tags","created_by_user_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_routing_rules": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","enabled","position","match_sources","match_priorities","match_category_id","match_subject_keywords","match_requester_domains","set_assignee_user_id","set_priority","set_category_id","set_status_id","add_tags","org_scoped","created_by_user_id","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // requester_contact_id (#3258 W03): the canonical requester PERSON — a
   // tenant identifier pointing at this org's own contacts row, so `included`
   // alongside submitted_by. (The export-policy row is the ONE registration

@@ -15,8 +15,14 @@
 -- ticket_routing_rule_org_links is an FK child of the rule: its org_id is the
 -- ALLOWLISTED org (data), not the tenancy axis. RLS joins through the parent
 -- (template 2026-07-11-ticket-form-org-links.sql), plus a SELECT-only branch
--- that admits any link whose parent rule the caller can read, so the create
--- path can apply a partner-wide rule's allowlist under an org context.
+-- that admits a caller's OWN org's link of a rule it can read, so the create
+-- path can apply a partner-wide rule's allowlist under an org context without
+-- disclosing which sibling orgs a rule names.
+--
+-- Fail closed: whether a partner-wide rule is limited to listed orgs is the
+-- explicit org_scoped flag, never "has link rows". Otherwise deleting the only
+-- listed org (its link cascades away) would silently widen the rule to every
+-- org of the partner. An org_scoped rule with no links matches nothing.
 --
 -- References (Gate B4): an org-owned rule has partner_id NULL, so a composite
 -- (category_id, partner_id) FK cannot bind it. Category / status FKs are plain
@@ -73,6 +79,9 @@ CREATE TABLE IF NOT EXISTS ticket_routing_rules (
   set_category_id uuid REFERENCES ticket_categories(id) ON DELETE RESTRICT,
   set_status_id uuid REFERENCES ticket_statuses(id) ON DELETE RESTRICT,
   add_tags text[],
+  -- Partner-wide rules only: true = applies to the orgs in
+  -- ticket_routing_rule_org_links and nothing else (none listed = no org).
+  org_scoped boolean NOT NULL DEFAULT false,
   created_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -85,6 +94,9 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ticket_routing_rules_name_chk' AND conrelid = 'ticket_routing_rules'::regclass) THEN
     ALTER TABLE ticket_routing_rules ADD CONSTRAINT ticket_routing_rules_name_chk CHECK (char_length(btrim(name)) BETWEEN 1 AND 100);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ticket_routing_rules_org_scoped_chk' AND conrelid = 'ticket_routing_rules'::regclass) THEN
+    ALTER TABLE ticket_routing_rules ADD CONSTRAINT ticket_routing_rules_org_scoped_chk CHECK (NOT org_scoped OR org_id IS NULL);
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ticket_routing_rules_keywords_chk' AND conrelid = 'ticket_routing_rules'::regclass) THEN
     ALTER TABLE ticket_routing_rules ADD CONSTRAINT ticket_routing_rules_keywords_chk CHECK (cardinality(match_subject_keywords) <= 20);
@@ -187,9 +199,8 @@ CREATE CONSTRAINT TRIGGER ticket_routing_rules_ref_partner_guard_trg
 -- ============================================
 -- 4. ticket_routing_rule_org_links
 -- ============================================
--- No link rows for a partner-wide rule = every org of the partner; rows
--- present = allowlist. Meaningful only for partner-wide rules (the service
--- refuses links on an org-owned rule).
+-- The allowlist of an org_scoped partner-wide rule (the service refuses links
+-- on an org-owned or non-org_scoped rule).
 CREATE TABLE IF NOT EXISTS ticket_routing_rule_org_links (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   rule_id uuid NOT NULL REFERENCES ticket_routing_rules(id) ON DELETE CASCADE,
@@ -280,16 +291,18 @@ CREATE POLICY ticket_routing_rule_org_links_isolation ON ticket_routing_rule_org
     )
   );
 
--- SELECT-only: a link is readable wherever its parent rule is readable. The
--- subquery runs under the caller's own RLS on ticket_routing_rules, so it
--- inherits exactly the parent's three branches (isolation, partner-wide,
--- org-member) and nothing more. Without it an org-scope or org-session create
--- could not see a partner-wide rule's allowlist, and a listed-orgs-only rule
--- would fire for every org of the partner.
+-- SELECT-only: a caller with access to the LINKED org reads that link, when
+-- it can read the parent rule. The subquery runs under the caller's own RLS
+-- on ticket_routing_rules, so it inherits the parent's three branches and
+-- nothing more. This is the create path's allowlist read under an org-scope or
+-- org-session context ("is my org listed?"); it never shows an org which
+-- sibling orgs a rule names — org_scoped, not link presence, says whether a
+-- list applies.
 DROP POLICY IF EXISTS ticket_routing_rule_org_links_parent_visible_select ON ticket_routing_rule_org_links;
 CREATE POLICY ticket_routing_rule_org_links_parent_visible_select ON ticket_routing_rule_org_links
   FOR SELECT USING (
-    EXISTS (
+    public.breeze_has_org_access(org_id)
+    AND EXISTS (
       SELECT 1 FROM public.ticket_routing_rules r
        WHERE r.id = ticket_routing_rule_org_links.rule_id
     )
