@@ -132,6 +132,24 @@ describe('listConcernsForCeiling / getConcernForCeiling', () => {
     expect(await getConcernForCeiling(c, randomUUID())).toBeNull();
   });
 
+  it('a site-restricted ceiling reads no concerns of the restricted org (fail closed: subjects carry no site)', async () => {
+    const f = await seed();
+    const a = await upsertConcern(input(f, f.orgA));
+    const siteId = randomUUID();
+    const ceilingWide = ceilingFor(f, { siteIds: new Set([siteId]) });
+    expect(await listConcernsForCeiling(ceilingWide)).toEqual([]);
+    expect(await listConcernsForCeiling(ceilingWide, { orgId: f.orgA })).toEqual([]);
+    expect(await getConcernForCeiling(ceilingWide, a.id)).toBeNull();
+    const ceilingOrgTerm = ceilingFor(f, {
+      orgIds: new Set([f.orgA, f.orgB]),
+      orgTerms: new Map([[f.orgA, { permissionKeys: new Set(['*:*']), siteIds: new Set([siteId]) }]]),
+    });
+    const b = await upsertConcern(input(f, f.orgB));
+    const ids = (await listConcernsForCeiling(ceilingOrgTerm)).map((x) => x.id);
+    expect(ids).toEqual([b.id]);
+    expect(await getConcernForCeiling(ceilingOrgTerm, a.id)).toBeNull();
+  });
+
   it('an org-scoped ceiling never sees a partner-level concern; a partner-wide one does', async () => {
     const f = await seed();
     const partnerLevel = await upsertConcern(input(f, null, { subject: { kind: 'incident', id: randomUUID() }, severity: 'high' }));

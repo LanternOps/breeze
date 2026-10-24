@@ -535,6 +535,8 @@ export const RATE_LIMIT_CONFIGS: RateLimitConfig[] = [
   { toolName: 'remember', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   { toolName: 'raise_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   { toolName: 'create_watch', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'snooze_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
+  { toolName: 'resolve_concern', tier: 2, permission: 'ai_sessions.use', category: 'AI Governance' },
   // Other
   { toolName: 'export_dataset', tier: 1, permission: 'devices.read', category: 'Other' },
   // Endpoint messaging (#8742 W02)

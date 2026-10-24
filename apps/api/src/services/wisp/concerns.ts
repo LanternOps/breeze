@@ -415,13 +415,26 @@ function toConcern(c: WispConcernRow, r: WispConcernRecipientRow | null): Concer
  * ceiling, and partner-level (org_id NULL) rows only for a partner-wide grant
  * whose grantor still reaches the whole partner. null = nothing visible.
  */
+/**
+ * Orgs whose concerns this ceiling may read. A concern's subject carries no
+ * site, so a site-restricted ceiling (ceiling-wide, or the org's own
+ * membership term) cannot be shown to cover it: those orgs read nothing —
+ * fail closed, the same way assertWithinCeiling refuses an org-only check
+ * under a site restriction (so such a grant cannot raise one either).
+ */
+function readableOrgIds(ceiling: GrantCeiling): Set<string> {
+  if (ceiling.siteIds !== null) return new Set();
+  return new Set([...ceiling.orgIds].filter((id) => (ceiling.orgTerms.get(id)?.siteIds ?? null) === null));
+}
+
 function visibilityWhere(ceiling: GrantCeiling, orgId?: string): SQL | null {
+  const readable = readableOrgIds(ceiling);
   if (orgId !== undefined) {
-    if (!ceiling.orgIds.has(orgId)) return null;
+    if (!readable.has(orgId)) return null;
     return and(eq(wispConcerns.partnerId, ceiling.partnerId), eq(wispConcerns.orgId, orgId))!;
   }
-  const orgIds = [...ceiling.orgIds];
-  const partnerLevel = ceiling.scopeOrgId === null && ceiling.partnerWide;
+  const orgIds = [...readable];
+  const partnerLevel = ceiling.scopeOrgId === null && ceiling.partnerWide && ceiling.siteIds === null;
   const branches: SQL[] = [];
   if (orgIds.length > 0) branches.push(inArray(wispConcerns.orgId, orgIds));
   if (partnerLevel) branches.push(isNull(wispConcerns.orgId));
