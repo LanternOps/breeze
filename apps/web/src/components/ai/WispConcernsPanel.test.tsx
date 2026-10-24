@@ -63,6 +63,12 @@ describe('WispConcernsPanel', () => {
     await waitFor(() => expect(screen.getByTestId('wisp-concern-select-a').getAttribute('aria-expanded')).toBe('true'));
   });
 
+  it('a malformed #concern= hash is ignored, not a crash', async () => {
+    window.location.hash = '#concern=%E0%A4%A';
+    await mountWith([concern('a', 'high')]);
+    expect(screen.getByTestId('wisp-concern-select-a').getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('selecting a row expands it without touching the host page hash', async () => {
     window.location.hash = '#tab=software';
     await mountWith([concern('a', 'high')]);

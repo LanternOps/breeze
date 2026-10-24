@@ -150,6 +150,16 @@ describe('listConcernsForCeiling / getConcernForCeiling', () => {
     expect(await getConcernForCeiling(ceilingOrgTerm, a.id)).toBeNull();
   });
 
+  it('a site-restricted partner-wide ceiling never reads a partner-level concern', async () => {
+    const f = await seed();
+    const p = await upsertConcern(input(f, null, { subject: { kind: 'incident', id: randomUUID() } }));
+    const c = ceilingFor(f, { scopeOrgId: null, partnerWide: true, siteIds: new Set([randomUUID()]) });
+    expect(await listConcernsForCeiling(c)).toEqual([]);
+    expect(await getConcernForCeiling(c, p.id)).toBeNull();
+    // Control: the same ceiling without the site restriction sees it.
+    expect((await getConcernForCeiling(ceilingFor(f, { scopeOrgId: null, partnerWide: true }), p.id))?.id).toBe(p.id);
+  });
+
   it('an org-scoped ceiling never sees a partner-level concern; a partner-wide one does', async () => {
     const f = await seed();
     const partnerLevel = await upsertConcern(input(f, null, { subject: { kind: 'incident', id: randomUUID() }, severity: 'high' }));
@@ -304,6 +314,40 @@ describe('recipients', () => {
     await recordNudge(shared.id, otherGrant, new Date());
     await dismissConcern(shared.id, { grantId: f.grant, userId: f.user });
     expect((await concernById(shared.id)).status).toBe('open');
+  });
+
+  it('snooze with a second OPEN recipient keeps the concern open; an expired snooze does not count as snoozed', async () => {
+    const f = await seed();
+    const c = await upsertConcern(input(f, f.orgA));
+    const otherGrant = await secondGrant(f, [f.orgA]);
+    await recordNudge(c.id, otherGrant, new Date());
+    await snoozeConcern(c.id, { grantId: f.grant, userId: f.user }, new Date(Date.now() + 86_400_000));
+    expect((await concernById(c.id)).status).toBe('open');
+
+    // The other recipient's snooze is already over → it is open again → still 'open'.
+    await asSystem(() => db.update(wispConcernRecipients).set({ snoozedUntil: new Date(Date.now() - 60_000) })
+      .where(and(eq(wispConcernRecipients.concernId, c.id), eq(wispConcernRecipients.grantId, otherGrant))));
+    await snoozeConcern(c.id, { grantId: f.grant, userId: f.user }, new Date(Date.now() + 86_400_000));
+    expect((await concernById(c.id)).status).toBe('open');
+
+    // Once the other recipient also snoozes, nobody is open → 'snoozed'.
+    await snoozeConcern(c.id, { grantId: otherGrant, userId: f.user }, new Date(Date.now() + 3_600_000));
+    expect((await concernById(c.id)).status).toBe('snoozed');
+  });
+
+  it('two recipients dismissing concurrently still close the concern (row lock serialises the aggregate)', async () => {
+    const f = await seed();
+    for (let i = 0; i < 5; i++) {
+      const c = await upsertConcern(input(f, f.orgA));
+      const otherGrant = await secondGrant(f, [f.orgA]);
+      await recordNudge(c.id, otherGrant, new Date());
+      await recordNudge(c.id, f.grant, new Date());
+      await Promise.all([
+        dismissConcern(c.id, { grantId: f.grant, userId: f.user }),
+        dismissConcern(c.id, { grantId: otherGrant, userId: f.user }),
+      ]);
+      expect((await concernById(c.id)).status).toBe('dismissed');
+    }
   });
 
   it('dismissing a resolved concern leaves its status alone', async () => {

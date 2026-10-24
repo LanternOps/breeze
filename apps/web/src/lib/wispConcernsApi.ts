@@ -11,7 +11,9 @@ export async function listWispConcerns(grantId: string, status?: ConcernStatus[]
   const res = await fetchWithAuth(`/wisp/concerns?${query}`);
   if (!res.ok) throw new Error(`wisp concerns list failed: ${res.status}`);
   const body = (await res.json()) as { concerns?: unknown } | null;
-  return Array.isArray(body?.concerns) ? (body.concerns as Concern[]) : [];
+  // A malformed body is a contract break, not "no concerns": surface it.
+  if (!Array.isArray(body?.concerns)) throw new Error('wisp concerns list: response has no concerns array');
+  return body.concerns as Concern[];
 }
 
 async function postConcernAction(

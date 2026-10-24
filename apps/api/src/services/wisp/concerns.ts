@@ -25,7 +25,7 @@ import {
   type ConcernStatus,
   type ConcernSubject,
 } from '@breeze/shared';
-import { isPgUniqueViolation } from '@breeze/shared/pgErrors';
+import { isPgUniqueViolation, pgErrorConstraint } from '@breeze/shared/pgErrors';
 import { db, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import { wispConcernRecipients, wispConcerns, type WispConcernRecipientRow, type WispConcernRow } from '../../db/schema/wispConcerns';
 import { wispGrants } from '../../db/schema/wisp';
@@ -126,6 +126,8 @@ async function findLiveBySubject(partnerId: string, orgId: string | null, subjec
  * signature). The existing live row is returned with `created: false` and is
  * NOT touched — in particular a snooze survives a re-raise (Review Focus 5).
  */
+const LIVE_INDEXES = new Set(['wisp_concerns_live_subject_uq', 'wisp_concerns_live_signature_uq']);
+
 export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: string; created: boolean }> {
   const signature = input.signature ?? null;
   const values = {
@@ -158,7 +160,9 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
         inserted = await withDbTransaction(() =>
           db.insert(wispConcerns).values(values).onConflictDoNothing(conflict).returning({ id: wispConcerns.id }));
       } catch (err) {
-        if (!isPgUniqueViolation(err)) throw err;
+        // Only the two live indexes resolve to "already live"; any other
+        // unique violation is a real bug and must surface.
+        if (!isPgUniqueViolation(err) || !LIVE_INDEXES.has(pgErrorConstraint(err) ?? '')) throw err;
       }
       if (inserted[0]) return { id: inserted[0].id, created: true };
 
@@ -191,7 +195,11 @@ export async function updateConcern(
  * With `by.grantId`, the outcome is remembered as a `concern_outcome` block
  * AFTER the resolution is written; the memory write never undoes it.
  */
-export async function resolveConcern(id: string, by: { grantId?: string; userId?: string }, outcome: string): Promise<void> {
+export async function resolveConcern(
+  id: string,
+  by: { grantId?: string; userId?: string },
+  outcome: string,
+): Promise<{ resolved: boolean; remembered: boolean }> {
   const resolved = await inSystemContext(async () => {
     const [row] = await db.update(wispConcerns)
       .set({
@@ -212,14 +220,15 @@ export async function resolveConcern(id: string, by: { grantId?: string; userId?
       });
     return row ?? null;
   });
-  if (!resolved || !by.grantId) return;
+  if (!resolved) return { resolved: false, remembered: false };
+  if (!by.grantId) return { resolved: true, remembered: false };
 
   const grantId = by.grantId;
   const remember = async () => {
     const [grant] = await inSystemContext(() =>
       db.select({ currentRevisionId: wispGrants.currentRevisionId }).from(wispGrants).where(eq(wispGrants.id, grantId)).limit(1));
     // No pinned revision = no ceiling to author under; nothing to remember.
-    if (!grant?.currentRevisionId) return;
+    if (!grant?.currentRevisionId) return false;
     const ceiling = await resolveGrantCeiling(grantId, grant.currentRevisionId);
     await rememberForGrant(ceiling, {
       owner: resolved.orgId ? { kind: 'org', orgId: resolved.orgId } : { kind: 'partner' },
@@ -228,18 +237,23 @@ export async function resolveConcern(id: string, by: { grantId?: string; userId?
       content: { summary: resolved.summary, outcome, severity: resolved.severity, resolvedBy: 'wisp' },
       confidence: 'medium',
     });
+    return true;
   };
   try {
     // Inside a caller's system transaction, isolate the memory write in a
     // savepoint so a failure there cannot poison the caller's commit.
-    if (getCurrentDbAccessContext()?.scope === 'system') await withDbTransaction(remember);
-    else await remember();
+    const remembered = getCurrentDbAccessContext()?.scope === 'system'
+      ? await withDbTransaction(remember)
+      : await remember();
+    return { resolved: true, remembered };
   } catch (err) {
     // The grant cannot author memory right now (paused / revoked / grantor
     // lost standing, or the owner fell outside its ceiling). The resolution
     // stands; the outcome simply is not remembered.
-    if (err instanceof GrantInactiveError || err instanceof CeilingViolationError) return;
-    captureException(err, undefined, { concernId: id, grantId, op: 'wisp.concerns.resolve.remember' });
+    if (!(err instanceof GrantInactiveError || err instanceof CeilingViolationError)) {
+      captureException(err, undefined, { concernId: id, grantId, op: 'wisp.concerns.resolve.remember' });
+    }
+    return { resolved: true, remembered: false };
   }
 }
 
@@ -269,10 +283,23 @@ async function upsertRecipient(concernId: string, grantId: string, set: Recipien
     });
 }
 
+/**
+ * Serialise recipient-aggregate transitions on one concern: without the row
+ * lock, two recipients dismissing (or snoozing) at once each still see the
+ * other's row as open under READ COMMITTED and neither closes the concern.
+ * Must run inside the caller's system transaction. Throws ConcernNotFoundError.
+ */
+async function lockConcern(id: string): Promise<void> {
+  const [row] = await db.select({ id: wispConcerns.id }).from(wispConcerns)
+    .where(eq(wispConcerns.id, id)).for('update').limit(1);
+  if (!row) throw new ConcernNotFoundError(id);
+}
+
 /** This grant dismissed the concern; the concern closes once every recipient has. */
 export async function dismissConcern(id: string, by: { grantId: string; userId: string }): Promise<void> {
   const now = new Date();
   await inSystemContext(async () => {
+    await lockConcern(id);
     await upsertRecipient(id, by.grantId, { dismissedAt: now, answeredAt: now });
     await db.update(wispConcerns)
       .set({ status: 'dismissed', updatedAt: sql`now()` })
@@ -288,6 +315,7 @@ export async function dismissConcern(id: string, by: { grantId: string; userId: 
 export async function snoozeConcern(id: string, by: { grantId: string; userId: string }, until: Date): Promise<void> {
   const now = new Date();
   await inSystemContext(async () => {
+    await lockConcern(id);
     await upsertRecipient(id, by.grantId, { snoozedUntil: until, answeredAt: now });
     await db.update(wispConcerns)
       .set({ status: 'snoozed', updatedAt: sql`now()` })

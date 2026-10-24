@@ -320,12 +320,22 @@ describe('stopWatchesForInactiveGrants', () => {
       title: 'Wisp: watches stopped',
       body: "Ada Tech's Wisp grant is revoked; 2 watch(es) no longer running: backup_health, ticket_waiting",
       link: '/approvals',
-      dedupeKey: `wisp-watches-orphaned-${GRANT}`,
+      dedupeKey: `wisp-watches-orphaned-${GRANT}-${NOW.toISOString().slice(0, 10)}`,
       grantId: GRANT,
     });
     expect(calls.find((c) => c.grantId === GRANT_3)!.body)
       .toBe("bo@example.test's Wisp grant is paused; 1 watch(es) no longer running: patch_compliance");
     expect(h.captureException).toHaveBeenCalledTimes(1);
+
+    // A grant whose every delivery fails is NOT counted as notified.
+    h.deliverInApp.mockReset();
+    h.deliverInApp.mockRejectedValue(new Error('down'));
+    h.executeQueue = [[
+      { id: 'w5', grant_id: GRANT_3, kind: 'ticket_waiting', status: 'revoked', paused_reason: null, grantor_user_id: GRANTOR_2, partner_id: PARTNER },
+    ]];
+    h.selectQueue.users = [[{ id: GRANTOR_2, name: 'Bo', email: 'bo@example.test' }]];
+    h.selectQueue.partner_users = [[{ userId: ADMIN_1, partnerId: PARTNER }]];
+    expect(await stopWatchesForInactiveGrants(NOW)).toEqual({ stopped: 1, grantsNotified: 0 });
 
     // Admins = org_access 'all' partner users who are active, for the affected partners.
     const adminSel = h.selects.find((s) => s.table === 'partner_users')!;

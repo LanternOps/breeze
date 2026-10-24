@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import {
   CHAT_RAISE_CONCERN_SUBJECT_KINDS,
+  CONCERN_EVIDENCE_MAX_BYTES,
   CONCERN_EVIDENCE_MAX_KEYS,
   CONCERN_OUTCOME_MAX,
   CONCERN_SEVERITIES,
@@ -23,15 +24,25 @@ import {
   WATCH_CADENCE_MAX_MINUTES,
   WATCH_CADENCE_MIN_MINUTES,
   WATCH_KINDS,
+  WATCH_PARAMS_MAX_BYTES,
+  WATCH_PARAMS_MAX_KEYS,
 } from '../types/wispConcerns';
 
-const objectWithMaxKeys = (maxKeys: number) =>
-  z.record(z.string(), z.unknown()).refine((o) => Object.keys(o).length <= maxKeys, {
-    message: `at most ${maxKeys} keys`,
-  });
+const jsonBytes = (o: unknown): number => {
+  try {
+    return new TextEncoder().encode(JSON.stringify(o)).length;
+  } catch {
+    return Number.POSITIVE_INFINITY; // not JSON-serialisable (cycle, BigInt): refuse
+  }
+};
 
-const evidenceSchema = objectWithMaxKeys(CONCERN_EVIDENCE_MAX_KEYS);
-const watchParamsSchema = objectWithMaxKeys(20);
+const boundedObject = (maxKeys: number, maxBytes: number) =>
+  z.record(z.string(), z.unknown())
+    .refine((o) => Object.keys(o).length <= maxKeys, { message: `at most ${maxKeys} keys` })
+    .refine((o) => jsonBytes(o) <= maxBytes, { message: `at most ${maxBytes} bytes of JSON` });
+
+const evidenceSchema = boundedObject(CONCERN_EVIDENCE_MAX_KEYS, CONCERN_EVIDENCE_MAX_BYTES);
+const watchParamsSchema = boundedObject(WATCH_PARAMS_MAX_KEYS, WATCH_PARAMS_MAX_BYTES);
 
 export const concernSeveritySchema = z.enum(CONCERN_SEVERITIES);
 export const concernStatusSchema = z.enum(CONCERN_STATUSES);

@@ -225,7 +225,7 @@ describe('resolveConcern', () => {
     h.updateReturning.push([resolvedRow]);
     h.selectRows.push([{ currentRevisionId: R1 }]);
     h.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(G1, 'paused'));
-    await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toBeUndefined();
+    await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(h.rememberForGrant).not.toHaveBeenCalled();
     expect(h.captureException).not.toHaveBeenCalled();
   });
@@ -234,13 +234,13 @@ describe('resolveConcern', () => {
     h.updateReturning.push([resolvedRow]);
     h.selectRows.push([{ currentRevisionId: R1 }]);
     h.rememberForGrant.mockRejectedValueOnce(new CeilingViolationError('org', 'out'));
-    await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toBeUndefined();
+    await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(h.captureException).not.toHaveBeenCalled();
 
     h.updateReturning.push([resolvedRow]);
     h.selectRows.push([{ currentRevisionId: R1 }]);
     h.rememberForGrant.mockRejectedValueOnce(new Error('db down'));
-    await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toBeUndefined();
+    await expect(resolveConcern(C1, { grantId: G1 }, 'fixed')).resolves.toEqual({ resolved: true, remembered: false });
     expect(h.captureException).toHaveBeenCalledTimes(1);
   });
 });

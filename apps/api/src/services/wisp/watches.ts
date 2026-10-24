@@ -248,26 +248,10 @@ type StoppedRow = {
   partner_id: string;
 };
 
-/**
- * Stop every active watch whose grant is no longer active (or has passed its
- * expiry), then tell the partner admins once per grant. A delivery failure for
- * one admin is captured and does not stop the others.
- */
-export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped: number; grantsNotified: number }> {
-  const at = now.toISOString();
-  const rows = await inSystemContext(async () => [...((await db.execute(sql`
-    UPDATE wisp_watches w
-       SET status = 'stopped',
-           stopped_reason = CASE WHEN g.status = 'active' THEN 'expired' ELSE g.status END,
-           updated_at = ${at}::timestamptz
-      FROM wisp_grants g
-     WHERE w.grant_id = g.id
-       AND w.status = 'active'
-       AND (g.status <> 'active' OR g.expires_at <= ${at}::timestamptz)
-    RETURNING w.id, w.grant_id, w.kind, g.status, g.paused_reason, g.grantor_user_id, g.partner_id`)) as unknown as StoppedRow[])]);
-  if (rows.length === 0) return { stopped: 0, grantsNotified: 0 };
+type GrantGroup = { grantId: string; partnerId: string; grantorUserId: string; status: string; kinds: WatchKind[] };
 
-  type GrantGroup = { grantId: string; partnerId: string; grantorUserId: string; status: string; kinds: WatchKind[] };
+/** Stopped rows grouped per grant for the admin notice; user-paused grants are skipped. */
+function groupForNotice(rows: StoppedRow[]): Map<string, GrantGroup> {
   const groups = new Map<string, GrantGroup>();
   for (const r of rows) {
     // A user who paused their own Wisp resumes it themselves (and that resume
@@ -284,16 +268,40 @@ export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped
     g.kinds.push(r.kind);
     groups.set(r.grant_id, g);
   }
-  if (groups.size === 0) return { stopped: rows.length, grantsNotified: 0 };
+  return groups;
+}
 
-  const grantorIds = [...new Set([...groups.values()].map((g) => g.grantorUserId))];
-  const partnerIds = [...new Set([...groups.values()].map((g) => g.partnerId))];
-  const { grantors, admins } = await inSystemContext(async () => {
-    const grantorRows = await db
+/**
+ * Stop every active watch whose grant is no longer active (or has passed its
+ * expiry), then tell the partner admins once per grant. A delivery failure for
+ * one admin is captured and does not stop the others.
+ */
+export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped: number; grantsNotified: number }> {
+  const at = now.toISOString();
+  // The stop UPDATE and the recipient lookups share ONE transaction: if a
+  // lookup fails, the stop rolls back and the next tick retries both — the
+  // watches are never left stopped with nobody ever told.
+  const result = await inSystemContext(async () => {
+    const rows = [...((await db.execute(sql`
+      UPDATE wisp_watches w
+         SET status = 'stopped',
+             stopped_reason = CASE WHEN g.status = 'active' THEN 'expired' ELSE g.status END,
+             updated_at = ${at}::timestamptz
+        FROM wisp_grants g
+       WHERE w.grant_id = g.id
+         AND w.status = 'active'
+         AND (g.status <> 'active' OR g.expires_at <= ${at}::timestamptz)
+      RETURNING w.id, w.grant_id, w.kind, g.status, g.paused_reason, g.grantor_user_id, g.partner_id`)) as unknown as StoppedRow[])];
+    const groups = groupForNotice(rows);
+    if (groups.size === 0) return { rows, groups, grantors: [], admins: [] };
+
+    const grantorIds = [...new Set([...groups.values()].map((g) => g.grantorUserId))];
+    const partnerIds = [...new Set([...groups.values()].map((g) => g.partnerId))];
+    const grantors = await db
       .select({ id: users.id, name: users.name, email: users.email })
       .from(users)
       .where(inArray(users.id, grantorIds));
-    const adminRows = await db
+    const admins = await db
       .select({ userId: partnerUsers.userId, partnerId: partnerUsers.partnerId })
       .from(partnerUsers)
       .innerJoin(users, eq(users.id, partnerUsers.userId))
@@ -302,8 +310,10 @@ export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped
         eq(partnerUsers.orgAccess, 'all'),
         eq(users.status, 'active'),
       ));
-    return { grantors: grantorRows, admins: adminRows };
+    return { rows, groups, grantors, admins };
   });
+  const { rows, groups, grantors, admins } = result;
+  if (groups.size === 0) return { stopped: rows.length, grantsNotified: 0 };
 
   const grantorName = new Map(grantors.map((u) => [u.id, u.name?.trim() ? u.name : u.email]));
   const adminsByPartner = new Map<string, Set<string>>();
@@ -317,7 +327,7 @@ export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped
   for (const g of groups.values()) {
     const recipients = adminsByPartner.get(g.partnerId);
     if (!recipients || recipients.size === 0) continue;
-    grantsNotified += 1;
+    let delivered = false;
     const kinds = [...new Set(g.kinds)].sort().join(', ');
     const name = grantorName.get(g.grantorUserId) ?? 'A user';
     for (const userId of recipients) {
@@ -328,13 +338,17 @@ export async function stopWatchesForInactiveGrants(now: Date): Promise<{ stopped
           title: 'Wisp: watches stopped',
           body: `${name}'s Wisp grant is ${g.status}; ${g.kinds.length} watch(es) no longer running: ${kinds}`,
           link: '/approvals',
-          dedupeKey: `wisp-watches-orphaned-${g.grantId}`,
+          // Per UTC day: a grant paused, resumed and paused again tells the
+          // admins again; a redelivery the same day writes nothing.
+          dedupeKey: `wisp-watches-orphaned-${g.grantId}-${at.slice(0, 10)}`,
           grantId: g.grantId,
         });
+        delivered = true;
       } catch (err) {
-        captureException(err, undefined, { component: 'wisp.watches', op: 'orphan_notice' });
+        captureException(err, undefined, { component: 'wisp.watches', op: 'orphan_notice', grantId: g.grantId, userId });
       }
     }
+    if (delivered) grantsNotified += 1;
   }
   return { stopped: rows.length, grantsNotified };
 }

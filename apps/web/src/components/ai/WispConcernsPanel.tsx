@@ -30,8 +30,12 @@ const SEVERITY_DOT: Record<ConcernSeverity, string> = {
 function readHashId(): string | null {
   const hash = typeof window === 'undefined' ? '' : window.location.hash;
   if (!hash.startsWith(HASH_PREFIX)) return null;
-  const id = decodeURIComponent(hash.slice(HASH_PREFIX.length));
-  return id || null;
+  try {
+    const id = decodeURIComponent(hash.slice(HASH_PREFIX.length));
+    return id || null;
+  } catch {
+    return null; // malformed percent-encoding in a pasted link: ignore it, don't crash the sidebar
+  }
 }
 
 function tomorrowNineLocal(): Date {
@@ -62,7 +66,8 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
       if (token !== loadToken.current) return;
       setConcerns(next);
       setLoadFailed(false);
-    } catch {
+    } catch (err) {
+      console.error('[WispConcernsPanel] loading concerns failed', err);
       if (token === loadToken.current) setLoadFailed(true);
     } finally {
       if (token === loadToken.current) setLoaded(true);

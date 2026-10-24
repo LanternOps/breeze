@@ -71,7 +71,7 @@ const uuid = z.string().uuid();
 
 export const WISP_NOT_FOUND = { error: 'Not found', code: 'not_found' } as const;
 
-type ErrorStatus = 404 | 409 | 500;
+type ErrorStatus = 403 | 404 | 409 | 500;
 export const wispFail = (c: Context, status: ErrorStatus, code: string, error: string) => c.json({ error, code }, status);
 
 export const authOf = (c: Context): AuthContext => c.get('auth') as AuthContext;
@@ -142,7 +142,10 @@ export function grantErrorResponse(c: Context, err: unknown): Response {
   }
   if (err instanceof CeilingViolationError) {
     if (err.code === 'inactive') return grantInactive(c);
-    return wispFail(c, 404, 'org_out_of_reach', 'Organization not found');
+    if (err.code === 'org') return wispFail(c, 404, 'org_out_of_reach', 'Organization not found');
+    // site / permission / tool: the grant exists and is the caller's own; say
+    // which restriction refused it instead of pretending the org is missing.
+    return wispFail(c, 403, 'outside_ceiling', `This Wisp delegation does not cover that (${err.code} restriction)`);
   }
   throw err;
 }
@@ -182,7 +185,7 @@ async function mutateConcern(
   c: Context,
   grantId: string,
   verb: Mutation,
-  apply: (concern: Concern, userId: string) => Promise<void>,
+  apply: (concern: Concern, userId: string) => Promise<unknown>,
   details: Record<string, unknown> = {},
 ): Promise<Response> {
   const id = pathId(c);
@@ -191,6 +194,11 @@ async function mutateConcern(
   if (!access.ok) return access.response;
   const concern = await getConcernForCeiling(access.ceiling, id);
   if (!concern) return c.json(WISP_NOT_FOUND, 404);
+  // Snooze / dismiss / resolve act on a live concern only; a closed one would
+  // write a recipient row and an audit entry for a change that never happens.
+  if (concern.status !== 'open' && concern.status !== 'snoozed') {
+    return wispFail(c, 409, 'concern_not_live', `This concern is already ${concern.status}`);
+  }
 
   const userId = authOf(c).user.id;
   try {

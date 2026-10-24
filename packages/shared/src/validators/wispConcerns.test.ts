@@ -35,6 +35,15 @@ describe('raiseConcernSchema (record_concern)', () => {
   });
 });
 
+describe('JSON byte caps', () => {
+  it('evidence over 16 KB and watch params over 4 KB are a validation error, not a DB CHECK', () => {
+    expect(raiseConcernSchema.safeParse({ subject: { kind: 'ticket', id }, summary: 's', severity: 'low', evidence: { blob: 'x'.repeat(16_400) } }).success).toBe(false);
+    expect(raiseConcernSchema.safeParse({ subject: { kind: 'ticket', id }, summary: 's', severity: 'low', evidence: { blob: 'x'.repeat(16_000) } }).success).toBe(true);
+    expect(createWatchInputSchema.safeParse({ orgId: null, kind: 'custom_query', params: { q: 'x'.repeat(4_100) }, cadenceMinutes: 60 }).success).toBe(false);
+    expect(createWatchInputSchema.safeParse({ orgId: null, kind: 'custom_query', params: { q: 'x'.repeat(4_000) }, cadenceMinutes: 60 }).success).toBe(true);
+  });
+});
+
 describe('raiseConcernChatSchema (raise_concern)', () => {
   it('accepts the chat subject kinds with an explicit orgId', () => {
     for (const kind of ['ticket', 'org', 'quote', 'invoice', 'contract', 'device']) {

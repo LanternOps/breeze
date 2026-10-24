@@ -67,7 +67,7 @@ async function seed() {
 }
 
 const orphanNotices = (userId: string, grantId: string) => asSystem(() => db.select().from(userNotifications)
-  .where(and(eq(userNotifications.userId, userId), eq(userNotifications.dedupeKey, `wisp-watches-orphaned-${grantId}`))));
+  .where(and(eq(userNotifications.userId, userId), eq(userNotifications.dedupeKey, `wisp-watches-orphaned-${grantId}-${new Date().toISOString().slice(0, 10)}`))));
 
 describe('wisp watches (real Postgres)', () => {
   it('claimDueWatches claims only due active rows and advances next_due_at by cadence', async () => {

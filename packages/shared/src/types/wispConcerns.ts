@@ -84,6 +84,15 @@ export const CONCERN_SUMMARY_MAX = 2000;
 export const CONCERN_OUTCOME_MAX = 1000;
 export const CONCERN_FEEDBACK_NOTE_MAX = 200;
 export const CONCERN_EVIDENCE_MAX_KEYS = 20;
+/**
+ * JSON-text byte caps checked by Zod so an oversized payload is a 400, not a
+ * CHECK violation. Deliberately half the DB caps (`pg_column_size(evidence)
+ * <= 32768`, `pg_column_size(params) <= 8192`): jsonb storage size is not the
+ * JSON text length, so the API stays well inside the column CHECK.
+ */
+export const CONCERN_EVIDENCE_MAX_BYTES = 16_384;
+export const WATCH_PARAMS_MAX_KEYS = 20;
+export const WATCH_PARAMS_MAX_BYTES = 4_096;
 /** A snooze may run at most this far ahead. */
 export const CONCERN_SNOOZE_MAX_DAYS = 30;
 

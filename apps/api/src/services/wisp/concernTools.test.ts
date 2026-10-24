@@ -17,6 +17,8 @@ const concerns = vi.hoisted(() => ({
 }));
 const { createWatch } = vi.hoisted(() => ({ createWatch: vi.fn() }));
 const { resolveGrantCeiling } = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn() }));
+const { captureException } = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../sentry', () => ({ captureException }));
 const { selectRows, dbSelect, lastWhere } = vi.hoisted(() => {
   const state = { rows: [] as unknown[], where: undefined as unknown };
   const chain = {
@@ -307,6 +309,12 @@ describe('wisp concern tools — handlers', () => {
     expect(concerns.upsertConcern).not.toHaveBeenCalled();
   });
 
+  it('a corrupt grant pin is captured and reported as grant_corrupt, not as a pause', async () => {
+    resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(GRANT, 'active', 'revision of another grant', 'corrupt'));
+    expect(JSON.parse(await run('list_concerns', {}))).toEqual({ error: 'grant_corrupt' });
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
   it('raise_concern / list_concerns surface GrantInactiveError as grant_inactive and rethrow unknown errors', async () => {
     resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(GRANT, 'revoked'));
     expect(JSON.parse(await run('raise_concern', raise()))).toEqual({ error: 'grant_inactive' });
@@ -391,12 +399,33 @@ describe('wisp concern tools — handlers', () => {
     expect(JSON.parse(await run('snooze_concern', { concernId: CONCERN, until }))).toEqual({ error: 'concern_not_found' });
   });
 
+  it('resolve_concern / snooze_concern refuse a closed concern and say when the outcome was not remembered', async () => {
+    concerns.getConcernForCeiling.mockResolvedValueOnce(concern({ status: 'resolved' }));
+    expect(JSON.parse(await run('resolve_concern', { concernId: CONCERN, outcome: 'x' }))).toEqual({ error: 'concern_not_live', status: 'resolved' });
+    concerns.getConcernForCeiling.mockResolvedValueOnce(concern({ status: 'dismissed' }));
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    expect(JSON.parse(await run('snooze_concern', { concernId: CONCERN, until }))).toEqual({ error: 'concern_not_live', status: 'dismissed' });
+    expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    expect(concerns.snoozeConcern).not.toHaveBeenCalled();
+
+    concerns.getConcernForCeiling.mockResolvedValueOnce(concern());
+    concerns.resolveConcern.mockResolvedValueOnce({ resolved: true, remembered: false });
+    expect(await run('resolve_concern', { concernId: CONCERN, outcome: 'x' })).toContain('could not be saved');
+
+    concerns.markAnswered.mockClear();
+    concerns.getConcernForCeiling.mockResolvedValueOnce(concern());
+    concerns.resolveConcern.mockResolvedValueOnce({ resolved: false, remembered: false });
+    expect(JSON.parse(await run('resolve_concern', { concernId: CONCERN, outcome: 'x' }))).toEqual({ error: 'concern_not_live' });
+    expect(concerns.markAnswered).not.toHaveBeenCalled();
+  });
+
   it('resolve_concern checks visibility, then resolveConcern(id, { grantId }, outcome) (memory-writing form), then markAnswered', async () => {
     concerns.getConcernForCeiling.mockResolvedValueOnce(null);
     expect(JSON.parse(await run('resolve_concern', { concernId: CONCERN, outcome: 'Key arrived' }))).toEqual({ error: 'concern_not_found' });
     expect(concerns.resolveConcern).not.toHaveBeenCalled();
 
     concerns.getConcernForCeiling.mockResolvedValueOnce(concern());
+    concerns.resolveConcern.mockResolvedValueOnce({ resolved: true, remembered: true });
     const out = await run('resolve_concern', { concernId: CONCERN, outcome: 'Key arrived' });
     expect(concerns.resolveConcern).toHaveBeenCalledWith(CONCERN, { grantId: GRANT }, 'Key arrived');
     expect(concerns.markAnswered).toHaveBeenCalledWith(CONCERN, GRANT, expect.any(Date));

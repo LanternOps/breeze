@@ -39,6 +39,7 @@ import { contracts, devices, invoices, quotes, tickets } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { sanitizeUntrustedToolText, wrapUntrustedData } from '../aiInputSanitizer';
 import type { AiTool } from '../aiTools';
+import { captureException } from '../sentry';
 import {
   createWatchShape,
   LIST_CONCERNS_DEFAULT_LIMIT,
@@ -101,12 +102,22 @@ function invalid(error: z.ZodError): string {
  * swallowed into a success-shaped string.
  */
 function mapServiceError(err: unknown): string {
-  if (err instanceof GrantInactiveError) return JSON.stringify({ error: 'grant_inactive' });
+  if (err instanceof GrantInactiveError) {
+    // A corrupt pin is data damage, not a pause: surface it (the routes do the same).
+    if (err.kind === 'corrupt') {
+      captureException(err, undefined, { grantId: err.grantId, op: 'wisp.concern_tool' });
+      return JSON.stringify({ error: 'grant_corrupt' });
+    }
+    return JSON.stringify({ error: 'grant_inactive' });
+  }
   if (err instanceof CeilingViolationError) return JSON.stringify({ error: 'ceiling_violation', code: err.code });
   if (err instanceof ConcernNotFoundError) return CONCERN_NOT_FOUND;
   if (err instanceof WatchLimitReachedError) return JSON.stringify({ error: 'watch_limit_reached' });
   throw err;
 }
+
+const isLive = (c: Concern) => c.status === 'open' || c.status === 'snoozed';
+const notLive = (c: Concern) => JSON.stringify({ error: 'concern_not_live', status: c.status });
 
 function ceilingFor(grant: WispGrantRef): Promise<GrantCeiling> {
   return resolveGrantCeiling(grant.grantId, grant.grantRevisionId);
@@ -232,6 +243,7 @@ const snoozeConcernHandler = grantTool(snoozeConcernToolSchema, async (input, ce
   // Existence-neutral: not found and not visible to this grant read the same.
   const visible = await getConcernForCeiling(ceiling, input.concernId);
   if (!visible) return CONCERN_NOT_FOUND;
+  if (!isLive(visible)) return notLive(visible);
   const until = new Date(input.until);
   await snoozeConcern(visible.id, { grantId: ceiling.grantId, userId: ceiling.grantorUserId }, until);
   await markAnswered(visible.id, ceiling.grantId, new Date());
@@ -241,10 +253,15 @@ const snoozeConcernHandler = grantTool(snoozeConcernToolSchema, async (input, ce
 const resolveConcernHandler = grantTool(resolveConcernToolSchema, async (input, ceiling) => {
   const visible = await getConcernForCeiling(ceiling, input.concernId);
   if (!visible) return CONCERN_NOT_FOUND;
+  if (!isLive(visible)) return notLive(visible);
   // The grantId form remembers the outcome as a concern_outcome memory block.
-  await resolveConcern(visible.id, { grantId: ceiling.grantId }, input.outcome);
+  const { resolved, remembered } = await resolveConcern(visible.id, { grantId: ceiling.grantId }, input.outcome);
+  // Closed by someone else between the read and the write.
+  if (!resolved) return JSON.stringify({ error: 'concern_not_live' });
   await markAnswered(visible.id, ceiling.grantId, new Date());
-  return `Concern ${visible.id} resolved; the outcome is remembered for next time.`;
+  return remembered
+    ? `Concern ${visible.id} resolved; the outcome is remembered for next time.`
+    : `Concern ${visible.id} resolved; the outcome could not be saved to Wisp memory.`;
 });
 
 const createWatchHandler = grantTool(createWatchInputSchema, async (input, ceiling) => {

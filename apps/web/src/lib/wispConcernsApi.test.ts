@@ -30,9 +30,9 @@ describe('listWispConcerns', () => {
     fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
     await expect(listWispConcerns('g1')).rejects.toThrow();
   });
-  it('returns [] when the body has no concerns array', async () => {
+  it('throws when the body has no concerns array (a contract break is not an empty list)', async () => {
     fetchWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
-    expect(await listWispConcerns('g1')).toEqual([]);
+    await expect(listWispConcerns('g1')).rejects.toThrow(/no concerns array/);
   });
 });
 

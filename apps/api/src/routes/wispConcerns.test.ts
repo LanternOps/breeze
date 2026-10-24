@@ -82,7 +82,8 @@ vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }
 vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
 
 import { wispRoutes } from './wisp';
-import { GrantInactiveError } from '../services/wisp/grantAuthority';
+import { CeilingViolationError, GrantInactiveError } from '../services/wisp/grantAuthority';
+import { WISP_NOT_FOUND as WISP_NOT_FOUND_BODY } from './wispConcerns';
 import { ConcernNotFoundError } from '../services/wisp/concerns';
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
@@ -350,6 +351,43 @@ describe('POST /wisp/concerns/:id/dismiss', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('grant_inactive');
     expect(h.dismissConcern).not.toHaveBeenCalled();
+  });
+
+  it('a partner admin cannot dismiss on another tech\'s grant (personal state) → the same 404', async () => {
+    h.dbResults.push([grantRow({ grantorUserId: OTHER_USER })]);
+    const res = await post(buildApp(asPartnerAdmin), `/wisp/concerns/${CONCERN_ID}/dismiss`, { grantId: GRANT_ID });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(WISP_NOT_FOUND_BODY);
+    expect(h.getConcernForCeiling).not.toHaveBeenCalled();
+    expect(h.dismissConcern).not.toHaveBeenCalled();
+  });
+
+  it('409 concern_not_live for a resolved / dismissed concern; nothing written or answered', async () => {
+    for (const status of ['resolved', 'dismissed'] as const) {
+      h.dbResults.push([grantRow()]);
+      h.getConcernForCeiling.mockResolvedValueOnce(concern({ status }));
+      const res = await post(buildApp(), `/wisp/concerns/${CONCERN_ID}/dismiss`, { grantId: GRANT_ID });
+      expect(res.status).toBe(409);
+      expect((await res.json()).code).toBe('concern_not_live');
+    }
+    expect(h.dismissConcern).not.toHaveBeenCalled();
+    expect(h.markAnswered).not.toHaveBeenCalled();
+  });
+});
+
+describe('ceiling violation codes', () => {
+  it('org → 404 org_out_of_reach; site/permission/tool → 403 outside_ceiling; inactive → 409', async () => {
+    const cases: Array<[ 'org' | 'site' | 'permission' | 'tool' | 'inactive', number, string]> = [
+      ['org', 404, 'org_out_of_reach'], ['site', 403, 'outside_ceiling'], ['permission', 403, 'outside_ceiling'],
+      ['tool', 403, 'outside_ceiling'], ['inactive', 409, 'grant_inactive'],
+    ];
+    for (const [code, status, body] of cases) {
+      h.dbResults.push([grantRow()]);
+      h.resolveGrantCeiling.mockRejectedValueOnce(new CeilingViolationError(code, 'x'));
+      const res = await buildApp().request(`/wisp/concerns?grantId=${GRANT_ID}`);
+      expect(res.status, code).toBe(status);
+      expect((await res.json()).code, code).toBe(body);
+    }
   });
 });
 
