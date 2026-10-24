@@ -7108,6 +7108,8 @@
     "pickUser": "Techniker auswählen",
     "pickPrompt": "Wählen Sie oben eine Option, um das Gedächtnis zu sehen.",
     "showContent": "Inhalt anzeigen",
-    "hideContent": "Inhalt ausblenden"
+    "hideContent": "Inhalt ausblenden",
+    "conversationUnavailable": "Diese Unterhaltung ist nicht mehr verfügbar.",
+    "usersLoadFailed": "Techniker konnten nicht geladen werden."
   }
 }

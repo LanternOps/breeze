@@ -27,7 +27,7 @@ import { createAuditLog } from '../auditService';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import {
   MEMORY_CONTENT_MAX_BYTES, MEMORY_SUBJECT_KEY_MAX_LENGTH, toMemoryBlock,
-  type MemoryBlock, type MemoryBlockType,
+  memoryKeyLock, type MemoryBlock, type MemoryBlockType,
 } from './memoryBroker';
 
 export type MemoryServiceErrorCode =
@@ -39,7 +39,9 @@ export type MemoryServiceErrorCode =
   /** recordHumanBlock: input failed validation (subject key, content, closed lists, ids). */
   | 'invalid_memory'
   /** recordHumanBlock: the caller may not author memory for the named owner. */
-  | 'owner_mismatch';
+  | 'owner_mismatch'
+  /** confirmBlock: a newer block already replaced this one; confirming it would orphan the key. */
+  | 'superseded';
 
 export class MemoryServiceError extends Error {
   readonly code: MemoryServiceErrorCode;
@@ -89,15 +91,6 @@ async function loadForChange(auth: AuthContext, id: string): Promise<AiMemoryBlo
   return row;
 }
 
-/**
- * The per-key advisory lock shared with memoryBroker.rememberForGrant and
- * recordHumanBlock (namespace + JSON key byte-identical; JSON, not a NUL-joined
- * string: Postgres text rejects NUL, 22021).
- */
-function memoryKeyLock(row: Pick<AiMemoryBlockRow, 'tenantPartnerId' | 'ownerKind' | 'ownerUserId' | 'ownerOrgId' | 'blockType' | 'subjectKey'>): SQL {
-  const lockKey = JSON.stringify([row.tenantPartnerId, row.ownerKind, row.ownerUserId ?? row.ownerOrgId, row.blockType, row.subjectKey]);
-  return sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`;
-}
 
 /**
  * unconfirmed → confirmed. Already confirmed: returned unchanged. Retracted:
@@ -115,16 +108,17 @@ export async function confirmBlock(auth: AuthContext, id: string): Promise<Memor
   const row = await loadForChange(auth, id);
   if (row.status === 'retracted') throw new MemoryServiceError('retracted', 'A retracted memory block cannot be confirmed');
   if (row.status === 'confirmed') return toMemoryBlock(row);
+  if (row.supersededById) throw new MemoryServiceError('superseded', 'A newer memory block already replaced this one');
 
   const updated = await db.transaction(async (tx) => {
     await tx.execute(memoryKeyLock(row));
     const [confirmed] = await tx.update(aiMemoryBlocks)
-      .set({ status: 'confirmed', updatedAt: new Date() })
-      .where(and(eq(aiMemoryBlocks.id, id), ne(aiMemoryBlocks.status, 'retracted')))
+      .set({ status: 'confirmed', updatedAt: sql`now()` })
+      .where(and(eq(aiMemoryBlocks.id, id), ne(aiMemoryBlocks.status, 'retracted'), isNull(aiMemoryBlocks.supersededById)))
       .returning();
     if (!confirmed) return undefined;
     await tx.update(aiMemoryBlocks)
-      .set({ supersededById: confirmed.id, updatedAt: new Date() })
+      .set({ supersededById: confirmed.id, updatedAt: sql`now()` })
       .where(and(
         eq(aiMemoryBlocks.tenantPartnerId, confirmed.tenantPartnerId),
         eq(aiMemoryBlocks.ownerKind, confirmed.ownerKind),
@@ -143,6 +137,7 @@ export async function confirmBlock(auth: AuthContext, id: string): Promise<Memor
   const current = await selectBlock(id);
   if (!current) throw new MemoryServiceError('not_found', 'Memory block not found');
   if (current.status === 'retracted') throw new MemoryServiceError('retracted', 'A retracted memory block cannot be confirmed');
+  if (current.supersededById) throw new MemoryServiceError('superseded', 'A newer memory block already replaced this one');
   return toMemoryBlock(current);
 }
 
@@ -152,7 +147,7 @@ export async function retractBlock(auth: AuthContext, id: string): Promise<Memor
   if (row.status === 'retracted') return toMemoryBlock(row);
 
   const [updated] = await db.update(aiMemoryBlocks)
-    .set({ status: 'retracted', updatedAt: new Date() })
+    .set({ status: 'retracted', updatedAt: sql`now()` })
     .where(and(eq(aiMemoryBlocks.id, id), ne(aiMemoryBlocks.status, 'retracted')))
     .returning();
   if (updated) return toMemoryBlock(updated);
@@ -339,15 +334,9 @@ export async function recordHumanBlock(auth: AuthContext, input: RecordHumanBloc
   }
 
   const row = await db.transaction(async (tx) => {
-    // Serialize writers of one (tenant, owner, block_type, subject_key) so two
-    // concurrent writes cannot both stay live. Byte-identical lock (namespace +
-    // JSON key) to memoryBroker.rememberForGrant, so a human record and an
-    // agent remember on one key also serialize against each other — keep the
-    // two in step. JSON, not a NUL-joined string: Postgres text rejects NUL (22021).
-    const lockKey = JSON.stringify([
-      owner.tenantPartnerId, owner.ownerKind, owner.ownerUserId ?? owner.ownerOrgId, input.blockType, input.subjectKey,
-    ]);
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`);
+    // The shared per-key lock (memoryBroker.memoryKeyLock): a human record and an
+    // agent remember on one key serialize, so two writes cannot both stay live.
+    await tx.execute(memoryKeyLock({ ...owner, blockType: input.blockType, subjectKey: input.subjectKey }));
 
     const [created] = await tx.insert(aiMemoryBlocks).values({
       ...owner,
@@ -366,7 +355,7 @@ export async function recordHumanBlock(auth: AuthContext, input: RecordHumanBloc
       ? eq(aiMemoryBlocks.ownerUserId, owner.ownerUserId!)
       : owner.ownerKind === 'org' ? eq(aiMemoryBlocks.ownerOrgId, owner.ownerOrgId!) : undefined;
     await tx.update(aiMemoryBlocks)
-      .set({ supersededById: created.id, updatedAt: new Date() })
+      .set({ supersededById: created.id, updatedAt: sql`now()` })
       .where(and(
         eq(aiMemoryBlocks.tenantPartnerId, owner.tenantPartnerId),
         eq(aiMemoryBlocks.ownerKind, owner.ownerKind),

@@ -62,6 +62,7 @@ function errorResponse(c: Context, err: unknown): Response {
     case 'not_found':
       return c.json({ error: err.code }, 404);
     case 'retracted':
+    case 'superseded':
       return c.json({ error: err.code }, 409);
     case 'partner_wide_write_denied':
     case 'human_only':

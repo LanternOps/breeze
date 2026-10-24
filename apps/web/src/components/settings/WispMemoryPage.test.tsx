@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   navigateTo: vi.fn(),
   loadSession: vi.fn(),
   open: vi.fn(),
+  showToast: vi.fn(),
+  aiSessionId: null as string | null,
   scope: 'partner' as string | null,
   canManagePartnerWide: true as boolean | undefined,
   organizations: [{ id: 'org-1', name: 'Acme' }] as Array<{ id: string; name: string }>,
@@ -22,10 +24,16 @@ vi.mock('../../stores/orgStore', () => ({
   useOrgStore: (selector: (s: unknown) => unknown) => selector({ organizations: mocks.organizations }),
 }));
 vi.mock('../../stores/aiStore', () => ({
-  useAiStore: { getState: () => ({ loadSession: mocks.loadSession, open: mocks.open }) },
+  useAiStore: { getState: () => ({ loadSession: mocks.loadSession, open: mocks.open, sessionId: mocks.aiSessionId }) },
 }));
+vi.mock('../shared/Toast', () => ({ showToast: mocks.showToast }));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: () => ({ scope: mocks.scope }) }));
-vi.mock('../../lib/runAction', () => ({ runAction: mocks.runAction, handleActionError: mocks.handleActionError }));
+vi.mock('../../lib/runAction', () => {
+  class ActionError extends Error {
+    constructor(message: string, public status: number) { super(message); }
+  }
+  return { runAction: mocks.runAction, handleActionError: mocks.handleActionError, ActionError };
+});
 vi.mock('@/lib/navigation', () => ({ navigateTo: mocks.navigateTo }));
 vi.mock('@/lib/i18n', () => ({ default: {}, i18n: {}, getFallbackFormattingLocale: () => undefined }));
 vi.mock('react-i18next', () => ({
@@ -69,6 +77,8 @@ describe('WispMemoryPage', () => {
     mocks.scope = 'partner';
     mocks.canManagePartnerWide = true;
     window.location.hash = '';
+    mocks.aiSessionId = null;
+    mocks.loadSession.mockImplementation(async (id: string) => { mocks.aiSessionId = id; });
     mocks.runAction.mockImplementation(async ({ request }: { request: () => Promise<Response> }) => request());
     mocks.fetchWithAuth.mockImplementation(async (url: string) => {
       if (url.startsWith('/wisp/memory?scope=mine')) return response({ blocks: [block()] });
@@ -177,6 +187,40 @@ describe('WispMemoryPage', () => {
     await waitFor(() => expect(mocks.open).toHaveBeenCalledTimes(1));
     expect(mocks.loadSession).toHaveBeenCalledWith(SESSION_ID);
     expect(mocks.loadSession.mock.invocationCallOrder[0]).toBeLessThan(mocks.open.mock.invocationCallOrder[0]);
+  });
+
+  it('From conversation: a session that cannot be restored toasts an error and does not open an empty panel', async () => {
+    mocks.loadSession.mockImplementation(async () => { mocks.aiSessionId = null; });
+    mocks.fetchWithAuth.mockImplementation(async () => response({ blocks: [block({ sourceSessionId: SESSION_ID })] }));
+    render(<WispMemoryPage />);
+    fireEvent.click(await screen.findByTestId('wisp-memory-from-conversation'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith({ type: 'error', message: 'wispMemory.conversationUnavailable' }));
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
+  it('a 404/409 mutation failure reloads the list so the stale row disappears', async () => {
+    const { ActionError } = (await import('../../lib/runAction')) as unknown as { ActionError: new (m: string, s: number) => Error };
+    mocks.runAction.mockRejectedValueOnce(new ActionError('gone', 409));
+    render(<WispMemoryPage />);
+    fireEvent.click(await screen.findByTestId(`wisp-memory-confirm-${BLOCK_ID}`));
+    await waitFor(() => expect(mocks.handleActionError).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mocks.fetchWithAuth.mock.calls.filter(([url]) => url === '/wisp/memory?scope=mine').length).toBe(2));
+  });
+
+  it('Technicians picker: a failed user list shows an error instead of an empty picker; 401 goes to /login', async () => {
+    mocks.fetchWithAuth.mockImplementation(async (url: string) =>
+      url === '/users' ? response({}, 500) : response({ blocks: [] }));
+    const { unmount } = render(<WispMemoryPage />);
+    fireEvent.click(await screen.findByTestId('wisp-memory-tab-users'));
+    expect(await screen.findByTestId('wisp-memory-users-error')).toBeTruthy();
+    unmount();
+    mocks.fetchWithAuth.mockImplementation(async (url: string) =>
+      url === '/users' ? response({}, 401) : response({ blocks: [] }));
+    window.location.hash = '';
+    render(<WispMemoryPage />);
+    fireEvent.click(await screen.findByTestId('wisp-memory-tab-users'));
+    await waitFor(() => expect(mocks.navigateTo).toHaveBeenCalledWith('/login', { replace: true }));
   });
 
   it('shows work_summary type label', async () => {

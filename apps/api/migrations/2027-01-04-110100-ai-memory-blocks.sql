@@ -13,7 +13,11 @@
 --   org     → breeze_has_org_access(owner_org_id)                 (shape 1);
 --   partner → breeze_has_partner_access(tenant_partner_id)        (shape 3).
 -- There is deliberately no partner-wide SELECT branch for org tokens: this is
--- private memory, not partner config. Registered in PARTNER_TENANT_TABLES
+-- private memory, not partner config. The partner branch admits any caller with
+-- partner access; the stricter WRITE gate for partner-owned blocks
+-- (canManagePartnerWidePolicies) is app-layer only, in memoryService.ts — any
+-- new request-context writer must call it (the single-caller contract test pins
+-- writers to memoryService.ts / memoryBroker.ts). Registered in PARTNER_TENANT_TABLES
 -- (rls-coverage.integration.test.ts) with column `tenant_partner_id`; the one
 -- FOR ALL policy references breeze_has_partner_access, so all four DML
 -- commands are covered.
@@ -70,7 +74,10 @@ CREATE TABLE IF NOT EXISTS ai_memory_blocks (
   ),
   CONSTRAINT ai_memory_blocks_block_type_chk CHECK (block_type IN ('preference','standing_instruction','fact','decision','concern_outcome','work_summary')),
   CONSTRAINT ai_memory_blocks_confidence_chk CHECK (confidence IN ('low','medium','high')),
-  CONSTRAINT ai_memory_blocks_status_chk CHECK (status IN ('unconfirmed','confirmed','retracted'))
+  CONSTRAINT ai_memory_blocks_status_chk CHECK (status IN ('unconfirmed','confirmed','retracted')),
+  -- Provenance pair: an agent write stamps both; a human write (recordHumanBlock)
+  -- may keep the grant id with no revision; a revision never stands alone.
+  CONSTRAINT ai_memory_blocks_grant_provenance_chk CHECK (authored_by_grant_revision_id IS NULL OR authored_by_grant_id IS NOT NULL)
 );
 
 -- ---------------------------------------------------------------------------

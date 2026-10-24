@@ -31,6 +31,12 @@ export const AI_MEMORY_BLOCKS_WRITER_ALLOWLIST: Record<string, 'agent' | 'human'
 
 const ACCESS_PATTERNS: RegExp[] = [
   /\b(?:from|insert|update|delete)\(\s*aiMemoryBlocks\s*\)/,
+  // Joins, namespace access (schema.aiMemoryBlocks, db.query.aiMemoryBlocks) and any
+  // value import of the table (including an alias) — a read through any of these
+  // would bypass both the ceiling filter and the service.
+  /\b\w*[Jj]oin\(\s*(?:\w+\.)?aiMemoryBlocks\b/,
+  /\.aiMemoryBlocks\b/,
+  /\bimport\s*\{[^}]*(?<!type\s)\baiMemoryBlocks\b[^}]*\}/,
   /\b(?:FROM|INTO|UPDATE|JOIN)\s+(?:public\.)?ai_memory_blocks\b/i,
   /identifier\(\s*['"]ai_memory_blocks['"]\s*\)/,
 ];

@@ -7108,6 +7108,8 @@
     "pickUser": "Selecciona un técnico",
     "pickPrompt": "Elige una opción arriba para ver su memoria.",
     "showContent": "Mostrar contenido",
-    "hideContent": "Ocultar contenido"
+    "hideContent": "Ocultar contenido",
+    "conversationUnavailable": "Esta conversación ya no está disponible.",
+    "usersLoadFailed": "No se pudieron cargar los técnicos."
   }
 }

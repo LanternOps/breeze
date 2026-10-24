@@ -7108,6 +7108,8 @@
     "pickUser": "Sélectionner un technicien",
     "pickPrompt": "Faites un choix ci-dessus pour voir sa mémoire.",
     "showContent": "Afficher le contenu",
-    "hideContent": "Masquer le contenu"
+    "hideContent": "Masquer le contenu",
+    "conversationUnavailable": "Cette conversation n'est plus disponible.",
+    "usersLoadFailed": "Impossible de charger les techniciens."
   }
 }

@@ -7108,6 +7108,8 @@
     "pickUser": "Bir teknisyen seçin",
     "pickPrompt": "Belleği görmek için yukarıdan seçim yapın.",
     "showContent": "İçeriği göster",
-    "hideContent": "İçeriği gizle"
+    "hideContent": "İçeriği gizle",
+    "conversationUnavailable": "Bu konuşma artık kullanılamıyor.",
+    "usersLoadFailed": "Teknisyenler yüklenemedi."
   }
 }

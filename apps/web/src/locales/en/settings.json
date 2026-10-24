@@ -7108,6 +7108,8 @@
     "pickUser": "Select a technician",
     "pickPrompt": "Choose one above to see its memory.",
     "showContent": "Show content",
-    "hideContent": "Hide content"
+    "hideContent": "Hide content",
+    "conversationUnavailable": "This conversation is no longer available.",
+    "usersLoadFailed": "Couldn't load technicians."
   }
 }

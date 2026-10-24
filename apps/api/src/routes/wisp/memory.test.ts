@@ -257,6 +257,14 @@ describe('wisp memory routes', () => {
     expect(h.writeRouteAudit).not.toHaveBeenCalled();
   });
 
+  it('confirm of an already-superseded block is 409 superseded and is not audited', async () => {
+    h.svc.confirmBlock.mockRejectedValue(new h.MemoryServiceError('superseded'));
+    const res = await app.request(`/wisp/memory/${BLOCK_ID}/confirm`, post);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'superseded' });
+    expect(h.writeRouteAudit).not.toHaveBeenCalled();
+  });
+
   it('not_found → 404, human_only / owner_mismatch / partner_wide_write_denied → 403, invalid_memory → 400', async () => {
     const cases: Array<[string, number]> = [
       ['not_found', 404],

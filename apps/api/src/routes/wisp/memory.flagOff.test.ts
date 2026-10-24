@@ -66,6 +66,18 @@ describe('wisp memory routes with BREEZE_WISP_ENABLED unset (real wispEnabled)',
     for (const fn of Object.values(h.svc)) expect(fn).not.toHaveBeenCalled();
   });
 
+  it.each(['IS_HOSTED', 'BREEZE_AI_AGENTS_ENABLED', 'BREEZE_WISP_ENABLED'])(
+    'each term of the conjunction is required: %s off (other two on) ⇒ 404',
+    async (term) => {
+      vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
+      vi.stubEnv(term, 'false');
+      expect(wispEnabled()).toBe(false);
+      const res = await app.request('/wisp/memory?scope=mine');
+      expect(res.status).toBe(404);
+      for (const fn of Object.values(h.svc)) expect(fn).not.toHaveBeenCalled();
+    },
+  );
+
   it('control: the same request reaches the service once the flag is on', async () => {
     vi.stubEnv('BREEZE_WISP_ENABLED', 'true');
     h.svc.listBlocksForUser.mockResolvedValue([]);

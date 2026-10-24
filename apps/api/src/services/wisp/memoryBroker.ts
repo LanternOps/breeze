@@ -254,6 +254,20 @@ function assertOwnerWithinCeiling(ceiling: GrantCeiling, owner: MemoryOwner): vo
  * (memoryService.confirmBlock) replaces it. Otherwise a prompt-injected
  * `remember` could silently drop a technician's confirmed preference.
  */
+/**
+ * The per-key advisory lock every writer of one (tenant, owner, block_type,
+ * subject_key) takes — rememberForGrant here, confirmBlock and recordHumanBlock
+ * in memoryService.ts — so an agent write and a human write on one key
+ * serialize. JSON, not a NUL-joined string: Postgres text rejects NUL (22021).
+ */
+export function memoryKeyLock(key: {
+  tenantPartnerId: string; ownerKind: MemoryOwner['kind']; ownerUserId: string | null; ownerOrgId: string | null;
+  blockType: MemoryBlockType; subjectKey: string;
+}): SQL {
+  const lockKey = JSON.stringify([key.tenantPartnerId, key.ownerKind, key.ownerUserId ?? key.ownerOrgId, key.blockType, key.subjectKey]);
+  return sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`;
+}
+
 export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInput): Promise<MemoryBlock> {
   assertActive(ceiling);
   validateRememberInput(block);
@@ -262,10 +276,11 @@ export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInp
   const { owner } = block;
   const ownerUserId = owner.kind === 'user' ? owner.userId : null;
   const ownerOrgId = owner.kind === 'org' ? owner.orgId : null;
-  const lockKey = JSON.stringify([ceiling.partnerId, owner.kind, ownerUserId ?? ownerOrgId, block.blockType, block.subjectKey]);
-
   const row = await inBrokerContext(async () => {
-    await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('wisp.memory.remember'), hashtext(${lockKey}))`);
+    await db.execute(memoryKeyLock({
+      tenantPartnerId: ceiling.partnerId, ownerKind: owner.kind, ownerUserId, ownerOrgId,
+      blockType: block.blockType, subjectKey: block.subjectKey,
+    }));
     const [inserted] = await db.insert(aiMemoryBlocks).values({
       tenantPartnerId: ceiling.partnerId,
       ownerKind: owner.kind,
@@ -283,7 +298,7 @@ export async function rememberForGrant(ceiling: GrantCeiling, block: RememberInp
     if (!inserted) throw new Error('ai_memory_blocks insert returned no row');
 
     await db.update(aiMemoryBlocks)
-      .set({ supersededById: inserted.id, updatedAt: new Date() })
+      .set({ supersededById: inserted.id, updatedAt: sql`now()` })
       .where(and(
         eq(aiMemoryBlocks.tenantPartnerId, ceiling.partnerId),
         eq(aiMemoryBlocks.ownerKind, owner.kind),

@@ -6,7 +6,8 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useAiStore } from '../../stores/aiStore';
 import { getJwtClaims } from '../../lib/authScope';
-import { handleActionError, runAction } from '../../lib/runAction';
+import { ActionError, handleActionError, runAction } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { asList } from '@/lib/asList';
@@ -53,6 +54,7 @@ export default function WispMemoryPage() {
   const [orgId, setOrgId] = useState('');
   const [userId, setUserId] = useState('');
   const [users, setUsers] = useState<UserOption[]>([]);
+  const [usersError, setUsersError] = useState(false);
   const [blocks, setBlocks] = useState<MemoryBlockDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -67,14 +69,21 @@ export default function WispMemoryPage() {
   useEffect(() => {
     if (activeTab !== 'users' || users.length > 0) return;
     let live = true;
+    setUsersError(false);
     void fetchWithAuth('/users')
       .then(async (response) => {
-        if (!response.ok) return;
+        if (response.status === 401) {
+          UNAUTHORIZED();
+          return;
+        }
+        if (!response.ok) throw new Error(`GET /users failed (${response.status})`);
         const data = await response.json();
         if (live) setUsers(asList(data, 'users') as UserOption[]);
       })
-      .catch(() => {
-        /* picker stays empty; the load error surface is for the block list */
+      .catch((error: unknown) => {
+        // Without this an empty picker reads as "no colleagues" rather than "failed to load".
+        console.error('[WispMemoryPage] user list failed', error);
+        if (live) setUsersError(true);
       });
     return () => {
       live = false;
@@ -130,14 +139,25 @@ export default function WispMemoryPage() {
       await load();
     } catch (error) {
       handleActionError(error, failed);
+      // 404 (gone) / 409 (retracted or superseded meanwhile): the row is stale — reload so it stops offering actions.
+      if (error instanceof ActionError && (error.status === 404 || error.status === 409)) void load();
     } finally {
       setBusyId(null);
     }
   };
 
   const openConversation = async (sessionId: string) => {
-    const store = useAiStore.getState();
-    await store.loadSession(sessionId);
+    try {
+      await useAiStore.getState().loadSession(sessionId);
+    } catch (error) {
+      console.error('[WispMemoryPage] loadSession failed', error);
+    }
+    // loadSession clears the session on a 404 (erased or expired) without raising;
+    // opening then would show an empty panel with no explanation.
+    if (useAiStore.getState().sessionId !== sessionId) {
+      showToast({ type: 'error', message: t('wispMemory.conversationUnavailable') });
+      return;
+    }
     useAiStore.getState().open();
   };
 
@@ -201,6 +221,9 @@ export default function WispMemoryPage() {
             </option>
           ))}
         </select>
+      )}
+      {activeTab === 'users' && usersError && (
+        <p data-testid="wisp-memory-users-error" className="text-sm text-destructive">{t('wispMemory.usersLoadFailed')}</p>
       )}
 
       {loading ? (

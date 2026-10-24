@@ -5,6 +5,7 @@
  * export registries (the table has no org_id column — see the migration header).
  */
 import './setup';
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
@@ -35,6 +36,8 @@ describe('ai_memory_blocks RLS (owner_kind-branched)', () => {
       blockValues(f.partnerA, { kind: 'partner' }, { ownerOrgId: f.orgA1 }),
       // user kind with both NULL
       blockValues(f.partnerA, { kind: 'user', userId: f.uA1 }, { ownerUserId: null }),
+      // a grant revision without its grant (provenance pair: revision ⇒ grant)
+      blockValues(f.partnerA, { kind: 'user', userId: f.uA1 }, { authoredByGrantId: null, authoredByGrantRevisionId: randomUUID() }),
     ];
     for (const values of bad) {
       await expectSqlState(() => withDbAccessContext(SYSTEM_CTX, () => db.insert(aiMemoryBlocks).values(values)), '23514');
@@ -298,6 +301,20 @@ describe('memoryService under RLS', () => {
     expect((await readBlock(retracted.id))!.supersededById).toBeNull();
     expect((await readBlock(otherKey.id))!.supersededById).toBeNull();
     expect(idsOf(await as(a, (auth) => listBlocksForUser(auth)))).toEqual(idsOf([proposalB, retracted, otherKey]));
+  });
+
+  it('memoryService: confirming a block that was already superseded is refused (superseded) and leaves the live block live', async () => {
+    const f = await seedMemoryFixture();
+    const owner = { kind: 'user', userId: f.uA1 } as const;
+    const key = { blockType: 'preference', subjectKey: 'ticket.notify' } as const;
+    const live = await insertBlock(f.partnerA, owner, { ...key, status: 'unconfirmed' });
+    const stale = await insertBlock(f.partnerA, owner, { ...key, status: 'unconfirmed', supersededById: live.id });
+    const a = partnerSession(f.uA1, f.partnerA, [f.orgA1, f.orgA2], 'selected');
+
+    expect(await serviceCode(as(a, (auth) => confirmBlock(auth, stale.id)))).toBe('superseded');
+    expect((await readBlock(stale.id))!.status).toBe('unconfirmed');
+    expect((await readBlock(live.id))!.supersededById).toBeNull();
+    expect(idsOf(await as(a, (auth) => listBlocksForUser(auth)))).toEqual([live.id]);
   });
 
   it('memoryService: org member retracts an org block; a sibling-org member gets not_found', async () => {

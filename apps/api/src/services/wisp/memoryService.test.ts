@@ -139,7 +139,8 @@ describe('memoryService', () => {
     // 1: the guarded confirm; 2: supersede the other live blocks of the same key (the human's choice wins).
     expect(h.updates).toHaveLength(2);
     expect(h.updates[0]!.set.status).toBe('confirmed');
-    expect(h.updates[0]!.set.updatedAt).toBeInstanceOf(Date);
+    // DB clock (now()), not the API host's — the insert default is now() too, so no cross-clock skew.
+    expect(sqlOf(h.updates[0]!.set.updatedAt).text).toMatch(/now\(\)/);
     const where = sqlOf(h.updates[0]!.where);
     expect(where.text).toMatch(/"status" <> \$\d/);
     expect(where.params).toContain('retracted');
