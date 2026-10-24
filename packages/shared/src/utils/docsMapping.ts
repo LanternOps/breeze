@@ -257,6 +257,7 @@ const docsMapping: DocsEntry[] = [
   { pattern: '/operator', docsPath: '/features/ai-agents/#ai-operator-preview', label: 'AI Operator' },
   { pattern: '/approvals', docsPath: '/features/ai-agents/', label: 'Approvals' },
   { pattern: '/workspace', docsPath: '/features/ai/', label: 'AI Workspace' },
+  { pattern: '/ai/wisp', docsPath: '/features/ai/', label: 'Wisp' },
 
   // Account
   { pattern: '/account/delete', docsPath: '/reference/account-deletion/', label: 'Account Deletion' },

@@ -42,7 +42,7 @@ import { ACTOR_TYPES, AI_AGENT_ACTING_KINDS, INVOICE_STATUSES, monitorKindSchema
 import { JOURNAL_VACUUM_MAX_BYTES, JOURNAL_VACUUM_MIN_BYTES, SYSTEM_CLEANUP_ACTION_IDS, scriptVerificationClaimSchema } from '@breeze/shared/validators';
 import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
-import { createWatchShape, deliveryToolShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, toolInputSchemas } from './aiToolSchemas';
+import { createWatchShape, deliveryToolShape, diagnosticAccessShapes, executeCommandShape, listConcernsShape, raiseConcernShape, recallShape, rememberShape, resolveConcernShape, setDeviceContextShape, snoozeConcernShape, ticketRoutingManageShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
@@ -365,6 +365,10 @@ export const TOOL_TIERS = {
   list_flows: 1,
   // #8973 W4: read-only business-hours calendars (writes human-only, spec §5.7).
   list_business_calendars: 1,
+  // #8883 W5: ticket routing rules. Reads Tier 1; the manage tool is Tier 3 (supervised).
+  list_ticket_routing_rules: 1,
+  test_ticket_routing_rule: 1,
+  manage_ticket_routing_rules: 3,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -4455,6 +4459,39 @@ export function buildBreezeSdkTools(
         limit: z.number().int().min(1).max(100).optional().describe('Max calendars (default 50, max 100)'),
       },
       makeHandler('list_business_calendars', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // #8883 W5: ticket routing rules. Writes are Tier 3 supervised and the
+    // partner-wide capability gate lives in the service.
+    tool(
+      'list_ticket_routing_rules',
+      registryDescription('list_ticket_routing_rules'),
+      {
+        orgId: uuid.optional().describe("Only this organization's rules plus the partner-wide ones that apply to it (UUID)"),
+        limit: z.number().int().min(0).max(200).optional().describe('Max rules (default 100, max 200)'),
+      },
+      makeHandler('list_ticket_routing_rules', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'test_ticket_routing_rule',
+      registryDescription('test_ticket_routing_rule'),
+      {
+        orgId: uuid.describe('Organization the sample ticket belongs to (UUID)'),
+        source: z.enum(['portal', 'email', 'alert', 'manual', 'api', 'ai']).describe('Ticket source'),
+        subject: z.string().min(1).max(255).describe('Sample ticket subject (max 255)'),
+        requesterEmail: z.string().max(320).nullable().describe('Requester email, or null when unknown'),
+        categoryId: uuid.optional().describe('Category already on the ticket (UUID, optional)'),
+        priority: z.enum(['low', 'normal', 'high', 'urgent']).optional().describe('Priority already on the ticket (optional)'),
+      },
+      makeHandler('test_ticket_routing_rule', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'manage_ticket_routing_rules',
+      registryDescription('manage_ticket_routing_rules'),
+      ticketRoutingManageShape,
+      makeHandler('manage_ticket_routing_rules', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound

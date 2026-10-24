@@ -207,6 +207,8 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_timesheet', description: 'Get a timesheet summary', category: 'Ticketing' },
       { name: 'get_ticket_approval_status', description: 'View a ticket\'s budget and customer-approval status', category: 'Ticketing' },
       { name: 'list_business_calendars', description: 'List business-hours calendars used for SLA deadlines', category: 'Ticketing' },
+      { name: 'list_ticket_routing_rules', description: 'List ticket routing rules applied to new tickets', category: 'Ticketing' },
+      { name: 'test_ticket_routing_rule', description: 'Dry-run which routing rule would match a sample ticket', category: 'Ticketing' },
       { name: 'manage_ticket_checklist (list/list_templates/get_template)', description: 'View ticket checklist steps and checklist templates', category: 'Ticketing' },
       // AI Governance
       { name: 'list_ai_agents', description: 'List AI agents', category: 'AI Governance' },
@@ -377,6 +379,7 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_automations (run)', description: 'Run an automation on demand', category: 'Fleet Operations' },
       // Ticketing (P2-4, #4191)
       { name: 'manage_tickets (move_org)', description: 'Move a ticket to a different organization', category: 'Ticketing' },
+      { name: 'manage_ticket_routing_rules (create/update/reorder/delete)', description: 'Create, change, reorder or delete ticket routing rules', category: 'Ticketing' },
       // Endpoint messaging (#8742 W02): customer-visible text, always approved.
       { name: 'send_endpoint_message (send)', description: 'Send a message to the person at one or more devices', category: 'Ticketing' },
       // AI Governance (P2-5, #4192)
@@ -613,6 +616,9 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   list_flows: 'automations.read',
   // #8973 W4: business-hours calendars (read-only)
   list_business_calendars: 'tickets.read',
+  // #8883 W5: ticket routing rules
+  list_ticket_routing_rules: 'tickets.read',
+  test_ticket_routing_rule: 'tickets.read',
   // Files & disk
   disk_cleanup: { preview: 'devices.read', execute: 'devices.execute' },
   system_cleanup: { list: 'devices.execute', run: 'devices.execute', status: 'devices.read' },

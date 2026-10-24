@@ -219,6 +219,27 @@ Tickets enter the queue from four directions:
   [Service Management mode](/reference/partner-management/#service-management-mode).
 </Aside>
 
+## Routing rules
+
+Routing rules set who a new ticket goes to, and how it starts, the moment it is created. Manage them in **Settings → Ticketing → Routing**.
+
+A rule has **conditions** and **actions**:
+
+- **Conditions:** where the ticket came from (portal, email, alert, technician, API, AI), its priority, its category, words in the subject, and the requester's email domain. A domain is either exact (`example.com`) or every subdomain (`*.example.com`, which matches `help.example.com` but not `example.com` itself). Within one condition any value can match; every condition you fill in must match. A rule with no conditions matches every ticket, and the editor warns you about it. A priority condition matches only a priority someone chose (the technician, the customer or an intake form); a ticket whose priority was left at the default doesn't match one, even though it is saved as Normal.
+- **Actions:** assign a technician, set the priority, the category or the starting status, and add tags. A rule must have at least one action. The starting status can be a **New**, **Open**, **Pending** or **On hold** status; a ticket that starts Pending or On hold starts with its SLA clock paused.
+
+How rules are applied:
+
+- **Org rules first.** An organization's own rules are checked first, then the partner-wide rules (marked **All orgs**, or limited to the organizations you list). Within each group, the order on the page decides; drag a rule to reorder it. The **first** rule that matches wins.
+- **A rule never overrides a choice.** It only fills in what the person or form creating the ticket left empty: a priority a technician picked, an assignee they chose, or an intake form's own category and priority always win. The rule's category and priority then decide the ticket's SLA targets.
+- **If an action can't be applied**, it is skipped and the rest of the rule still applies. For example, if the technician a rule assigns can't be assigned that ticket (they were disabled, or they can't see that customer's organization), the ticket is created without that assignee. A rule whose only assignee has since been deleted becomes a rule with no action; the editor shows it so you can fix it.
+- **Every routed ticket says why.** The ticket gets an internal note naming the rule and listing the actions it applied and any it skipped, and the ticket keeps that note even if the rule is later renamed or deleted.
+- **Rules run once, at creation.** Editing a ticket later never re-routes it. Imported tickets, and tickets created as a continuation of a closed ticket (a reply to a closed email thread, an Office add-in follow-up), are not routed. Routing sends no notifications of its own; an assigned technician gets the usual [assignment notification](#assignment-notifications).
+
+Use **Test a ticket** on the Routing tab to see which rule a ticket would match, and what it would set, without creating anything.
+
+Partner-wide rules can be created and changed only by staff with access to all of your organizations. Staff with access to some organizations manage those organizations' own rules. Organization users can see the rules that apply to them but can't change them.
+
 ## Email-to-Ticket
 
 Breeze can turn customer emails into tickets automatically, so your help desk works entirely over email like a full PSA. Configure it under **Settings → Ticketing → Inbound email**.
@@ -302,8 +323,9 @@ Anything else is routed exactly as it would be with the setting off. The origina
 
 #### Default assignee for new inbound tickets
 
-An unassigned ticket sends no assignee notification, so staff can miss it. Pick a **Default assignee for new inbound tickets** on the same card to give every ticket created from inbound email an owner. It's empty (off) by default.
+An unassigned ticket sends no assignee notification, so staff can miss it. Set a default assignee to give every ticket created from inbound email an owner. It's empty (off) by default. The setting lives at the bottom of **Settings → Ticketing → Routing**, under **If no rule assigns an email ticket** (it used to be on the Inbound email card).
 
+- It is the **fallback** after [routing rules](#routing-rules): it applies only when no rule assigned the ticket, including when the matching rule set only a priority or category, or its assignee was skipped.
 - Only **new** tickets are assigned. A reply that threads onto an existing ticket never changes who it's assigned to, and a ticket something else already assigned is left alone.
 - You can pick an **active** member of your team whose organization access isn't set to none and whose role can view tickets. Breeze checks this every time the card saves, and rejects a user from another partner, a disabled user, or someone without ticket access. If the person you picked later stops qualifying, the card shows them as unavailable and won't save other changes until you pick someone else or clear the setting.
 - Each ticket is checked again when it arrives. If the default assignee can no longer be assigned that ticket (for example, they were disabled, or their access doesn't include that customer's organization), the ticket is created **unassigned** and Breeze records why in its inbound email log. The email is never rejected because of this setting.

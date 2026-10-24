@@ -635,7 +635,51 @@
       "attachFailed": "Impossibile allegare",
       "attachTooLarge": "Il file supera i 5 MB",
       "attachUnsupported": "È possibile allegare solo file di testo",
-      "threadFailed": "Wisp è attivo, ma non è stato possibile aprire il suo thread. Riattiva Wisp per riaprirlo."
+      "threadFailed": "Wisp è attivo, ma non è stato possibile aprire il suo thread. Riattiva Wisp per riaprirlo.",
+      "paused": "Wisp in pausa",
+      "resumed": "Wisp ripreso",
+      "pauseFailed": "Impossibile mettere Wisp in pausa",
+      "resumeFailed": "Impossibile riprendere Wisp"
+    },
+    "spend": {
+      "meter": "{{spent}}¢ su {{budget}}¢ oggi",
+      "resets": "si azzera tra {{hours}} h",
+      "raise": "Aumenta il budget di oggi",
+      "label": "Spesa di Wisp oggi"
+    },
+    "pause": "Metti Wisp in pausa",
+    "resume": "Riprendi",
+    "paused": {
+      "byYou": "Hai messo Wisp in pausa. Non farà controlli né ti invierà promemoria finché non lo riprendi."
+    },
+    "live": {
+      "checking": "Controllo di {{org}} in corso…",
+      "checkingUnnamed": "Controllo di un cliente in corso…"
+    },
+    "thread": {
+      "title": "Thread di Wisp",
+      "openChat": "Apri nella chat",
+      "openChatInactive": "Wisp deve essere attivo per chattare in questo thread.",
+      "notFound": "Questo thread di Wisp non esiste o non è tuo.",
+      "loadFailed": "Impossibile caricare questo thread di Wisp.",
+      "retry": "Riprova",
+      "stale": "Impossibile aggiornare questo thread. Ciò che vedi potrebbe non essere aggiornato."
+    },
+    "activity": {
+      "title": "Attività",
+      "empty": "Ancora niente. Il lavoro di Wisp comparirà qui.",
+      "loadFailed": "Impossibile caricare l'attività",
+      "loadMore": "Carica altro",
+      "cost": "{{cents}} ¢",
+      "kind": {
+        "assessment": "Controllo",
+        "concern": "Segnalazione",
+        "specialist": "Specialista",
+        "approval": "Approvazione",
+        "memory": "Memoria",
+        "nudge": "Promemoria",
+        "brief": "Riepilogo"
+      }
     }
   },
   "wispConcerns": {
@@ -677,6 +721,14 @@
       "invoice": "Fattura",
       "contract": "Contratto",
       "site": "Sede"
-    }
+    },
+    "reviewApproval": "Rivedi approvazione",
+    "useful": "Utile",
+    "notUseful": "Non utile",
+    "feedbackNotePlaceholder": "Cosa sarebbe stato meglio? (facoltativo)",
+    "feedbackSend": "Invia",
+    "feedbackGivenUseful": "Hai segnato questo come utile",
+    "feedbackGivenNotUseful": "Hai segnato questo come non utile",
+    "feedbackSaved": "Grazie. Wisp se lo ricorderà."
   }
 }

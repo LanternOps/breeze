@@ -9,7 +9,7 @@ import './setup';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../../db';
-import { configPolicyAssignments, configurationPolicies } from '../../db/schema';
+import { configPolicyAssignments, configPolicyFeatureLinks, configurationPolicies, softwarePolicies } from '../../db/schema';
 import { loadDeviceHierarchy } from '../../services/deviceHierarchy';
 import { loadDevicePolicySet } from '../../services/devicePolicySet';
 import { createOrganization, createPartner, createSite } from './db-utils';
@@ -79,6 +79,38 @@ describe('loadDevicePolicySet (#8142) — real PostgreSQL', () => {
     const set = await inOrg(w.orgId, w.partnerId, async () => loadDevicePolicySet((await loadDeviceHierarchy(w.deviceId))!));
     const bare = set.candidates.find((c) => c.level === 'device' && c.links.event_log);
     expect(bare?.links.event_log?.eventLog).toBeNull();
+  });
+
+  runDb('#6958 PR E: software_policy and security_agents links ride the set as presence only (nested settings null)', async () => {
+    const partner = (await createPartner())!;
+    const org = (await createOrganization({ partnerId: partner.id }))!;
+    const site = (await createSite({ orgId: org.id }))!;
+    const deviceId = await seedDevice(org.id, site.id, 'swlinks');
+    const policyId = await seedPolicy({
+      owner: { orgId: org.id, partnerId: null },
+      links: [{ featureType: 'pam', inlineSettings: { uacInterceptionEnabled: true } }],
+      assignments: [{ level: 'organization', targetId: org.id }],
+    });
+    const softwarePolicyId = await sys(async () => {
+      const [sw] = await db.insert(softwarePolicies).values({
+        orgId: org.id, name: 'set swlinks', mode: 'allowlist', rules: { software: [] },
+      }).returning({ id: softwarePolicies.id });
+      await db.insert(configPolicyFeatureLinks).values([
+        { configPolicyId: policyId, featureType: 'software_policy' as const, featurePolicyId: sw!.id },
+        { configPolicyId: policyId, featureType: 'security_agents' as const, inlineSettings: { version: 1, agents: [] } },
+      ]);
+      return sw!.id;
+    });
+
+    const set = await inOrg(org.id, partner.id, async () => loadDevicePolicySet((await loadDeviceHierarchy(deviceId))!));
+    const candidate = set.candidates.find((c) => c.policyId === policyId);
+    expect(candidate?.links.software_policy?.featurePolicyId).toBe(softwarePolicyId);
+    expect(candidate?.links.security_agents).toBeDefined();
+    for (const link of [candidate?.links.software_policy, candidate?.links.security_agents]) {
+      expect(link).toMatchObject({ eventLog: null, hardwareMonitoring: null, patch: null, timeSync: null, onedrive: null });
+    }
+    // The pre-existing link is unchanged.
+    expect(candidate?.links.pam).toBeDefined();
   });
 
   runDb('RLS ALONE hides cross-tenant assignments: an unfiltered read in the org context never sees them', async () => {

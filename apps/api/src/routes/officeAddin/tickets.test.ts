@@ -642,6 +642,8 @@ describe('POST /tickets/from-email', () => {
     expect(hoisted.createTicket.mock.calls[0]![0].description).toBe(
       'Re: T-2026-0001 (continued)\n\nSmoke everywhere.'
     );
+    // #8883 W5 (Gate B14): explicit continuation provenance — routing is skipped.
+    expect(hoisted.createTicket.mock.calls[0]![0].continuationOfTicketId).toBe(CLOSED_TICKET_ID);
     expect(updateSets[0]).toEqual({
       emailMessageId: MSG_ID,
       emailThreadKey: '<ticket-old@tickets.example.com>',

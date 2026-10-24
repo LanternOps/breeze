@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { db, withSystemDbAccessContext, getCurrentDbAccessContext, withDbTransaction } from '../../db';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
@@ -56,7 +56,8 @@ import {
   saveFilesystemSnapshot,
   upsertFilesystemScanState,
 } from '../../services/filesystemAnalysis';
-import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { evaluateSoftwarePolicyArming, recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
+import { MAX_DERIVED_SERVICE_WATCHES, serviceObservationKey } from '../../services/softwarePolicyServiceRules';
 import {
   resolvePatchConfigPolicyForDevice,
   patchExclusiveWindowsUpdateFromPolicySet,
@@ -2724,6 +2725,114 @@ async function resolveMonitorDerivedWatches(deviceId: string, opts?: DevicePolic
   return { kind: 'resolved', watches };
 }
 
+// ============================================
+// #6958 PR E: service watches derived from software-policy compliance
+// ============================================
+
+/** A compliance row older than this no longer contributes watches. */
+export const SOFTWARE_SERVICE_WATCH_STALE_MS = 30 * 60 * 1000;
+/** `check_interval_seconds` when derived software watches are the only watches. */
+export const SOFTWARE_SERVICE_ONLY_CHECK_INTERVAL_SECONDS = 300;
+
+/**
+ * Who can hold a software_compliance_status row for this device: the
+ * software_policy resolver's rule (resolveSoftwarePolicyForDevice:
+ * loadDeviceHierarchy drops the partner — ownership AND target — for an
+ * unassigned_pool org; SQL role/OS filter). The security_agents resolver uses
+ * the same rule over a SUBSET of the device's groups (execution-safe ones),
+ * so this rule admits a superset of both: the pre-filter below can only ever
+ * say "maybe" too often, never "no" wrongly.
+ */
+const SOFTWARE_SERVICE_WATCH_APPLICABILITY: ApplicabilityRule = {
+  ownership: 'orgOrPartnerUnlessUnassignedPool', partnerTarget: 'partnerUnlessUnassignedPool', roleOs: 'sql',
+};
+
+/**
+ * The service watches the software compliance worker derived for this device
+ * (`software_compliance_status.service_watches`, from `service_running`
+ * clauses of allowlist rules' catalog versions).
+ *
+ * - Read in the CALLER'S OWN context (agent: org-scoped with currentPartnerId,
+ *   so a partner-wide policy is legible through
+ *   `software_policies_partner_wide_select`; the compliance row through the
+ *   device-join policy). Never a system escape (#2417 / #1105).
+ * - Only rows refreshed within SOFTWARE_SERVICE_WATCH_STALE_MS, of ACTIVE
+ *   policies.
+ * - `auto_restart` is re-derived from the LIVE policy row on every resolution
+ *   (`evaluateSoftwarePolicyArming(…, 'install')`), never stored: disarming
+ *   or deactivating a policy revokes restart authority without waiting for
+ *   the row to age out. A name under several policies is armed if any is. The
+ *   result is cached for MONITORING_CACHE_TTL_SECONDS (120 s) by
+ *   buildMonitoringConfigUpdate, so a cached entry can carry `auto_restart:
+ *   true` for up to 120 s after a disarm — accepted (plan Review Focus 3).
+ * - #8142: on the heartbeat the beat's policy set is passed in; when no
+ *   applicable candidate carries a `software_policy` or `security_agents`
+ *   link, no compliance row can exist for the device, so the answer is []
+ *   with ZERO statements. Without a set (display path, set-load error) the
+ *   query runs.
+ * - Deduped case-insensitively (watchKey semantics), sorted, capped at
+ *   MAX_DERIVED_SERVICE_WATCHES.
+ */
+export async function resolveSoftwarePolicyServiceWatches(
+  deviceId: string,
+  opts?: DevicePolicySetOpts,
+): Promise<MonitoringWatchConfig[]> {
+  const set = policySetFor(deviceId, opts);
+  if (set) {
+    const linked = applicableCandidates(set, SOFTWARE_SERVICE_WATCH_APPLICABILITY)
+      .some((c) => c.links.software_policy !== undefined || c.links.security_agents !== undefined);
+    if (!linked) return [];
+  }
+
+  const rows = await db
+    .select({
+      serviceWatches: softwareComplianceStatus.serviceWatches,
+      mode: softwarePolicies.mode,
+      enforceMode: softwarePolicies.enforceMode,
+      remediationOptions: softwarePolicies.remediationOptions,
+    })
+    .from(softwareComplianceStatus)
+    .innerJoin(softwarePolicies, eq(softwarePolicies.id, softwareComplianceStatus.policyId))
+    .where(and(
+      eq(softwareComplianceStatus.deviceId, deviceId),
+      eq(softwarePolicies.isActive, true),
+      gt(softwareComplianceStatus.lastChecked, new Date(Date.now() - SOFTWARE_SERVICE_WATCH_STALE_MS)),
+      isNotNull(softwareComplianceStatus.serviceWatches),
+    ));
+
+  const byKey = new Map<string, { name: string; armed: boolean }>();
+  for (const row of rows) {
+    if (!Array.isArray(row.serviceWatches)) continue;
+    const armed = evaluateSoftwarePolicyArming(
+      { mode: row.mode, enforceMode: row.enforceMode, remediationOptions: row.remediationOptions },
+      'install',
+    ).armed;
+    for (const entry of row.serviceWatches as unknown[]) {
+      const name = entry && typeof entry === 'object' ? (entry as { name?: unknown }).name : undefined;
+      if (typeof name !== 'string' || name.length === 0) continue;
+      const key = serviceObservationKey(name);
+      const existing = byKey.get(key);
+      if (existing) existing.armed = existing.armed || armed;
+      else byKey.set(key, { name, armed });
+    }
+  }
+
+  return Array.from(byKey.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_DERIVED_SERVICE_WATCHES)
+    .map(([, { name, armed }]) => ({
+      watch_type: 'service' as const,
+      name,
+      // The agent alerts on derived watches through monitoring.check_failed;
+      // software-compliance alerting itself is #6960 W3.
+      alert_on_stop: false,
+      alert_after_consecutive_failures: MONITOR_WATCH_DEFAULTS.alertAfterConsecutiveFailures,
+      auto_restart: armed,
+      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+    }));
+}
+
 /**
  * Outcome of resolving a device's monitoring config. Three states, because the
  * wire has three meanings (#2949):
@@ -2768,13 +2877,24 @@ async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DevicePo
   const monitorWatches = monitorResult.watches;
   const policy = policyResult.kind === 'resolved' ? policyResult.settings : null;
 
+  // #6958 PR E: software-policy-derived service watches. A monitor watch of the
+  // same service (watchKey, case-insensitive) WINS: its alerting and restart
+  // settings are what the operator authored for that service.
+  const monitorServiceKeys = new Set(monitorWatches
+    .filter((w) => w.watch_type === 'service')
+    .map((w) => serviceObservationKey(w.name)));
+  const derivedWatches = (await resolveSoftwarePolicyServiceWatches(deviceId, opts))
+    .filter((w) => !monitorServiceKeys.has(serviceObservationKey(w.name)));
+
   // Nothing applies: no policy resolved AND no monitor contributes a watch.
   // This is an authoritative answer, so it is sent as an explicit empty watch
   // set — the agent's ApplyConfig stops the monitor and drops every watch
   // state on `watches: []` (agent/internal/monitoring/monitor.go), and has
   // since monitoring first shipped. Omitting the key instead reads as "no
   // change" on the agent and strands the last delivered watches (#2949).
-  if (!policy && monitorWatches.length === 0) {
+  // Derived watches count too: answering `watches: []` here would make the
+  // agent drop them.
+  if (!policy && monitorWatches.length === 0 && derivedWatches.length === 0) {
     return {
       kind: 'none_applies',
       settings: { check_interval_seconds: MONITOR_ONLY_CHECK_INTERVAL_SECONDS, watches: [] },
@@ -2784,8 +2904,9 @@ async function resolveDeviceMonitoringSettings(deviceId: string, opts?: DevicePo
   return {
     kind: 'resolved',
     settings: {
-      check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
-      watches: monitorWatches,
+      check_interval_seconds: policy?.check_interval_seconds
+        ?? (monitorWatches.length > 0 ? MONITOR_ONLY_CHECK_INTERVAL_SECONDS : SOFTWARE_SERVICE_ONLY_CHECK_INTERVAL_SECONDS),
+      watches: [...monitorWatches, ...derivedWatches],
     },
   };
 }
