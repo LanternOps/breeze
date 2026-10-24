@@ -672,6 +672,20 @@ describe('createAiSession with a model', () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({});
   });
+
+  it('forwards wispGrantId + orgId flat (Wisp W06 thread reply)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 's2', title: null, orgId: 'o1', createdAt: 'now' }, 201));
+    await createAiSession({ wispGrantId: 'g1', orgId: 'o1' });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ wispGrantId: 'g1', orgId: 'o1' });
+  });
+
+  it('drops an undefined orgId (a partner-wide grant) from the body', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 's2', title: null, orgId: 'o1', createdAt: 'now' }, 201));
+    await createAiSession({ wispGrantId: 'g1', orgId: undefined });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ wispGrantId: 'g1' });
+  });
 });
 
 describe('continueAiSession', () => {
