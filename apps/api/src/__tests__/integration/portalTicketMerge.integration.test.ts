@@ -17,6 +17,7 @@ import { portalUsers } from '../../db/schema';
 import { hashPassword } from '../../services/password';
 import { mergeTickets } from '../../services/ticketMerge';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { uniqueInternalNumber } from '../../services/inboundEmail/fixtureNumbering';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -51,7 +52,7 @@ async function ticket(orgId: string, partnerId: string, submittedBy: string, sub
   return (await one<{ id: string }>(sql`
     INSERT INTO tickets (org_id, partner_id, subject, description, source, priority, ticket_number, internal_number, submitted_by)
     VALUES (${orgId}::uuid, ${partnerId}::uuid, ${subject}, ${`${subject} description`}, 'portal', 'normal',
-            ${`PM${crypto.randomUUID().slice(0, 8).toUpperCase()}`}, ${`T-2026-${Math.floor(1000 + Math.random() * 8999)}`},
+            ${`PM${crypto.randomUUID().slice(0, 8).toUpperCase()}`}, ${uniqueInternalNumber()},
             ${submittedBy}::uuid)
     RETURNING id`)).id;
 }

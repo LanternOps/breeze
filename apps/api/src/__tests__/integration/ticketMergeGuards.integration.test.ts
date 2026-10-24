@@ -24,6 +24,7 @@ import { claimMessageLink } from '../../services/ticketEmailLinks';
 import { insertEmailAuthoredComment } from '../../services/inboundEmail/emailComments';
 import { addTicketPart, createTimeEntry, type TimeEntryActor } from '../../services/timeEntryService';
 import { createOrganization, createPartner, createUser } from './db-utils';
+import { uniqueInternalNumber } from '../../services/inboundEmail/fixtureNumbering';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -34,7 +35,7 @@ async function insertTicket(orgId: string, partnerId: string): Promise<string> {
   return (await one<{ id: string }>(sql`
     INSERT INTO tickets (org_id, partner_id, subject, source, priority, ticket_number, internal_number)
     VALUES (${orgId}::uuid, ${partnerId}::uuid, 'guards', 'api', 'normal', ${`MG-${crypto.randomUUID().slice(0, 8)}`},
-            ${`T-2026-${Math.floor(1000 + Math.random() * 8999)}`})
+            ${uniqueInternalNumber()})
     RETURNING id`)).id;
 }
 

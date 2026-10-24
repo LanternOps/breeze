@@ -38,6 +38,7 @@ import {
 import { stopTimer, type TimeEntryActor } from '../../services/timeEntryService';
 import { claimPeriod, seedBlockFixture, seedEntry, type BlockFixture } from './hourBlockFixtures';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { uniqueInternalNumber } from '../../services/inboundEmail/fixtureNumbering';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -154,7 +155,7 @@ async function insertTicket(orgId: string, partnerId: string, extra: { deviceId?
     INSERT INTO tickets (id, org_id, partner_id, subject, source, priority, ticket_number, internal_number, device_id)
     VALUES (${extra.id ?? crypto.randomUUID()}::uuid, ${orgId}::uuid, ${partnerId}::uuid, 'merge race', 'api', 'normal',
             ${`MRC-${crypto.randomUUID().slice(0, 8)}`},
-            ${`T-2026-${Math.floor(1000 + Math.random() * 8999)}`}, ${extra.deviceId ?? null}::uuid)
+            ${uniqueInternalNumber()}, ${extra.deviceId ?? null}::uuid)
     RETURNING id`)).id;
 }
 

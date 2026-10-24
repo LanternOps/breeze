@@ -17,6 +17,7 @@ import { mergeTickets } from '../../services/ticketMerge';
 import { TicketMergedError } from '../../services/ticketMerge/errors';
 import { moveTicketOrg, type TicketActor } from '../../services/ticketService';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
+import { uniqueInternalNumber } from '../../services/inboundEmail/fixtureNumbering';
 import { getTestDb } from './setup';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -29,7 +30,7 @@ async function insertTicket(orgId: string, partnerId: string, deviceId: string |
   return (await one<{ id: string }>(sql`
     INSERT INTO tickets (org_id, partner_id, subject, source, priority, ticket_number, internal_number, device_id)
     VALUES (${orgId}::uuid, ${partnerId}::uuid, 'movers', 'api', 'normal', ${`MV-${crypto.randomUUID().slice(0, 8)}`},
-            ${`T-2026-${Math.floor(1000 + Math.random() * 8999)}`}, ${deviceId}::uuid)
+            ${uniqueInternalNumber()}, ${deviceId}::uuid)
     RETURNING id`)).id;
 }
 
