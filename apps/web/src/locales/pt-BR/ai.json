@@ -662,7 +662,8 @@
       "openChatInactive": "O Wisp precisa estar ativo para conversar nesta conversa.",
       "notFound": "Esta conversa do Wisp não existe ou não é sua.",
       "loadFailed": "Não foi possível carregar esta conversa do Wisp.",
-      "retry": "Tentar novamente"
+      "retry": "Tentar novamente",
+      "stale": "Não foi possível atualizar esta conversa. O que você vê pode estar desatualizado."
     },
     "activity": {
       "title": "Atividade",

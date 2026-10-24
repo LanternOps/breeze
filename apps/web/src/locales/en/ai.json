@@ -662,7 +662,8 @@
       "openChatInactive": "Wisp must be active to chat on this thread.",
       "notFound": "This Wisp thread doesn't exist or isn't yours.",
       "loadFailed": "Couldn't load this Wisp thread.",
-      "retry": "Try again"
+      "retry": "Try again",
+      "stale": "Couldn't refresh this thread. What you see may be out of date."
     },
     "activity": {
       "title": "Activity",

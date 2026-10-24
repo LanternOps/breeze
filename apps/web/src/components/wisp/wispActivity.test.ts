@@ -50,6 +50,21 @@ describe('fetchWispActivity', () => {
     expect(out.items[0]!.id).toBe('i1');
   });
 
+  it('a page where every row is malformed is a contract break, not "no activity"', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch.mockResolvedValue(res(true, { data: { items: [item({ kind: 'renamed' }), item({ id: undefined })], nextCursor: null } }));
+    await expect(fetchWispActivity('t1', null)).rejects.toThrow(/malformed/);
+    err.mockRestore();
+  });
+
+  it('logs dropped rows so a partial contract break is visible', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockFetch.mockResolvedValue(res(true, { data: { items: [item({ kind: 'future' }), item()], nextCursor: null } }));
+    await fetchWispActivity('t1', null);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('dropped 1 of 2'), expect.anything());
+    err.mockRestore();
+  });
+
   it('W06a shape: reads data.current (the live line) and honours a smaller limit', async () => {
     mockFetch.mockResolvedValue(res(true, { data: { items: [], nextCursor: null, current: CURRENT } }));
     const out = await fetchWispActivity('t1', null, 1);

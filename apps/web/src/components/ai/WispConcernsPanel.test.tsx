@@ -64,6 +64,23 @@ describe('WispConcernsPanel', () => {
     await waitFor(() => expect(screen.getByTestId('wisp-concern-select-a').getAttribute('aria-expanded')).toBe('true'));
   });
 
+  it('a deep link to a concern that was resolved meanwhile widens to all statuses and shows it (W06 review focus 3)', async () => {
+    window.location.hash = '#concern=gone';
+    api.listWispConcerns.mockImplementation(async (_g: string, statuses: string[]) =>
+      statuses.includes('resolved') ? [concern('a', 'high'), concern('gone', 'low', { status: 'resolved' })] : [concern('a', 'high')]);
+    render(<WispConcernsPanel grantId="g1" threadId="t1" />);
+    await waitFor(() => expect(screen.getByTestId('wisp-concern-select-gone').getAttribute('aria-expanded')).toBe('true'));
+    expect(api.listWispConcerns).toHaveBeenLastCalledWith('g1', ['open', 'snoozed', 'resolved', 'dismissed']);
+  });
+
+  it('a deep link to an id that is in no list widens once and does not loop', async () => {
+    window.location.hash = '#concern=nope';
+    await mountWith([concern('a', 'high')]);
+    await waitFor(() => expect(api.listWispConcerns).toHaveBeenCalledTimes(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(api.listWispConcerns).toHaveBeenCalledTimes(2);
+  });
+
   it('a malformed #concern= hash is ignored, not a crash', async () => {
     window.location.hash = '#concern=%E0%A4%A';
     await mountWith([concern('a', 'high')]);
@@ -159,7 +176,7 @@ describe('WispConcernsPanel', () => {
     it('Useful posts at once and the row shows the choice from the server recipient', async () => {
       api.feedbackWispConcern.mockResolvedValue(nudged('useful'));
       await mountWith([concern('a', 'high', { recipient: nudged() })]);
-      api.listWispConcerns.mockResolvedValue([concern('a', 'high', { recipient: nudged('useful') })]);
+      api.listWispConcerns.mockImplementation(() => new Promise(() => {})); // the refetch never lands: only the server answer can update the row
       fireEvent.click(screen.getByTestId('wisp-concern-useful-a'));
       await waitFor(() => expect(api.feedbackWispConcern).toHaveBeenCalledWith('a', 'g1', true));
       expect(await screen.findByTestId('wisp-concern-feedback-given-a')).toBeTruthy();
@@ -177,6 +194,25 @@ describe('WispConcernsPanel', () => {
       fireEvent.click(screen.getByTestId('wisp-concern-feedback-send-a'));
       await waitFor(() => expect(api.feedbackWispConcern).toHaveBeenCalledWith('a', 'g1', false, 'not my customer'));
       expect(api.feedbackWispConcern).toHaveBeenCalledTimes(1);
+    });
+
+    it('a 409 (answered elsewhere) closes the note editor and refetches so the recorded choice shows', async () => {
+      api.feedbackWispConcern.mockRejectedValue(new ActionError('already recorded', 409));
+      await mountWith([concern('a', 'high', { recipient: nudged() })]);
+      api.listWispConcerns.mockResolvedValue([concern('a', 'high', { recipient: nudged('useful') })]);
+      fireEvent.click(screen.getByTestId('wisp-concern-not-useful-a'));
+      fireEvent.click(screen.getByTestId('wisp-concern-feedback-send-a'));
+      expect(await screen.findByTestId('wisp-concern-feedback-given-a')).toBeTruthy();
+      expect(screen.queryByTestId('wisp-concern-feedback-note-a')).toBeNull();
+      expect(showToast).not.toHaveBeenCalled(); // runAction already toasted the server's message
+    });
+
+    it('any other failure keeps the buttons enabled and shows no choice', async () => {
+      api.feedbackWispConcern.mockRejectedValue(new ActionError('nope', 500));
+      await mountWith([concern('a', 'high', { recipient: nudged() })]);
+      fireEvent.click(screen.getByTestId('wisp-concern-useful-a'));
+      await waitFor(() => expect((screen.getByTestId('wisp-concern-useful-a') as HTMLButtonElement).disabled).toBe(false));
+      expect(screen.queryByTestId('wisp-concern-feedback-given-a')).toBeNull();
     });
 
     it('a recorded choice shows instead of the buttons', async () => {

@@ -16,10 +16,13 @@ type View =
   | { kind: 'loading' }
   | { kind: 'notFound' }
   | { kind: 'error' }
-  | { kind: 'ready'; wisp: Wisp; current: CurrentActivity };
+  /** `stale`: background refreshes keep failing, so what is shown may be out of date. */
+  | { kind: 'ready'; wisp: Wisp; current: CurrentActivity; stale: boolean };
 
 /** The live line and spend meter refresh at this cadence while the tab is visible (w00 A31). */
 const POLL_MS = 30_000;
+/** One failed poll is noise; this many in a row is worth telling the user. */
+const STALE_AFTER_FAILED_POLLS = 2;
 
 /**
  * A poll replaces the server-owned fields but keeps what the thread payload
@@ -54,18 +57,19 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
   const viewRef = useRef(view);
   viewRef.current = view;
   const loadToken = useRef(0);
+  const failedPolls = useRef(0);
 
-  /** `silent` = a background poll: a failure keeps the page as it is. */
+  /** `silent` = a background poll: a failure keeps the page, and repeated failures mark it stale. */
   const load = useCallback(async (silent: boolean) => {
     const token = ++loadToken.current;
     if (!silent) setView({ kind: 'loading' });
-    // The live line comes from the activity route's `current` (W06a); a failed
-    // read keeps the last known line (undefined) rather than failing the page.
+    // The live line comes from the activity route's `current` (W06a). A failed
+    // read drops the line: a stale "Checking …" would claim work that may be over.
     const currentRead = fetchWispActivity(threadId, null, 1).then(
-      (page): CurrentActivity | undefined => page.current,
-      (err: unknown) => {
+      (page) => page.current,
+      (err: unknown): CurrentActivity => {
         console.error('[WispThreadPage] reading the live activity line failed', err);
-        return undefined;
+        return null;
       },
     );
     try {
@@ -80,11 +84,18 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
       if (token !== loadToken.current) return;
       const next = wispStateFromThread(body);
       if (!next) throw new Error('wisp thread read: malformed payload');
-      const prev = viewRef.current.kind === 'ready' ? viewRef.current : null;
-      setView({ kind: 'ready', wisp: mergePolled(prev?.wisp ?? null, next), current: current === undefined ? (prev?.current ?? null) : current });
+      const prev = viewRef.current.kind === 'ready' ? viewRef.current.wisp : null;
+      failedPolls.current = 0;
+      setView({ kind: 'ready', wisp: mergePolled(prev, next), current, stale: false });
     } catch (err) {
       console.error('[WispThreadPage] loading the thread failed', err);
-      if (token === loadToken.current && !(silent && viewRef.current.kind === 'ready')) setView({ kind: 'error' });
+      if (token !== loadToken.current) return;
+      if (silent && viewRef.current.kind === 'ready') {
+        failedPolls.current += 1;
+        if (failedPolls.current >= STALE_AFTER_FAILED_POLLS) setView((v) => (v.kind === 'ready' ? { ...v, stale: true } : v));
+        return;
+      }
+      setView({ kind: 'error' });
     }
   }, [threadId]);
 
@@ -117,6 +128,9 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
   const ownsStore = storeWisp?.threadId === threadId;
 
   const onWispChange = (patch: Partial<Wisp>) => {
+    // The server just answered this change: a poll already in flight carries
+    // the state from before it and must not overwrite it.
+    loadToken.current++;
     setView((v) => (v.kind === 'ready' ? { ...v, wisp: { ...v.wisp, ...patch } } : v));
     if (ownsStore) updateStoreWisp(patch);
   };
@@ -153,7 +167,7 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
     );
   }
 
-  const { wisp, current } = view;
+  const { wisp, current, stale } = view;
   const orgName = wisp.scopeOrgId ? ((organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null) : null;
   const active = wisp.status === 'active';
 
@@ -174,11 +188,20 @@ export default function WispThreadPage({ threadId }: { threadId: string }) {
         </button>
       </div>
 
+      {stale && (
+        <div className="flex flex-wrap items-center gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300" data-testid="wisp-thread-stale" role="status">
+          <span>{t('wisp.thread.stale')}</span>
+          <button type="button" data-testid="wisp-thread-stale-retry" onClick={() => void load(true)} className="font-medium underline underline-offset-2">
+            {t('wisp.thread.retry')}
+          </button>
+        </div>
+      )}
+
       <section className="overflow-hidden rounded-lg border bg-card">
         <WispThreadHeader
           wisp={wisp}
           orgName={orgName}
-          wideningAvailable={false}
+          wideningAvailable={wisp.wideningAvailable}
           showFocus={false}
           currentActivity={current}
           onWispChange={onWispChange}

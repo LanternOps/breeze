@@ -662,7 +662,8 @@
       "openChatInactive": "Wisp muss aktiv sein, um in diesem Thread zu chatten.",
       "notFound": "Dieser Wisp-Thread existiert nicht oder gehört Ihnen nicht.",
       "loadFailed": "Dieser Wisp-Thread konnte nicht geladen werden.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "stale": "Dieser Thread konnte nicht aktualisiert werden. Die Anzeige ist möglicherweise veraltet."
     },
     "activity": {
       "title": "Aktivität",

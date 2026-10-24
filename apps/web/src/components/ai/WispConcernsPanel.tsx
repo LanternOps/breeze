@@ -84,6 +84,17 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
+  // A nudge link can outlive its concern's live status (resolved or dismissed
+  // meanwhile): widen to every status once so the row shows its outcome,
+  // rather than the link selecting nothing (W06 review focus 3).
+  const widenedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded || loadFailed || showAll || !selectedId || widenedFor.current === selectedId) return;
+    if (concerns.some((c) => c.id === selectedId)) return;
+    widenedFor.current = selectedId;
+    setShowAll(true);
+  }, [loaded, loadFailed, showAll, selectedId, concerns]);
+
   // The hash is read-only here: `#concern=<id>` deep-links IN (w00), but this
   // panel lives in the global sidebar, so writing the hash would clobber the
   // host page's own hash state (DeviceDetails tabs, list selections).
@@ -113,10 +124,18 @@ export function WispConcernsPanel({ grantId, threadId }: { grantId: string; thre
   // the refetch that follows confirms it.
   const giveFeedback = (id: string, useful: boolean, note?: string) =>
     run(async () => {
-      const recipient = note === undefined
-        ? await feedbackWispConcern(id, grantId, useful)
-        : await feedbackWispConcern(id, grantId, useful, note);
-      if (recipient) setConcerns((list) => list.map((c) => (c.id === id ? { ...c, recipient } : c)));
+      try {
+        const recipient = note === undefined
+          ? await feedbackWispConcern(id, grantId, useful)
+          : await feedbackWispConcern(id, grantId, useful, note);
+        if (recipient) setConcerns((list) => list.map((c) => (c.id === id ? { ...c, recipient } : c)));
+      } catch (err) {
+        // 409 = already answered (another tab, the phone): runAction toasted the
+        // server's message; finish normally so the editor closes and the refetch
+        // shows the recorded choice instead of buttons that can only 409 again.
+        if (err instanceof ActionError && err.status === 409) return;
+        throw err;
+      }
     }, () => { setFeedbackNoteId(null); setFeedbackNote(''); });
 
   const renderFeedback = (c: Concern) => {

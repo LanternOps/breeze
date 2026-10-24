@@ -662,7 +662,8 @@
       "openChatInactive": "Wisp debe estar activo para chatear en este hilo.",
       "notFound": "Este hilo de Wisp no existe o no es tuyo.",
       "loadFailed": "No se pudo cargar este hilo de Wisp.",
-      "retry": "Intentar de nuevo"
+      "retry": "Intentar de nuevo",
+      "stale": "No se pudo actualizar este hilo. Es posible que lo que ves esté desactualizado."
     },
     "activity": {
       "title": "Actividad",

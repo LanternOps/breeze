@@ -50,8 +50,18 @@ export async function fetchWispActivity(
   const items = body?.data?.items;
   // A malformed body is a contract break, not "no activity".
   if (!Array.isArray(items)) throw new Error('Wisp activity response malformed: data.items is not an array');
+  const parsed = items.map(parseItem).filter((i): i is ActivityItem => i !== null);
+  const dropped = items.length - parsed.length;
+  if (dropped > 0) {
+    // A few unknown kinds are a newer server; every row unknown is a contract break.
+    if (parsed.length === 0) throw new Error(`Wisp activity response malformed: none of ${items.length} rows parsed`);
+    console.error(`[wispActivity] dropped ${dropped} of ${items.length} activity rows (unknown kind or missing fields)`, items);
+  }
+  if (body.data?.current != null && parseCurrent(body.data.current) === null) {
+    console.error('[wispActivity] malformed `current`; showing no live line', body.data.current);
+  }
   return {
-    items: items.map(parseItem).filter((i): i is ActivityItem => i !== null),
+    items: parsed,
     nextCursor: typeof body.data?.nextCursor === 'string' ? body.data.nextCursor : null,
     current: parseCurrent(body.data?.current),
   };

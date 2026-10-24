@@ -662,7 +662,8 @@
       "openChatInactive": "Wisp doit être actif pour discuter dans ce fil.",
       "notFound": "Ce fil Wisp n’existe pas ou ne vous appartient pas.",
       "loadFailed": "Impossible de charger ce fil Wisp.",
-      "retry": "Réessayer"
+      "retry": "Réessayer",
+      "stale": "Impossible d'actualiser ce fil. Ce qui est affiché n'est peut-être plus à jour."
     },
     "activity": {
       "title": "Activité",

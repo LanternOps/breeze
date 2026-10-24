@@ -79,7 +79,7 @@ describe('WispThreadPage (W06 T7)', () => {
     expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread/t1');
     expect(lastHeader()).toMatchObject({
       orgName: 'Greenwood',
-      wideningAvailable: false,
+      wideningAvailable: false, // the payload's own value (false here)
       showFocus: false,
       currentActivity: null,
       wisp: expect.objectContaining({ grantId: 'g1', threadId: 't1', scopeOrgId: 'org-a', status: 'active', summary: 'All quiet.', spentTodayCents: 42 }),
@@ -155,10 +155,10 @@ describe('WispThreadPage (W06 T7)', () => {
     expect(h.fetchActivity).toHaveBeenLastCalledWith('t1', null, 1);
     expect(activityKeys().at(-1)).not.toBe(before);
 
-    // A failed live-line read keeps the last known line and the page.
+    // A failed live-line read drops the line (never a stale "Checking …") and keeps the page.
     h.fetchActivity.mockRejectedValue(new Error('activity down'));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(lastHeader().currentActivity).toEqual(live);
+    expect(lastHeader().currentActivity).toBeNull();
     expect(screen.getByTestId('header-mock')).toBeTruthy();
 
     const calls = h.fetchWithAuth.mock.calls.length;
@@ -183,5 +183,31 @@ describe('WispThreadPage (W06 T7)', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(screen.getByTestId('header-mock')).toBeTruthy();
     expect(screen.queryByTestId('wisp-thread-load-error')).toBeNull();
+    // One failed poll is noise; a second in a row says the page is stale, with a retry.
+    expect(screen.queryByTestId('wisp-thread-stale')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByTestId('wisp-thread-stale')).toBeTruthy();
+    h.fetchWithAuth.mockResolvedValue(res(200, payload({ grant: { status: 'paused' } })));
+    fireEvent.click(screen.getByTestId('wisp-thread-stale-retry'));
+    await waitFor(() => expect(screen.queryByTestId('wisp-thread-stale')).toBeNull());
+    expect(screen.getByTestId('header-mock')).toBeTruthy();
+  });
+
+  it('passes the payload’s wideningAvailable through to the header', async () => {
+    h.fetchWithAuth.mockResolvedValue(res(200, { ...payload(), data: { ...payload().data, wideningAvailable: true } }));
+    render(<WispThreadPage threadId="t1" />);
+    await screen.findByTestId('header-mock');
+    expect(lastHeader().wideningAvailable).toBe(true);
+  });
+
+  it('a header patch outranks a poll that was already in flight', async () => {
+    render(<WispThreadPage threadId="t1" />);
+    await screen.findByTestId('header-mock');
+    let release!: (r: Response) => void;
+    h.fetchWithAuth.mockImplementationOnce(() => new Promise<Response>((r) => { release = r; }));
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); }); // starts a silent poll
+    act(() => (lastHeader().onWispChange as (p: unknown) => void)({ status: 'paused', pausedReason: 'user_paused' }));
+    await act(async () => { release(res(200, payload())); });
+    expect(screen.getByTestId('header-mock').getAttribute('data-status')).toBe('paused');
   });
 });

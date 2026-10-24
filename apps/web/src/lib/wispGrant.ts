@@ -79,6 +79,8 @@ export function wispStateFromThread(body: unknown): NonNullable<WispState> | nul
   if (typeof grant?.spentTodayCents === 'number' && Number.isFinite(grant.spentTodayCents) && typeof grant?.budgetResetsAt === 'string') {
     optional.spentTodayCents = grant.spentTodayCents;
     optional.budgetResetsAt = grant.budgetResetsAt;
+  } else if (grant && ('spentTodayCents' in grant || 'budgetResetsAt' in grant)) {
+    console.error('[wispGrant] spend meter fields malformed; hiding the meter', { spentTodayCents: grant.spentTodayCents, budgetResetsAt: grant.budgetResetsAt });
   }
   // Absent key = unknown (left undefined, WispGrantPauseControl looks it up); present = authoritative.
   if (grant && 'pausedReason' in grant) optional.pausedReason = str(grant.pausedReason);

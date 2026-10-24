@@ -662,7 +662,8 @@
       "openChatInactive": "Bu konuşmada sohbet etmek için Wisp'in etkin olması gerekir.",
       "notFound": "Bu Wisp konuşması yok ya da size ait değil.",
       "loadFailed": "Bu Wisp konuşması yüklenemedi.",
-      "retry": "Tekrar dene"
+      "retry": "Tekrar dene",
+      "stale": "Bu ileti dizisi yenilenemedi. Gördükleriniz güncel olmayabilir."
     },
     "activity": {
       "title": "Etkinlik",

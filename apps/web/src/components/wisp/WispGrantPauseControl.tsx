@@ -48,7 +48,11 @@ export default function WispGrantPauseControl({ wisp, onChange }: WispGrantPause
         if (!res.ok) throw new Error(`wisp grants list failed: ${res.status}`);
         const body = (await res.json()) as { grants?: Array<{ id?: unknown; pausedReason?: unknown }> } | null;
         const row = body?.grants?.find((g) => g.id === wisp.grantId);
-        if (live && row) onChangeRef.current({ pausedReason: typeof row.pausedReason === 'string' ? row.pausedReason : null });
+        if (!row) {
+          console.error('[WispGrantPauseControl] grant missing from GET /wisp/grants; Resume stays disabled', wisp.grantId);
+          return;
+        }
+        if (live) onChangeRef.current({ pausedReason: typeof row.pausedReason === 'string' ? row.pausedReason : null });
       } catch (err) {
         // Resume stays disabled (the safe default); the server would refuse a system pause anyway.
         console.error('[WispGrantPauseControl] reading the pause reason failed', err);

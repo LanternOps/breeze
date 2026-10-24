@@ -65,6 +65,27 @@ describe('WispGrantPauseControl (W06 T15, w00 A29)', () => {
     expect(h.runAction).not.toHaveBeenCalled();
   });
 
+  it('a failed pause-reason lookup is retried when the grant is shown again', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) } as unknown as Response);
+    const onChange = vi.fn();
+    const { unmount } = render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: undefined })} onChange={onChange} />);
+    await waitFor(() => expect(err).toHaveBeenCalled());
+    unmount();
+    h.fetchWithAuth.mockResolvedValue(ok({ grants: [{ id: 'g-1', pausedReason: 'user_paused' }] }));
+    render(<WispGrantPauseControl wisp={wisp({ status: 'paused', pausedReason: undefined })} onChange={onChange} />);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ pausedReason: 'user_paused' }));
+    err.mockRestore();
+  });
+
+  it('a non-ActionError failure toasts the fallback once', async () => {
+    h.runAction.mockRejectedValue(new Error('network'));
+    render(<WispGrantPauseControl wisp={wisp()} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByTestId('wisp-pause'));
+    await waitFor(() => expect(h.showToast).toHaveBeenCalledTimes(1));
+    expect(h.showToast.mock.calls[0]![0]).toMatchObject({ type: 'error' });
+  });
+
   it('renders nothing for a revoked or expired grant', () => {
     const { container } = render(<WispGrantPauseControl wisp={wisp({ status: 'revoked' })} onChange={vi.fn()} />);
     expect(container.textContent).toBe('');
