@@ -1,0 +1,22 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /deviceManagement/managedDevices/{id} (managementState) and POST /deviceManagement/managedDevices/{id}/retire",
+  "_notes": "postSatisfied records the after-unenrol path: Intune deletes the managedDevice record, so the read is graph_not_found, which the post-probe accepts as evidence (the pre-probe does not).",
+  "toolName": "m365_retire_intune_device",
+  "provider": "m365",
+  "preSatisfied": {
+    "read:m365.intune.device.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000d0001", "deviceName": "DANA-IPHONE", "managementState": "retirePending" } }
+  },
+  "preUnsatisfied": {
+    "read:m365.intune.device.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000d0001", "deviceName": "DANA-IPHONE", "managementState": "managed" } }
+  },
+  "writeOk": {
+    "write:m365.intune.device.retire": { "ok": true, "result": { "success": true, "action": "m365.intune.device.retire", "managedDeviceId": "00000000-0000-4000-8000-0000000d0001" } }
+  },
+  "postSatisfied": {
+    "read:m365.intune.device.get": { "ok": false, "code": "graph_not_found", "message": "The requested Microsoft 365 resource was not found." }
+  },
+  "writeRefusal": {
+    "write:m365.intune.device.retire": { "ok": false, "code": "device_not_found", "message": "The Intune managed device was not found." }
+  }
+}
