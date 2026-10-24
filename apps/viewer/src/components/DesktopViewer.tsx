@@ -43,6 +43,7 @@ import {
   mouseButtonName,
   shouldForwardKeyRepeat,
   chordRouting,
+  modifiersReleasedByKeyPress,
   viewerShortcut,
   isPasteChord,
   isCopyChord,
@@ -1912,6 +1913,43 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   }, [getInputSender, reliableInput]);
   releaseAllKeysRef.current = releaseAllKeys;
 
+  // "Release stuck keys" (toolbar and shortcut). releaseAllKeys only covers
+  // what this viewer believes is held, and its agent-side reset is sequenced
+  // input only; a key the bookkeeping lost stays down (#9595). An agent that
+  // takes release_held_input releases everything it holds and clears OS
+  // modifier state, so the viewer just forgets its own: key_ups sent on
+  // `input` could land after the release on `control` as stray key-ups.
+  const handleReleaseStuckKeys = useCallback(() => {
+    const control = transportRef.current === 'webrtc' ? webrtcRef.current?.controlChannel : undefined;
+    if (viewOnlyRef.current || !inputCapabilitiesRef.current.snapshot().releaseHeldOnRequest
+      || !control || control.readyState !== 'open') {
+      releaseAllKeys();
+      // releaseAllKeys strands its key_ups when the input channel is down;
+      // say so rather than reporting a release that has not happened.
+      setInputNotice(getInputSender()
+        ? 'Released the keys and mouse buttons this viewer was holding on the remote.'
+        : 'Releases queued: they are sent when the input channel reconnects.');
+      return;
+    }
+    // Send first, forget second: a send that throws (the channel closing
+    // between the readyState check and here) must not leave this viewer
+    // believing nothing is held while the remote still holds keys.
+    try {
+      control.send(JSON.stringify({ type: 'release_held_input' }));
+    } catch (err) {
+      console.warn('Release stuck keys request failed:', err);
+      releaseAllKeys();
+      setInputNotice('Could not reach the remote; released the keys this viewer was holding.');
+      return;
+    }
+    pressedKeysRef.current.clear();
+    heldKeyNameByCodeRef.current.clear();
+    heldCodeByKeyRef.current.clear();
+    pressedButtonsRef.current.clear();
+    // Fire-and-forget: the agent sends no ack, so this reports the request.
+    setInputNotice('Asked the remote to release every held key, mouse button and modifier.');
+  }, [releaseAllKeys, getInputSender]);
+
   // A new session's channel may open with releases still stranded from the
   // last one; send them as soon as it can carry them rather than waiting for
   // the next input event. 'connected' can precede the input channel opening.
@@ -2237,12 +2275,15 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // ── Input: keyboard handlers ───────────────────────────────────────
 
-  // key_press presses its modifiers around the key and then releases them, so
-  // a modifier we had sent as key_down is no longer down on the remote.
-  // Forget it, or the next chord would take the 'held' route and lose it
-  // (Shift+A arriving as a lowercase a).
+  // An older agent's key_press presses its modifiers around the key and then
+  // releases them, so a modifier we had sent as key_down is no longer down on
+  // the remote. Forget it, or the next chord would take the 'held' route and
+  // lose it (Shift+A arriving as a lowercase a). A current agent leaves held
+  // modifiers down, and forgetting them would strand them (#9595).
   const forgetModifiersReleasedByKeyPress = useCallback((modifiers: string[]) => {
-    for (const m of modifiers) pressedKeysRef.current.delete(m);
+    for (const m of modifiersReleasedByKeyPress(modifiers, inputCapabilitiesRef.current.snapshot().releasesHeldInput)) {
+      pressedKeysRef.current.delete(m);
+    }
   }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -2310,11 +2351,13 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       // The prefix modifiers already went down on the remote as key_downs.
       // Release them first, or paste-as-keystrokes would type into a held
       // Ctrl+Alt+Shift and fire shortcuts there.
+      if (shortcut === 'release-keys') {
+        handleReleaseStuckKeys();
+        return;
+      }
       releaseAllKeys();
       if (shortcut === 'paste-keystrokes') {
         handlePasteAsKeystrokes();
-      } else if (shortcut === 'release-keys') {
-        setInputNotice('Released all keys and mouse buttons on the remote.');
       } else {
         toggleDocumentFullscreen();
       }
@@ -2414,7 +2457,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     if (ne.code) heldKeyNameByCodeRef.current.set(ne.code, key);
     if (keyFields.code) heldCodeByKeyRef.current.set(key, keyFields.code);
     sendInputFn({ type: 'key_down', key, capsLock, ...keyFields });
-  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
+  }, [sendInputFn, handlePasteAsKeystrokes, releaseAllKeys, handleReleaseStuckKeys, forgetModifiersReleasedByKeyPress, remapCmdCtrl, keyNameMode, remoteOs, reliableInput]);
 
   const handleKeyUp = useCallback((e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -2858,7 +2901,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           setRemapOverride(v);
           rememberDevicePrefs({ remapCmdCtrl: v });
         }}
-        onReleaseAllKeys={releaseAllKeys}
+        onReleaseAllKeys={handleReleaseStuckKeys}
         onShowRemoteCursorChange={setShowRemoteCursor}
         onConfigChange={handleConfigChange}
         onBitrateChange={handleBitrateChange}
