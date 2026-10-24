@@ -227,6 +227,13 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // enqueues, so it keeps the ambient transaction (same call as
   // `quotes/bulk-send`).
   { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/restore\/?$/ },
+  // #9796 bulk site move — same connection-hold reason as bulk restore. `runBulkIsolated` moves
+  // each device (row lock + guarded UPDATE + denormalized rewrite) in its own short RLS
+  // transaction, up to BULK_SITE_MOVE_CAP. Under the ambient request transaction every row lock
+  // would be held until the last device finished, and a Postgres error late in the batch would
+  // roll back every move already reported `moved`. The handler's whole-batch pre-read opens its
+  // own caller-scoped context too.
+  { method: 'POST', pattern: /^\/api\/v1\/devices\/bulk\/site\/?$/ },
   // Parked-device assignment. Each assignment runs in its own short system
   // transaction (one per device for a bulk batch of up to 50), and the list
   // opens its own system read. Under the ambient request transaction every one

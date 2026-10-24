@@ -105,6 +105,9 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/bulk/restore'],
     ['POST', '/api/v1/devices/bulk/restore/'],
     ['post', '/api/v1/devices/bulk/restore'], // method is case-insensitive
+    // #9796 bulk site move — one short transaction per device via runBulkIsolated.
+    ['POST', '/api/v1/devices/bulk/site'],
+    ['POST', '/api/v1/devices/bulk/site/'],
     ['POST', '/api/v1/sso/providers'],
     ['POST', '/api/v1/sso/providers/'],
     ['PATCH', '/api/v1/sso/providers/abc-123'],
@@ -413,6 +416,10 @@ describe('isSelfManagedDbContextRoute', () => {
     ['POST', '/api/v1/devices/11111111-1111-4111-8111-111111111111/restore', 'single restore keeps ambient tx'],
     ['POST', '/api/v1/devices/bulk/restore/extra', 'extra segment must not match'],
     ['GET', '/api/v1/devices/bulk/restore', 'bulk restore is POST-only'],
+    ['GET', '/api/v1/devices/bulk/site', 'bulk site move is POST-only'],
+    ['POST', '/api/v1/devices/bulk/site/extra', 'extra segment must not match'],
+    // The single-device site move (PATCH /devices/:id) runs in one request transaction and keeps it.
+    ['PATCH', '/api/v1/devices/11111111-1111-4111-8111-111111111111', 'single site move keeps ambient tx'],
     // Bulk permanent delete only validates and ENQUEUES — no slow work in the
     // handler, so it keeps the ambient transaction (same call as quotes/bulk-send).
     ['POST', '/api/v1/devices/bulk/permanent-delete', 'bulk purge only enqueues; the worker does the work'],
