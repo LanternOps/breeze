@@ -24,6 +24,7 @@ import {
   loadWispNudgePrefs,
   selectWispNudgePrefsError,
   selectWispNudgePrefsErrorKind,
+  selectWispNudgePrefsAvailable,
   loadTicketPushPrefs,
   saveTicketPushPrefs,
   selectTicketPushPrefs,
@@ -437,6 +438,9 @@ function SheetBody({
   onRevokeDevice: (device: PairedMobileDevice) => void;
   onRevokeApp: (app: ConnectedApp) => void;
 }) {
+  // Hidden until the prefs route answers: with Wisp off it 404s, so the
+  // section never appears (flag off = no visible change).
+  const wispAvailable = useAppSelector(selectWispNudgePrefsAvailable);
   return (
     <View style={{ flex: 1 }}>
       <ScrollView
@@ -498,8 +502,12 @@ function SheetBody({
             nowhere to send what these settings govern (#4336). */}
         {pushRegistered ? <TicketPushPreferenceRows theme={theme} /> : null}
 
-        <SectionHeader label="Wisp" theme={theme} />
-        <WispNudgePreferenceRows theme={theme} pushRegistered={pushRegistered} />
+        {wispAvailable ? (
+          <>
+            <SectionHeader label="Wisp" theme={theme} />
+            <WispNudgePreferenceRows theme={theme} pushRegistered={pushRegistered} />
+          </>
+        ) : null}
 
         <SectionDivider color={theme.border} />
 

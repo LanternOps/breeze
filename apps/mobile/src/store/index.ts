@@ -115,6 +115,7 @@ export {
   saveWispNudgePrefs,
   clearWispPrefsError,
   selectWispNudgePrefs,
+  selectWispNudgePrefsAvailable,
   selectWispNudgePrefsSaving,
   selectWispNudgePrefsError,
   selectWispNudgePrefsErrorKind,

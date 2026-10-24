@@ -25,6 +25,7 @@ import reducer, {
   loadWispNudgePrefs,
   saveWispNudgePrefs,
   selectWispNudgePrefs,
+  selectWispNudgePrefsAvailable,
   selectWispNudgePrefsError,
   selectWispNudgePrefsErrorKind,
   selectWispNudgePrefsSaving,
@@ -45,6 +46,17 @@ describe('wispPrefsSlice', () => {
     const next = reducer(initial, loadWispNudgePrefs.fulfilled(quiet, 'r', undefined));
     expect(next.prefs.proactivity).toBe('quiet');
     expect(next.status).toBe('ready');
+  });
+
+  it('Wisp rows are available only after a successful load (flag off ⇒ route 404 ⇒ hidden)', () => {
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: initial })).toBe(false);
+    const ready = reducer(initial, loadWispNudgePrefs.fulfilled(quiet, 'r', undefined));
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: ready })).toBe(true);
+    // A reload in flight keeps the section on screen (no flicker on reopen).
+    const reloading = reducer(ready, loadWispNudgePrefs.pending('r2', undefined));
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: reloading })).toBe(true);
+    const failed = reducer(reloading, loadWispNudgePrefs.rejected(null, 'r2', undefined, 'Not found'));
+    expect(selectWispNudgePrefsAvailable({ wispPrefs: failed })).toBe(false);
   });
 
   it('load.rejected records the error without clobbering prefs', () => {

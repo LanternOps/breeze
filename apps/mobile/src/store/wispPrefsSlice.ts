@@ -24,6 +24,13 @@ export interface WispPrefsState {
   error: string | null;
   /** Which operation produced `error`, so a failed load is not toasted as a failed save. */
   errorKind: 'load' | 'save' | null;
+  /**
+   * True once a load has succeeded, false again after a failed one. The
+   * Settings "Wisp" section renders only while this is true: with Wisp off (or
+   * not entitled) the route answers 404, so the section never appears — flag
+   * off means no visible change on mobile. A reload in flight keeps it.
+   */
+  available: boolean;
 }
 
 function cloneDefaults(): WispNudgePreferences {
@@ -40,6 +47,7 @@ const initialState: WispPrefsState = {
   rollback: null,
   error: null,
   errorKind: null,
+  available: false,
 };
 
 function messageOf(err: unknown, fallback: string): string {
@@ -95,12 +103,14 @@ const wispPrefsSlice = createSlice({
         state.status = 'ready';
         state.error = null;
         state.errorKind = null;
+        state.available = true;
       })
       .addCase(loadWispNudgePrefs.rejected, (state, action) => {
         // Leaves `prefs` alone: a failed refresh must not reset what the person sees.
         state.status = 'error';
         state.error = (action.payload as string) ?? action.error.message ?? 'Failed to load';
         state.errorKind = 'load';
+        state.available = false;
       })
       .addCase(saveWispNudgePrefs.pending, (state, action) => {
         state.rollback = { ...state.prefs, channels: { ...state.prefs.channels } };
@@ -131,6 +141,8 @@ export default wispPrefsSlice.reducer;
 
 export const selectWispNudgePrefs = (state: { wispPrefs: WispPrefsState }) =>
   state.wispPrefs.prefs;
+export const selectWispNudgePrefsAvailable = (state: { wispPrefs: WispPrefsState }) =>
+  state.wispPrefs.available;
 export const selectWispNudgePrefsSaving = (state: { wispPrefs: WispPrefsState }) =>
   state.wispPrefs.saving;
 export const selectWispNudgePrefsError = (state: { wispPrefs: WispPrefsState }) =>
