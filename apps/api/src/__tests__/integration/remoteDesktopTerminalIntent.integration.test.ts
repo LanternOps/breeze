@@ -293,6 +293,9 @@ const fakeWs = { send: () => {}, close: () => {} } as unknown as Parameters<
 /** Drive the real agent WS onMessage with a command_result from the session's own agent. */
 async function agentResult(fx: Fixture, message: Record<string, unknown>): Promise<void> {
   const handlers = createAgentWsHandlers(fx.agentId, {
+    agentId: fx.agentId,
+    siteId: fx.env.site.id,
+    installIncarnation: 1,
     deviceId: fx.deviceId,
     orgId: fx.env.organization.id,
     partnerId: fx.env.partner.id,

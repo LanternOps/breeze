@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 
 import { db } from '../../db';
 import { devices } from '../../db/schema';
+import { updateOwnDeviceRow } from '../../services/agentOwnDeviceRow';
 import type { AgentAuthContext } from '../../middleware/agentAuth';
 import {
   PREVIOUS_TOKEN_GRACE_MS,
@@ -224,24 +225,24 @@ tokenRoutes.post('/:id/rotate-token', async (c) => {
   // concurrent rotation or hash mismatch touches zero rows and stages nothing.
   // Re-staging over an existing pending set is deliberate and safe: it is how an
   // agent that lost the plaintext (crash before the disk write) retries.
+  //
+  // #8318 §6.4: through updateOwnDeviceRow, so the CAS is also bound to the
+  // agent_id this request authenticated as — a stale install can stage nothing
+  // on a row a reattach confirm handed to a new one.
   let rotatedRows: { id: string }[];
   try {
-    rotatedRows = await db
-      .update(devices)
-      .set({
+    rotatedRows = await updateOwnDeviceRow(
+      db,
+      agent,
+      {
         pendingTokenHash: agentTokenHash,
         pendingWatchdogTokenHash: watchdogTokenHash,
         pendingHelperTokenHash: helperTokenHash,
         pendingTokenExpiresAt: pendingExpiresAt,
         updatedAt: rotatedAt,
-      })
-      .where(
-        and(
-          eq(devices.id, device.id),
-          eq(devices.agentTokenHash, authTokenHash)
-        )
-      )
-      .returning({ id: devices.id });
+      },
+      { where: eq(devices.agentTokenHash, authTokenHash) },
+    );
   } catch (error) {
     console.error('[agents] token rotation staging DB update failed:', {
       agentId,
@@ -432,7 +433,7 @@ tokenRoutes.post('/:id/rotate-token/confirm', async (c) => {
   let promoted: boolean;
   try {
     promoted = await promotePendingAgentCredentials({
-      deviceId: device.id,
+      agent,
       pendingTokenHash: authTokenHash,
       expectedAgentTokenHash: device.agentTokenHash,
       pendingWatchdogTokenHash: device.pendingWatchdogTokenHash,
