@@ -56,6 +56,8 @@ const patchData: PatchCompliance = {
   compliancePercent: 91.8,
   totalDevices: 42,
   compliantDevices: 38,
+  devicePercent: 90,
+  failedDevices: 1,
   criticalSummary: { total: 5, patched: 4, pending: 1 },
   importantSummary: { total: 0, patched: 0, pending: 0 },
   unratedSummary: { total: 0, patched: 0, pending: 0 },
@@ -90,7 +92,8 @@ describe('KpiStrip', () => {
     expect(screen.getByTestId('dashboard-critical-card')).toHaveTextContent('3');
     expect(screen.getByTestId('dashboard-warnings-card')).toHaveTextContent('4');
     expect(screen.getByTestId('dashboard-tickets-card')).toHaveTextContent('12');
-    expect(screen.getByTestId('dashboard-patch-card')).toHaveTextContent('92%');
+    // The device % (38 of 42), not the 91.8 item %.
+    expect(screen.getByTestId('dashboard-patch-card')).toHaveTextContent('90%');
   });
 
   it('drops the tickets and patch tiles when those endpoints are unavailable', () => {
@@ -208,5 +211,38 @@ describe('KpiStrip devices links (#6721)', () => {
     renderStrip();
     expect(screen.getByTestId('dashboard-online-card').tagName).not.toBe('A');
     expect(screen.getByTestId('dashboard-online-card')).toHaveTextContent('40');
+  });
+
+  // #9791 C (Decision 4): the tile is the device percentage, the same figure
+  // the /patches headline shows, and links to that list.
+  it('Patch compliance → /patches#compliance, showing the device % (not the item %)', () => {
+    render(
+      <KpiStrip
+        devices={loaded(deviceStats)}
+        alerts={loaded(alertsSummary)}
+        tickets={loaded(ticketStats)}
+        patch={loaded({ ...patchData, compliancePercent: 70, devicePercent: 95 })}
+        onRetry={() => {}}
+      />
+    );
+    const tile = screen.getByTestId('dashboard-patch-card');
+    expect(tile).toHaveTextContent('95%');
+    expect(tile).not.toHaveTextContent('70%');
+    expect(tile.getAttribute('href')).toBe('/patches#compliance');
+  });
+
+  it('an empty fleet shows no percentage on the patch tile', () => {
+    render(
+      <KpiStrip
+        devices={loaded(deviceStats)}
+        alerts={loaded(alertsSummary)}
+        tickets={loaded(ticketStats)}
+        patch={loaded({ ...patchData, compliancePercent: 100, totalDevices: 0, compliantDevices: 0, devicePercent: 0 })}
+        onRetry={() => {}}
+      />
+    );
+    const tile = screen.getByTestId('dashboard-patch-card');
+    expect(tile).not.toHaveTextContent('%');
+    expect(tile).toHaveTextContent('—');
   });
 });

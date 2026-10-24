@@ -511,6 +511,32 @@ All resource reads are org-scoped -- the API key's organization determines which
 
 ---
 
+## MCP Apps (preview)
+
+Some MCP hosts can render a small interactive view next to a tool result instead of raw JSON. These hosts support the [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) extension (`io.modelcontextprotocol/ui`). Breeze ships one such view as a pilot: a **fleet reliability card** for the `get_fleet_health` tool. It is off by default. An operator turns it on with `MCP_APPS_ENABLED=true`.
+
+**What an Apps-capable host sees.** The host declares the extension when it connects:
+
+```json
+{ "capabilities": { "extensions": { "io.modelcontextprotocol/ui": { "mimeTypes": ["text/html;profile=mcp-app"] } } } }
+```
+
+Legacy clients send this in `initialize`. Clients on protocol `2026-07-28` send it in every request's client capabilities. When the flag is on, the `get_fleet_health` entry in `tools/list` gains `_meta.ui.resourceUri = "ui://breeze/fleet-health/v1"`. The host then fetches that view with `resources/read` and shows the result of each `get_fleet_health` call in it:
+
+- the score bands (critical 0–50, poor 51–70, fair 71–85, good 86–100), the degrading count and the average score, for **all matching devices**;
+- a table of **the returned page** (worst first on the first page), with uptime, crash, hang, service-failure and hardware-error counts;
+- a "N more — ask for the next page" hint when there are more devices. Paging stays with the assistant; the view has no buttons.
+
+**Every other client gets exactly what it gets today.** The `get_fleet_health` result is the same text and the same `structuredContent` for every client, whether or not it declared the extension and whether or not the flag is on. A client that does not declare the extension sees no `_meta.ui` and cannot read the view. The legacy HTTP+SSE transport (`/api/v1/mcp/message`) never offers it.
+
+**Who can see it.** The view is offered only to a connection that can already list `get_fleet_health`. That means the connection's [tool areas](#limit-a-connection-to-tool-areas) include `devices`, and the key's role holds `devices.read`. Anyone else gets the ordinary "Unknown resource URI" error for the view's address.
+
+**What the view does not do.** The view makes no network requests and loads nothing from any server. It contains no data until the tool runs: it renders only the tool result the host hands it, and shows device names and other values as plain text. If the result is a summary or an error rather than the usual device list, the view shows the tool's text instead.
+
+The view is English only. For the pilot evaluation, the audit log marks requests from Apps-capable clients with `details.uiExtension`. For a protocol `2026-07-28` client, every request is marked. For a legacy client, `initialize`, `tools/list`, `resources/read` and `tools/call` are marked. While the flag is on, each successful view fetch and each `get_fleet_health` call is also marked with `details.mcpApp = "fleet-health/v1"`, whether or not the client declared the extension.
+
+---
+
 ## Guided prompts
 
 Beyond individual tools, the server advertises five **guided prompts** -- ready-made workflows for the tasks MSPs run most often. An AI client lists them with `prompts/list` and expands one with `prompts/get`; the prompt returns a structured starting message (with any argument you supply filled in) that steers the assistant through the right sequence of tools. They're a fast on-ramp: rather than describing a whole procedure, you pick the workflow and let it drive.
@@ -885,6 +911,7 @@ All tool inputs are validated against Zod schemas before execution. Invalid inpu
 | `MCP_INTENT_CREATES_PER_USER_PER_HOUR` | `60` | Maximum new approval requests per requesting user per hour, across all their credentials. |
 | `MCP_APPROVAL_WAIT_MS` | `20000` | How long an `accept` retry of a URL-elicitation approval waits for the decision before returning `pending_approval`. |
 | `MCP_APPROVAL_WAITS_PER_PRINCIPAL` | `2` | Concurrent `accept` waits per MCP credential; further ones return the current status without waiting. |
+| `MCP_APPS_ENABLED` | `false` | When `true`, MCP hosts that declare the MCP Apps extension get the `get_fleet_health` fleet reliability view (`ui://breeze/fleet-health/v1`). Every other client's responses are unchanged. The API refuses to boot on a non-boolean value. See [MCP Apps (preview)](#mcp-apps-preview). |
 | `MCP_MAX_SSE_SESSIONS_PER_KEY` | `5` | Maximum concurrent SSE sessions per API key. |
 | `MCP_SSE_RATE_LIMIT_PER_MINUTE` | `30` | Maximum SSE connections per API key per minute. |
 | `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE` | `120` | Maximum JSON-RPC messages per API key per minute. |

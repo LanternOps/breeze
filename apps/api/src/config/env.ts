@@ -347,6 +347,25 @@ export function aiWorkspaceEnabled(): boolean {
 }
 
 /**
+ * Wisp, the always-on delegated agent (Wisp design §10).
+ *
+ * This is the DEPLOYMENT switch; the `wisp` entitlement (W01) is the commercial
+ * switch, and both must be on before anything Wisp-shaped runs. Same three-term
+ * conjunction as aiWorkspaceEnabled(), all read at CALL time: hosted, the AI
+ * agents platform switch, and BREEZE_WISP_ENABLED. Default OFF. With it off the
+ * /api/v1/wisp routes answer 404, the grant hooks are not installed and the
+ * reconciler skips every tick. config/validate.ts refuses the flag in production
+ * without IS_HOSTED=true.
+ */
+export function wispEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_WISP_ENABLED', false)
+  );
+}
+
+/**
  * EDR response actions (#8167 W03) — the SERVER-WIDE kill switch. Default ON:
  * the per-connection `edr_connections.actions_enabled` opt-in (default OFF,
  * partner admin + MFA) is the real gate, and an env default of OFF would make

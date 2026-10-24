@@ -44,6 +44,7 @@ export type BodyLimitRule =
   | 'agreement-signed-copy'
   | 'edr-webhook'
   | 'yara-test-sample'
+  | 'wisp-thread-attachment'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
@@ -194,6 +195,15 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
   // /security/yara path stays at the default.
   if (/^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test$/i.test(path)) {
     return { rule: 'yara-test-sample', maxSize: 10 * 1024 * 1024 + 64 * 1024, error: 'File too large (max 10 MB)' };
+  }
+  // Wisp thread attachment (W04 6b): one multipart text file OR a JSON
+  // `{ text, label }` paste, capped at 5 MiB of decoded text by the route
+  // (THREAD_ATTACHMENT_MAX_BYTES, 413 too_large). 1 MiB of headroom covers the
+  // multipart envelope and the JSON escaping of pasted text; the route
+  // registers the same ceiling (WISP_THREAD_ATTACHMENT_BODY_LIMIT). The JSON
+  // siblings under /wisp/thread stay at the default.
+  if (/^\/api\/v1\/wisp\/thread\/[^/]+\/attachments$/.test(path)) {
+    return { rule: 'wisp-thread-attachment', maxSize: 6 * 1024 * 1024, error: 'Attachment too large (max 5 MiB)' };
   }
   if (path === '/api/v1/users/me/avatar') {
     return {

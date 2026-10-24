@@ -423,6 +423,12 @@
           "markdownDescription": "Enables the write_image command without any pre-configured scope."
         },
         {
+          "description": "Enables the write_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "clipboard-manager:allow-write-secret",
+          "markdownDescription": "Enables the write_secret command without any pre-configured scope."
+        },
+        {
           "description": "Enables the write_text command without any pre-configured scope.",
           "type": "string",
           "const": "clipboard-manager:allow-write-text",
@@ -457,6 +463,12 @@
           "type": "string",
           "const": "clipboard-manager:deny-write-image",
           "markdownDescription": "Denies the write_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "clipboard-manager:deny-write-secret",
+          "markdownDescription": "Denies the write_secret command without any pre-configured scope."
         },
         {
           "description": "Denies the write_text command without any pre-configured scope.",

@@ -92,7 +92,15 @@ vi.mock('./callerTarget', async (orig) => {
   };
 });
 
+// Wisp W04a: the delegation ceiling at release for a chat-originated intent.
+// Mocked at the module boundary; its own behaviour (enforceWispCeiling reuse,
+// typed codes, audit, fail-closed) is covered in wisp/releaseCeiling.test.ts.
+vi.mock('../wisp/releaseCeiling', () => ({
+  checkWispCeilingForRelease: vi.fn(async (_intent: unknown, auth: unknown) => ({ ok: true, auth })),
+}));
+
 import { revalidateApprovedIntentForRelease } from './revalidateRelease';
+import { checkWispCeilingForRelease } from '../wisp/releaseCeiling';
 import { checkToolPermission, checkPermissionRequirements } from '../aiGuardrails';
 import { loadTenantToolBindingState, loadTenantToolForExecution } from '../toolSources/resolver';
 import { getToolTier } from '../aiTools';
@@ -1111,5 +1119,70 @@ describe('revalidateApprovedIntentForRelease mcp_api origin branch (B-W04 #6158)
     );
     expect(rebuildMcpOriginAuthContext).not.toHaveBeenCalled();
     expect(buildAuthContextForIntent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('revalidateApprovedIntentForRelease Wisp delegation ceiling (W04a)', () => {
+  const SESSION = '55555555-5555-4555-8555-555555555555';
+  const plainArgs = { deviceId: 'dev-1', action: 'restart', serviceName: 'spooler' };
+  const plainDigest = computeArgumentDigest(canonicalizeArguments(plainArgs));
+  const chatIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    actionName: 'manage_services', arguments: plainArgs, argumentDigest: plainDigest,
+    aiOriginKind: 'ai_assistant', aiOriginSessionId: SESSION, ...overrides,
+  });
+
+  it('an intent with no chat-session origin never consults the Wisp ceiling', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      chatIntent({ aiOriginKind: null, aiOriginSessionId: null }),
+      { boundArgumentDigest: plainDigest },
+    );
+    expect(result).toMatchObject({ ok: true });
+    expect(checkWispCeilingForRelease).not.toHaveBeenCalled();
+  });
+
+  it('a chat-originated intent is checked with the rebuilt requester auth, and released under the auth the check returns', async () => {
+    const narrowed = { narrowed: true } as never;
+    vi.mocked(checkWispCeilingForRelease).mockResolvedValueOnce({ ok: true, auth: narrowed });
+    const intent = chatIntent();
+    const result = await revalidateApprovedIntentForRelease(intent, { boundArgumentDigest: plainDigest });
+    expect(checkWispCeilingForRelease).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(checkWispCeilingForRelease).mock.calls[0]![0]).toBe(intent);
+    expect(vi.mocked(checkWispCeilingForRelease).mock.calls[0]![1]).toMatchObject({ user: { id: 'user-1' }, orgId: 'org-1' });
+    expect(result).toEqual({ ok: true, auth: narrowed });
+  });
+
+  it('a Wisp refusal is returned as-is and stops the release', async () => {
+    vi.mocked(checkWispCeilingForRelease).mockResolvedValueOnce({
+      ok: false, errorCode: 'wisp_grant_inactive', details: { wispRefusal: 'inactive' },
+    });
+    const result = await revalidateApprovedIntentForRelease(chatIntent(), { boundArgumentDigest: plainDigest });
+    expect(result).toEqual({ ok: false, errorCode: 'wisp_grant_inactive', details: { wispRefusal: 'inactive' } });
+  });
+
+  it('runs only after every core check passed (an RBAC denial never reaches it)', async () => {
+    vi.mocked(checkToolPermission).mockResolvedValueOnce('Missing permission' as never);
+    const result = await revalidateApprovedIntentForRelease(chatIntent(), { boundArgumentDigest: plainDigest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'rbac_denied' });
+    expect(checkWispCeilingForRelease).not.toHaveBeenCalled();
+  });
+
+  it('a Wisp refusal never spends a single-use caller verification', async () => {
+    const args = { userIdentifier: 'victim@contoso.test', reason: 'r' };
+    const digest = computeArgumentDigest(canonicalizeArguments(args));
+    vi.mocked(checkWispCeilingForRelease).mockResolvedValueOnce({
+      ok: false, errorCode: 'wisp_ceiling_refused', details: { wispRefusal: 'permission' },
+    });
+    const result = await revalidateApprovedIntentForRelease(
+      chatIntent({
+        actionName: 'm365_disable_user', arguments: args, argumentDigest: digest,
+        targetEntraTenantId: '22222222-2222-4222-8222-222222222222',
+        targetEntraOid: '33333333-3333-4333-8333-333333333333',
+        targetConnectionRef: '44444444-4444-4444-8444-444444444444',
+      }),
+      { boundArgumentDigest: digest },
+    );
+    expect(result).toMatchObject({ ok: false, errorCode: 'wisp_ceiling_refused' });
+    expect(requireCallerVerification).not.toHaveBeenCalled();
+    expect(loadPinnedCallerBackend).not.toHaveBeenCalled();
   });
 });

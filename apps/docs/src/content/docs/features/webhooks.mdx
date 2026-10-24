@@ -135,6 +135,7 @@ Ticket events are published from the ticketing transactional outbox with **id-on
 | `ticket.status_changed` | `from`, `to`, `statusId` | The core status changed (`statusId` is the partner's custom status row, when one was used) |
 | `ticket.updated` | `changed` (field names) | Fields were edited — subject, description, priority, category, due date, device, tags, requester |
 | `ticket.assigned` | `assigneeId` (`null` when unassigned), `actorPrincipalId` | The assignee changed. `actorPrincipalId` is the service principal that made the change (`null` for people and the system), so a mirroring integration can skip its own assignments |
+| `ticket.merged` | `sourceTicketId`, `targetTicketId`, `sourceInternalNumber`, `targetInternalNumber` | A ticket was merged into another. Sent once, on the surviving ticket (`ticketId` = `targetTicketId`). The source stays as a read-only record: a Partner API read of it returns `mergedIntoTicketId` and `mergedAt`. The source also gets a `ticket.status_changed` to `closed` when it was not already closed, and the survivor a `ticket.updated` with `changed: ["merge"]`. Comments moved by the merge are not re-sent as `ticket.commented` |
 | `ticket.sla_breached` | `assigneeId` | A response or resolution SLA target was missed |
 
 ### Migration Window Events

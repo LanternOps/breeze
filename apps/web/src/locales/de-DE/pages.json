@@ -181,7 +181,8 @@
     "billingAutopay": "Automatische Zahlungen",
     "endpointMessages": "Endpunkt-Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",
-    "settingsPlan": "Tarif & Funktionen"
+    "settingsPlan": "Tarif & Funktionen",
+    "settingsWispMemory": "Wisp-Gedächtnis"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -268,6 +269,10 @@
       "plan": {
         "title": "Tarif & Funktionen",
         "description": "Ihr Tarif, welche Funktionen er umfasst und woher jede einzelne stammt."
+      },
+      "wispMemory": {
+        "title": "Wisp-Gedächtnis",
+        "description": "Prüfen, bestätigen und widerrufen, was Wisp sich merkt."
       }
     },
     "groups": {

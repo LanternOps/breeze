@@ -517,7 +517,7 @@ export default function PartnerSettingsPage() {
   const activeDef = TAB_BY_KEY[activeTab];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t('partnerSettingsPage.title')}</h1>

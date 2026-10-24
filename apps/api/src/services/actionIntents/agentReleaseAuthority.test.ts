@@ -70,6 +70,16 @@ vi.mock('../aiAgents/effectivePolicy', () => ({
   resolveEffectiveAgent: policyState.resolveEffectiveAgent,
 }));
 
+// Wisp W02: the pinned grant ceiling. The REAL assertWithinCeiling runs; only
+// the live resolve is stubbed (spied so call shape can be asserted).
+const grantState = vi.hoisted(() => ({ resolveGrantCeiling: vi.fn(), assertWithinCeiling: vi.fn(), assertToolCallWithinCeiling: vi.fn() }));
+vi.mock('../wisp/grantAuthority', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../wisp/grantAuthority')>();
+  grantState.assertWithinCeiling.mockImplementation(actual.assertWithinCeiling);
+  grantState.assertToolCallWithinCeiling.mockImplementation(actual.assertToolCallWithinCeiling);
+  return { ...actual, resolveGrantCeiling: grantState.resolveGrantCeiling, assertWithinCeiling: grantState.assertWithinCeiling, assertToolCallWithinCeiling: grantState.assertToolCallWithinCeiling };
+});
+
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentPolicy } from '@breeze/shared';
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
@@ -760,6 +770,103 @@ describe('checkAgentReleaseAuthority', () => {
       } as Partial<ActionIntent>));
 
       expect(result).toMatchObject({ ok: false, errorCode: 'agent_policy_denied' });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Wisp W02 — the pinned delegation ceiling (Wisp design §4.3)
+  // -------------------------------------------------------------------------
+  describe('grant-bearing runs', () => {
+    const grantRun = () => ({ ...runRow(), grantId: 'g1', grantRevisionId: 'r1' });
+    const ceiling = (o: Record<string, unknown> = {}) => ({
+      grantId: 'g1', revisionId: 'r1', partnerId: 'partner-1', grantorUserId: 'u1', scopeOrgId: null, partnerWide: true,
+      orgIds: new Set(['org-1']), siteIds: null, permissionKeys: new Set(['*:*']), toolAllowlist: null,
+      deniedTools: new Set(['manage_ai_agents']), orgTerms: new Map(), status: 'active', ...o,
+    });
+
+    it('a run with no grant never calls resolveGrantCeiling', async () => {
+      seedHappyRows();
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({ ok: true });
+      expect(grantState.resolveGrantCeiling).not.toHaveBeenCalled();
+    });
+
+    it('grant_inactive when the grant is PAUSED (pausable)', async () => {
+      const { GrantInactiveError } = await import('../wisp/grantAuthority');
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'paused'));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({
+        ok: false, errorCode: 'grant_inactive', details: { grantId: 'g1', grantRevisionId: 'r1', code: 'inactive' },
+      });
+    });
+
+    it('grant_ended (terminal) when the grant was revoked or expired', async () => {
+      const { GrantInactiveError } = await import('../wisp/grantAuthority');
+      for (const status of ['revoked', 'expired'] as const) {
+        seedHappyRows({ run: grantRun() });
+        grantState.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError('g1', status));
+        await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+          ok: false, errorCode: 'grant_ended', details: { grantId: 'g1', status },
+        });
+      }
+    });
+
+    it('a corrupt pin is a terminal violation, never a pause', async () => {
+      const { GrantInactiveError } = await import('../wisp/grantAuthority');
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g1', 'active', 'malformed ceiling snapshot', 'corrupt'));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+        ok: false, errorCode: 'grant_ceiling_violation', details: { code: 'corrupt' },
+      });
+    });
+
+    it('an evaluator outage is grant_ceiling_unavailable (pausable), never a throw that strands the claim', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockRejectedValue(new Error('connection terminated'));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+        ok: false, errorCode: 'grant_ceiling_unavailable', details: { grantId: 'g1', code: 'unavailable' },
+      });
+    });
+
+    it('grant_ceiling_violation {code:"org"} when the intent org left the live ceiling', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling({ orgIds: new Set(['another-org']) }));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({
+        ok: false, errorCode: 'grant_ceiling_violation', details: { grantId: 'g1', grantRevisionId: 'r1', code: 'org' },
+      });
+    });
+
+    it('grant_ceiling_violation {code:"permission"} when the grantor no longer holds the tool\'s permission', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['devices:read']) }));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({
+        ok: false, errorCode: 'grant_ceiling_violation', details: { code: 'permission' },
+      });
+    });
+
+    it('checks tool = intent.actionName, permission from TOOL_PERMISSIONS, orgId = intent.orgId, siteId = the resolved target device site', async () => {
+      seedHappyRows({ run: grantRun(), deviceSiteId: 'site-a' });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling());
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toEqual({ ok: true });
+      expect(grantState.resolveGrantCeiling).toHaveBeenCalledWith('g1', 'r1');
+      expect(grantState.assertToolCallWithinCeiling).toHaveBeenCalledWith(
+        expect.objectContaining({ grantId: 'g1' }),
+        { toolName: 'manage_services', orgId: 'org-1', siteId: 'site-a' },
+        expect.arrayContaining([expect.objectContaining({ resource: 'devices' })]),
+      );
+    });
+
+    it('an action with no resolvable human permission is a terminal violation (fail closed)', async () => {
+      seedHappyRows({ run: grantRun() });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling());
+      await expect(checkAgentReleaseAuthority(intentFixture({ actionName: 'no_such_tool_mapping' } as Partial<ActionIntent>)))
+        .resolves.toMatchObject({ ok: false, errorCode: 'grant_ceiling_violation', details: { code: 'permission' } });
+    });
+
+    it('the grant check runs BEFORE the policy candidates loop (a ceiling violation wins over a snapshot deny)', async () => {
+      // The snapshot allowlist is empty, so the candidates loop alone would say agent_policy_denied.
+      seedHappyRows({ run: { ...runRow(effectivePolicy({ toolAllowlist: [] })), grantId: 'g1', grantRevisionId: 'r1' } });
+      grantState.resolveGrantCeiling.mockResolvedValue(ceiling({ orgIds: new Set(['another-org']) }));
+      await expect(checkAgentReleaseAuthority(intentFixture())).resolves.toMatchObject({ errorCode: 'grant_ceiling_violation' });
     });
   });
 });

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ConnectionHealthPanel, { KNOWN_CONDITIONS } from "./ConnectionHealthPanel";
+import type { ConnectionIncident } from "./useConnectionHealth";
 import { fetchWithAuth } from "../../stores/auth";
 import { installAstroClientRouterStandIn } from "../../__tests__/astroClientRouterStandIn";
 
@@ -24,13 +25,13 @@ function res(payload: unknown, status = 200): Response {
 }
 
 const now = Date.now();
-function incident(over: Record<string, unknown> = {}) {
+function incident(over: Partial<ConnectionIncident> = {}): ConnectionIncident {
   return {
     id: "i1",
     sourceKind: "psa",
     orgId: null,
     condition: "sync_failed",
-    severity: "permanent",
+    severity: "permanent" as const,
     detail: "Boom <b>bold</b>",
     displayName: "ConnectWise",
     fixHref: "/integrations#psa",
@@ -189,5 +190,69 @@ describe("ConnectionHealthPanel", () => {
       expect(typeof en.connectionHealthPanel.condition[code]).toBe("string");
     }
     expect(KNOWN_CONDITIONS).toHaveLength(20);
+  });
+});
+
+describe("ConnectionHealthPanel — page-owned data (critique 10-20)", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+  });
+
+  it("reserves its space with a loading placeholder instead of rendering nothing", () => {
+    fetchMock.mockImplementation(() => new Promise(() => {}));
+    render(<ConnectionHealthPanel />);
+    expect(screen.getByTestId("connection-health-loading")).toBeInTheDocument();
+  });
+
+  it("renders the health it is handed without fetching", () => {
+    render(
+      <ConnectionHealthPanel
+        health={{
+          state: { kind: "ready", open: { data: [incident()], truncated: false }, recent: { data: [], truncated: false } },
+          retry: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getAllByTestId("connection-health-open-row")).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("names the organization an incident belongs to, and marks partner-wide ones", () => {
+    const orgId = "11111111-1111-4111-8111-111111111111";
+    render(
+      <ConnectionHealthPanel
+        resolveOrgName={(id) => (id === orgId ? "Contoso Ltd" : null)}
+        health={{
+          state: {
+            kind: "ready",
+            open: {
+              data: [
+                incident({ id: "a", orgId, displayName: "Microsoft 365" }),
+                incident({ id: "b", orgId: null, displayName: "Huntress" }),
+              ],
+              truncated: false,
+            },
+            recent: { data: [], truncated: false },
+          },
+          retry: vi.fn(),
+        }}
+      />,
+    );
+    const scopes = screen.getAllByTestId("connection-health-row-scope").map((el) => el.textContent);
+    expect(scopes).toEqual(["Contoso Ltd", "Partner-wide"]);
+  });
+
+  it("says what the healthy state covers, so it is not read as 'nothing connected'", () => {
+    render(
+      <ConnectionHealthPanel
+        health={{
+          state: { kind: "ready", open: { data: [], truncated: false }, recent: { data: [], truncated: false } },
+          retry: vi.fn(),
+        }}
+      />,
+    );
+    expect(screen.getByTestId("connection-health-empty-detail")).toHaveTextContent(
+      /checked automatically/i,
+    );
   });
 });

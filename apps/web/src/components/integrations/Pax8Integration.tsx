@@ -21,6 +21,7 @@ import { formatDateTime } from "@/lib/dateTimeFormat";
 import LinkSubscriptionPicker from "./LinkSubscriptionPicker";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
+import { IntegrationPanelHeader } from "./IntegrationPanelHeader";
 
 // ── Types mirrored from apps/api/src/routes/pax8.ts ────────────────────────
 interface Pax8Integration {
@@ -420,14 +421,10 @@ export default function Pax8Integration() {
   if (isOrgScoped) {
     return (
       <div className="space-y-6" data-testid="pax8-panel">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Boxes className="h-5 w-5" />
-          </div>
-          <h1 className="text-2xl font-semibold">
-            {t("pax8Integration.pax8")}
-          </h1>
-        </div>
+        <IntegrationPanelHeader
+          icon={<Boxes className="h-4 w-4" />}
+          title={t("pax8Integration.pax8")}
+        />
         <p
           className="text-center text-sm text-muted-foreground"
           data-testid="pax8-org-scope"
@@ -462,40 +459,34 @@ export default function Pax8Integration() {
   return (
     <div className="space-y-6" data-testid="pax8-panel">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Boxes className="h-5 w-5" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {t("pax8Integration.pax8")}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "pax8Integration.connectPax8ToSyncCompaniesAndLicenseSubscriptions",
-            )}
-          </p>
-        </div>
-        {isConfigured ? (
-          <span
-            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
-            data-testid="pax8-status-connected"
-          >
-            <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
-          </span>
-        ) : (
-          <span
-            className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
-            data-testid="pax8-status-disconnected"
-          >
-            <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
-          </span>
+      <IntegrationPanelHeader
+        icon={<Boxes className="h-4 w-4" />}
+        title={t("pax8Integration.pax8")}
+        description={t(
+          "pax8Integration.connectPax8ToSyncCompaniesAndLicenseSubscriptions",
         )}
-      </div>
+        actions={
+          isConfigured ? (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs text-emerald-700"
+              data-testid="pax8-status-connected"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" /> {t("common:states.active")}
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
+              data-testid="pax8-status-disconnected"
+            >
+              <Unplug className="h-3.5 w-3.5" /> {t("common:states.inactive")}
+            </span>
+          )
+        }
+      />
 
       {loadError && (
         <div
-          className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+          className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
           data-testid="pax8-load-error"
         >
           {loadError}

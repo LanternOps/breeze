@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Building2, Shield, Ticket } from 'lucide-react';
 import '@/lib/i18n';
 
@@ -65,6 +65,30 @@ describe('SettingsSectionNav (#9168)', () => {
       HTMLElement.prototype.scrollIntoView = original;
     }
   });
+
+  // The CSS bound (100vh - 7rem) only fits once the rail is stuck. Before that
+  // it sits under the page title and its bottom ran off-screen, hiding the last
+  // sections until the page was scrolled. Size it from where it actually is.
+  it('sizes the rail from its on-screen top so its bottom never runs past the viewport', () => {
+    const { container } = render(
+      <main>
+        <SettingsSectionNav groups={groups} activeKey="company" onNavigate={vi.fn()} selectId="nav-select" />
+      </main>,
+    );
+    const rail = container.querySelector('nav') as HTMLElement;
+    const main = container.querySelector('main') as HTMLElement;
+    let top = 194;
+    rail.getBoundingClientRect = () => ({ top } as DOMRect);
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
+
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    expect(rail.style.maxHeight).toBe('682px'); // 900 - 194 - 24
+
+    top = 88; // scrolled until stuck at top-6 under the 4rem app header
+    act(() => { main.dispatchEvent(new Event('scroll')); });
+    expect(rail.style.maxHeight).toBe('788px');
+  });
+
   describe('link items (#9787)', () => {
     const linkGroups: SettingsNavGroup[] = [
       {
