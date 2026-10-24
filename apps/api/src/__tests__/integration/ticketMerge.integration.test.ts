@@ -10,7 +10,7 @@
 import './setup';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { withDbAccessContext, type DbAccessContext } from '../../db';
+import { withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { loadMergeTicketRows, mergeTickets } from '../../services/ticketMerge';
 import { previewMerge } from '../../services/ticketMerge/preview';
 import { db } from '../../db';
@@ -18,6 +18,7 @@ import { MergeRefusedError, TicketMergedError } from '../../services/ticketMerge
 import { addTicketComment, type TicketActor } from '../../services/ticketService';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { getTestDb } from './setup';
+import { businessCalendarIntervals, businessCalendarRevisions, businessCalendars } from '../../db/schema';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const T = 60_000;
@@ -365,6 +366,32 @@ describe('mergeTickets (#8972 W1, spec §3.3)', () => {
     });
     expect(t.sla_paused_minutes as number).toBeGreaterThanOrEqual(39);
     expect(t.sla_paused_business_minutes as number).toBeGreaterThanOrEqual(39);
+  }, T);
+
+  // #8973 W4: the open pause folds into business minutes on the SOURCE's own
+  // calendar, not the wall clock. The calendar has one business minute a day
+  // (00:00–00:01 UTC), so a 30-minute pause accrues at most 1.
+  runDb('tombstone: an open pause on a calendar ticket accrues business minutes on that calendar', async () => {
+    const s = await seed();
+    const owner = { orgId: null, partnerId: s.partner.id };
+    const revId = await withSystemDbAccessContext(async () => {
+      const [cal] = await db.insert(businessCalendars).values({ ...owner, name: `Merge cal ${seq}` }).returning();
+      const [rev] = await db.insert(businessCalendarRevisions).values({ calendarId: cal!.id, ...owner, revision: 1, timezone: 'UTC' }).returning();
+      await db.insert(businessCalendarIntervals).values([0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
+        revisionId: rev!.id, ...owner, weekday, startMinute: 0, endMinute: 1,
+      })));
+      return rev!.id;
+    });
+    await getTestDb().execute(sql`
+      UPDATE tickets SET status = 'pending', sla_paused_at = now() - interval '30 minutes', sla_paused_minutes = 10,
+                         sla_paused_business_minutes = 10, sla_calendar_revision_id = ${revId}::uuid
+       WHERE id = ${s.src}::uuid`);
+    await merge(s);
+    const t = await one<{ sla_paused_minutes: number; sla_paused_business_minutes: number; sla_calendar_revision_id: string }>(sql`
+      SELECT sla_paused_minutes, sla_paused_business_minutes, sla_calendar_revision_id FROM tickets WHERE id = ${s.src}::uuid`);
+    expect(t.sla_paused_minutes).toBeGreaterThanOrEqual(39);
+    expect(t.sla_paused_business_minutes).toBeLessThanOrEqual(11);
+    expect(t.sla_calendar_revision_id).toBe(revId);
   }, T);
 
   runDb('path compression: A→B then B→C leaves A pointing at C', async () => {

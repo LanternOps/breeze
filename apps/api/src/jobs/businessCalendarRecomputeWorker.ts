@@ -37,8 +37,9 @@ import { attachWorkerObservability } from './workerObservability';
  * (quorum C4): the edit only moves time after now, so every deadline it can
  * change is still in the future; the sweep stamps only `now() >= due`.
  *
- * W1 (merged tickets) is not on main: once `merged_into_ticket_id` ships,
- * add `merged_into_ticket_id IS NULL` to ELIGIBLE (cross-wave rebase rule).
+ * Merged tombstones (#8972) are never recomputed: ELIGIBLE excludes
+ * `merged_into_ticket_id IS NOT NULL` (cross-wave rebase rule) on top of the
+ * open-status filter a tombstone (always closed) already fails.
  */
 export const BUSINESS_CALENDAR_RECOMPUTE_QUEUE = 'business-calendar-recompute';
 export const RECOMPUTE_CHUNK = 500;
@@ -72,6 +73,7 @@ const OPEN_STATUSES = new Set(['new', 'open', 'pending', 'on_hold']);
 const ELIGIBLE = sql`
   t.status IN ('new', 'open', 'pending', 'on_hold')
   AND t.deleted_at IS NULL
+  AND t.merged_into_ticket_id IS NULL
   AND (
     (t.response_sla_minutes IS NOT NULL AND t.first_response_at IS NULL
       AND NOT ('response' = ANY(string_to_array(COALESCE(t.sla_breach_reason, ''), ','))))

@@ -121,6 +121,7 @@ interface SourceDetail {
   slaPausedBusinessMinutes: number;
   firstResponseAt: Date | null;
   slaBreachReason: string | null;
+  slaCalendarRevisionId: string | null;
 }
 
 interface InTxResult {
@@ -257,6 +258,7 @@ async function mergeInTx(
     slaPausedBusinessMinutes: tickets.slaPausedBusinessMinutes,
     firstResponseAt: tickets.firstResponseAt,
     slaBreachReason: tickets.slaBreachReason,
+    slaCalendarRevisionId: tickets.slaCalendarRevisionId,
   }).from(tickets).where(eq(tickets.id, srcId)).limit(1)) as SourceDetail[];
   const [dstTags] = await tx.select({ tags: tickets.tags }).from(tickets).where(eq(tickets.id, dstId)).limit(1);
 
@@ -289,7 +291,8 @@ async function mergeInTx(
     updatedAt: now,
   };
   if (detail!.slaPausedAt) {
-    const calendar = await loadTicketCalendar(tx as never, null);
+    // On the source's own calendar snapshot (#8973 W4), like every pause end.
+    const calendar = await loadTicketCalendar(tx as never, detail!.slaCalendarRevisionId);
     const clock = slaClockRowOf({ ...detail!, createdAt: src.createdAt });
     const elapsed = Math.max(0, Math.floor((now.getTime() - new Date(detail!.slaPausedAt).getTime()) / 60_000));
     const accrued = accruePauseEnd(clock, calendar, now);

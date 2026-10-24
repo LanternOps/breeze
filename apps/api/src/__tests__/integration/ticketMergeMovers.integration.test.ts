@@ -19,6 +19,7 @@ import { moveTicketOrg, type TicketActor } from '../../services/ticketService';
 import { createDevice, createOrganization, createPartner, createSite, createUser } from './db-utils';
 import { uniqueInternalNumber } from '../../services/inboundEmail/fixtureNumbering';
 import { getTestDb } from './setup';
+import { businessCalendarIntervals, businessCalendarRevisions, businessCalendars, orgTicketSettings } from '../../db/schema';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
 const T = 60_000;
@@ -48,6 +49,20 @@ async function seed() {
 }
 
 type Seed = Awaited<ReturnType<typeof seed>>;
+
+/** An org-owned business calendar (Mon–Fri 09:00–17:00) set as the org's override. */
+async function orgCalendar(orgId: string): Promise<string> {
+  return sys(async () => {
+    const owner = { orgId, partnerId: null };
+    const [cal] = await db.insert(businessCalendars).values({ ...owner, name: `Movers cal ${crypto.randomUUID().slice(0, 8)}` }).returning();
+    const [rev] = await db.insert(businessCalendarRevisions).values({ calendarId: cal!.id, ...owner, revision: 1, timezone: 'Europe/London' }).returning();
+    await db.insert(businessCalendarIntervals).values([1, 2, 3, 4, 5].map((weekday) => ({
+      revisionId: rev!.id, ...owner, weekday, startMinute: 540, endMinute: 1020,
+    })));
+    await db.insert(orgTicketSettings).values({ orgId, businessCalendarId: cal!.id });
+    return rev!.id;
+  });
+}
 const merge = (s: Seed, src: string, dst: string) =>
   withDbAccessContext(s.ctx, () => mergeTickets({ sourceTicketId: src, intoTicketId: dst, notifyRequester: false }, s.actor));
 
@@ -116,5 +131,40 @@ describe('movers carry merged tombstones (#8972 W1, spec §3.9)', () => {
     const rows = await q<{ id: string; org_id: string }>(sql`SELECT id, org_id FROM tickets WHERE id IN (${dst}::uuid, ${src}::uuid)`);
     expect(rows.map((r) => r.org_id)).toEqual([s.orgB.id, s.orgB.id]);
     expect(await one(sql`SELECT merged_into_ticket_id FROM tickets WHERE id = ${src}::uuid`)).toEqual({ merged_into_ticket_id: dst });
+  }, T);
+
+  // #8973 W4 × #8972 W1: a moved ticket re-resolves its calendar for the target
+  // org, so a source-org calendar is never left referenced — that includes the
+  // tombstones the movers carry with their survivor.
+  runDb('moveTicketOrg: a carried tombstone never keeps the source org\'s calendar', async () => {
+    const s = await seed();
+    const revA = await orgCalendar(s.orgA.id);
+    const dst = await insertTicket(s.orgA.id, s.partner.id);
+    const src = await insertTicket(s.orgA.id, s.partner.id);
+    await getTestDb().execute(sql`UPDATE tickets SET sla_calendar_revision_id = ${revA}::uuid WHERE id IN (${dst}::uuid, ${src}::uuid)`);
+    await merge(s, src, dst);
+    await sys(() => moveTicketOrg(dst, s.orgB.id, s.actor));
+    expect(await q(sql`SELECT id FROM tickets WHERE sla_calendar_revision_id = ${revA}::uuid`)).toEqual([]);
+    expect(await one(sql`SELECT org_id, merged_into_ticket_id FROM tickets WHERE id = ${src}::uuid`))
+      .toEqual({ org_id: s.orgB.id, merged_into_ticket_id: dst });
+  }, T);
+
+  runDb('device mover: a carried tombstone never keeps the source org\'s calendar', async () => {
+    const s = await seed();
+    const revA = await orgCalendar(s.orgA.id);
+    const siteA = await createSite({ orgId: s.orgA.id });
+    const siteB = await createSite({ orgId: s.orgB.id });
+    const device = await createDevice({ orgId: s.orgA.id, siteId: siteA.id });
+    const dst = await insertTicket(s.orgA.id, s.partner.id, device.id);
+    const src = await insertTicket(s.orgA.id, s.partner.id);
+    await getTestDb().execute(sql`UPDATE tickets SET sla_calendar_revision_id = ${revA}::uuid WHERE id IN (${dst}::uuid, ${src}::uuid)`);
+    await merge(s, src, dst);
+    await sys(() => db.transaction((tx) => moveDeviceOrgInTransaction(tx, {
+      deviceId: device.id, sourceOrgId: s.orgA.id, targetOrgId: s.orgB.id, targetSiteId: siteB.id,
+      targetOrgName: 'B', deviceLinkGroupId: null, acceptCurrencyMismatch: false,
+      actor: { userId: s.user.id, allowedSiteIds: undefined }, stepUp: null, via: 'generic_move',
+    })));
+    expect(await q(sql`SELECT id FROM tickets WHERE sla_calendar_revision_id = ${revA}::uuid`)).toEqual([]);
+    expect(await one(sql`SELECT org_id FROM tickets WHERE id = ${src}::uuid`)).toEqual({ org_id: s.orgB.id });
   }, T);
 });

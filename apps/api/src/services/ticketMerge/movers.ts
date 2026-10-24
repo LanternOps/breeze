@@ -29,8 +29,9 @@
 import { sql } from 'drizzle-orm';
 import { lockTicketsForWrite, type DbExecutor } from '../ticketRowLock';
 import { TICKET_ORG_DENORMALIZED_TABLES } from '../ticketOrgMoveLockOrder';
+import { reresolveMovedTicketCalendars } from '../businessCalendars/reresolve';
 
-type Tx = Pick<DbExecutor, 'execute' | 'select'>;
+type Tx = Pick<DbExecutor, 'execute' | 'select' | 'update'>;
 
 const ids = (list: readonly string[]) => sql.join(list.map((id) => sql`${id}::uuid`), sql`, `);
 
@@ -80,6 +81,10 @@ export async function carryMergedTombstonesInTx(
            assigned_to = CASE WHEN partner_id IS DISTINCT FROM ${targetPartner} THEN NULL ELSE assigned_to END,
            updated_at = now()
      WHERE id IN (${list})`);
+  // #8973 W4 (spec §4.3 "Move-org"): like every moved ticket, a tombstone
+  // re-resolves its business calendar for the org it now belongs to, so a
+  // source-org calendar is never left referenced. Rows already locked above.
+  await reresolveMovedTicketCalendars(tx, tombs);
   await tx.execute(sql`
     UPDATE ticket_comments SET agent_run_id = NULL, proposed_by_run_id = NULL
      WHERE ticket_id IN (${list}) AND (agent_run_id IS NOT NULL OR proposed_by_run_id IS NOT NULL)`);
