@@ -2,8 +2,10 @@
  * Spec §9(a) — the deterministic gate's per-effect contract for
  * `identity_offboarding` (wave #6171, PR R1c, plan Task 24).
  *
- * For every effect in the recipe's CLOSED catalog, against recorded provider
- * fixtures (`__fixtures__/providers/<toolName>.json`):
+ * For every effect in the recipe's CLOSED catalog, against provider-response
+ * fixtures (`__fixtures__/providers/<toolName>.json`). Today every fixture is a
+ * REFERENCE shape authored from the API docs; the lab run re-records them, and
+ * the gate-mode tripwire below stays red until it does:
  *
  *   1. PRE-PROBE SHORT-CIRCUITS. When the pre-probe observes the desired end
  *      state, NO write is dispatched: an idempotent effect settles `succeeded`
@@ -17,7 +19,12 @@
  *   3. POST-PROBE IS THE VERIFICATION. A successful write call never implies a
  *      successful effect (Operator spec §13).
  *   4. REPLAY IS A NO-OP BY OBSERVATION. Dispatching the same effect twice
- *      performs the write once; the second pass is property 1.
+ *      performs the write once; the second pass is property 1. EXCEPT the four
+ *      tools in REPLAY_REQUESTS_SAME_OPERATION, whose done world cannot be
+ *      certified before a write: their replay re-requests the SAME operation
+ *      key, and at-most-once is the permanent (org, task, operation_key) index
+ *      (real rows: aiOperatorEffectDispatchReplay.integration.test.ts). This
+ *      file proves only the key identity for those four.
  *   5. Each tool declares an idempotency class, and a `non_idempotent` one is
  *      never auto-retried.
  *
@@ -39,20 +46,25 @@
  *     the arguments each probe and executor sees are the recipe's, never the
  *     fixture's.
  * Every mocked provider call answers ONLY from the fixture phase in play; a
- * call the fixture does not record throws, and every property asserts that no
- * probe swallowed such a throw into `unknown` (`captureException` unused). A
- * fixture that lies about its phase therefore fails here.
+ * call the fixture does not record throws a FixtureGapError, and every
+ * property asserts that no such gap was hit (a probe would swallow it into
+ * `unknown`, and a Google executor into an `{ error }` result). A fixture that
+ * lies about its phase therefore fails here. The provider WRITE call's
+ * arguments are checked against the plan's identities (WRITE_ARGS, stated in
+ * this file, never in the fixture), so a write aimed at the wrong target fails.
  *
  * `m365_disable_user` is caller-protected: its executor routes through
  * `executeProtectedM365Headless`, whose pinned-intent loader
- * (`aiToolsM365.loadM365MutationContext`) is mocked to a control-plane pin, so
- * its write response is tested at the `executeM365WriteActionByOrg` boundary.
+ * (`aiToolsM365.loadM365MutationContext`) is mocked to a control-plane pin
+ * whose object id DIFFERS from the plan's `userIdentifier`, so the test proves
+ * the write goes to the pinned id. Its write response is tested at the
+ * `executeM365WriteActionByOrg` boundary.
  *
  * GATE MODE. `BREEZE_GATE_SIGNOFF=1` enables the tripwire that fails while any
  * fixture is still a `reference` shape (deviation G1: a permanently red case
  * in `test-api` would block the merge queue). `BREEZE_RECORD_PROVIDER_FIXTURES=1`
  * prints the provider-call capture plan the lab operator records against
- * (README). Both are read ONLY in this file (envInventory, G8).
+ * (README). Both are read only by `*.test.ts` files (envInventory, G8).
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -74,6 +86,10 @@ const h = vi.hoisted(() => {
     phase: '' as string,
     tool: '' as string,
     calls: [] as { key: string; args: unknown }[],
+    /** Every call the phase in play did not record. Each property asserts this stays empty. */
+    gaps: [] as string[],
+    /** The mailbox each Gmail client was built for. */
+    impersonated: [] as string[],
   };
   class FixtureGapError extends Error {}
   /** Answer `key` from the current fixture phase; a Google `{ error }` entry throws like googleapis does. */
@@ -81,7 +97,9 @@ const h = vi.hoisted(() => {
     state.calls.push({ key, args });
     const world = state.world;
     if (!world || !Object.prototype.hasOwnProperty.call(world, key)) {
-      throw new FixtureGapError(`fixture ${state.tool}.${state.phase} records no response for ${key}`);
+      const gap = `fixture ${state.tool}.${state.phase} records no response for ${key}`;
+      state.gaps.push(gap);
+      throw new FixtureGapError(gap);
     }
     const r = world[key] as { error?: { code: number; message: string } };
     if (r && typeof r === 'object' && 'error' in r && r.error && typeof r.error.code === 'number') {
@@ -135,7 +153,8 @@ vi.mock('../googleClient', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../googleClient')>()),
   getDirectoryClient: () => h.directory,
   getLicensingClient: () => h.licensing,
-  getGmailClient: () => h.gmail,
+  // Gmail settings impersonate the MAILBOX OWNER; record who, so a write to the wrong mailbox fails.
+  getGmailClient: (_keyJson: string, subject: string) => { h.state.impersonated.push(subject); return h.gmail; },
 }));
 vi.mock('../aiToolsGoogle', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../aiToolsGoogle')>()),
@@ -222,7 +241,8 @@ const fixtureSchema = z.object({
   preUnsatisfied: worldSchema,
   writeOk: worldSchema,
   postSatisfied: worldSchema,
-  writeRefusal: worldSchema.optional(),
+  /** Required: dropping it would silently lose the negative half of property 2. */
+  writeRefusal: worldSchema,
 }).strict().refine((f) => (f.preSatisfied === null) === (f.preSatisfiedUnreachable !== undefined), {
   message: 'preSatisfiedUnreachable must be given exactly when preSatisfied is null',
 });
@@ -328,6 +348,56 @@ const WRITE_CALL: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.entries(M365_HEADLESS_ACTIONS).map(([tool, actionId]) => [tool, `write:${actionId}`])),
 };
 
+/** The Entra object id the protected-dispatch pin resolves to; differs from the plan's userIdentifier on purpose. */
+const PINNED_OID = '00000000-0000-4000-8000-0000000a0099';
+
+/**
+ * The arguments each tool's provider WRITE call must carry: the plan's own
+ * identities, stated here (never in the fixture), so a write aimed at the
+ * wrong user, group, licence, device or mailbox fails. `mailbox` is the
+ * impersonated Gmail owner.
+ */
+const WRITE_ARGS: Readonly<Record<string, { args: Record<string, unknown>; mailbox?: string }>> = {
+  google_set_vacation: {
+    mailbox: ID.googleEmail,
+    args: { userId: 'me', requestBody: { enableAutoReply: true, responseBodyPlainText: ID.message } },
+  },
+  google_set_forwarding: {
+    mailbox: ID.googleEmail,
+    args: { userId: 'me', requestBody: { enabled: true, emailAddress: ID.destination } },
+  },
+  google_add_mail_delegate: { mailbox: ID.googleEmail, args: { userId: 'me', requestBody: { delegateEmail: ID.destination } } },
+  google_remove_from_group: { args: { groupKey: ID.googleGroup, memberKey: ID.googleEmail } },
+  google_remove_license: { args: { productId: ID.googleProduct, skuId: ID.googleSku, userId: ID.googleEmail } },
+  // The SELECTIVE account wipe, never `admin_remote_wipe` (a factory reset; D-R1-1).
+  google_account_wipe_mobile_device: {
+    args: { customerId: 'my_customer', resourceId: 'md-res-1', requestBody: { action: 'admin_account_wipe' } },
+  },
+  google_signout: { args: { userKey: ID.googleEmail } },
+  google_suspend_user: { args: { userKey: ID.googleEmail, requestBody: { suspended: true } } },
+  m365_set_auto_reply: {
+    args: { type: 'm365.user.mailbox.auto_reply', userIdentifier: ID.m365Oid, status: 'alwaysEnabled', externalAudience: 'all' },
+  },
+  m365_remove_from_group: { args: { type: 'm365.group.membership.remove', groupId: ID.m365Group, userIdentifier: ID.m365Oid } },
+  m365_remove_license: { args: { type: 'm365.user.license.remove', userIdentifier: ID.m365Oid, skuIds: [ID.m365Sku] } },
+  m365_retire_intune_device: { args: { type: 'm365.intune.device.retire', managedDeviceId: ID.m365Device } },
+  m365_revoke_sessions: { args: { type: 'm365.user.revoke_sessions', userIdentifier: ID.m365Oid } },
+  // Caller-protected: the PINNED object id, never the identifier the plan carries.
+  m365_disable_user: { args: { type: 'm365.user.disable', oid: PINNED_OID } },
+};
+
+/** The error code each Google executor must return on its recorded refusal. */
+const GOOGLE_REFUSAL_CODE: Readonly<Record<string, string>> = {
+  google_set_vacation: 'google_forbidden',
+  google_set_forwarding: 'forwarding_pending_verification',
+  google_add_mail_delegate: 'google_forbidden',
+  google_remove_from_group: 'google_forbidden',
+  google_remove_license: 'google_not_found',
+  google_account_wipe_mobile_device: 'google_not_found',
+  google_signout: 'google_forbidden',
+  google_suspend_user: 'google_forbidden',
+};
+
 /**
  * Tools whose replay, observing the already-done world, re-requests the same
  * operation rather than settling noop. Stated here, not derived from the
@@ -397,10 +467,18 @@ function parsedError(result: string): string | null {
 
 const unobservable = (tool: string) => Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, tool);
 
+/** No probe swallowed an error into `unknown`, and no call went unanswered by the fixture. */
+function expectClean(): void {
+  expect(h.state.gaps, 'fixture gaps').toEqual([]);
+  expect(h.captureException).not.toHaveBeenCalled();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.inserted.length = 0;
   h.state.calls.length = 0;
+  h.state.gaps.length = 0;
+  h.state.impersonated.length = 0;
   h.state.world = null;
   h.checkPlanEffectMembershipSystem.mockImplementation(async (input: { toolName: string }) => ({
     ok: true, approvalId: APPROVAL.id, approverUserId: APPROVAL.approverUserId, approvedAssuranceLevel: 3,
@@ -412,7 +490,8 @@ beforeEach(() => {
   h.loadM365MutationContext.mockImplementation(async () => ({
     intent: { id: 'intent-1', requestedByUserId: null },
     ctx: { backend: 'controlPlane', orgId: ORG, connectionId: 'conn-1' },
-    userId: ID.m365Oid,
+    // Deliberately NOT the plan's userIdentifier: the write must go to the pin.
+    userId: PINNED_OID,
   }));
 });
 
@@ -462,13 +541,13 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
         });
         drainCalls();
         expect(pre.state, `${toolName}: ${f.preSatisfiedUnreachable}`).not.toBe('satisfied');
-        expect(h.captureException).not.toHaveBeenCalled();
+        expectClean();
         return;
       }
       use(f, 'preSatisfied');
       const out = await dispatch(effect);
       drainCalls();
-      expect(h.captureException).not.toHaveBeenCalled();
+      expectClean();
       expect(h.createActionIntent).not.toHaveBeenCalled();
       if (classifyEffectIdempotency(toolName) === 'non_idempotent') {
         expect(out.kind).toBe('handoff');
@@ -489,7 +568,7 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       use(f, 'preUnsatisfied');
       const out = await dispatch(effect);
       drainCalls();
-      expect(h.captureException).not.toHaveBeenCalled();
+      expectClean();
       expect(out).toMatchObject({ kind: 'dispatching', intentId: 'i1' });
       expect(h.createActionIntent).toHaveBeenCalledTimes(1);
       expect(h.createActionIntent.mock.calls[0]![1]).toMatchObject({
@@ -502,31 +581,36 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       use(f, 'writeOk');
       const result = await runWrite(effect);
       const calls = drainCalls();
+      expectClean();
       expect(parsedError(result), `${toolName} write returned: ${result}`).toBeNull();
-      expect(calls.filter((c) => c.key === WRITE_CALL[toolName]).length, `${toolName} must issue ${WRITE_CALL[toolName]}`)
-        .toBeGreaterThanOrEqual(1);
+      // Exactly one provider write, aimed at the plan's own target.
+      const writes = calls.filter((c) => c.key === WRITE_CALL[toolName]);
+      expect(writes, `${toolName} must issue ${WRITE_CALL[toolName]} exactly once`).toHaveLength(1);
+      expect(writes[0]!.args, `${toolName} write arguments`).toMatchObject(WRITE_ARGS[toolName]!.args);
+      if (WRITE_ARGS[toolName]!.mailbox) {
+        expect(new Set(h.state.impersonated), `${toolName} must act as the mailbox owner`).toEqual(new Set([WRITE_ARGS[toolName]!.mailbox]));
+      }
       if (effect.provider === 'm365') {
-        const writes = calls.filter((c) => c.key.startsWith('write:'));
-        expect(writes).toHaveLength(1);
-        expect(writes[0]!.key).toBe(WRITE_CALL[toolName]);
+        expect(calls.filter((c) => c.key.startsWith('write:'))).toHaveLength(1);
         // The recorded success is a well-formed executor result.
         expect(writeActionResultSchema.safeParse((f.writeOk[WRITE_CALL[toolName]!] as { result: unknown }).result).success).toBe(true);
         if (toolName === 'm365_disable_user') {
-          // Caller-protected: dispatches to the PINNED object id, never by UPN.
-          expect(writes[0]!.args).toMatchObject({ type: 'm365.user.disable', oid: ID.m365Oid });
+          // Caller-protected: the pinned id, and no identifier-based fallback.
+          expect(writes[0]!.args).not.toHaveProperty('userIdentifier');
         }
       }
     });
 
     it('the provider write fails closed or returns an error on the recorded refusal — never a success', async () => {
       const f = loadFixture(toolName);
-      if (!f.writeRefusal) return;
       const effect = effectFor(toolName);
       use(f, 'writeRefusal');
       if (effect.provider === 'google') {
         const result = await runWrite(effect);
         drainCalls();
-        expect(parsedError(result), `${toolName} refusal returned: ${result}`).not.toBeNull();
+        // The recorded refusal, not some other error (a fixture gap would also be `{ error }`).
+        expectClean();
+        expect(parsedError(result), `${toolName} refusal returned: ${result}`).toBe(GOOGLE_REFUSAL_CODE[toolName]);
         return;
       }
       const refusal = f.writeRefusal[WRITE_CALL[toolName]!] as { ok: false; code: string };
@@ -537,9 +621,11 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       } else {
         expect(writeActionFailureCodeSchema.safeParse(refusal.code).success, refusal.code).toBe(true);
         const result = await runWrite(effect);
-        expect(parsedError(result), `${toolName} refusal returned: ${result}`).not.toBeNull();
+        // The executor returns the service's own message for a Graph-level failure.
+        expect(parsedError(result), `${toolName} refusal returned: ${result}`).toBe((refusal as unknown as { message: string }).message);
       }
       drainCalls();
+      expectClean();
     });
 
     it('post-probe unsatisfied → the effect is NOT verified even though the write returned 200', async () => {
@@ -552,9 +638,13 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       use(f, 'preUnsatisfied');
       const out = await verify(effect);
       drainCalls();
-      expect(h.captureException).not.toHaveBeenCalled();
+      expectClean();
       expect(out.kind).not.toBe('verified');
       expect(out.kind).toBe(isStructurallyUnobservable(toolName) ? 'handoff' : 'unverified');
+      if (out.kind === 'unverified') {
+        // Only a non_idempotent effect is barred from a retry (the positive control for property 5).
+        expect(out.retryable).toBe(classifyEffectIdempotency(toolName) !== 'non_idempotent');
+      }
     });
 
     it('post-probe satisfied → verified (a declared unobservable effect is never verified)', async () => {
@@ -563,7 +653,7 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       use(f, 'postSatisfied');
       const out = await verify(effect);
       drainCalls();
-      expect(h.captureException).not.toHaveBeenCalled();
+      expectClean();
       if (unobservable(toolName)) {
         expect(isStructurallyUnobservable(toolName)).toBe(true);
         expect(out.kind).toBe('handoff');
@@ -572,7 +662,9 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       }
     });
 
-    it('replay performs the write exactly once', async () => {
+    it(REPLAY_REQUESTS_SAME_OPERATION.has(toolName)
+      ? 'replay re-requests the SAME operation key (at-most-once is the operation index)'
+      : 'replay performs the write exactly once', async () => {
       const f = loadFixture(toolName);
       const effect = effectFor(toolName);
       use(f, 'preUnsatisfied');
@@ -582,7 +674,7 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       use(f, 'postSatisfied');
       const second = await dispatch(effect);
       drainCalls();
-      expect(h.captureException).not.toHaveBeenCalled();
+      expectClean();
       const key = planEffectOperationKey({
         stepKey: STEP_KEY, planRevision: APPROVAL.planRevision, toolName, targetId: effect.targetId, ordinal: effect.ordinal,
       });
@@ -616,7 +708,9 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       const handed = await dispatch(effect);
       expect(handed.kind).toBe('handoff');
       expect(h.createActionIntent).not.toHaveBeenCalled();
+      // The empty world above was deliberate; clear its gaps before the next phase.
       h.state.calls.length = 0;
+      h.state.gaps.length = 0;
       // A post-write unsatisfied is never retryable.
       use(f, 'preUnsatisfied');
       const out = await verify(effect);

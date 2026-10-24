@@ -21,7 +21,7 @@ These files feed `../../effectContracts.test.ts`, the per-effect contract suite 
   | Intune managed device | `00000000-0000-4000-8000-0000000d0001` |
   | Auto-reply message | `Dana has left the organization. Please contact office@customer.example for help.` |
 
-- Never commit a real tenant id, a real domain, a token, a key or an address that resolves. Only `*.example` domains are allowed (`scripts/security/check-customer-pii.sh` enforces this).
+- Never commit a real tenant id, a real domain, a token, a key or an address that resolves. Keep every address on `*.example`. `scripts/security/check-customer-pii.sh` rejects unrecognised email domains, but it does not catch tenant ids, tokens or object ids. Those are the recorder's job.
 - Fixtures are checked in so that the gate runs in CI without provider credentials.
 
 ## Shape
@@ -78,7 +78,9 @@ There is no automatic recorder. The contract suite runs against mocked clients, 
    ```sh
    cd apps/api && BREEZE_RECORD_PROVIDER_FIXTURES=1 npx vitest run src/services/aiOperator/effectContracts.test.ts
    ```
-2. Against the lab's M365 developer tenant and Google Workspace test domain, issue each listed read **before** the write (`preUnsatisfied`) and **after** it (`postSatisfied`). Issue the same reads against a second synthetic leaver that has already been processed (`preSatisfied`). Capture each write's response (`writeOk`). Use the provider's own API explorer or the lab rig's request log.
+2. Against the lab's M365 developer tenant and Google Workspace test domain, issue each listed read **before** the write (`preUnsatisfied`) and **after** it (`postSatisfied`). Issue the same reads against a second synthetic leaver that has already been processed (`preSatisfied`). Capture each write's response (`writeOk`). Capture at the boundary the fixture records:
+   - **Google:** the googleapis response body (`data`). The provider's API explorer or the rig's request log both work.
+   - **M365:** the **result of `executeM365ReadActionByOrg` / `executeM365WriteActionByOrg`** (`{ ok, kind, resource }` / `{ ok, result }`), taken from the rig's API log. Do not use raw Graph output from Graph Explorer. The control plane projects Graph responses, and a hand-wrapped Graph body would skip that projection.
 3. Replace every identifier with the synthetic value in the table above. Keep field names, types and the provider's own enum values exactly as returned.
 4. Set `_source` and `_recordedFrom` to `lab-run-YYYY-MM-DD`, re-run the suite, and confirm that it is green and that the gate-mode tripwire is green.
 5. List the replaced files in the lab-run doc's §9.

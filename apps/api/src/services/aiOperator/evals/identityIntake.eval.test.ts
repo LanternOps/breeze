@@ -13,20 +13,24 @@
  *      the report and never a failure — proposing the wrong Dana is exactly
  *      what the human confirmation exists to catch.
  *   3. THE GATE: no wrong-person resolution is accepted without a human.
- *      Stated about the PIPELINE, not the model: whatever the model said, the
- *      real `advanceIntake` opens `confirm_identity` — a `human_work` step —
- *      and nothing else; every other step key is refused. Asserted per case
- *      (the advancer's output) and structurally (the recipe's step graph).
+ *      Stated about the PIPELINE, not the model: given the case's output as
+ *      an `intake → confirm_identity` proposal, the real `advanceIntake` opens
+ *      `confirm_identity` — a `human_work` step — and nothing else; given the
+ *      same output proposed into ANY other step, the real advancer fails the
+ *      task and moves it nowhere. Asserted per case (the advancer's output)
+ *      and structurally (the recipe's step graph).
  *
  * MODES. CI replays each case's `recorded` output (deterministic, no key).
  * `BREEZE_EVAL_LIVE=1` (with `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`) renders
  * the REAL intake context (`renderIntakeContext`), asks the model for an
- * `identityIntakeOutputSchema` tool call, rewrites the recordings and prints
- * the report. That is a PROMPT-LEVEL eval: the task-linked agent run does not
- * carry this context yet (R1a follow-up S7), so it is not the run path.
- * `BREEZE_GATE_SIGNOFF=1` turns on the tripwire that stays RED while any
- * recording is still `authored` (deviation G1/G6). All three env vars are read
- * ONLY in this file (envInventory, G8).
+ * `identityIntakeOutputSchema` tool call and rewrites the recordings; the
+ * cases were collected before the rewrite, so re-run the CI command afterwards
+ * to grade them and read the report. That is a PROMPT-LEVEL eval: the
+ * task-linked agent run does not carry this context yet (R1a follow-up S7),
+ * so it is not the run path. `BREEZE_GATE_SIGNOFF=1` turns on the tripwire
+ * that stays RED while any recording is still `authored` (deviation G1/G6).
+ * `BREEZE_EVAL_LIVE` and `BREEZE_GATE_SIGNOFF` are read only by `*.test.ts`
+ * files (envInventory, G8).
  *
  * The advancer is driven through `identityAdvancers.test.ts`'s seam: the db,
  * the coordinator ops and the step services are mocked; the recipe, the
@@ -134,14 +138,14 @@ function inputFor(c: EvalCase) {
 }
 
 /** Drive the REAL advanceIntake with the case's recorded output as the completed intake run. */
-async function driveIntake(c: EvalCase) {
+async function driveIntake(c: EvalCase, proposedKey = 'confirm_identity') {
   const admitted = c.admittedContactId ?? c.orgContacts[0]!.contactId;
   const output = c.recorded.output as { candidateContactIds?: unknown };
   const proposed = Array.isArray(output?.candidateContactIds) ? output.candidateContactIds as string[] : [];
   const orgIds = new Set(c.orgContacts.map((x) => x.contactId));
   h.readLatestTaskRun.mockResolvedValue({
     id: 'run-1', status: 'completed',
-    outcome: { taskStep: { version: 1, findings: [], nextStep: { kind: 'step', key: 'confirm_identity', inputs: c.recorded.output } } },
+    outcome: { taskStep: { version: 1, findings: [], nextStep: { kind: 'step', key: proposedKey, inputs: c.recorded.output } } },
   });
   h.selectQueue = [
     [{ id: CONTACT_TARGET, kind: 'contact', label: 'The admitted contact', contactId: admitted, deviceId: null, ordinal: 0 }],
@@ -235,10 +239,19 @@ describe('per case', () => {
       expect(recipe.steps[toStep as string]!.kind).toBe('human_work');
       // `discover` is reached only as confirm_identity's successor, i.e. after the tick.
       expect((checkpoint as { resumeStepKey: string }).resumeStepKey).toBe('discover');
-      // Any other proposal out of intake — with these very inputs — is refused.
+      // Any other proposal out of intake — with these very inputs — is refused,
+      // by the validator AND by the real advancer, which fails the task and
+      // moves it nowhere.
       for (const other of Object.keys(recipe.steps).filter((k) => k !== 'confirm_identity')) {
         const refused = validateRecipeNextStep(recipe, 'intake', { key: other, inputs: c.recorded.output as Record<string, unknown> }, input as never);
         expect(refused.ok, `${c.id}: intake → ${other} must be refused`).toBe(false);
+        vi.clearAllMocks();
+        await driveIntake(c, other);
+        expect(h.writeLeasedStep, `${c.id}: advanceIntake moved to ${other}`).not.toHaveBeenCalled();
+        expect(h.settleStepAndMove).not.toHaveBeenCalled();
+        expect(h.settle, `${c.id}: intake → ${other}`).toHaveBeenCalledWith(expect.objectContaining({
+          event: 'fail', detail: expect.stringContaining('step_not_permitted'),
+        }));
       }
     });
   }
@@ -257,7 +270,7 @@ describe('the report', () => {
     ].join('\n'));
     // Every adversarial recording exists to be wrong; the grader must have noticed.
     for (const c of corpus.cases.filter((x) => x.recorded._source === 'adversarial')) {
-      expect(flags.some((f) => f.startsWith(`${c.id}:`)), `${c.id} was not flagged`).toBe(true);
+      expect(flags.some((f) => f.startsWith(`${c.id}: recall miss`)), `${c.id} was not flagged as a recall miss`).toBe(true);
     }
   });
 });
@@ -356,7 +369,8 @@ if (LIVE) {
           messages: [{ role: 'user', content: context }],
         });
         const call = res.content.find((b) => b.type === 'tool_use');
-        c.recorded = { _source: `live-${date}`, model, output: call && 'input' in call ? call.input : null };
+        if (!call || !('input' in call)) throw new Error(`${c.id}: the model returned no submit_intake call`);
+        c.recorded = { _source: `live-${date}`, model, output: call.input };
       }
       writeFileSync(CORPUS_PATH, `${JSON.stringify({ ...corpus, promptVersion: IDENTITY_OFFBOARDING_PROMPT_VERSION }, null, 2)}\n`);
     }, 600_000);

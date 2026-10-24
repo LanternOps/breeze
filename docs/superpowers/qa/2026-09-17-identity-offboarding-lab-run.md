@@ -2,7 +2,7 @@
 
 > **THIS CHECKLIST HAS NOT BEEN RUN. EVERY ROW BELOW IS `TODO`. Clause (e) of the release gate is BLOCKED until a person fills it in by hand on a lab rig. Do not enable `AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED` in any environment until every row is PASS.**
 
-This is the evidence document for spec §9's `deterministic` gate on the Operator Recipe Library's `identity_offboarding` recipe (feature #6165, wave #6171, PR R1c). The gate runs against a real Microsoft 365 developer tenant and a real Google Workspace test domain, on a non-production rig. The automated clauses (a)–(d) and (f) are summarised in the gate table at the end. This checklist is clause (e): **zero unauthorized or duplicate effects**.
+This is the evidence document for spec §9's `deterministic` gate on the Operator Recipe Library's `identity_offboarding` recipe (feature #6165, wave #6171, PR R1c). Clauses (a)–(d) and (f) are automated tests that run on mocked providers and real Postgres; the gate table at the end summarises them. This checklist is clause (e), **zero unauthorized or duplicate effects**. It is the only clause that runs against a real Microsoft 365 developer tenant and a real Google Workspace test domain, on a non-production rig.
 
 Rules for whoever fills this in:
 
@@ -82,7 +82,7 @@ The automated gate cannot answer these questions. Each one bounds or explains a 
 | After `admin_account_wipe`, does `mobiledevices.list` report `WIPING` / `WIPED` for the device? | The probe treats those two statuses as done. If Google reports something else, the probe can never verify row 6. The tool is unclassified, so `non_idempotent`: an unconfirmed state hands off and is never retried. | TODO (record the exact `status` values seen) | TODO |
 | How do the Gmail mail-settings reads (`getVacation`, `getAutoForwarding`, `delegates.list`) behave once the user is suspended? | `verify_outcome` re-reads after the suspend. If a suspended mailbox refuses the reads, rows 1–3 cannot be re-verified after row 8. | TODO | TODO |
 | Did Google licence removal (row 5) affect mail delivery or the mail settings set in rows 1–3? | Open design item 3 on PR #9993 (a degraded mail tool holding only its own provider's lockout). The R1a note says Google licence removal may affect mail. | TODO | TODO |
-| Did every refusal body match the recorded fixture shape (`consent_upgrade_required`, `unsupported_group_type`, `device_not_found`, Google 403/404)? | The contract suite asserts each refusal fails closed or returns an error. That holds only if the real shapes match. | TODO | TODO |
+| Did every refusal body match its recorded fixture shape (each fixture's `writeRefusal`, e.g. `consent_upgrade_required`, `unsupported_group_type`, `device_not_found`, `user_not_found`, `graph_throttled`, Google 403/404, and Gmail's pending-verification forward)? | The contract suite asserts each refusal fails closed or returns an error. That holds only if the real shapes match. | TODO | TODO |
 
 ## 4. Ordering evidence
 

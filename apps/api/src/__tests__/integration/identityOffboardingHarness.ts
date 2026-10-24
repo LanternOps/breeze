@@ -17,7 +17,9 @@
  *    NOT assert the mail-before-lockout ordering: that property is the gate's
  *    own assertion, and keeping a second copy here would let the gate's
  *    mutation proof fail in the harness instead of in the assertion under test.
- *  - `seedTenant` takes an optional frozen-snapshot allowlist.
+ *  - `policySnapshot` takes an optional allowlist (the gate's frozen-ceiling
+ *    case inserts an earlier, narrower run), and `asPlanTenant` adapts a
+ *    tenant to the shared approval fixtures.
  */
 import './setup';
 import { randomUUID } from 'node:crypto';

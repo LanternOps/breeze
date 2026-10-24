@@ -38,6 +38,8 @@ const fake = vi.hoisted(() => ({
   world: null as unknown as import('./identityOffboardingHarness').FakeWorld,
   googleConnId: null as string | null,
   m365Calls: 0,
+  /** Per-tool probe overrides, by phase (default: pre unsatisfied, post satisfied). */
+  probe: {} as Record<string, { pre?: 'satisfied' | 'unsatisfied' | 'unknown'; post?: 'satisfied' | 'unsatisfied' | 'unknown' }>,
 }));
 
 vi.mock('../../services/m365ControlPlane/readActionService', async (importOriginal) => ({
@@ -269,6 +271,7 @@ beforeEach(() => {
   fake.world = freshWorld();
   fake.googleConnId = null;
   fake.m365Calls = 0;
+  fake.probe = {};
   gate.forTargets.mockClear();
   gate.device.mockClear();
   __resetEffectProbesForTest();
@@ -278,7 +281,7 @@ beforeEach(() => {
       continue;
     }
     registerEffectProbe(tool, async (_effect, ctx) => {
-      const state = ctx.phase === 'pre' ? 'unsatisfied' : 'satisfied';
+      const state = fake.probe[tool]?.[ctx.phase] ?? (ctx.phase === 'pre' ? 'unsatisfied' : 'satisfied');
       return { state, observedAt: new Date(), detail: `scripted ${ctx.phase} ${state}` };
     });
   }
@@ -325,6 +328,35 @@ describe('(b) ordering: stopping after any dispatch leaves no locked-out account
           }
         }
       }
+    }, 120_000);
+  }
+
+  // Off the happy path: a mail-routing effect whose post-probe does NOT verify
+  // (e.g. a forward whose destination never confirms) must stop the walk
+  // before that provider's lockout is ever dispatched.
+  for (const p of PROVIDERS) {
+    runDb(`${p}: a mail-routing effect that does not verify stops the walk before ${LOCKOUT_TOOL[p]} is dispatched`, async () => {
+      const t = await seedTenant();
+      const a = await driveToApprovedAndHeld(t);
+      const plan = await planKeys(a);
+      assertBothLockoutsPlanned(plan);
+      const mail = plan.filter((e) => e.provider === p && MAIL_ROUTING_TOOLS[p].includes(e.toolName));
+      const failing = mail[mail.length - 1]!; // the LAST mail effect, so earlier ones did verify
+      const lockout = plan.find((e) => e.toolName === LOCKOUT_TOOL[p])!;
+      expect(failing.ordinal).toBeLessThan(lockout.ordinal);
+      fake.probe[failing.toolName] = { post: 'unsatisfied' };
+
+      await openWindow(a);
+      await walkEffects(a);
+
+      const task = await readTask(a);
+      expect(task.state, `${task.state}: ${task.outcomeDetail}`).toBe('handed_off');
+      const keys = new Set((await operations(a)).map((o) => o.operationKey));
+      expect(keys.has(failing.key), `${failing.toolName} was dispatched`).toBe(true);
+      expect(keys.has(lockout.key), `${LOCKOUT_TOOL[p]} was dispatched after ${failing.toolName} failed to verify`).toBe(false);
+      // Nothing after the unverified effect went out at all.
+      expect([...keys].sort()).toEqual(plan.slice(0, failing.ordinal + 1).map((e) => e.key).sort());
+      expect((await childIntents(a)).map((i) => i.actionName)).not.toContain(LOCKOUT_TOOL[p]);
     }, 120_000);
   }
 
@@ -583,7 +615,8 @@ describe('(c) plan-approval membership for identity_offboarding effects', () => 
     const requesterAuth = await userAuth(asPlanTenant(t), t.requesterId);
     const theirs = rows.find((r) => r.userId === t.approverId)!;
     const res = await asUser(requesterAuth, () => decideApprovalRequest({ auth: requesterAuth, id: theirs.id, status: 'approved' }));
-    expect(res.httpStatus).not.toBe(200);
+    // The request row is looked up scoped to the DECIDING user, so it is invisible to the requester.
+    expect(res).toMatchObject({ httpStatus: 404, body: { error: 'Not found' } });
 
     expect(await readIntent(planIntent!.id)).toMatchObject({ status: 'pending_approval' });
     const [approval] = await approvals(a);
