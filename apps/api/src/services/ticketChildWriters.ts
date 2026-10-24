@@ -209,6 +209,11 @@ export const TICKET_CHILD_WRITERS: Record<string, TicketChildWriter> = {
   'routes/portal/tickets.ts::POST /tickets/:id/comments': TF(['ticket_comments']),
   'services/inboundEmail/emailComments.ts::insertEmailAuthoredComment': TF(['ticket_comments']),
   'services/inboundEmail/inboundAttachments.ts::persistInboundAttachments': TF(['ticket_attachments']),
+  // Ticket import (#8313 W1): the reservation and the skip-delete run inside
+  // importTicket's transactions after lockImportedTicket; each re-takes the
+  // ticket lock (a no-op) and guards the tombstone itself.
+  'services/ticketImport/importAttachments.ts::reserveImportAttachments': TF(['ticket_attachments']),
+  'services/ticketImport/importAttachments.ts::deleteSkippedReservations': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::POST /:id/attachments/from-artifact': TF(['ticket_attachments']),
   'routes/tickets/attachments.ts::DELETE /:id/attachments/:attachmentId': TF(['ticket_attachments'], {

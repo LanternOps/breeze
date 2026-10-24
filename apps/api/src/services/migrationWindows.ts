@@ -63,16 +63,22 @@ export type MigrationWindowErrorCode =
   | 'MIGRATION_WINDOW_NOT_OPEN'
   | 'MIGRATION_WINDOW_RATE_LIMITED'
   | 'MIGRATION_SOURCE_ID_IN_USE'
-  | 'MIGRATION_IMPORT_INVALID';
+  | 'MIGRATION_IMPORT_INVALID'
+  // Attachments in import mode (#8313 W1, spec 2026-10-19 §4.1, §4.3): the
+  // writer stores imported files in object storage only (409), and a file it
+  // could not read or store for now fails the ticket for this pass (503).
+  | 'TICKET_IMPORT_OBJECT_STORAGE_REQUIRED'
+  | 'TICKET_IMPORT_ATTACHMENT_UNAVAILABLE';
 
 export class MigrationWindowError extends Error {
   constructor(
     public readonly code: MigrationWindowErrorCode,
     message: string,
-    public readonly status: 400 | 401 | 403 | 404 | 409 | 429,
+    public readonly status: 400 | 401 | 403 | 404 | 409 | 429 | 503,
     public readonly details?: Record<string, unknown>,
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'MigrationWindowError';
   }
 }
