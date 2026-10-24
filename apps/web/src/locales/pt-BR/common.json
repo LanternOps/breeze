@@ -117,7 +117,8 @@
     "ticketsProblems": "Problemas",
     "ticketsChanges": "Mudanças",
     "endpointMessages": "Mensagens",
-    "securityDetectionRules": "Regras de detecção"
+    "securityDetectionRules": "Regras de detecção",
+    "planAndFeatures": "Plano e recursos"
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -2778,5 +2779,9 @@
     "title": "Esta seção falhou",
     "description": "Um erro de renderização impediu a exibição desta página. Tente novamente e, se continuar acontecendo, inclua a mensagem abaixo ao relatar o problema.",
     "retry": "Tentar novamente"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloqueado",
+    "upgrade": "Ver planos"
   }
 }

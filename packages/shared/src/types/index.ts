@@ -22,7 +22,7 @@ export * from './hourBlock';
 // ============================================
 
 export type PartnerType = 'msp' | 'enterprise' | 'internal';
-export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
+export type PlanType = (typeof PARTNER_PLANS)[number];
 export type OrgType = 'customer' | 'internal';
 // `offboarding` (#2774): terminal-intent drain state — users locked out, agents
 // kept authenticated (self_uninstall-only) until drained, then auto-`churned`.
@@ -539,7 +539,7 @@ export interface Policy {
 // Alert Types
 // ============================================
 
-import { ACTOR_TYPES, AUDIT_RESULTS, NOTIFICATION_CHANNEL_TYPES } from '../constants';
+import { ACTOR_TYPES, AUDIT_RESULTS, NOTIFICATION_CHANNEL_TYPES, PARTNER_PLANS } from '../constants';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';

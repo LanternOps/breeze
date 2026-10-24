@@ -7007,5 +7007,55 @@
       "paused": "Übersprungen, weil sie pausiert waren: {{count}}",
       "confirm": "Auf offene Tickets anwenden"
     }
+  },
+  "planAndFeatures": {
+    "heading": "Tarif & Funktionen",
+    "description": "Was Ihr Tarif umfasst. Gesperrte Funktionen bleiben sichtbar, damit Sie sehen, was ein Upgrade hinzufügt.",
+    "currentPlan": "Aktueller Tarif",
+    "plans": {
+      "free": "Kostenlos",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unbegrenzt"
+    },
+    "columns": {
+      "feature": "Funktion",
+      "state": "Zustand",
+      "source": "Quelle",
+      "expires": "Läuft ab",
+      "limits": "Grenzwerte"
+    },
+    "state": {
+      "enabled": "Enthalten",
+      "disabled": "Gesperrt"
+    },
+    "source": {
+      "plan": "Tarifstandard",
+      "billing": "Abrechnung",
+      "license": "Lizenz",
+      "manual": "Manuell"
+    },
+    "graceWarning": "Abgelaufen am {{expiresAt}} — Kulanzfrist bis {{graceUntil}}",
+    "noExpiry": "Nie",
+    "noLimits": "—",
+    "reason": "Grund: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding-Supervisor",
+        "why": "Ein KI-Supervisor, der Fehler beim Zero-Touch-Onboarding diagnostiziert und behebt."
+      },
+      "verified_library": {
+        "label": "Verifizierte Softwarebibliothek",
+        "why": "Kuratierte, verifizierte Pakete, die Sie bedenkenlos bereitstellen können."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp sichtet Ihre Geräteflotte fortlaufend und benachrichtigt die richtige Person; verfügbar ab Pro."
+      }
+    },
+    "loadError": "Ihr Tarif konnte nicht geladen werden.",
+    "retry": "Erneut versuchen"
   }
 }

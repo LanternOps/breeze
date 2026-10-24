@@ -7007,5 +7007,55 @@
       "paused": "Duraklatıldıkları için atlananlar: {{count}}",
       "confirm": "Açık taleplere uygula"
     }
+  },
+  "planAndFeatures": {
+    "heading": "Plan ve özellikler",
+    "description": "Planınızın içerdikleri. Kilitli özellikler görünür kalır; böylece bir yükseltmenin neler kattığını görebilirsiniz.",
+    "currentPlan": "Mevcut plan",
+    "plans": {
+      "free": "Ücretsiz",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Sınırsız"
+    },
+    "columns": {
+      "feature": "Özellik",
+      "state": "Durum",
+      "source": "Kaynak",
+      "expires": "Bitiş",
+      "limits": "Sınırlar"
+    },
+    "state": {
+      "enabled": "Dahil",
+      "disabled": "Kilitli"
+    },
+    "source": {
+      "plan": "Plan varsayılanı",
+      "billing": "Faturalandırma",
+      "license": "Lisans",
+      "manual": "Manuel"
+    },
+    "graceWarning": "{{expiresAt}} tarihinde sona erdi — ek süre {{graceUntil}} tarihine kadar",
+    "noExpiry": "Hiçbir zaman",
+    "noLimits": "—",
+    "reason": "Neden: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Kurulum denetçisi",
+        "why": "Sıfır dokunuşlu kurulum hatalarını teşhis edip onaran bir yapay zekâ denetçisi."
+      },
+      "verified_library": {
+        "label": "Doğrulanmış yazılım kitaplığı",
+        "why": "Güvenle dağıtabileceğiniz, seçilmiş ve doğrulanmış paketler."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp filonuzu sürekli olarak önceliklendirir ve doğru kişiyi uyarır; Pro ve üzeri planlarda kullanılabilir."
+      }
+    },
+    "loadError": "Planınız yüklenemedi.",
+    "retry": "Tekrar dene"
   }
 }

@@ -7007,5 +7007,55 @@
       "paused": "Ignorés car mis en pause : {{count}}",
       "confirm": "Appliquer aux tickets ouverts"
     }
+  },
+  "planAndFeatures": {
+    "heading": "Offre et fonctionnalités",
+    "description": "Ce que comprend votre offre. Les fonctionnalités verrouillées restent visibles pour que vous voyiez ce qu’une montée en gamme apporte.",
+    "currentPlan": "Offre actuelle",
+    "plans": {
+      "free": "Gratuite",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Illimitée"
+    },
+    "columns": {
+      "feature": "Fonctionnalité",
+      "state": "État",
+      "source": "Provenance",
+      "expires": "Expiration",
+      "limits": "Limites"
+    },
+    "state": {
+      "enabled": "Incluse",
+      "disabled": "Verrouillée"
+    },
+    "source": {
+      "plan": "Valeur par défaut de l’offre",
+      "billing": "Facturation",
+      "license": "Licence",
+      "manual": "Attribution manuelle"
+    },
+    "graceWarning": "Expirée le {{expiresAt}} — délai de grâce jusqu’au {{graceUntil}}",
+    "noExpiry": "Jamais",
+    "noLimits": "—",
+    "reason": "Motif : {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Superviseur d’intégration",
+        "why": "Un superviseur IA qui diagnostique et corrige les échecs d’intégration sans intervention."
+      },
+      "verified_library": {
+        "label": "Bibliothèque de logiciels vérifiés",
+        "why": "Des paquets sélectionnés et vérifiés que vous pouvez déployer en toute confiance."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp trie votre parc en continu et relance la bonne personne ; disponible à partir de l’offre Pro."
+      }
+    },
+    "loadError": "Impossible de charger votre offre.",
+    "retry": "Réessayer"
   }
 }

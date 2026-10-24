@@ -11,6 +11,7 @@ import {
 } from '@simplewebauthn/browser';
 import { extractApiError } from '@/lib/apiError';
 import { resetPartnerCurrencyCache } from '@/lib/partnerCurrencyCache';
+import { resetEntitlementsCache } from '@/lib/entitlementsCache';
 import { resetApproximateTotalCache } from '@/lib/approximateTotalCache';
 import { clearSsoReauthGrant } from '@/lib/ssoReauthGrant';
 import { getSafeNext, loginPathWithNext } from '@/lib/authNext';
@@ -215,6 +216,8 @@ export const useAuthStore = create<AuthState>()(
         // A partner switch in the same tab must never render the previous
         // partner's currency (lib/usePartnerCurrency caches per page).
         resetPartnerCurrencyCache();
+        // Same for the partner's plan entitlements (hooks/useEntitlement).
+        resetEntitlementsCache();
         // Reporting totals are converted into the VIEWER's partner reporting
         // currency (lib/useApproximateTotal), so they must not outlive the
         // session either.

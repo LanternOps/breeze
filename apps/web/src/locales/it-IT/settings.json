@@ -7007,5 +7007,55 @@
       "paused": "Ignorati perché sono stati in pausa: {{count}}",
       "confirm": "Applica ai ticket aperti"
     }
+  },
+  "planAndFeatures": {
+    "heading": "Piano e funzionalità",
+    "description": "Cosa include il tuo piano. Le funzionalità bloccate restano visibili, così puoi vedere cosa aggiunge un upgrade.",
+    "currentPlan": "Piano attuale",
+    "plans": {
+      "free": "Gratuito",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Illimitato"
+    },
+    "columns": {
+      "feature": "Funzionalità",
+      "state": "Stato",
+      "source": "Origine",
+      "expires": "Scadenza",
+      "limits": "Limiti"
+    },
+    "state": {
+      "enabled": "Inclusa",
+      "disabled": "Bloccata"
+    },
+    "source": {
+      "plan": "Predefinito del piano",
+      "billing": "Fatturazione",
+      "license": "Licenza",
+      "manual": "Assegnazione manuale"
+    },
+    "graceWarning": "Scaduta il {{expiresAt}} — periodo di tolleranza fino al {{graceUntil}}",
+    "noExpiry": "Mai",
+    "noLimits": "—",
+    "reason": "Motivo: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Supervisore dell’onboarding",
+        "why": "Un supervisore IA che diagnostica e ripara gli errori dell’onboarding zero-touch."
+      },
+      "verified_library": {
+        "label": "Libreria software verificata",
+        "why": "Pacchetti selezionati e verificati che puoi distribuire in tutta sicurezza."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp esamina di continuo il tuo parco dispositivi e sollecita la persona giusta; disponibile da Pro in su."
+      }
+    },
+    "loadError": "Impossibile caricare il tuo piano.",
+    "retry": "Riprova"
   }
 }

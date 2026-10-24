@@ -180,7 +180,8 @@
     "adminAiModels": "Modelos de IA",
     "billingAutopay": "Pagos automáticos",
     "endpointMessages": "Mensajes al equipo",
-    "securityDetectionRules": "Reglas de detección"
+    "securityDetectionRules": "Reglas de detección",
+    "settingsPlan": "Plan y funciones"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",
@@ -263,6 +264,10 @@
       },
       "alertTemplates": {
         "title": "Plantillas de alertas"
+      },
+      "plan": {
+        "title": "Plan y funciones",
+        "description": "Tu plan, qué funciones incluye y de dónde proviene cada una."
       }
     },
     "groups": {

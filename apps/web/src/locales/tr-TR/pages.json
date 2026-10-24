@@ -180,7 +180,8 @@
     "adminAiModels": "Yapay zeka modelleri",
     "billingAutopay": "Otomatik ödemeler",
     "endpointMessages": "Uç Nokta Mesajları",
-    "securityDetectionRules": "Tespit Kuralları"
+    "securityDetectionRules": "Tespit Kuralları",
+    "settingsPlan": "Plan ve özellikler"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -263,6 +264,10 @@
       },
       "alertTemplates": {
         "title": "Uyarı şablonları"
+      },
+      "plan": {
+        "title": "Plan ve özellikler",
+        "description": "Planınız, hangi özellikleri içerdiği ve her birinin nereden geldiği."
       }
     },
     "groups": {

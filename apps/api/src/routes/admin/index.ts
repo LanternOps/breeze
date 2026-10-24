@@ -19,6 +19,7 @@ import { deprecationsAdminRoutes } from './deprecations';
 import { systemConnectionsAdminRoutes } from './systemConnections';
 import { systemConnectionHealthAdminRoutes } from './systemConnectionHealth';
 import { adminAutopayRolloutRoutes } from './autopayRollout';
+import { entitlementsAdminRoutes } from './entitlements';
 
 export const adminRoutes = new Hono();
 
@@ -78,3 +79,8 @@ adminRoutes.route('/system', systemConnectionHealthAdminRoutes);
 
 // Hosted conversion sweep: platform-admin gate here, MFA on POSTs in the router.
 adminRoutes.route('/monitor-conversion', adminMonitorConversionRoutes);
+
+// Partner Entitlements W1 (#9907): an entitlement is a partner-axis commercial
+// fact, so a partner can never self-grant — platform-admin only (gate above),
+// with requireMfa() on the mutating verbs inside the router.
+adminRoutes.route('/', entitlementsAdminRoutes);

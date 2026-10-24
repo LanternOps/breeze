@@ -117,7 +117,8 @@
     "ticketsProblems": "Problemas",
     "ticketsChanges": "Cambios",
     "endpointMessages": "Mensajes",
-    "securityDetectionRules": "Reglas de detección"
+    "securityDetectionRules": "Reglas de detección",
+    "planAndFeatures": "Plan y funciones"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -2778,5 +2779,9 @@
     "title": "Esta sección falló",
     "description": "Un error de renderizado impidió mostrar esta página. Inténtalo de nuevo y, si sigue ocurriendo, incluye el mensaje de abajo al reportarlo.",
     "retry": "Intentar de nuevo"
+  },
+  "featureLock": {
+    "lockedLabel": "Bloqueado",
+    "upgrade": "Ver planes"
   }
 }

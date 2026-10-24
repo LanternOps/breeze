@@ -8,6 +8,7 @@
  * that will catch any actual type errors at runtime against a real database.
  */
 import { randomUUID } from 'crypto';
+import type { PlanType } from '@breeze/shared';
 import { getTestDb, type TestDatabase } from './setup';
 import { hashPassword } from '../../services/password';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
@@ -164,7 +165,7 @@ export interface CreatePartnerOptions {
   name?: string;
   slug?: string;
   type?: 'msp' | 'enterprise' | 'internal';
-  plan?: 'free' | 'pro' | 'enterprise' | 'unlimited';
+  plan?: PlanType;
   /** Defaults to 'active'. Use 'suspended' / 'churned' / 'pending' to test the tenant-status gate. */
   status?: 'pending' | 'active' | 'suspended' | 'churned';
   /** Set to a Date to soft-delete the partner (drives the deletedAt branch in tenantStatus.ts). */

@@ -117,7 +117,8 @@
     "ticketsProblems": "Sorunlar",
     "ticketsChanges": "Değişiklikler",
     "endpointMessages": "Mesajlar",
-    "securityDetectionRules": "Tespit Kuralları"
+    "securityDetectionRules": "Tespit Kuralları",
+    "planAndFeatures": "Plan ve özellikler"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -2778,5 +2779,9 @@
     "title": "Bu bölüm çöktü",
     "description": "Bir görüntüleme hatası bu sayfanın gösterilmesini engelledi. Tekrar deneyin; sorun devam ederse bildirirken aşağıdaki mesajı ekleyin.",
     "retry": "Tekrar dene"
+  },
+  "featureLock": {
+    "lockedLabel": "Kilitli",
+    "upgrade": "Planları gör"
   }
 }

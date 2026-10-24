@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tokens, User } from './auth';
 import { applyResolvedLocalePreferences } from '@/lib/appearance';
+import { entitlementsCache } from '../lib/entitlementsCache';
 import {
   apiAcceptInvite,
   apiConfirmPhone,
@@ -2736,5 +2737,15 @@ describe('logout() and the stashed SSO re-auth grant (#8862)', () => {
     useAuthStore.getState().logout();
 
     expect(sessionStorage.getItem(SSO_REAUTH_GRANT_KEY)).toBeNull();
+  });
+});
+
+describe('logout resets the entitlements cache (#9907)', () => {
+  it('clears a cached snapshot and invalidates in-flight requests', () => {
+    entitlementsCache.value = { plan: 'pro', entitlements: [] };
+    const generation = entitlementsCache.generation;
+    useAuthStore.getState().logout();
+    expect(entitlementsCache.value).toBeNull();
+    expect(entitlementsCache.generation).toBe(generation + 1);
   });
 });

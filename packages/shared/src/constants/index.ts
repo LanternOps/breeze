@@ -93,7 +93,7 @@ export const AUDIT_RESULTS = ['success', 'failure', 'denied', 'dispatched'] as c
 export const REMOTE_SESSION_TYPES = ['terminal', 'desktop', 'file_transfer'] as const;
 
 // Partner Plans
-export const PARTNER_PLANS = ['free', 'pro', 'enterprise', 'unlimited'] as const;
+export const PARTNER_PLANS = ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited'] as const;
 
 // Built-in Permissions
 export const PERMISSIONS = {

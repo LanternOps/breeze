@@ -7007,5 +7007,55 @@
       "paused": "Skipped because they have paused: {{count}}",
       "confirm": "Apply to open tickets"
     }
+  },
+  "planAndFeatures": {
+    "heading": "Plan & features",
+    "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
+    "currentPlan": "Current plan",
+    "plans": {
+      "free": "Free",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unlimited"
+    },
+    "columns": {
+      "feature": "Feature",
+      "state": "Status",
+      "source": "Source",
+      "expires": "Expires",
+      "limits": "Limits"
+    },
+    "state": {
+      "enabled": "Included",
+      "disabled": "Locked"
+    },
+    "source": {
+      "plan": "Plan default",
+      "billing": "Billing",
+      "license": "Licence",
+      "manual": "Manual"
+    },
+    "graceWarning": "Expired {{expiresAt}} — grace until {{graceUntil}}",
+    "noExpiry": "Never",
+    "noLimits": "—",
+    "reason": "Reason: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding supervisor",
+        "why": "An AI supervisor that diagnoses and repairs zero-touch onboarding failures."
+      },
+      "verified_library": {
+        "label": "Verified software library",
+        "why": "Curated, verified packages you can deploy with confidence."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp triages your fleet continuously and nudges the right person; available on Pro and above."
+      }
+    },
+    "loadError": "Could not load your plan.",
+    "retry": "Retry"
   }
 }
