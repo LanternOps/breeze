@@ -1,6 +1,7 @@
 import TopologyEntry from '../topology/TopologyEntry';
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useHashState } from "@/lib/useHashState";
+import { eventLogFilterFromHash, type EventLogFilter } from "@/lib/deviceEventLogLink";
 import { usePermissions } from "@/lib/permissions";
 import { ENABLE_ENDPOINT_MESSAGING } from "@/lib/featureFlags";
 import DeviceChatPanel from "../endpointMessages/DeviceChatPanel";
@@ -292,7 +293,8 @@ const EXT_TAB_RE = /^ext:[a-z][a-z0-9-]{1,31}:[a-z0-9._:-]+$/;
 // direct unit-testing of the hash round-trip without mounting the (heavy)
 // full component.
 export function tabFromHash(hash: string): Tab | undefined {
-  const seg = hash.split("/")[0] ?? "";
+  // `&k=v` filters may follow the tab segment (`#eventlog&from=…`); strip them.
+  const seg = hash.split("/")[0]?.split("&")[0] ?? "";
   if (VALID_TABS.includes(seg as CoreTab)) return seg as CoreTab;
   if (EXT_TAB_RE.test(seg)) return seg as ExtTab;
   return undefined;
@@ -434,6 +436,11 @@ export default function DeviceDetails({
   const [highlightedExecutionId, setHighlightedExecutionId] = useHashState<
     string | undefined
   >(undefined, scriptExecutionIdFromHash);
+  // Wave F (#9791): `#eventlog[/<source>]&from=&to=` hands the reliability
+  // scoring window (and, where one exists, the exact source) to the Event log tab.
+  const [eventLogFilter, setEventLogFilter] = useHashState<
+    EventLogFilter | undefined
+  >(undefined, eventLogFilterFromHash);
   // Whether the Overview Activity rail is collapsed to its thin vertical bar.
   // Starts collapsed so the page paints at full width during the async load and
   // never flashes a rail that then vanishes (the v0.85.0 stretch bug). Once the
@@ -467,6 +474,7 @@ export default function DeviceDetails({
     setActiveTab(tab);
     setFocusedAnomalyId(undefined);
     setHighlightedExecutionId(undefined);
+    setEventLogFilter(undefined);
   };
 
   // Use provided timezone or browser default
@@ -1304,6 +1312,7 @@ export default function DeviceDetails({
           deviceId={device.id}
           timezone={effectiveTimezone}
           osType={device.os}
+          linkedFilter={eventLogFilter}
         />
       )}
 

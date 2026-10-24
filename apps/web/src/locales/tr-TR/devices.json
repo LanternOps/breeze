@@ -1887,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Cihaz günlükleri yükleniyor...",
     "noLogsMatchTheSelectedFilters": "Seçilen filtrelerle eşleşen günlük yok.",
-    "noDeviceLogsRecordedYet": "Henüz kayıtlı cihaz kaydı yok."
+    "noDeviceLogsRecordedYet": "Henüz kayıtlı cihaz kaydı yok.",
+    "linkedWindow": "Güvenilirlik puanlama aralığı gösteriliyor: {{from}} – {{to}}",
+    "linkedWindowWithSource": "Güvenilirlik puanlama aralığı gösteriliyor: {{from}} – {{to}}, kaynak: {{source}}",
+    "clearLinkedFilter": "Bağlantı filtresini temizle"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Yönetim duruşu yükleniyor...",
@@ -2308,7 +2311,11 @@
       "savedNotActive": "İşaretçi kaydedildi. Daha sonraki bir işaretçi hâlâ geçerli olduğundan puan değişmedi.",
       "clearNotFound": "Bu işaretçi artık mevcut değil.",
       "clearAlreadyCleared": "Bu işaretçi zaten devre dışı bırakılmış."
-    }
+    },
+    "viewInEventLog": "Olay günlüğünde görüntüle",
+    "openEventLog": "Olay günlüğünü aç",
+    "eventLogLinkTitle": "Olay günlüğü, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "{{source}} için olay günlüğü, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Panoya kopyala",

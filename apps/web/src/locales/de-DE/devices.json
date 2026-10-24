@@ -1887,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Geräteprotokolle werden geladen...",
     "noLogsMatchTheSelectedFilters": "Keine Protokolle entsprechen den ausgewählten Filtern.",
-    "noDeviceLogsRecordedYet": "Es wurden noch keine Geräteprotokolle aufgezeichnet."
+    "noDeviceLogsRecordedYet": "Es wurden noch keine Geräteprotokolle aufgezeichnet.",
+    "linkedWindow": "Zeigt das Zuverlässigkeits-Bewertungsfenster {{from}} – {{to}}",
+    "linkedWindowWithSource": "Zeigt das Zuverlässigkeits-Bewertungsfenster {{from}} – {{to}} für {{source}}",
+    "clearLinkedFilter": "Link-Filter zurücksetzen"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Verwaltungsstatus wird geladen...",
@@ -2308,7 +2311,11 @@
       "savedNotActive": "Markierung gespeichert. Eine spätere Markierung ist weiterhin wirksam, daher hat sich die Punktzahl nicht geändert.",
       "clearNotFound": "Diese Markierung existiert nicht mehr.",
       "clearAlreadyCleared": "Diese Markierung wurde bereits aufgehoben."
-    }
+    },
+    "viewInEventLog": "Im Ereignisprotokoll anzeigen",
+    "openEventLog": "Ereignisprotokoll öffnen",
+    "eventLogLinkTitle": "Ereignisprotokoll, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Ereignisprotokoll für {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "In die Zwischenablage kopieren",

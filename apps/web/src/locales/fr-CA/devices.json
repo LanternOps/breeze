@@ -1887,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Chargement des journaux de l’appareil...",
     "noLogsMatchTheSelectedFilters": "Aucun journal ne correspond aux filtres sélectionnés.",
-    "noDeviceLogsRecordedYet": "Aucun journal de l’appareil n’a encore été enregistré."
+    "noDeviceLogsRecordedYet": "Aucun journal de l’appareil n’a encore été enregistré.",
+    "linkedWindow": "Affichage de la fenêtre de calcul de fiabilité {{from}} – {{to}}",
+    "linkedWindowWithSource": "Affichage de la fenêtre de calcul de fiabilité {{from}} – {{to}} pour {{source}}",
+    "clearLinkedFilter": "Effacer le filtre du lien"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Posture de gestion de chargement...",
@@ -2308,7 +2311,11 @@
       "savedNotActive": "Marqueur enregistré. Un marqueur plus récent reste en vigueur, donc le score de fiabilité n’a pas changé.",
       "clearNotFound": "Ce marqueur n’existe plus.",
       "clearAlreadyCleared": "Ce marqueur a déjà été désactivé."
-    }
+    },
+    "viewInEventLog": "Voir dans le journal des événements",
+    "openEventLog": "Ouvrir le journal des événements",
+    "eventLogLinkTitle": "Journal des événements, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Journal des événements pour {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copie dans le presse-papiers",

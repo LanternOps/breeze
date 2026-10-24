@@ -1887,7 +1887,10 @@
     "s": "s",
     "loadingDeviceLogs": "Cargando registros del dispositivo...",
     "noLogsMatchTheSelectedFilters": "Ningún registro coincide con los filtros seleccionados.",
-    "noDeviceLogsRecordedYet": "Aún no se han registrado registros del dispositivo."
+    "noDeviceLogsRecordedYet": "Aún no se han registrado registros del dispositivo.",
+    "linkedWindow": "Mostrando la ventana de puntuación de confiabilidad {{from}} – {{to}}",
+    "linkedWindowWithSource": "Mostrando la ventana de puntuación de confiabilidad {{from}} – {{to}} para {{source}}",
+    "clearLinkedFilter": "Quitar filtro del enlace"
   },
   "deviceManagementTab": {
     "loadingManagementPosture": "Cargando postura de gestión...",
@@ -2308,7 +2311,11 @@
       "savedNotActive": "Marcador guardado. Un marcador posterior sigue vigente, así que la puntuación no cambió.",
       "clearNotFound": "Este marcador ya no existe.",
       "clearAlreadyCleared": "Este marcador ya estaba anulado."
-    }
+    },
+    "viewInEventLog": "Ver en el registro de eventos",
+    "openEventLog": "Abrir registro de eventos",
+    "eventLogLinkTitle": "Registro de eventos, {{from}} – {{to}}",
+    "eventLogLinkTitleWithSource": "Registro de eventos de {{source}}, {{from}} – {{to}}"
   },
   "deviceScriptHistory": {
     "copyToClipboard": "Copiar al portapapeles",

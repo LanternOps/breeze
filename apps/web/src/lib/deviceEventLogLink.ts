@@ -17,6 +17,9 @@ export interface EventLogFilter {
 }
 
 const EVENTLOG_TAB = 'eventlog';
+
+/** The bare tab fragment (no filter) — what clearing a linked filter writes. */
+export const EVENTLOG_TAB_HASH = EVENTLOG_TAB;
 const KNOWN_TABS = [EVENTLOG_TAB] as const;
 
 /** Just the `eventlog[/<source>]&from=&to=` fragment (no leading `#`). */
