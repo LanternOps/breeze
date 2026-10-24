@@ -1750,6 +1750,7 @@
       "actions": "Actions"
     },
     "lastSyncFailedSuffix": " — échoué",
+    "lastSyncPartialSuffix": " — en rattrapage",
     "never": "Jamais"
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

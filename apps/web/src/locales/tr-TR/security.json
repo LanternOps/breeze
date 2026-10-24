@@ -1750,6 +1750,7 @@
       "actions": "Eylemler"
     },
     "lastSyncFailedSuffix": "— başarısız oldu",
+    "lastSyncPartialSuffix": " — yetişiyor",
     "never": "Hiçbir zaman"
   },
   "dnsSecurityDnsSecurityPoliciesTab": {

@@ -242,6 +242,13 @@ export interface AiOperatorTaskDto extends AiOperatorTaskListItemDto {
   targets: AiOperatorTaskTargetRowDto[];
   steps: AiOperatorTaskStepDto[];
   events: AiOperatorTaskEventDto[];
+  /**
+   * W06 R1b: every plan revision proposed for this task, `superseded` ones
+   * included, ordered by `planRevision`, each with its frozen effects in
+   * ordinal order. OPTIONAL so callers built before it keep compiling; the
+   * detail route always sends it (`[]` when nothing was proposed).
+   */
+  plan?: AiOperatorPlanApprovalDto[];
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +468,8 @@ export interface AiOperatorPlanApprovalDto {
   planRevision: number;
   effectSetDigest: string;
   effectCount: number;
-  intentId: string;
+  /** Null only while a `pending` approval is not yet linked to its intent (the column's own rule). */
+  intentId: string | null;
   state: AiOperatorPlanApprovalState;
   approvedByUserId: string | null;
   approvedAt: string | null;

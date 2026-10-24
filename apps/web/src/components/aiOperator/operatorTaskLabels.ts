@@ -26,3 +26,51 @@ export function taskStateLabel(t: Translator, state: AiOperatorTaskState): strin
     default: return state;
   }
 }
+
+/**
+ * Display label for an effect tool name. DISPLAY ONLY: it says nothing about
+ * whether a tool runs automatically or by hand — that is the server's answer
+ * (`plannedEffectTools` / `degradedEffectTools` / `degradedEffects`), rendered
+ * as sent. An unknown tool shows its raw name rather than a guess.
+ */
+export function effectToolLabel(t: Translator, tool: string): string {
+  switch (tool) {
+    case 'google_set_vacation': return t('aiOperator:effectTool.googleSetVacation');
+    case 'google_set_forwarding': return t('aiOperator:effectTool.googleSetForwarding');
+    case 'google_add_mail_delegate': return t('aiOperator:effectTool.googleAddMailDelegate');
+    case 'google_remove_from_group': return t('aiOperator:effectTool.googleRemoveFromGroup');
+    case 'google_remove_license': return t('aiOperator:effectTool.googleRemoveLicense');
+    case 'google_account_wipe_mobile_device': return t('aiOperator:effectTool.googleAccountWipeMobileDevice');
+    case 'google_signout': return t('aiOperator:effectTool.googleSignout');
+    case 'google_suspend_user': return t('aiOperator:effectTool.googleSuspendUser');
+    case 'm365_set_auto_reply': return t('aiOperator:effectTool.m365SetAutoReply');
+    case 'm365_remove_from_group': return t('aiOperator:effectTool.m365RemoveFromGroup');
+    case 'm365_remove_license': return t('aiOperator:effectTool.m365RemoveLicense');
+    case 'm365_retire_intune_device': return t('aiOperator:effectTool.m365RetireIntuneDevice');
+    case 'm365_revoke_sessions': return t('aiOperator:effectTool.m365RevokeSessions');
+    case 'm365_disable_user': return t('aiOperator:effectTool.m365DisableUser');
+    default: return tool;
+  }
+}
+
+export type EffectProviderKey = 'google' | 'm365' | 'breeze' | 'other';
+
+/** The provider a tool name belongs to, read off its prefix (spec §4.1's per-provider grouping). */
+export function effectToolProvider(tool: string): EffectProviderKey {
+  if (tool.startsWith('google_')) return 'google';
+  if (tool.startsWith('m365_')) return 'm365';
+  return 'other';
+}
+
+/**
+ * Provider display name. Product names are never translated
+ * (`locales/TERMINOLOGY.md`), so these are constants, not catalog keys.
+ */
+export function providerLabel(provider: EffectProviderKey | 'breeze'): string {
+  switch (provider) {
+    case 'google': return 'Google Workspace';
+    case 'm365': return 'Microsoft 365';
+    case 'breeze': return 'Breeze';
+    default: return provider;
+  }
+}

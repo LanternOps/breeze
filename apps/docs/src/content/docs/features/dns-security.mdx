@@ -152,6 +152,10 @@ POST /dns-security/integrations/:id/sync
 
 The response includes a `jobId` for tracking the sync task in BullMQ.
 
+### Sync Status and Catching Up
+
+Each integration records the outcome of its last sync run in `lastSyncStatus`: `success`, `error` (with a reason in `lastSyncError`), or `partial`. Cisco Umbrella can only return a limited number of records per request, so one run makes at most 100 requests to its activity feed and saves the events in time slices as it goes. A run that uses up those requests before reaching the present stops and records `partial`, and `lastSyncError` names the time range that has not been fetched yet, for example `Reached the per-run request budget; 2026-10-22T04:25:27.166Z..2026-10-24T16:00:00.187Z not yet fetched, resumes next run`. `lastSync` then shows how far the data reaches. The dashboard marks the integration as **catching up** and shows that range on hover. Nothing is skipped: the next scheduled run starts where the last one stopped and keeps the slice size that worked, so a backlog left by an outage or a paused integration catches up over the following runs. When a run reaches the present, the status returns to `success`. Each sync covers at most the last 30 days, because the Umbrella reporting API does not return older activity.
+
 ### Deleting an Integration
 
 ```bash

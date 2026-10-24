@@ -79,6 +79,9 @@ describe('connection health verdicts (W2 Sources table)', () => {
     ['accounting connect in progress', accountingHealth({ status: 'pending_tenant' }), unknown],
     ['dns error', dnsFilterHealth({ isActive: true, lastSyncStatus: 'error' }), transient('sync_failed')],
     ['dns success', dnsFilterHealth({ isActive: true, lastSyncStatus: 'success' }), healthy],
+    // #10018: a run cut short by the request budget still reached the vendor.
+    // Falling behind across runs is staleness (#10021), not a failed sync.
+    ['dns partial', dnsFilterHealth({ isActive: true, lastSyncStatus: 'partial' }), healthy],
     ['dns never synced', dnsFilterHealth({ isActive: true, lastSyncStatus: null }), unknown],
     ['dns inactive', dnsFilterHealth({ isActive: false, lastSyncStatus: 'error' }), retired],
   ])('%s', (_name, actual, expected) => expect(actual).toEqual(expected));
