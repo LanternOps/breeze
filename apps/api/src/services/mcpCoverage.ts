@@ -811,5 +811,6 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'wisp/memory.ts': { tools: ['recall', 'remember'] },
   'wispConcerns.ts': { tools: ['list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern'] },
   'wispWatches.ts': { tools: ['create_watch'] },
+  'wispNudgePreferences.ts': { exempt: 'human_only_ai_governance', note: 'Wisp nudge preferences (W06): how and when Wisp may reach the person (channels, quiet-hour override, brief time, proactivity) and the partner urgent-capable severities that break quiet hours; the AI must never set its own reach.' },
   'wispThreads.ts': { exempt: 'human_only_ai_governance', note: 'Wisp thread surface (W04): the human reads their grant\'s thread, picks its customer focus and attaches context; focus and attachments decide what Wisp sees, so the AI never sets them. The model reads attachments through read_artifact.' },
 };

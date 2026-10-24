@@ -245,6 +245,29 @@ describe('upsertConcern', () => {
     await expect(updateConcern(randomUUID(), { severity: 'low' })).resolves.toBeUndefined();
   });
 
+  it('updateConcern never touches a concern closed mid-run (resolved / dismissed): no field, no updated_at (W06 carry-over)', async () => {
+    const f = await seed();
+    const resolved = await upsertConcern(input(f, f.orgA, { subject: { kind: 'ticket', id: randomUUID() } }));
+    await resolveConcern(resolved.id, { userId: f.user }, 'fixed');
+    const dismissed = await upsertConcern(input(f, f.orgA, { subject: { kind: 'ticket', id: randomUUID() } }));
+    await dismissConcern(dismissed.id, { grantId: f.grant, userId: f.user });
+    for (const id of [resolved.id, dismissed.id]) {
+      const before = await concernById(id);
+      await updateConcern(id, { severity: 'high', summary: 'touched by a late run', lastAssessedRunId: null });
+      const after = await concernById(id);
+      expect(after).toMatchObject({ severity: before.severity, summary: before.summary, status: before.status });
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+    }
+  });
+
+  it('updateConcern still patches a snoozed (live) concern', async () => {
+    const f = await seed();
+    const c = await upsertConcern(input(f, f.orgA, { subject: { kind: 'ticket', id: randomUUID() } }));
+    await snoozeConcern(c.id, { grantId: f.grant, userId: f.user }, new Date(Date.now() + 86_400_000));
+    await updateConcern(c.id, { severity: 'high' });
+    expect(await concernById(c.id)).toMatchObject({ status: 'snoozed', severity: 'high' });
+  });
+
   it('resolve then upsert → a new row', async () => {
     const f = await seed();
     const i = input(f, f.orgA);

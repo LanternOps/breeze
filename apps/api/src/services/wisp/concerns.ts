@@ -174,7 +174,12 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
   });
 }
 
-/** Patch the given fields; evidence is replaced, not merged. No-op on an unknown id. */
+/**
+ * Patch the given fields of a LIVE concern; evidence is replaced, not merged.
+ * No-op on an unknown id and on a concern that was resolved or dismissed
+ * meanwhile (a run that read it open must not bump a closed one — the routes'
+ * `concern_not_live` rule, W06 carry-over).
+ */
 export async function updateConcern(
   id: string,
   patch: { summary?: string; severity?: ConcernSeverity; evidence?: Record<string, unknown>; lastAssessedRunId?: string | null; childConcernIds?: string[] },
@@ -186,7 +191,8 @@ export async function updateConcern(
   if (patch.lastAssessedRunId !== undefined) set.lastAssessedRunId = patch.lastAssessedRunId;
   if (patch.childConcernIds !== undefined) set.childConcernIds = patch.childConcernIds;
   await inSystemContext(async () => {
-    await db.update(wispConcerns).set(set).where(eq(wispConcerns.id, id));
+    await db.update(wispConcerns).set(set)
+      .where(and(eq(wispConcerns.id, id), inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES])));
   });
 }
 

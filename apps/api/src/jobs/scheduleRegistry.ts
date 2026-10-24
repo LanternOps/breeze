@@ -213,6 +213,10 @@ export const JOB_SCHEDULES = {
   // only `sending-domains-daily` at :03 (and `warranty-batch-sync` at :42);
   // :23 keeps the daily = 3 (mod 5) lane.
   'wisp-concern-retention': '23 21 * * *',
+  // Wisp W06a (#9912) — 15-minute nudge digest + morning-brief sweep (w00 A28).
+  // Sub-hourly, so outside the coarse collision grid; :13/:28/:43/:58 avoid
+  // the unmanaged 0 (mod 5) ticks.
+  'wisp-nudge-digest': '13,28,43,58 * * * *',
   // Disk Cleanup v2 W03 (spec §5.2) — daily sweep of device_filesystem_cleanup_runs:
   // abandoned previews at 7 days, the pinned candidate blob at 90 days, and
   // file runs stuck in `running` at 24 hours. Hour 22 held only the sub-daily

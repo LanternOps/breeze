@@ -287,7 +287,7 @@ const EXPECTED_NAMES = [
   'auditBaselineJobs', 'cisJobs', 'automationWorker', 'securityPostureWorker',
   'reliabilityWorker', 'userRiskWorker', 'abuseSignalsWorker', 'userRiskRetention',
   'backupVerificationJobs', 'eventLogRetention', 'hardwareHealthRetention', 'timeSyncRetention', 'logCorrelationWorker', 'agentLogRetention',
-  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention',
+  'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention', 'wispConcernRetention', 'wispNudgeDigest',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
   'm365SyncRetention', 'filesystemCleanupRunRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'restorePointAttemptRetention', 'webhookDeliveryRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',

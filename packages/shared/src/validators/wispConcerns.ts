@@ -15,6 +15,7 @@ import {
   CHAT_RAISE_CONCERN_SUBJECT_KINDS,
   CONCERN_EVIDENCE_MAX_BYTES,
   CONCERN_EVIDENCE_MAX_KEYS,
+  CONCERN_FEEDBACK_NOTE_MAX,
   CONCERN_OUTCOME_MAX,
   CONCERN_SEVERITIES,
   CONCERN_SNOOZE_MAX_DAYS,
@@ -195,3 +196,11 @@ export type DismissBody = z.infer<typeof dismissBodySchema>;
 
 export const resolveBodySchema = z.object({ grantId: z.uuid(), outcome: outcomeSchema });
 export type ResolveBody = z.infer<typeof resolveBodySchema>;
+
+/** POST /:id/feedback (w00 A34): one tap "useful / not useful" on a nudged concern, with an optional one-line note. */
+export const concernFeedbackBodySchema = z.object({
+  grantId: z.uuid(),
+  useful: z.boolean(),
+  note: z.string().trim().max(CONCERN_FEEDBACK_NOTE_MAX).optional(),
+});
+export type ConcernFeedbackBody = z.infer<typeof concernFeedbackBodySchema>;

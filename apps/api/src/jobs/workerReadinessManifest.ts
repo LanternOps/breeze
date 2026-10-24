@@ -300,6 +300,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Wisp W05b (#9917): daily concern retention — same shape (one Worker, no
   // flag gate before construction, attached under its registry-key name).
   consumers('wispConcernRetention'),
+  // Wisp W06a (#9912): 15-minute nudge digest + morning brief — same shape
+  // (one Worker constructed and attached unconditionally; flag read per run).
+  consumers('wispNudgeDigest'),
   // #5290 (W03) — daily monitor breach-episode retention prune, same shape as
   // mlOutputRetention/metricAnomalyIncidentRetention/agentLogRetention: one
   // Worker, no flag gate, constructs and attaches unconditionally under its

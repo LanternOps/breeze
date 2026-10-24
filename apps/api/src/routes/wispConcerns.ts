@@ -8,6 +8,7 @@
  *   POST /:id/snooze  { grantId, until }     → { success: true }
  *   POST /:id/dismiss { grantId }            → { success: true }
  *   POST /:id/resolve { grantId, outcome }   → { success: true }
+ *   POST /:id/feedback { grantId, useful, note? } → { data: { recipient } }   (W06, w00 A34)
  *
  * GATES are inherited from the hub's `use('*')` chain (auth → 404 while
  * !wispEnabled() → partner scope → ai_sessions:use → requireEntitlement
@@ -32,6 +33,7 @@ import { Hono, type Context } from 'hono';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  concernFeedbackBodySchema,
   concernGrantQuerySchema,
   dismissBodySchema,
   listConcernsQuerySchema,
@@ -51,6 +53,7 @@ import {
   getConcernForCeiling,
   listConcernsForCeiling,
   markAnswered,
+  recordFeedback,
   resolveConcern,
   snoozeConcern,
   type Concern,
@@ -62,6 +65,7 @@ import {
   resolveGrantCeiling,
   type GrantCeiling,
 } from '../services/wisp/grantAuthority';
+import { MemoryServiceError, recordHumanBlock } from '../services/wisp/memoryService';
 
 // ---------------------------------------------------------------------------
 // Shared with routes/wispWatches.ts: grant access, ceiling, error shapes
@@ -240,4 +244,59 @@ wispConcernsRoutes.post('/:id/resolve', zValidator('json', resolveBodySchema), a
   const { grantId, outcome } = c.req.valid('json');
   return mutateConcern(c, grantId, 'resolved', (concern, userId) =>
     resolveConcern(concern.id, { userId }, outcome));
+});
+
+// W06 (w00 A34): one tap "useful / not useful" on a nudged concern. The
+// caller's OWN grant (it is their recipient row). Any status: feedback about a
+// nudge stays meaningful after the concern closed. The answer is remembered
+// as the person's own `preference` memory FIRST (request context, RLS) and
+// then written to the recipient row (system context) — so a retry after a
+// failed recipient write re-records (supersedes) the memory and completes,
+// while a retry after both succeeded is the idempotent same-value path.
+wispConcernsRoutes.post('/:id/feedback', zValidator('json', concernFeedbackBodySchema), async (c) => {
+  const id = pathId(c);
+  if (!id) return c.json(WISP_NOT_FOUND, 404);
+  const { grantId, useful } = c.req.valid('json');
+  const note = c.req.valid('json').note || null;
+  const access = await grantCeilingFor(c, grantId, 'owner');
+  if (!access.ok) return access.response;
+  const concern = await getConcernForCeiling(access.ceiling, id);
+  if (!concern) return c.json(WISP_NOT_FOUND, 404);
+
+  const answer = useful ? 'useful' : 'not_useful';
+  const previous = concern.recipient?.feedback ?? null;
+  if (previous === answer) return c.json({ data: { recipient: concern.recipient } });
+  if (previous !== null) {
+    return wispFail(c, 409, 'feedback_already_recorded', 'Feedback on this nudge was already recorded');
+  }
+
+  const auth = authOf(c);
+  try {
+    await recordHumanBlock(auth, {
+      owner: { kind: 'user' },
+      blockType: 'preference',
+      subjectKey: `nudge_feedback:${concern.subject.kind}:${concern.severity}`,
+      content: { useful, concernId: concern.id, summary: concern.summary, note },
+      confidence: 'high',
+      authoredByGrantId: access.grant.id,
+    });
+    await recordFeedback(concern.id, access.grant.id, { useful, note });
+  } catch (err) {
+    if (err instanceof ConcernNotFoundError) return c.json(WISP_NOT_FOUND, 404);
+    if (err instanceof MemoryServiceError && err.code === 'invalid_memory') {
+      return c.json({ error: err.message, code: 'invalid_feedback' }, 400);
+    }
+    throw err;
+  }
+
+  writeRouteAudit(c, {
+    orgId: concern.orgId,
+    partnerId: concern.partnerId,
+    action: 'wisp.concern.feedback',
+    resourceType: 'wisp_concern',
+    resourceId: concern.id,
+    details: { grantId: access.grant.id, useful, hasNote: note !== null },
+  });
+  const after = await getConcernForCeiling(access.ceiling, concern.id);
+  return c.json({ data: { recipient: after?.recipient ?? null } });
 });
