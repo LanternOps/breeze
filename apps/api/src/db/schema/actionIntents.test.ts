@@ -354,6 +354,9 @@ describe('action_intents schema', () => {
         'targetEntraOid',
         'targetConnectionRef',
         'dispatchStartedAt',
+        // B-W06 (#6160): stamped only by the status-change trigger
+        // (2027-01-04-121000-action-intents-status-changed-at.sql).
+        'statusChangedAt',
       ].sort(),
     );
   });

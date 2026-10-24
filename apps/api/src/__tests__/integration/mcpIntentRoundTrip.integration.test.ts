@@ -40,6 +40,8 @@ import {
   intentOutbox,
 } from '../../db/schema';
 import { processIntentReleaseJob } from '../../jobs/intentReleaseWorker';
+import { cancelActionIntent } from '../../services/actionIntents/intentService';
+import { buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { PERMISSIONS } from '../../services/permissions';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import {
@@ -527,5 +529,221 @@ describe('Tier-3 over MCP via action intents: round trip (B-W04, real Postgres)'
       toolName: TOOL,
     });
     expect(handlerSpy).not.toHaveBeenCalled();
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// B-W06 (#6160): the same round trip as a Tasks-declaring 2026-07-28 client
+// ---------------------------------------------------------------------------
+
+const TASKS_EXT = 'io.modelcontextprotocol/tasks';
+
+async function modernRpc(
+  rawKey: string,
+  method: string,
+  params: Record<string, unknown>,
+  opts: { declareTasks?: boolean; name?: string } = {},
+): Promise<{ status: number; body: any }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json', 'X-API-Key': rawKey,
+    'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': method,
+  };
+  const name = opts.name ?? (method === 'tools/call' ? String(params.name) : method.startsWith('tasks/') ? String(params.taskId) : undefined);
+  if (name !== undefined) headers['Mcp-Name'] = name;
+  const res = await app.request('/api/v1/mcp/sse', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: ++rpcId, method,
+      params: {
+        ...params,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientCapabilities': opts.declareTasks === false ? {} : { extensions: { [TASKS_EXT]: {} } },
+        },
+      },
+    }),
+  });
+  return { status: res.status, body: await res.json() };
+}
+
+function requesterAuth(f: Fixture) {
+  const { orgCondition, canAccessOrg } = buildOrgAccessClosures([f.orgId]);
+  return {
+    principal: { kind: 'user_session' },
+    user: { id: f.requester.id, email: f.requester.email, name: 'Requester', isPlatformAdmin: false },
+    token: {
+      sub: f.requester.id, email: f.requester.email, roleId: null, orgId: f.orgId, partnerId: f.partnerId,
+      scope: 'organization', type: 'access', mfa: true,
+    },
+    partnerId: f.partnerId,
+    orgId: f.orgId,
+    scope: 'organization',
+    accessibleOrgIds: [f.orgId],
+    orgCondition,
+    canAccessOrg,
+  } as unknown as AuthContext;
+}
+
+async function fileTask(f: Fixture, args: Record<string, unknown>) {
+  const { status, body } = await modernRpc(f.rawKey, 'tools/call', { name: TOOL, arguments: args });
+  expect(status).toBe(200);
+  expect(body.error).toBeUndefined();
+  expect(body.result).toMatchObject({ resultType: 'task', status: 'working' });
+  const taskId = body.result.taskId as string;
+  expect(taskId).toMatch(/^[0-9a-f-]{36}$/);
+  return { taskId, created: body.result };
+}
+
+describe('Tier-3 over MCP as a Task (B-W06, real Postgres)', () => {
+  beforeEach(() => {
+    process.env.MCP_STATELESS_ENABLED = 'true';
+    process.env.MCP_TASKS_ENABLED = 'true';
+  });
+  afterEach(() => {
+    delete process.env.MCP_STATELESS_ENABLED;
+    delete process.env.MCP_TASKS_ENABLED;
+  });
+
+  it('approve and release: task working → completed; result equals get_action_status; lastUpdatedAt = status_changed_at', async () => {
+    const f = await seed();
+    const { taskId, created } = await fileTask(f, { snapshotId: randomUUID(), deviceId: f.deviceId });
+    const filed = await readIntent(taskId);
+    expect(filed).toMatchObject({ status: 'pending_approval', source: 'mcp_api', originPrincipalId: f.keyId });
+    expect(created.createdAt).toBe(filed.createdAt.toISOString());
+    expect(created.statusMessage).toContain(`/approvals#intent-${taskId}`);
+
+    const pending = await modernRpc(f.rawKey, 'tasks/get', { taskId });
+    expect(pending.body.result).toMatchObject({ resultType: 'complete', taskId, status: 'working' });
+
+    const approverRow = (await approvalRowsFor(taskId)).find((r) => r.userId === f.approver.id)!;
+    expect((await decideAsApprover(f, approverRow.id, 'approve')).status).toBe(200);
+    await processIntentReleaseJob({ intentId: taskId, eventType: 'intent_approved' });
+    expect(handlerSpy).toHaveBeenCalledTimes(1);
+
+    const done = await modernRpc(f.rawKey, 'tasks/get', { taskId });
+    expect(done.body.result.status).toBe('completed');
+    const status = await modernRpc(f.rawKey, 'tools/call', { name: 'get_action_status', arguments: { actionId: taskId } });
+    expect(status.body.result.structuredContent).toMatchObject({ actionId: taskId, status: 'completed' });
+    expect(done.body.result.result.structuredContent).toEqual(status.body.result.structuredContent);
+    expect(done.body.result.result.content[0].text).toContain(RESULT_MARKER);
+
+    const row = await readIntent(taskId);
+    expect(row.statusChangedAt).toBeInstanceOf(Date);
+    expect(done.body.result.lastUpdatedAt).toBe(row.statusChangedAt!.toISOString());
+  }, 60_000);
+
+  it('cancel while pending: tasks/cancel → {} → tasks/get → cancelled', async () => {
+    const f = await seed();
+    const { taskId } = await fileTask(f, { snapshotId: randomUUID(), deviceId: f.deviceId });
+    const ack = await modernRpc(f.rawKey, 'tasks/cancel', { taskId });
+    expect(ack.body.error).toBeUndefined();
+    const { _meta, ...rest } = ack.body.result;
+    expect(rest).toEqual({ resultType: 'complete' });
+    expect((await readIntent(taskId)).status).toBe('cancelled');
+    const got = await modernRpc(f.rawKey, 'tasks/get', { taskId });
+    expect(got.body.result.status).toBe('cancelled');
+    expect(handlerSpy).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('cancel in the web app: tasks/get → cancelled with lastUpdatedAt advanced to the transition', async () => {
+    const f = await seed();
+    const { taskId, created } = await fileTask(f, { snapshotId: randomUUID(), deviceId: f.deviceId });
+    const before = await modernRpc(f.rawKey, 'tasks/get', { taskId });
+    expect(before.body.result.status).toBe('working');
+
+    const result = await cancelActionIntent(requesterAuth(f), taskId);
+    expect(result.ok).toBe(true);
+
+    const after = await modernRpc(f.rawKey, 'tasks/get', { taskId });
+    expect(after.body.result.status).toBe('cancelled');
+    const row = await readIntent(taskId);
+    expect(after.body.result.lastUpdatedAt).toBe(row.statusChangedAt!.toISOString());
+    expect(Date.parse(after.body.result.lastUpdatedAt)).toBeGreaterThan(Date.parse(before.body.result.lastUpdatedAt));
+    expect(Date.parse(after.body.result.lastUpdatedAt)).toBeGreaterThan(Date.parse(created.createdAt));
+  }, 60_000);
+
+  it('second credential of the same human: tasks/get and tasks/cancel → not found, identical to an unknown id', async () => {
+    const f = await seed();
+    const { taskId } = await fileTask(f, { snapshotId: randomUUID(), deviceId: f.deviceId });
+
+    const rawKeyB = `brz_${randomBytes(24).toString('hex')}`;
+    await sys(() => db.insert(apiKeys).values({
+      orgId: f.orgId,
+      createdBy: f.requester.id,
+      name: `roundtrip-task-b-${randomUUID().slice(0, 8)}`,
+      keyHash: createHash('sha256').update(rawKeyB).digest('hex'),
+      keyPrefix: rawKeyB.slice(0, 12),
+      scopes: ['ai:read', 'ai:execute'],
+      status: 'active',
+      mcpDomains: null,
+    }));
+
+    const unknownId = randomUUID();
+    const unknown = await modernRpc(rawKeyB, 'tasks/get', { taskId: unknownId });
+    const cross = await modernRpc(rawKeyB, 'tasks/get', { taskId });
+    const crossCancel = await modernRpc(rawKeyB, 'tasks/cancel', { taskId });
+    expect(unknown.body.error).toEqual({ code: -32602, message: 'Task not found', data: { reason: 'not_found' } });
+    expect(cross.body.result).toBeUndefined();
+    expect(cross.body.error).toEqual(unknown.body.error);
+    expect(crossCancel.body.error).toEqual(unknown.body.error);
+    const crossUpdate = await modernRpc(rawKeyB, 'tasks/update', { taskId, inputResponses: {} });
+    expect(crossUpdate.body.result).toBeUndefined();
+    expect(crossUpdate.body.error).toEqual(unknown.body.error);
+    expect((await readIntent(taskId)).status).toBe('pending_approval');
+
+    // The owner still reads it.
+    expect((await modernRpc(f.rawKey, 'tasks/get', { taskId })).body.result.status).toBe('working');
+  }, 60_000);
+});
+
+describe('Tasks ownership against real rows (B-W06 review follow-up)', () => {
+  beforeEach(() => {
+    process.env.MCP_STATELESS_ENABLED = 'true';
+    process.env.MCP_TASKS_ENABLED = 'true';
+  });
+  afterEach(() => {
+    delete process.env.MCP_STATELESS_ENABLED;
+    delete process.env.MCP_TASKS_ENABLED;
+  });
+
+  const NOT_FOUND = { code: -32602, message: 'Task not found', data: { reason: 'not_found' } };
+
+  it("another org's task and the same human's chat-source intent are not found on tasks/get, tasks/update and tasks/cancel", async () => {
+    const f = await seed();
+    const other = await seed();
+    const { taskId: otherOrgTask } = await fileTask(other, { snapshotId: randomUUID(), deviceId: other.deviceId });
+
+    const [chat] = await sys(() => db.insert(actionIntents).values({
+      orgId: f.orgId,
+      partnerId: f.partnerId,
+      requestedByUserId: f.requester.id,
+      requestingApiKeyId: null,
+      requestingAgentRunId: null,
+      source: 'chat',
+      originPrincipalKind: 'user_session',
+      originPrincipalId: f.requester.id,
+      actionName: TOOL,
+      actionVersion: 1,
+      arguments: { snapshotId: randomUUID(), deviceId: f.deviceId },
+      argumentDigest: 'c'.repeat(64),
+      targetSummary: 'Restore a snapshot',
+      impactSummary: 'Overwrites files on the device',
+      reason: 'chat-source ownership probe',
+      riskTier: 3,
+      idempotencyKey: `chat-${randomUUID()}`,
+      correlationId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    }).returning({ id: actionIntents.id }));
+
+    for (const taskId of [otherOrgTask, chat!.id]) {
+      for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel'] as const) {
+        const res = await modernRpc(f.rawKey, method, { taskId });
+        expect(res.body.result).toBeUndefined();
+        expect(res.body.error).toEqual(NOT_FOUND);
+      }
+    }
+    expect((await readIntent(otherOrgTask)).status).toBe('pending_approval');
+    expect((await readIntent(chat!.id)).status).toBe('pending_approval');
   }, 60_000);
 });

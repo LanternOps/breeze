@@ -10,21 +10,33 @@ import { captureMessage } from './sentry';
  * is "not declared": a client that gets it wrong sees today's experience, never
  * an error.
  *
- * Shape note for B-W06 (#6160): `McpClientExtensions` is derived from
- * `MCP_CLIENT_EXTENSION_KEYS`, and the legacy side key is written and read
- * key by key from the same list. Adding `tasks` = one entry in that list plus
- * its declaration check in `parseMcpClientExtensions`; the side-key helpers
- * and the "nothing declared" sentinel follow automatically.
+ * Shape note: `McpClientExtensions` is derived from `MCP_CLIENT_EXTENSION_KEYS`
+ * (B-W05 `ui`, B-W06 `tasks`). The legacy side key is written and read only
+ * for `MCP_LEGACY_SIDE_KEY_EXTENSION_KEYS` (`ui`): Tasks are modern-only.
  */
 
 /** MCP Apps extension id (SEP-1865, `modelcontextprotocol/ext-apps` 2026-01-26). */
 export const MCP_UI_EXTENSION_ID = 'io.modelcontextprotocol/ui';
 /** The only view mime type the MCP Apps specification defines. */
 export const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
+/** Tasks extension id (SEP-2663, `modelcontextprotocol/ext-tasks` 2026-07-28). B-W06 #6160. */
+export const MCP_TASKS_EXTENSION_ID = 'io.modelcontextprotocol/tasks';
 
 /** Every negotiated extension flag. The side key and the sentinel are built from this list. */
-export const MCP_CLIENT_EXTENSION_KEYS = ['ui'] as const;
+export const MCP_CLIENT_EXTENSION_KEYS = ['ui', 'tasks'] as const;
 type McpClientExtensionKey = (typeof MCP_CLIENT_EXTENSION_KEYS)[number];
+
+/**
+ * B-W06 (#6160, D-B47): the keys a legacy session may carry. Tasks are
+ * modern-only (declared per request), so the legacy side key is written and
+ * read for `ui` only: a legacy `initialize` declaring tasks stores nothing for
+ * it, and a read never yields `tasks: true` whatever the stored value says.
+ */
+export const MCP_LEGACY_SIDE_KEY_EXTENSION_KEYS = ['ui'] as const satisfies readonly McpClientExtensionKey[];
+
+function isLegacySideKeyExtension(key: McpClientExtensionKey): boolean {
+  return (MCP_LEGACY_SIDE_KEY_EXTENSION_KEYS as readonly McpClientExtensionKey[]).includes(key);
+}
 
 export type McpClientExtensions = { readonly [K in McpClientExtensionKey]: boolean };
 
@@ -49,14 +61,27 @@ function ownRecord(value: unknown, key: string): Record<string, unknown> | undef
 /**
  * `ui` is true only when `caps.extensions["io.modelcontextprotocol/ui"].mimeTypes`
  * is an array containing the exact string `text/html;profile=mcp-app`.
+ * `tasks` (B-W06 #6160) is true only when
+ * `caps.extensions["io.modelcontextprotocol/tasks"]` is a plain object (`{}`
+ * included); `true`, an array, `null` or absent is not a declaration.
  */
 export function parseMcpClientExtensions(caps: unknown): McpClientExtensions {
   const extensions = ownRecord(caps, 'extensions');
   const ui = ownRecord(extensions, MCP_UI_EXTENSION_ID);
   const mimeTypes = ui && Object.prototype.hasOwnProperty.call(ui, 'mimeTypes') ? ui.mimeTypes : undefined;
   const uiDeclared = Array.isArray(mimeTypes) && mimeTypes.some((mime) => mime === MCP_APP_MIME_TYPE);
-  const declared = buildExtensions((key) => (key === 'ui' ? uiDeclared : false));
+  const tasksDeclared = ownRecord(extensions, MCP_TASKS_EXTENSION_ID) !== undefined;
+  const declared = buildExtensions((key) => (key === 'ui' ? uiDeclared : tasksDeclared));
   return anyDeclared(declared) ? declared : NO_MCP_CLIENT_EXTENSIONS;
+}
+
+/**
+ * B-W06 (#6160): the legacy-era view of a declaration — every key outside
+ * MCP_LEGACY_SIDE_KEY_EXTENSION_KEYS forced to false (Tasks are modern-only).
+ */
+export function toLegacyClientExtensions(ext: McpClientExtensions): McpClientExtensions {
+  const legacy = buildExtensions((key) => isLegacySideKeyExtension(key) && ext[key]);
+  return anyDeclared(legacy) ? legacy : NO_MCP_CLIENT_EXTENSIONS;
 }
 
 /**
@@ -80,9 +105,13 @@ export async function writeLegacySessionExtensions(
   ext: McpClientExtensions,
   ttlSeconds: number,
 ): Promise<void> {
-  if (!anyDeclared(ext) || !redis) return;
+  const legacy = toLegacyClientExtensions(ext);
+  if (!anyDeclared(legacy) || !redis) return;
   try {
-    await redis.setex(`${MCP_SESSION_EXT_REDIS_PREFIX}${sessionId}`, ttlSeconds, JSON.stringify(buildExtensions((key) => ext[key])));
+    // B-W06: only the legacy keys are serialised, so the W05 payload
+    // ('{"ui":true}') is unchanged whatever else was declared.
+    const stored = Object.fromEntries(MCP_LEGACY_SIDE_KEY_EXTENSION_KEYS.map((key) => [key, legacy[key]]));
+    await redis.setex(`${MCP_SESSION_EXT_REDIS_PREFIX}${sessionId}`, ttlSeconds, JSON.stringify(stored));
   } catch (err) {
     console.warn('[MCP] Failed to persist negotiated client extensions:', err);
     captureMessage('MCP negotiated client extensions could not be persisted for a legacy session', {
@@ -123,6 +152,5 @@ export async function readLegacySessionExtensions(
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return NO_MCP_CLIENT_EXTENSIONS;
   const stored = parsed as Record<string, unknown>;
-  const ext = buildExtensions((key) => stored[key] === true);
-  return anyDeclared(ext) ? ext : NO_MCP_CLIENT_EXTENSIONS;
+  return toLegacyClientExtensions(buildExtensions((key) => stored[key] === true));
 }

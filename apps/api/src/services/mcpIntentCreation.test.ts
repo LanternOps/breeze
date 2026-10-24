@@ -44,7 +44,7 @@ vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
-import { cancelOwnedMcpIntent, createMcpActionIntent, reportSuspiciousMcpOrigin, type CreateMcpActionIntentInput } from './mcpIntentCreation';
+import { cancelOwnedMcpIntent, countLiveMcpIntentsForOrigin, createMcpActionIntent, reportSuspiciousMcpOrigin, type CreateMcpActionIntentInput } from './mcpIntentCreation';
 import { ActionIntentError } from './actionIntents/intentService';
 
 const USER = '22222222-2222-4222-8222-222222222222';
@@ -306,5 +306,28 @@ describe('cancelOwnedMcpIntent', () => {
     mocks.loadRow.mockResolvedValueOnce([]);
     expect(await cancelOwnedMcpIntent(auth, INTENT, 'https://app.example.com')).toEqual({ kind: 'not_found' });
     expect(mocks.cancelActionIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe('countLiveMcpIntentsForOrigin (B-W06 #6160, D-B52)', () => {
+  it('counts the caller origin\'s live mcp_api intents', async () => {
+    mocks.approverRows = [{ n: 7 }] as never;
+    try {
+      expect(await countLiveMcpIntentsForOrigin(input().auth)).toBe(7);
+    } finally {
+      mocks.approverRows = [];
+    }
+  });
+
+  it('no row → 0', async () => {
+    mocks.approverRows = [];
+    expect(await countLiveMcpIntentsForOrigin(input().auth)).toBe(0);
+  });
+
+  it('a principal without an origin ref (partner service principal, user session) → 0 without a query', async () => {
+    const { withSystemDbAccessContext } = await import('../db');
+    vi.mocked(withSystemDbAccessContext).mockClear();
+    expect(await countLiveMcpIntentsForOrigin({ principal: { kind: 'user_session' }, user: { id: USER } } as never)).toBe(0);
+    expect(withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });
