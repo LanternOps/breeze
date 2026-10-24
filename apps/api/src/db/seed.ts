@@ -130,6 +130,7 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'devices', action: 'write', description: 'Create and update devices' },
   { resource: 'devices', action: 'delete', description: 'Delete/decommission devices' },
   { resource: 'devices', action: 'execute', description: 'Execute commands on devices' },
+  { resource: 'devices', action: 'recover_agent', description: 'Restart or start the agent through the watchdog' },
 
   { resource: 'agent_rollback', action: 'create', description: 'Authorize a signed agent rollback' },
 
@@ -353,7 +354,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     forceMfa: false,
     permissions: [
       'backup:read', 'backup:write',
-      'devices:read', 'devices:execute',
+      'devices:read', 'devices:execute', 'devices:recover_agent',
       'endpoint_messages:send', 'endpoint_messages:read',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',
@@ -430,7 +431,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     forceMfa: false,
     permissions: [
       'backup:read', 'backup:write', 'backup:cross_site_restore',
-      'devices:read', 'devices:write', 'devices:delete', 'devices:execute',
+      'devices:read', 'devices:write', 'devices:delete', 'devices:execute', 'devices:recover_agent',
       'endpoint_messages:send', 'endpoint_messages:read',
       'scripts:read', 'scripts:write', 'scripts:delete', 'scripts:execute',
       'alerts:read', 'alerts:write', 'alerts:acknowledge',
@@ -495,7 +496,7 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
     description: 'Execute scripts and manage devices',
     forceMfa: false,
     permissions: [
-      'devices:read', 'devices:write', 'devices:execute',
+      'devices:read', 'devices:write', 'devices:execute', 'devices:recover_agent',
       'endpoint_messages:send', 'endpoint_messages:read',
       'scripts:read', 'scripts:execute',
       'alerts:read', 'alerts:acknowledge',

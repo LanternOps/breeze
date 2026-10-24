@@ -254,41 +254,7 @@
       "twelveHour": "12 Stunden",
       "twentyFourHour": "24 Stunden",
       "language": "Sprache",
-      "languageDescription": "Standardsprache für Partnereinstellungen.",
-      "businessHours": {
-        "title": "Geschäftszeiten",
-        "description": "Legen Sie Ihre Standardbetriebszeiten für Support und Benachrichtigungen fest.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Immer verfügbar"
-          },
-          "business": {
-            "label": "Geschäftszeiten",
-            "description": "Mo-Fr 9-17 Uhr"
-          },
-          "extended": {
-            "label": "Erweiterte Öffnungszeiten",
-            "description": "Mo-Fr 7-19 Uhr, Sa 9-13 Uhr"
-          },
-          "custom": {
-            "label": "Benutzerdefiniert",
-            "description": "Legen Sie Ihren eigenen Zeitplan fest"
-          }
-        },
-        "customSchedule": "Benutzerdefinierter Zeitplan",
-        "open": "Offen",
-        "to": "zu"
-      },
-      "days": {
-        "mon": "Montag",
-        "tue": "Dienstag",
-        "wed": "Mittwoch",
-        "thu": "Donnerstag",
-        "fri": "Freitag",
-        "sat": "Samstag",
-        "sun": "Sonntag"
-      }
+      "languageDescription": "Standardsprache für Partnereinstellungen."
     }
   },
   "partnerAiBudgets": {
@@ -700,7 +666,13 @@
         "quality": "Qualität"
       },
       "failovers": "Failover",
-      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war"
+      "failoversHelp": "Aufrufe, die von einem Ausweichmodell bedient wurden, weil das konfigurierte ausgefallen oder nicht verfügbar war",
+      "titleBy": {
+        "model": "KI-Nutzung nach Modell",
+        "organization": "KI-Nutzung nach Organisation",
+        "technician": "KI-Nutzung nach Techniker",
+        "feature": "KI-Nutzung nach Funktion"
+      }
     },
     "link": {
       "summary": "Modell: {{model}} — festgelegt unter KI-Anbieter und Modelle → Standards pro Funktion",
@@ -777,13 +749,10 @@
     "maintenancePlaceholder": "z.B. So 02:00-06:00, 02:00-04:00 oder 24/7",
     "maintenanceInvalid": "Verwenden Sie ein UTC-Fenster wie <first>Sonntag 02:00-04:00</first> oder <second>02:00-04:00</second> oder <always>24/7</always> für Always-On. Lassen Sie das Feld leer, damit Organisationen es konfigurieren können.",
     "maintenanceHelp": "Zeitfenster (UTC) für automatische Updates und Neustarts. Verwenden Sie <always>24/7</always> für Always-On oder lassen Sie das Feld leer, damit Organisationen es individuell konfigurieren können.",
-    "deviceGroup": "Standardgerätegruppe",
-    "alertThreshold": "Standardalarmschwelle",
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung für neue Geräte",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensbenachrichtigung senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "enrollment": {
       "title": "Geräteregistrierung",
@@ -1030,8 +999,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Unternehmen",
+      "devices": "Geräte und Agenten",
       "security": "Sicherheit und Zugang",
       "communications": "Kommunikation",
+      "ai": "KI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1031,11 @@
       },
       "company": {
         "label": "Unternehmen",
-        "description": "Name, Adresse, Kontakte"
+        "description": "Name, Adresse, Kontakte, E-Mail-Signatur"
       },
       "regional": {
         "label": "Regional",
-        "description": "Zeitzone, Formate, Stunden"
+        "description": "Zeitzone, Sprache, Formate, Stunden"
       },
       "defaults": {
         "label": "Standardeinstellungen",
@@ -1072,7 +1043,7 @@
       },
       "security": {
         "label": "Sicherheit",
-        "description": "IP-Zulassungsliste und Zugriff"
+        "description": "Passwörter, Sitzungen, MFA und IP-Zulassungsliste"
       },
       "remoteAccess": {
         "label": "Fernzugriff",
@@ -1080,11 +1051,11 @@
       },
       "eventLogs": {
         "label": "Ereignisprotokolle",
-        "description": "Weitergabe und Aufbewahrung"
+        "description": "Geräte-Ereignisprotokolle an Elasticsearch weiterleiten"
       },
       "notifications": {
         "label": "Benachrichtigungen",
-        "description": "E-Mail- und Webhook-Benachrichtigungen"
+        "description": "Absenderadresse, SMTP, Slack- und Pushover-Standardwerte"
       },
       "ticketing": {
         "label": "Ticketverkauf",
@@ -1109,7 +1080,7 @@
       },
       "aiFeatures": {
         "label": "KI-Funktionen",
-        "description": "Standardwerte für Anomalieerkennung und Korrekturvorschläge"
+        "description": "KI-Datenrichtlinie, Anomalieerkennung und Korrekturvorschläge"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1097,14 @@
       "aiApprovals": {
         "label": "KI-Genehmigungs-Timeout",
         "description": "Wie lange der KI-Chat auf die Genehmigung einer gesperrten Aktion wartet"
+      },
+      "callerVerification": {
+        "label": "Anruferverifizierung",
+        "description": "Identitätsprüfung von Anrufern bei Support-Anfragen"
+      },
+      "knownGuests": {
+        "label": "Bekannte Gäste",
+        "description": "Zugelassene Besucher- und Techniker-Geräte nach MAC-Adresse"
       }
     },
     "saved": "Partnereinstellungen gespeichert",
@@ -1152,6 +1131,9 @@
       "nativeDescription": "Tickets, Zeiterfassung, Angebote, Rechnungen und Verträge laufen in Breeze. Dies ist die Standardeinstellung.",
       "offLabel": "Aus – nur RMM",
       "offDescription": "Blendet die Bereiche Service-Desk und Abrechnung sowie die Registerkarten Tickets und Abrechnung im Kundendatensatz aus. Vorhandene Tickets bleiben lesbar; neue können nicht erstellt werden.",
+      "offConfirmTitle": "Service-Management deaktivieren?",
+      "offConfirmMessage": "Damit werden Service-Desk und Abrechnung für alle Organisationen ausgeblendet, und es können keine neuen Tickets mehr erstellt werden. Vorhandene Tickets bleiben lesbar.",
+      "offConfirmAction": "Deaktivieren",
       "externalNote": "Dieser Partner nutzt ein externes PSA. Eine Änderung ist hier noch nicht möglich.",
       "topologyTitle": "Netzwerktopologie",
       "topologyBeta": "Beta-Version",
@@ -1385,6 +1367,14 @@
     "never": "Niemals",
     "downloadInstaller": "Vorkonfiguriertes Installationsprogramm herunterladen",
     "downloading": "Wird heruntergeladen...",
+    "installerDialogTitle": "Installationsprogramm für „{{name}}“ herunterladen",
+    "installerDialogDescription": "Das Installationsprogramm wird für eine feste Anzahl von Geräten erstellt. Jedes Gerät, das es ausführt, verbraucht eine davon.",
+    "installerDeviceCount": "Anzahl der Geräte",
+    "installerDeviceCountRemaining": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountRemaining_one": "Dieser Schlüssel hat noch {{count}} Registrierung übrig.",
+    "installerDeviceCountRemaining_other": "Dieser Schlüssel hat noch {{count}} Registrierungen übrig.",
+    "installerDeviceCountUnlimited": "Dieser Schlüssel hat kein Nutzungslimit.",
+    "installerDeviceCountRange": "Geben Sie eine ganze Zahl von 1 bis {{max}} ein.",
     "rotate": "Rotieren",
     "page": "Seite {{current}} von {{total}}",
     "previous": "Zurück",
@@ -1398,7 +1388,10 @@
     "retrySites": "Erneut versuchen",
     "createASite": "Standort erstellen",
     "maxUsage": "Maximale Nutzung (optional)",
-    "defaultDeviceLimit": "50 (Standard)",
+    "defaultDeviceLimit": "{{count}} (Organisationsstandard)",
+    "expiresAtHelp": "Leer lassen für {{duration}} (Organisationsstandard).",
+    "usageFromDefault": "Standard",
+    "usageFromDefaultTitle": "Das Geräte-Limit stammt aus dem Organisationsstandard.",
     "maxUsageHelp": "Maximale Anzahl von Agenten, die sich mit diesem Schlüssel registrieren können.",
     "expiresAt": "Läuft ab um (optional)",
     "creating": "Erstellen...",
@@ -1454,16 +1447,16 @@
       "inviter_name": "Name der einladenden Person",
       "expires_days": "Tage bis zum Ablauf der Einladung",
       "cta_button": "Schaltfläche",
-      "client_name": "Client name",
-      "setup_link": "Automatic payments setup link",
-      "ach_mode_text": "Available payment methods",
-      "payment_method": "Saved payment method",
-      "schedule_text": "Payment schedule",
-      "fee_text": "Processing fee terms",
-      "stopped_by": "Who stopped automatic payments",
-      "open_invoices_text": "Open invoice summary",
-      "expires_on": "Card expiry date",
-      "update_link": "Payment method update link",
+      "client_name": "Kundenname",
+      "setup_link": "Link zur Einrichtung automatischer Zahlungen",
+      "ach_mode_text": "Verfügbare Zahlungsmethoden",
+      "payment_method": "Gespeicherte Zahlungsmethode",
+      "schedule_text": "Zahlungsplan",
+      "fee_text": "Bedingungen der Bearbeitungsgebühren",
+      "stopped_by": "Person, die automatische Zahlungen beendet hat",
+      "open_invoices_text": "Übersicht offener Rechnungen",
+      "expires_on": "Ablaufdatum der Karte",
+      "update_link": "Link zum Aktualisieren der Zahlungsmethode",
       "amount_due": "Fälliger Betrag",
       "charge_date": "Abbuchungsdatum",
       "fee_amount": "Bearbeitungsgebühr",
@@ -1484,15 +1477,15 @@
       "approval_expires": "Freigabefrist",
       "approval_status": "Freigabestatus"
     },
-    "billingPayments": "Billing & payments",
-    "supportPortal": "Support & portal",
+    "billingPayments": "Abrechnung und Zahlungen",
+    "supportPortal": "Support und Portal",
     "labels": {
-      "autopay_request": "Automatic payments request",
-      "autopay_enrolled": "Automatic payments confirmed",
-      "autopay_stopped": "Automatic payments stopped",
+      "autopay_request": "Anfrage für automatische Zahlungen",
+      "autopay_enrolled": "Automatische Zahlungen bestätigt",
+      "autopay_stopped": "Automatische Zahlungen beendet",
       "autopay_paused": "Automatische Zahlungen pausiert",
       "autopay_resumed": "Automatische Zahlungen fortgesetzt",
-      "card_expiring": "Saved card expiring",
+      "card_expiring": "Gespeicherte Karte läuft bald ab",
       "payment_receipt": "Beleg für Onlinezahlung",
       "payment_failed": "Zahlung konnte nicht abgeschlossen werden",
       "ticket_approval_requested_approver": "Freigabeanfrage für Arbeiten (Genehmiger)",
@@ -1789,27 +1782,13 @@
     "deviceGroup": {
       "title": "Standardgerätegruppe",
       "description": "Neu registrierte Geräte werden dieser Gruppe automatisch hinzugefügt.",
-      "options": {
-        "AllManagedDevices": "Alle verwalteten Geräte",
-        "CriticalInfrastructure": "Kritische Infrastruktur",
-        "RemoteStaff": "Remote-Mitarbeiter",
-        "Contractors": "Auftragnehmer"
-      }
-    },
-    "alertSeverity": {
-      "title": "Standardschweregrad der Warnung",
-      "description": "Warnungen unterhalb dieses Schweregrads werden nur an den Zusammenfassungsfeed übermittelt.",
-      "options": {
-        "critical": "Nur kritisch",
-        "high": "Hoch und kritisch",
-        "medium": "Mittel und höher"
-      }
+      "none": "Keine",
+      "unavailable": "Ausgewählte Gruppe (nicht verfügbar)"
     },
     "autoEnrollment": {
       "title": "Automatische Registrierung",
       "enable": "Aktivieren Sie die automatische Registrierung",
-      "requireApproval": "Erfordert die Genehmigung des Administrators",
-      "sendWelcome": "Willkommensnachricht senden"
+      "requireApproval": "Erfordert die Genehmigung des Administrators"
     },
     "agentUpdates": {
       "title": "Agent-Update-Richtlinie",
@@ -1860,7 +1839,7 @@
     "disabledDescription": "Aktivieren Sie oben die Protokollweiterleitung, um die Verbindungseinstellungen zu konfigurieren.",
     "enable": {
       "title": "Aktivieren Sie die Protokollweiterleitung",
-      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle in einem wiederkehrenden Zeitplan an Ihren Protokollspeicher weitergeleitet."
+      "description": "Wenn diese Option aktiviert ist, werden Ereignisprotokolle an Ihren Protokollspeicher weitergeleitet, sobald jedes Gerät sie meldet."
     },
     "connection": {
       "title": "Verbindung",
@@ -1949,6 +1928,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Kundenansicht",
+      "subtitle": "Vorschau: Das sieht {{who}}",
+      "whoOrganization": "Ihr Kunde",
+      "pickerLabel": "Ansicht als",
+      "pickerAll": "Gesamte Organisation",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Kundenansicht konnte nicht geladen werden.",
+      "on": "An",
+      "off": "Aus",
+      "notAvailable": "Eine detaillierte Vorschau dieses Bereichs ist noch nicht verfügbar.",
+      "permissionWithheld": "Nicht angezeigt: Für diese Vorschau benötigen Sie {{permissions}}.",
+      "tilesWithheld": "Einige Kacheln werden nicht angezeigt: Für die Vorschau benötigen Sie {{permissions}}.",
+      "noteNoUser": "Ticketbezogene Daten sind ausgeblendet. Wählen Sie einen Portalbenutzer, um zu sehen, was diese Person sieht.",
+      "readinessTitle": "Bereitschaftsprüfungen",
+      "readinessNone": "Keine Probleme gefunden.",
+      "fix": "Beheben",
+      "readiness": {
+        "documents_empty": "Dokumente ist aktiviert, aber kein Dokument ist als „Im Portal sichtbar“ markiert – Ihr Kunde sieht eine leere Bibliothek.",
+        "reports_empty": "Berichte ist aktiviert, aber es gibt noch keine Berichtsläufe – Ihr Kunde sieht eine leere Liste.",
+        "service_one_time_visible": "Service ist aktiviert und einmalige Einträge sind für Ihren Kunden weiterhin sichtbar.",
+        "backups_no_data": "Backups ist aktiviert, aber es gibt noch keine Backup-Daten.",
+        "dashboard_security_no_data": "Dashboard ist aktiviert, aber der Sicherheitswert hat noch keine Daten – die Kachel ist für Ihren Kunden leer.",
+        "branding_unset": "Das Portal-Branding wurde nie festgelegt (Logo, Farben, Willkommensnachricht oder Support-Kontakt)."
+      }
+    },
     "loading": "Portaleinstellungen werden geladen…",
     "save": "Portaleinstellungen speichern",
     "toasts": {
@@ -2060,6 +2065,10 @@
         "enableVulnerabilityDetail": {
           "label": "Schwachstellen-Details",
           "description": "Zeigt allen Portal-Anmeldungen dieser Organisation die CVE-Funde jedes Geräts und deren Schweregrad (CVE-ID, Beschreibung, Schweregrad, CVSS-Wert, Patch-Verfügbarkeit, Status). Dadurch ist sichtbar, welche Rechner angreifbar sind. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
+        },
+        "enablePhysicalPlacement": {
+          "label": "Physische Platzierung",
+          "description": "Zeigt jedem Portal-Login dieser Organisation, wo jedes Gerät physisch untergebracht ist (Rack und Raum). Das legt das physische Layout der Umgebung offen. Wird durch „Gesamte Sichtbarkeit aktivieren“ nicht eingeschaltet."
         },
         "enableHourBlock": {
           "label": "Support-Stunden",
@@ -2436,7 +2445,11 @@
     "sourceDefault": "Standard",
     "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
     "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
-    "thresholdsOff": "Aus"
+    "thresholdsOff": "Aus",
+    "todaysCost": "Kosten heute",
+    "monthlyCost": "Kosten im Monat",
+    "messagesToday": "Nachrichten heute",
+    "tokensThisMonth": "Token in diesem Monat"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2949,6 +2962,7 @@
           "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
           "blocked_by_app_rule": "Durch eine App-Regel blockiert",
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
+          "explicitly_declined": "Ausdrücklich abgelehnt",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "ring_reference_invalid": "Update-Ring der Richtlinie ist ungültig",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
@@ -4347,6 +4361,13 @@
     "commitmentTermRange": "Bindungsdauer: Geben Sie eine ganze Zahl von 1 bis 120 Monaten ein."
   },
   "catalogItemsTab": {
+    "viewActive": "Aktiv",
+    "viewArchived": "Archiviert",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Dienstleistung"
+    },
     "itemArchived": "Element archiviert",
     "itemRestored": "Artikel wiederhergestellt",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "Der Produktkatalog ist nur für Partnerkonten verfügbar.",
@@ -4395,7 +4416,9 @@
     "nMoreCurrencies_other": "+{{count}} Währungen",
     "incompletePriceBook": "Unvollständige Preisliste",
     "marginUnavailable": "Marge nicht verfügbar",
-    "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar"
+    "marginUnavailableCostIn": "Kosten in {{currency}} — Marge nicht verfügbar",
+    "marginUnknownMissingCost_one": "Marge unbekannt — {{count}} Komponente hat keine Kosten",
+    "marginUnknownMissingCost_other": "Marge unbekannt — {{count}} Komponenten haben keine Kosten"
   },
   "catalogSettingsPage": {
     "productCatalog": "Produktkatalog",
@@ -4462,6 +4485,9 @@
     "notEnabledBody": "MCP OAuth ist auf diesem Server deaktiviert. Setzen Sie MCP_OAUTH_ENABLED=true und starten Sie die API neu, um verbundene Apps zuzulassen.",
     "revokeConfirm": "Zugriff für {{name}} entziehen? Ihr Zugriffstoken wird innerhalb von 10 Minuten nicht mehr funktionieren.",
     "revokeFailed": "Widerruf fehlgeschlagen ({{status}})",
+    "revokeTitle": "Verbundene App widerrufen",
+    "revokeSuccess": "Zugriff für {{name}} wurde widerrufen",
+    "revokeFailedGeneric": "Widerruf fehlgeschlagen",
     "networkError": "Netzwerkfehler",
     "networkErrorDuringRevoke": "Netzwerkfehler beim Widerrufen",
     "revoking": "Widerrufen…",
@@ -4693,6 +4719,7 @@
     "actions": "Aktionen",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "Keine Rollen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen.",
     "cloneRole": "Klonrolle: {{name}}",
+    "cloneDescription": "Kopie von {{name}}",
     "clone": "Klonen",
     "edit": "Bearbeiten",
     "delete": "Löschen",
@@ -5371,6 +5398,8 @@
       "billingDescription": "Steuer- und Rechnungsadresse",
       "pax8": "Pax8-Marktplatz",
       "pax8Description": "Abonnements und Bestellungen",
+      "cloudTenants": "Cloud-Mandanten",
+      "cloudTenantsDescription": "Microsoft 365 und Google Workspace",
       "extensions": "Erweiterungen",
       "extensionsDescription": "Abschnitte von Drittanbieter-Erweiterungen",
       "portalBranding": "Portal & Branding",
@@ -5686,6 +5715,20 @@
       "sourceOrg": "Überschreibung der Organisation",
       "sourcePartner": "Partner-Standard",
       "sourceDefault": "Integrierter Standard"
+    },
+    "businessCalendar": {
+      "title": "Geschäftszeiten",
+      "description": "Der Kalender, nach dem die SLA-Uhren dieser Organisation laufen. Bei „Erben“ gilt der Partner-Standard.",
+      "label": "Geschäftskalender",
+      "inherit": "Erben",
+      "inheritedDefault": "Geerbt: {{name}} (Partner-Standard)",
+      "inheritedNone": "Geerbt: 24×7 (kein Partner-Standard)",
+      "partnerWideOption": "{{name}} (alle Orgs)",
+      "archivedOverride": "Archivierter Kalender (gilt nicht mehr)",
+      "loadFailed": "Der Geschäftskalender konnte nicht geladen werden.",
+      "errors": {
+        "save": "Der Geschäftskalender konnte nicht gespeichert werden. Bitte erneut versuchen."
+      }
     }
   },
   "organizationForm": {
@@ -5697,16 +5740,12 @@
       "nameRequired": "Der Name der Organisation ist erforderlich",
       "slugRequired": "Slug ist erforderlich",
       "slugFormat": "Verwenden Sie nur Kleinbuchstaben, Zahlen und Bindestriche",
-      "maxDevicesRequired": "Geben Sie ein maximales Gerätelimit ein",
-      "maxDevicesInteger": "Max. Geräte müssen eine ganze Zahl sein",
-      "maxDevicesMin": "Die maximale Anzahl an Geräten muss mindestens 1 betragen",
       "contractEndAfterStart": "Das Vertragsende muss am oder nach dem Startdatum liegen"
     },
     "fields": {
       "name": "Name der Organisation",
       "slug": "Schnecke",
       "type": "Organisationstyp",
-      "maxDevices": "Max. Geräte",
       "contractStart": "Vertragsbeginn",
       "contractEnd": "Vertragsende"
     },
@@ -6858,6 +6897,163 @@
     "disabledToast": "Zusammenfassung zum Verbindungsstatus deaktiviert",
     "loadFailed": "E-Mail-Einstellungen konnten nicht geladen werden.",
     "saveFailed": "E-Mail-Einstellungen konnten nicht gespeichert werden.",
+    "retry": "Erneut versuchen"
+  },
+  "characterKeyShortcuts": {
+    "title": "Einzeltasten-Kürzel",
+    "description": "Kürzel mit einer einzelnen Taste wie g dann d, c dann c, /, ? und die Tasten der Ticketwarteschlange. Deaktivieren, wenn sie mit einem Screenreader oder der Spracheingabe kollidieren. Strg/Cmd+K ist nicht betroffen.",
+    "label": "Einzeltasten-Kürzel aktivieren",
+    "enabledToast": "Einzeltasten-Kürzel aktiviert",
+    "disabledToast": "Einzeltasten-Kürzel deaktiviert",
+    "saveFailed": "Einzeltasten-Kürzel konnten nicht gespeichert werden."
+  },
+  "businessHoursCard": {
+    "title": "Geschäftszeiten",
+    "description": "Kalender, nach denen die SLA-Uhren für Reaktion und Lösung laufen. Ein Ticket nutzt den Kalender seiner Organisation oder Ihren Standardkalender; ist keiner festgelegt, läuft die Uhr rund um die Uhr.",
+    "newTicketsOnly": "Änderungen an Zeiten oder Zeitzone gelten nur für neue Tickets. Mit „Auf offene Tickets anwenden“ aktualisieren Sie bereits offene Tickets.",
+    "create": "Neuer Kalender",
+    "loading": "Geschäftszeiten werden geladen…",
+    "loadError": "Geschäftszeiten konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Noch keine Geschäftszeiten-Kalender. Tickets laufen rund um die Uhr (24×7), bis Sie einen Kalender anlegen und als Standard festlegen.",
+    "allOrgs": "Alle Orgs",
+    "default": "Standard",
+    "archived": "Archiviert",
+    "edit": "Bearbeiten",
+    "setDefault": "Als Standard festlegen",
+    "clearDefault": "Standard aufheben",
+    "applyOpen": "Auf offene Tickets anwenden",
+    "archive": "Archivieren",
+    "unarchive": "Wiederherstellen",
+    "delete": "Löschen",
+    "deleteTitle": "{{name}} löschen?",
+    "deleteMessage": "Dadurch werden der Kalender und seine Feiertage endgültig gelöscht. Ein Kalender, den Tickets oder Organisationen noch verwenden, kann nicht gelöscht werden; archivieren Sie ihn stattdessen.",
+    "name": "Kalendername",
+    "timezone": "Zeitzone",
+    "appliesTo": "Gilt für",
+    "ownerPartner": "Alle Organisationen (partnerweit)",
+    "ownerOrg": "Eine Organisation",
+    "organization": "Organisation",
+    "chooseOrg": "Organisation auswählen",
+    "weeklyHours": "Wöchentliche Zeiten",
+    "closed": "Geschlossen",
+    "to": "bis",
+    "addInterval": "Zeiten hinzufügen",
+    "intervalStart": "{{day}} öffnet um",
+    "intervalEnd": "{{day}} schließt um",
+    "removeInterval": "Zeiten für {{day}} entfernen",
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "cancel": "Abbrechen",
+    "holidays": "Feiertage",
+    "holidayHint": "Feiertage mit heutigem oder früherem Datum ändern offene Tickets nicht.",
+    "noHolidays": "Keine Feiertage.",
+    "holidayDate": "Datum",
+    "holidayName": "Feiertagsname",
+    "holidayAdd": "Feiertag hinzufügen",
+    "holidayRemove": "Feiertag {{name}} entfernen",
+    "weekdays": {
+      "0": "Sonntag",
+      "1": "Montag",
+      "2": "Dienstag",
+      "3": "Mittwoch",
+      "4": "Donnerstag",
+      "5": "Freitag",
+      "6": "Samstag"
+    },
+    "errors": {
+      "nameRequired": "Geben Sie einen Namen ein.",
+      "orgRequired": "Wählen Sie eine Organisation aus.",
+      "invalidTime": "Geben Sie Zeiten als HH:MM ein (z. B. 09:00); das Ende kann 24:00 sein.",
+      "order": "Jedes Intervall muss nach seinem Beginn enden.",
+      "overlap": "Intervalle am selben Tag dürfen sich nicht überschneiden.",
+      "empty": "Fügen Sie mindestens ein Öffnungsintervall hinzu.",
+      "timezone": "Wählen Sie eine gültige Zeitzone.",
+      "save": "Der Kalender konnte nicht gespeichert werden. Bitte erneut versuchen.",
+      "holidayInvalid": "Geben Sie ein gültiges Datum und einen Namen für den Feiertag ein.",
+      "holidayAdd": "Der Feiertag konnte nicht hinzugefügt werden. Bitte erneut versuchen.",
+      "holidayRemove": "Der Feiertag konnte nicht entfernt werden. Bitte erneut versuchen.",
+      "inUse": "Dieser Kalender wird von Tickets oder Organisationen verwendet und kann nicht gelöscht werden. Archivieren Sie ihn stattdessen.",
+      "isDefault": "Dieser Kalender ist der Standard. Heben Sie den Standard auf, bevor Sie ihn löschen.",
+      "default": "Der Standardkalender konnte nicht geändert werden. Bitte erneut versuchen.",
+      "archive": "Der Archivstatus konnte nicht geändert werden. Bitte erneut versuchen.",
+      "delete": "Der Kalender konnte nicht gelöscht werden. Bitte erneut versuchen.",
+      "apply": "Der Kalender konnte nicht auf offene Tickets angewendet werden. Bitte erneut versuchen."
+    },
+    "toasts": {
+      "created": "Kalender erstellt",
+      "updated": "Kalender aktualisiert",
+      "defaultSet": "Standardkalender festgelegt",
+      "defaultCleared": "Standard aufgehoben; Tickets ohne Überschreibung laufen 24×7",
+      "archived": "Kalender archiviert",
+      "unarchived": "Kalender wiederhergestellt",
+      "deleted": "Kalender gelöscht",
+      "holidayAdded": "Feiertag hinzugefügt",
+      "holidayRemoved": "Feiertag entfernt",
+      "recompute": "Die Fristen offener Tickets werden aktualisiert.",
+      "applied": "Auf offene Tickets angewendet: {{count}} aktualisiert",
+      "appliedPartial": "{{skipped}} Tickets wurden gerade bearbeitet und behalten ihre bisherigen Zeiten. Wenden Sie die Änderung erneut an, um sie nachzuholen."
+    },
+    "apply": {
+      "title": "{{name}} auf offene Tickets anwenden",
+      "explanation": "Offene Tickets, die nie pausiert wurden, wechseln zu den aktuellen Zeiten und ihre Fristen werden neu berechnet. Tickets mit Pausenverlauf bleiben unverändert.",
+      "loading": "Vorschau wird geladen…",
+      "loadFailed": "Die Vorschau konnte nicht geladen werden.",
+      "revisionChanged": "Die Zeiten haben sich seit dieser Vorschau geändert. Prüfen Sie die aktualisierten Zahlen, bevor Sie anwenden.",
+      "eligible": "Tickets, die aktualisiert werden: {{count}}",
+      "breached": "Davon würden sofort überfällig: {{count}}",
+      "paused": "Übersprungen, weil sie pausiert waren: {{count}}",
+      "confirm": "Auf offene Tickets anwenden"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Tarif & Funktionen",
+    "description": "Was Ihr Tarif umfasst. Gesperrte Funktionen bleiben sichtbar, damit Sie sehen, was ein Upgrade hinzufügt.",
+    "currentPlan": "Aktueller Tarif",
+    "plans": {
+      "free": "Kostenlos",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unbegrenzt"
+    },
+    "columns": {
+      "feature": "Funktion",
+      "state": "Zustand",
+      "source": "Quelle",
+      "expires": "Läuft ab",
+      "limits": "Grenzwerte"
+    },
+    "state": {
+      "enabled": "Enthalten",
+      "disabled": "Gesperrt"
+    },
+    "source": {
+      "plan": "Tarifstandard",
+      "billing": "Abrechnung",
+      "license": "Lizenz",
+      "manual": "Manuell"
+    },
+    "graceWarning": "Abgelaufen am {{expiresAt}} — Kulanzfrist bis {{graceUntil}}",
+    "noExpiry": "Nie",
+    "noLimits": "—",
+    "reason": "Grund: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding-Supervisor",
+        "why": "Ein KI-Supervisor, der Fehler beim Zero-Touch-Onboarding diagnostiziert und behebt."
+      },
+      "verified_library": {
+        "label": "Verifizierte Softwarebibliothek",
+        "why": "Kuratierte, verifizierte Pakete, die Sie bedenkenlos bereitstellen können."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp sichtet Ihre Geräteflotte fortlaufend und benachrichtigt die richtige Person; verfügbar ab Pro."
+      }
+    },
+    "loadError": "Ihr Tarif konnte nicht geladen werden.",
     "retry": "Erneut versuchen"
   }
 }

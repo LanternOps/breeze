@@ -29,6 +29,20 @@ describe('getVpnProviderLabel', () => {
     expect(getVpnProviderLabel('generic')).toBe('VPN');
   });
 
+  it('maps the enterprise VPN / SSE clients (#8763) to vendor labels', () => {
+    expect(getVpnProviderLabel('zscaler')).toBe('Zscaler');
+    expect(getVpnProviderLabel('globalprotect')).toBe('GlobalProtect');
+    expect(getVpnProviderLabel('cisco-secure-client')).toBe('Cisco Secure Client');
+    expect(getVpnProviderLabel('forticlient')).toBe('FortiClient');
+    expect(getVpnProviderLabel('netskope')).toBe('Netskope');
+  });
+
+  it('gives each enterprise client its own badge, not the generic one', () => {
+    for (const provider of ['zscaler', 'globalprotect', 'cisco-secure-client', 'forticlient', 'netskope']) {
+      expect(getVpnProviderBadgeClass(provider)).not.toBe(getVpnProviderBadgeClass('generic'));
+    }
+  });
+
   it('falls back to the generic label for unknown providers', () => {
     expect(getVpnProviderLabel('nordvpn')).toBe('VPN');
   });

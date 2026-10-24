@@ -20,6 +20,8 @@ const { checklistMocks, templateMocks, mockLimit, mockSelect } = vi.hoisted(() =
     applyChecklistTemplateToTicket: vi.fn(),
     getChecklistTemplate: vi.fn(),
     listChecklistTemplates: vi.fn(),
+    createChecklistTemplateFromTicket: vi.fn(),
+    duplicateChecklistTemplate: vi.fn(),
   };
   // findTicketWithAccess ends in .limit(1).
   const mockLimit = vi.fn<() => Promise<unknown[]>>(() => Promise.resolve([]));
@@ -153,12 +155,29 @@ describe('manage_ticket_checklist (#6930)', () => {
     expect(checklistMocks.patchChecklistItem).toHaveBeenCalledWith(ITEM_ID, { label: 'new', detail: null }, { userId: 'user-1' });
   });
 
-  it('update_item refuses a ticked step (a text edit would clear the attestation)', async () => {
+  it('update_item refuses a LABEL edit of a ticked step (it would clear the attestation)', async () => {
     mockAccessibleTicket();
     checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
     const out = await run({ action: 'update_item', itemId: ITEM_ID, label: 'new' });
     expect(out).toEqual({ error: expect.stringContaining('[CHECKLIST_TICKED_ITEM_REQUIRES_USER]') });
     expect(checklistMocks.patchChecklistItem).not.toHaveBeenCalled();
+  });
+
+  it('update_item refuses label+detail on a ticked step (the label rule still applies)', async () => {
+    mockAccessibleTicket();
+    checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
+    const out = await run({ action: 'update_item', itemId: ITEM_ID, label: 'new', detail: 'n' });
+    expect(out).toEqual({ error: expect.stringContaining('[CHECKLIST_TICKED_ITEM_REQUIRES_USER]') });
+    expect(checklistMocks.patchChecklistItem).not.toHaveBeenCalled();
+  });
+
+  it('update_item ALLOWS a detail-only (note) edit of a ticked step — the tick is kept (#9180)', async () => {
+    mockAccessibleTicket();
+    checklistMocks.isChecklistItemTickedForUpdate.mockResolvedValueOnce(true);
+    checklistMocks.patchChecklistItem.mockResolvedValue({ id: ITEM_ID, detail: 'n' });
+    const out = await run({ action: 'update_item', itemId: ITEM_ID, detail: 'n' });
+    expect(out.error).toBeUndefined();
+    expect(checklistMocks.patchChecklistItem).toHaveBeenCalledWith(ITEM_ID, { detail: 'n' }, { userId: 'user-1' });
   });
 
   it('delete_item refuses a ticked step', async () => {
@@ -235,5 +254,58 @@ describe('manage_ticket_checklist (#6930)', () => {
     const out = await run({ action: 'add_item', ticketId: TICKET_ID, label: 'x' }, auth);
     expect(out.error).toBe('agent_principal_unsupported_action');
     expect(checklistMocks.addChecklistItem).not.toHaveBeenCalled();
+  });
+
+  describe('save_as_template / duplicate_template (#9180)', () => {
+    it('save_as_template passes the TICKET, the name and the template actor', async () => {
+      mockAccessibleTicket();
+      templateMocks.createChecklistTemplateFromTicket.mockResolvedValue({ template: { id: 'tpl' }, skipped: { operator: 0, duplicates: 0 } });
+      const out = await run({ action: 'save_as_template', ticketId: TICKET_ID, name: 'Runbook' });
+      expect(out).toEqual({ template: { id: 'tpl' }, skipped: { operator: 0, duplicates: 0 } });
+      expect(templateMocks.createChecklistTemplateFromTicket).toHaveBeenCalledWith(
+        { id: TICKET_ID, orgId: ORG_ID },
+        { name: 'Runbook', ownerScope: 'organization' },
+        expect.objectContaining({ userId: 'user-1', partnerId: 'partner-1', scope: 'partner' }),
+      );
+    });
+
+    it('save_as_template requires a name and an accessible ticket', async () => {
+      mockAccessibleTicket();
+      expect((await run({ action: 'save_as_template', ticketId: TICKET_ID })).error).toContain('name');
+      expect((await run({ action: 'save_as_template', ticketId: TICKET_ID, name: 'x' })).error).toBe('Ticket not found');
+      expect(templateMocks.createChecklistTemplateFromTicket).not.toHaveBeenCalled();
+    });
+
+    it('save_as_template maps a partner-wide denial to PARTNER_WIDE_WRITE_DENIED', async () => {
+      mockAccessibleTicket();
+      templateMocks.createChecklistTemplateFromTicket.mockRejectedValue(new PartnerWideWriteDeniedError());
+      const out = await run({ action: 'save_as_template', ticketId: TICKET_ID, name: 'x', ownerScope: 'partner' });
+      expect(out).toEqual({ error: expect.stringContaining('[PARTNER_WIDE_WRITE_DENIED]') });
+    });
+
+    it('duplicate_template passes id, optional name and actor', async () => {
+      templateMocks.duplicateChecklistTemplate.mockResolvedValue({ id: 'copy' });
+      const out = await run({ action: 'duplicate_template', templateId: TEMPLATE_ID });
+      expect(out).toEqual({ template: { id: 'copy' } });
+      expect(templateMocks.duplicateChecklistTemplate).toHaveBeenCalledWith(
+        TEMPLATE_ID, {}, expect.objectContaining({ userId: 'user-1' }),
+      );
+    });
+
+    it('duplicate_template requires templateId', async () => {
+      expect((await run({ action: 'duplicate_template' })).error).toContain('templateId');
+    });
+
+    it('both are writes: refused for an ai_agent principal', async () => {
+      const auth = makeAuth({ principal: { kind: 'ai_agent', runId: 'run-1' } as AuthContext['principal'] });
+      expect((await run({ action: 'duplicate_template', templateId: TEMPLATE_ID }, auth)).error).toBe('agent_principal_unsupported_action');
+      expect((await run({ action: 'save_as_template', ticketId: TICKET_ID, name: 'x' }, auth)).error).toBe('agent_principal_unsupported_action');
+    });
+
+    it('schema accepts the new actions and rejects unknown keys', () => {
+      expect(validateToolInput('manage_ticket_checklist', { action: 'save_as_template', ticketId: TICKET_ID, name: 'x', description: 'd', ownerScope: 'partner' })).toEqual({ success: true });
+      expect(validateToolInput('manage_ticket_checklist', { action: 'duplicate_template', templateId: TEMPLATE_ID, name: 'x' })).toEqual({ success: true });
+      expect(validateToolInput('manage_ticket_checklist', { action: 'save_as_template', ticketId: TICKET_ID, name: 'x', bogus: 1 }).success).toBe(false);
+    });
   });
 });

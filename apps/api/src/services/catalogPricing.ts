@@ -171,7 +171,11 @@ export interface BundleEconomics {
   headlineGapMessage: string | null;
   /** every component has a price-book row in currencyCode AND headlinePrice !== null */
   priceBookComplete: boolean;
-  /** every component's costCurrency === currencyCode (null cost still counts as 0, as before) */
+  /**
+   * every component has a KNOWN cost usable in currencyCode: non-null, same
+   * currency, representable at its minor unit. A NULL cost is unknown, never 0
+   * (#9223) — it makes the margin unavailable, never inflated.
+   */
   marginAvailable: boolean;
   /** null unless priceBookComplete && marginAvailable — never a partial sum */
   totalCost: string | null;
@@ -189,6 +193,8 @@ export interface BundleEconomics {
   allocationMatchesHeadline: boolean;
   /** component item ids lacking a price in currencyCode (empty when complete) */
   missingPriceComponentIds: string[];
+  /** component item ids whose cost is NULL/unknown (#9223); non-empty ⇒ marginAvailable false */
+  missingCostComponentIds: string[];
 }
 
 export function computeBundleEconomicsFrom(args: {
@@ -213,11 +219,16 @@ export function computeBundleEconomicsFrom(args: {
     .filter((component) => !component.hasPriceInCurrency)
     .map((component) => component.componentItemId);
   const priceBookComplete = args.headlinePrice !== null && missingPriceComponentIds.length === 0;
-  // Margin needs EVERY component cost usable in the bundle currency: same
-  // currency and representable at its minor unit (#3775 review #4/#8). A null
-  // cost still counts as 0, as before.
-  const marginAvailable = args.components.every(
-    (component) => component.costBasis === null || snapshotCost(component.costBasis, component.costCurrency, currency) !== null
+  // A NULL cost is UNKNOWN, never 0 (#9223): counting it as zero reported an
+  // inflated margin for a bundle whose true cost is not known.
+  const missingCostComponentIds = args.components
+    .filter((component) => component.costBasis === null)
+    .map((component) => component.componentItemId);
+  // Margin needs EVERY component cost known and usable in the bundle currency:
+  // non-null, same currency and representable at its minor unit (#3775 review
+  // #4/#8, #9223).
+  const marginAvailable = missingCostComponentIds.length === 0 && args.components.every(
+    (component) => snapshotCost(component.costBasis, component.costCurrency, currency) !== null
   );
   // All arithmetic is in hundredths (exact for numeric(_,2) inputs) and every
   // derived amount is rounded at the TARGET currency's minor unit — a JPY
@@ -267,6 +278,7 @@ export function computeBundleEconomicsFrom(args: {
         : anyAllocation
           ? allocCents === headlineCents
           : true,
-    missingPriceComponentIds
+    missingPriceComponentIds,
+    missingCostComponentIds
   };
 }

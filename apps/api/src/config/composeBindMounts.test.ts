@@ -210,3 +210,37 @@ describe('Compose bind-mount sources', () => {
     expect(stale).toEqual([]);
   });
 });
+
+/**
+ * #9519 — apps/web and apps/portal both import `@breeze/document-ui`. The dev
+ * and worktree overrides must bind-mount it into each consuming container, or
+ * edits never reach the running stack (and the document-renderer e2e needs a
+ * `docker cp`). Compose merges `volumes` by target path across the .dev and
+ * .worktree files, so the .dev entries are what wt-stack relies on; the
+ * worktree portal block repeats them (as it does the apps/portal mounts) so it
+ * stays correct if it ever gains `!override`. Each file is checked on its own.
+ */
+describe('document-ui dev mounts (#9519)', () => {
+  const REQUIRED = [
+    './packages/document-ui/src:/app/packages/document-ui/src:cached',
+    './packages/document-ui/package.json:/app/packages/document-ui/package.json:ro',
+    './packages/document-ui/tsconfig.json:/app/packages/document-ui/tsconfig.json:ro',
+    '/app/packages/document-ui/node_modules',
+  ];
+
+  function serviceVolumes(composeFile: string, service: string): string[] {
+    const doc = load(readFileSync(path.join(REPO_ROOT, composeFile), 'utf8'), {
+      schema: COMPOSE_SCHEMA,
+    }) as { services?: Record<string, { volumes?: unknown }> } | null;
+    const volumes = doc?.services?.[service]?.volumes;
+    return Array.isArray(volumes) ? volumes.filter((v): v is string => typeof v === 'string') : [];
+  }
+
+  it.each([
+    ['docker-compose.override.yml.dev', 'web'],
+    ['docker-compose.override.yml.dev', 'portal'],
+    ['docker-compose.override.yml.worktree', 'portal'],
+  ])('%s: %s mounts packages/document-ui', (composeFile, service) => {
+    expect(serviceVolumes(composeFile, service)).toEqual(expect.arrayContaining(REQUIRED));
+  });
+});

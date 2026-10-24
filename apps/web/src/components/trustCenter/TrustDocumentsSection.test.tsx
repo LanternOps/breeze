@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { installAstroClientRouterStandIn } from '../../__tests__/astroClientRouterStandIn';
 import '@/lib/i18n';
 const api = vi.hoisted(() => ({ updateTrustDocuments: vi.fn() }));
 vi.mock('@/lib/api/trustPage', () => api);
@@ -146,5 +148,32 @@ describe('TrustDocumentsSection', () => {
     expect(await screen.findByTestId('trust-docs-save')).toBeDisabled();
     expect(screen.getByTestId('trust-doc-remove-d-pol')).toBeDisabled();
     expect(await screen.findByTestId('trust-doc-add-d-ev')).toBeDisabled();
+  });
+});
+
+async function expectHashLinkClick(testId: string, expected: string) {
+  const router = installAstroClientRouterStandIn();
+  window.location.hash = '';
+  try {
+    const changed = new Promise<void>((resolve) => {
+      window.addEventListener('hashchange', (e) => {
+        if ((e as HashChangeEvent).newURL.endsWith(expected)) resolve();
+      });
+    });
+    await userEvent.click(screen.getByTestId(testId));
+    expect(window.location.hash).toBe(expected);
+    await expect(changed).resolves.toBeUndefined();
+  } finally {
+    router.uninstall();
+    window.location.hash = '';
+  }
+}
+
+describe('TrustDocumentsSection upload link', () => {
+  it('click sets #documents and fires hashchange under the Astro router', async () => {
+    lib.listOrgDocuments.mockResolvedValue([]);
+    mount();
+    await screen.findByTestId('trust-docs-upload-link');
+    await expectHashLinkClick('trust-docs-upload-link', '#documents');
   });
 });

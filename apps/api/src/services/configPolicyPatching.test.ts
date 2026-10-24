@@ -42,8 +42,6 @@ vi.mock('../db/schema', () => ({
     id: 'id',
     featureLinkId: 'feature_link_id',
     sources: 'sources',
-    autoApprove: 'auto_approve',
-    autoApproveSeverities: 'auto_approve_severities',
     scheduleFrequency: 'schedule_frequency',
     scheduleTime: 'schedule_time',
     scheduleDayOfWeek: 'schedule_day_of_week',
@@ -88,8 +86,6 @@ describe('normalizePatchInlineSettings', () => {
   it('passes valid input through', () => {
     const input = {
       sources: ['os', 'third_party'],
-      autoApprove: true,
-      autoApproveSeverities: ['critical'],
       scheduleFrequency: 'daily',
       scheduleTime: '03:00',
       scheduleDayOfWeek: 'mon',
@@ -101,8 +97,6 @@ describe('normalizePatchInlineSettings', () => {
     const result = normalizePatchInlineSettings(input);
 
     expect(result.sources).toEqual(['os', 'third_party']);
-    expect(result.autoApprove).toBe(true);
-    expect(result.autoApproveSeverities).toEqual(['critical']);
     expect(result.scheduleFrequency).toBe('daily');
     expect(result.scheduleTime).toBe('03:00');
     expect(result.scheduleDayOfWeek).toBe('mon');
@@ -115,8 +109,6 @@ describe('normalizePatchInlineSettings', () => {
     const result = normalizePatchInlineSettings({});
 
     expect(result.sources).toEqual(['os']);
-    expect(result.autoApprove).toBe(false);
-    expect(result.autoApproveSeverities).toEqual([]);
     expect(result.scheduleFrequency).toBe('weekly');
     expect(result.scheduleTime).toBe('02:00');
     expect(result.scheduleDayOfWeek).toBe('sun');
@@ -130,7 +122,6 @@ describe('normalizePatchInlineSettings', () => {
     const result = normalizePatchInlineSettings(null);
 
     expect(result.sources).toEqual(['os']);
-    expect(result.autoApprove).toBe(false);
     expect(result.scheduleFrequency).toBe('weekly');
   });
 
@@ -159,8 +150,6 @@ describe('tryNormalizePatchInlineSettings', () => {
   it('returns valid: true for good input', () => {
     const result = tryNormalizePatchInlineSettings({
       sources: ['os'],
-      autoApprove: false,
-      autoApproveSeverities: [],
       scheduleFrequency: 'weekly',
       scheduleTime: '02:00',
       scheduleDayOfWeek: 'sun',
@@ -200,14 +189,18 @@ describe('tryNormalizePatchInlineSettings', () => {
     expect(result.settings.sources).toEqual(['os']);
   });
 
-  it('returns valid: false for autoApprove true with empty severities (superRefine)', () => {
+  it('strips the retired policy-level approval keys instead of rejecting them (#8188)', () => {
     const result = tryNormalizePatchInlineSettings({
       autoApprove: true,
       autoApproveSeverities: [],
+      autoApproveDeferralDays: 5,
+      apps: [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }],
     });
 
-    expect(result.valid).toBe(false);
-    expect(result.settings.sources).toEqual(['os']);
+    expect(result.valid).toBe(true);
+    for (const key of ['autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays', 'apps']) {
+      expect(result.settings).not.toHaveProperty(key);
+    }
   });
 });
 
@@ -216,7 +209,7 @@ describe('loadPolicyLocalPatchConfig', () => {
     vi.clearAllMocks();
   });
 
-  it('preserves JSON-only patch fields when normalized patch settings exist', async () => {
+  it('builds settings from the relational row and ignores retired keys in the stored JSON (#8188)', async () => {
     vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
       configPolicyId: 'policy-1',
       configPolicyName: 'Policy 1',
@@ -232,8 +225,6 @@ describe('loadPolicyLocalPatchConfig', () => {
       },
       patchSettings: {
         sources: ['os'],
-        autoApprove: false,
-        autoApproveSeverities: [],
         scheduleFrequency: 'daily',
         scheduleTime: '03:00',
         scheduleDayOfWeek: 'mon',
@@ -245,11 +236,10 @@ describe('loadPolicyLocalPatchConfig', () => {
     const result = await loadPolicyLocalPatchConfig('policy-1');
 
     expect(result?.settings.sources).toEqual(['os']);
-    expect(result?.settings.autoApprove).toBe(false);
-    expect(result?.settings.autoApproveDeferralDays).toBe(5);
-    expect(result?.settings.apps).toEqual([
-      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-    ]);
+    expect(result?.settings.scheduleTime).toBe('03:00');
+    for (const key of ['autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays', 'apps']) {
+      expect(result?.settings).not.toHaveProperty(key);
+    }
   });
 
   // #8030: the columns must reach the effective settings, and an invalid stored
@@ -263,8 +253,6 @@ describe('loadPolicyLocalPatchConfig', () => {
     storedInlineSettings: {},
     patchSettings: {
       sources: ['os'],
-      autoApprove: false,
-      autoApproveSeverities: [],
       scheduleFrequency: 'daily',
       scheduleTime: '03:00',
       scheduleDayOfWeek: 'mon',
@@ -314,8 +302,6 @@ describe('loadPolicyLocalPatchConfig', () => {
       storedInlineSettings: { sources: ['os'] },
       patchSettings: {
         sources: ['os'],
-        autoApprove: false,
-        autoApproveSeverities: [],
         scheduleFrequency: 'weekly',
         scheduleTime: '02:00',
         scheduleDayOfWeek: 'sun',
@@ -330,65 +316,7 @@ describe('loadPolicyLocalPatchConfig', () => {
     expect(result?.settings.exclusiveWindowsUpdate).toBe(true);
   });
 
-  it('salvages valid app rules and deferral when stored inline JSON is malformed, with warn + Sentry', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
-      configPolicyId: 'policy-2',
-      configPolicyName: 'Policy 2',
-      orgId: 'org-1',
-      featureLinkId: 'link-2',
-      featurePolicyId: null,
-      storedInlineSettings: {
-        // Legacy unpadded time — fails the whole-document parse.
-        scheduleTime: '2:00',
-        autoApproveDeferralDays: 7,
-        apps: [
-          { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-          { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
-          // Invalid entry: pin without pinnedVersion — dropped individually.
-          { source: 'third_party', packageId: 'BadEntry', action: 'pin' },
-        ],
-      },
-      patchSettings: {
-        sources: ['os', 'third_party'],
-        autoApprove: false,
-        autoApproveSeverities: [],
-        scheduleFrequency: 'weekly',
-        scheduleTime: '03:00',
-        scheduleDayOfWeek: 'sat',
-        scheduleDayOfMonth: 1,
-        rebootPolicy: 'if_required',
-      },
-    }]) as any);
-
-    const result = await loadPolicyLocalPatchConfig('policy-2');
-
-    // Columns win for normalized fields.
-    expect(result?.settings.sources).toEqual(['os', 'third_party']);
-    expect(result?.settings.scheduleTime).toBe('03:00');
-    // JSON-only fields are salvaged per-entry, not wiped to defaults.
-    expect(result?.settings.autoApproveDeferralDays).toBe(7);
-    expect(result?.settings.apps).toEqual([
-      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-      { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
-    ]);
-
-    // Loud failure: document-level warn + Sentry, plus per-entry drop warn.
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Stored patch inline settings failed validation')
-    );
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('policy-2'));
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Dropping invalid app rule at index 2')
-    );
-    expect(captureException).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(captureException).mock.calls[0]?.[0]).toBeInstanceOf(Error);
-
-    warnSpy.mockRestore();
-  });
-
-  it('falls back to defaults with a warn when inline JSON is malformed and no patchSettings row exists', async () => {
+  it('falls back to defaults with a warn and Sentry report when inline JSON is malformed and no patchSettings row exists', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
@@ -399,65 +327,22 @@ describe('loadPolicyLocalPatchConfig', () => {
       featurePolicyId: null,
       storedInlineSettings: {
         sources: [], // fails min(1)
-        autoApproveDeferralDays: 999, // out of range — NOT salvaged
       },
       patchSettings: null,
     }]) as any);
 
     const result = await loadPolicyLocalPatchConfig('policy-3');
 
-    // Pins the lenient contract: malformed JSON + no normalized row → defaults.
+    // Pins the lenient contract: malformed JSON + no normalized row -> defaults.
     expect(result?.settings.sources).toEqual(['os']);
-    expect(result?.settings.autoApprove).toBe(false);
-    expect(result?.settings.autoApproveDeferralDays).toBe(0);
-    expect(result?.settings.apps).toEqual([]);
+    expect(result?.settings.scheduleFrequency).toBe('weekly');
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Stored patch inline settings failed validation')
     );
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('policy-3'));
     expect(captureException).toHaveBeenCalledTimes(1);
-
-    warnSpy.mockRestore();
-  });
-
-  it('dedupes salvaged app rules so the downstream re-parse cannot throw', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    vi.mocked(db.select).mockReturnValueOnce(selectJoinLimitRows([{
-      configPolicyId: 'policy-4',
-      configPolicyName: 'Policy 4',
-      orgId: 'org-1',
-      featureLinkId: 'link-4',
-      featurePolicyId: null,
-      storedInlineSettings: {
-        scheduleTime: '2:00', // forces whole-document failure
-        apps: [
-          { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-          // Same canonical bucket (custom → third_party) + same packageId.
-          { source: 'custom', packageId: 'mozilla.firefox', action: 'block' },
-        ],
-      },
-      patchSettings: {
-        sources: ['os'],
-        autoApprove: false,
-        autoApproveSeverities: [],
-        scheduleFrequency: 'weekly',
-        scheduleTime: '02:00',
-        scheduleDayOfWeek: 'sun',
-        scheduleDayOfMonth: 1,
-        rebootPolicy: 'if_required',
-      },
-    }]) as any);
-
-    const result = await loadPolicyLocalPatchConfig('policy-4');
-
-    expect(result?.settings.apps).toEqual([
-      { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-    ]);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('Dropping duplicate app rule at index 1')
-    );
+    expect(vi.mocked(captureException).mock.calls[0]?.[0]).toBeInstanceOf(Error);
 
     warnSpy.mockRestore();
   });
@@ -498,7 +383,8 @@ describe('loadPolicyLocalPatchConfig', () => {
       featureLinkId: 'link-5',
       featurePolicyId: null,
       storedInlineSettings: {
-        sources: ['os'],
+        sources: ['os', 'third_party'],
+        // Retired keys left in old documents are stripped silently.
         autoApproveDeferralDays: 3,
         apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
       },
@@ -507,8 +393,8 @@ describe('loadPolicyLocalPatchConfig', () => {
 
     const result = await loadPolicyLocalPatchConfig('policy-5');
 
-    expect(result?.settings.autoApproveDeferralDays).toBe(3);
-    expect(result?.settings.apps).toHaveLength(1);
+    expect(result?.settings.sources).toEqual(['os', 'third_party']);
+    expect(result?.settings).not.toHaveProperty('apps');
     expect(warnSpy).not.toHaveBeenCalled();
     expect(captureException).not.toHaveBeenCalled();
 

@@ -7,6 +7,7 @@
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Read onboarding is not enabled for this organization.",
     "notAvailableOnInstance": "Not available on this Breeze instance yet.",
+    "notEnabledForOrg": "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
     "callback": {
       "active": "Microsoft consent completed. The refreshed connection status is shown below.",
       "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
@@ -82,7 +83,9 @@
         "intune_devices": "Intune devices",
         "ca_policies": "Conditional Access",
         "skus": "Licenses",
-        "secure_score": "Secure Score"
+        "secure_score": "Secure Score",
+        "signin_events": "Sign-in events",
+        "unknown": "Unrecognized data type"
       }
     },
     "errors": {
@@ -91,6 +94,7 @@
       "consent_cancelled": "Microsoft consent was cancelled.",
       "conditional_access_blocked": "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin.",
       "consent_provider_error": "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs.",
+      "user_consent_blocked": "Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests.",
       "admin_role_required": "A Global Administrator or Privileged Role Administrator must grant consent.",
       "tenant_mismatch": "The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.",
       "tenant_already_bound": "This Microsoft tenant is already connected to another organization.",
@@ -103,6 +107,7 @@
       "manifest_stale": "The granted permissions use an older manifest. Grant consent again.",
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
+      "executor_unavailablePending": "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
     },
     "stepTitle": "Read access",
@@ -124,6 +129,7 @@
     "unavailable": "Connection details are unavailable.",
     "onboardingUnavailable": "Customer Graph Actions onboarding is not enabled for this organization.",
     "notAvailableOnInstance": "Not available on this Breeze instance yet.",
+    "notEnabledForOrg": "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
     "callback": {
       "active": "Microsoft consent completed. The refreshed connection status is shown below.",
       "degraded": "Microsoft consent completed, but the connection needs attention. Refreshed details are shown below."
@@ -175,6 +181,7 @@
       "consent_cancelled": "Microsoft consent was cancelled.",
       "conditional_access_blocked": "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin.",
       "consent_provider_error": "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs.",
+      "user_consent_blocked": "Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests.",
       "admin_role_required": "A Global Administrator or Privileged Role Administrator must grant consent.",
       "tenant_mismatch": "The administrator you signed in with belongs to a different Microsoft tenant than this connection. Sign in with an administrator of the connected tenant.",
       "tenant_already_bound": "This Microsoft tenant is already connected to another organization.",
@@ -186,6 +193,7 @@
       "manifest_stale": "The granted permissions use an older manifest. Grant consent again.",
       "organization_probe_failed": "The Microsoft organization check failed. Retest the connection.",
       "executor_unavailable": "The verification service is unavailable. Retest later.",
+      "executor_unavailablePending": "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.",
       "unknown": "Verification needs attention. Retest the connection or start consent again."
     },
     "stepTitle": "Admin actions",
@@ -258,8 +266,10 @@
   "m365TenantPanel": {
     "loading": "Loading Microsoft 365 connections.",
     "consentUnavailable": "Consent-based connection isn't available on this Breeze instance yet.",
+    "consentNotEnabledForOrg": "Consent-based connection isn't enabled for this organization yet. Ask your Breeze administrator to enable it.",
     "selectOrganization": "Select an organization to connect its Microsoft 365 tenant.",
     "noTenantForOrg": "No Microsoft 365 tenant connected to {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · connected to {{orgName}}",
     "noTenant": "No Microsoft 365 tenant connected to this organization",
     "tenantId": "Tenant ID",
     "copyTenantId": "Copy tenant ID",
@@ -330,6 +340,9 @@
     "retry": "Retry",
     "since": "since {{time}}",
     "fix": "Fix",
+    "remedy": {
+      "reconnect": "Reconnect from the client app (e.g. re-add the MCP server). No action in Breeze."
+    },
     "truncated": "Showing the first {{count}}",
     "recentlyResolved": "Recently resolved ({{count}})",
     "resolution": {
@@ -516,6 +529,11 @@
     "pageOf": "Page {{current}} of {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configuring integrations for",
+      "thisOrganization": "this organization",
+      "change": "Change"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notifications",
     "security": "Security",
@@ -558,7 +576,7 @@
     "hidePassword": "Hide password",
     "portalLabelToggle": "Show the provider name in the client portal",
     "portalLabelHelp": "Off by default: customers see \"Managed cloud backup\" instead of the vendor name.",
-    "credentialsHelp": "Create a dedicated Cove console user with a read-only role, a unique password and no two-factor authentication. Breeze only reads status; it never changes anything in Cove.",
+    "credentialsHelp": "Create a Cove API user (Management → Users → API Users) under your top-level customer. Enter that customer's name as the partner name, the API user's login name as the username and its token as the password. Breeze only reads status; it never changes anything in Cove.",
     "test": "Test connection",
     "syncNow": "Sync now",
     "reauthRequired": "Credentials rejected",
@@ -626,7 +644,6 @@
     "microsoft365IntegrationIsNotEnabledOnThis": "Legacy direct connection is not enabled on this instance. ",
     "anAdministratorEnablesItBySetting": "An administrator enables it by setting",
     "onTheAPIServerThenReloadingThisPage": "on the API server, then reloading this page. ",
-    "connectAnEntraAzureADAppRegistrationSo2": "Connect an Entra (Azure AD) app registration so the AI assistant can look up users, manage groups, disable accounts, and reset passwords for this organization's tenant. ",
     "connection": "Connection",
     "enterTheTenantIdAppClientIdAnd": "Enter the tenant id, app (client) id, and a client secret from your Entra app registration. Breeze makes a live Graph call to verify the credentials before saving. ",
     "howToGetTheTenantIdAppId": "How to get the tenant id, app id, and client secret",
@@ -656,7 +673,6 @@
     "permissionsListedBelowThen": "permissions listed below, then",
     "grantAdminConsent": "Grant admin consent",
     "tenantID": "Tenant ID",
-    "contosoOnmicrosoftComOrTenantGUID": "contoso.onmicrosoft.com or tenant GUID",
     "appClientID": "App (client) ID",
     "applicationClientId": "application (client) id",
     "clientSecret": "Client secret ",
@@ -678,7 +694,25 @@
     "saveAndVerify": "Save & verify",
     "legacyBadge": "Legacy",
     "precedenceNote": "This legacy direct connection takes precedence over the consent-based connection for this tenant.",
-    "disconnectConfirm": "Disconnect the legacy direct connection? Breeze deletes the stored app registration credentials. The app registration itself stays in Microsoft Entra."
+    "disconnectConfirm": "Disconnect the legacy direct connection? Breeze deletes the stored app registration credentials. The app registration itself stays in Microsoft Entra.",
+    "legacyHeading": "Microsoft 365: legacy app registration (AI assistant only)",
+    "legacyHeadingForOrg": "Microsoft 365: legacy app registration (AI assistant only) for {{orgName}}",
+    "legacyScopeSummary": "An Entra app registration plus client secret for this organization's tenant. It powers only the AI assistant actions listed below.",
+    "powersHeading": "Powers",
+    "powersList": "Six AI assistant actions: user lookup, sign-in activity, list groups, group members, disable user, reset password.",
+    "doesNotPowerHeading": "Does not power",
+    "doesNotPowerSync": "Tenant sync (users, licenses, sign-ins, Conditional Access, Secure Score)",
+    "doesNotPowerQueryTools": "AI and MCP tools",
+    "doesNotPowerReports": "M365 reports and evidence built on them",
+    "useConnectWithMicrosoft": "Use Connect with Microsoft above instead.",
+    "searchAllApplicationsFirst": ". Before creating a new app, search ",
+    "allApplications": "All applications",
+    "searchAllApplicationsFirst2": " (not Owned applications) for an existing Breeze app in this tenant. ",
+    "tenantIdGuidPlaceholder": "Tenant ID (GUID), e.g. 00000000-0000-0000-0000-000000000000",
+    "tenantIdGuidHint": "Use the Directory (tenant) ID (a GUID) from the Entra app registration Overview, not the contoso.onmicrosoft.com domain.",
+    "savingRequiresMfa": " Saving requires MFA verification.",
+    "clientSecretPlaceholder": "app client secret",
+    "clientSecretStoredPlaceholder": "•••••••••• (stored, encrypted)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Device health",

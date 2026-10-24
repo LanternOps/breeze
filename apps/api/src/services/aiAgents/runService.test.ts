@@ -1025,6 +1025,11 @@ describe('createAndEnqueueAgentRun skip reasons', () => {
     expect(where).toContain('"error_code"');
     expect(dbMockState.updateSets.at(-1)).toMatchObject({ status: 'queued', errorCode: null });
     expect(dbMockState.updateSets.at(-1)?.finishedAt).toBeNull();
+    // #9451: a reclaim is a NEW attempt — its compute settlement reopens (the
+    // previous attempt's claim must not suppress it) and its re-stamped
+    // queuedAt is the attempt identity in the ai-compute:<run>:<attempt> key.
+    expect(dbMockState.updateSets.at(-1)).toMatchObject({ computeSettledAt: null, computeCents: null });
+    expect(dbMockState.updateSets.at(-1)?.queuedAt).toBeInstanceOf(Date);
     // Phase 2 wave P2-1: the reclaim SET must carry the retrying caller's
     // profile/correlationGroupId too, not just leave the reclaimed row on
     // whatever it was originally inserted with — profile governs tool
@@ -1900,10 +1905,12 @@ describe('transitionRunStatus — compute reservation release (execution plane W
   // reaper alone, and its reservation used to stand until UTC midnight —
   // counting against the org's daily compute ceiling (refusing that org's
   // later analyses) and never billing the compute the provider really ran.
+  const STARTED = new Date('2026-10-20T00:00:00Z');
+
   it('releases an outstanding reservation at the RESERVATION on a terminal transition', async () => {
     dbMockState.updateRows = [{
       id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
-      profile: 'analysis', computeReservedCents: 25,
+      profile: 'analysis', computeReservedCents: 25, startedAt: STARTED,
     }];
     expect(await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed', {
       errorCode: 'stalled',
@@ -1916,10 +1923,21 @@ describe('transitionRunStatus — compute reservation release (execution plane W
   it('releases on the run\'s ADMITTED funding source, never a re-derived one (W03)', async () => {
     dbMockState.updateRows = [{
       id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
-      profile: 'analysis', computeReservedCents: 25, fundingSource: 'partner_key',
+      profile: 'analysis', computeReservedCents: 25, fundingSource: 'partner_key', startedAt: STARTED,
     }];
     await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed', { errorCode: 'stalled' });
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'partner_key');
+  });
+
+  it('#9451: a run that never STARTED ran no sandbox, so its reservation is released at 0, not billed', async () => {
+    // enqueue_failed, or cancelled while queued: billing the worst case would
+    // charge the org for compute that never existed.
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'enqueue_failed', outcome: {},
+      profile: 'analysis', computeReservedCents: 25, startedAt: null,
+    }];
+    await transitionRunStatus(RUN_ID, 'queued', 'failed', { errorCode: 'enqueue_failed' });
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'platform');
   });
 
   it('does NOT settle on a non-terminal transition', async () => {

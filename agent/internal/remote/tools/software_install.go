@@ -93,7 +93,7 @@ var (
 // InstallSoftware downloads a package from a presigned URL, verifies its checksum,
 // and executes it with the provided silent install arguments.
 func InstallSoftware(payload map[string]any) CommandResult {
-	return InstallSoftwareWithProgress(payload, nil)
+	return InstallSoftwareWithOptions(payload, nil, InstallOptions{})
 }
 
 // InstallSoftwareWithProgress is InstallSoftware plus in-flight stage reports:
@@ -101,17 +101,66 @@ func InstallSoftware(payload map[string]any) CommandResult {
 // ProgressStageInstalling just before the installer runs (package-manager
 // installs report only ProgressStageInstalling — winget/brew download
 // internally). A payload refused before either stage reports nothing.
-func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReporter) (result CommandResult) {
+//
+// It has no script runner: a payload carrying a pre/post-install script fails
+// with install_script_runner_unavailable. Use InstallSoftwareWithOptions.
+func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReporter) CommandResult {
+	return InstallSoftwareWithOptions(payload, progress, InstallOptions{})
+}
+
+// InstallSoftwareWithOptions is InstallSoftwareWithProgress plus pre/post-
+// install scripts and zip archives (#6958). The order (plan D3) is:
+//
+//  1. detection pre-gate: an already-installed package is skipped, no script runs
+//  2. platform check
+//  3. a zip without a post-install script is refused; a script without a
+//     runner is refused (install_script_runner_unavailable)
+//  4. download, then sha256
+//  5. restore checkpoint (before the pre-script: it is the first mutation)
+//  6. pre-install script (pre_install_script_failed: the installer never runs)
+//  7. installer, or archive extraction for a zip (a failure skips the post-script)
+//  8. post-install script (post_install_script_failed: no rollback; the
+//     restore point stays)
+//  9. post-install detection, polling up to detectionSettleWindow while a
+//     service_running clause is unmet
+//  10. staging-dir cleanup, last, so scripts can copy files out first
+//
+// Scripts run inside the "installing" progress stage.
+func InstallSoftwareWithOptions(payload map[string]any, progress ProgressReporter, opts InstallOptions) (result CommandResult) {
 	startTime := time.Now()
+	// #4609 W07: the command's one System Restore checkpoint, taken
+	// immediately before the first mutation (the pre-install script or
+	// executeInstaller below, or the package manager's install). Declared
+	// above every early-return gate so the defer reports it on all of them: a
+	// stamped request that never reaches the boundary (already installed, a
+	// validation, network-policy, download or checksum refusal) is reported
+	// as skipped_no_mutation.
+	cp := newSoftwareCheckpoint(payload)
 	// Stamp StartedAt on every return path so the server can record the
 	// real start instead of reconstructing it from durationMs.
 	defer func() {
 		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
+		result.RestorePoint = cp.Report()
 	}()
 
+	// Parsed before anything else so a malformed script fails loudly, and so
+	// no path below can silently drop one.
+	preScript, postScript, err := parseInstallScripts(payload)
+	if err != nil {
+		return NewErrorResult(err, time.Since(startTime).Milliseconds())
+	}
+	hasScripts := preScript != nil || postScript != nil
+
 	if _, ok := payload["installMethod"].(map[string]any); ok {
+		if hasScripts {
+			return NewErrorResult(
+				errors.New("pre/post-install scripts are not supported with a package-manager install method"),
+				time.Since(startTime).Milliseconds(),
+			)
+		}
 		progress.report(ProgressStageInstalling)
-		return installViaManager(payload, defaultManagerDeps())
+		// Same checkpoint, so the manager path cannot take a second one.
+		return installViaManagerWithCheckpoint(payload, defaultManagerDeps(), cp)
 	}
 
 	downloadUrl, errResult := RequirePayloadString(payload, "downloadUrl")
@@ -124,7 +173,7 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 	silentInstallArgs := GetPayloadString(payload, "silentInstallArgs", "")
 	softwareName := GetPayloadString(payload, "softwareName", "")
 	version := GetPayloadString(payload, "version", "")
-	fileName, fileType, checksum, silentInstallArgs, softwareName, version, err := validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version)
+	fileName, fileType, checksum, silentInstallArgs, softwareName, version, err = validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, softwareName, version)
 	if err != nil {
 		return NewErrorResult(err, time.Since(startTime).Milliseconds())
 	}
@@ -163,6 +212,39 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 		}
 	}
 
+	// #9165: an installer this OS cannot run is refused here, before the
+	// network policy and the download, rather than by executeInstaller after a
+	// full download + checksum + restore-point checkpoint. Nothing has been
+	// fetched or checkpointed, so the deferred Report gives
+	// skipped_no_mutation for a stamped request.
+	//
+	// It sits AFTER the detection gate on purpose: the gate never downloads or
+	// checkpoints either, and a package that is already present keeps
+	// reporting "already installed" even when the installer offered for it is
+	// for another OS (a version with no recorded file type is sent as "exe",
+	// so a cross-platform deployment can hit exactly that).
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return NewErrorResult(unsupportedInstallerError(fileType, runtime.GOOS), time.Since(startTime).Milliseconds())
+	}
+
+	// #6958: an archive is only extracted, for a post-install script to act
+	// on; without one it would report an install that put nothing in place.
+	isArchive := fileType == "zip"
+	if isArchive && postScript == nil {
+		return NewErrorResult(
+			fmt.Errorf("%s: a zip package needs a post-install script", installErrArchiveRequiresPost),
+			time.Since(startTime).Milliseconds(),
+		)
+	}
+	// Defense in depth behind the server's agent-version gate: a script is
+	// never skipped because this build (or caller) cannot run it.
+	if hasScripts && opts.RunScript == nil {
+		return NewErrorResult(
+			fmt.Errorf("%s: this agent cannot run pre/post-install scripts", installErrRunnerUnavailable),
+			time.Since(startTime).Milliseconds(),
+		)
+	}
+
 	// Outbound network policy (Wave 6 Task 5, security remediation). The
 	// destination is attacker-influenced and carries an executable payload, so
 	// every check below — scheme, host shape, address classification at dial
@@ -186,7 +268,8 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 	}
 
 	// Download to a private per-download staging directory (hardened DACL on
-	// Windows — see createPrivateInstallDir).
+	// Windows — see createPrivateInstallDir). Removed on return, i.e. after
+	// the post-install script, which may still copy files out of it.
 	tempDir, err := createPrivateInstallDir()
 	if err != nil {
 		return NewErrorResult(fmt.Errorf("failed to create temp dir: %w", err), time.Since(startTime).Milliseconds())
@@ -221,9 +304,39 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 		}
 	}
 
-	// Execute installer
+	// #4609: after download AND checksum, immediately before the first
+	// mutation (the pre-install script when there is one). The platform check
+	// and the pre-install detection gate above return earlier, so neither a
+	// wrong-OS installer nor an already-installed package ever consumes the
+	// day's one restore point.
+	takeSoftwareCheckpoint(cp)
+
 	progress.report(ProgressStageInstalling)
-	exitCode, output, descendantsPending, err := executeInstallerFn(localPath, fileType, silentInstallArgs, successExitCodes)
+	runID := installScriptRunID(opts.CommandID)
+	secrets := installScriptRedactions(preScript, postScript)
+	scriptReports := map[string]any{}
+	if preScript != nil {
+		report, failed := runInstallScript(preScript, opts.RunScript, runID, tempDir, localPath, secrets, startTime)
+		if failed != nil {
+			return *failed
+		}
+		scriptReports[preScript.field] = report
+	}
+
+	// Execute installer, or extract the archive
+	var (
+		exitCode           int
+		output             string
+		descendantsPending bool
+	)
+	if isArchive {
+		// Into the staging dir itself: install_dir is the extraction root.
+		if xErr := extractArchive(localPath, tempDir); xErr != nil {
+			return NewErrorResult(fmt.Errorf("archive extraction failed: %w", xErr), time.Since(startTime).Milliseconds())
+		}
+	} else {
+		exitCode, output, descendantsPending, err = executeInstallerFn(localPath, fileType, silentInstallArgs, successExitCodes)
+	}
 	output, outputTruncated := sanitizeInstallerOutput(output)
 	if err != nil {
 		errMsg := err.Error()
@@ -252,8 +365,37 @@ func InstallSoftwareWithProgress(payload map[string]any, progress ProgressReport
 	if outputTruncated {
 		successPayload["outputTruncated"] = true
 	}
+	if isArchive {
+		successPayload["extracted"] = true
+	}
 
-	return applyPostInstallDetectionSettling(successPayload, exitCode, output, detectionRules, time.Since(startTime).Milliseconds(), descendantsPending)
+	if postScript != nil {
+		report, failed := runInstallScript(postScript, opts.RunScript, runID, tempDir, localPath, secrets, startTime)
+		if failed != nil {
+			return *failed
+		}
+		scriptReports[postScript.field] = report
+	}
+	for field, report := range scriptReports {
+		successPayload[field] = report
+	}
+
+	// A service a script just registered can take a moment to reach running,
+	// so an unmet service_running clause is re-polled like a still-landing
+	// installer (descendantsPending), bounded by detectionSettleWindow.
+	settle := descendantsPending || hasServiceRunningClause(detectionRules)
+	return applyPostInstallDetectionSettling(successPayload, exitCode, output, detectionRules, time.Since(startTime).Milliseconds(), settle)
+}
+
+// hasServiceRunningClause reports whether rules include a service_running
+// clause.
+func hasServiceRunningClause(rules []DetectionRule) bool {
+	for _, r := range rules {
+		if r.Type == "service_running" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyPostInstallDetection decides the final install result from the device's
@@ -358,7 +500,7 @@ func validateInstallInputs(fileName, fileType, checksum, silentInstallArgs, soft
 
 func isSupportedInstallFileType(fileType string) bool {
 	switch strings.ToLower(strings.TrimSpace(fileType)) {
-	case "exe", "msi", "deb", "pkg", "dmg":
+	case "exe", "msi", "deb", "pkg", "dmg", "zip":
 		return true
 	default:
 		return false
@@ -652,13 +794,19 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
 	defer cancel()
 
+	if !installerSupportedOnPlatform(fileType, runtime.GOOS) {
+		return 1, "", false, unsupportedInstallerError(fileType, runtime.GOOS)
+	}
+
 	var cmd *exec.Cmd
 
-	switch {
-	case fileType == "msi" && runtime.GOOS == "windows":
+	// installerSupportedOnPlatform above has already matched fileType to this
+	// OS, so each case only has to say how to run it.
+	switch fileType {
+	case "msi":
 		cmd = exec.CommandContext(ctx, "msiexec", buildMSIExecArgs(localPath, silentInstallArgs)...)
 
-	case fileType == "exe" && runtime.GOOS == "windows":
+	case "exe":
 		if silentInstallArgs != "" {
 			args := strings.ReplaceAll(silentInstallArgs, "{file}", localPath)
 			parts := splitCommandLine(args)
@@ -667,21 +815,63 @@ func executeInstaller(localPath, fileType, silentInstallArgs string, successExit
 			cmd = exec.CommandContext(ctx, localPath)
 		}
 
-	case fileType == "deb" && runtime.GOOS == "linux":
+	case "deb":
 		cmd = exec.CommandContext(ctx, "dpkg", "-i", localPath)
 
-	case fileType == "pkg" && runtime.GOOS == "darwin":
+	case "pkg":
 		cmd = exec.CommandContext(ctx, "installer", "-pkg", localPath, "-target", "/")
 
-	case fileType == "dmg" && runtime.GOOS == "darwin":
+	case "dmg":
 		// Mount, find .app or .pkg, install, unmount
 		return installDMG(ctx, localPath, successExitCodes)
 
+	case "zip":
+		// InstallSoftwareWithOptions extracts archives itself; nothing in an
+		// archive is ever executed as the installer.
+		return 1, "", false, fmt.Errorf("zip archives are extracted, not executed")
+
 	default:
-		return 1, "", false, fmt.Errorf("unsupported file type %q on %s", fileType, runtime.GOOS)
+		// Unreachable while installerPlatforms and the cases above agree.
+		return 1, "", false, unsupportedInstallerError(fileType, runtime.GOOS)
 	}
 
 	return runInstallerCommand(ctx, cmd, fileType, successExitCodes)
+}
+
+// installerPlatforms is the ONE table of which installer file type runs on
+// which OS. InstallSoftwareWithProgress checks it before downloading (#9165)
+// and executeInstaller checks it again before dispatching, so the two cannot
+// drift. Keys are matched exactly, as executeInstaller's dispatch always was:
+// validateInstallInputs accepts any case ("MSI"), but only the lowercase form
+// has ever been runnable.
+//
+// zip (#6958) is extracted rather than executed, so it is valid everywhere a
+// post-install script can run.
+var installerPlatforms = map[string][]string{
+	"msi": {"windows"},
+	"exe": {"windows"},
+	"deb": {"linux"},
+	"pkg": {"darwin"},
+	"dmg": {"darwin"},
+	"zip": {"windows", "darwin", "linux"},
+}
+
+// installerSupportedOnPlatform reports whether an installer of fileType can
+// run on goos (a runtime.GOOS value).
+func installerSupportedOnPlatform(fileType, goos string) bool {
+	for _, want := range installerPlatforms[fileType] {
+		if want == goos {
+			return true
+		}
+	}
+	return false
+}
+
+// unsupportedInstallerError is the refusal for a pairing installerPlatforms
+// does not allow. The text is unchanged from when executeInstaller produced it
+// after the download, so anything matching on it keeps working.
+func unsupportedInstallerError(fileType, goos string) error {
+	return fmt.Errorf("unsupported file type %q on %s", fileType, goos)
 }
 
 // lockedBuffer collects an installer's merged stdout+stderr. CombinedOutput's

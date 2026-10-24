@@ -21,9 +21,10 @@ import {
 } from './graphActionsExecutorClient';
 import { recordM365WriteActionEvent } from './writeActionMetrics';
 import {
-  isM365GraphActionsEnabledForOrg,
+  m365GraphActionsAvailability,
   loadM365CustomerGraphActionsRuntimeConfig,
 } from './writeActionRuntimeConfig';
+import { m365ToolsDisabledMessage, type M365DisabledReason } from './availability';
 import { consumeM365WriteActionBudget } from './writeActionBudget';
 import { prepareCallerDispatch } from '../callerVerification/dispatch';
 import { requireCallerVerification } from '../callerVerification/gate';
@@ -57,6 +58,8 @@ export type M365WriteActionServiceResult =
       code: M365WriteActionRefusalCode | WriteActionFailureCode;
       message: string;
       retryAfterSeconds?: number;
+      // Set only on `tools_disabled` gate refusals: which switch is off (#9319).
+      reason?: M365DisabledReason;
     };
 
 /** One plain sentence per executor failure code. Never echoes Graph error detail. */
@@ -145,11 +148,13 @@ export async function executeM365WriteActionByOrg(
       });
     }
   }
-  if (!isM365GraphActionsEnabledForOrg(orgId)) {
+  const availability = m365GraphActionsAvailability(orgId);
+  if (availability !== 'enabled') {
     return {
       ok: false,
       code: 'tools_disabled',
-      message: 'Microsoft 365 Graph actions are not enabled for this organization.',
+      reason: availability,
+      message: m365ToolsDisabledMessage(availability),
     };
   }
 

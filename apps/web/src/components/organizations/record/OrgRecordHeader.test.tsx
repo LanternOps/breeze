@@ -13,6 +13,7 @@ vi.mock('@/lib/permissions', () => ({
   usePermissions: () => ({ permissions: [], can: (r: string, a: string) => granted.has(`${r}:${a}`) }),
 }));
 import OrgRecordHeader from './OrgRecordHeader';
+import { installAstroClientRouterStandIn } from '../../../__tests__/astroClientRouterStandIn';
 import type { OrgRecordOrg, OrgSummary } from './orgRecordFetch';
 
 const ORG: OrgRecordOrg = {
@@ -73,6 +74,45 @@ describe('OrgRecordHeader', () => {
     const empty = screen.getByTestId('org-record-no-primary-contact');
     expect(empty.textContent).toBe('No primary contact · Add contact');
     expect(screen.getByTestId('org-record-primary-contact-link').getAttribute('href')).toBe('#contacts');
+  });
+
+  it('shows the site-level primary instead of "No primary contact" (#9317)', () => {
+    const sp = (id: string, name: string, siteName: string) => ({
+      id, name, email: `${id}@acme.test`, phone: null, siteId: `s-${id}`, siteName,
+    });
+    renderHeader({
+      summary: { ...SUMMARY, contacts: { count: 2, primary: null, sitePrimaries: [sp('a', 'Sam Site', 'HQ'), sp('b', 'Pat Branch', 'Annex')] } },
+    });
+    const el = screen.getByTestId('org-record-site-primary-contact');
+    expect(el.textContent).toContain('Sam Site');
+    expect(el.textContent).toContain('HQ');
+    expect(el.textContent).toContain('+1 more');
+    expect(el.textContent).toContain('No org-level primary contact');
+    expect(screen.queryByText('No primary contact')).toBeNull();
+    expect(screen.queryByTestId('org-record-no-primary-contact')).toBeNull();
+    expect(screen.getByTestId('org-record-primary-contact-link').getAttribute('href')).toBe('#contacts');
+  });
+
+  it('single site primary: phone link, no "+N more", and the org primary wins when both exist (#9317)', () => {
+    const one = { id: 'a', name: 'Sam Site', email: 'sam@acme.test', phone: '555-0100', siteId: 's-a', siteName: 'HQ' };
+    renderHeader({ summary: { ...SUMMARY, contacts: { count: 1, primary: null, sitePrimaries: [one] } } });
+    const el = screen.getByTestId('org-record-site-primary-contact');
+    expect(el.textContent).not.toContain('more');
+    expect(screen.getByRole('link', { name: /555-0100/ }).getAttribute('href')).toBe('tel:555-0100');
+    expect(screen.getByRole('link', { name: /sam@acme.test/ }).getAttribute('href')).toBe('mailto:sam@acme.test');
+  });
+
+  it('org primary takes precedence over site primaries; empty sitePrimaries falls back to the empty state (#9317)', () => {
+    const one = { id: 'a', name: 'Sam Site', email: null, phone: null, siteId: 's-a', siteName: 'HQ' };
+    const { unmount } = renderHeader({
+      summary: { ...SUMMARY, contacts: { count: 2, primary: SUMMARY.contacts!.primary, sitePrimaries: [one] } },
+    });
+    expect(screen.getByTestId('org-record-primary-contact')).toBeTruthy();
+    expect(screen.queryByTestId('org-record-site-primary-contact')).toBeNull();
+    unmount();
+    renderHeader({ summary: { ...SUMMARY, contacts: { count: 0, primary: null, sitePrimaries: [] } } });
+    expect(screen.getByTestId('org-record-no-primary-contact')).toBeTruthy();
+    expect(screen.queryByTestId('org-record-site-primary-contact')).toBeNull();
   });
 
   it('stays quiet about contacts while the summary is still null', () => {
@@ -192,6 +232,30 @@ describe('OrgRecordHeader', () => {
       expect(screen.getByTestId(id).className, id).toMatch(/\bh-9\b/);
     }
     granted.clear();
+  });
+});
+
+describe('OrgRecordHeader - primary-contact links switch the tab (#9337)', () => {
+  it.each([
+    ['no primary at all', { contacts: { count: 0, primary: null } }],
+    ['site-level primaries only', { contacts: { count: 1, primary: null, sitePrimaries: [{ id: 'a', name: 'Sam', email: null, phone: null, siteId: 's', siteName: 'HQ' }] } }],
+  ])('%s: clicking fires hashchange to #contacts even with the Astro router claiming anchors', async (_n, patch) => {
+    const router = installAstroClientRouterStandIn();
+    window.location.hash = '';
+    try {
+      renderHeader({ summary: { ...SUMMARY, ...patch } as OrgSummary });
+      const changed = new Promise<string>((resolve) => {
+        window.addEventListener('hashchange', (e) => {
+          if ((e as HashChangeEvent).newURL.endsWith('#contacts')) resolve('ok');
+        }, { once: false });
+      });
+      await userEvent.click(screen.getByTestId('org-record-primary-contact-link'));
+      expect(window.location.hash).toBe('#contacts');
+      await expect(changed).resolves.toBe('ok');
+    } finally {
+      router.uninstall();
+      window.location.hash = '';
+    }
   });
 });
 

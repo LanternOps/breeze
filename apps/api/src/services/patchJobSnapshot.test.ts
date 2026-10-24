@@ -8,9 +8,6 @@ function makePolicyLocal(overrides: {
   return {
     settings: {
       sources: ['os'],
-      autoApprove: false,
-      autoApproveSeverities: [],
-      autoApproveDeferralDays: 0,
       ...overrides.settings,
     },
     ring: {
@@ -33,9 +30,6 @@ describe('buildPatchesSnapshot', () => {
     const snapshot = buildPatchesSnapshot(makePolicyLocal({
       settings: {
         sources: ['os', 'third_party'],
-        autoApprove: true,
-        autoApproveSeverities: ['critical', 'important'],
-        autoApproveDeferralDays: 7,
       },
       ring: {
         appRules: [
@@ -53,15 +47,6 @@ describe('buildPatchesSnapshot', () => {
       excludeCategories: [],
       autoApprove: { security: true },
       sources: ['os', 'third_party'],
-      policyAutoApprove: {
-        enabled: true,
-        severities: ['critical', 'important'],
-        deferralDays: 7,
-      },
-      apps: [
-        { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
-        { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
-      ],
       ringAppRules: [
         { source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' },
         { source: 'custom', packageId: 'corp-tool', action: 'pin', pinnedVersion: '1.2.3' },
@@ -73,54 +58,26 @@ describe('buildPatchesSnapshot', () => {
     });
   });
 
-  // #8186 W02: the ring owns the rules. The legacy `apps` key mirrors them so
-  // an executor that predates `ringAppRules` (rolling deploy) still enforces
-  // them; the policy's own inline list is not snapshotted at all.
-  it('legacy apps key mirrors ring rules', () => {
+  // #8188 W04: every supported executor reads `ringAppRules`, so the legacy
+  // `apps` mirror and the inert `policyAutoApprove` block are no longer
+  // written. A stale policy-level value on the loaded settings never reaches
+  // the snapshot.
+  it('writes neither the legacy apps key nor policyAutoApprove', () => {
     const ringRules = [{ source: 'third_party', packageId: 'Mozilla.Firefox', action: 'block' }] as const;
-    const policyLocal = {
-      ...makePolicyLocal({ ring: { appRules: [...ringRules] } }),
-    };
-    // A loaded policy still carries its stale inline list until W04 strips it.
-    (policyLocal.settings as Record<string, unknown>).apps = [{ source: 'custom', packageId: 'corp-tool', action: 'block' }];
+    const policyLocal = makePolicyLocal({ ring: { appRules: [...ringRules] } });
+    Object.assign(policyLocal.settings as Record<string, unknown>, {
+      apps: [{ source: 'custom', packageId: 'corp-tool', action: 'block' }],
+      autoApprove: true,
+      autoApproveSeverities: ['critical'],
+      autoApproveDeferralDays: 7,
+    });
 
     const snapshot = buildPatchesSnapshot(policyLocal);
 
-    expect(snapshot.apps).toEqual(snapshot.ringAppRules);
+    expect(snapshot).not.toHaveProperty('apps');
+    expect(snapshot).not.toHaveProperty('policyAutoApprove');
     expect(snapshot.ringAppRules).toEqual(ringRules);
     expect(JSON.stringify(snapshot)).not.toContain('corp-tool');
-  });
-
-  it('maps policyAutoApprove from settings.autoApprove/autoApproveSeverities/autoApproveDeferralDays', () => {
-    const snapshot = buildPatchesSnapshot(makePolicyLocal({
-      settings: {
-        autoApprove: true,
-        autoApproveSeverities: ['moderate'],
-        autoApproveDeferralDays: 14,
-      },
-    }));
-
-    expect(snapshot.policyAutoApprove).toEqual({
-      enabled: true,
-      severities: ['moderate'],
-      deferralDays: 14,
-    });
-  });
-
-  it('falls back to schema defaults for legacy settings missing auto-approve fields', () => {
-    // Legacy stored settings predate these fields — the fallbacks mirror the
-    // patchInlineSettingsSchema defaults and are deliberate.
-    const snapshot = buildPatchesSnapshot({
-      settings: { sources: ['os'] },
-      ring: makePolicyLocal().ring,
-    });
-
-    expect(snapshot.policyAutoApprove).toEqual({
-      enabled: false,
-      severities: [],
-      deferralDays: 0,
-    });
-    expect(snapshot.apps).toEqual([]);
   });
 
   it('carries ring category include/exclude filters into the snapshot (#2117)', () => {

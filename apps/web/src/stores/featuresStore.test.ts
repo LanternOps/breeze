@@ -16,7 +16,7 @@ describe('featuresStore', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     useFeaturesStore.setState({
-      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false },
+      features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false },
       cfAccessLogin: { enabled: false },
       registration: { enabled: false },
       softwarePackages: { uploadsEnabled: true },
@@ -52,7 +52,7 @@ describe('featuresStore', () => {
       res({ features: { billing: true, support: true } })
     );
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: true, support: true, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
   });
 
@@ -72,7 +72,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockRejectedValueOnce(new Error('network'));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -82,7 +82,7 @@ describe('featuresStore', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(res({}, false, 500));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
     expect(useFeaturesStore.getState().loaded).toBe(true);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
@@ -104,6 +104,12 @@ describe('featuresStore', () => {
     expect(useFeaturesStore.getState().features.toolSources).toBe(true);
   });
 
+  it('reads features.flows from /config and defaults it closed', async () => {
+    fetchMock.mockResolvedValueOnce(res({ features: { flows: true } }));
+    await useFeaturesStore.getState().load();
+    expect(useFeaturesStore.getState().features.flows).toBe(true);
+  });
+
   it.each([true, false, undefined])('reads sweep act capability %s and defaults closed', async (enabled) => {
     fetchMock.mockResolvedValueOnce(res({ features: { aiAgentsSweepAct: enabled } }));
     await useFeaturesStore.getState().load();
@@ -113,7 +119,7 @@ describe('featuresStore', () => {
   it('coerces missing fields to false', async () => {
     fetchMock.mockResolvedValueOnce(res({}));
     await useFeaturesStore.getState().load();
-    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, preAssignmentEnrollment: false, callerVerification: false });
+    expect(useFeaturesStore.getState().features).toEqual({ billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false, flows: false, preAssignmentEnrollment: false, callerVerification: false });
   });
 });
 

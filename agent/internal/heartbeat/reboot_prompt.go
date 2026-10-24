@@ -106,6 +106,11 @@ func chainedRebootPrompt(helper, local patching.PromptFunc) patching.PromptFunc 
 // to before this wave. The daemon-drawn notification is added only when no
 // helper session took the broadcast — otherwise a future Linux helper would put
 // the same warning on screen twice.
+//
+// That skip also bypasses DesktopNotify's wall fallback (#9181). Harmless while
+// no Linux helper ships, but a Linux helper that holds a notify session and
+// fails to render would silence the headless fallback; if one ever ships, the
+// broadcast needs to report delivery the way the prompt seam does.
 func chainedRebootNotify(broadcast, local patching.NotifyFunc, helperPresent func() bool) patching.NotifyFunc {
 	return func(title, body, urgency string) {
 		if broadcast != nil {

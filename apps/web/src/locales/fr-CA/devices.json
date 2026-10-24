@@ -441,6 +441,14 @@
         "message": "Installe Homebrew sous le compte de l’utilisateur actuellement connecté, à partir d’une copie figée et vérifiée par somme de contrôle de l’installateur officiel. Nécessite une session console avec des droits d’administrateur et une autorisation sudo active ou sans mot de passe; sinon, l’installation échoue et l’erreur est rapportée.",
         "confirm": "Installer Homebrew"
       },
+      "restartAgent": {
+        "title": "Redémarrer l’agent Breeze?",
+        "message": "Demander au watchdog de {{hostname}} de redémarrer le service de l’agent Breeze. Le watchdog s’en charge à sa prochaine connexion, généralement en moins d’une minute, et ne se connecte que pendant que l’agent est arrêté.",
+        "watchdogLastSeen": "Dernier signal du watchdog : {{date}}.",
+        "watchdogStale": "Le dernier signal du watchdog date du {{date}}, trop ancien pour prendre la demande; elle sera refusée tant qu’il ne se reconnecte pas.",
+        "watchdogNeverSeen": "Le watchdog ne s’est pas encore manifesté; la demande sera refusée tant qu’il ne se connecte pas.",
+        "confirm": "Redémarrer l’agent"
+      },
       "bulkDeleteManual": {
         "title": "Supprimer {{count}} actifs manuels?",
         "message": "Cette action supprime définitivement les actifs manuels sélectionnés. Cette opération est irréversible.",
@@ -473,6 +481,10 @@
     "reRunAgentInventoryCollectorsSo": "Collecter l’inventaire maintenant",
     "refresh": "Actualiser",
     "reboot": "Redémarrer",
+    "forceRebootNow": "Forcer le redémarrage maintenant",
+    "forceRebootHint": "Redémarre immédiatement et ferme les applications en cours. Le travail non enregistré est perdu.",
+    "forceRebootAgentUpgradeRequired": "Mise à jour de l'agent requise : le redémarrage forcé nécessite l'agent {{version}} ou une version ultérieure",
+    "forceRebootQueued": "Redémarrage forcé mis en file d'attente pour {{hostname}}. Il s'exécute dès que rien d'autre ne s'exécute sur l'appareil.",
     "wake": "Veillée",
     "rebootToSafeMode": "Redémarrer en mode sans échec",
     "deploySoftware": "Déployer un logiciel",
@@ -492,7 +504,8 @@
       "liveSessionOnly": "{{reason}} — le terminal distant nécessite un agent connecté. Les commandes en file d'attente s'exécutent tout de même à la reconnexion.",
       "allCommands": "{{reason}} — aucun agent n'est disponible pour exécuter des commandes."
     },
-    "installHomebrew": "Installer Homebrew"
+    "installHomebrew": "Installer Homebrew",
+    "restartAgent": "Redémarrer l’agent"
   },
   "deviceActivityFeed": {
     "activity": "Activité",
@@ -868,7 +881,12 @@
     "devices": "Dispositifs",
     "devicesCrumbOtherOrg": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail reste {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Ouvre l’onglet Appareils de {{deviceOrg}}; votre organisation de travail ne change pas",
-    "switchOrgFailed": "Impossible de changer d’organisation. Réessayez."
+    "switchOrgFailed": "Impossible de changer d’organisation. Réessayez.",
+    "restartAgent": {
+      "queued": "Redémarrage de l’agent demandé pour {{hostname}}. Le watchdog l’exécutera à sa prochaine connexion.",
+      "alreadyPending": "Un redémarrage de l’agent de {{hostname}} attend déjà le watchdog.",
+      "failed": "Impossible de demander le redémarrage de l’agent pour {{hostname}}"
+    }
   },
   "deviceDetails": {
     "overview": "Aperçu",
@@ -983,7 +1001,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne coupera l’appareil du réseau jusqu’à ce que vous leviez l’isolement. Les séances actives diminueront.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne rétablira la connectivité réseau de cet appareil.",
     "cancel": "Annuler",
-    "isolate": "Isoler"
+    "isolate": "Isoler",
+    "managedSecurityAgents": "Agents de sécurité gérés",
+    "since": "Depuis le {{date}}"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Chargement de la configuration effective...",
@@ -1015,7 +1035,9 @@
       "label": "approbation",
       "byRing": "définie par l'anneau de mise à jour lié",
       "manualOnly": "approbations manuelles seulement (aucun anneau de mise à jour lié)"
-    }
+    },
+    "chainResolutionRule": "Le niveau décide d’abord : Appareil l’emporte sur Groupe d’appareils, puis Site, Organisation et Partenaire. La priorité (le plus petit nombre l’emporte) ne départage que les politiques d’un même niveau. Les fonctionnalités barrées ont été remplacées par une politique plus proche.",
+    "featureOverriddenBy": "Remplacée par {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Impossible de récupérer les activités",
@@ -1340,6 +1362,7 @@
     "drive": "Conduision",
     "size": "Taille",
     "used": "Utilisés",
+    "usedPercent": "% utilisé",
     "health": "Santé",
     "noDiskInventoryReported": "Aucun inventaire de disque signalé.",
     "networkAdapters": "Adaptateurs réseau",
@@ -1369,8 +1392,6 @@
     "ratedSpeed": "nominale {{speed}}"
   },
   "deviceInfoTab": {
-    "logsSilent": "Cet appareil est en ligne mais n'a envoyé aucun journal depuis {{since}}. L'envoi des journaux est peut-être désactivé, en échec, ou n'atteint pas le serveur — vérifiez la configuration d'envoi des journaux de l'agent sur l'appareil.",
-    "logsSilentNeverShipped": "Cet appareil est en ligne mais n'a jamais envoyé de journal. L'envoi des journaux est peut-être désactivé, en échec, ou n'atteint pas le serveur — vérifiez la configuration d'envoi des journaux de l'agent sur l'appareil.",
     "updateStuck": "La mise à jour de l'agent vers {{target}} semble bloquée : {{attempts}} tentatives depuis {{since}} et l'appareil est toujours sur son ancienne version. Le programme de mise à jour réessaie à chaque heartbeat; vérifiez les journaux de l'agent, ou l'appareil lui-même s'il n'en envoie aucun.",
     "updateOfferWithheld": "Les offres de mise à jour sont retenues pour cet appareil (depuis {{since}}) : on ne peut pas confirmer que la version de son agent accepte l'édition offerte par ce serveur, il reste donc à sa version actuelle. Récupérez-le avec un programme d'installation de l'édition offerte ou une version de l'agent qui signale son édition.",
     "helperInstallIssue": {
@@ -1765,8 +1786,6 @@
       "manual": "Manuel"
     },
     "updateWithheld": "Mises à jour retenues",
-    "logsSilent": "Journaux silencieux",
-    "logsSilentTooltip": "Cet appareil est en ligne mais n'a envoyé aucun journal depuis plus de 6 heures. L'envoi des journaux est peut-être désactivé, en échec, ou n'atteint pas le serveur.",
     "updateStuck": "Mise à jour bloquée",
     "updateStuckTooltip": "Cet appareil réessaie depuis plus d'une heure sa mise à jour de l'agent vers {{target}} sans aboutir.",
     "updateWithheldTooltip": "Le serveur n'offre pas de mises à jour à cet appareil, car on ne peut pas confirmer que la version de son agent accepte l'édition offerte. Il reste à sa version actuelle jusqu'à sa récupération.",
@@ -1931,6 +1950,7 @@
     "title": "Connexions réseau actives"
   },
   "devicePatchStatusTab": {
+    "released": "Publié le {{date}}",
     "compliance": {
       "compliant": "{{percent}} % conforme",
       "description": "Mises à jour en attente vs installées",
@@ -2054,6 +2074,7 @@
       "excludedCategoryTitle": "L'anneau de mise à jour {{ring}} exclut la catégorie de ce correctif, alors les exécutions planifiées l'ignorent.",
       "excludedAppRuleTitle": "Une règle de blocage ou d'épinglage d'application de l'anneau de mise à jour lié retient ce correctif, alors les exécutions planifiées l'ignorent.",
       "excludedRingReferenceTitle": "Retenu : la politique de correctifs de cet appareil est liée à un anneau de mise à jour qui n'existe plus ou qui n'est pas offert à ce partenaire. Corrigez l'anneau de mise à jour de la politique pour reprendre l'application des correctifs.",
+      "excludedDeclinedTitle": "Refusé : ce correctif a été explicitement refusé, l'approbation automatique de l'anneau ne l'installera donc pas. Approuvez-le de nouveau pour l'autoriser.",
       "pending": "Approbation en attente",
       "needsApprovalRingTitle": "L'anneau de mise à jour {{ring}} n'approuve pas automatiquement ce correctif. Approuvez-le manuellement pour l'installer.",
       "needsApprovalNoRingTitle": "Aucun anneau de mise à jour n'est lié à la politique de correctifs de cet appareil, alors ce correctif ne s'installe qu'après une approbation manuelle.",
@@ -2478,7 +2499,7 @@
     "showFindings": "Afficher les constats",
     "stats": {
       "accepted": "Accepté",
-      "kev": "Kev",
+      "kev": "Exploitée connue",
       "mitigated": "Atténué",
       "open": "Ouvrir",
       "patchReady": "Prêt à la mise à jour",
@@ -2496,9 +2517,9 @@
     "statusLabel": "Étiquette de statut",
     "table": {
       "actions": "Actions",
-      "cve": "Cve",
+      "cve": "CVE",
       "cvss": "CVSS",
-      "kev": "Kev",
+      "kev": "KEV",
       "risk": "Risque",
       "severity": "Gravité",
       "status": "Statut"
@@ -2681,7 +2702,7 @@
       "message_one": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec {{count}} appareil restant ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion.",
       "message_other": "{{skipped}} des {{total}} appareils sélectionnés sont retirés et seront ignorés — ils n’ont plus d’agent géré. Continuer avec les {{count}} appareils restants ? Ceux qui sont hors ligne l’exécuteront à leur prochaine connexion."
     },
-    "importFromRmm": "Importer depuis un autre RMM",
+    "importFromRmm": "Importer des champs personnalisés depuis un autre RMM",
     "hiddenNonAgentNotice": "{{count}} {{class}} masqués — {{fields}} s'applique uniquement aux appareils avec agent.",
     "hiddenNonAgentClassLabel": {
       "network": "appareils réseau",
@@ -3015,6 +3036,29 @@
     "submitting": "Traitement…",
     "cancel": "Annuler",
     "genericError": "Impossible de démarrer le mode maintenance."
+  },
+  "forceRebootDialog": {
+    "title": "Forcer le redémarrage maintenant",
+    "description": "Redémarre {{hostname}} immédiatement et ferme les applications en cours, au lieu de les attendre.",
+    "hostnameLabel": "Appareil",
+    "osLabel": "Système d'exploitation",
+    "commandLabel": "Commande",
+    "noEffectOnOs": "Sous {{os}}, un redémarrage n'attend jamais les applications : c'est donc un redémarrage immédiat normal.",
+    "warning": "Le travail non enregistré dans les applications ouvertes sur cet appareil sera perdu. Le redémarrage attend toujours les commandes déjà en cours sur l'appareil.",
+    "typeHostname": "Tapez {{hostname}} pour confirmer",
+    "stepUpHeading": "Confirmez votre identité",
+    "stepUpPasskeyNote": "Vous confirmerez avec votre clé d'accès.",
+    "stepUpCodeLabel": "Code d'authentification",
+    "noStepUpFactor": "Ajoutez une application d'authentification ou une clé d'accès à votre compte avant de forcer le redémarrage d'un appareil.",
+    "mfaRequired": "Terminez d'abord la connexion AMF, puis réessayez.",
+    "stepUpFailed": "La vérification n'a pas abouti. Entrez un nouveau code et réessayez.",
+    "deviceOffline": "Cet appareil n'est pas en ligne. Un redémarrage forcé n'est envoyé qu'à un appareil en ligne en ce moment.",
+    "agentUpgradeRequired": "L'agent de cet appareil est trop ancien pour un redémarrage forcé. Mettez d'abord l'agent à jour.",
+    "genericError": "Impossible d'envoyer le redémarrage forcé.",
+    "cancel": "Annuler",
+    "confirm": "Forcer le redémarrage maintenant",
+    "submitStepUp": "Vérifier et forcer le redémarrage",
+    "submitting": "Envoi…"
   },
   "moveDeviceOrgDialog": {
     "title": "Déplacer vers une autre organisation",
@@ -3441,6 +3485,8 @@
     "health": {
       "empty": {
         "title": "Aucune surveillance n’est encore en place",
+        "titleWithCheck": "Aucune donnée de santé SNMP",
+        "descriptionWithCheck": "Un contrôle réseau est actif pour cet appareil : la joignabilité reste donc suivie. Activez SNMP pour collecter aussi des données de santé.",
         "action": "Configurer la surveillance",
         "benefit": {
           "printer": "Activez SNMP pour afficher les niveaux de toner et d’encre, les bacs à papier, les compteurs de pages et les erreurs de l’imprimante.",

@@ -26,6 +26,38 @@ const meaningfulMirror = {
   apps: [appRule],
 };
 
+/**
+ * #8188 (W04): the exact key set of an exported patch feature. The policy-level
+ * approval keys (autoApprove, autoApproveSeverities, autoApproveDeferralDays,
+ * apps) are retired — approval and per-app rules live on the Update Ring — so
+ * the SQL projection, PATCH_NORMALIZED_MATERIAL_KEYS and the HTTP DTO must all
+ * carry exactly these keys. Every value comes from the relational
+ * config_policy_patch_settings row; the inline mirror contributes nothing.
+ */
+const EXPECTED_PATCH_EXPORT_KEYS = [
+  'exclusiveWindowsUpdate',
+  'offlineBehavior',
+  'rebootAllowDeferral',
+  'rebootDeferralMinutes',
+  'rebootDelayMinutes',
+  'rebootMaxDeferrals',
+  'rebootPolicy',
+  'rebootPromptBody',
+  'rebootPromptButton',
+  'rebootPromptTitle',
+  'scheduleDayOfMonth',
+  'scheduleDayOfWeek',
+  'scheduleFrequency',
+  'scheduleTime',
+  'sources',
+].sort();
+
+const RETIRED_PATCH_EXPORT_KEYS = ['apps', 'autoApprove', 'autoApproveSeverities', 'autoApproveDeferralDays'];
+
+// Mirror corpus: before #8188 these cases pinned SQL/TS parity of the mirror's
+// apps/deferral salvage. The projection no longer reads the mirror for patch,
+// so they now pin that no mirror shape — valid, invalid, oversized, carrying
+// retired or forbidden keys — reaches the export or changes its key set.
 const parityCases: Array<{ name: string; mirror: unknown; serializedMirror?: string }> = [
   { name: 'null uses schema defaults', mirror: null },
   { name: 'empty object uses schema defaults', mirror: {} },
@@ -368,7 +400,7 @@ const parityCases: Array<{ name: string; mirror: unknown; serializedMirror?: str
   },
 ];
 
-runDb('final partner HTTP export matches tryNormalizePatchInlineSettings without leaking the raw mirror', async () => {
+runDb('patch export carries exactly the relational keys, never the retired approval keys or the raw mirror', async () => {
   const db = getTestDb();
   const partner = await createPartner();
   const org = await createOrganization({ partnerId: partner.id });
@@ -394,6 +426,10 @@ runDb('final partner HTTP export matches tryNormalizePatchInlineSettings without
     VALUES (${link.id}::uuid)
   `);
 
+  // The relational row holds column defaults, which equal the schema defaults.
+  const expectedSettings = tryNormalizePatchInlineSettings({}).settings;
+  expect(Object.keys(expectedSettings).sort()).toEqual(EXPECTED_PATCH_EXPORT_KEYS);
+
   const app = configurationExportApp(partner.id, org.id);
 
   for (const testCase of parityCases) {
@@ -403,26 +439,34 @@ runDb('final partner HTTP export matches tryNormalizePatchInlineSettings without
       SET inline_settings = ${serialized}::jsonb
       WHERE id = ${link.id}::uuid
     `);
+
+    // The SQL projection itself: exact key membership.
+    const projected = await db.execute(sql`
+      SELECT public.breeze_partner_export_policy_settings_pre_patch(
+        ${link.id}::uuid, 'patch', ${serialized}::jsonb
+      ) AS settings
+    `) as unknown as Array<{ settings: Record<string, unknown> }>;
+    expect.soft(Object.keys(projected[0]!.settings).sort(), `${testCase.name}: SQL projection keys`)
+      .toEqual(EXPECTED_PATCH_EXPORT_KEYS);
+
     const response = await app.request('/configuration-policies');
     expect(response.status, `${testCase.name}: ${await response.clone().text()}`).toBe(200);
     const body = await response.json() as {
       data: Array<{ features: Array<{ type: string; settings: Record<string, unknown> }> }>;
+      blocked?: unknown[];
     };
+    // A key-set mismatch between the projection and
+    // PATCH_NORMALIZED_MATERIAL_KEYS fails the whole policy closed.
+    expect.soft(body.blocked ?? [], `${testCase.name}: blocked`).toEqual([]);
     const actual = body.data[0]?.features.find((feature) => feature.type === 'patch')?.settings;
-    const expected = tryNormalizePatchInlineSettings(JSON.parse(serialized)).settings;
-    expect.soft(
-      {
-        autoApproveDeferralDays: actual?.autoApproveDeferralDays,
-        apps: actual?.apps,
-      },
-      testCase.name,
-    ).toEqual({
-      autoApproveDeferralDays: expected.autoApproveDeferralDays,
-      apps: expected.apps,
-    });
+    expect.soft(Object.keys(actual ?? {}).sort(), `${testCase.name}: DTO keys`).toEqual(EXPECTED_PATCH_EXPORT_KEYS);
+    expect.soft(actual, `${testCase.name}: DTO values`).toEqual(expectedSettings);
     const dto = JSON.stringify(body);
+    for (const key of RETIRED_PATCH_EXPORT_KEYS) {
+      expect.soft(dto, `${testCase.name}: retired key ${key}`).not.toContain(`"${key}"`);
+    }
     expect.soft(dto, `${testCase.name}: raw mirror key`).not.toContain('__breezePatchInlineMirror');
-    expect.soft(dto, `${testCase.name}: raw forbidden values`).not.toMatch(/hunter2|sk-live-never-export/u);
+    expect.soft(dto, `${testCase.name}: raw forbidden values`).not.toMatch(/hunter2|sk-live-never-export|Example\.App/u);
   }
 });
 

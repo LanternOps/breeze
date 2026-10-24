@@ -561,13 +561,15 @@ const renderData: ContractBlockRenderData[] = [{
   bodyHtml: '<p>Effective {{dates.effective}}.</p>', fileData: null,
   versionSha256: 'a'.repeat(64), declaredVariables: [], templateName: 'MSA', versionNumber: 1,
 }];
+// The quote_acceptances insert's DB-default signed_at, as `.returning()` yields it.
+const ACC_SIGNED_AT = new Date('2026-07-16T12:34:56Z');
 
 function queueContractAcceptPath(partnerSettings: Record<string, unknown> = {}) {
   queueResult([contractQuote]);              // 1 select quote FOR UPDATE
   queueResult([contractBlock]);              // 2 blocks
   queueResult([monthlyLine]);                // 3 lines
   queueResult([{ prefix: 'INV', termsDays: 30, settings: partnerSettings }]); // 4 partners select
-  queueResult([{ id: 'acc1' }]);             // 5 quote_acceptances insert
+  queueResult([{ id: 'acc1', signedAt: ACC_SIGNED_AT }]); // 5 quote_acceptances insert (DB-returned signed_at)
   queueResult([{ id: 'inv1' }]);             // 6 invoices insert
   queueResult([]);                           // 7 invoices update (issueFields)
   queueResult([]);                           // 8 quotes update -> converted
@@ -618,6 +620,22 @@ describe('acceptQuote contract document snapshot', () => {
     // an unstamped quote falls back to the partner language, 'en' here.
     expect((acceptanceValues as { renderLocale?: string }).renderLocale).toBe('en');
     expect(snapshotArgs[6]).toBe('en'); // createExecutedDocuments renders under the same locale
+    // #8865 W1b: the evidence snapshot (arg index 7) mirrors the acceptance row,
+    // signed_at taken from the DB-returned value, hash = the acceptance hash.
+    expect(snapshotArgs[7]).toMatchObject({
+      signerName: baseParams.signerName,
+      signerEmail: baseParams.signerEmail,
+      signerIp: baseParams.ipAddress,
+      signerUserAgent: baseParams.userAgent,
+      signedAt: ACC_SIGNED_AT,
+      acceptanceOrigin: 'customer',
+      acceptanceMethod: 'typed-signature',
+      acceptanceReference: null,
+      recordedByUserId: null,
+      contentHashVersion: 2,
+      acceptanceRenderLocale: 'en',
+    });
+    expect(snapshotArgs[7].contentSha256).toBe(acceptanceValues.quoteSha256);
     // And that hash genuinely differs from the no-contract hash (proves folding).
     const withoutContracts = computeQuoteSha256(contractQuote as any, [contractBlock] as any, [monthlyLine] as any, []);
     expect(acceptanceValues.quoteSha256).not.toBe(withoutContracts);
@@ -718,5 +736,86 @@ describe('acceptQuote superseded public-link guard', () => {
 
     expect(thrown).toMatchObject({ status: 410, code: 'QUOTE_SUPERSEDED' });
     expect(thrown).not.toMatchObject({ status: 409, code: 'INVALID_STATE' });
+  });
+});
+
+// #9221: the accepted quote's one-time invoice lines carry the quote line's
+// internal unit cost as the invoice line's cost_basis snapshot, so per-client
+// profitability (which folds invoice_lines.cost_basis) has a cost for
+// quote-sourced lines. Forward-only — nothing here touches historical rows.
+describe('acceptQuote quote-line unit cost -> invoice-line cost basis (#9221)', () => {
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+  });
+
+  // .values call order (see queueAcceptHappyPath): [0] quote_acceptances,
+  // [1] invoices, [2] invoice_lines.
+  const invoiceLineValues = () =>
+    (db as unknown as Chain).values.mock.calls[2]![0] as Record<string, unknown>;
+  const acceptanceValues = () =>
+    (db as unknown as Chain).values.mock.calls[0]![0] as { quoteSha256: string };
+
+  it('stamps quote_lines.unit_cost onto invoice_lines.cost_basis', async () => {
+    queueAcceptHappyPath({}, { unitCost: '612.40' });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toMatchObject({ unitPrice: '1000.00', costBasis: '612.40' });
+  });
+
+  it('keeps an explicit zero cost as a known 0.00, not unknown', async () => {
+    queueAcceptHappyPath({}, { unitCost: '0.00' });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toHaveProperty('costBasis', '0.00');
+  });
+
+  it('writes costBasis null when the quote line has no unit cost (unknown, never zero)', async () => {
+    queueAcceptHappyPath({}, { unitCost: null });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toHaveProperty('costBasis', null);
+  });
+
+  it('writes costBasis null when the quote line omits unitCost entirely', async () => {
+    const { line } = queueAcceptHappyPath();
+    delete (line as Record<string, unknown>).unitCost;
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toHaveProperty('costBasis', null);
+  });
+
+  it('drops a cost not representable at the invoice currency minor unit (snapshotCost rule)', async () => {
+    // JPY has no minor unit: a '12.50' cost cannot be stored exactly, so it is a
+    // gap (null) rather than a silently rounded figure.
+    queueAcceptHappyPath({ currencyCode: 'JPY' }, { unitPrice: '1000', unitCost: '12.50' });
+
+    await acceptQuote(baseParams);
+
+    expect(invoiceLineValues()).toHaveProperty('costBasis', null);
+  });
+
+  it('cost basis is NOT an acceptance-hash input: the recorded quoteSha256 is identical with and without a unit cost', async () => {
+    queueAcceptHappyPath({}, { unitCost: null });
+    await acceptQuote(baseParams);
+    const withoutCost = acceptanceValues().quoteSha256;
+
+    results.length = 0;
+    vi.clearAllMocks();
+    stagePax8OrderFromQuoteMock.mockResolvedValue({ orderId: null, lineCount: 0 });
+
+    queueAcceptHappyPath({}, { unitCost: '612.40' });
+    await acceptQuote(baseParams);
+    const withCost = acceptanceValues().quoteSha256;
+
+    expect(withoutCost).toMatch(/^[0-9a-f]{64}$/);
+    expect(withCost).toBe(withoutCost);
+    // ...and the cost did land on the invoice line in the second run.
+    expect(invoiceLineValues()).toHaveProperty('costBasis', '612.40');
   });
 });

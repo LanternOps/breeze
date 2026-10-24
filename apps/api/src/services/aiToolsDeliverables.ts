@@ -42,7 +42,7 @@
 import { z } from 'zod';
 import {
   createDeliverableSchema, updateDeliverableSchema, deliverOccurrenceSchema, waiveOccurrenceSchema,
-  rescheduleOccurrenceSchema, reportRunEvidenceRefSchema, createKeyDateSchema, updateKeyDateSchema,
+  rescheduleOccurrenceSchema, reportRunEvidenceRefSchema, documentEvidenceRefSchema, createKeyDateSchema, updateKeyDateSchema,
   applyTemplateSetSchema,
   updateDocumentSchema, type OrgDocumentCategory,
 } from '@breeze/shared';
@@ -51,7 +51,7 @@ import type { AiTool, AiToolTier } from './aiTools';
 import {
   listDeliverables, createDeliverable, updateDeliverable, deactivateDeliverable,
   listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence,
-  rescheduleOccurrence, addEvidence, DeliverableServiceError, type DeliverableActor,
+  rescheduleOccurrence, addEvidence, DeliverableServiceError, type DeliverableActor, type DeliverableSummary,
 } from './serviceDeliverableService';
 import { listKeyDates, createKeyDate, updateKeyDate, deleteKeyDate } from './orgKeyDateService';
 import {
@@ -59,6 +59,7 @@ import {
 } from './deliverableTemplateService';
 import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { listDocuments, supersedeDocument, updateDocument } from './orgDocumentService';
+import { pageEnvelope, pageParamSchema, readPageArgs } from './aiToolPagination';
 import { missingParamsJson, validationErrorJson, zodErrorToJson } from './aiToolValidation';
 
 export const MANAGE_DELIVERABLES_ACTIONS = [
@@ -74,7 +75,9 @@ export const MANAGE_KEY_DATES_ACTIONS = ['list', 'create', 'update', 'delete'] a
 const MANAGE_DELIVERABLES_REQUIRED: Record<(typeof MANAGE_DELIVERABLES_ACTIONS)[number], readonly string[]> = {
   create: ['orgId', 'input'], update: ['orgId', 'deliverableId', 'patch'], deactivate: ['orgId', 'deliverableId'],
   deliver: ['orgId', 'occurrenceId'], waive: ['orgId', 'occurrenceId', 'reason'], reopen: ['orgId', 'occurrenceId'],
-  reschedule: ['orgId', 'occurrenceId', 'dueAt'], link_evidence: ['orgId', 'occurrenceId', 'reportRunId'],
+  reschedule: ['orgId', 'occurrenceId', 'dueAt'],
+  // exactly one of reportRunId / documentId is enforced in the handler
+  link_evidence: ['orgId', 'occurrenceId'],
   apply_template: ['orgId', 'setId'],
 };
 const MANAGE_KEY_DATES_REQUIRED: Record<(typeof MANAGE_KEY_DATES_ACTIONS)[number], readonly string[]> = {
@@ -130,6 +133,19 @@ function toToolError(err: unknown): string {
 const unknownAction = (action: string) => JSON.stringify({ error: `Unknown action: ${action}`, code: 'VALIDATION_ERROR' });
 const optionalString = (v: unknown): string | undefined => (v == null ? undefined : String(v));
 
+const LIST_DELIVERABLES_PAGE = { defaultLimit: 15, maxLimit: 100 } as const;
+
+/** The fields a model needs to pick a deliverable; description/instructions are opt-in (includeDetails). */
+function projectDeliverable(d: DeliverableSummary, includeDetails: boolean): Record<string, unknown> {
+  return {
+    id: d.id, name: d.name, cadence: d.cadence, contractId: d.contractId, contractName: d.contractName,
+    nextDue: d.nextDue, status: d.status, openCount: d.openCount,
+    lastDelivered: d.lastDelivered === null ? null : { at: d.lastDelivered.at, late: d.lastDelivered.late },
+    portalVisible: d.portalVisible, active: d.active,
+    ...(includeDetails ? { description: d.description, instructions: d.instructions } : {}),
+  };
+}
+
 export const LIST_DELIVERABLES_TOOL: AiTool = {
   tier: 2 as AiToolTier,
   domain: 'accounts',
@@ -138,7 +154,7 @@ export const LIST_DELIVERABLES_TOOL: AiTool = {
   definition: {
     name: 'list_deliverables',
     description:
-      "List one organization’s service deliverables with cadence, next due date, last delivery and status (on_track/due_soon/late/missed/inactive). Includes recent occurrences when occurrencesFor is set. Read-only.",
+      "List one organization’s service deliverables with cadence, next due date, last delivery and status (on_track/due_soon/late/missed/inactive). Paged: follow nextCursor while hasMore. description/instructions only with includeDetails. Includes recent occurrences when occurrencesFor is set. Read-only.",
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -146,6 +162,8 @@ export const LIST_DELIVERABLES_TOOL: AiTool = {
         contractId: { type: 'string', description: 'Only deliverables attached to this contract (UUID)' },
         includeInactive: { type: 'boolean', description: 'Include deactivated deliverables (default false)' },
         occurrencesFor: { type: 'string', description: 'Also return the recent occurrences of this deliverable id (UUID)' },
+        includeDetails: { type: 'boolean', description: "Include each deliverable's description and instructions (default false)" },
+        ...pageParamSchema(LIST_DELIVERABLES_PAGE.defaultLimit, LIST_DELIVERABLES_PAGE.maxLimit),
       },
       required: ['orgId'],
     },
@@ -155,17 +173,29 @@ export const LIST_DELIVERABLES_TOOL: AiTool = {
     if (refusal) return refusal;
     const missing = missingParamsJson(input, 'list', ['orgId']);
     if (missing) return missing;
+    // `includeInactive` changes WHICH rows are listed, but pageFingerprint exempts every
+    // `include*` key as a projection flag, so it is renamed (and normalised: omitted === false)
+    // to stay in the fingerprint; a cursor replayed across it would otherwise skip/repeat rows.
+    const { includeInactive, ...rest } = input;
+    const page = readPageArgs('list_deliverables', { ...rest, inactiveRows: includeInactive === true }, LIST_DELIVERABLES_PAGE);
+    if (!page.ok) return JSON.stringify({ error: page.error, code: page.code });
     const actor = actorFromAuth(auth);
     const orgId = String(input.orgId);
     try {
-      const deliverables = await listDeliverables(orgId, {
+      const all = await listDeliverables(orgId, {
         contractId: optionalString(input.contractId),
         includeInactive: input.includeInactive === true,
       }, actor);
       const occurrences = input.occurrencesFor
         ? await listOccurrences(orgId, String(input.occurrencesFor), { limit: 24 }, actor)
         : undefined;
-      return JSON.stringify({ deliverables, showing: deliverables.length, ...(occurrences ? { occurrences } : {}) });
+      // The service returns the whole (stable, sortOrder/name) list; page it here.
+      const includeDetails = input.includeDetails === true;
+      const items = all.slice(page.offset, page.offset + page.limit).map((d) => projectDeliverable(d, includeDetails));
+      return JSON.stringify({
+        ...pageEnvelope({ key: 'deliverables', items, limit: page.limit, offset: page.offset, fingerprint: page.fingerprint, total: all.length }),
+        ...(occurrences ? { occurrences } : {}),
+      });
     } catch (err) { return toToolError(err); }
   },
 };
@@ -195,7 +225,8 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
         note: { type: 'string', description: 'Delivery note (deliver)' },
         reason: { type: 'string', description: 'Waiver reason (waive)' },
         dueAt: { type: 'string', description: 'New due date, YYYY-MM-DD (reschedule)' },
-        reportRunId: { type: 'string', description: 'Report run to attach as evidence (link_evidence)' },
+        reportRunId: { type: 'string', description: 'Report run to attach as evidence (link_evidence; exactly one of reportRunId / documentId)' },
+        documentId: { type: 'string', description: 'Org library document to attach as evidence (link_evidence; exactly one of reportRunId / documentId)' },
       },
       required: ['action'],
     },
@@ -234,9 +265,15 @@ export const MANAGE_DELIVERABLES_TOOL: AiTool = {
         case 'reschedule':
           return JSON.stringify(await rescheduleOccurrence(orgId, String(input.occurrenceId),
             rescheduleOccurrenceSchema.parse({ dueAt: input.dueAt }), actor));
-        case 'link_evidence':
-          return JSON.stringify(await addEvidence(orgId, String(input.occurrenceId),
-            reportRunEvidenceRefSchema.parse({ kind: 'report_run', reportRunId: input.reportRunId }), actor));
+        case 'link_evidence': {
+          const hasRun = input.reportRunId != null && input.reportRunId !== '';
+          const hasDoc = input.documentId != null && input.documentId !== '';
+          if (hasRun === hasDoc) return validationErrorJson('link_evidence needs exactly one of reportRunId or documentId');
+          const ref = hasDoc
+            ? documentEvidenceRefSchema.parse({ kind: 'document', documentId: input.documentId })
+            : reportRunEvidenceRefSchema.parse({ kind: 'report_run', reportRunId: input.reportRunId });
+          return JSON.stringify(await addEvidence(orgId, String(input.occurrenceId), ref, actor));
+        }
         case 'apply_template': {
           const parsed = applyTemplateSetSchema.parse({
             setId: String(input.setId),

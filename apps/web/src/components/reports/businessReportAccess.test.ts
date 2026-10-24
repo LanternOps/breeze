@@ -41,4 +41,38 @@ describe('business report card gate (#3198)', () => {
     const { result: both } = renderHook(() => useCanUseBusinessReportType());
     expect(both.current('ai_usage_by_client')).toBe(true);
   });
+
+  it('gates mrr_renewals on contracts:read alone', () => {
+    granted = new Set(['tickets:read', 'time_entries:read', 'invoices:read', 'ai_sessions:read_all']);
+    const { result: without } = renderHook(() => useCanUseBusinessReportType());
+    expect(without.current('mrr_renewals')).toBe(false);
+
+    granted = new Set(['contracts:read']);
+    const { result: held } = renderHook(() => useCanUseBusinessReportType());
+    expect(held.current('mrr_renewals')).toBe(true);
+  });
+
+  it('gates quote_win_rate on quotes:read alone', () => {
+    granted = new Set(['tickets:read', 'time_entries:read', 'invoices:read', 'ai_sessions:read_all', 'contracts:read']);
+    const { result: without } = renderHook(() => useCanUseBusinessReportType());
+    expect(without.current('quote_win_rate')).toBe(false);
+
+    granted = new Set(['quotes:read']);
+    const { result: held } = renderHook(() => useCanUseBusinessReportType());
+    expect(held.current('quote_win_rate')).toBe(true);
+  });
+
+  it('gates client_profitability on BOTH invoices:read and time_entries:read', () => {
+    granted = new Set(['invoices:read']);
+    const { result: invoicesOnly } = renderHook(() => useCanUseBusinessReportType());
+    expect(invoicesOnly.current('client_profitability')).toBe(false);
+
+    granted = new Set(['time_entries:read']);
+    const { result: timeOnly } = renderHook(() => useCanUseBusinessReportType());
+    expect(timeOnly.current('client_profitability')).toBe(false);
+
+    granted = new Set(['invoices:read', 'time_entries:read']);
+    const { result: both } = renderHook(() => useCanUseBusinessReportType());
+    expect(both.current('client_profitability')).toBe(true);
+  });
 });

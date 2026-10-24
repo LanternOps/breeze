@@ -7,8 +7,17 @@ describe('security agent vendor registry (#6960)', () => {
     expect(listVendors().map((v) => v.key).sort()).toEqual([...SECURITY_AGENT_VENDOR_KEYS].sort());
   });
 
-  it('only Huntress is enableable (W02); SentinelOne and the DNS vendors wait for their waves', () => {
-    expect(listVendors().filter((vendor) => vendor.enableable).map((vendor) => vendor.key)).toEqual(['huntress']);
+  it('Huntress (W02) and SentinelOne (W04) are enableable; the DNS vendors wait for their wave', () => {
+    expect(listVendors().filter((vendor) => vendor.enableable).map((vendor) => vendor.key)).toEqual(['huntress', 'sentinelone']);
+    expect(getVendor('controld').enableable).toBe(false);
+    expect(getVendor('nextdns').enableable).toBe(false);
+  });
+
+  it('SentinelOne: Windows only, keys from the EDR mapping, built-in package provider', () => {
+    const s1 = getVendor('sentinelone');
+    expect(s1.platforms).toEqual({ windows: 'supported', macos: 'unsupported', linux: 'unsupported' });
+    expect(s1.orgSource).toBe('edr_mapping');
+    expect(s1.integrationProvider).toBe('sentinelone');
   });
 
   it('Huntress: Windows supported, macOS needs MDM approval, Linux unsupported, keys from the EDR mapping', () => {

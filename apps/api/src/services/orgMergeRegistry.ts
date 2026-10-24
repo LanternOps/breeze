@@ -181,6 +181,11 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
   tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
 
+  // Tool Catalog W03 (#5218). Two orgs may each own a flow with the same slug
+  // (`flows_org_slug_uq` is per-org), so a plain repoint aborts on 23505 and a
+  // dedupe-DELETE would silently destroy a draft.
+  flows: { kind: 'custom', note: 'repoint org_id; a loser flow whose slug collides with a survivor flow is renamed <slug>_m<n> first so no flow is silently dropped (flows_org_slug_uq); moved flows that name a renamed loser tool source have their step tool references rewritten (resolve phase, before mergeToolSources renames)' },
+
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
   // execution must not keep pointing at an `ai_agent_runs` row: runs are
   // `leave-for-erasure` (org_id is trigger-immutable,
@@ -503,6 +508,12 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // 42501 mid-merge, after the loser org was already fenced.
   agent_health_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
   software_inventory_observations: { kind: 'derived', note: 'org_id moves via the (device_id, org_id) -> devices(id, org_id) ON UPDATE CASCADE FK; UPDATE is revoked from breeze_app (append-only evidence)' },
+  // #6263 W03a (DECISION W03-c). A rule's org_id/partner_id are a trigger-kept
+  // copy of its parent set's: yara_rules_inherit_owner overwrites them on every
+  // write, and yara_rule_sets_propagate_owner rewrites them when the parent's
+  // owner changes. A direct repoint would be silently reverted to the parent's
+  // org, so the merge never writes this table — the yara_rule_sets repoint moves it.
+  yara_rules: { kind: 'derived', note: 'owner columns copied from yara_rule_sets by trigger; the parent repoint propagates (yara_rule_sets_propagate_owner)' },
 
   // No org_id column — tenancy via parent rows, which we re-point:
   ...buildFollowsParentEntries(),
@@ -597,6 +608,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // deferrable (org_id, offering_partner_id) composite FK holds after the repoint.
   ai_model_assignments: { kind: 'repoint-dedupe', key: ['surface', 'role'], keyWhere: '{org_id} IS NOT NULL' },
   ai_budget_alert_events: { kind: 'repoint-dedupe', key: ['period', 'period_key', 'threshold_pct'] }, // verified: ai_budget_alert_events_org_period_rung_uidx (org_id, period, period_key, threshold_pct)
+  ai_credit_debits: { kind: 'repoint' }, // #9451: undelivered/failed credit debits are obligations, so they follow the survivor (leave-for-erasure would delete them unbilled with the loser shell). idempotency_key is GLOBALLY unique, so a repoint can never collide; no composite FKs. Merges are same-partner, so the billed partner is unchanged.
   ai_budget_reservations: { kind: 'repoint-dedupe', key: ['idempotency_key'] }, // verified: ai_budget_reservations_org_idempotency_uidx (org_id, idempotency_key). Its composite (session_id, org_id) FK to ai_sessions is DEFERRABLE INITIALLY IMMEDIATE so the merge can re-point ai_sessions and this table in separate statements.
   client_ai_usage: { kind: 'repoint-dedupe', key: ['client_user_id', 'period', 'period_key'] }, // verified: client_ai_usage_bucket_uniq (org_id, client_user_id, period, period_key)
   contact_external_links: { kind: 'repoint-dedupe', key: ['system', 'external_id'] }, // verified: contact_external_links_uniq (org_id, system, external_id)
@@ -634,6 +646,16 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // child may repoint in separate statements under SET CONSTRAINTS ALL
   // DEFERRED.
   ticket_checklist_template_items: { kind: 'repoint' },
+  // Business-hours calendars (#8973 W4): org-owned calendars follow their org
+  // (spec §8.2). No org-axis unique exists (business_calendars_partner_name_uq
+  // is partner rows only), so a plain repoint cannot collide. The children copy
+  // the owner pair; their owner guards are DEFERRABLE INITIALLY IMMEDIATE, and
+  // the revision/interval immutability triggers allow an org_id-only restamp
+  // (Gate B15), so tickets that snapshotted a loser revision keep a valid one.
+  business_calendars: { kind: 'repoint' },
+  business_calendar_revisions: { kind: 'repoint' },
+  business_calendar_intervals: { kind: 'repoint' },
+  business_calendar_holidays: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
@@ -786,6 +808,11 @@ const REPOINT_TABLES: readonly string[] = [
   "agent_rollback_directives",
   // agent_rollback_events removed (#4371 fixup): reclassified 'leave-for-erasure'
   // in SPECIAL above — breeze_app has no UPDATE on this append-only table.
+  // agreement_request_recipients / agreement_requests (#8865 W1b): composite
+  // (…, org_id) FKs are DEFERRABLE, so parent and child org_id move in separate
+  // statements; the only unique key, (request_id, email), cannot collide across orgs.
+  "agreement_request_recipients",
+  "agreement_requests",
   "ai_action_plans",
   // ai_invocations (#7600 W02) is append-only, but its trigger admits exactly
   // the org_id-only UPDATE this policy issues while the loser org is fenced
@@ -877,6 +904,9 @@ const REPOINT_TABLES: readonly string[] = [
   "caller_verifications",
   "capacity_predictions",
   "capacity_thresholds",
+  "circuit_served_sites",
+  "circuit_terminations",
+  "circuits",
   "cis_baseline_results",
   "cis_baselines",
   "cis_remediation_actions",
@@ -1160,6 +1190,10 @@ const REPOINT_TABLES: readonly string[] = [
   // see its note there.
   "script_tags",
   "scripts",
+  // #6960 W03: plain repoint. Uniques are (device_id, vendor) and
+  // (org_id, vendor, vendor_endpoint_id) for vendor_only rows; vendor_endpoint_id is
+  // a Breeze row id (huntress_agents.id), unique across orgs, so no collision.
+  "security_agent_device_status",
   "security_policies",
   "security_posture_org_snapshots",
   "security_posture_snapshots",
@@ -1293,6 +1327,10 @@ const REPOINT_TABLES: readonly string[] = [
   "users",
   "vault_snapshot_inventory",
   "webhooks",
+  // #6263 W03a. Plain org XOR partner rule set; its AFTER UPDATE trigger
+  // yara_rule_sets_propagate_owner rewrites the child yara_rules owner columns
+  // (yara_rules is `derived` in SPECIAL). Built-in rows (org_id NULL) never match.
+  "yara_rule_sets",
 ];
 
 export function getOrgMergePolicies(): ReadonlyMap<string, OrgMergePolicy> {

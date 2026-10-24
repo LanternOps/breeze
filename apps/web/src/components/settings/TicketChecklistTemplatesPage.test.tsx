@@ -215,4 +215,40 @@ describe('TicketChecklistTemplatesPage (#5808 W02)', () => {
     render(<TicketChecklistTemplatesPage />);
     expect(await screen.findByTestId('checklist-templates-error')).toBeTruthy();
   });
+
+  describe('duplicate (#9180)', () => {
+    it('POSTs /duplicate for the source and adds the copy to the list', async () => {
+      const copy = templateFrom({ id: 'tpl-copy', name: 'Copy of Laptop refresh' });
+      fetchMock.mockImplementation(async (url: string, opts?: RequestInit) => {
+        const method = opts?.method ?? 'GET';
+        if (url === '/ticket-checklist-templates/tpl-org/duplicate' && method === 'POST') {
+          return jsonResponse({ data: copy }, 201);
+        }
+        if (String(url).startsWith('/ticket-checklist-templates') && method === 'GET') {
+          return jsonResponse({ data: [templateFrom()] });
+        }
+        return jsonResponse({ error: 'unexpected' }, 500);
+      });
+      render(<TicketChecklistTemplatesPage />);
+      fireEvent.click(await screen.findByTestId('checklist-template-duplicate-tpl-org'));
+      expect(await screen.findByTestId('checklist-template-tpl-copy')).toBeTruthy();
+      const call = fetchMock.mock.calls.find((c) => c[0] === '/ticket-checklist-templates/tpl-org/duplicate');
+      expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({});
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+    });
+
+    it('hides duplicate on a partner-wide template for a user who fails canManagePartnerWide', async () => {
+      state.canManagePartnerWide = false;
+      render(<TicketChecklistTemplatesPage />);
+      await screen.findByTestId('checklist-template-tpl-partner');
+      expect(screen.queryByTestId('checklist-template-duplicate-tpl-partner')).toBeNull();
+      expect(screen.getByTestId('checklist-template-duplicate-tpl-org')).toBeTruthy();
+    });
+
+    it('toasts a failed duplicate and leaves the list unchanged', async () => {
+      render(<TicketChecklistTemplatesPage />);
+      fireEvent.click(await screen.findByTestId('checklist-template-duplicate-tpl-org'));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    });
+  });
 });

@@ -1,7 +1,9 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, cleanup, act } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CatalogItemsTab from './CatalogItemsTab';
+import { i18n } from '@/lib/i18n';
+import { showToast } from '../shared/Toast';
 import { fetchWithAuth } from '../../stores/auth';
 import { resetPartnerCurrencyCache } from '../../lib/usePartnerCurrency';
 import type { CatalogItem } from '../../lib/api/catalog';
@@ -56,6 +58,7 @@ const ECONOMICS = {
   currencyCode: 'EUR', headlinePrice: '1500.00', priceBookComplete: true, marginAvailable: true,
   totalCost: '600.00', margin: '900.00', marginPct: 60, allocationTotal: '0.00', allocationMatchesHeadline: true,
   missingPriceComponentIds: [] as string[],
+  missingCostComponentIds: [] as string[],
 };
 
 function seed(active: CatalogItem[] = [WIDGET, LAPTOP, BUNDLE], economics: Record<string, unknown> = ECONOMICS) {
@@ -76,6 +79,15 @@ function seed(active: CatalogItem[] = [WIDGET, LAPTOP, BUNDLE], economics: Recor
 
 describe('CatalogItemsTab', () => {
   beforeEach(() => { vi.clearAllMocks(); resetPartnerCurrencyCache(); seed(); });
+
+  it('renders translated (not raw) Active/Archived toggle labels and type filter labels (#9665)', async () => {
+    render(<CatalogItemsTab />);
+    await screen.findByText('Widget Service');
+    expect(screen.getByTestId('catalog-view-active')).toHaveTextContent(/^Active$/);
+    expect(screen.getByTestId('catalog-view-archived')).toHaveTextContent(/^Archived$/);
+    expect(screen.getByTestId('catalog-filter-type-hardware')).toHaveTextContent(/^Hardware$/);
+    expect(screen.getByTestId('catalog-filter-type-service')).toHaveTextContent(/^Service$/);
+  });
 
   it('renders items with type chips and computed margin', async () => {
     render(<CatalogItemsTab />);
@@ -166,6 +178,41 @@ describe('CatalogItemsTab', () => {
     expect(econ2).not.toHaveTextContent('60.0%');
   });
 
+  it('bundle margin with an unknown (NULL) component cost reads as unknown, never a number (#9223)', async () => {
+    seed([WIDGET, BUNDLE], { ...ECONOMICS, marginAvailable: false, totalCost: null, margin: null, marginPct: null, missingCostComponentIds: ['w1'] });
+    render(<CatalogItemsTab />);
+    await screen.findByText('Starter Bundle');
+    fireEvent.click(screen.getByTestId('catalog-bundle-toggle-b1'));
+    const econ = await screen.findByTestId('catalog-bundle-economics-b1');
+    expect(econ).toHaveTextContent('Margin unknown — 1 component has no cost');
+    expect(econ).not.toHaveTextContent('Margin unavailable');
+    expect(econ).not.toHaveTextContent('%');
+  });
+
+  it('unknown-cost margin: plural count, incomplete price book wins, and an older API payload without the field degrades (#9223)', async () => {
+    const open = async () => {
+      render(<CatalogItemsTab />);
+      await screen.findByText('Starter Bundle');
+      fireEvent.click(screen.getByTestId('catalog-bundle-toggle-b1'));
+      return screen.findByTestId('catalog-bundle-economics-b1');
+    };
+    const unknown = { ...ECONOMICS, marginAvailable: false, totalCost: null, margin: null, marginPct: null };
+
+    seed([WIDGET, BUNDLE], { ...unknown, missingCostComponentIds: ['w1', 'w2'] });
+    expect(await open()).toHaveTextContent('Margin unknown — 2 components have no cost');
+    cleanup();
+
+    seed([WIDGET, BUNDLE], { ...unknown, priceBookComplete: false, missingPriceComponentIds: ['w1'], missingCostComponentIds: ['w2'] });
+    const incomplete = await open();
+    expect(incomplete).toHaveTextContent('Incomplete price book');
+    expect(incomplete).not.toHaveTextContent('Margin unknown');
+    cleanup();
+
+    const { missingCostComponentIds: _omit, ...legacy } = unknown;
+    seed([WIDGET, BUNDLE], legacy);
+    expect(await open()).toHaveTextContent('Margin unavailable');
+  });
+
   it('archives an item from the row overflow (kebab) menu — after a confirm step (#1368)', async () => {
     render(<CatalogItemsTab />);
     await screen.findByText('Laptop');
@@ -185,6 +232,33 @@ describe('CatalogItemsTab', () => {
       );
       expect(call).toBeTruthy();
     });
+  });
+
+  it('toasts archive failures in the CURRENT language after a locale switch (stale t / hard-coded copy)', async () => {
+    i18n.addResourceBundle('xx', 'settings', {
+      catalogItemsTab: { archiveFailedRetry: 'XX archive failed', itemArchived: 'XX archived' },
+    }, true, true);
+    try {
+      render(<CatalogItemsTab />);
+      await screen.findByText('Laptop');
+      await act(async () => { await i18n.changeLanguage('xx'); });
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (url, opts) => {
+        if (String(url) === '/catalog/l1/archive') return jsonResponse({}, 500);
+        return base(url, opts);
+      });
+      fireEvent.click(screen.getByTestId('catalog-actions-l1'));
+      fireEvent.click(await screen.findByTestId('catalog-archive-l1'));
+      fireEvent.click(await screen.findByTestId('catalog-archive-confirm'));
+      await waitFor(() =>
+        expect(vi.mocked(showToast)).toHaveBeenCalledWith(
+          expect.objectContaining({ message: 'XX archive failed', type: 'error' }),
+        ),
+      );
+    } finally {
+      await act(async () => { await i18n.changeLanguage('en'); });
+      i18n.removeResourceBundle('xx', 'settings');
+    }
   });
 
   it('creates a bundle and PUTs components including showOnInvoice', async () => {

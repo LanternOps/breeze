@@ -2,7 +2,7 @@
 
 This runbook deploys the isolated `@breeze/m365-graph-actions-executor` and enables the Breeze **Customer Graph Actions** (Tier-3 mutation) path. It mirrors the [Customer Graph Read runbook](./m365-customer-graph-read-executor.md); read that first for the shared trust-boundary and identity model. This executor owns a **separate** reusable Microsoft application certificate and app-only Graph tokens with **write** scope; the browser, general API, web app, database, and audit pipeline must never receive them.
 
-The actions executor serves the consent operations as well as mutations. Behind the same internal EdDSA request authentication as the read executor it exposes `POST /v1/verify-identity` (identity phase of consent), `POST /v1/retest` (application-token proof and grant reconciliation, used to finish consent and by Retest), `POST /v1/execute-action` (the mutations), and `GET /healthz`. `POST /v1/complete-consent` is still served for one release for an API older than the identity-first flow; the current API never calls it. The executor never redirects a browser and is not a general Graph proxy.
+The actions executor serves the consent operations as well as mutations. Behind the same internal EdDSA request authentication as the read executor it exposes `POST /v1/verify-identity` (identity phase of consent), `POST /v1/retest` (application-token proof and grant reconciliation, used to finish consent and by Retest), `POST /v1/execute-action` (the mutations), and `GET /healthz`. The pre-identity-first `POST /v1/complete-consent` operation has been removed (#7910); the executor answers it with 404. The executor never redirects a browser and is not a general Graph proxy.
 
 ## Scope and trust boundary
 
@@ -165,7 +165,7 @@ Three deploy-time traps were found while wiring this task's compose plumbing. Ea
 1. Deploy the API release carrying the M365 actions control-plane and the reset-password reveal path (PR #2693) to every API instance; verify the running revision.
 2. Provision the dedicated actions Entra application, certificate, Key Vault version, executor identity, private ingress, and controlled egress.
 3. Verify the exact executor tuple against the signed release inventory as described above, then deploy it **dark** by that `sha256` digest (never a mutable tag); verify `GET /healthz` returns only `{"status":"ok"}` and that identity, Key Vault, and Microsoft connectivity succeed from a non-customer test path.
-4. Keep `M365_GRAPH_ACTIONS_TOOLS_ENABLED=false`. Confirm no public route reaches `/v1/verify-identity`, `/v1/complete-consent`, `/v1/retest`, `/v1/execute-action`, or `/healthz`, and that only the actions-executor identity can read the pinned vault secret.
+4. Keep `M365_GRAPH_ACTIONS_TOOLS_ENABLED=false`. Confirm no public route reaches `/v1/verify-identity`, `/v1/retest`, `/v1/execute-action`, or `/healthz`, and that only the actions-executor identity can read the pinned vault secret.
 5. Consent one disposable internal Breeze org so it has an `active` `customer-graph-actions` connection, then enable only that org UUID via `M365_GRAPH_ACTIONS_TOOLS_ORG_IDS`, flip `M365_GRAPH_ACTIONS_TOOLS_ENABLED=true`, and exercise a `disable` and a `reset_password` through the full approve → headless-execute → reveal path.
 6. Expand the org allowlist gradually. Use `*` only after limited rollout is accepted.
 

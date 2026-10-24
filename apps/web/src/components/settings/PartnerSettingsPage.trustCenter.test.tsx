@@ -12,6 +12,7 @@ vi.mock('../../lib/authScope', () => ({
   getJwtClaims: vi.fn(() => ({ scope: 'partner', orgId: null, partnerId: 'partner-1' })),
   loginPathWithNext: () => '/login',
 }));
+vi.mock('../auth/MfaPolicyOffBanner', () => ({ PARTNER_SETTINGS_SAVED_EVENT: 'breeze:partner-settings-saved', default: () => null }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('./TicketingSettingsTabs', () => ({ default: () => <div data-testid="stub-ticketing-settings-tabs" /> }));
 // The form itself is covered by TrustTemplateSettings.test.tsx; here only the tab wiring.
@@ -20,7 +21,7 @@ vi.mock('../trustCenter/TrustTemplateSettings', () => ({ default: () => <div dat
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const PARTNER = {
   id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro', createdAt: '2026-02-09T00:00:00.000Z',
-  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {} },
+  settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {} },
 };
 const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body } as unknown as Response);
 

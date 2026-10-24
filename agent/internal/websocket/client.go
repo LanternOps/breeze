@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/netcache"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/secmem"
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 	"github.com/breeze-rmm/agent/internal/wire"
 )
 
@@ -91,6 +93,9 @@ type CommandResult struct {
 	// mean the server only ever saw the marker on the HTTP fallback.
 	Cancelled            bool   `json:"cancelled,omitempty"`
 	CancelledByCommandID string `json:"cancelledByCommandId,omitempty"`
+	// #4609 System Restore checkpoint outcome, mirrored from
+	// tools.CommandResult. Top-level, never folded into Result.
+	RestorePoint *systemrestore.Outcome `json:"restorePoint,omitempty"`
 }
 
 // outboundResult pairs a marshalled command-result frame with the structured
@@ -221,6 +226,11 @@ type Client struct {
 	// Must not block: it runs inline on the read pump. Set once at
 	// construction time, before Start().
 	OnRevocationLease func(msg RevocationLeaseMessage)
+
+	// OnDesktopICECandidate, if set, receives viewer ICE candidates the server
+	// relays for a desktop session after the offer (#9182). Must not block: it
+	// runs inline on the read pump. Set once before Start().
+	OnDesktopICECandidate func(msg DesktopICECandidateMessage)
 
 	// resends is the bounded record of recently sent command results the
 	// server may ask for again with RESULT_PROCESSING_FAILED (#7365). See
@@ -403,7 +413,21 @@ func (c *Client) connect() error {
 	// Keep the handshake response: a refused upgrade (W08 503
 	// WS_UPGRADE_REFUSED, #8456; or a 429) carries Retry-After, which the
 	// reconnect loop honours (#8841).
-	conn, resp, err := dialer.Dial(wsURL, headers)
+	// Tie the dial to Stop: a Stop issued mid-handshake cancels it instead of
+	// waiting out HandshakeTimeout (and the ECH/DNS path before it).
+	dialCtx, cancelDial := context.WithCancel(context.Background())
+	defer cancelDial()
+	c.stopMu.RLock()
+	done := c.done // read on the caller's goroutine, under the lock Stop takes
+	c.stopMu.RUnlock()
+	go func() {
+		select {
+		case <-done:
+			cancelDial()
+		case <-dialCtx.Done():
+		}
+	}()
+	conn, resp, err := dialer.DialContext(dialCtx, wsURL, headers)
 	if err != nil {
 		// gorilla also returns the response for a 101 with malformed
 		// handshake headers; that is not a refusal.
@@ -450,10 +474,8 @@ func (c *Client) reconnectLoop() {
 	backoff := newReconnectBackoff(nil)
 
 	for {
-		select {
-		case <-c.done:
+		if c.stopped() {
 			return
-		default:
 		}
 
 		var sleep time.Duration
@@ -461,6 +483,15 @@ func (c *Client) reconnectLoop() {
 			sleep = backoff.afterDialFailure(err)
 			log.Warn("connection failed", "error", err.Error(), "retryIn", sleep)
 		} else {
+			// Stop may have run while the dial was in flight: closeCurrentConn
+			// found c.conn nil then, and connect stored the new socket after.
+			// Without this check readPump would sit on it for up to pongWait
+			// before the loop noticed, and Stop callers (tests, shutdown) hung.
+			if c.stopped() {
+				c.closeCurrentConn(true)
+				return
+			}
+
 			// Run read/write pumps — track how long the connection lasted
 			connStart := time.Now()
 			pumpDone := make(chan struct{})
@@ -472,11 +503,7 @@ func (c *Client) reconnectLoop() {
 			c.closeCurrentConn(false)
 			lasted := time.Since(connStart)
 
-			// Check if we should stop
-			c.runningMu.RLock()
-			running := c.isRunning
-			c.runningMu.RUnlock()
-			if !running {
+			if c.stopped() {
 				return
 			}
 
@@ -493,6 +520,17 @@ func (c *Client) reconnectLoop() {
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+// stopped reports whether Stop has run. It is the single exit signal for
+// reconnectLoop (Stop closes done and clears isRunning together).
+func (c *Client) stopped() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -571,6 +609,13 @@ func (c *Client) readPump() error {
 		if msg.Type == "revocation_lease" || msg.Type == "revocation_lease_revoked" ||
 			msg.Type == "revocation_lease_unavailable" {
 			c.handleRevocationLeaseMessage(msg.Type, message)
+			continue
+		}
+
+		// Relayed viewer ICE candidates carry no id either (#9182). Older
+		// agents fall through to the id-less skip below and ignore them.
+		if msg.Type == "desktop_ice_candidate" {
+			c.handleDesktopICECandidateMessage(message)
 			continue
 		}
 

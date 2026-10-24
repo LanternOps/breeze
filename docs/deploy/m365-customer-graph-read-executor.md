@@ -10,7 +10,7 @@ Customer Graph Read uses one dedicated multitenant Entra application, the fixed 
 - user-owned delegated mail and Teams communications;
 - future Graph mutation and Exchange PowerShell executors.
 
-Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/verify-identity`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. (`POST /v1/complete-consent` still exists for one release so an API older than the identity-first flow keeps working; the current API never calls it, and it is removed in a later release.) `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
+Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/verify-identity`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. The pre-identity-first `POST /v1/complete-consent` operation has been removed (#7910); the executor answers it with 404. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
 
 `POST /v1/read-action` executes one typed Microsoft Graph read (the twelve actions behind the `m365_query_*` AI tools) and uses the same internal EdDSA request authentication as the other two operations — no separate trust boundary. It is additive, so deploy order is safe in either direction: an executor deployed before this operation exists returns a plain `404` for the route, and the API's executor client treats that the same as any other unreachable/unhealthy executor, surfacing the existing `executor_unavailable` outcome rather than failing insecurely or leaking a raw transport error.
 
@@ -37,6 +37,8 @@ The identity-first consent flow (#7910) needs `POST /v1/verify-identity` on the 
 ## Consent flow (identity first)
 
 Breeze proves who the administrator is, and which tenant they belong to, before it asks Microsoft for consent. Consent can then only land in that verified tenant.
+
+The first Microsoft sign-in shows a user-level consent screen ("View your basic profile", "Maintain access to data you have given it access to", and an optional "Consent on behalf of your organization" checkbox for administrators). Tenants with user consent disabled show an approval-required error (for example AADSTS90094 or AADSTS65001); a Global Administrator must complete the sign-in, optionally ticking the checkbox to consent for everyone.
 
 1. **Identity.** `POST …/consent` returns a Microsoft v2 OpenID Connect sign-in URL (`/oauth2/v2.0/authorize`, `scope=openid profile`, a nonce, PKCE S256, `prompt=select_account`). A first connect, or a reconnect after a disconnect cleared the tenant, signs in at `/organizations`. A reconnect of a still-bound connection, and a permission upgrade, sign in at the bound tenant instead. The callback hands the code to the executor's `verify-identity`, which redeems it and fully validates the ID token: signature against Microsoft's keys, issuer derived from `tid`, audience, expiry, nonce, `oid`, and a `wids` claim containing Global Administrator or Privileged Role Administrator. The API stores the verified tenant and administrator object ID server-side under a new one-use state.
 2. **Confirm tenant.** For an `/organizations` sign-in only, the browser returns to the card (`/integrations#m365/customer-graph-read/confirm-tenant`). The card shows the verified tenant ID and the signed-in username, and the operator must confirm (`POST …/consent/continue`) or cancel (`POST …/consent/cancel`). This is the guard against an MSP technician consenting their own tenant for a customer organization: `/organizations` signs a guest administrator in to their home tenant, not the customer's. Neither route accepts a tenant; the confirmation is bound to the same organization, profile, consent attempt and Breeze user, is one-use, and expires with the session (10 minutes). A pinned reconnect or upgrade skips this step.
@@ -278,7 +280,7 @@ Deploy the repository plus the signed `sha256` digest, not a mutable version or 
 
 1. Keep `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED=false` and confirm the legacy M365 card/routes still work.
 2. Confirm the executor process is healthy at private `GET /healthz` and returns only `{"status":"ok"}`.
-3. Confirm no public route reaches `/v1/verify-identity`, `/v1/complete-consent`, `/v1/retest`, `/v1/read-action`, `/v1/sync-action`, or `/healthz`.
+3. Confirm no public route reaches `/v1/verify-identity`, `/v1/retest`, `/v1/read-action`, `/v1/sync-action`, or `/healthz`.
 4. Confirm the executor identity can read only the pinned Key Vault secret version and API/general identities cannot.
 5. Confirm controlled egress permits the fixed Microsoft/Key Vault dependencies and blocks an unrelated destination.
 6. Enable one internal organization UUID, complete the real-tenant checklist, and watch `breeze_m365_customer_graph_read_events_total{event,outcome}` plus the fixed audit event names below.

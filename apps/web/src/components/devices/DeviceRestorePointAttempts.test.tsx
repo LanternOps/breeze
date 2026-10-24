@@ -115,7 +115,7 @@ describe('DeviceRestorePointAttempts', () => {
 
   it('never renders a recoverability promise anywhere on the list', async () => {
     const statuses = [
-      'requested', 'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only',
+      'requested', 'created', 'existing_accepted', 'skipped_disabled', 'skipped_definition_only', 'skipped_no_mutation',
       'unsupported', 'busy', 'insufficient_privileges', 'verification_failed', 'failed',
     ];
     fetchMock.mockResolvedValue(

@@ -195,6 +195,8 @@ func (c *Client) Run() error {
 		}
 	}
 
+	c.wireDesktopICETrickle()
+
 	// Hand each session's clipboard counters to the service for the central
 	// audit log (#1012). Sent once, from session teardown.
 	c.desktopMgr.mgr.OnClipboardSummary = func(sessionID string, summary ipc.ClipboardSummary) {
@@ -212,6 +214,13 @@ func (c *Client) Run() error {
 	})
 
 	log.Info("user helper connected and authenticated", "agentId", c.agentID)
+
+	// Relay queued and future warn+ log records to the agent for the life of
+	// this connection, when the process has no shipper of its own (#9266).
+	if fwd := activeLogForwarder.Load(); fwd != nil {
+		conn := c.conn
+		safeGo("log_forward", func() { fwd.Pump(conn, runDone) })
+	}
 
 	// Enter command loop
 	return c.commandLoop()
@@ -321,7 +330,8 @@ func (c *Client) authenticate() error {
 		// Advertised only alongside SupportsConsentUI: the agent hands v2
 		// prompts only to helpers that render them (sessionbroker's
 		// consentProtocolFromAuth applies the same condition).
-		ConsentProtocolVersion: consentProtocolForAuth(supportsConsent),
+		ConsentProtocolVersion:     consentProtocolForAuth(supportsConsent),
+		SupportsTargetedPamDismiss: supportsTargetedPamDismissForAuth(c.role),
 	}
 
 	if err := c.conn.SendTyped("auth", ipc.TypeAuthRequest, authReq); err != nil {
@@ -502,6 +512,12 @@ func (c *Client) commandLoop() error {
 
 		case ipc.TypeDesktopLeaseUpdate:
 			safeGo("desktop_lease_update", func() { c.handleDesktopLeaseUpdate(env) })
+
+		case ipc.TypeDesktopICETrickleBegin:
+			safeGo("desktop_ice_trickle_begin", func() { c.handleDesktopICETrickleBegin(env) })
+
+		case ipc.TypeDesktopRemoteICECandidate:
+			safeGo("desktop_remote_ice_candidate", func() { c.handleDesktopRemoteICECandidate(env) })
 
 		case ipc.TypeDesktopInput:
 			safeGo("desktop_input", func() { c.handleDesktopInput(env) })
@@ -1190,9 +1206,16 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 		return
 	}
 
+	if req.Instance != nil && !req.Instance.Valid() {
+		if err := c.conn.SendError(env.ID, ipc.TypePamDismissConsentResult, "invalid PAM consent instance"); err != nil {
+			log.Warn("failed to send PAM dismiss instance error", "id", env.ID, "error", err)
+		}
+		return
+	}
+
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	result := newPamActuator().Dismiss(ctx)
+	result := dismissPamConsent(ctx, newPamActuator(), req.Instance)
 	if err := c.conn.SendTyped(env.ID, ipc.TypePamDismissConsentResult, ipc.PamDismissConsentResult{
 		Success:       result.Success,
 		Reason:        result.Reason,
@@ -1200,6 +1223,35 @@ func (c *Client) handlePamDismissConsent(env *ipc.Envelope) {
 	}); err != nil {
 		log.Warn("failed to send PAM dismiss result", "id", env.ID, "error", err)
 	}
+}
+
+// reasonTargetedDismissUnsupported is reported when a targeted dismissal reaches
+// an actuator that cannot target one consent.exe. Nothing is pressed.
+const reasonTargetedDismissUnsupported = "targeted_dismiss_unsupported"
+
+// dismissPamConsent runs the deny path's untargeted Dismiss, or — when the
+// agent named a consent.exe instance (#8995) — dismisses only that instance. A
+// targeted request never falls back to the untargeted Escape, which would
+// cancel whichever UAC prompt happened to be found first.
+func dismissPamConsent(ctx context.Context, actuator pamactuator.Actuator, instance *ipc.PamConsentInstance) pamactuator.Result {
+	if instance == nil {
+		return actuator.Dismiss(ctx)
+	}
+	targeted, ok := actuator.(pamactuator.InstanceDismisser)
+	if !ok {
+		return pamactuator.Result{Success: false, Reason: reasonTargetedDismissUnsupported,
+			DetailMessage: "this PAM actuator cannot dismiss a specific consent.exe instance"}
+	}
+	return targeted.DismissInstance(ctx, pamactuator.ConsentInstance{
+		PID:       instance.PID,
+		CreatedAt: time.Unix(0, instance.CreatedUnixNano),
+	})
+}
+
+// supportsTargetedPamDismissForAuth is advertised at auth: only the SYSTEM
+// helper handles pam_dismiss_consent, and it honours Instance (#8995).
+func supportsTargetedPamDismissForAuth(role ipc.HelperRole) bool {
+	return role == ipc.HelperRoleSystem
 }
 
 func (c *Client) handleTrayUpdate(env *ipc.Envelope) {
@@ -1283,6 +1335,49 @@ func (c *Client) handleDesktopLeaseUpdate(env *ipc.Envelope) {
 			"sessionId", update.SessionID, "reason", update.Reason)
 	}
 	c.desktopMgr.mgr.ApplyLeaseUpdate(update)
+}
+
+// wireDesktopICETrickle sends the desktop manager's late local candidates
+// to the service, which relays them to the API (#9182). Sent in order on
+// pion's serial candidate callback; nothing is sent before the service's
+// desktop_ice_trickle_begin.
+func (c *Client) wireDesktopICETrickle() {
+	c.desktopMgr.mgr.OnLocalICECandidate = func(sessionID, startGeneration string, cand desktop.LocalICECandidate) {
+		notice := localICECandidateNotice(sessionID, startGeneration, cand)
+		if err := c.conn.SendTyped("desk-ice-"+sessionID, ipc.TypeDesktopLocalICECandidate, notice); err != nil {
+			log.Warn("failed to send desktop ICE candidate via IPC", "session", sessionID, "seq", cand.Seq, "error", err)
+		}
+	}
+}
+
+func (c *Client) handleDesktopICETrickleBegin(env *ipc.Envelope) {
+	var req ipc.DesktopICETrickleBegin
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_ice_trickle_begin payload", "error", err)
+		return
+	}
+	if err := c.desktopMgr.beginICETrickle(req); err != nil {
+		// The service sends begin only after this helper's start succeeded,
+		// so a refusal means the session is already gone or the request is
+		// bad; either way its late candidates stay local.
+		log.Warn("desktop ICE trickle not started; late candidates will not reach the viewer",
+			"sessionId", req.SessionID, "generation", req.StartGeneration, "reason", err.Error())
+	}
+}
+
+func (c *Client) handleDesktopRemoteICECandidate(env *ipc.Envelope) {
+	var req ipc.DesktopRemoteICECandidate
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		log.Warn("invalid desktop_remote_ice_candidate payload", "error", err)
+		return
+	}
+	if err := c.desktopMgr.addRemoteICECandidate(req); err != nil {
+		if errors.Is(err, desktop.ErrNoICESession) || errors.Is(err, desktop.ErrStaleICEGeneration) {
+			log.Debug("dropping relayed viewer ICE candidate", "sessionId", req.SessionID, "reason", err.Error())
+			return
+		}
+		log.Warn("failed to apply relayed viewer ICE candidate", "sessionId", req.SessionID, "error", err.Error())
+	}
 }
 
 func (c *Client) handleDesktopStop(env *ipc.Envelope) {

@@ -38,6 +38,7 @@ const serviceMocks = vi.hoisted(() => ({
   removeChecklistTemplateItem: vi.fn(),
   reorderChecklistTemplateItems: vi.fn(),
   applyChecklistTemplateToTicket: vi.fn(),
+  duplicateChecklistTemplate: vi.fn(),
 }));
 vi.mock('../services/ticketChecklistTemplateService', () => ({
   ...serviceMocks,
@@ -68,6 +69,7 @@ const {
   deleteChecklistTemplate,
   addChecklistTemplateItem,
   updateChecklistTemplateItem,
+  duplicateChecklistTemplate,
 } = serviceMocks;
 
 const TEMPLATE = '11111111-1111-4111-8111-111111111111';
@@ -311,5 +313,66 @@ describe('ticket checklist template routes (#5783 W02)', () => {
     const res = await post('/ticket-checklist-templates', { name: 'Dupe' });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'DUPLICATE_CHECKLIST_TEMPLATE_NAME' });
+  });
+
+  // ── duplicate (#9180) ─────────────────────────────────────────────────────
+
+  it('POST /:id/duplicate returns 201 and passes the id, body and actor to the service', async () => {
+    duplicateChecklistTemplate.mockResolvedValueOnce({ id: 'new', name: 'Copy of X' });
+    const res = await post(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, { name: 'Mine' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ data: { id: 'new', name: 'Copy of X' } });
+    expect(duplicateChecklistTemplate).toHaveBeenCalledWith(
+      TEMPLATE,
+      { name: 'Mine' },
+      expect.objectContaining({ userId: 'u1', partnerId: 'p1', scope: 'partner', partnerOrgAccess: 'all' }),
+    );
+  });
+
+  it('POST /:id/duplicate accepts an empty body (server picks the name)', async () => {
+    duplicateChecklistTemplate.mockResolvedValueOnce({ id: 'new' });
+    const res = await post(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, {});
+    expect(res.status).toBe(201);
+    expect(duplicateChecklistTemplate).toHaveBeenCalledWith(TEMPLATE, {}, expect.anything());
+  });
+
+  it('POST /:id/duplicate 403s without tickets:write', async () => {
+    const res = await app.request(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, {
+      method: 'POST',
+      headers: { ...NO_PERM, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(403);
+    expect(duplicateChecklistTemplate).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/duplicate refuses an ORG-scoped token', async () => {
+    authState.scope = 'organization';
+    authState.partnerOrgAccess = null;
+    const res = await post(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, {});
+    expect(res.status).toBe(403);
+    expect(duplicateChecklistTemplate).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/duplicate rejects owner-changing keys (copy always keeps the source owner)', async () => {
+    const res = await post(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, { ownerScope: 'partner' });
+    expect(res.status).toBe(400);
+    expect(duplicateChecklistTemplate).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/duplicate maps PartnerWideWriteDeniedError to 403 and a hidden template to 404', async () => {
+    duplicateChecklistTemplate.mockRejectedValueOnce(new PartnerWideWriteDeniedError());
+    const denied = await post(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, {});
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ code: 'PARTNER_WIDE_WRITE_DENIED' });
+
+    duplicateChecklistTemplate.mockRejectedValueOnce(new ChecklistTemplateServiceError('Not found', 404, 'NOT_FOUND'));
+    const hidden = await post(`/ticket-checklist-templates/${TEMPLATE}/duplicate`, {});
+    expect(hidden.status).toBe(404);
+  });
+
+  it('POST /:id/duplicate 400s a non-uuid id', async () => {
+    const res = await post('/ticket-checklist-templates/not-a-uuid/duplicate', {});
+    expect(res.status).toBe(400);
   });
 });

@@ -5,6 +5,7 @@
 
 import { classifyAnswerPoll, resolveAnswerTimeoutMs } from './answerPoll';
 import { apiFetch } from './api';
+import { createIceTrickle } from './iceTrickle';
 
 /**
  * Error thrown when the remote agent reports a session failure
@@ -138,6 +139,11 @@ export interface WebRTCSession {
   close: () => void;
 }
 
+/**
+ * How long to gather before sending the offer. Candidates gathered later are
+ * trickled after the answer (#9182, see iceTrickle.ts), so this only needs to
+ * cover the fast host/srflx candidates.
+ */
 const ICE_GATHER_TIMEOUT_MS = 3000;
 
 /**
@@ -275,6 +281,8 @@ function createPeerConnection(iceServers: RTCIceServer[]): {
  * 4. POST offer to API (triggers start_desktop command to agent)
  * 5. Poll for answer (agent creates pion PeerConnection and returns SDP answer)
  * 6. Set remote description → ICE completes → video flows
+ * 7. Trickle: late local candidates are POSTed, the agent's late ones polled
+ *    and added (#9182)
  */
 export async function createWebRTCSession(
   params: AuthenticatedConnectionParams,
@@ -310,11 +318,15 @@ export async function createWebRTCSession(
   }
 
   const { pc, inputChannel, controlChannel } = createPeerConnection(iceServers);
+  // Trickle ICE (#9182): listens from before setLocalDescription so no late
+  // local candidate is missed.
+  const trickle = createIceTrickle(pc, params);
 
   let closed = false;
   const close = () => {
     if (closed) return;
     closed = true;
+    trickle.stop();
     try { inputChannel.close(); } catch { /* ignore */ }
     try { controlChannel.close(); } catch { /* ignore */ }
     try { pc.close(); } catch { /* ignore */ }
@@ -345,6 +357,8 @@ export async function createWebRTCSession(
     if (!localDesc?.sdp) {
       throw new Error('Failed to generate local SDP');
     }
+    // Everything gathered so far is in this SDP; anything later trickles.
+    trickle.markOfferSent(localDesc.sdp);
 
     // POST offer to API — this triggers the agent to create a pion session
     const offerResp = await apiFetch(
@@ -380,6 +394,8 @@ export async function createWebRTCSession(
     await pc.setRemoteDescription(
       new RTCSessionDescription({ type: 'answer', sdp: answerSdp }),
     );
+    // Send our late candidates and fetch the agent's (#9182).
+    trickle.start(answerSdp);
 
     return {
       pc,

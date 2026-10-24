@@ -20,6 +20,7 @@
     "state": {
       "met": "Getroffen",
       "notMet": "Nicht erfüllt",
+      "metLate": "Verspätet erfüllt",
       "breached": "Durchbrochen",
       "pausedLeft": "Pausiert · {{relative}} übrig",
       "left": "{{relative}} übrig"
@@ -81,7 +82,9 @@
       "high": "Hoch",
       "normal": "Normal",
       "low": "Niedrig"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} Schritte",
+    "checklistTitle": "Checkliste: {{done}} von {{total}} Schritten erledigt"
   },
   "ticketArchivedList": {
     "emptyTitle": "Keine archivierten Tickets.",
@@ -233,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} Std. gearbeitet · {{billed}} Std. abgerechnet",
     "includedMinutes": "{{hours}} Std. im Vertrag enthalten",
+    "laborBreakdown": "{{hours}} Std. × {{rate}} = {{amount}}",
+    "laborRule": "Jeder Eintrag wird mit seinen auf Stunden gerundeten Minuten (2 Dezimalstellen) × Satz abgerechnet.",
     "missingRateCount_one": "1 Eintrag hat keinen Stundensatz – nicht im obigen Betrag enthalten",
     "missingRateCount_other": "{{count}} Einträge haben keinen Stundensatz – nicht im obigen Betrag enthalten",
     "deleteEntry": "Zeiteintrag über {{duration}} von {{tech}} löschen",
@@ -331,6 +336,11 @@
     "selectedCount_other": "{{count}} ausgewählt",
     "clearSelection": "Auswahl aufheben",
     "noSelection": "Wählen Sie ein Ticket aus. Verwenden Sie j/k zum Verschieben, Enter zum Erweitern.",
+    "ticketNotInView": "Ticket {{number}} ist nicht in dieser Ansicht.",
+    "movedToClosed": {
+      "message": "{{status}} — jetzt unter {{tab}}",
+      "view": "In {{tab}} anzeigen"
+    },
     "ticketingSettings": "Ticketing-Einstellungen",
     "assignFailed": "Zuweisung fehlgeschlagen. Wiederholen.",
     "assignedToYou": "Ihnen zugewiesen",
@@ -522,7 +532,11 @@
     },
     "device": {
       "none": "Kein Gerät",
-      "unlink": "Verknüpfung aufheben"
+      "unlink": "Verknüpfung aufheben",
+      "link": "Gerät verknüpfen",
+      "change": "Gerät ändern",
+      "cancel": "Abbrechen",
+      "assigneeWarning": "Beim Ändern des Geräts wird der Bearbeiter neu geprüft. Ein Techniker ohne Zugriff auf das neue Gerät wird entfernt."
     },
     "toast": {
       "statusUpdated": "Status aktualisiert",

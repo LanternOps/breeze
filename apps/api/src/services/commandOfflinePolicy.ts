@@ -213,6 +213,13 @@ const BACKUP_AND_RESTORE: readonly string[] = [
 const LIVE_ONLY: readonly string[] = [
   C.SYSTEM_CLEANUP_LIST,
   C.SYSTEM_CLEANUP_RUN,
+  // #8729: "Force reboot now" means now. Plain `reboot` waits up to a day for
+  // an offline device; a force-close of unsaved work landing on a laptop hours
+  // later, while someone is using it, is exactly the wrong outcome. The route
+  // also refuses an offline device up front. Still behind the power-state
+  // barrier (commandClaimEligibility.ts), so a reboot held by in-flight work
+  // expires visibly instead of firing late.
+  C.FORCE_REBOOT,
 ];
 
 /**

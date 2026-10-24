@@ -12,9 +12,29 @@ export type M365ConsentConnectionSummary = {
   status: string;
 };
 
+/** Which switch gates consent onboarding (#9319). Mirrors the API status payload. */
+export type M365OnboardingAvailability = "enabled" | "instance_disabled" | "org_not_enabled";
+
+/**
+ * Reads the status payload's `onboardingAvailability`. Absent (an API that
+ * predates the field) falls back to what `onboardingEnabled` implies; an
+ * unknown value is rejected (null) so the strict envelope parsers fail closed.
+ */
+export function parseOnboardingAvailability(
+  value: unknown,
+  onboardingEnabled: boolean,
+): M365OnboardingAvailability | null {
+  if (value === undefined) return onboardingEnabled ? "enabled" : "instance_disabled";
+  if (value !== "enabled" && value !== "instance_disabled" && value !== "org_not_enabled") return null;
+  // The two fields describe the same gate; a disagreeing payload is malformed.
+  if ((value === "enabled") !== onboardingEnabled) return null;
+  return value;
+}
+
 export type M365ConsentStepSummary = {
   loadState: M365ConsentLoadState;
   onboardingEnabled: boolean;
+  onboardingAvailability: M365OnboardingAvailability;
   connection: M365ConsentConnectionSummary | null;
 };
 

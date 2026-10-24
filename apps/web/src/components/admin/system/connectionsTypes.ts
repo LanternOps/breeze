@@ -111,3 +111,35 @@ export function isConnectionsReport(value: unknown): value is ConnectionsReport 
   const r = value as Partial<ConnectionsReport>;
   return Array.isArray(r.groups) && typeof r.summary === 'object' && r.summary !== null;
 }
+
+/** Mirrors `ExecutorProbeResult` in apps/api/src/services/system/connections/m365ExecutorProbe.ts (#9324). */
+export type ProbeRouteState = 'present' | 'missing' | 'unknown';
+
+export interface ExecutorProbeView {
+  id: string;
+  configured: boolean;
+  reachable: boolean;
+  latencyMs: number | null;
+  routes: Record<string, ProbeRouteState>;
+  version: { version: string; gitSha: string } | null;
+  versionMatchesApi: boolean | null;
+}
+
+/** Entries that get a "Check now" probe. */
+export const PROBEABLE_ENTRY_IDS: readonly string[] = ['m365-graph-read', 'm365-graph-actions'];
+
+/** The probe list, or null when the body is not the expected shape. */
+export function parseProbeReport(value: unknown): ExecutorProbeView[] | null {
+  const executors = (value as { executors?: unknown } | null)?.executors;
+  if (!Array.isArray(executors)) return null;
+  const ok = executors.every(
+    (e) =>
+      typeof e === 'object' &&
+      e !== null &&
+      typeof (e as ExecutorProbeView).id === 'string' &&
+      typeof (e as ExecutorProbeView).reachable === 'boolean' &&
+      typeof (e as ExecutorProbeView).routes === 'object' &&
+      (e as ExecutorProbeView).routes !== null,
+  );
+  return ok ? (executors as ExecutorProbeView[]) : null;
+}

@@ -8,6 +8,7 @@
     "existingAcceptedNoDetail": "Ponto existente reutilizado",
     "skippedDisabled": "Ignorado — a Restauração do Sistema está desativada neste dispositivo",
     "skippedDefinitionOnly": "Ignorado — atualização somente de definições",
+    "skippedNoMutation": "Desnecessário — nenhuma alteração foi feita, então nenhum ponto de restauração foi criado",
     "unsupported": "Não disponível neste dispositivo",
     "busy": "Ignorado — o serviço de cópia de sombra de volume estava em uso",
     "insufficientPrivileges": "Ignorado — privilégios insuficientes",

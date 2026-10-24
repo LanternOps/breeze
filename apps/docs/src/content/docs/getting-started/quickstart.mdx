@@ -325,25 +325,22 @@ Download and install the Breeze agent on a device. `BREEZE_SERVER` must be the
 URL of your Breeze server **as the target device can reach it** — not
 `localhost`, which on the target device means the target device itself:
 
-```bash
-# On the target device:
-# The enrollment token is REQUIRED — grab it from the Add Device dialog.
-curl -fsSL https://breeze.example.com/api/v1/agents/install.sh | \
-  BREEZE_SERVER=https://breeze.example.com \
-  BREEZE_ENROLL_TOKEN=<your-enrollment-token> \
-  bash
-```
-
-If your server is configured with an org enrollment secret, pass it as an
-**optional** extra gate alongside the token (never instead of it):
+Easiest: open **Devices → Add Device**, switch to the **CLI Commands** tab, pick
+a site, click **Generate token**, and copy the command shown for **Linux/macOS**
+(or **Windows**). The Linux/macOS command looks like this — the dialog fills in
+your real server URL and token:
 
 ```bash
-curl -fsSL https://breeze.example.com/api/v1/agents/install.sh | \
-  BREEZE_SERVER=https://breeze.example.com \
-  BREEZE_ENROLL_TOKEN=<your-enrollment-token> \
-  BREEZE_ENROLLMENT_SECRET=<your-enrollment-secret> \
-  bash
+# On the target device (Linux/macOS):
+f="$(mktemp)" && { curl -fsSL --connect-timeout 10 -o "$f" "https://breeze.example.com/api/v1/agents/install.sh" && head -n1 "$f" | grep -q '^#!' || { echo "[ERROR] Could not fetch the Breeze installer from https://breeze.example.com — verify this machine has network access to your Breeze server." >&2; false; }; } && sudo bash "$f" --server "https://breeze.example.com" --token "<your-enrollment-token>"
 ```
+
+The enrollment token is **required** — it identifies the organization and site.
+If your server is configured with an org enrollment secret, the dialog appends it
+as an **optional** extra gate alongside the token (never instead of it):
+`--enrollment-secret "<your-enrollment-secret>"`. The installer also accepts the
+equivalent `BREEZE_SERVER`, `BREEZE_ENROLL_TOKEN` and `BREEZE_ENROLLMENT_SECRET`
+environment variables.
 
 <Aside type="caution">
   Agents cannot enrol against a `localhost`-only install. Give the server a LAN

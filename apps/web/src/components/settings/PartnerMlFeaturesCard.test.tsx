@@ -70,6 +70,10 @@ describe('PartnerMlFeaturesCard', () => {
       body: JSON.stringify({ settings: { ml: { remediation_suggestions: { enabled: true } } } }),
     });
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(onSaved).toHaveBeenCalledWith({
+      anomalies: { enabled: true, create_alerts: true },
+      remediation_suggestions: { enabled: true },
+    });
     expect((getByTestId('partner-ml-anomalies-enabled') as HTMLInputElement).checked).toBe(true);
   });
 

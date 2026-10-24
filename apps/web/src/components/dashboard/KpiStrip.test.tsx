@@ -1,10 +1,27 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/i18n/format', () => ({ formatNumber: (n: number) => String(n) }));
 
+const viewerRef = vi.hoisted(() => ({
+  current: {
+    isPlatformAdmin: false,
+    permissions: [{ resource: '*', action: '*' }],
+    getScope: () => 'partner',
+    toolSourcesEnabled: false,
+    aiForOfficeEnabled: false,
+    serviceManagementMode: 'native',
+  } as unknown as import('../../lib/navVisibility').NavViewer,
+}));
+vi.mock('../../lib/navVisibility', async (orig) => ({
+  ...(await orig<typeof import('../../lib/navVisibility')>()),
+  useNavViewer: () => viewerRef.current,
+}));
+
 import KpiStrip from './KpiStrip';
+import { decodeFilterFromHash } from '../devices/filterUrl';
+import { readDeviceClassFromHash } from '../devices/deviceClassFilter';
 import type { DashboardQueryState } from '../../hooks/useDashboardQuery';
 import type { AlertsSummary, DeviceStats, PatchCompliance, TicketStats } from './types';
 
@@ -136,5 +153,60 @@ describe('KpiStrip', () => {
 
     expect(screen.getByText('dashboard.emptyDevices.title')).toBeInTheDocument();
     expect(screen.queryByTestId('dashboard-total-devices-card')).not.toBeInTheDocument();
+  });
+});
+
+describe('KpiStrip devices links (#6721)', () => {
+  const hashOf = (href: string | null) => href!.slice(href!.indexOf('#'));
+  const renderStrip = () =>
+    render(
+      <KpiStrip
+        devices={loaded(deviceStats)}
+        alerts={loaded(alertsSummary)}
+        tickets={loaded(ticketStats)}
+        patch={loaded(patchData)}
+        onRetry={() => {}}
+      />
+    );
+
+  beforeEach(() => {
+    viewerRef.current = {
+      isPlatformAdmin: false,
+      permissions: [{ resource: '*', action: '*' }],
+      getScope: () => 'partner',
+      toolSourcesEnabled: false,
+      aiForOfficeEnabled: false,
+      serviceManagementMode: 'native',
+    };
+  });
+
+  it('Total devices → /devices#deviceClass=agent', () => {
+    renderStrip();
+    expect(screen.getByTestId('dashboard-total-devices-card').getAttribute('href')).toBe('/devices#deviceClass=agent');
+  });
+
+  it('Online tile decodes to status equals online + agent, with no ?status=', () => {
+    renderStrip();
+    const href = screen.getByTestId('dashboard-online-card').getAttribute('href');
+    expect(href).not.toContain('?status=');
+    expect(readDeviceClassFromHash(hashOf(href))).toBe('agent');
+    expect(decodeFilterFromHash(hashOf(href))).toEqual({
+      operator: 'AND',
+      conditions: [{ field: 'status', operator: 'equals', value: 'online' }],
+    });
+  });
+
+  it('every tile link has a focus-visible ring', () => {
+    renderStrip();
+    for (const id of ['total-devices', 'online', 'critical', 'warnings', 'tickets', 'patch']) {
+      expect(screen.getByTestId(`dashboard-${id}-card`).className).toMatch(/focus-visible:ring/);
+    }
+  });
+
+  it('a viewer without devices:read gets plain tiles (R4)', () => {
+    viewerRef.current = { ...viewerRef.current, permissions: [{ resource: 'alerts', action: 'read' }] };
+    renderStrip();
+    expect(screen.getByTestId('dashboard-online-card').tagName).not.toBe('A');
+    expect(screen.getByTestId('dashboard-online-card')).toHaveTextContent('40');
   });
 });

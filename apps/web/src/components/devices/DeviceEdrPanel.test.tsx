@@ -13,9 +13,12 @@ function ok(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as Response;
 }
 
+const emptyCoverage = { summary: [], data: [], pagination: { limit: 50, offset: 0, total: 0 } };
+
 // Route by URL + method — never positional (effect-load vs click race).
 function routeFetch(map: { s1?: unknown; huntress?: unknown }) {
   fetchWithAuth.mockImplementation((url: string) => {
+    if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(emptyCoverage));
     if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: map.s1 ?? [], pagination: { total: 0, limit: 50, offset: 0 } }));
     if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: map.huntress ?? [], total: 0, limit: 50, offset: 0 }));
     return Promise.resolve(ok({ data: [] }));
@@ -50,6 +53,7 @@ describe('DeviceEdrPanel isolate', () => {
   it('confirms then POSTs /s1/isolate with the device id', async () => {
     let isolateBody: unknown;
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(emptyCoverage));
       if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [], pagination: { total: 0, limit: 50, offset: 0 } }));
       if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
       if (url === '/s1/isolate') { isolateBody = JSON.parse(String(init?.body)); return Promise.resolve(ok({ data: {} })); }
@@ -67,6 +71,7 @@ describe('DeviceEdrPanel threat actions', () => {
   it('POSTs /s1/threat-action with the threat row id', async () => {
     let body: unknown;
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(emptyCoverage));
       if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [{ id: 't1', threatName: 'Emotet', severity: 'high', status: 'active', detectedAt: '2026-06-20T00:00:00Z' }], pagination: { total: 1, limit: 50, offset: 0 } }));
       if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
       if (url === '/s1/threat-action') { body = JSON.parse(String(init?.body)); return Promise.resolve(ok({ data: {} })); }
@@ -111,5 +116,86 @@ describe('DeviceEdrPanel error + status gating', () => {
     await screen.findByText('Quarantined item');
     expect(screen.queryByTestId('edr-threat-kill-t9')).toBeNull();
     expect(screen.queryByTestId('edr-threat-quarantine-t9')).toBeNull();
+  });
+});
+
+describe('DeviceEdrPanel security agent coverage', () => {
+  const coverageRow = {
+    id: 'c1',
+    orgId: 'org-1',
+    deviceId: 'dev-1',
+    deviceName: 'Device-01',
+    vendor: 'huntress',
+    state: 'gap',
+    reasonCode: 'install_failed',
+    detail: 'Installer exited with code 1603',
+    lastEvaluatedAt: '2026-06-22T00:00:00Z',
+    stateChangedAt: '2026-06-21T00:00:00Z',
+  };
+
+  function routeWithCoverage(coverage: () => Promise<Response>) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [], pagination: { total: 0, limit: 50, offset: 0 } }));
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      if (url.startsWith('/edr/security-agents/coverage')) return coverage();
+      return Promise.resolve(ok({ data: [] }));
+    });
+  }
+
+  it('lists managed security agent rows with vendor, state, reason, detail and since', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [coverageRow], pagination: { limit: 50, offset: 0, total: 1 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    const block = await screen.findByTestId('device-security-agent-coverage');
+    expect(block).toHaveTextContent('Huntress');
+    expect(block).toHaveTextContent('Gap');
+    expect(block).toHaveTextContent('Install failed');
+    expect(block).toHaveTextContent('Installer exited with code 1603');
+    expect(block).toHaveTextContent(/since/i);
+    const url = fetchWithAuth.mock.calls.map((c) => String(c[0])).find((u) => u.startsWith('/edr/security-agents/coverage'));
+    expect(url).toContain('orgId=org-1');
+    expect(url).toContain('deviceId=dev-1');
+  });
+
+  it('falls back to the raw reason code when it is unknown', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [{ ...coverageRow, reasonCode: 'brand_new_reason' }], pagination: { limit: 50, offset: 0, total: 1 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    expect(await screen.findByTestId('device-security-agent-coverage')).toHaveTextContent('brand_new_reason');
+  });
+
+  it('renders no block when there are no rows', async () => {
+    routeWithCoverage(() => Promise.resolve(ok({ summary: [], data: [], pagination: { limit: 50, offset: 0, total: 0 } })));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('device-security-agent-coverage')).toBeNull();
+  });
+
+  it('logs a failed coverage fetch without showing the block or the panel error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    routeWithCoverage(() => Promise.resolve({ ok: false, status: 500, statusText: 'err', json: async () => ({}) } as Response));
+    render(<DeviceEdrPanel deviceId="dev-1" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    await waitFor(() => expect(errSpy).toHaveBeenCalled());
+    expect(screen.queryByTestId('device-security-agent-coverage')).toBeNull();
+    expect(screen.queryByTestId('edr-error')).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('ignores a slow coverage response for a previous device', async () => {
+    let resolveOld: (r: Response) => void = () => {};
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url.startsWith('/edr/security-agents/coverage')) {
+        if (url.includes('deviceId=dev-old')) return new Promise<Response>((r) => { resolveOld = r; });
+        return Promise.resolve(ok({ summary: [], data: [], pagination: { limit: 50, offset: 0, total: 0 } }));
+      }
+      if (url.startsWith('/s1/threats')) return Promise.resolve(ok({ data: [], pagination: { total: 0, limit: 50, offset: 0 } }));
+      if (url.startsWith('/huntress/incidents')) return Promise.resolve(ok({ data: [], total: 0, limit: 50, offset: 0 }));
+      return Promise.resolve(ok({ data: [] }));
+    });
+    const { rerender } = render(<DeviceEdrPanel deviceId="dev-old" orgId="org-1" />);
+    rerender(<DeviceEdrPanel deviceId="dev-new" orgId="org-1" />);
+    await waitFor(() => expect(screen.getByTestId('edr-s1-empty')).toBeInTheDocument());
+    resolveOld(ok({ summary: [], data: [coverageRow], pagination: { limit: 50, offset: 0, total: 1 } }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByTestId('device-security-agent-coverage')).toBeNull();
   });
 });

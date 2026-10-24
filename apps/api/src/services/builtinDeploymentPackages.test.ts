@@ -26,6 +26,17 @@ describe('builtin deployment packages', () => {
     expect(pkg.silentInstallArgsTemplate).toContain('{s1_site_token}');
   });
 
+  it('SentinelOne install args must carry the single-brace site-token placeholder', async () => {
+    const { installArgPlaceholders, installArgsCarryPlaceholders } = await import('./builtinDeploymentPackages');
+    expect(installArgPlaceholders('sentinelone')).toEqual(['{s1_site_token}']);
+    expect(installArgPlaceholders('huntress')).toEqual(['{huntress_acct_key}', '{huntress_org_key}']);
+    expect(installArgsCarryPlaceholders('sentinelone', 'SITE_TOKEN={s1_site_token} /q /NORESTART')).toBe(true);
+    expect(installArgsCarryPlaceholders('sentinelone', 'msiexec /i "{file}" /qn /norestart')).toBe(false);
+    expect(installArgsCarryPlaceholders('sentinelone', 'SITE_TOKEN={{s1_site_token}}')).toBe(false);
+    expect(installArgsCarryPlaceholders('sentinelone', '')).toBe(false);
+    expect(installArgsCarryPlaceholders('sentinelone', null)).toBe(false);
+  });
+
   it('exposes both providers', () => {
     expect(Object.keys(BUILTIN_PACKAGES).sort()).toEqual(['huntress', 'sentinelone']);
   });

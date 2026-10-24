@@ -29,6 +29,7 @@ import { withSystemDbAccessContext } from '../db';
 import { getSessionMessages } from '../services/aiAgent';
 import { streamingSessionManager } from '../services/streamingSessionManager';
 import { checkBudgetDetailed } from '../services/aiCostTracker';
+import { aiDenialBody } from '../services/aiDenialCode';
 import {
   isAiBudgetLockTimeout,
   markAiBudgetReservationIndeterminate,
@@ -125,7 +126,7 @@ export async function continueAiSession(
   // reserveAiBudget enforces caps, NOT prepaid credits or the plan gate —
   // check them with the resolved funding before reserving.
   const denial = await checkBudgetDetailed(session.orgId, summaryModel.funding);
-  if (denial) return c.json({ error: denial.message }, 402);
+  if (denial) return c.json(aiDenialBody(denial), 402);
 
   const binding = turnBindingFrom(summaryModel);
   // SESSIONLESS on purpose (ticket-draft precedent): the summary is not a

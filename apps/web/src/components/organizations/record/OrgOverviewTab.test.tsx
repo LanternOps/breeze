@@ -149,11 +149,11 @@ describe('OrgOverviewTab — fleet strip (#9020)', () => {
     expect(devices.tagName).toBe('A');
     expect(devices).toHaveAttribute('href', '#devices');
     expect(screen.getByTestId('org-overview-stat-tickets')).toHaveAttribute('href', '#tickets');
-    // Alerts have no record tab, and /alerts scopes by the org switcher rather
-    // than an orgId param — a link could open another customer's alerts.
+    // Alerts have no record tab; /alerts honours ?orgId= by switching the
+    // working org to this one (#9108), so the stat links there.
     const alertsStat = screen.getByTestId('org-overview-stat-alerts');
-    expect(alertsStat.tagName).not.toBe('A');
-    expect(alertsStat.closest('a')).toBeNull();
+    expect(alertsStat.tagName).toBe('A');
+    expect(alertsStat).toHaveAttribute('href', `/alerts?orgId=${ORG_ID}`);
   });
 
   it('omits the Online metric — no big 0 — when every device is offline', async () => {

@@ -1,7 +1,7 @@
 import { exportJWK, generateKeyPair } from 'jose';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const ENV_KEYS = ['MCP_OAUTH_ENABLED', 'OAUTH_ISSUER', 'OAUTH_RESOURCE_URL', 'OAUTH_JWKS_PRIVATE_JWK'] as const;
+const ENV_KEYS = ['MCP_OAUTH_ENABLED', 'OAUTH_ISSUER', 'OAUTH_RESOURCE_URL', 'OAUTH_JWKS_PRIVATE_JWK', 'OAUTH_CIMD_ENABLED'] as const;
 const clearEnv = () => ENV_KEYS.forEach((key) => delete process.env[key]);
 const loadApp = async () => new Hono().route('/.well-known', (await import('./oauthWellKnown')).wellKnownRoutes);
 const generatedPrivateJwk = async () => {
@@ -46,6 +46,29 @@ describe('wellKnownRoutes', () => {
       resource_indicators_supported: true,
     });
   });
+  // B-W03 (#6157, D-B20/D-B21).
+  it('AS metadata includes authorization_response_iss_parameter_supported: true', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    process.env.OAUTH_ISSUER = 'https://auth.example';
+    vi.resetModules();
+    const body = await (await (await loadApp()).request('/.well-known/oauth-authorization-server')).json();
+    expect(body.authorization_response_iss_parameter_supported).toBe(true);
+  });
+
+  it('AS metadata includes client_id_metadata_document_supported only when OAUTH_CIMD_ENABLED', async () => {
+    process.env.MCP_OAUTH_ENABLED = 'true';
+    process.env.OAUTH_ISSUER = 'https://auth.example';
+    vi.resetModules();
+    const off = await (await (await loadApp()).request('/.well-known/oauth-authorization-server')).json();
+    expect(off).not.toHaveProperty('client_id_metadata_document_supported');
+
+    process.env.OAUTH_CIMD_ENABLED = 'true';
+    vi.resetModules();
+    const on = await (await (await loadApp()).request('/.well-known/oauth-authorization-server')).json();
+    expect(on.client_id_metadata_document_supported).toBe(true);
+    expect(on.registration_endpoint).toBe('https://auth.example/oauth/reg');
+  });
+
   it('serves OAuth protected resource metadata', async () => {
     process.env.MCP_OAUTH_ENABLED = 'true';
     process.env.OAUTH_ISSUER = 'https://auth.example';

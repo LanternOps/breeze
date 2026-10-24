@@ -27,7 +27,7 @@
     "viewTask": "Apri attività",
     "badgeTitle": "Creato da un'attività dell'Operatore IA. Spunta quando hai finito e l'attività riprende."
   },
-  "editDoneWarning": "Modificare un passaggio completato cancella chi lo ha completato e quando.",
+  "editDoneWarning": "Modificare il testo del passaggio cancella chi lo ha completato e quando. Modificando solo la nota la spunta resta.",
   "resolveConfirm": {
     "title": "Checklist incompleta",
     "body_one": "{{count}} passaggio su {{total}} non è spuntato. Risolvere comunque?",
@@ -74,7 +74,20 @@
       "loadFailed": "Impossibile caricare i modelli di checklist.",
       "saveFailed": "Impossibile salvare il modello di checklist.",
       "applyFailed": "Impossibile applicare il modello di checklist.",
-      "operatorStepWaiting": "Un'attività dell'Operatore sta aspettando un passaggio non spuntato di questo ticket, quindi il modello non può sostituirli. Scegli “Aggiungi questi passaggi alla checklist esistente”, spunta il passaggio quando hai finito, oppure ferma prima l'attività."
+      "operatorStepWaiting": "Un'attività dell'Operatore sta aspettando un passaggio non spuntato di questo ticket, quindi il modello non può sostituirli. Scegli “Aggiungi questi passaggi alla checklist esistente”, spunta il passaggio quando hai finito, oppure ferma prima l'attività.",
+      "saveAsFailed": "Impossibile salvare la checklist come modello.",
+      "noSteps": "Questo ticket non ha passaggi riutilizzabili da salvare.",
+      "duplicateFailed": "Impossibile duplicare il modello di checklist."
+    },
+    "duplicate": "Duplica",
+    "duplicateSuccess": "Duplicato come “{{name}}”.",
+    "saveAs": {
+      "cta": "Salva come modello",
+      "name": "Nome del modello",
+      "allOrganizations": "Rendi disponibile a tutte le organizzazioni",
+      "submit": "Salva modello",
+      "success": "Salvata come modello “{{name}}”.",
+      "skipped": "Esclusi: {{operator}} passaggio/i Operator e {{duplicates}} passaggio/i ripetuto/i."
     }
   }
 }

@@ -2,6 +2,8 @@
  * Service deliverable routes (#5573 W01), mounted at `/orgs`:
  *
  *   /orgs/:orgId/deliverables[/:id[/occurrences]]
+ *   /orgs/:orgId/deliverables/move
+ *   /orgs/:orgId/deliverables/occurrences/reschedule  (bulk, #9314)
  *   /orgs/:orgId/deliverables/occurrences/:oId/{deliver,waive,reopen,reschedule,evidence[/:eId]}
  *
  * A sibling `/orgs` router in the orgSummary / orgArchive style: it owns its
@@ -14,7 +16,7 @@
  * paths are registered BEFORE `/:orgId/deliverables/:id` so "occurrences" is
  * never captured as a deliverable id.
  */
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireScope, requirePermission, type AuthContext } from '../middleware/auth';
@@ -23,11 +25,12 @@ import {
   applyTemplateSetSchema,
   createDeliverableSchema, updateDeliverableSchema, listDeliverablesQuerySchema,
   deliverOccurrenceSchema, waiveOccurrenceSchema, rescheduleOccurrenceSchema,
-  addEvidenceSchema, listOccurrencesQuerySchema,
+  bulkRescheduleOccurrencesSchema,
+  addEvidenceSchema, listOccurrencesQuerySchema, moveDeliverablesSchema,
 } from '@breeze/shared';
 import {
-  listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable,
-  listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence,
+  listDeliverables, getDeliverable, createDeliverable, updateDeliverable, deactivateDeliverable, moveDeliverables,
+  listOccurrences, deliverOccurrence, waiveOccurrence, reopenOccurrence, rescheduleOccurrence, rescheduleOccurrences,
   addEvidence, removeEvidence, getOccurrenceOr404,
   type DeliverableActor,
 } from '../services/serviceDeliverableService';
@@ -43,6 +46,22 @@ serviceDeliverableRoutes.use('*', authMiddleware);
 const scopes = requireScope('partner', 'system');
 const readPerm = requirePermission(PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
 const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
+const agreementsReadPerm = requirePermission(PERMISSIONS.AGREEMENTS_READ.resource, PERMISSIONS.AGREEMENTS_READ.action);
+
+/**
+ * #9312: citing a signed agreement as evidence also needs `agreements:read`
+ * — the same gate as listing or downloading it (routes/contracts/documents.ts).
+ * Without it, `contracts:write` alone would let a caller probe signed-agreement
+ * ids (404 vs 200). Runs after the JSON validator, on either body shape: a
+ * single evidence ref (POST …/evidence) or `{ evidence: [...] }` (…/deliver).
+ */
+async function agreementsReadForSignedAgreementEvidence(c: Context, next: Next) {
+  const body = (c.req as unknown as { valid: (t: 'json') => unknown }).valid('json') as
+    { kind?: string; evidence?: Array<{ kind: string }> };
+  const refs = Array.isArray(body.evidence) ? body.evidence : [body];
+  if (refs.some((r) => r.kind === 'contract_document')) return agreementsReadPerm(c, next);
+  return next();
+}
 
 const orgParam = z.object({ orgId: z.string().guid() });
 const deliverableParam = orgParam.extend({ id: z.string().guid() });
@@ -110,6 +129,7 @@ serviceDeliverableRoutes.post(
   '/:orgId/deliverables/occurrences/:oId/deliver',
   scopes, writePerm,
   zValidator('param', occurrenceParam), zValidator('json', deliverOccurrenceSchema),
+  agreementsReadForSignedAgreementEvidence,
   async (c) => {
     const { orgId, oId } = c.req.valid('param');
     try {
@@ -154,10 +174,28 @@ serviceDeliverableRoutes.post(
   },
 );
 
+// #9314 — bulk reschedule. 200 with per-id results; a refused/foreign id is
+// reported in its own row (404 for a foreign org's id), never a whole-request
+// failure and never a cross-tenant write.
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/occurrences/reschedule',
+  scopes, writePerm,
+  zValidator('param', orgParam), zValidator('json', bulkRescheduleOccurrencesSchema),
+  async (c) => {
+    const { orgId } = c.req.valid('param');
+    const { occurrenceIds, dueAt, shiftDays } = c.req.valid('json');
+    try {
+      const input = dueAt !== undefined ? { occurrenceIds, dueAt } : { occurrenceIds, shiftDays: shiftDays as number };
+      return c.json({ data: { results: await rescheduleOccurrences(orgId, input, deliverableActorFrom(c)) } });
+    } catch (err) { return handleDeliverableError(c, err); }
+  },
+);
+
 serviceDeliverableRoutes.post(
   '/:orgId/deliverables/occurrences/:oId/evidence',
   scopes, writePerm,
   zValidator('param', occurrenceParam), zValidator('json', addEvidenceSchema),
+  agreementsReadForSignedAgreementEvidence,
   async (c) => {
     const { orgId, oId } = c.req.valid('param');
     try {
@@ -233,6 +271,19 @@ serviceDeliverableRoutes.post(
         ),
       });
     } catch (err) { return handleTemplateError(c, err); }
+  },
+);
+
+// ── Bulk move onto another contract (#9302; literal segment — MUST precede `/:id`) ──
+
+serviceDeliverableRoutes.post(
+  '/:orgId/deliverables/move',
+  scopes, writePerm,
+  zValidator('param', orgParam), zValidator('json', moveDeliverablesSchema),
+  async (c) => {
+    try {
+      return c.json({ data: await moveDeliverables(c.req.valid('param').orgId, c.req.valid('json'), deliverableActorFrom(c)) });
+    } catch (err) { return handleDeliverableError(c, err); }
   },
 );
 

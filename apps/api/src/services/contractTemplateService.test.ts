@@ -567,3 +567,56 @@ describe('contractTemplateService.getTemplateUsage', () => {
     })).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// assertTemplateVersionUsable — extracted from quoteService.assertContractBlockValid (#8865 W1a)
+// ---------------------------------------------------------------------------
+
+describe('assertTemplateVersionUsable', () => {
+  const ref = { templateId: 't1', templateVersionId: 'v1' };
+  const target = { orgId: 'o1', partnerId: 'p1' };
+  it('rejects an unpublished version (422 VERSION_NOT_PUBLISHED)', async () => {
+    queueResult([{ templateId: 't1', status: 'draft' }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target))
+      .rejects.toMatchObject({ status: 422, code: 'VERSION_NOT_PUBLISHED' });
+  });
+  it('rejects a missing version', async () => {
+    queueResult([]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).rejects.toMatchObject({ status: 422, code: 'VERSION_NOT_PUBLISHED' });
+  });
+  it('rejects a version of a different template', async () => {
+    queueResult([{ templateId: 'OTHER', status: 'published' }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).rejects.toMatchObject({ code: 'VERSION_NOT_PUBLISHED' });
+  });
+  it('rejects an archived template (422 TEMPLATE_ARCHIVED)', async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([{ status: 'archived', orgId: null, partnerId: 'p1' }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).rejects.toMatchObject({ status: 422, code: 'TEMPLATE_ARCHIVED' });
+  });
+  it('rejects a missing template (422 TEMPLATE_ARCHIVED)', async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).rejects.toMatchObject({ code: 'TEMPLATE_ARCHIVED' });
+  });
+  it("rejects another partner's partner-wide template (422 TEMPLATE_NOT_VISIBLE)", async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([{ status: 'active', orgId: null, partnerId: 'p2' }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).rejects.toMatchObject({ status: 422, code: 'TEMPLATE_NOT_VISIBLE' });
+  });
+  it("rejects another org's org-owned template", async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([{ status: 'active', orgId: 'o2', partnerId: null }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).rejects.toMatchObject({ code: 'TEMPLATE_NOT_VISIBLE' });
+  });
+  it('accepts a published version of an active partner-wide template under the same partner', async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).resolves.toBeUndefined();
+  });
+  it("accepts the target org's own org-owned template", async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([{ status: 'active', orgId: 'o1', partnerId: null }]);
+    await expect(svc.assertTemplateVersionUsable(ref, target)).resolves.toBeUndefined();
+  });
+  it('reads through the caller-supplied executor (tx) when one is passed', async () => {
+    queueResult([{ templateId: 't1', status: 'published' }]); queueResult([{ status: 'active', orgId: null, partnerId: 'p1' }]);
+    const realSelect = (db as unknown as { select: (...a: unknown[]) => unknown }).select;
+    const select = vi.fn((...args: unknown[]) => realSelect(...args));
+    await svc.assertTemplateVersionUsable(ref, target, { select } as never);
+    expect(select).toHaveBeenCalledTimes(2);
+  });
+});

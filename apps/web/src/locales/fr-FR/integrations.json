@@ -7,6 +7,7 @@
     "unavailable": "Les détails de la connexion ne sont pas disponibles.",
     "onboardingUnavailable": "L’intégration de lecture Microsoft Graph du client n’est pas activée pour cette organisation.",
     "notAvailableOnInstance": "Pas encore disponible sur cette instance de Breeze.",
+    "notEnabledForOrg": "Pas encore activé pour cette organisation. Demandez à votre administrateur Breeze de l'activer.",
     "callback": {
       "active": "Le consentement Microsoft est terminé. L’état actualisé de la connexion est affiché ci-dessous.",
       "degraded": "Le consentement Microsoft est terminé, mais la connexion nécessite une intervention. Les détails actualisés sont affichés ci-dessous."
@@ -82,7 +83,9 @@
         "intune_devices": "Appareils Intune",
         "ca_policies": "Accès conditionnel",
         "skus": "Licences",
-        "secure_score": "Niveau de sécurité"
+        "secure_score": "Niveau de sécurité",
+        "signin_events": "Événements de connexion",
+        "unknown": "Type de données non reconnu"
       }
     },
     "errors": {
@@ -91,6 +94,7 @@
       "consent_cancelled": "Le consentement Microsoft a été annulé.",
       "conditional_access_blocked": "Microsoft a bloqué cette connexion : la stratégie d'accès conditionnel du locataire l'a interrompue (par exemple une vérification de l'appareil). Réessayez depuis un navigateur approuvé par le locataire ou adressez-vous à l'administrateur du locataire.",
       "consent_provider_error": "Microsoft a renvoyé une erreur lors de la connexion. Réessayez ; si l'erreur se reproduit, consultez les journaux de connexion du locataire.",
+      "user_consent_blocked": "Votre organisation exige qu'un administrateur approuve la connexion à cette application. Connectez-vous avec un administrateur général, ou approuvez-la dans Entra → Applications d'entreprise → Demandes de consentement administrateur.",
       "admin_role_required": "Un administrateur général ou un administrateur de rôle privilégié doit accorder le consentement.",
       "tenant_mismatch": "L'administrateur avec lequel vous vous êtes connecté appartient à un autre locataire Microsoft que cette connexion. Connectez-vous avec un administrateur du locataire connecté.",
       "tenant_already_bound": "Ce locataire Microsoft est déjà connecté à une autre organisation.",
@@ -103,6 +107,7 @@
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
+      "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
     },
     "stepTitle": "Accès en lecture",
@@ -124,6 +129,7 @@
     "unavailable": "Les détails de la connexion ne sont pas disponibles.",
     "onboardingUnavailable": "L’intégration des actions Microsoft Graph du client n’est pas activée pour cette organisation.",
     "notAvailableOnInstance": "Pas encore disponible sur cette instance de Breeze.",
+    "notEnabledForOrg": "Pas encore activé pour cette organisation. Demandez à votre administrateur Breeze de l'activer.",
     "callback": {
       "active": "Le consentement Microsoft est terminé. L’état actualisé de la connexion est affiché ci-dessous.",
       "degraded": "Le consentement Microsoft est terminé, mais la connexion nécessite une intervention. Les détails actualisés sont affichés ci-dessous."
@@ -175,6 +181,7 @@
       "consent_cancelled": "Le consentement Microsoft a été annulé.",
       "conditional_access_blocked": "Microsoft a bloqué cette connexion : la stratégie d'accès conditionnel du locataire l'a interrompue (par exemple une vérification de l'appareil). Réessayez depuis un navigateur approuvé par le locataire ou adressez-vous à l'administrateur du locataire.",
       "consent_provider_error": "Microsoft a renvoyé une erreur lors de la connexion. Réessayez ; si l'erreur se reproduit, consultez les journaux de connexion du locataire.",
+      "user_consent_blocked": "Votre organisation exige qu'un administrateur approuve la connexion à cette application. Connectez-vous avec un administrateur général, ou approuvez-la dans Entra → Applications d'entreprise → Demandes de consentement administrateur.",
       "admin_role_required": "Un administrateur général ou un administrateur de rôle privilégié doit accorder le consentement.",
       "tenant_mismatch": "L'administrateur avec lequel vous vous êtes connecté appartient à un autre locataire Microsoft que cette connexion. Connectez-vous avec un administrateur du locataire connecté.",
       "tenant_already_bound": "Ce locataire Microsoft est déjà connecté à une autre organisation.",
@@ -186,6 +193,7 @@
       "manifest_stale": "Les autorisations accordées utilisent un ancien manifeste. Accordez à nouveau le consentement.",
       "organization_probe_failed": "La vérification de l’organisation Microsoft a échoué. Retestez la connexion.",
       "executor_unavailable": "Le service de vérification n’est pas disponible. Réessayez plus tard.",
+      "executor_unavailablePending": "La connexion n’a pas pu aboutir. Réessayez avec « Connecter » ; si l’échec persiste, contactez le support.",
       "unknown": "La vérification nécessite votre attention. Retestez la connexion ou redémarrez le consentement."
     },
     "stepTitle": "Actions d'administration",
@@ -258,8 +266,10 @@
   "m365TenantPanel": {
     "loading": "Chargement des connexions Microsoft 365.",
     "consentUnavailable": "La connexion par consentement n'est pas encore disponible sur cette instance Breeze.",
+    "consentNotEnabledForOrg": "La connexion par consentement n'est pas encore activée pour cette organisation. Demandez à votre administrateur Breeze de l'activer.",
     "selectOrganization": "Sélectionnez une organisation pour connecter son locataire Microsoft 365.",
     "noTenantForOrg": "Aucun locataire Microsoft 365 connecté à {{orgName}}",
+    "tenantConnectedToOrg": "{{tenantName}} · connecté à {{orgName}}",
     "noTenant": "Aucun locataire Microsoft 365 connecté à cette organisation",
     "tenantId": "ID du locataire",
     "copyTenantId": "Copier l'ID du locataire",
@@ -330,6 +340,9 @@
     "retry": "Réessayer",
     "since": "depuis {{time}}",
     "fix": "Corriger",
+    "remedy": {
+      "reconnect": "Reconnectez-vous depuis l’application cliente (p. ex. ajoutez de nouveau le serveur MCP). Aucune action dans Breeze."
+    },
     "truncated": "Affichage des {{count}} premiers",
     "recentlyResolved": "Résolus récemment ({{count}})",
     "resolution": {
@@ -537,6 +550,11 @@
     "pageOf": "Page {{current}} de {{total}}"
   },
   "integrationsPage": {
+    "scopeBar": {
+      "configuringFor": "Configuration des intégrations pour",
+      "thisOrganization": "cette organisation",
+      "change": "Changer"
+    },
     "webhooks": "Webhooks",
     "notifications": "Notifications",
     "security": "Sécurité",
@@ -579,7 +597,7 @@
     "hidePassword": "Masquer le mot de passe",
     "portalLabelToggle": "Afficher le nom du fournisseur dans le portail client",
     "portalLabelHelp": "Désactivé par défaut : les clients voient « Sauvegarde cloud infogérée » au lieu du nom de l'éditeur.",
-    "credentialsHelp": "Créez un utilisateur de console Cove dédié, en lecture seule, avec un mot de passe unique et sans authentification à deux facteurs. Breeze lit uniquement l'état et ne modifie rien dans Cove.",
+    "credentialsHelp": "Créez un utilisateur API Cove (Management → Users → API Users) sous votre client de premier niveau. Saisissez le nom de ce client comme nom du partenaire, le nom de connexion de l'utilisateur API comme nom d'utilisateur et son jeton comme mot de passe. Breeze lit uniquement l'état et ne modifie rien dans Cove.",
     "test": "Tester la connexion",
     "syncNow": "Synchroniser maintenant",
     "reauthRequired": "Identifiants refusés",
@@ -647,7 +665,6 @@
     "microsoft365IntegrationIsNotEnabledOnThis": "La connexion directe héritée n’est pas activée sur cette instance. ",
     "anAdministratorEnablesItBySetting": "Un administrateur l’active en définissant",
     "onTheAPIServerThenReloadingThisPage": "sur le serveur API, puis je recharge cette page. ",
-    "connectAnEntraAzureADAppRegistrationSo2": "Connectez une inscription à une application Entra (Azure AD) afin que l’assistant IA puisse rechercher les utilisateurs, gérer des groupes, désactiver les comptes et réinitialiser les mots de passe du locataire de cette organisation. ",
     "connection": "Connexion",
     "enterTheTenantIdAppClientIdAnd": "Saisissez l’identifiant locataire, l’identifiant de l’application (client) et un secret client à partir de votre inscription à l’application Entra. Breeze effectue un appel Graph en direct pour vérifier les identifiants avant d’enregistrer. ",
     "howToGetTheTenantIdAppId": "Comment obtenir l’identifiant locataire, l’identifiant de l’application et le secret client",
@@ -677,7 +694,6 @@
     "permissionsListedBelowThen": "les autorisations listées ci-dessous, alors",
     "grantAdminConsent": "Accorder le consentement de l’administration",
     "tenantID": "Locataire ID",
-    "contosoOnmicrosoftComOrTenantGUID": "contoso.onmicrosoft.com ou GUID locataire",
     "appClientID": "ID d’application (client)",
     "applicationClientId": "ID application (client)",
     "clientSecret": "Secret client ",
@@ -699,7 +715,25 @@
     "saveAndVerify": "Enregistrer et vérifier",
     "legacyBadge": "Ancienne méthode",
     "precedenceNote": "Cette connexion directe (ancienne méthode) a priorité sur la connexion par consentement pour ce locataire.",
-    "disconnectConfirm": "Déconnecter la connexion directe (ancienne méthode) ? Breeze supprime les identifiants enregistrés de l'inscription d'application. L'inscription d'application reste dans Microsoft Entra."
+    "disconnectConfirm": "Déconnecter la connexion directe (ancienne méthode) ? Breeze supprime les identifiants enregistrés de l'inscription d'application. L'inscription d'application reste dans Microsoft Entra.",
+    "legacyHeading": "Microsoft 365 : inscription d’application héritée (assistant IA uniquement)",
+    "legacyHeadingForOrg": "Microsoft 365 : inscription d’application héritée (assistant IA uniquement) pour {{orgName}}",
+    "legacyScopeSummary": "Une inscription d’application Entra avec secret client pour le locataire Entra de cette organisation. Elle ne sert qu’aux actions de l’assistant IA listées ci-dessous.",
+    "powersHeading": "Permet",
+    "powersList": "Six actions de l’assistant IA : recherche d’utilisateur, activité de connexion, liste des groupes, membres d’un groupe, désactivation d’utilisateur et réinitialisation de mot de passe.",
+    "doesNotPowerHeading": "Ne permet pas",
+    "doesNotPowerSync": "La synchronisation du locataire (utilisateurs, licences, connexions, accès conditionnel, Secure Score)",
+    "doesNotPowerQueryTools": "Les outils IA et MCP",
+    "doesNotPowerReports": "Les rapports et preuves M365 qui en dépendent",
+    "useConnectWithMicrosoft": "Utilisez plutôt « Se connecter avec Microsoft » ci-dessus.",
+    "searchAllApplicationsFirst": ". Avant de créer une nouvelle application, recherchez dans ",
+    "allApplications": "Toutes les applications",
+    "searchAllApplicationsFirst2": " (et non « Applications que je possède ») une application Breeze existante dans ce locataire Entra. ",
+    "tenantIdGuidPlaceholder": "ID de locataire (GUID), p. ex. 00000000-0000-0000-0000-000000000000",
+    "tenantIdGuidHint": "Utilisez l’ID de l’annuaire (locataire), un GUID, depuis la vue d’ensemble de l’inscription d’application Entra, et non le domaine contoso.onmicrosoft.com.",
+    "savingRequiresMfa": " L'enregistrement nécessite une vérification MFA.",
+    "clientSecretPlaceholder": "secret client de l'application",
+    "clientSecretStoredPlaceholder": "•••••••••• (stocké, chiffré)"
   },
   "monitoringIntegration": {
     "deviceHealth": "Santé des dispositifs",

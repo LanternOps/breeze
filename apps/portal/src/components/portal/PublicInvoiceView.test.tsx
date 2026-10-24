@@ -15,7 +15,9 @@ function detail(overrides: Partial<PublicInvoiceDetail> = {}): PublicInvoiceDeta
       id: 'inv-1', invoiceNumber: 'INV-2026-0001', status: 'sent', currencyCode: 'USD',
       issueDate: '2026-08-01', dueDate: '2026-08-31', total: '100.00', amountPaid: '0.00',
       balance: '100.00', depositDue: null, subtotal: '100.00', taxTotal: '0.00', taxRate: null,
+      displayStatus: 'sent',
     },
+    documentLocale: 'en',
     lines: [],
     chargeNow: { amount: '100.00', isDeposit: false },
     payable: true,
@@ -103,7 +105,7 @@ describe('PublicInvoiceView — autopay payment waiting on the bank (off-session
 
 // Visual QA 2026-10-05: one paper, identical on the public and portal pages.
 describe('PublicInvoiceView — paper and rail layout', () => {
-  const long = { name: 'Managed services for the whole office including https://very-long-unbroken-host-name.example.internal/path/segment', description: '',
+  const long = { id: 'long-1', name: 'Managed services for the whole office including https://very-long-unbroken-host-name.example.internal/path/segment', description: '',
     quantity: '1.00', unitPrice: '1234567.00', lineTotal: '1234567.00', taxable: false, ticketNumber: null };
   it('the payment rail sticks at lg from its grid item, not from inside it (V-4)', () => {
     render(<PublicInvoiceView token="t" initial={detail()} />);
@@ -115,13 +117,30 @@ describe('PublicInvoiceView — paper and rail layout', () => {
     render(<PublicInvoiceView token="t" initial={detail({ lines: [long] as never })} />);
     const cell = screen.getByText(long.name).closest('td')!;
     expect(cell).toHaveClass('[overflow-wrap:anywhere]');
-    const amount = screen.getAllByText('$1,234,567.00').find(el => el.tagName === 'TD')!;
+    const amount = screen.getAllByText('$1,234,567.00').map(el => el.closest('td')).find(td => td?.className.includes('font-medium'))!;
     expect(amount).toHaveClass('whitespace-nowrap');
+  });
+  it('the Pay button and the sign-in note sit outside the document root', () => {
+    render(<PublicInvoiceView token="t" initial={detail()} />);
+    const root = screen.getByTestId('document-root');
+    expect(root.contains(screen.getByTestId('public-invoice-pay'))).toBe(false);
+    expect(root.contains(screen.getByText(/Have a customer portal account/))).toBe(false);
+  });
+  it('sets the partner accent on its wrapper after the client fetch (D17)', () => {
+    render(<PublicInvoiceView token="t" initial={detail({ branding: { ...detail().branding, primaryColor: '#0a7c5c' } })} />);
+    expect(screen.getByTestId('public-invoice-paper').style.getPropertyValue('--doc-accent')).toBe('#0a7c5c');
+  });
+  it('a void invoice keeps its no-amounts state and never builds the document', () => {
+    render(<PublicInvoiceView token="t" initial={detail({ invoice: { id: 'inv-1', invoiceNumber: 'INV-2026-0001', status: 'void' } as never })} />);
+    expect(screen.getByTestId('public-invoice-void')).toBeInTheDocument();
+    expect(screen.queryByTestId('document-root')).toBeNull();
   });
   it('the balance-due figure speaks the serif, and the paper dates are long (V-26, V-27)', () => {
     render(<PublicInvoiceView token="t" initial={detail()} />);
-    expect(screen.getByTestId('public-invoice-balance')).toHaveClass('font-display');
-    expect(screen.getByText('August 31, 2026')).toBeInTheDocument();
-    expect(screen.getByText('August 1, 2026')).toBeInTheDocument();
+    // The shared document renders its hero in the document face (doc-font-display) and
+    // its dates through the shared model (documentDate), identical on every surface.
+    expect(screen.getByTestId('document-totals-hero').querySelector('.doc-font-display')).not.toBeNull();
+    expect(screen.getByText('Aug 31, 2026')).toBeInTheDocument();
+    expect(screen.getByText('Aug 01, 2026')).toBeInTheDocument();
   });
 });

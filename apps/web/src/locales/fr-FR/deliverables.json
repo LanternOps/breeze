@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Livrables de service",
+    "pausedDraft": "En pause jusqu'à l'activation du contrat. Un brouillon n'ouvre aucun ticket ; à l'activation, les livrables non commencés sont déplacés à la date de début du contrat (ou à aujourd'hui, si elle est passée).",
     "empty": "Aucun livrable pour l'instant. Ajoutez les rapports et revues récurrents dus à ce client."
   },
   "table": {
@@ -46,7 +47,8 @@
     "addEvidence": "Ajouter un justificatif",
     "removeEvidence": "Retirer le justificatif",
     "save": "Enregistrer",
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "retry": "Réessayer"
   },
   "form": {
     "name": "Nom",
@@ -90,6 +92,7 @@
     "evidence": "Justificatifs",
     "noEvidence": "Aucun justificatif joint",
     "late": "En retard",
+    "awaitingEvidenceHint": "Ticket résolu — joignez un justificatif pour terminer",
     "rescheduledFrom": "Replanifiée depuis le {{date}}",
     "deliveryNote": "Note de livraison",
     "waivedReason": "Motif de la dispense",
@@ -100,11 +103,23 @@
     "upload": "Téléverser",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Afficher la liste de contrôle",
-    "hideChecklist": "Masquer la liste de contrôle"
+    "hideChecklist": "Masquer la liste de contrôle",
+    "linkDocument": "Lier un document existant",
+    "linkDocumentSelect": "Choisir un document à lier comme preuve",
+    "linkDocumentLoading": "Chargement des documents…",
+    "linkDocumentPlaceholder": "Choisir un document…",
+    "linkDocumentEmpty": "Aucun document dans la bibliothèque de cette organisation pour le moment.",
+    "linkAgreement": "Lier une convention signée",
+    "linkAgreementSelect": "Choisir une convention signée à lier comme preuve",
+    "linkAgreementLoading": "Chargement des conventions signées…",
+    "linkAgreementPlaceholder": "Choisir une convention signée…",
+    "linkAgreementEmpty": "Aucune convention signée pour cette organisation pour le moment.",
+    "link": "Lier"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",
     "document": "Document",
+    "signedAgreement": "Convention signée",
     "reportRunId": "Identifiant de l'exécution de rapport"
   },
   "upcoming": {
@@ -123,7 +138,11 @@
     "uploadFailed": "Impossible de téléverser le fichier justificatif.",
     "tooLarge": "Ce fichier dépasse 10 Mo.",
     "unsupportedType": "Seuls les fichiers PDF, JPEG, PNG et WebP peuvent être joints.",
-    "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu."
+    "storageUnavailable": "Le stockage de documents est indisponible pour le moment. Réessayez sous peu.",
+    "linkFailed": "Impossible de lier le document.",
+    "libraryLoadFailed": "Impossible de charger la bibliothèque de documents.",
+    "agreementsLoadFailed": "Impossible de charger les conventions signées.",
+    "agreementsForbidden": "Vous n'avez pas l'autorisation de consulter les conventions signées."
   },
   "confirm": {
     "deactivate": "Désactiver {{name}} ? Les occurrences ouvertes seront clôturées et aucune nouvelle ne sera planifiée.",
@@ -169,7 +188,8 @@
     "evidenceAdded": "Justificatif ajouté",
     "evidenceRemoved": "Justificatif retiré",
     "deactivated": "Livrable désactivé",
-    "evidenceUploaded": "Justificatif téléversé"
+    "evidenceUploaded": "Justificatif téléversé",
+    "evidenceLinked": "Document lié comme preuve"
   },
   "templates": {
     "pageTitle": "Modèles de livrables",
@@ -232,5 +252,33 @@
       "itemDeleted": "Livrable retiré",
       "applied": "Ensemble de modèles appliqué"
     }
+  },
+  "move": {
+    "action": "Déplacer vers un contrat…",
+    "toTitle": "Déplacer des livrables vers un contrat",
+    "selected": "Sélectionnés : {{count}}",
+    "selectRow": "Sélectionner {{name}}",
+    "target": "Contrat cible",
+    "confirm": "Déplacer",
+    "moved": "Livrables déplacés",
+    "hereAction": "Déplacer ici des livrables depuis…",
+    "hereTitle": "Déplacer des livrables ici",
+    "hereHelp": "Choisissez des livrables parmi les autres contrats de cette organisation pour les déplacer vers celui-ci.",
+    "hereEmpty": "Il n'y a aucun autre livrable dans cette organisation.",
+    "collision": "Rien n'a été déplacé. Ces noms existent déjà dans le contrat cible : {{names}}"
+  },
+  "bulk": {
+    "select": "Sélectionner {{name}}",
+    "selectAll": "Sélectionner tous les livrables",
+    "count_one": "{{count}} sélectionné",
+    "count_other": "{{count}} sélectionnés",
+    "reschedule": "Reporter la sélection",
+    "clear": "Effacer",
+    "newDate": "Nouvelle date d’échéance",
+    "done_one": "{{count}} occurrence reportée",
+    "done_other": "{{count}} occurrences reportées",
+    "partial": "{{moved}} reportées, {{refused}} n’ont pas pu être déplacées",
+    "none": "Aucun des livrables sélectionnés n’a d’occurrence ouverte à reporter.",
+    "failed": "Impossible de reporter les occurrences sélectionnées."
   }
 }

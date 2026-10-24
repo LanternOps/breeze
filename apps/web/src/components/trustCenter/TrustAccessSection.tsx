@@ -13,6 +13,7 @@ import {
 } from '@/lib/api/trustPageAccess';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { handleActionError, runAction } from '@/lib/runAction';
+import { useEmailConfigured } from '@/lib/useEmailConfigured';
 
 const STATUSES: TrustAccessRequestStatus[] = ['pending_approval', 'pending_verification', 'approved', 'denied', 'revoked'];
 const ERROR_KEYS: Record<string, string> = {
@@ -35,6 +36,8 @@ export default function TrustAccessSection({ orgId, orgFetch, state, canWrite, o
   );
   const friendly = useCallback((code: string) => (ERROR_KEYS[code] ? tr(ERROR_KEYS[code]) : undefined), [tr]);
   const page = state.page;
+  // #9256: only an explicit `false` (server has no email transport) changes the toast copy.
+  const emailConfigured = useEmailConfigured();
   // Seeded once from the server page: other sections bump the revision and reload, which must not clobber edits here.
   const [nda, setNda] = useState(page.ndaText ?? '');
   const [ticket, setTicket] = useState(page.accessRequestCreatesTicket);
@@ -91,9 +94,9 @@ export default function TrustAccessSection({ orgId, orgFetch, state, canWrite, o
     }
   };
   const approve = (r: TrustAccessRequestItem) =>
-    act(r.id, () => approveTrustAccessRequest(orgFetch, orgId, r.id), 'access.approved', 'access.approveFailed');
+    act(r.id, () => approveTrustAccessRequest(orgFetch, orgId, r.id), emailConfigured === false ? 'access.approvedNoEmail' : 'access.approved', 'access.approveFailed');
   const resend = (r: TrustAccessRequestItem) =>
-    act(r.id, () => resendTrustAccessGrant(orgFetch, orgId, r.id), 'access.resent', 'access.resendFailed');
+    act(r.id, () => resendTrustAccessGrant(orgFetch, orgId, r.id), emailConfigured === false ? 'access.resentNoEmail' : 'access.resent', 'access.resendFailed');
   const openConfirm = (kind: 'deny' | 'revoke', request: TrustAccessRequestItem) => { setNote(''); setConfirming({ kind, request }); };
   const confirm = () => {
     if (!confirming) return;

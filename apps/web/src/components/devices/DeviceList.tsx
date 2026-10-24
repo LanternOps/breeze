@@ -36,7 +36,7 @@ import type {
   FilterConditionGroup,
   HardwareHealth,
 } from "@breeze/shared";
-import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck, isDeviceLogSilent } from "@breeze/shared";
+import { HARDWARE_HEALTH_RANK, isAgentUpdateStuck } from "@breeze/shared";
 import ComponentStatePill from "./hardware/ComponentStatePill";
 import {
   matchesMergedListFilters,
@@ -93,6 +93,7 @@ import {
   writeVisibleCustomFieldKeys,
 } from "./customFieldColumnVisibility";
 import { useCustomFieldDefinitionsStore } from "../../stores/customFieldDefinitions";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 import {
   densityTableClasses,
   readDensity,
@@ -213,8 +214,6 @@ export type Device = {
   updateAttemptTargetVersion?: string | null;
   updateAttemptStartedAt?: string | null;
   updateAttemptLastAt?: string | null;
-  /** Latest agent-logs ingest time (#7067); drives the logs-silent badge. */
-  lastLogAt?: string | null;
   watchdogVersion?: string | null;
   /** Installed Breeze Assist helper version (devices.helper_version, #6751). */
   helperVersion?: string | null;
@@ -336,6 +335,12 @@ export type Device = {
    * case `status === 'offline'` is the load-bearing signal).
    */
   watchdogStatus?: "connected" | "failover" | "offline" | null;
+  /**
+   * When the watchdog last heartbeated (ISO). The watchdog only heartbeats
+   * while it is in failover, so a recent value means it can take a "Restart
+   * agent" request (#9234); null means it has never reported.
+   */
+  watchdogLastSeen?: string | null;
   hardware?: {
     cpuModel?: string;
     cpuCores?: number;
@@ -1925,7 +1930,7 @@ export default function DeviceList({
         // #8407: primary status + at most ONE secondary pill (most severe
         // first); the rest fold into a "+N" chip whose popover keeps every
         // per-condition testid reachable. Order: update stuck > agent silent >
-        // logs silent > collision > Assist install issue > updates withheld.
+        // collision > Assist install issue > updates withheld.
         // Rule for new conditions: a list pill is only for something a tech
         // must act on for this device — diagnostics go on the detail page.
         const pillClass =
@@ -1962,28 +1967,6 @@ export default function DeviceList({
               >
                 {t("deviceList.agentSilent")}{" "}
                 {formatSilentDuration(device.mainAgentSilentSince!)}
-              </span>
-            ),
-          });
-        }
-        // #7067: a heartbeating device that has shipped no logs for over 6h —
-        // distinct from agent-silent (dead main agent with a live watchdog).
-        if (
-          isDeviceLogSilent({
-            status: device.status,
-            lastLogAt: device.lastLogAt,
-            enrolledAt: device.enrolledAt,
-          })
-        ) {
-          secondary.push({
-            key: "logs-silent",
-            node: (
-              <span
-                data-testid={`device-${device.id}-logs-silent-badge`}
-                title={t("deviceList.logsSilentTooltip")}
-                className={pillClass}
-              >
-                {t("deviceList.logsSilent")}
               </span>
             ),
           });
@@ -2035,7 +2018,6 @@ export default function DeviceList({
         const secondaryLabels: Record<string, string> = {
           stuck: t("deviceList.updateStuck"),
           "agent-silent": t("deviceList.agentSilent"),
-          "logs-silent": t("deviceList.logsSilent"),
           duplicate: t("deviceList.possibleDuplicate"),
           helper: t("deviceList.helperNotInstalled"),
           withheld: t("deviceList.updateWithheld"),
@@ -2749,8 +2731,13 @@ export default function DeviceList({
   // sortValue are keyed by the closed ColumnId union, and threading a
   // per-org dynamic key through them is the same exhaustive-Record problem
   // this design sidesteps.
-  const formatCustomFieldValue = (value: unknown): React.ReactNode => {
+  const formatCustomFieldValue = (
+    def: (typeof visibleCustomFieldDefs)[number],
+    value: unknown,
+  ): React.ReactNode => {
     if (value === null || value === undefined || value === "") return dash;
+    const choiceLabel = dropdownChoiceLabel(def, value);
+    if (choiceLabel !== undefined) return choiceLabel;
     if (typeof value === "boolean") return value ? t("common:labels.yes") : t("common:labels.no");
     if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : dash;
     return String(value);
@@ -2768,7 +2755,7 @@ export default function DeviceList({
         className="max-w-[200px] px-3 py-3 text-sm text-muted-foreground"
         data-testid={`device-${device.id}-custom-${def.fieldKey}`}
       >
-        <span className="block truncate">{formatCustomFieldValue(value)}</span>
+        <span className="block truncate">{formatCustomFieldValue(def, value)}</span>
       </td>
     );
   };

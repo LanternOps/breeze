@@ -5,7 +5,7 @@
 - iOS bundle ID: `com.breeze.rmm`
 - Android application ID: `com.breeze.rmm`
 - Store version: `1.0.0`
-- Build numbers: iOS `buildNumber` and Android `versionCode` in `app.json` — bump the one you are shipping before every upload (Play rejects a reused `versionCode`).
+- Build numbers: Android `versionCode` in `app.json` — bump before every Play upload (Play rejects a reused `versionCode`). iOS: Xcode Cloud assigns its own build number and ignores `ios.buildNumber`; that value only matters for a local Product → Archive, where it must exceed the last uploaded number (see "iOS 27 — UIScene lifecycle" below).
 - The release path uses the local Xcode project; no Expo/EAS account is required. A committed `eas.json` exists so build-time config has a named home, but no EAS build has ever been run for this app.
 - Apple Team ID: `D8W6N2JYMA` (LanternOps LLC)
 
@@ -445,6 +445,79 @@ Four constraints worth recording:
   no AASA file just leaves an unanswered claim.
 - Apple fetches the file through its CDN at install time, so changes are not
   instant; a build installed before the file went live needs a reinstall.
+
+## iOS 27 — UIScene lifecycle is mandatory (build 84 rejection)
+
+Build 1.0.1 (84) was rejected under Guideline 2.1(a): it crashed on launch on
+every review device. The crash logs all end in
+`___UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption_block_invoke`
+(`EXC_BREAKPOINT`, main thread, before any of our code runs). iOS 27 refuses to
+launch an app that was **linked against the iOS 27 SDK** (Xcode 27, which is what
+`DTAppStoreToolsBuild 27A9275` in the logs means) unless it adopts the
+scene-based life cycle. The same binary launches fine on iOS 26, which is why
+TestFlight testers never saw it — the check is a runtime assertion in iOS 27,
+not a build-time error.
+
+React Native core has not migrated, so the scene delegate comes from Expo:
+`expo-build-properties` with `ios.enableSceneSupport: true` (in `app.json`,
+listed **last** in `plugins` — Expo runs config-plugin mods in reverse
+registration order, so last-registered runs first and sees the stock
+AppDelegate before any other plugin edits it). At prebuild it makes `AppDelegate` conform to
+`ExpoReactNativeFactoryProvider`, drops the `UIWindow` creation from
+`didFinishLaunchingWithOptions`, and writes a `UIApplicationSceneManifest`
+pointing at Expo's built-in `EXExpoAppSceneDelegate` — no `SceneDelegate.swift`
+is generated. Requires `expo@57.0.23` or newer.
+
+- The plugin **refuses to touch a non-standard `AppDelegate.swift`**. If a
+  future config plugin edits the delegate, prebuild fails with
+  "`enableSceneSupport` requires the standard Expo SDK 57 Swift AppDelegate"
+  and the changes have to be applied by hand (see
+  https://github.com/expo/fyi/blob/main/ios-scene-lifecycle.md).
+- Under the scene life cycle, cold-start deep links and universal links arrive
+  in `UIScene.ConnectionOptions`, not launch options. `ExpoAppSceneDelegate`
+  rebuilds them for `Linking.getInitialURL()`; re-check a cold-start universal
+  link on each iOS major.
+- **On the SDK 58 upgrade, remove the property.** Scene support is the default
+  there and prebuild warns that the flag is a no-op.
+- Verify a candidate build on an **iOS 27** simulator or device before
+  uploading. An iOS 26 device proves nothing about this class of failure.
+- **Build numbers:** build 84 came from Xcode Cloud, which assigns its own
+  sequential number and ignores `ios.buildNumber` in `app.json`. The
+  `app.json` value only governs a local Product → Archive and must exceed the
+  last uploaded number (bumped to 85 here for that path).
+- CI (`Build Mobile iOS (Simulator)`) greps the generated `Info.plist` and
+  `AppDelegate.swift` after prebuild so a plugin that silently no-ops is caught
+  before a build ever reaches App Review.
+
+## Xcode 27.1 (Swift 6.4) — two build breaks, both handled in the repo
+
+Xcode 27.1 ships Swift 6.4; Expo SDK 57 was published against Swift 6.3.1
+(Xcode 27.0). Two things stop a 27.1 build dead, neither related to app code:
+
+1. **Precompiled Expo modules refuse to import** — `failed to build module
+   'ExpoModulesCore'; this SDK is not supported by the compiler (the SDK is
+   built with 'Apple Swift version 6.3.1'…)`. Fixed by building the Expo
+   modules from source: `ios.usePrecompiledModules: false` in the
+   `expo-build-properties` entry in `app.json` (lands in
+   `Podfile.properties.json` as `EXPO_USE_PRECOMPILED_MODULES=false` at
+   prebuild). Costs a few minutes per clean build.
+2. **`ExpoModulesJSI` swiftinterface fails to compile** — `cannot find type
+   '__ObjC::expo' in scope`. Swift 6.4 prints C++ extension blocks as
+   `extension __ObjC::expo…` and the package's `build-xcframework.sh` only
+   stripped the `__ObjC.` spelling. Carried as a pnpm patch
+   (`patches/expo-modules-jsi@57.1.1.patch`, upstream
+   https://github.com/expo/expo/pull/50569, not in any 57.x release). The
+   patch is keyed to the exact transitive version; because the root
+   `allowUnusedPatches: true` turns drift into a buried warning,
+   `appJson.test.ts` asserts every `expo-modules-jsi` version in the lockfile
+   has a patch entry. When the version moves, either re-key the patch or, if
+   the new version contains #50569, delete the patch and the test block.
+
+If either error reappears after an Xcode update, check the toolchain's Swift
+version against these notes before touching app code. A stale cached slice can
+also reproduce (2): delete
+`node_modules/.pnpm/expo-modules-jsi*/node_modules/expo-modules-jsi/apple/Products`
+and run `pod install` again.
 
 ## Build, screenshots, and submission sequence
 

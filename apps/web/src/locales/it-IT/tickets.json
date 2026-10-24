@@ -20,6 +20,7 @@
     "state": {
       "met": "Rispettato",
       "notMet": "Non rispettato",
+      "metLate": "Rispettato in ritardo",
       "breached": "Violato",
       "pausedLeft": "In pausa · {{relative}} rimanenti",
       "left": "{{relative}} rimanenti"
@@ -81,7 +82,9 @@
       "high": "Alta",
       "normal": "Normale",
       "low": "Bassa"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} passaggi",
+    "checklistTitle": "Checklist: {{done}} passaggi su {{total}} completati"
   },
   "ticketArchivedList": {
     "emptyTitle": "Nessun ticket archiviato.",
@@ -233,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} h lavorate · {{billed}} h fatturate",
     "includedMinutes": "{{hours}} h incluse nel contratto",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Ogni voce fattura i minuti arrotondati in ore (2 decimali) × la sua tariffa.",
     "missingRateCount_one": "1 voce non ha una tariffa oraria — non conteggiata nell'importo sopra",
     "missingRateCount_other": "{{count}} voci non hanno una tariffa oraria — non conteggiate nell'importo sopra",
     "deleteEntry": "Elimina la voce di tempo di {{duration}} di {{tech}}",
@@ -331,6 +336,11 @@
     "selectedCount_other": "{{count}} selezionati",
     "clearSelection": "Cancella",
     "noSelection": "Seleziona un ticket. Usa j/k per spostarti, Invio per espandere.",
+    "ticketNotInView": "Il ticket {{number}} non è in questa vista.",
+    "movedToClosed": {
+      "message": "{{status}} — ora in {{tab}}",
+      "view": "Visualizza in {{tab}}"
+    },
     "ticketingSettings": "Impostazioni ticketing",
     "assignFailed": "Assegnazione non riuscita. Riprova.",
     "assignedToYou": "Assegnato a te",
@@ -522,7 +532,11 @@
     },
     "device": {
       "none": "Nessun dispositivo",
-      "unlink": "Scollega"
+      "unlink": "Scollega",
+      "link": "Collega dispositivo",
+      "change": "Cambia dispositivo",
+      "cancel": "Annulla",
+      "assigneeWarning": "Cambiando il dispositivo l'assegnatario viene riverificato. Un tecnico senza accesso al nuovo dispositivo verrà rimosso dall'assegnazione."
     },
     "toast": {
       "statusUpdated": "Stato aggiornato",

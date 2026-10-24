@@ -20,20 +20,13 @@ async function signingConfig() {
   };
 }
 
-function completeResult() {
+function identityResult() {
   return {
     success: true as const,
     tenantId: TENANT,
-    applicationId: APPLICATION_ID,
     administratorObjectId: ADMIN_ID,
-    organizationDisplayName: 'Contoso',
-    manifestVersion: 2,
+    administratorUsername: 'admin@tenant.example',
     verifiedAt: '2026-07-14T16:00:00.000Z',
-    grantReconciliation: 'complete' as const,
-    observedGrants: [],
-    missingGrants: [],
-    unexpectedGrants: [],
-    grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
   };
 }
 
@@ -88,7 +81,7 @@ describe('createGraphActionsExecutorClient', () => {
     await expect(client.executeWriteAction(req())).rejects.toBeInstanceOf(GraphActionsExecutorClientError);
   });
 
-  it('serializes once and signs the exact complete-consent body against the actions audience', async () => {
+  it('serializes once and signs the exact verify-identity body against the actions audience', async () => {
     const { signingPrivateJwk, signingKid, publicKey } = await signingConfig();
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = String(init?.body);
@@ -102,10 +95,10 @@ describe('createGraphActionsExecutorClient', () => {
       expect(verified.protectedHeader).toMatchObject({ alg: 'EdDSA', kid: signingKid });
       expect(verified.payload).toMatchObject({
         correlationId: UUID,
-        operation: 'complete-consent',
+        operation: 'verify-identity',
         bodySha256: createHash('sha256').update(body).digest('base64url'),
       });
-      return new Response(JSON.stringify(completeResult()), {
+      return new Response(JSON.stringify(identityResult()), {
         headers: { 'content-type': 'application/json' },
       });
     });
@@ -116,16 +109,18 @@ describe('createGraphActionsExecutorClient', () => {
     const input = {
       correlationId: UUID,
       consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT,
+      expectedTenantId: TENANT,
       authorizationCode: 'authorization-code',
       codeVerifier: 'v'.repeat(43),
       nonce: 'nonce',
       redirectUri: 'https://console.example.test/api/v1/m365/consent/callback',
     };
 
-    await expect(client.completeIdentityVerification(input)).resolves.toEqual(completeResult());
+    await expect(client.verifyConsentIdentity(input)).resolves.toEqual(identityResult());
+    // #7910 W04: the legacy single-call consent method is gone.
+    expect(client).not.toHaveProperty('completeIdentityVerification');
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://actions.internal/v1/complete-consent');
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://actions.internal/v1/verify-identity');
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual(input);
   });
 
@@ -266,5 +261,61 @@ describe('Graph-actions executor client: verify-identity', () => {
     expect(error).toBeInstanceOf(GraphActionsExecutorClientError);
     expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
     expect(String(error)).not.toContain('leak');
+  });
+});
+
+describe('Graph-actions executor client: failure classification (#9322)', () => {
+  const verifyInput = {
+    correlationId: UUID,
+    consentAttemptId: ATTEMPT_ID,
+    expectedTenantId: null,
+    authorizationCode: 'authorization-code-secret',
+    codeVerifier: 'v'.repeat(43),
+    nonce: 'nonce-secret',
+    redirectUri: 'https://console.example.test/api/v1/m365/actions-consent/callback',
+  };
+
+  async function clientFor(fetchImpl: unknown) {
+    const { signingPrivateJwk, signingKid } = await signingConfig();
+    return createGraphActionsExecutorClient({
+      executorUrl: 'https://actions.internal/', executorAudience: 'm365-graph-actions-executor',
+      signingPrivateJwk, signingKid, fetch: fetchImpl as never,
+    });
+  }
+
+  const json = (body: string, status = 200, contentType = 'application/json') =>
+    new Response(body, { status, headers: { 'content-type': contentType } });
+
+  it.each([
+    ['fetch reject', () => Promise.reject(new TypeError('fetch failed')), { cause: 'network' }],
+    ['abort', () => Promise.reject(new DOMException('The operation was aborted.', 'AbortError')), { cause: 'timeout' }],
+    ['404', () => Promise.resolve(json('{"error":"not_found"}', 404)), { cause: 'http_status', httpStatus: 404 }],
+    ['401', () => Promise.resolve(json('{"error":"unauthorized"}', 401)), { cause: 'http_status', httpStatus: 401 }],
+    ['200 text/html', () => Promise.resolve(json('<html></html>', 200, 'text/html')), { cause: 'content_type' }],
+    ['200 malformed JSON', () => Promise.resolve(json('{not-json')), { cause: 'malformed_json' }],
+    ['200 extra JSON field', () => Promise.resolve(json(JSON.stringify({ ...identityResult(), extra: 'x' }))), { cause: 'schema_mismatch' }],
+  ] as const)('%s → executor_unavailable with its cause', async (_label, respond, expected) => {
+    const client = await clientFor(vi.fn(respond));
+    const error = await client.verifyConsentIdentity(verifyInput).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GraphActionsExecutorClientError);
+    expect(error).toMatchObject({
+      code: 'executor_unavailable',
+      message: 'executor_unavailable',
+      operation: 'verify-identity',
+      ...expected,
+    });
+    const serialized = JSON.stringify(error) + String(error);
+    for (const secret of ['authorization-code-secret', 'nonce-secret', 'v'.repeat(43)]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it('a request that fails its own schema is request_invalid', async () => {
+    const fetchImpl = vi.fn();
+    const client = await clientFor(fetchImpl);
+    await expect(client.retestCustomerGraphActions({ correlationId: 'not-a-uuid', tenantId: TENANT }))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'request_invalid', operation: 'retest' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,7 @@ import {
   parseSecurityScanSettings,
   securityScanCron,
 } from './securityScanSettings';
+import { YARA_MAX_RULE_SETS_PER_POLICY } from '../types/yara';
 
 describe('parseSecurityScanSettings', () => {
   it('returns defaults for a non-object', () => {
@@ -54,6 +55,37 @@ describe('parseSecurityScanSettings', () => {
     expect(parsed.scanMinute).toBe(SECURITY_SCAN_SETTINGS_DEFAULTS.scanMinute);
     expect(parsed.scanHour).toBe(SECURITY_SCAN_SETTINGS_DEFAULTS.scanHour);
     expect(parsed.scanDayOfWeek).toBe(SECURITY_SCAN_SETTINGS_DEFAULTS.scanDayOfWeek);
+  });
+});
+
+describe('parseSecurityScanSettings ruleSetIds (#6263 W03)', () => {
+  const A = '6f1d2c3b-0000-4000-8000-0000000000a1';
+  const B = '6f1d2c3b-0000-4000-8000-0000000000b2';
+
+  it('defaults to an empty list (empty = legacy scan, DECISION W03-e)', () => {
+    expect(SECURITY_SCAN_SETTINGS_DEFAULTS.ruleSetIds).toEqual([]);
+    expect(parseSecurityScanSettings({}).ruleSetIds).toEqual([]);
+    expect(parseSecurityScanSettings({ ruleSetIds: 'nope' }).ruleSetIds).toEqual([]);
+  });
+
+  it('drops non-UUIDs and duplicates, lower-cases, and keeps first-seen order', () => {
+    expect(parseSecurityScanSettings({
+      ruleSetIds: [B.toUpperCase(), 'not-a-uuid', 42, A, B, ` ${A} `, null],
+    }).ruleSetIds).toEqual([B, A]);
+  });
+
+  it(`truncates to ${YARA_MAX_RULE_SETS_PER_POLICY} entries`, () => {
+    const ids = Array.from({ length: 25 }, (_, i) =>
+      `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    const parsed = parseSecurityScanSettings({ ruleSetIds: ids }).ruleSetIds;
+    expect(parsed).toHaveLength(YARA_MAX_RULE_SETS_PER_POLICY);
+    expect(parsed).toEqual(ids.slice(0, YARA_MAX_RULE_SETS_PER_POLICY));
+  });
+
+  it('never shares the defaults array with a parsed result', () => {
+    const parsed = parseSecurityScanSettings(null);
+    parsed.ruleSetIds.push(A);
+    expect(SECURITY_SCAN_SETTINGS_DEFAULTS.ruleSetIds).toEqual([]);
   });
 });
 

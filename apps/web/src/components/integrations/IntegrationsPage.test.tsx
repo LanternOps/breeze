@@ -9,6 +9,10 @@ const m365State = vi.hoisted(() => ({
 const orgState = vi.hoisted(() => ({
   currentOrgId: "11111111-1111-4111-8111-111111111111" as string | null,
   jwtOrgId: null as string | null,
+  organizations: [
+    { id: "11111111-1111-4111-8111-111111111111", name: "Contoso Ltd" },
+    { id: "22222222-2222-4222-8222-222222222222", name: "Fabrikam Inc" },
+  ] as { id: string; name: string }[],
 }));
 
 // Mock authScope so we can drive the Distributors-tab scope gate.
@@ -32,8 +36,8 @@ vi.mock("../../lib/permissions", () => ({
   }),
 }));
 vi.mock("../../stores/orgStore", () => ({
-  useOrgStore: (selector: (value: { currentOrgId: string | null }) => unknown) =>
-    selector({ currentOrgId: orgState.currentOrgId }),
+  useOrgStore: (selector: (value: unknown) => unknown) =>
+    selector({ currentOrgId: orgState.currentOrgId, organizations: orgState.organizations }),
 }));
 
 // Stub the heavy child panels so the test stays focused on tab/sub-tab wiring.
@@ -72,6 +76,7 @@ vi.mock("./M365CustomerGraphReadCard", () => ({
     "consent_cancelled",
     "conditional_access_blocked",
     "consent_provider_error",
+    "user_consent_blocked",
     "admin_role_required",
     "tenant_mismatch",
     "tenant_already_bound",
@@ -110,6 +115,7 @@ vi.mock("./M365CustomerGraphActionsCard", () => ({
     "consent_cancelled",
     "conditional_access_blocked",
     "consent_provider_error",
+    "user_consent_blocked",
     "admin_role_required",
     "tenant_mismatch",
     "tenant_already_bound",
@@ -208,6 +214,7 @@ const PUBLIC_RESULTS = [
   "consent_cancelled",
   "conditional_access_blocked",
   "consent_provider_error",
+  "user_consent_blocked",
   "admin_role_required",
   "tenant_mismatch",
   "tenant_already_bound",
@@ -1027,5 +1034,56 @@ describe("IntegrationsPage header (#7151)", () => {
     // The docs button must be able to wrap/shrink instead of a bare
     // `shrink-0` that runs it off-screen on mobile.
     expect(docsButton.className).not.toContain("shrink-0");
+  });
+});
+
+describe("IntegrationsPage — scope bar (#9318)", () => {
+  beforeEach(() => {
+    scope = "partner";
+    orgState.currentOrgId = "11111111-1111-4111-8111-111111111111";
+    orgState.jwtOrgId = null;
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("names the org being configured and follows the org store", () => {
+    const view = render(<IntegrationsPage />);
+    expect(screen.getByTestId("integrations-scope-org")).toHaveTextContent("Contoso Ltd");
+
+    orgState.currentOrgId = "22222222-2222-4222-8222-222222222222";
+    view.rerender(<IntegrationsPage />);
+    expect(screen.getByTestId("integrations-scope-org")).toHaveTextContent("Fabrikam Inc");
+  });
+
+  it("offers a Change control that asks the workspace switcher to open", () => {
+    const opened = vi.fn();
+    window.addEventListener("breeze:open-org-switcher", opened);
+    try {
+      render(<IntegrationsPage />);
+      fireEvent.click(screen.getByTestId("integrations-scope-change"));
+      expect(opened).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("breeze:open-org-switcher", opened);
+    }
+  });
+
+  it("falls back to generic copy when the org is not in the loaded list", () => {
+    orgState.currentOrgId = "33333333-3333-4333-8333-333333333333";
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("integrations-scope-org")).toHaveTextContent("this organization");
+  });
+
+  it("renders no scope bar when no org is resolved", () => {
+    orgState.currentOrgId = null;
+    render(<IntegrationsPage />);
+    expect(screen.queryByTestId("integrations-scope-bar")).not.toBeInTheDocument();
+  });
+
+  it("hides Change for an organization-scoped session but still names the org", () => {
+    scope = "organization";
+    orgState.currentOrgId = null;
+    orgState.jwtOrgId = "22222222-2222-4222-8222-222222222222";
+    render(<IntegrationsPage />);
+    expect(screen.getByTestId("integrations-scope-org")).toHaveTextContent("Fabrikam Inc");
+    expect(screen.queryByTestId("integrations-scope-change")).not.toBeInTheDocument();
   });
 });

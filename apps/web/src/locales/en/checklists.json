@@ -27,7 +27,7 @@
     "viewTask": "View task",
     "badgeTitle": "Created by an AI Operator task. Tick it when the work is done and the task continues."
   },
-  "editDoneWarning": "Editing a completed step clears who completed it and when.",
+  "editDoneWarning": "Changing the step text clears who completed it and when. Editing only the note keeps the tick.",
   "resolveConfirm": {
     "title": "Unfinished checklist",
     "body_one": "{{count}} of {{total}} steps is unticked. Resolve anyway?",
@@ -74,7 +74,20 @@
       "loadFailed": "Failed to load checklist templates.",
       "saveFailed": "Failed to save the checklist template.",
       "applyFailed": "Failed to apply the checklist template.",
-      "operatorStepWaiting": "An Operator task is waiting on one of this ticket's unticked steps, so the template can't replace them. Choose “Add these steps to the existing checklist” instead, tick the step when the work is done, or stop the task first."
+      "operatorStepWaiting": "An Operator task is waiting on one of this ticket's unticked steps, so the template can't replace them. Choose “Add these steps to the existing checklist” instead, tick the step when the work is done, or stop the task first.",
+      "saveAsFailed": "Failed to save the checklist as a template.",
+      "noSteps": "This ticket has no reusable steps to save.",
+      "duplicateFailed": "Failed to duplicate the checklist template."
+    },
+    "duplicate": "Duplicate",
+    "duplicateSuccess": "Duplicated as “{{name}}”.",
+    "saveAs": {
+      "cta": "Save as template",
+      "name": "Template name",
+      "allOrganizations": "Make available to all organizations",
+      "submit": "Save template",
+      "success": "Saved as template “{{name}}”.",
+      "skipped": "Left out: {{operator}} Operator step(s) and {{duplicates}} repeated step(s)."
     }
   }
 }

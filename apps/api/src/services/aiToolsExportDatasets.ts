@@ -20,7 +20,7 @@ import { searchFleetLogs } from './logSearch';
 import { canReadSensitiveEventLogCategory } from './eventLogSensitivity';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
 import { redactAgentLogRow } from './logRedaction';
-import { readCatalog, readDeviceFindings, normStatus } from './aiToolsVulnerability';
+import { readCatalog, readDeviceFindings, readFindingSoftware, normStatus } from './aiToolsVulnerability';
 import {
   generateDeviceInventoryReport,
   generateSoftwareInventoryReport,
@@ -506,9 +506,13 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
         const findings = await readDeviceFindings(req.orgId, { status, deviceId });
         const catalog = await readCatalog([...new Set(findings.map((f) => f.vulnerabilityId))]);
         const byId = new Map(catalog.map((c) => [c.id, c]));
+        // #9532: the affected software, read per device (bounded by that
+        // device's findings), flattened to one column per field.
+        const softwareById = await readFindingSoftware(req.orgId, findings.map((f) => f.id), req.auth);
         for (const finding of findings) {
           const cve = byId.get(finding.vulnerabilityId);
           if (!cve) continue;
+          const software = softwareById.get(finding.id)?.software ?? null;
           collected.push({
             id: finding.id,
             deviceId,
@@ -520,6 +524,9 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
             status: finding.status,
             knownExploited: cve.knownExploited ?? false,
             patchAvailable: cve.patchAvailable ?? false,
+            softwareName: software?.name ?? null,
+            softwareVersion: software?.version ?? null,
+            softwareVendor: software?.vendor ?? null,
           });
         }
       });

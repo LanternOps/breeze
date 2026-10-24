@@ -375,7 +375,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           name: { type: 'string' },
           slug: { type: 'string' },
           type: { type: 'string', enum: ['msp', 'enterprise', 'internal'] },
-          plan: { type: 'string', enum: ['free', 'pro', 'enterprise', 'unlimited'] },
+          plan: { type: 'string', enum: ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited'] },
           maxOrganizations: { type: 'integer', nullable: true },
           maxDevices: { type: 'integer', nullable: true },
           billingEmail: { type: 'string', format: 'email', nullable: true },
@@ -2133,7 +2133,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
                   name: { type: 'string', minLength: 1 },
                   slug: { type: 'string', minLength: 1, maxLength: 100 },
                   type: { type: 'string', enum: ['msp', 'enterprise', 'internal'] },
-                  plan: { type: 'string', enum: ['free', 'pro', 'enterprise', 'unlimited'] },
+                  plan: { type: 'string', enum: ['free', 'starter', 'community', 'pro', 'enterprise', 'unlimited'] },
                   maxOrganizations: { type: 'integer', nullable: true },
                   maxDevices: { type: 'integer', nullable: true },
                   billingEmail: { type: 'string', format: 'email' }
@@ -2585,6 +2585,56 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
           }
         }
       }
+    },
+    '/devices/{id}/force-reboot': {
+      post: {
+        operationId: 'forceRebootDevice',
+        tags: ['Devices'],
+        summary: 'Force reboot a device now (closes running apps)',
+        description: 'Queue a `force_reboot` command: an immediate reboot that force-closes running applications, discarding unsaved work. On Windows the agent runs `shutdown /r /f /t 0`; on macOS and Linux it runs `shutdown -r +0`, where force changes nothing. Plain reboot is unchanged and stays on POST /devices/{id}/commands. This route is the only way to queue `force_reboot`. Requires devices:execute, an interactive user session (API keys, MCP grants and AI agents are refused), an MFA-assured session, and, while two-factor authentication is enabled on the deployment, a single-use step-up grant minted by POST /auth/mfa/step-up for operation `device_force_reboot` bound to { deviceId }. The device must be online now and run an agent that knows `force_reboot`. The command still waits behind in-flight work like any reboot, and expires if it is not claimed within the live-only window (15 minutes by default).',
+        parameters: [{ $ref: '#/components/parameters/idParam' }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  stepUpGrant: { type: 'string', format: 'uuid', description: 'Step-up grant id from POST /auth/mfa/step-up (operation device_force_reboot, resource { deviceId }). Required when two-factor authentication is enabled.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Force reboot queued',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string', format: 'uuid' },
+                    deviceId: { type: 'string', format: 'uuid' },
+                    type: { type: 'string', enum: ['force_reboot'] },
+                    status: { type: 'string' },
+                    createdAt: { type: 'string', format: 'date-time' },
+                    delivery: { type: 'string', description: 'How the command was handed over (e.g. delivered, queued_live)' },
+                    deliverBy: { type: 'string', format: 'date-time', nullable: true, description: 'The command expires if not claimed by this time' },
+                    argv: { type: 'array', items: { type: 'string' }, description: 'The exact command the agent runs on this OS' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { description: 'Invalid body, decommissioned device, or unsupported OS' },
+          '403': { description: '`Interactive user session required` for machine principals; `MFA_REQUIRED` for a non-assured session; `STEP_UP_REQUIRED` when the step-up grant is missing, stale, bound to another device or already consumed; site access denied; or a partner trust denial' },
+          '404': { description: 'Device not found' },
+          '409': { description: '`DEVICE_OFFLINE` (the device is not online now; a force reboot is never queued for later), `AGENT_UPGRADE_REQUIRED` (the agent predates force_reboot; the body carries agentVersion and minAgentVersion), or the device is pending assignment' },
+          '503': { description: 'Step-up binding could not be established (auth state or session id unavailable); retry' },
+        },
+      },
     },
     '/devices/{id}/move-org': {
       post: {
@@ -4745,6 +4795,7 @@ API requests are rate-limited to ensure fair usage. Rate limit headers are inclu
         operationId: 'addIceCandidate',
         tags: ['Remote'],
         summary: 'Add ICE candidate',
+        description: 'Trickles a viewer ICE candidate gathered after the offer: stored against the session\'s current start and relayed to the agent hosting it.',
         parameters: [{ $ref: '#/components/parameters/idParam' }],
         responses: {
           '200': {

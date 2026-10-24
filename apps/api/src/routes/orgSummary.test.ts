@@ -59,8 +59,15 @@ const ORG_ID = '11111111-1111-1111-1111-111111111111';
  * `limitedRows` defaults to `baseRows` for every caller that doesn't need to
  * tell the two apart. */
 function queryResult<T>(baseRows: T[], limitedRows: T[] = baseRows) {
-  const promise = Promise.resolve(baseRows) as Promise<T[]> & { limit: (n: number) => Promise<T[]> };
-  promise.limit = () => Promise.resolve(limitedRows);
+  const promise = Promise.resolve(baseRows) as Promise<T[]> & {
+    limit: (n: number) => Promise<T[]>;
+    orderBy: (...a: unknown[]) => Promise<T[]> & { limit: (n: number) => Promise<T[]> };
+  };
+  promise.limit = (n: number) => {
+    joinLimits.push(n);
+    return Promise.resolve(limitedRows);
+  };
+  promise.orderBy = () => promise;
   return promise;
 }
 
@@ -69,7 +76,7 @@ function queryResult<T>(baseRows: T[], limitedRows: T[] = baseRows) {
  * BOTH ways with different expected rows (`contacts`: a plain `count(*)` and
  * a separate `.limit(1)` primary-contact lookup) — a `{ base, limited }` pair
  * that lets a test express the two independently. */
-type RowsSpec<T> = T[] | { base: T[]; limited: T[] };
+type RowsSpec<T> = T[] | { base: T[]; limited: T[]; joined?: T[] };
 
 /** Table-keyed row stubs. `db.select` is mocked to look up the table passed
  * to `.from()` rather than pinning exact call order/count — the route issues
@@ -79,16 +86,24 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
   vi.mocked(db.select).mockImplementation(
     () =>
       ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            whereByTable.set(table, condition);
+        from: (table: unknown) => {
+          const run = (condition: unknown, joined: boolean) => {
+            whereByTable.set(joined ? JOINED_KEY : table, condition);
             const spec = rowsByTable.get(table);
+            if (joined) {
+              const rows = (spec && !Array.isArray(spec) ? spec.joined : undefined) ?? [];
+              return queryResult(rows);
+            }
             if (spec && !Array.isArray(spec)) {
               return queryResult(spec.base, spec.limited);
             }
             return queryResult((spec as unknown[] | undefined) ?? []);
-          },
-        }),
+          };
+          return {
+            where: (condition: unknown) => run(condition, false),
+            innerJoin: () => ({ where: (condition: unknown) => run(condition, true) }),
+          };
+        },
       }) as any,
   );
 }
@@ -96,6 +111,8 @@ function setupDb(rowsByTable: Map<unknown, RowsSpec<unknown>>) {
 /** WHERE condition captured per table by `setupDb`, so a test can assert on the
  * predicate the route actually built and not just the rows the mock returned. */
 const whereByTable = new Map<unknown, unknown>();
+const JOINED_KEY = 'contacts+sites join query';
+const joinLimits: number[] = [];
 
 /** Compile a captured WHERE into its REAL SQL text.
  *
@@ -320,6 +337,67 @@ describe('GET /orgs/organizations/:id/summary', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.contacts).toEqual({ count: 3, primary: null });
+  });
+
+  it('site-level primary only: primary is null and sitePrimaries names the contact and site (#9317)', async () => {
+    whereByTable.clear();
+    joinLimits.length = 0;
+    setupDb(
+      new Map<unknown, RowsSpec<unknown>>([
+        [organizations, [{ id: ORG_ID, currencyCode: 'USD' }]],
+        [sites, [{ count: '2' }]],
+        [
+          contacts,
+          {
+            base: [{ count: '1' }],
+            limited: [],
+            joined: [
+              { id: 'c-site', name: 'Sam Site', email: 'sam@x.example', phone: null, siteId: 'site-1', siteName: 'HQ' },
+            ],
+          },
+        ],
+      ]),
+    );
+    const app = buildApp({ grants: [PERMISSIONS.ORGS_READ] });
+    const res = await app.request(`/orgs/organizations/${ORG_ID}/summary`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.contacts.primary).toBeNull();
+    // Scoped to this org's site-level primaries, capped at 3.
+    const q = new PgDialect().sqlToQuery(whereByTable.get(JOINED_KEY) as SQL);
+    expect(q.sql).toContain('"is_primary" = $');
+    expect(q.sql).toContain('"site_id" is not null');
+    expect(q.params).toContain(ORG_ID);
+    expect(joinLimits).toContain(3);
+    expect(body.contacts.sitePrimaries).toEqual([
+      { id: 'c-site', name: 'Sam Site', email: 'sam@x.example', phone: null, siteId: 'site-1', siteName: 'HQ' },
+    ]);
+  });
+
+  it('org-level primary present: sitePrimaries is empty and the site query is skipped (#9317)', async () => {
+    whereByTable.clear();
+    setupDb(
+      new Map<unknown, RowsSpec<unknown>>([
+        [organizations, [{ id: ORG_ID, currencyCode: 'USD' }]],
+        [sites, [{ count: '1' }]],
+        [
+          contacts,
+          {
+            base: [{ count: '2' }],
+            limited: [{ id: 'c1', name: 'Jane Doe', email: null, phone: null }],
+            joined: [{ id: 'x', name: 'Should not appear', email: null, phone: null, siteId: 's', siteName: 'S' }],
+          },
+        ],
+      ]),
+    );
+    const app = buildApp({ grants: [PERMISSIONS.ORGS_READ] });
+    const res = await app.request(`/orgs/organizations/${ORG_ID}/summary`);
+
+    const body = await res.json();
+    expect(body.contacts.primary).toEqual({ id: 'c1', name: 'Jane Doe', email: null, phone: null });
+    expect(body.contacts.sitePrimaries).toBeUndefined();
+    expect(whereByTable.has(JOINED_KEY)).toBe(false);
   });
 
   it('includes lastActivityAt only when the caller holds audit:read', async () => {

@@ -22,7 +22,7 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
   const set = (patch: Partial<InheritableDefaultSettings>) =>
     onChange({ ...data, ...patch });
 
-  const autoEnrollment = data.autoEnrollment ?? { enabled: false, requireApproval: true, sendWelcome: true };
+  const autoEnrollment = data.autoEnrollment ?? { enabled: false, requireApproval: true };
 
   const maintenanceWindow = data.maintenanceWindow ?? '';
   const maintenanceWindowInvalid = maintenanceWindow.trim() !== '' && !isValidMaintenanceWindow(maintenanceWindow);
@@ -59,8 +59,9 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
     <div className="space-y-6">
       <div className="grid gap-6 sm:grid-cols-2">
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerDefaults.updatePolicy')}</label>
+          <label htmlFor="partner-defaults-update-policy" className="text-sm font-medium">{t('partnerDefaults.updatePolicy')}</label>
           <select
+            id="partner-defaults-update-policy"
             // Fold the legacy 'staged' value into 'auto' for display — they are
             // behaviourally identical (both maintenance-window gated; no real
             // staged rollout exists, see #1962). The backend still accepts
@@ -76,8 +77,10 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
         </div>
 
         <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerDefaults.maintenanceWindow')}</label>
+          <label htmlFor="partner-defaults-maintenance-window" className="text-sm font-medium">{t('partnerDefaults.maintenanceWindow')}</label>
           <input
+            id="partner-defaults-maintenance-window"
+            aria-describedby="partner-defaults-maintenance-window-hint"
             type="text"
             value={maintenanceWindow}
             onChange={e => set({ maintenanceWindow: e.target.value || undefined })}
@@ -88,11 +91,11 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
             }`}
           />
           {maintenanceWindowInvalid ? (
-            <p className="text-xs text-destructive">
+            <p id="partner-defaults-maintenance-window-hint" className="text-xs text-destructive">
               <Trans i18nKey="partnerDefaults.maintenanceInvalid" t={t} components={{ first: <code />, second: <code />, always: <code /> }} />
             </p>
           ) : (
-            <p className="text-xs text-muted-foreground">
+            <p id="partner-defaults-maintenance-window-hint" className="text-xs text-muted-foreground">
               <Trans i18nKey="partnerDefaults.maintenanceHelp" t={t} components={{ always: <code /> }} />
             </p>
           )}
@@ -107,34 +110,13 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
           />
         </div>
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerDefaults.deviceGroup')}</label>
-          <input
-            type="text"
-            value={data.deviceGroup ?? ''}
-            onChange={e => set({ deviceGroup: e.target.value || undefined })}
-            placeholder={t('partnerDefaults.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-          />
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-sm font-medium">{t('partnerDefaults.alertThreshold')}</label>
-          <input
-            type="text"
-            value={data.alertThreshold ?? ''}
-            onChange={e => set({ alertThreshold: e.target.value || undefined })}
-            placeholder={t('partnerDefaults.notSet')}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-          />
-        </div>
       </div>
 
       {/* Auto-enrollment */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.title')}</p>
+      <div className="space-y-4 border-t pt-6">
+        <h3 className="text-sm font-semibold">{t('partnerDefaults.autoEnrollment.title')}</h3>
         <div className="space-y-3">
-          <div className="flex items-center gap-3">
+          <label className="flex items-center gap-3">
             <input
               type="checkbox"
               checked={autoEnrollment.enabled}
@@ -143,9 +125,9 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               }
               className="h-4 w-4 rounded border"
             />
-            <label className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.enable')}</label>
-          </div>
-          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.enable')}</span>
+          </label>
+          <label className="flex items-center gap-3">
             <input
               type="checkbox"
               checked={autoEnrollment.requireApproval}
@@ -154,25 +136,14 @@ export default function PartnerDefaultsTab({ data, onChange, pinnableVersions }:
               }
               className="h-4 w-4 rounded border"
             />
-            <label className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.requireApproval')}</label>
-          </div>
-          <div className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={autoEnrollment.sendWelcome}
-              onChange={e =>
-                set({ autoEnrollment: { ...autoEnrollment, sendWelcome: e.target.checked } })
-              }
-              className="h-4 w-4 rounded border"
-            />
-            <label className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.sendWelcome')}</label>
-          </div>
+            <span className="text-sm font-medium">{t('partnerDefaults.autoEnrollment.requireApproval')}</span>
+          </label>
         </div>
       </div>
 
       {/* Enrollment link defaults + the partner-only lifetime cap (#2776) */}
-      <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
-        <p className="text-sm font-medium">{t('partnerDefaults.enrollment.title')}</p>
+      <div className="space-y-4 border-t pt-6">
+        <h3 className="text-sm font-semibold">{t('partnerDefaults.enrollment.title')}</h3>
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="space-y-2">
             <label htmlFor="partner-enrollment-ttl" className="text-sm font-medium">

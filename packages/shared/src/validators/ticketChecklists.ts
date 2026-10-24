@@ -157,6 +157,34 @@ export const applyChecklistTemplateSchema = z
   })
   .strict();
 
+/**
+ * Save a ticket's current checklist as a new template (#9180). The items are
+ * read from the ticket server-side — the body never carries them, so a caller
+ * cannot smuggle steps the ticket does not have. Owner defaults to the
+ * ticket's own org; `partner` makes it partner-wide (gated on
+ * `canManagePartnerWidePolicies`). Like template create, `partnerId` is never
+ * accepted from a body.
+ */
+export const saveChecklistAsTemplateSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).nullable().optional(),
+    ownerScope: checklistTemplateOwnerScopeSchema.default('organization'),
+  })
+  .strict();
+
+/**
+ * Duplicate a template (#9180). The copy ALWAYS has the same owner as the
+ * source (ownership is create-only and never re-homed), so no scope fields are
+ * accepted. `name` is optional: omitted, the server picks "Copy of <name>"
+ * and de-collides it.
+ */
+export const duplicateChecklistTemplateSchema = z
+  .object({
+    name: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
 export type ChecklistItemSource = z.infer<typeof checklistItemSourceSchema>;
 export type ChecklistItemCreateInput = z.infer<typeof checklistItemCreateSchema>;
 export type ChecklistItemPatchInput = z.infer<typeof checklistItemPatchSchema>;
@@ -169,3 +197,5 @@ export type UpdateChecklistTemplateItemInput = z.infer<typeof updateChecklistTem
 export type ChecklistTemplateItemReorderInput = z.infer<typeof checklistTemplateItemReorderSchema>;
 export type ListChecklistTemplatesQuery = z.infer<typeof listChecklistTemplatesQuerySchema>;
 export type ApplyChecklistTemplateInput = z.infer<typeof applyChecklistTemplateSchema>;
+export type SaveChecklistAsTemplateInput = z.infer<typeof saveChecklistAsTemplateSchema>;
+export type DuplicateChecklistTemplateInput = z.infer<typeof duplicateChecklistTemplateSchema>;

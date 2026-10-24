@@ -45,7 +45,6 @@ const BINARY_JOBS = [
   'build-viewer-macos',
   'build-helper-macos',
   'resolve-windows-signing-provider',
-  'sign-windows-tauri-azure',
   'sign-windows-tauri-sslcom',
   'sign-windows-tauri',
   'package-windows-updater',
@@ -114,7 +113,7 @@ test('every binary/signing job needs classify-release and is gated on release_ki
 
 test('discovery: no other job produces binaries, holds signing secrets or OIDC, or pushes the binaries image', () => {
   const BINARY_ARTIFACT = /^\s+(?:name|asset_name): (?:breeze-(?:agent|backup|watchdog|user-helper|desktop-helper|viewer|helper|recovery)-|breeze-installer-app\b|viewer-latest-json\b|macos-pkg-attestation\b)/mu;
-  const SIGNING_SECRET = /\bsecrets\.(?:TAURI_SIGNING_|APPLE_|SSLCOM_|AZURE_)/u;
+  const SIGNING_SECRET = /\bsecrets\.(?:TAURI_SIGNING_|APPLE_|SSLCOM_)/u;
   const discovered = new Set();
   for (const [name] of releaseJobs) {
     const text = jobText(name);
@@ -384,7 +383,9 @@ const EVENTS = {
 const VARS = [];
 for (const windows of ['true', 'false']) {
   for (const macos of ['true', 'false']) {
-    for (const provider of ['azure', 'sslcom']) {
+    // SSL.com is the only Windows signing provider (the Azure lane was retired);
+    // an empty variable resolves to it, exactly as the resolver script does.
+    for (const provider of ['', 'sslcom']) {
       VARS.push({ ENABLE_WINDOWS_SIGNING: windows, ENABLE_MACOS_SIGNING: macos, WINDOWS_SIGNING_PROVIDER: provider });
     }
   }
@@ -398,26 +399,25 @@ const isTagRelease = ({ github, inputs }) => github.ref_type === 'tag'
 // a tag release requires lineage success (else the job fails, no output).
 function scenario(event, vars, failures, kind = 'full') {
   const base = EVENTS[event];
+  // .github/scripts/resolve-windows-signing-provider.mjs: empty resolves to sslcom.
+  const resolvedProvider = vars.WINDOWS_SIGNING_PROVIDER === '' ? 'sslcom' : vars.WINDOWS_SIGNING_PROVIDER;
   return {
     ...base,
     vars,
     failures,
     outputs(name) {
-      if (name === 'resolve-windows-signing-provider') return { provider: vars.WINDOWS_SIGNING_PROVIDER };
+      if (name === 'resolve-windows-signing-provider') return { provider: resolvedProvider };
       if (name === 'validate-release-lineage') return { channel: 'mainline' };
       if (name === 'classify-release') return { release_kind: isTagRelease(base) ? kind : 'full', binaries_version: kind === 'server-only' ? '1.2.0' : '' };
       return {};
     },
     behaviour: {
       'classify-release': (results) => (isTagRelease(base) && results['validate-release-lineage'] !== 'success' ? 'failure' : 'success'),
-      // .github/scripts/assert-windows-signing-convergence.mjs: exactly the
-      // selected provider succeeded and the other was skipped.
+      // .github/scripts/assert-windows-signing-convergence.mjs: the selected
+      // provider's signing job succeeded; anything else fails closed.
       'sign-windows-tauri': (results) => {
-        const azure = results['sign-windows-tauri-azure'];
-        const sslcom = results['sign-windows-tauri-sslcom'];
-        const converged = vars.WINDOWS_SIGNING_PROVIDER === 'azure'
-          ? azure === 'success' && sslcom === 'skipped'
-          : sslcom === 'success' && azure === 'skipped';
+        const converged = resolvedProvider === 'sslcom'
+          && results['sign-windows-tauri-sslcom'] === 'success';
         return converged ? 'success' : 'failure';
       },
     },
@@ -426,7 +426,9 @@ function scenario(event, vars, failures, kind = 'full') {
 
 test('the job-graph snapshot is the pre-change graph and the current graph only adds jobs', () => {
   const added = Object.keys(currentGraph).filter((name) => !(name in BASELINE)).sort();
-  assert.deepEqual(added, ['carry-forward-binaries', 'classify-release']);
+  // build-yara-pack (#6263 W03b) is a later, unrelated addition: server
+  // content built for both release kinds, needed only by create-release.
+  assert.deepEqual(added, ['build-yara-pack', 'carry-forward-binaries', 'classify-release', 'yara-pack-fp-gate']);
   const removed = Object.keys(BASELINE).filter((name) => !(name in currentGraph));
   assert.deepEqual(removed, []);
   for (const [name, entry] of Object.entries(BASELINE)) {
@@ -436,7 +438,8 @@ test('the job-graph snapshot is the pre-change graph and the current graph only 
     for (const need of extraNeeds) {
       assert.ok(
         ['classify-release', 'carry-forward-binaries'].includes(need)
-          || (['release-integrity-gate', 'create-release'].includes(name) && BINARY_JOBS.includes(need)),
+          || (['release-integrity-gate', 'create-release'].includes(name) && BINARY_JOBS.includes(need))
+          || (name === 'create-release' && ['build-yara-pack', 'yara-pack-fp-gate'].includes(need)),
         `${name} gained an unexpected need: ${need}`,
       );
     }
@@ -449,7 +452,7 @@ test('the job-graph snapshot is the pre-change graph and the current graph only 
 // signs, notarizes, publishes or promotes anything.
 const SIGNING_OR_PUBLISHING = [
   'build-macos-agent', 'build-macos-installer-app', 'build-viewer', 'build-viewer-macos', 'build-helper-macos',
-  'sign-windows-tauri-azure', 'sign-windows-tauri-sslcom', 'package-windows-updater', 'build-binaries-image',
+  'sign-windows-tauri-sslcom', 'package-windows-updater', 'build-binaries-image',
   'create-release', 'promote-signed-release-images',
 ];
 
@@ -498,7 +501,7 @@ for (const statusModel of ['transitive', 'direct']) {
         'validate-release-lineage', 'classify-release', 'carry-forward-binaries', 'build-api', 'build-web',
         'build-docker-api', 'build-docker-web', 'build-docker-portal', 'build-docker-m365-graph-read-executor',
         'build-docker-m365-graph-actions-executor', 'build-docker-m365-communications-executor',
-        'release-integrity-gate', 'create-release', 'promote-signed-release-images',
+        'release-integrity-gate', 'create-release', 'promote-signed-release-images', 'build-yara-pack', 'yara-pack-fp-gate',
       ]) {
         assert.equal(results[name], 'success', `${name} must run for a server-only release (${JSON.stringify(vars)})`);
       }
@@ -542,6 +545,10 @@ function prepareAssets(kind) {
   mkdirSync(join(work, 'artifacts', 'viewer-latest-json'), { recursive: true });
   writeFileSync(join(work, 'artifacts', 'viewer-latest-json', 'latest.json'), '{"version":"1.2.0"}\n');
   writeFileSync(join(work, 'release-images.json'), '[]\n');
+  // #6263 W03b: the built-in YARA pack ships with both release kinds.
+  mkdirSync(join(work, 'artifacts', 'breeze-yara-builtin'), { recursive: true });
+  writeFileSync(join(work, 'artifacts', 'breeze-yara-builtin', 'breeze-yara-builtin.json'), '{"format":"breeze-yara-bundle"}');
+  writeFileSync(join(work, 'artifacts', 'breeze-yara-builtin', 'breeze-yara-builtin-report.json'), '{}\n');
   if (kind === 'full') {
     mkdirSync(join(work, 'artifacts', 'breeze-recovery-linux-amd64'), { recursive: true });
     writeFileSync(join(work, 'artifacts', 'breeze-recovery-linux-amd64', 'breeze-recovery-linux-amd64.iso'), 'iso\n');
@@ -579,6 +586,49 @@ test('manifest: a full release differs from today only by "releaseKind": "full"'
   assert.equal((raw.match(/^ {2}"sourceCommit":/gmu) ?? []).length, 1);
 });
 
+test('manifest: both release kinds refuse to ship without the built-in YARA pack', () => {
+  for (const kind of ['full', 'server-only']) {
+    for (const file of ['breeze-yara-builtin.json', 'breeze-yara-builtin-report.json']) {
+      const work = mkdtempSync(join(scratch, `prepare-nopack-${kind}-`));
+      gitRepo(work);
+      for (const dir of ['artifacts/api-dist', 'artifacts/web-dist', 'artifacts/breeze-recovery-linux-amd64', 'artifacts/macos-pkg-attestation', 'artifacts/breeze-yara-builtin']) {
+        mkdirSync(join(work, dir), { recursive: true });
+      }
+      writeFileSync(join(work, 'artifacts/breeze-recovery-linux-amd64/breeze-recovery-linux-amd64.iso'), 'iso\n');
+      writeFileSync(join(work, 'artifacts/macos-pkg-attestation/macos-pkg.tsv'), '');
+      for (const f of ['breeze-yara-builtin.json', 'breeze-yara-builtin-report.json']) {
+        if (f !== file) writeFileSync(join(work, 'artifacts/breeze-yara-builtin', f), '{}');
+      }
+      writeFileSync(join(work, 'release-images.json'), '[]\n');
+      writeFileSync(join(work, 'carried-images.json'), JSON.stringify([{ name: 'binaries', repository: 'r', digest: `sha256:${'1'.repeat(64)}`, fromRelease: 'v1.2.0', fromSourceCommit: 'b'.repeat(40) }]));
+      const result = spawnSync('bash', ['-e', '-c', stepRun('create-release', 'Prepare release assets')], {
+        cwd: work,
+        encoding: 'utf8',
+        env: { ...process.env, GITHUB_REPOSITORY: 'LanternOps/breeze', GITHUB_REF_NAME: 'v1.2.3', WINDOWS_SIGNING_PROVIDER_USED: '', RELEASE_KIND: kind, BINARIES_TAG: 'v1.2.0', BINARIES_SHA: 'b'.repeat(40) },
+      });
+      assert.notEqual(result.status, 0, `${kind} release without ${file} must fail`);
+      assert.match(result.stdout + result.stderr, /built-in YARA pack/);
+    }
+  }
+});
+
+test('create-release downloads the YARA pack artifact (its download pattern is an allowlist)', () => {
+  const { lines } = stepLines('create-release', 'Download all artifacts');
+  const text = lines.map((line) => (typeof line === 'string' ? line : line.content)).join('\n');
+  const pattern = text.match(/pattern:\s*'\{([^}]*)\}'/u);
+  assert.ok(pattern, 'Download all artifacts must keep its brace-list pattern');
+  assert.ok(pattern[1].split(',').includes('breeze-yara-builtin'), 'breeze-yara-builtin must be downloaded or Prepare release assets refuses every release');
+});
+
+test('create-release needs the YARA pack job, which runs for both release kinds', () => {
+  assert.ok(currentGraph['create-release'].needs.includes('build-yara-pack'));
+  assert.ok(ifConjuncts('create-release').includes("needs.build-yara-pack.result == 'success'"));
+  assert.ok(currentGraph['create-release'].needs.includes('yara-pack-fp-gate'), 'a pack that matches a clean corpus must never publish');
+  assert.ok(ifConjuncts('create-release').includes("needs.yara-pack-fp-gate.result == 'success'"));
+  assert.deepEqual(currentGraph['yara-pack-fp-gate'].needs, ['build-yara-pack'], 'the gate scans the exact uploaded bytes');
+  assert.ok(!currentGraph['build-yara-pack'].needs.includes('classify-release'), 'the pack is server content, not gated on release kind');
+});
+
 test('manifest: a full release still refuses to ship without the recovery ISO or pkg attestation', () => {
   for (const missing of ['artifacts/breeze-recovery-linux-amd64', 'artifacts/macos-pkg-attestation']) {
     const work = mkdtempSync(join(scratch, 'prepare-missing-'));
@@ -614,7 +664,9 @@ test('manifest: a server-only release records kind, pairing and carried images; 
   assert.equal(manifest.binariesRelease, 'v1.2.0');
   assert.equal(manifest.binariesSourceCommit, 'b'.repeat(40));
   assert.equal(manifest.carriedImages[0].fromRelease, 'v1.2.0');
-  assert.deepEqual(manifest.assets.map((asset) => asset.name).sort(), ['breeze-api.tar.gz', 'breeze-web.tar.gz', 'latest.json']);
+  assert.deepEqual(manifest.assets.map((asset) => asset.name).sort(), [
+    'breeze-api.tar.gz', 'breeze-web.tar.gz', 'breeze-yara-builtin-report.json', 'breeze-yara-builtin.json', 'latest.json',
+  ]);
 
   // Base manifest for the latest.json byte-identity check.
   const latest = readFileSync(join(work, 'release-assets', 'latest.json'));
@@ -640,6 +692,7 @@ test('manifest: a server-only release records kind, pairing and carried images; 
     ['installer', (m) => m.assets.push({ name: 'breeze-viewer-windows.msi', sha256: '0'.repeat(64), size: 1 })],
     ['recovery ISO', (m) => m.assets.push({ name: 'breeze-recovery-linux-amd64.iso', sha256: '0'.repeat(64), size: 1 })],
     ['unexpected asset', (m) => m.assets.push({ name: 'notes.txt', sha256: '0'.repeat(64), size: 1 })],
+    ['missing YARA pack', (m) => { m.assets = m.assets.filter((a) => a.name !== 'breeze-yara-builtin.json'); }],
     ['wrong kind', (m) => { m.releaseKind = 'full'; }],
     ['wrong pairing', (m) => { m.binariesRelease = 'v1.1.0'; }],
     ['latest.json changed', (m) => { m.assets.find((a) => a.name === 'latest.json').sha256 = 'f'.repeat(64); }],

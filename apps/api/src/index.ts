@@ -4,6 +4,8 @@ loadDotenv({ quiet: true });
 // on `NODE_ENV === 'production'` at import time). Must stay directly after
 // dotenv so .env is loaded first. See #917 (L-6).
 import './config/normalizeNodeEnv';
+// An empty CLAUDE_CONFIG_DIR (compose `${VAR:-}`) must read as unset for the Agent SDK. #9133.
+import './config/normalizeClaudeConfigDir';
 import { serve } from '@hono/node-server';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { installPerRouteMaxPayload } from './services/wsMaxPayload';
@@ -68,6 +70,7 @@ import { timeEntriesRoutes } from './routes/timeEntries';
 import { billingProfilesRoutes } from './routes/billingProfiles';
 import { ticketCategoriesRoutes } from './routes/ticketCategories';
 import { ticketConfigRoutes } from './routes/ticketConfig';
+import { businessCalendarRoutes } from './routes/businessCalendars';
 import { ticketResponseTemplateRoutes } from './routes/tickets/ticketResponseTemplates';
 import { ticketFormRoutes } from './routes/tickets/forms';
 import { tenantVariableRoutes } from './routes/tenantVariables';
@@ -143,6 +146,7 @@ import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
 import { discoveryAssetPlacementRoutes } from './routes/discoveryAssetPlacement';
 import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { topologyRoutes } from './routes/topology';
+import { circuitRoutes } from './routes/circuits';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -245,6 +249,7 @@ import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
 import { toolSourcesRoutes } from './routes/toolSources';
+import { flowsRoutes } from './routes/flows';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -334,8 +339,9 @@ import { drainAuditRetryQueue, runWithAuditRequestTracking } from './services/au
 import { runShutdownPhases } from './services/shutdownPhases';
 import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { closeModelGateway } from './services/aiModels/gateway/server';
-import { createCorsOriginResolver } from './services/corsOrigins';
+import { CORS_MIDDLEWARE_OPTIONS } from './services/corsPolicy';
 import { validateConfig } from './config/validate';
+import { startTurnPreflight } from './services/system/connections/turnPreflight';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
 import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
@@ -348,6 +354,7 @@ import {
   extensionRootsSnapshot,
 } from './extensions/faultAttribution';
 import { syncBinaries } from './services/binarySync';
+import { syncBuiltinYaraPack } from './services/yaraBuiltinPack';
 import { startRegularMsiCacheWarmer } from './services/installerBuilder';
 import * as dbModule from './db';
 import { webhookDeliveries } from './db/schema';
@@ -464,10 +471,6 @@ const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({ app });
 // per-route hook for `maxPayload`, so the `ws` library default of 100 MiB
 // would otherwise apply everywhere. Size it per route instead.
 installPerRouteMaxPayload(wss);
-const resolveCorsOrigin = createCorsOriginResolver({
-  configuredOriginsRaw: process.env.CORS_ALLOWED_ORIGINS,
-  nodeEnv: process.env.NODE_ENV
-});
 
 // Global middleware
 // FIRST, deliberately: `http_requests_total` / `http_request_duration_seconds`
@@ -552,14 +555,8 @@ app.use('*', prettyJSON());
 app.use(
   '*',
   exceptTunnelHttp(
-    cors({
-      origin: (origin) => resolveCorsOrigin(origin),
-      credentials: true,
-      allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'X-Breeze-CSRF'],
-      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      exposeHeaders: ['Content-Length', 'X-Request-Id'],
-      maxAge: 86400
-    })
+    // Origin resolver + header lists live in services/corsPolicy.ts (B-W03 #6157).
+    cors(CORS_MIDDLEWARE_OPTIONS)
   )
 );
 
@@ -873,6 +870,7 @@ api.route('/time-entries', timeEntriesRoutes);
 api.route('/ticket-categories', ticketCategoriesRoutes);
 api.route('/billing-profiles', billingProfilesRoutes);
 api.route('/ticket-config', ticketConfigRoutes);
+api.route('/business-calendars', businessCalendarRoutes);
 api.route('/', ticketResponseTemplateRoutes);
 api.route('/', ticketFormRoutes);
 api.route('/', tenantVariableRoutes);
@@ -1162,7 +1160,11 @@ api.route('/extensions', extensionsWebRoutes);
 // Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
 // when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
 api.route('/tool-sources', toolSourcesRoutes);
+// Tool Catalog W03 (#5218) — read-only flows. 404s whole-router when
+// FLOWS_ENABLED is off (routes/flows.ts's first `use('*')`).
+api.route('/flows', flowsRoutes);
 api.route('/topology', topologyRoutes);
+api.route('/circuits', circuitRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on
@@ -1919,6 +1921,18 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Binary sync failed (non-fatal in github mode):', err);
   }
 
+  // #6263 W03b: upsert the built-in YARA pack from this release's signed
+  // manifest. Deliberately NOT awaited: it fetches the release asset and runs
+  // the breeze-yarac pre-check (up to minutes), and a pack problem must never
+  // block or crash boot. It never rejects (every failure logs and returns
+  // 'skipped', leaving the published built-in set as it was) and opens its
+  // own system DB context outside any ambient one. Every replica runs it; an
+  // advisory lock plus the strictly-newer version check make that a no-op
+  // after the first.
+  void syncBuiltinYaraPack()
+    .then((outcome) => console.log(`[startup] Built-in YARA pack: ${outcome}`))
+    .catch((err) => console.error('[startup] Built-in YARA pack sync failed unexpectedly:', err));
+
   // Keeps the regular-MSI download cache (installerBuilder.ts) warm from a
   // background timer instead of the request path: the installer routes that
   // consume it all run inside an ambient DB transaction opened by auth
@@ -1989,6 +2003,11 @@ async function bootstrap(): Promise<void> {
   server = serve({
     fetch: app.fetch,
     port
+  });
+
+  // #9372: one non-blocking TURN preflight (never rejects, never delays boot).
+  startTurnPreflight(process.env).catch(() => {
+    console.warn('[turn-preflight] preflight failed unexpectedly');
   });
 
   injectWebSocket(server);

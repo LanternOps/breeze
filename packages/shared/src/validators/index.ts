@@ -36,9 +36,11 @@ export * from './authenticator';
 export * from './catalog';
 export * from './invoices';
 export * from './contracts';
+export * from './relatedContracts';
 export * from './workTypes';
 export * from './mlFeedback';
 export * from './quotes';
+export * from './agreementRequests';
 export * from './contractTemplates';
 export * from './scriptProposals';
 export * from './maintenanceWindow';
@@ -48,6 +50,7 @@ export * from './aiApprovalSettings';
 export * from './softwareDetection';
 export * from './softwareExitCodes';
 export * from './softwareDownloadPolicy';
+export * from './softwareVersionInstallSpec';
 export * from './systemCleanup';
 export * from './psa';
 export * from './deviceRoles';
@@ -433,6 +436,14 @@ export const vpnProviderSchema = z.enum([
   'zerotier',
   'openvpn',
   'cloudflare-warp',
+  // Enterprise VPN / SSE clients (#8763). Closed enum: an API older than the
+  // agent drops entries with a provider it doesn't know (per-entry salvage in
+  // routes/agents/inventory.ts), so ship the API before promoting the agent.
+  'zscaler',
+  'globalprotect',
+  'cisco-secure-client',
+  'forticlient',
+  'netskope',
   'generic'
 ]);
 
@@ -603,12 +614,18 @@ const patchSourceValueSchema = z.enum([
  */
 const PROVIDERLESS_PATCH_SOURCES = new Set<string>(['firmware', 'drivers']);
 
+// Length in UTF-16 code units (an astral char counts twice). zod <=4.5 measured
+// `.max()` this way; zod >=4.6 counts code points. The ring app-rules backfill
+// migration (2026-12-26-230000) emulates the UTF-16 rule in SQL, so it is
+// pinned explicitly rather than left to the zod version.
+const utf16Max = (max: number) => (v: string) => v.length <= max;
+
 export const policyAppRuleSchema = z.object({
   source: z.enum(['third_party', 'custom']),
-  packageId: z.string().min(1).max(256),
-  displayName: z.string().max(255).optional(),
+  packageId: z.string().min(1).refine(utf16Max(256), { message: 'Too long: expected <=256 characters' }),
+  displayName: z.string().refine(utf16Max(255), { message: 'Too long: expected <=255 characters' }).optional(),
   action: z.enum(['block', 'pin']),
-  pinnedVersion: z.string().min(1).max(64).optional(),
+  pinnedVersion: z.string().min(1).refine(utf16Max(64), { message: 'Too long: expected <=64 characters' }).optional(),
 }).superRefine((data, ctx) => {
   if (data.action === 'pin' && !data.pinnedVersion) {
     ctx.addIssue({
@@ -637,8 +654,8 @@ export function canonicalAppRuleKey(source: string, packageId: string): string {
 
 /**
  * Update Ring per-app block/pin rules — `patch_policies.app_rules` (#8184).
- * Same element type as the policy-level `apps` list, max 200, unique by
- * `canonicalAppRuleKey`.
+ * Element type `policyAppRuleSchema` (the retired policy-level `apps` list
+ * used the same one), max 200, unique by `canonicalAppRuleKey`.
  */
 export const ringAppRulesSchema = z.array(policyAppRuleSchema).max(200).superRefine((rules, ctx) => {
   const seen = new Set<string>();
@@ -827,12 +844,13 @@ export const rebootPromptTextSchemas = {
   button: restartPromptTextSchema(REBOOT_PROMPT_BUTTON_MAX, false),
 } as const;
 
+// #8188 (#1317 W04): auto-approval and per-app block/pin rules are owned by
+// the Update Ring (patch_policies.auto_approve / app_rules). The retired
+// policy-level keys (autoApprove, autoApproveSeverities,
+// autoApproveDeferralDays, apps) are no longer defined here, so a payload that
+// still carries them has them stripped rather than validated or stored.
 export const patchInlineSettingsSchema = z.object({
   sources: z.array(patchSourceValueSchema).min(1).default(['os']),
-  autoApprove: z.boolean().default(false),
-  autoApproveSeverities: z.array(z.enum(['critical', 'important', 'moderate', 'low'])).default([]),
-  autoApproveDeferralDays: z.number().int().min(0).max(60).default(0),
-  apps: z.array(policyAppRuleSchema).max(200).default([]),
   scheduleFrequency: z.enum(['daily', 'weekly', 'monthly']).default('weekly'),
   scheduleTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('02:00'),
   scheduleDayOfWeek: z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']).default('sun'),
@@ -864,14 +882,6 @@ export const patchInlineSettingsSchema = z.object({
   // channel (NoAutoUpdate=1); Breeze's own WUA-driven installs are unaffected.
   exclusiveWindowsUpdate: z.boolean().default(false),
 }).superRefine((data, ctx) => {
-  if (data.autoApprove && data.autoApproveSeverities.length === 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['autoApproveSeverities'],
-      message: 'Select at least one severity for auto-approval.',
-    });
-  }
-
   if (data.sources.length > 0 && data.sources.every((s) => PROVIDERLESS_PATCH_SOURCES.has(s))) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -907,22 +917,6 @@ export const patchInlineSettingsSchema = z.object({
       path: ['rebootDeferralMinutes'],
       message: 'rebootDelayMinutes + rebootMaxDeferrals x rebootDeferralMinutes must not exceed 10080 minutes (7 days).',
     });
-  }
-
-  const seen = new Set<string>();
-  for (const [i, app] of data.apps.entries()) {
-    // The approval evaluator matches 'third_party' and 'custom' as a single
-    // bucket, so canonicalize the source when deduping to mirror that.
-    const canonicalSource = app.source === 'custom' ? 'third_party' : app.source;
-    const key = `${canonicalSource}|${app.packageId.toLowerCase()}`;
-    if (seen.has(key)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['apps', i],
-        message: 'Duplicate app rule for the same source and package.',
-      });
-    }
-    seen.add(key);
   }
 });
 
@@ -1066,6 +1060,7 @@ export * from './aiAgents';
 export * from './aiAgentGraduation';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
+export * from './aiOperatorIdentity';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
@@ -1141,17 +1136,22 @@ export {
   listDeliverablesQuerySchema,
   reportRunEvidenceRefSchema,
   documentEvidenceRefSchema,
+  contractDocumentEvidenceRefSchema,
   evidenceRefSchema,
   addEvidenceSchema,
   deliverOccurrenceSchema,
   waiveOccurrenceSchema,
   rescheduleOccurrenceSchema,
+  bulkRescheduleOccurrencesSchema,
   listOccurrencesQuerySchema,
+  moveDeliverablesSchema,
+  type MoveDeliverablesInput,
   type CreateDeliverableInput,
   type UpdateDeliverableInput,
   type DeliverOccurrenceInput,
   type WaiveOccurrenceInput,
   type RescheduleOccurrenceInput,
+  type BulkRescheduleOccurrencesInput,
   type AddEvidenceInput,
   type EvidenceRef,
 } from './serviceDeliverables';
@@ -1173,6 +1173,10 @@ export {
   checklistTemplateItemReorderSchema,
   listChecklistTemplatesQuerySchema,
   applyChecklistTemplateSchema,
+  saveChecklistAsTemplateSchema,
+  duplicateChecklistTemplateSchema,
+  type SaveChecklistAsTemplateInput,
+  type DuplicateChecklistTemplateInput,
   type ChecklistTemplateOwnerScope,
   type CreateChecklistTemplateInput,
   type UpdateChecklistTemplateInput,
@@ -1191,6 +1195,7 @@ export {
   listTemplateSetsQuerySchema,
   applyTemplateSetSchema,
   MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
   type ManagedEvidenceReportType,
   type CreateTemplateItemInput,
   type UpdateTemplateItemInput,
@@ -1244,6 +1249,9 @@ export { canonicalizeTopologyContext, canonicalizeTopologySection } from './topo
 export * from './topologyPhysical';
 export * from './topologyPhysicalNormalized';
 export * from './topologyUnifiNormalized';
+export * from './topologyUnifiV2';
+export * from './topologyUnifiV2Normalized';
+export { canonicalizeUnifiResourceV2 } from './topologyUnifiV2Canonical';
 export { canonicalizeAdjacencyReport, canonicalizeAdjacencyScope, canonicalizeUnifiResource } from './topologyPhysicalCanonical';
 export type { AdjacencyDigestIdentity, UnifiDigestIdentity } from './topologyPhysicalCanonical';
 
@@ -1404,9 +1412,12 @@ export * from './aiModelOptions';
 export * from './aiModelChoice';
 export * from './aiModelRegistryApi';
 export * from './autopay';
+export * from './flows';
+export * from './businessCalendars';
 export * from './trustCenter';
 export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';
 export * from './trustCenterContent';
 export * from './trustCenterTemplate';
 export * from './trustCenterEmbed';
+export * from './launchPurchaseSelection';

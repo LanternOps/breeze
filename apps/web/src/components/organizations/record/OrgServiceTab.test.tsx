@@ -111,7 +111,7 @@ function deliverable(overrides: Partial<Deliverable> = {}): Deliverable {
 
 function fetchFor(
   deliverables: Deliverable[],
-  contracts: Array<{ id: string; name: string }> | Response = [],
+  contracts: Array<{ id: string; name: string; startDate?: string }> | Response = [],
 ): OrgFetch {
   return vi.fn(async (path: string) => {
     if (path.startsWith(`/orgs/${ORG_ID}/deliverables`)) return json({ data: deliverables });
@@ -177,7 +177,7 @@ describe('OrgServiceTab', () => {
   });
 
   it('opens the add form with the org contracts loaded through orgFetch as picker options', async () => {
-    const orgFetch = fetchFor([], [{ id: 'c-1', name: 'Gold support' }]);
+    const orgFetch = fetchFor([], [{ id: 'c-1', name: 'Gold support', startDate: '2026-03-01' }]);
     render(<OrgServiceTab orgId={ORG_ID} orgFetch={orgFetch} />);
     await screen.findByTestId('deliverables-table');
     expect(screen.queryByTestId('deliverable-form')).toBeNull();
@@ -186,7 +186,7 @@ describe('OrgServiceTab', () => {
     await screen.findByTestId('deliverable-form');
     await waitFor(() => {
       const props = formProps.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-      expect(props.contractOptions).toEqual([{ id: 'c-1', name: 'Gold support' }]);
+      expect(props.contractOptions).toEqual([{ id: 'c-1', name: 'Gold support', startDate: '2026-03-01' }]);
       expect(props.contractsState).toBeUndefined();
     });
     const calls = (orgFetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [string][];

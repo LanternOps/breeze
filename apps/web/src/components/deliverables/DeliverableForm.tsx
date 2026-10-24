@@ -1,7 +1,12 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import { MANAGED_EVIDENCE_REPORT_TYPES, type CreateDeliverableInput, type UpdateDeliverableInput } from '@breeze/shared';
+import {
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  defaultPortalVisibleForCadence,
+  type CreateDeliverableInput,
+  type UpdateDeliverableInput,
+} from '@breeze/shared';
 import {
   createDeliverable,
   updateDeliverable,
@@ -13,6 +18,7 @@ import {
 import { listChecklistTemplates, type ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
+import { localDateInputValue } from '../../lib/localDate';
 
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
@@ -31,7 +37,9 @@ export interface DeliverableFormProps {
    *  picker is hidden. */
   contractId?: string | null;
   /** Contracts to choose from when `contractId` is not fixed. */
-  contractOptions?: Array<{ id: string; name: string }>;
+  contractOptions?: Array<{ id: string; name: string; startDate?: string | null }>;
+  /** Start date of the pinned `contractId`; the default for `effectiveFrom` (spec §4.1). */
+  contractStartDate?: string | null;
   /** Lifecycle of the `contractOptions` load when `contractId` is not fixed:
    *  `'loading'` disables the picker, `'failed'` shows an inline error and
    *  blocks Save — a deliverable that belongs under a contract must never be
@@ -65,11 +73,15 @@ interface FormState {
   checklistTemplateId: string;
 }
 
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+function laterOf(a: string, b: string): string {
+  return a > b ? a : b;
 }
 
-function initialState(initial: Deliverable | undefined, fixedContractId: string | null | undefined): FormState {
+function todayISO(): string {
+  return localDateInputValue();
+}
+
+function initialState(initial: Deliverable | undefined, fixedContractId: string | null | undefined, contractStartDate?: string | null): FormState {
   if (initial) {
     return {
       name: initial.name,
@@ -96,15 +108,15 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
     description: '',
     contractId: fixedContractId ?? '',
     cadence: 'monthly',
-    anchorDueDate: today,
-    effectiveFrom: today,
+    anchorDueDate: laterOf(today, (fixedContractId && contractStartDate) || today),
+    effectiveFrom: (fixedContractId && contractStartDate) || today,
     effectiveUntil: '',
     leadDays: '7',
     graceDays: '14',
     artifactRequired: true,
     completionMode: 'on_ticket_resolve',
     autoEvidenceReportId: '',
-    portalVisible: true,
+    portalVisible: defaultPortalVisibleForCadence('monthly'),
     sortOrder: '0',
     instructions: '',
     checklistTemplateId: '',
@@ -125,6 +137,7 @@ export default function DeliverableForm({
   orgId,
   contractId: fixedContractId,
   contractOptions,
+  contractStartDate,
   contractsState,
   initial,
   onSaved,
@@ -134,7 +147,13 @@ export default function DeliverableForm({
   const uid = useId();
   const id = (field: string) => `${uid}-${field}`;
   const isEdit = Boolean(initial);
-  const [form, setForm] = useState<FormState>(() => initialState(initial, fixedContractId));
+  const [form, setForm] = useState<FormState>(() => initialState(initial, fixedContractId, contractStartDate));
+  // #9308: contract start seeds effectiveFrom (and the due date) only until the user edits them.
+  const touched = useRef({ effectiveFrom: false, anchorDueDate: false });
+  // #9315. Until the user touches the portal toggle it follows the cadence
+  // (off for one-time, on for recurring). Edit mode starts "touched": the
+  // stored value is a real choice, and cadence is read-only there anyway.
+  const [portalTouched, setPortalTouched] = useState(isEdit);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evidenceReports, setEvidenceReports] = useState<EvidenceReportOption[]>([]);
@@ -165,11 +184,28 @@ export default function DeliverableForm({
   }, [fetcher]);
 
   // The picker is always offered when no contract is pinned — an empty list
-  // still lets the user confirm "not tied to a contract" deliberately.
-  const showContractPicker = !fixedContractId;
+  // still lets the user confirm "not tied to a contract" deliberately. When
+  // EDITING it is offered even if the table pinned a contract (#9302): the pin
+  // only fixes where a NEW deliverable lands; an existing one must be movable.
+  const showContractPicker = isEdit || !fixedContractId;
+  // The current contract stays selectable even if the caller's list omits it
+  // (e.g. paused/expired), so opening the dialog never silently re-files the row.
+  const pickerOptions = [...(contractOptions ?? [])];
+  if (initial?.contractId && !pickerOptions.some((c) => c.id === initial.contractId)) {
+    pickerOptions.push({ id: initial.contractId, name: initial.contractName ?? initial.contractId });
+  }
   const contractsFailed = showContractPicker && contractsState === 'failed';
   const contractsLoading = showContractPicker && contractsState === 'loading';
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
+  const pickContract = (contractId: string) => {
+    const start = contractOptions?.find((c) => c.id === contractId)?.startDate || todayISO();
+    setForm((f) => ({
+      ...f,
+      contractId,
+      ...(isEdit || touched.current.effectiveFrom ? {} : { effectiveFrom: start }),
+      ...(isEdit || touched.current.anchorDueDate ? {} : { anchorDueDate: laterOf(todayISO(), start) }),
+    }));
+  };
 
   // Managed evidence definitions this org could link a deliverable to. The
   // tuple was empty in W01 and each later wave (W02 threat_detection_review,
@@ -212,8 +248,8 @@ export default function DeliverableForm({
   }, [fetcher, orgId]);
 
   const resolvedContractId = (): string | null | undefined => {
-    if (fixedContractId) return fixedContractId;
     if (showContractPicker) return form.contractId || null;
+    if (fixedContractId) return fixedContractId;
     return isEdit ? undefined : null;
   };
 
@@ -305,13 +341,13 @@ export default function DeliverableForm({
             id={id('contract')}
             className={inputClass}
             value={form.contractId}
-            onChange={(e) => set('contractId', e.target.value)}
+            onChange={(e) => pickContract(e.target.value)}
             disabled={contractsLoading || contractsFailed}
             aria-invalid={contractsFailed || undefined}
             data-testid="deliverable-form-contract"
           >
             <option value="">{t('form.noContract')}</option>
-            {contractOptions?.map((c) => (
+            {pickerOptions.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
@@ -329,7 +365,14 @@ export default function DeliverableForm({
             id={id('cadence')}
             className={inputClass}
             value={form.cadence}
-            onChange={(e) => set('cadence', e.target.value as DeliverableCadence)}
+            onChange={(e) => {
+              const cadence = e.target.value as DeliverableCadence;
+              setForm((f) => ({
+                ...f,
+                cadence,
+                ...(portalTouched ? {} : { portalVisible: defaultPortalVisibleForCadence(cadence) }),
+              }));
+            }}
             disabled={isEdit}
             data-testid="deliverable-form-cadence"
           >
@@ -345,7 +388,7 @@ export default function DeliverableForm({
             type="date"
             className={inputClass}
             value={form.anchorDueDate}
-            onChange={(e) => set('anchorDueDate', e.target.value)}
+            onChange={(e) => { touched.current.anchorDueDate = true; set('anchorDueDate', e.target.value); }}
             disabled={isEdit}
             required
             data-testid="deliverable-form-anchor"
@@ -358,7 +401,7 @@ export default function DeliverableForm({
             type="date"
             className={inputClass}
             value={form.effectiveFrom}
-            onChange={(e) => set('effectiveFrom', e.target.value)}
+            onChange={(e) => { touched.current.effectiveFrom = true; set('effectiveFrom', e.target.value); }}
             required
           />
         </div>
@@ -463,7 +506,10 @@ export default function DeliverableForm({
           <input
             type="checkbox"
             checked={form.portalVisible}
-            onChange={(e) => set('portalVisible', e.target.checked)}
+            onChange={(e) => {
+              setPortalTouched(true);
+              set('portalVisible', e.target.checked);
+            }}
             data-testid="deliverable-form-portal-visible"
           />
           {t('form.portalVisible')}

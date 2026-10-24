@@ -1785,6 +1785,42 @@ describe('TicketWorkbench custom-status select (config path)', () => {
     });
   });
 
+  it('resolve patch carries the custom status name/colour so the host banner never shows the stale name', async () => {
+    fetchConfigMock.mockResolvedValue(makeConfig());
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open', statusName: 'Open' }) });
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    const select = await screen.findByTestId('ticket-workbench-status');
+    await waitFor(() => expect(select.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+    fireEvent.change(select, { target: { value: 'st-done' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Verified the fix.' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({
+        status: 'resolved', statusName: 'Done & verified', statusColor: '#00aa55',
+      }));
+    });
+  });
+
+  it('a plain resolve clears the stale custom status name in the patch', async () => {
+    mockTicketApi({ 'tk-1': makeTicket({ status: 'open', statusName: 'Open' }) });
+    const onTicketPatched = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onTicketPatched={onTicketPatched} />);
+
+    await screen.findByTestId('ticket-workbench');
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
+    fireEvent.change(screen.getByTestId('ticket-workbench-resolve-note'), { target: { value: 'Replaced the toner.' } });
+    fireEvent.click(screen.getByTestId('ticket-workbench-resolve-submit'));
+
+    await waitFor(() => {
+      expect(onTicketPatched).toHaveBeenCalledWith('tk-1', expect.objectContaining({
+        status: 'resolved', statusName: null, statusColor: null,
+      }));
+    });
+  });
+
   it('picking a custom PENDING-core status opens the pending form and submits {statusId, pendingReason}', async () => {
     fetchConfigMock.mockResolvedValue(makeConfig());
     mockTicketApi({ 'tk-1': makeTicket({ status: 'open' }) });
@@ -2439,6 +2475,78 @@ describe('TicketWorkbench device link/unlink', () => {
   });
 });
 
+describe('TicketWorkbench device link/change (#8962)', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  const DEVICES = [
+    { id: 'dev-7', hostname: 'DESK-7', displayName: null, osType: 'windows', status: 'online' },
+    { id: 'dev-8', hostname: 'DESK-8', displayName: 'Front desk', osType: 'macos', status: 'offline' },
+  ];
+
+  function mockWithDevices(ticket: TicketDetail) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith('/devices/options')) {
+        return makeJsonResponse({ data: DEVICES, page: { hasMore: false, total: 2, nextCursor: null } });
+      }
+      if (!init?.method || init.method === 'GET') {
+        if (url === '/tickets/tk-1') return makeJsonResponse({ data: ticket });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('offers Link device on a ticket with no device and PATCHes the chosen deviceId scoped to the ticket org', async () => {
+    mockWithDevices(makeTicket({ orgId: 'org-1', deviceId: null, deviceHostname: null }));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-edit'));
+    expect(screen.getByTestId('ticket-workbench-device-edit')).toHaveTextContent('Link device');
+
+    const choice = await screen.findByLabelText(/DESK-7/);
+    fireEvent.click(choice);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ deviceId: 'dev-7' }) })
+      );
+    });
+    const optionCalls = fetchMock.mock.calls.filter(([u]) => String(u).startsWith('/devices/options'));
+    expect(optionCalls.length).toBeGreaterThan(0);
+    expect(String(optionCalls[0][0])).toContain('orgId=org-1');
+  });
+
+  it('offers Change device on a linked ticket, keeps Unlink, and replaces the device', async () => {
+    mockWithDevices(makeTicket({ orgId: 'org-1', deviceId: 'dev-1', deviceHostname: 'DESKTOP-123' }));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    expect(screen.getByTestId('ticket-workbench-device-unlink')).toBeInTheDocument();
+    expect(screen.getByTestId('ticket-workbench-device-edit')).toHaveTextContent('Change device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-edit'));
+
+    fireEvent.click(await screen.findByLabelText(/Front desk/));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1',
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ deviceId: 'dev-8' }) })
+      );
+    });
+  });
+
+  it('warns that changing the device on an assigned ticket can unassign the technician', async () => {
+    mockWithDevices(makeTicket({ orgId: 'org-1', deviceId: 'dev-1', deviceHostname: 'DESKTOP-123', assignedTo: 'u-1' } as Partial<TicketDetail>));
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench-device');
+    fireEvent.click(screen.getByTestId('ticket-workbench-device-edit'));
+    expect(await screen.findByTestId('ticket-workbench-device-assignee-warning')).toBeInTheDocument();
+  });
+});
+
 // ─── Requester editing + clickable device link ────────────────────────────────
 
 describe('TicketWorkbench requester editing + device link', () => {
@@ -2991,7 +3099,8 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     authState.permissions = [{ resource: 'tickets', action: 'manage' }];
     mockTicketApi({ 'tk-1': makeTicket() });
     const onChanged = vi.fn();
-    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} />);
+    const onDeleted = vi.fn();
+    render(<TicketWorkbench ticketId="tk-1" onChanged={onChanged} onDeleted={onDeleted} />);
 
     await screen.findByTestId('ticket-workbench');
     fireEvent.click(screen.getByTestId('ticket-delete-button'));
@@ -3009,6 +3118,8 @@ describe('TicketWorkbench soft-delete (tickets:manage)', () => {
     await waitFor(() => {
       expect(onChanged).toHaveBeenCalled();
     });
+    // #9564: tells the host which ticket is gone so it drops any hold on it.
+    expect(onDeleted).toHaveBeenCalledWith('tk-1');
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Ticket deleted' }));
     // Split-pane mode: the host handles re-selection, so no navigation here.
     expect(navigateTo).not.toHaveBeenCalled();

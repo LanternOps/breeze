@@ -25,6 +25,16 @@ describe('feature Save action feedback', () => {
     expect.objectContaining({ method: existingId ? 'PATCH' : 'POST' }));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
+  it('save with successMessage null stays silent; a string overrides the default', async () => {
+    vi.clearAllMocks();
+    const row = { id: LINK, ...payload };
+    vi.mocked(fetchWithAuth).mockImplementation(async () => new Response(JSON.stringify(row), { status: 200 }));
+    const { result } = renderHook(() => useFeatureLink(POLICY));
+    await act(async () => { expect(await result.current.save(LINK, payload, { successMessage: null })).toEqual(row); });
+    expect(showToast).not.toHaveBeenCalled();
+    await act(async () => { await result.current.save(LINK, payload, { successMessage: 'Custom' }); });
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Custom' }));
+  });
   it.each([200, 403])('surfaces a failed body at HTTP %s and retains inline error', async (status) => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({ success: false, error: 'Denied' }), { status }));
     const { result } = renderHook(() => useFeatureLink(POLICY));
@@ -45,27 +55,18 @@ describe('feature Save action feedback', () => {
       message: expect.not.stringContaining('MONITOR_NOT_ATTACHABLE'),
     }));
   });
-  it('maps APPROVAL_RULES_MOVED_TO_RING to copy that points at the Update Ring (#8187)', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
-      error: 'Approval and application rules are configured on the Update Ring linked to this policy.',
-      code: 'APPROVAL_RULES_MOVED_TO_RING',
-    }), { status: 400 }));
+  it.each([
+    ['TOO_MANY_RULE_SETS', /at most 20 rule sets/],
+    ['INVALID_RULE_SET_IDS', /not valid/],
+    ['YARA_RULE_SET_NOT_ATTACHABLE', /cannot use some of the selected rule sets/],
+  ])('maps the rule-set gate code %s to readable copy (#6267)', async (code, copy) => {
+    vi.mocked(fetchWithAuth).mockResolvedValue(
+      new Response(JSON.stringify({ error: 'raw gate text', code, ruleSetIds: ['x'] }), { status: 400 }),
+    );
     const { result } = renderHook(() => useFeatureLink(POLICY));
     await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
-    expect(result.current.error).toMatch(/Update Ring/);
-    expect(result.current.error).toMatch(/reload/i);
-  });
-  it('maps RING_LACKS_POLICY_APP_RULES to repair copy, not the reload-and-save-again copy (#8678)', async () => {
-    vi.mocked(fetchWithAuth).mockResolvedValue(new Response(JSON.stringify({
-      error: 'This policy still carries application rules that no Update Ring enforces.',
-      code: 'RING_LACKS_POLICY_APP_RULES',
-    }), { status: 400 }));
-    const { result } = renderHook(() => useFeatureLink(POLICY));
-    await act(async () => { expect(await result.current.save(LINK, payload)).toBeNull(); });
-    // The localized repair copy, not the API's English message passed through.
-    expect(result.current.error).toMatch(/Update Ring you chose/);
-    expect(result.current.error).not.toMatch(/reload/i);
-    expect(result.current.error).not.toContain('RING_LACKS_POLICY_APP_RULES');
+    expect(result.current.error).toMatch(copy);
+    expect(result.current.errorDetail).toMatchObject({ status: 400, code, body: { ruleSetIds: ['x'] } });
   });
   it('redirects on 401 without an extra toast', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 401 }));

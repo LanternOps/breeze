@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TRUST_DOCUMENTS_MAX, type TrustDocumentVisibility } from '@breeze/shared';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import HashLink from '@/components/shared/HashLink';
 import type { OrgFetch } from '@/components/organizations/record/orgRecordFetch';
 import { listOrgDocuments, type OrgDocument } from '@/lib/api/orgDocuments';
 import { updateTrustDocuments, type TrustLinkedDocument } from '@/lib/api/trustPage';
@@ -180,9 +181,9 @@ export default function TrustDocumentsSection({ orgId, orgFetch, canWrite, docum
           <h3 className="text-base font-semibold">{tr('sections.documentsHeading')}</h3>
           <p className="mt-1 text-sm text-muted-foreground">{tr('documents.description')}</p>
         </div>
-        <a href="#documents" className="text-sm text-primary underline" data-testid="trust-docs-upload-link">
+        <HashLink hash="documents" className="text-sm text-primary underline" data-testid="trust-docs-upload-link">
           {tr('documents.upload')}
-        </a>
+        </HashLink>
       </div>
 
       {error && <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm" role="alert" data-testid="trust-docs-error">{error}</p>}

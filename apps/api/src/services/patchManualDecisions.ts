@@ -1,0 +1,141 @@
+/**
+ * Manual patch decisions (`patch_approvals`) — the ONE latest-wins resolution
+ * between `approved` and `rejected` rows (#9369, #9485).
+ *
+ * A partner can hold several decision rows per patch: a blanket row
+ * (`ring_id IS NULL`) and one per ring. A decline is a TERMINAL deny — it must
+ * beat an older approval — so every reader of `patch_approvals` resolves the
+ * rows through `resolveLatestManualDecisions` rather than selecting
+ * `status = 'approved'` alone. Readers:
+ *
+ *  - `patchEligibility.ts` (ring-aware; scope = the device's ring)
+ *  - `routes/devices/patches.ts` manual-install gate (ring-agnostic)
+ *  - `vulnerabilityRemediation.ts` (ring-agnostic)
+ */
+import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { db } from '../db';
+import { patchApprovals } from '../db/schema';
+
+export interface ManualDecisionRow {
+  patchId: string;
+  status: string;
+  ringId: string | null;
+  updatedAt: Date | string | null;
+}
+
+/**
+ * Which rows apply:
+ *  - `{ ringId }` — this ring's rows plus partner-wide (null ring) rows.
+ *  - `'any'` — every row, for readers with no ring context. Still latest-wins
+ *    across all rings: a decline denies only until a NEWER approval (any ring
+ *    or blanket) supersedes it. It is not a permanent per-ring veto; the full
+ *    ring-aware verdict lives in `patchEligibility.ts`.
+ */
+export type ManualDecisionScope = { ringId: string | null } | 'any';
+
+export interface ManualDecisions {
+  approved: Set<string>;
+  declined: Set<string>;
+}
+
+/**
+ * Latest decision wins (`updatedAt`); a TIE resolves to the decline
+ * (fail-closed). A missing/invalid timestamp counts as time 0 (oldest) —
+ * unreachable in practice, `updated_at` is NOT NULL. Rows with a status other
+ * than approved/rejected are ignored.
+ */
+export function resolveLatestManualDecisions(
+  rows: readonly ManualDecisionRow[],
+  scope: ManualDecisionScope,
+): ManualDecisions {
+  const latest = new Map<string, { status: string; at: number }>();
+  for (const row of rows) {
+    if (row.status !== 'approved' && row.status !== 'rejected') continue;
+    if (scope !== 'any' && row.ringId !== scope.ringId && row.ringId !== null) continue;
+    const t = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    const at = Number.isFinite(t) ? t : 0;
+    const prev = latest.get(row.patchId);
+    if (!prev || at > prev.at || (at === prev.at && row.status === 'rejected')) {
+      latest.set(row.patchId, { status: row.status, at });
+    }
+  }
+  const approved = new Set<string>();
+  const declined = new Set<string>();
+  for (const [patchId, d] of latest) {
+    (d.status === 'rejected' ? declined : approved).add(patchId);
+  }
+  return { approved, declined };
+}
+
+/**
+ * The partner's approved/rejected decision rows for these patches. Returns the
+ * query itself so a caller can wrap it (e.g. `readOwnPartnerAxisRows`).
+ */
+export function selectManualDecisionRows(partnerId: string, patchIds: string[]) {
+  return db
+    .select({
+      patchId: patchApprovals.patchId,
+      status: patchApprovals.status,
+      ringId: patchApprovals.ringId,
+      updatedAt: patchApprovals.updatedAt,
+    })
+    .from(patchApprovals)
+    .where(
+      and(
+        eq(patchApprovals.partnerId, partnerId),
+        inArray(patchApprovals.patchId, patchIds),
+        inArray(patchApprovals.status, ['approved', 'rejected']),
+      ),
+    );
+}
+
+/**
+ * Where a ring's winning decision for a patch lives: `'ring'` when a row for
+ * this ring carries the winning status, otherwise `'partner'` (the blanket
+ * row). Hint for the UI only — the verdict itself is `resolveLatestManualDecisions`.
+ */
+export function manualDecisionScope(
+  rows: readonly ManualDecisionRow[],
+  ringId: string,
+  patchId: string,
+  verdict: 'approved' | 'rejected',
+): 'ring' | 'partner' {
+  // The winner is the NEWEST applicable row carrying the winning status (a
+  // newer opposite-status row would have changed the verdict). A timestamp tie
+  // attributes to the ring's own row.
+  let best: { at: number; scope: 'ring' | 'partner' } | null = null;
+  for (const r of rows) {
+    if (r.patchId !== patchId || r.status !== verdict) continue;
+    if (r.ringId !== null && r.ringId !== ringId) continue;
+    const t = r.updatedAt ? new Date(r.updatedAt).getTime() : 0;
+    const at = Number.isFinite(t) ? t : 0;
+    const scope = r.ringId === null ? 'partner' : 'ring';
+    if (!best || at > best.at || (at === best.at && scope === 'ring')) best = { at, scope };
+  }
+  return best?.scope ?? 'partner';
+}
+
+/**
+ * Ring-view read: this ring's rows PLUS partner-wide (`ring_id IS NULL`) rows,
+ * every status, for the partner. Feed the result to `resolveLatestManualDecisions`
+ * with `{ ringId }` — the same resolution `patchEligibility.ts` uses — so the
+ * ring UI never disagrees with what the evaluator installs (#9633). Rows of
+ * OTHER rings are never returned. `patchIds` omitted = the whole partner.
+ */
+export function selectRingScopedApprovalRows(partnerId: string, ringId: string, patchIds?: string[]) {
+  return db
+    .select({
+      patchId: patchApprovals.patchId,
+      status: patchApprovals.status,
+      ringId: patchApprovals.ringId,
+      updatedAt: patchApprovals.updatedAt,
+    })
+    .from(patchApprovals)
+    .where(
+      and(
+        eq(patchApprovals.partnerId, partnerId),
+        or(eq(patchApprovals.ringId, ringId), isNull(patchApprovals.ringId)),
+        ...(patchIds ? [inArray(patchApprovals.patchId, patchIds)] : []),
+      ),
+    );
+}

@@ -137,7 +137,11 @@ export async function unifiTopologyAdvertisement(deviceId: string, collectorId: 
     return await db.transaction(async () => {
       const collector = await loadUnifiCollector(collectorId);
       const current = collector ? await currentUnifiCollectorTopology(deviceId, collector) : null;
-      return current ? { acceptedUnifiTopologyVersions: [1], topologyProducerEpoch: current.producerEpoch, topologySourceIdentity: current.sourceIdentity } : null;
+      if (!current || !collector) return null;
+      // Wi-Fi v2 is advertised only while the materializer gate is on, so an agent never spends controller
+      // requests on statistics the API would then skip. Turning the flag off is the rollback: agents fall back to v1.
+      const wifiV2 = (await loadTopologyFlags({ scope: { orgId: collector.orgId, siteId: collector.siteId } })).interfaceHealth;
+      return { acceptedUnifiTopologyVersions: wifiV2 ? [1, 2] : [1], topologyProducerEpoch: current.producerEpoch, topologySourceIdentity: current.sourceIdentity };
     });
   } catch (error) {
     console.error('[unifi] topology advertisement failed; collector stays legacy-only:', error instanceof Error ? error.message : error);

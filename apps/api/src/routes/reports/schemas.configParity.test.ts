@@ -76,6 +76,9 @@ const FIXTURES: Record<string, Record<string, unknown>> = {
   technician_time_billability: { period: { kind: 'last_30_days' }, groupBy: 'technician', weeklyCapacityHours: 40 },
   ar_aging: { groupBy: 'organization', includePaidInPeriod: false },
   ai_usage_by_client: { period: { kind: 'last_full_month' }, groupBy: 'organization' },
+  mrr_renewals: { groupBy: 'organization', renewalHorizonDays: 90 },
+  quote_win_rate: { period: { kind: 'last_full_month' }, groupBy: 'author' },
+  client_profitability: { period: { kind: 'last_full_month' }, groupBy: 'organization', laborCostPerHour: { amount: '45.00', currencyCode: 'USD' } },
 };
 
 describe('parseStoredReportConfig — per-type lookup keeps the loose contract', () => {
@@ -108,6 +111,27 @@ describe('parseStoredReportConfig — per-type lookup keeps the loose contract',
 
   it('applies the OWNING type\'s validation — a bad posture windowDays is rejected on posture', () => {
     expect(() => parseFor('security_compliance_posture', { windowDays: 9999 })).toThrow();
+  });
+
+  it('#9828 Gate B 8: mrr_renewals refuses asOf and period with the run-time message', () => {
+    expect(() => parseFor('mrr_renewals', { asOf: '2026-01-01' })).toThrow(/asOf is not supported for mrr_renewals; it is measured at run time/);
+    expect(() => parseFor('mrr_renewals', { period: { kind: 'last_full_month' } })).toThrow(/period is not supported for mrr_renewals; it is measured at run time/);
+    expect(() => parseFor('mrr_renewals', { renewalHorizonDays: 45 })).toThrow();
+  });
+
+  it('#9828 W2: quote_win_rate accepts its three groupings and rejects a foreign one', () => {
+    for (const groupBy of ['organization', 'author', 'currency']) {
+      expect(() => parseFor('quote_win_rate', { groupBy })).not.toThrow();
+    }
+    expect(() => parseFor('quote_win_rate', { groupBy: 'model' })).toThrow();
+    expect(() => parseFor('quote_win_rate', { orgIds: ['11111111-1111-4111-8111-111111111111'] })).toThrow();
+  });
+
+  it('#9828 W3: client_profitability validates laborCostPerHour and refuses the business selectors', () => {
+    expect(() => parseFor('client_profitability', { laborCostPerHour: { amount: '0', currencyCode: 'USD' } })).toThrow();
+    expect(() => parseFor('client_profitability', { laborCostPerHour: { amount: '45.001', currencyCode: 'USD' } })).toThrow();
+    expect(() => parseFor('client_profitability', { laborCostPerHour: { amount: '45', currencyCode: 'XXX' } })).toThrow();
+    expect(() => parseFor('client_profitability', { orgIds: ['11111111-1111-4111-8111-111111111111'] })).toThrow();
   });
 
   it('DELIBERATE LOOSENING: a foreign key is passed through, not validated, on another type', () => {

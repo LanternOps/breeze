@@ -139,6 +139,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
         { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
         { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
         { domain: "secure_score", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "signin_events", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
       ],
     },
     ...overrides,
@@ -237,6 +238,19 @@ describe("M365CustomerGraphReadCard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("says the org is not enabled, not the instance, for org_not_enabled (#9319)", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ onboardingEnabled: false, onboardingAvailability: "org_not_enabled", connection: null })),
+    );
+
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText(
+      "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText("Not available on this Breeze instance yet.")).not.toBeInTheDocument();
+  });
+
   it("keeps connection management when onboarding is off but a connection exists", async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ onboardingEnabled: false, connection: connection() })),
@@ -261,6 +275,7 @@ describe("M365CustomerGraphReadCard", () => {
     ["conditional_access_blocked", "Microsoft blocked this sign-in: the tenant's Conditional Access policy interrupted it (for example a device check). Try again from a browser the tenant trusts, or ask the tenant admin."],
     ["consent_provider_error", "Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs."],
     ["executor_unavailable", "The verification service is unavailable. Retest later."],
+    ["user_consent_blocked", "Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests."],
   ] as const)("shows safe callback copy for %s and refreshes once", async (callbackResult, message) => {
     fetchWithAuthMock.mockResolvedValue(makeResponse(envelope()));
 
@@ -1187,11 +1202,153 @@ describe("M365CustomerGraphReadCard", () => {
       expect(screen.queryByTestId("m365-sync-summary")).not.toBeInTheDocument();
     });
 
-    it("rejects an envelope whose sync block has an unknown domain", async () => {
+    // #9392: the API's domain list (M365_SYNC_DOMAINS) grew `signin_events` in
+    // v0.124.0 while this card kept its own six-entry allowlist, and the
+    // fail-closed parser hid the whole connected tenant.
+    it("keeps the connected tenant visible when the summary includes signin_events (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+            { domain: "signin_events", status: "error", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual(["Sign-in events: error"]);
+    });
+
+    // The guard against the next domain: a domain this bundle does not know
+    // degrades to an "unknown" label instead of nulling the envelope.
+    it("keeps the connected tenant visible and labels a domain it does not know as unknown (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "mailboxes", status: "error", asOf: null, truncated: false, unlicensed: false },
+            { domain: "teams_calls", status: "success", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      const { container } = render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual(["Unrecognized data type: error"]);
+      // The raw wire name is never shown to the operator, in text or attributes.
+      expect(container.innerHTML).not.toMatch(/mailboxes|teams_calls/);
+    });
+
+    it("shows one chip when several domains produce the same label (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "signin_events", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "future_a", status: "error", asOf: null, truncated: false, unlicensed: false },
+            { domain: "future_b", status: "error", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual([
+        "Sign-in activity needs Entra ID P1",
+        "Unrecognized data type: error",
+      ]);
+    });
+
+    it("accepts more domains than this bundle knows about (#9392)", async () => {
+      const known = ["users", "signin_activity", "intune_devices", "ca_policies", "skus", "secure_score", "signin_events"];
+      const domains = [...known, "future_a", "future_b"].map((domain) => (
+        { domain, status: "success", asOf: null, truncated: false, unlicensed: false }
+      ));
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: { lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5, domains },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(await screen.findByTestId("m365-sync-summary")).toHaveTextContent("10 users");
+    });
+
+    it("does not claim Entra ID P1 for an unknown domain flagged unlicensed (#9392)", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5,
+          domains: [
+            { domain: "future_a", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "future_b", status: "throttled", asOf: null, truncated: false, unlicensed: true },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      // The card cannot know which license an unknown domain needs, so it
+      // falls through to the status chip instead of the P1 sentence.
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual(["Unrecognized data type: throttled"]);
+    });
+
+    function syncDomains(names: string[]) {
+      return names.map((domain) => ({ domain, status: "success", asOf: null, truncated: false, unlicensed: false }));
+    }
+
+    it("accepts a 64-character domain name and exactly 64 domains", async () => {
+      const names = ["a" + "b".repeat(63), ...Array.from({ length: 63 }, (_, i) => `d_${i}`)];
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        sync: { lastSuccessAt: "2026-09-08T11:30:00.000Z", users: 10, devices: 5, domains: syncDomains(names) },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Northwind Tenant")).toBeInTheDocument();
+      expect(screen.queryByText("Connection details are unavailable.")).not.toBeInTheDocument();
+    });
+
+    it("rejects an envelope with more than 64 sync domains", async () => {
       fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
         sync: {
           lastSuccessAt: null, users: null, devices: null,
-          domains: [{ domain: "mailboxes", status: "success", asOf: null, truncated: false, unlicensed: false }],
+          domains: syncDomains(Array.from({ length: 65 }, (_, i) => `d_${i}`)),
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+    });
+
+    it.each(["Users", "1users", "users-x", "us ers", "", "<script>", "a".repeat(65)])(
+      "rejects an envelope whose sync domain name is malformed: %j",
+      async (bad) => {
+        fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+          sync: { lastSuccessAt: null, users: null, devices: null, domains: syncDomains([bad]) },
+        })));
+        render(<M365CustomerGraphReadCard />);
+
+        expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+      },
+    );
+
+    it("rejects an envelope whose sync block has a non-string domain", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        sync: {
+          lastSuccessAt: null, users: null, devices: null,
+          domains: [{ domain: 42, status: "success", asOf: null, truncated: false, unlicensed: false }],
         },
       })));
       render(<M365CustomerGraphReadCard />);
@@ -1307,6 +1464,7 @@ describe("M365CustomerGraphReadCard", () => {
         expect(onStateChange).toHaveBeenLastCalledWith({
           loadState: "ready",
           onboardingEnabled: true,
+          onboardingAvailability: "enabled",
           connection: {
             tenantId: "44444444-4444-4444-8444-444444444444",
             displayName: "Northwind Tenant",
@@ -1322,6 +1480,20 @@ describe("M365CustomerGraphReadCard", () => {
 describe("M365CustomerGraphReadCard — identity-first consent (W03)", () => {
   it("accepts confirm-tenant as a callback result so the page passes it through", () => {
     expect(M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS).toContain("confirm-tenant");
+  });
+
+  it("accepts user_consent_blocked as a callback result and localizes it as a stored code (#9322)", async () => {
+    expect(M365_CUSTOMER_GRAPH_READ_CALLBACK_RESULTS).toContain("user_consent_blocked");
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "pending-consent",
+        lastErrorCode: "user_consent_blocked",
+      }) })),
+    );
+    render(<M365CustomerGraphReadCard />);
+
+    expect(await screen.findByText("Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests.")).toBeInTheDocument();
+    expect(screen.queryByText("user_consent_blocked")).not.toBeInTheDocument();
   });
 
   const TENANT = "99999999-9999-4999-8999-999999999999";
@@ -1412,5 +1584,96 @@ describe("M365CustomerGraphReadCard — identity-first consent (W03)", () => {
     expect(navigateToMicrosoftLoginMock).not.toHaveBeenCalled();
     const listCalls = fetchWithAuthMock.mock.calls.filter(([url]) => String(url).startsWith("/m365/connections?orgId="));
     expect(listCalls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("M365CustomerGraphReadCard — executor_unavailable copy (#9323)", () => {
+  const PENDING_COPY = "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.";
+  const RETEST_COPY = "The verification service is unavailable. Retest later.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  it("shows the sentence exactly once when the callback and the connection carry the same code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphReadCard callbackResult="executor_unavailable" />);
+    await screen.findByRole("button", { name: "Re-consent" });
+    expect(screen.getAllByText(RETEST_COPY)).toHaveLength(1);
+  });
+
+  it("still shows the connection error when the callback result is a different code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphReadCard callbackResult="consent_expired" />);
+    expect(await screen.findByText(RETEST_COPY)).toBeInTheDocument();
+    expect(screen.getByText("The consent session expired. Start consent again.")).toBeInTheDocument();
+  });
+
+  it("pending-consent: no Retest wording, one sentence, Re-consent present", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "pending-consent", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphReadCard callbackResult="executor_unavailable" />);
+    expect(await screen.findByRole("button", { name: "Re-consent" })).toBeInTheDocument();
+    expect(screen.getAllByText(PENDING_COPY)).toHaveLength(1);
+    expect(document.body).not.toHaveTextContent(/retest/i);
+  });
+
+  it("pending-consent without a callback: connection box uses the no-Retest copy", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "pending-consent", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText(PENDING_COPY)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/retest/i);
+  });
+
+  it("degraded keeps the Retest wording", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText(RETEST_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retest" })).toBeInTheDocument();
+  });
+});
+
+describe("M365CustomerGraphReadCard — executor_unavailable edge cases (#9323)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  it("keeps both messages when the callback code differs from the connection code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "admin_role_required" }) })),
+    );
+    render(<M365CustomerGraphReadCard callbackResult="executor_unavailable" />);
+    expect(await screen.findByText("A Global Administrator or Privileged Role Administrator must grant consent.")).toBeInTheDocument();
+    expect(screen.getByText("The verification service is unavailable. Retest later.")).toBeInTheDocument();
+  });
+
+  it.each(["verifying", "suspended", "revoked"])("%s has no Retest button, so it gets the no-Retest copy", async (status) => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status, lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphReadCard />);
+    expect(await screen.findByText("Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retest" })).not.toBeInTheDocument();
   });
 });

@@ -78,6 +78,10 @@ const needsInstallerUpload = (item: SoftwareItem): boolean =>
  *                            wizard with those devices pre-selected, then the
  *                            hash is cleared via replaceState so a refresh
  *                            doesn't re-open the wizard.
+ *   #versions=<catalogId>  → consumed once the catalog has loaded (#6960):
+ *                            opens that package on its Versions tab (the
+ *                            Security Agents "upload the SentinelOne MSI" deep
+ *                            link), then the hash is cleared the same way.
  */
 type CatalogView =
   | { tab: "catalog" }
@@ -131,6 +135,31 @@ function ReadinessPill({ status }: { status: EdrReadiness["status"] }) {
     );
   return null;
 }
+function toSoftwareItem(item: Record<string, unknown>): SoftwareItem {
+  return {
+    id: String(item.id),
+    orgId: item.orgId ? String(item.orgId) : undefined,
+    name: String(item.name ?? ""),
+    vendor: String(item.vendor ?? ""),
+    category: String(item.category ?? "utility"),
+    description: String(item.description ?? ""),
+    createdAt: String(item.createdAt ?? ""),
+    integrationProvider:
+      item.integrationProvider === "huntress" ||
+      item.integrationProvider === "sentinelone"
+        ? item.integrationProvider
+        : undefined,
+    partnerId: item.partnerId ? String(item.partnerId) : undefined,
+    versionCount:
+      item.versionCount != null ? Number(item.versionCount) : undefined,
+    methodCount:
+      item.methodCount != null ? Number(item.methodCount) : undefined,
+    methodKinds: Array.isArray(item.methodKinds)
+      ? item.methodKinds.map(String)
+      : undefined,
+  };
+}
+
 export default function SoftwareCatalog() {
   useTranslation("policies");
   useTranslation("policies");
@@ -210,6 +239,45 @@ export default function SoftwareCatalog() {
     window.addEventListener("hashchange", consumeDeployHash);
     return () => window.removeEventListener("hashchange", consumeDeployHash);
   }, []);
+  // #6960: consume #versions=<catalogId> once the catalog is loaded — open that
+  // package on its Versions tab (an unknown id opens nothing), then clear the
+  // hash so a refresh doesn't re-open it.
+  useEffect(() => {
+    if (loading) return;
+    const consumeVersionsHash = () => {
+      const raw = window.location.hash.replace(/^#/, "");
+      if (!raw.startsWith("versions=")) return;
+      const id = raw.slice("versions=".length);
+      replaceUrl(window.location.pathname + window.location.search);
+      const open = (item: SoftwareItem) => {
+        setDetailTab("versions");
+        setSelectedSoftware(item);
+      };
+      const loaded = catalogItems.find((candidate) => candidate.id === id);
+      if (loaded) {
+        open(loaded);
+        return;
+      }
+      // The list is one page: fetch a package outside it by id. An unknown or
+      // inaccessible id opens nothing.
+      if (!id) return;
+      void (async () => {
+        try {
+          const response = await fetchWithAuth(`/software/catalog/${encodeURIComponent(id)}`);
+          if (!response.ok) return;
+          const payload = (await response.json()) as { data?: unknown };
+          if (payload?.data && typeof payload.data === "object") {
+            open(toSoftwareItem(payload.data as Record<string, unknown>));
+          }
+        } catch (err) {
+          console.warn("[software] could not open the package from the #versions link", err);
+        }
+      })();
+    };
+    consumeVersionsHash();
+    window.addEventListener("hashchange", consumeVersionsHash);
+    return () => window.removeEventListener("hashchange", consumeVersionsHash);
+  }, [loading, catalogItems]);
   // Summary cards for the Deployments tab. Re-runs whenever the list view
   // becomes active again (e.g. returning from a deployment's detail), so the
   // counts stay fresh without a manual refresh control.
@@ -257,30 +325,7 @@ export default function SoftwareCatalog() {
       const payload = await response.json();
       const data = asList(payload);
       if (Array.isArray(data)) {
-        setCatalogItems(
-          data.map((item: Record<string, unknown>) => ({
-            id: String(item.id),
-            orgId: item.orgId ? String(item.orgId) : undefined,
-            name: String(item.name ?? ""),
-            vendor: String(item.vendor ?? ""),
-            category: String(item.category ?? "utility"),
-            description: String(item.description ?? ""),
-            createdAt: String(item.createdAt ?? ""),
-            integrationProvider:
-              item.integrationProvider === "huntress" ||
-              item.integrationProvider === "sentinelone"
-                ? item.integrationProvider
-                : undefined,
-            partnerId: item.partnerId ? String(item.partnerId) : undefined,
-            versionCount:
-              item.versionCount != null ? Number(item.versionCount) : undefined,
-            methodCount:
-              item.methodCount != null ? Number(item.methodCount) : undefined,
-            methodKinds: Array.isArray(item.methodKinds)
-              ? item.methodKinds.map(String)
-              : undefined,
-          })),
-        );
+        setCatalogItems(data.map(toSoftwareItem));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load catalog");

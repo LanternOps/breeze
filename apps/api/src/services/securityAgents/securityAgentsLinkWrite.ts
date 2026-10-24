@@ -25,9 +25,14 @@ import { getVendor, type VendorKey } from './securityAgentVendors';
  *   5. An enabled vendor may not be limited to a platform it does not support
  *      (macOS MDM-approval is allowed: those devices show as not applicable).
  *
- * The generator adds one refusal of its own inside the write transaction:
- * `security_agents_catalog_missing` when the partner has no catalog package
- * for an enabled vendor (its integration is not connected).
+ * The generator adds two refusals of its own inside the write transaction,
+ * both after every check above (so a caller without `devices.execute` still
+ * gets the 403 first):
+ *   - `security_agents_catalog_missing` when the partner has no catalog
+ *     package for an enabled vendor (its integration is not connected);
+ *   - `security_agents_binary_missing` when the package needs a
+ *     partner-uploaded installer (SentinelOne's MSI) and has no deployable
+ *     version yet.
  *
  * The caller states whether it has authorized arming (`armAuthorized`); the
  * check never infers it.
@@ -39,7 +44,8 @@ export type SecurityAgentsLinkWriteCode =
   | 'security_agents_invalid_settings'
   | 'vendor_not_enableable'
   | 'security_agents_platform_unsupported'
-  | 'security_agents_catalog_missing';
+  | 'security_agents_catalog_missing'
+  | 'security_agents_binary_missing';
 
 export type SecurityAgentsLinkWriteRefusal = {
   status: 400 | 403;
@@ -47,7 +53,10 @@ export type SecurityAgentsLinkWriteRefusal = {
     error: string;
     code: SecurityAgentsLinkWriteCode;
     vendors?: VendorKey[];
-    /** Web path where the missing integration is connected (catalog_missing only). */
+    /**
+     * Web path where the prerequisite is fixed: the integration page
+     * (catalog_missing) or the package's Versions tab (binary_missing).
+     */
     setupPath?: string;
   };
 };

@@ -17,6 +17,7 @@ const CASES: Array<[Exclude<RestorePointStatus, 'requested'>, RegExp]> = [
   ['existing_accepted', /existing point reused/i],
   ['skipped_disabled', /system restore is turned off/i],
   ['skipped_definition_only', /definitions[- ]only/i],
+  ['skipped_no_mutation', /not needed/i],
   ['unsupported', /not available on this device/i],
   ['busy', /volume snapshot service was in use/i],
   ['insufficient_privileges', /not enough privileges/i],
@@ -46,6 +47,13 @@ describe('RestorePointBadge', () => {
       expect(text).not.toContain('backup');
       unmount();
     }
+  });
+
+  it('renders skipped_no_mutation without rollback or backup language', () => {
+    render(<RestorePointBadge outcome={outcome({ status: 'skipped_no_mutation' })} />);
+    const text = screen.getByTestId('restore-point-badge').textContent ?? '';
+    expect(text).toMatch(/not needed/i);
+    expect(text).not.toMatch(/roll ?back|backup/i);
   });
 
   it('renders existing_accepted as NEUTRAL, naming the age and the Windows limit', () => {
@@ -81,6 +89,7 @@ describe('RestorePointBadge', () => {
     ['failed', 'danger'],
     ['unsupported', 'neutral'],
     ['skipped_definition_only', 'neutral'],
+    ['skipped_no_mutation', 'neutral'],
     ['requested', 'neutral'],
   ] as const)('tones %s as %s', (status, tone) => {
     render(<RestorePointBadge outcome={outcome({ status })} />);

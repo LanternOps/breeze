@@ -1,12 +1,9 @@
 import {
-  completeConsentResultSchema,
   isM365SyncAction,
   m365SyncActionResponseSchema,
   readActionResultSchema,
   retestResultSchema,
   verifyConsentIdentityResultSchema,
-  type CompleteConsentRequest,
-  type CompleteConsentResult,
   type ExecutorFailureCode,
   type IdentityFailureCode,
   type M365SyncActionResponse,
@@ -244,49 +241,6 @@ export async function verifyIdentityOperation(
   }
 }
 
-/**
- * Legacy single-call flow (tenant hint from /adminconsent): identity proof
- * pinned to the hint, then application proof, with one credential fetch and one
- * token client. Removed in W4 of #7910.
- */
-export async function completeConsentOperation(
-  request: CompleteConsentRequest,
-  dependencies: ExecutorOperationDependencies,
-): Promise<CompleteConsentResult> {
-  if (request.redirectUri !== dependencies.callbackUrl) return failed('identity_token_invalid');
-  const credential = await fetchCredential(dependencies);
-  if (typeof credential === 'string') return failed(credential);
-  let tokenClient: MicrosoftTokenClient | undefined;
-  try {
-    try {
-      tokenClient = dependencies.createTokenClient(credential);
-    } catch {
-      return failed('credential_unavailable');
-    }
-    let identity: VerifiedMicrosoftAdminIdentity;
-    try {
-      identity = await proveAdministratorIdentity(tokenClient, {
-        expectedTenantId: request.tenantHint,
-        code: request.authorizationCode,
-        codeVerifier: request.codeVerifier,
-        nonce: request.nonce,
-      }, dependencies);
-    } catch (error) {
-      return failed(mappedFailure(error, 'identity'));
-    }
-    return await proveApplication(tokenClient, identity.tenantId, dependencies, (verified) => (
-      completeConsentResultSchema.parse({
-        ...verified,
-        administratorObjectId: identity.administratorObjectId,
-      })
-    ));
-  } finally {
-    tokenClient = undefined;
-    credential.certificatePem = '';
-    credential.privateKeyPem = '';
-  }
-}
-
 export async function retestOperation(
   request: RetestRequest,
   dependencies: ExecutorOperationDependencies,
@@ -429,7 +383,6 @@ export function createExecutorOperations(config: {
     verifyIdentity: verifyMicrosoftAdminIdentity,
   };
   return {
-    completeConsent: (request: CompleteConsentRequest) => completeConsentOperation(request, dependencies),
     verifyIdentity: (request: VerifyConsentIdentityRequest) => verifyIdentityOperation(request, dependencies),
     retest: (request: RetestRequest) => retestOperation(request, dependencies),
     readAction: (request: ReadActionRequest) => readActionOperation(request, dependencies),

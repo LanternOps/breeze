@@ -69,7 +69,9 @@ vi.mock('../../services/m365ControlPlane/writeActionRuntimeConfig', async (impor
     ...actual,
     loadM365CustomerGraphActionsRuntimeConfig: () => FAKE_ACTIONS_CONFIG,
     isM365CustomerGraphActionsOnboardingEnabledForOrg: () => true,
+    m365CustomerGraphActionsOnboardingAvailability: () => 'enabled' as const,
     isM365GraphActionsEnabledForOrg: () => true,
+    m365GraphActionsAvailability: () => 'enabled',
   };
 });
 

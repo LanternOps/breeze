@@ -77,6 +77,10 @@ const GOVERNANCE_TABLE_NAMES = [
   // A DNS allow/block policy is pushed to the org's DNS filtering provider and
   // applies to every device behind it; the table has no site axis.
   'dnsPolicies',
+  // YARA rule sets (#6263 W03a) are scanned by every device of every policy
+  // that attaches them (and may auto-quarantine there); no site axis.
+  'yaraRuleSets',
+  'yaraRules',
 ] as const;
 
 /**
@@ -84,6 +88,15 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
+  // #6263 W03a. Called only from the mutating routes in
+  // routes/security/yara.ts, each of which runs writeDenial
+  // (canMutateOrgWideGovernance) before reaching it.
+  'services/yaraBuiltinPackStore.ts':
+    'boot-only system-scope upsert of THE built-in set (no org, no site); no caller, so no site-restricted actor can reach it (#6263 W03b)',
+  'services/yaraRuleSetPublisher.ts':
+    'reached only through routes/security/yara.ts and routes/security/yaraIocImport.ts mutations, which call canMutateOrgWideGovernance (writeDenial / create) first — verify when editing any of these files',
+  'routes/security/yaraIocImport.ts':
+    'every mutation runs writeDenial (routes/security/yaraAccess.ts: canMutateOrgWideGovernance + canManagePartnerWidePolicies) first; 403s pinned in yaraIocImport.test.ts (#6263 W04)',
   // Background probe of a destination's create-only write support, started
   // after a brokered backup write is issued. Writes only the
   // provider_capabilities.conditionalWrites record, in system context; no

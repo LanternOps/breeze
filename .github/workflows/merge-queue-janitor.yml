@@ -2,14 +2,23 @@ name: Merge Queue Janitor
 
 # When the merge queue rebuilds (a bypass push to main, a dequeued entry ahead),
 # GitHub deletes the temporary `gh-readonly-queue/main/pr-N-<sha>` ref but does
-# NOT cancel the workflow runs that were started for it. Observed 2026-09-07:
-# 18 superseded merge_group runs sat in the runner queue ahead of the 4 live
-# ones and starved them. This job cancels any queued/in-progress merge_group
-# run whose ref no longer exists. Cheap: one API-only job every 10 minutes.
+# NOT cancel the workflow runs that were started for it (#5190, #9800). Those
+# runs sit in the runner queue ahead of the live groups and starve them.
+#
+# This job cancels any queued/in-progress merge_group run whose ref no longer
+# exists (strictly a 404 on the ref lookup; any other API outcome cancels
+# nothing). Logic + tests: .github/scripts/cancel-stale-merge-group-runs.mjs.
+#
+# Triggers: GitHub throttles `schedule` on busy repos (observed gaps of ~3h
+# against a 10-minute cron), so the cron alone cannot protect the queue. The
+# `merge_group` trigger runs the sweep every time the queue builds a new group,
+# which is exactly when the previous groups have just been invalidated.
 
 on:
+  merge_group:
+    types: [checks_requested]
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -26,22 +35,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout sweep script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          sparse-checkout: .github/scripts/cancel-stale-merge-group-runs.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Cancel merge_group runs whose queue ref is gone
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          cancelled=0
-          for status in queued in_progress; do
-            gh api "repos/${GITHUB_REPOSITORY}/actions/runs?event=merge_group&status=${status}&per_page=100" \
-              --jq '.workflow_runs[] | "\(.id) \(.head_branch)"' |
-            while read -r id ref; do
-              [ -n "$ref" ] || continue
-              if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${ref}" >/dev/null 2>&1; then
-                continue
-              fi
-              echo "cancelling run ${id}: ref ${ref} no longer exists"
-              gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/cancel" >/dev/null && cancelled=$((cancelled+1)) || true
-            done
-          done
-          echo "done"
+        run: node .github/scripts/cancel-stale-merge-group-runs.mjs

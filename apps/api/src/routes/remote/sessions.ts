@@ -14,7 +14,8 @@ import {
   partners
 } from '../../db/schema';
 import { requireScope, requirePermission } from '../../middleware/auth';
-import { sendCommandToAgent } from '../agentWs';
+import { sendCommandToAgent, sendDesktopIceCandidateToAgent } from '../agentWs';
+import { submitViewerIceCandidate } from '../../services/remoteDesktopIceTrickle';
 import { dispatchCommandToAgent } from '../../services/agentCommandRelay';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../../services/remoteAccessPolicy';
 import { createDesktopConnectCode, createWsTicket } from '../../services/remoteSessionAuth';
@@ -1282,33 +1283,25 @@ sessionRoutes.post(
     const capabilityDenial = await currentSessionCapabilityDenial(c, session, device);
     if (capabilityDenial) return capabilityDenial;
 
-    // Only allow ICE candidates in connecting or active state
-    if (!['connecting', 'active'].includes(session.status)) {
+    // Same trickle path as the viewer-token route (#9182): stored against the
+    // session's current start and relayed to the agent hosting it.
+    const submitted = await submitViewerIceCandidate({
+      session,
+      agentId: device.agentId ?? null,
+      candidate: data.candidate,
+      send: sendDesktopIceCandidateToAgent,
+    });
+    if (!submitted.ok) {
       return c.json({
         error: 'Cannot add ICE candidate for session in current state',
         status: session.status
       }, 400);
     }
 
-    // Append ICE candidate to array
-    const currentCandidates = (session.iceCandidates as unknown[]) || [];
-    const updatedCandidates = [...currentCandidates, data.candidate];
-
-    const [updated] = await db
-      .update(remoteSessions)
-      .set({
-        iceCandidates: updatedCandidates
-      })
-      .where(eq(remoteSessions.id, sessionId))
-      .returning();
-
-    if (!updated) {
-      return c.json({ error: 'Failed to update session' }, 500);
-    }
-
     return c.json({
-      id: updated.id,
-      iceCandidatesCount: (updated.iceCandidates as unknown[]).length
+      id: sessionId,
+      iceCandidatesCount: submitted.iceCandidatesCount,
+      forwarded: submitted.forwarded,
     });
   }
 );

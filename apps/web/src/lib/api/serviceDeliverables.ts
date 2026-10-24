@@ -14,6 +14,7 @@ import type {
   CreateDeliverableInput,
   DeliverOccurrenceInput,
   RescheduleOccurrenceInput,
+  BulkRescheduleOccurrencesInput,
   UpdateDeliverableInput,
   WaiveOccurrenceInput,
 } from '@breeze/shared';
@@ -81,10 +82,12 @@ export interface Deliverable {
 
 export interface OccurrenceEvidence {
   id: string;
-  kind: 'document' | 'report_run';
+  kind: 'document' | 'report_run' | 'contract_document';
   documentId: string | null;
   reportId: string | null;
   reportRunId: string | null;
+  /** #9312: the signed agreement (contract_documents) this evidence cites. */
+  contractDocumentId: string | null;
   createdAt: string;
 }
 
@@ -199,6 +202,15 @@ export async function updateDeliverable(
   );
 }
 
+/** #9302 — all-or-nothing bulk move; `contractId: null` makes them standalone. */
+export async function moveDeliverables(
+  f: Fetcher,
+  orgId: string,
+  body: { deliverableIds: string[]; contractId: string | null },
+): Promise<{ moved: number }> {
+  return unwrapData<{ moved: number }>(await f(`${base(orgId)}/move`, jsonInit('POST', body)));
+}
+
 /** Soft-delete: the row stays for history, `active` flips to false. */
 export async function deactivateDeliverable(f: Fetcher, orgId: string, id: string): Promise<void> {
   await unwrapData<unknown>(await f(`${base(orgId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }));
@@ -257,6 +269,22 @@ export async function rescheduleOccurrence(
   return unwrapData<Occurrence>(
     await f(`${occurrencePath(orgId, occurrenceId)}/reschedule`, jsonInit('POST', body)),
   );
+}
+
+export type BulkRescheduleResult =
+  | { occurrenceId: string; ok: true; occurrence: Occurrence }
+  | { occurrenceId: string; ok: false; status: number; code: string; error: string };
+
+/** #9314 — one request for many occurrences; refused rows come back in `results`. */
+export async function bulkRescheduleOccurrences(
+  f: Fetcher,
+  orgId: string,
+  body: BulkRescheduleOccurrencesInput,
+): Promise<BulkRescheduleResult[]> {
+  const out = await unwrapData<{ results: BulkRescheduleResult[] }>(
+    await f(`${base(orgId)}/occurrences/reschedule`, jsonInit('POST', body)),
+  );
+  return out.results;
 }
 
 export async function addEvidence(

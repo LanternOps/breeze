@@ -8,6 +8,7 @@
     "existingAcceptedNoDetail": "Se reutilizó un punto existente",
     "skippedDisabled": "Omitido — Restaurar sistema está desactivado en este dispositivo",
     "skippedDefinitionOnly": "Omitido — actualización solo de definiciones",
+    "skippedNoMutation": "No necesario — no se hicieron cambios, por lo que no se creó un punto de restauración",
     "unsupported": "No disponible en este dispositivo",
     "busy": "Omitido — el servicio de instantáneas de volumen estaba en uso",
     "insufficientPrivileges": "Omitido — privilegios insuficientes",

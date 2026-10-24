@@ -51,6 +51,13 @@ func TestProviderFromName(t *testing.T) {
 		// Locks the vendor-before-defender ordering for the new cases.
 		{"threatdown vs defender", "ThreatDown Defender Plus", "malwarebytes"},
 		{"webroot vs defender", "Webroot Defender", "webroot"},
+		// CylancePROTECT, rebranded Aurora Endpoint Defense (#9178). Windows
+		// Security Center still registers it as "CylancePROTECT" after the rebrand.
+		{"cylanceprotect", "CylancePROTECT", "cylance"},
+		{"cylance lower", "cylanceprotect", "cylance"},
+		{"cylance optics", "CylanceOPTICS", "cylance"},
+		// Locks the cylance-before-defender ordering.
+		{"cylance vs defender", "Cylance Defender Shield", "cylance"},
 		{"malwarebytes", "Malwarebytes", "malwarebytes"},
 		// Regression guards for the broad matches the new cases sit beside.
 		{"microsoft defender antivirus", "Microsoft Defender Antivirus", "windows_defender"},

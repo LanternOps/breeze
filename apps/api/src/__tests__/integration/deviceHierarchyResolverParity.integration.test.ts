@@ -148,7 +148,7 @@ async function seedPartnerWidePolicies(partnerId: string): Promise<void> {
     };
     const patchLink = await mk('patch');
     await db.insert(configPolicyPatchSettings).values({
-      featureLinkId: patchLink, autoApprove: true, rebootPolicy: 'never', scheduleFrequency: 'daily',
+      featureLinkId: patchLink, rebootPolicy: 'never', scheduleFrequency: 'daily',
     });
     const timeLink = await mk('time_sync');
     await db.insert(configPolicyTimeSyncSettings).values({
@@ -241,7 +241,7 @@ type Resolver = (deviceId: string, opts?: DeviceHierarchyOpts) => Promise<unknow
 const NON_TRIVIAL: Record<string, (own: any) => void> = {
   resolveDeviceHelperSettings: (o) => expect(o).toMatchObject({ enabled: true, showDeviceInfo: false }),
   resolvePatchConfigPolicyForDevice: (o) =>
-    expect(o).toMatchObject({ assignmentLevel: 'partner', settings: { autoApprove: true, rebootPolicy: 'never' } }),
+    expect(o).toMatchObject({ assignmentLevel: 'partner', settings: { rebootPolicy: 'never', scheduleFrequency: 'daily' } }),
   resolveMonitorsForDevice: (o) => {
     expect(o.kind).toBe('resolved');
     expect(o.monitors.length).toBeGreaterThan(0);

@@ -22,7 +22,7 @@ export * from './hourBlock';
 // ============================================
 
 export type PartnerType = 'msp' | 'enterprise' | 'internal';
-export type PlanType = 'free' | 'pro' | 'enterprise' | 'unlimited';
+export type PlanType = (typeof PARTNER_PLANS)[number];
 export type OrgType = 'customer' | 'internal';
 // `offboarding` (#2774): terminal-intent drain state — users locked out, agents
 // kept authenticated (self_uninstall-only) until drained, then auto-`churned`.
@@ -222,6 +222,12 @@ export type VpnProvider =
   | 'zerotier'
   | 'openvpn'
   | 'cloudflare-warp'
+  // Enterprise VPN / SSE clients (#8763).
+  | 'zscaler'
+  | 'globalprotect'
+  | 'cisco-secure-client'
+  | 'forticlient'
+  | 'netskope'
   | 'generic';
 
 /** How the agent recognized the VPN — a raw signal, not a trust ranking. */
@@ -533,7 +539,7 @@ export interface Policy {
 // Alert Types
 // ============================================
 
-import { ACTOR_TYPES, AUDIT_RESULTS, NOTIFICATION_CHANNEL_TYPES } from '../constants';
+import { ACTOR_TYPES, AUDIT_RESULTS, NOTIFICATION_CHANNEL_TYPES, PARTNER_PLANS } from '../constants';
 
 export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type AlertStatus = 'active' | 'acknowledged' | 'resolved' | 'suppressed' | 'dismissed';
@@ -629,13 +635,6 @@ export interface AuditLog {
 
 export type DateFormat = 'MM/DD/YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD';
 export type TimeFormat = '12h' | '24h';
-export type BusinessHoursPreset = '24/7' | 'business' | 'extended' | 'custom';
-
-export interface DaySchedule {
-  start: string;
-  end: string;
-  closed?: boolean;
-}
 
 export interface InheritableSecuritySettings {
   minLength?: number;
@@ -697,12 +696,11 @@ export interface InheritableEventLogSettings {
 
 export interface InheritableDefaultSettings {
   policyDefaults?: Record<string, string>;
+  /** Org level only: a `device_groups.id` (static group) applied at enrollment (#9617). */
   deviceGroup?: string;
-  alertThreshold?: string;
   autoEnrollment?: {
     enabled: boolean;
     requireApproval: boolean;
-    sendWelcome: boolean;
   };
   agentUpdatePolicy?: string;
   maintenanceWindow?: string;
@@ -798,10 +796,6 @@ export interface PartnerSettings {
   dateFormat?: DateFormat;
   timeFormat?: TimeFormat;
   language?: SupportedLocale;
-  businessHours?: {
-    preset: BusinessHoursPreset;
-    custom?: Record<string, DaySchedule>;
-  };
   contact?: {
     name?: string;
     email?: string;
@@ -889,6 +883,7 @@ export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiToolDomains';
 export * from './aiOperator';
+export * from './aiOperatorRecipes';
 export * from './aiOrigin';
 export * from './orgNarrativeReport';
 export * from './fleetDesign';
@@ -947,6 +942,7 @@ export * from './portalService';
 
 export * from './loginContext';
 export * from './ssoDiscovery';
+export * from './ssoPresets';
 export * from './publicQuote';
 
 // ============================================
@@ -990,6 +986,7 @@ export * from './topologyDiagnostics';
 
 // Physical topology collection contracts (M2 #5998)
 export * from './topologyPhysical';
+export * from './topologyUnifiV2';
 
 // Interface measurement telemetry contracts (M3 #5999)
 export * from './topologyTelemetry';
@@ -1000,6 +997,7 @@ export * from './topologyInvestigation';
 export * from './topologyAi';
 
 export * from './securityScan';
+export * from './yara';
 
 // Metric anomaly episodes (spec 2026-09-21)
 export * from './metricAnomalyEpisodes';

@@ -259,6 +259,48 @@ describe('restore-point outcome ingest against real Postgres', () => {
     expect(await ledgerCount(requestId)).toBe(1);
   });
 
+  runDb('HTTP: skipped_no_mutation (agent stopped before any change, #4758) terminalises the row', async () => {
+    const t = await seedTenant();
+    const { commandId, requestId } = await stamp(t);
+
+    // The exact shape the agent synthesizes (systemrestore.Checkpoint.Report):
+    // no sequence, no description, zero duration.
+    const res = await postHttpResult(t, commandId, {
+      status: 'failed', exitCode: 1, error: 'script content is empty',
+      restorePoint: {
+        status: 'skipped_no_mutation',
+        requestId,
+        message: 'no restore point was needed: the command stopped before making any change',
+        attemptedAt: '2026-09-02T18:03:11.123456789Z',
+        durationMs: 0,
+      },
+    });
+    expect(res.status).toBe(200);
+
+    expect(await ledgerRow(requestId)).toMatchObject({
+      status: 'skipped_no_mutation',
+      sequenceNumber: null,
+      description: null,
+      acceptedExistingPoint: false,
+      durationMs: 0,
+      deviceCommandId: commandId,
+    });
+  });
+
+  runDb('HTTP: a legacy unstamped outcome (empty requestId) never fails the command result', async () => {
+    // Today's agent does not send one (Checkpoint.Report is nil without a
+    // block), but an outcome the ledger cannot correlate must be dropped
+    // without touching the command's own terminal state.
+    const t = await seedTenant();
+    const { commandId, requestId } = await stamp(t);
+    const res = await postHttpResult(t, commandId, {
+      ...RESULT, restorePoint: outcome('', { status: 'created' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await commandRow(commandId)).status).toBe('completed');
+    expect((await ledgerRow(requestId))?.status).toBe('requested');
+  });
+
   runDb('WS: requested -> terminal after the terminal CAS (throttle path)', async () => {
     const t = await seedTenant();
     const { commandId, requestId } = await stamp(t);

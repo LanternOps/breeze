@@ -20,6 +20,7 @@
     "state": {
       "met": "Respecté",
       "notMet": "Jamais rencontrés",
+      "metLate": "Respecté en retard",
       "breached": "Violation",
       "pausedLeft": "En pause · temps restant : {{relative}}",
       "left": "Temps restant : {{relative}}"
@@ -81,7 +82,9 @@
       "high": "Élevée",
       "normal": "Normal",
       "low": "Faible"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} étapes",
+    "checklistTitle": "Liste de contrôle : {{done}} étapes sur {{total}} terminées"
   },
   "ticketArchivedList": {
     "emptyTitle": "Pas de tickets archivés.",
@@ -233,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} h travaillées · {{billed}} h facturées",
     "includedMinutes": "{{hours}} h incluses au contrat",
+    "laborBreakdown": "{{hours}} h × {{rate}} = {{amount}}",
+    "laborRule": "Chaque saisie facture ses minutes arrondies en heures (2 décimales) × son taux.",
     "missingRateCount_one": "1 entrée n'a pas de taux horaire — non comptée dans le montant ci-dessus",
     "missingRateCount_other": "{{count}} entrées n'ont pas de taux horaire — non comptées dans le montant ci-dessus",
     "deleteEntry": "Supprimer l’entrée de temps de {{duration}} de {{tech}}",
@@ -331,6 +336,11 @@
     "selectedCount_other": "{{count}} sélectionné",
     "clearSelection": "Effacer la sélection",
     "noSelection": "Choisissez un ticket. Utilisez j/k pour naviguer et Entrée pour développer.",
+    "ticketNotInView": "Le ticket {{number}} n’est pas dans cette vue.",
+    "movedToClosed": {
+      "message": "{{status}} — désormais sous {{tab}}",
+      "view": "Voir dans {{tab}}"
+    },
     "ticketingSettings": "Paramètres de ticketterie",
     "assignFailed": "Assignation échouée. Réessayez.",
     "assignedToYou": "Vous a été attribué",
@@ -522,7 +532,11 @@
     },
     "device": {
       "none": "Aucun appareil",
-      "unlink": "Délier"
+      "unlink": "Délier",
+      "link": "Lier un appareil",
+      "change": "Changer l'appareil",
+      "cancel": "Annuler",
+      "assigneeWarning": "Changer l'appareil revalide la personne assignée. Un technicien sans accès au nouvel appareil sera désassigné."
     },
     "toast": {
       "statusUpdated": "Statut mis à jour",

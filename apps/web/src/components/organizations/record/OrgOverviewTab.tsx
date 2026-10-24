@@ -235,6 +235,7 @@ export default function OrgOverviewTab({
   const resolveTarget = (target: StatTarget | null): StatTarget | null =>
     target && 'tab' in target && !tabs.includes(target.tab) ? null : target;
 
+  const alertsHref = `/alerts?orgId=${encodeURIComponent(orgId)}`;
   const fleet: FleetStat[] = [];
   if (summary?.devices) {
     const { total, online, offline } = summary.devices;
@@ -262,11 +263,9 @@ export default function OrgOverviewTab({
     fleet.push({
       key: 'alerts',
       label: t('orgRecord.overview.tiles.alerts'),
-      // Unlinked on purpose: the record has no alerts tab, and `/alerts` scopes
-      // by the header org switcher, not by an `orgId` param — a link would
-      // open whichever org the switcher points at, possibly another
-      // customer's alerts. The critical-alerts feed below is the detail here.
-      target: null,
+      // The record has no alerts tab; `/alerts` honours `?orgId=` by switching
+      // the working org to this one (#9108), so the link opens these alerts.
+      target: { href: alertsHref },
       metrics,
       note: metrics.length === 0 ? t('orgRecord.overview.fleet.noAlerts') : undefined,
     });
@@ -442,7 +441,7 @@ export default function OrgOverviewTab({
         <section data-testid="org-overview-critical-alerts" className="rounded-lg border bg-card">
           <header className="flex items-center justify-between border-b px-4 py-2.5">
             <h2 className="text-sm font-semibold">{t('orgRecord.overview.criticalAlerts.title')}</h2>
-            <a className="text-xs text-primary hover:underline" href={`/alerts?orgId=${orgId}`}>
+            <a className="text-xs text-primary hover:underline" href={alertsHref}>
               {t('orgRecord.overview.criticalAlerts.viewAll')}
             </a>
           </header>

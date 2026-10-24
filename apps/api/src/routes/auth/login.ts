@@ -731,7 +731,7 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     });
   }
 
-  auditLogin(c, { orgId: orgId ?? null, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
+  auditLogin(c, { orgId: orgId ?? null, partnerId: partnerId ?? null, userId: user.id, email: user.email, name: user.name, mfa: false, scope, ip });
 
   installSessionCookies();
 

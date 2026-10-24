@@ -5,11 +5,13 @@ import { quotes, quoteBlocks, quoteLines, quoteAcceptances, quoteRecipients } fr
 import { invoices, invoiceLines } from '../db/schema/invoices';
 import { organizations, partners, sites } from '../db/schema/orgs';
 import { deviceGroups } from '../db/schema/devices';
+import { contracts } from '../db/schema/contracts';
 import { resolvePartnerDocumentLocale } from './documentLocale';
 import { QuoteServiceError } from './quoteTypes';
 import { computeQuoteSha256 } from './quoteContentHash';
 import { getAcceptanceProvider } from './acceptanceProvider';
 import { computeLineTotal, computeInvoiceTotals } from './invoiceMath';
+import { snapshotCost } from './catalogPricing';
 import { computeDueDate, resolveInvoiceTermsDays } from './invoiceTerms';
 import { formatInvoiceNumber } from './invoiceNumbers';
 import { isQuoteExpired } from './quoteExpiry';
@@ -21,7 +23,10 @@ import { buildContractSpecsFromQuote, type QuoteLineForContract } from './quoteT
 import { createContractWithLinesDetailed } from './contractService';
 import { stagePax8OrderFromQuote } from './quoteToPax8Order';
 import { captureException } from './sentry';
-import { isQuoteLineSiteDeleted, stampInvoiceLineDetail } from '@breeze/shared';
+import {
+  isQuoteLineSiteDeleted, stampInvoiceLineDetail,
+  RELATED_CONTRACT_STATUSES, contractsOverlapCadence, type RelatedContractStatus,
+} from '@breeze/shared';
 import type { ContractBlockRenderData } from './contractTemplateRender';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { stampedPresentation, quotePresentationAsInvoiceSource } from './invoicePresentation';
@@ -29,6 +34,7 @@ import {
   assertContractRenderDataComplete,
   buildContractHashParts,
   createExecutedDocuments,
+  type SignedAgreementEvidence,
 } from './contractDocumentService';
 // One-way import: quoteLifecycle does NOT import this module, so there is no
 // cycle (verify with `grep -n quoteAcceptService services/quoteLifecycle.ts`).
@@ -73,6 +79,13 @@ export interface AcceptQuoteParams {
 
 type QuoteRow = typeof quotes.$inferSelect;
 
+export interface OverlappingExistingContract {
+  id: string;
+  name: string;
+  status: RelatedContractStatus;
+  intervalMonths: number;
+}
+
 export interface AcceptQuoteResult {
   quote: QuoteRow;
   acceptanceId: string;
@@ -87,6 +100,11 @@ export interface AcceptQuoteResult {
   // Executed contract_documents snapshot ids created for this accept (one per
   // contract block); empty when the quote embeds no contract blocks.
   contractDocumentIds: string[];
+  /** #9303: the org's contracts that ALREADY existed (draft/active/paused) on
+   *  the same cadence with an overlapping term as a contract this accept
+   *  created. Activating both would bill the customer twice, so the on-behalf
+   *  UI names them after the accept. Empty when there are none. */
+  overlappingContracts: OverlappingExistingContract[];
   /** Set when an on-behalf accept claimed a DRAFT revision and so retired its
    *  parent, so the route can audit it exactly as `/send` does. */
   superseded?: QuoteSupersedeResult;
@@ -367,6 +385,8 @@ export async function acceptQuote(
       // The join is pinned to the same partner, so a mismatched org can only
       // yield NULL (inherit), never another tenant's value.
       orgTermsDays: organizations.invoiceTermsDays,
+      // #9778: client name for the auto-created contract's name.
+      orgName: organizations.name,
     })
     .from(partners)
     .leftJoin(organizations, and(eq(organizations.id, quote.orgId), eq(organizations.partnerId, partners.id)))
@@ -421,29 +441,49 @@ export async function acceptQuote(
   }
 
   // 1. Record the acceptance.
+  const acceptanceValues = {
+    quoteId: quote.id,
+    orgId: quote.orgId,
+    signerName: captured.signerName,
+    signerEmail: captured.signerEmail,
+    // Defense-in-depth: routes already resolve a single validated client IP,
+    // but ip_address is varchar(64) — clamp so a stray long value can never
+    // overflow and roll back the whole accept (C1). On the on-behalf path
+    // this is the TECH's IP and user agent, not the customer's.
+    ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
+    userAgent: params.userAgent ?? null,
+    quoteSha256,
+    hashVersion: 2,
+    acceptanceTokenJti: params.acceptanceTokenJti ?? null,
+    renderLocale,
+    origin,
+    method: captured.method,
+    reference: origin === 'on_behalf' ? (params.reference ?? null) : null,
+    recordedByUserId: origin === 'on_behalf' ? (params.actorUserId ?? null) : null,
+  };
   const [acceptance] = await db
     .insert(quoteAcceptances)
-    .values({
-      quoteId: quote.id,
-      orgId: quote.orgId,
-      signerName: captured.signerName,
-      signerEmail: captured.signerEmail,
-      // Defense-in-depth: routes already resolve a single validated client IP,
-      // but ip_address is varchar(64) — clamp so a stray long value can never
-      // overflow and roll back the whole accept (C1). On the on-behalf path
-      // this is the TECH's IP and user agent, not the customer's.
-      ipAddress: params.ipAddress ? params.ipAddress.slice(0, 64) : null,
-      userAgent: params.userAgent ?? null,
-      quoteSha256,
-      hashVersion: 2,
-      acceptanceTokenJti: params.acceptanceTokenJti ?? null,
-      renderLocale,
-      origin,
-      method: captured.method,
-      reference: origin === 'on_behalf' ? (params.reference ?? null) : null,
-      recordedByUserId: origin === 'on_behalf' ? (params.actorUserId ?? null) : null,
-    })
-    .returning({ id: quoteAcceptances.id });
+    .values(acceptanceValues)
+    .returning({ id: quoteAcceptances.id, signedAt: quoteAcceptances.signedAt });
+
+  // #8865 W1b: the signer-evidence snapshot every executed contract document
+  // carries, so it outlives the quote. Built from the SAME values just
+  // inserted, with signed_at taken from the DB default as returned — exactly
+  // what the 2026-12-31-210000 back-fill copied onto legacy rows.
+  const signedAgreementEvidence: SignedAgreementEvidence = {
+    signerName: acceptanceValues.signerName,
+    signerEmail: acceptanceValues.signerEmail,
+    signedAt: acceptance!.signedAt,
+    signerIp: acceptanceValues.ipAddress,
+    signerUserAgent: acceptanceValues.userAgent,
+    acceptanceOrigin: origin,
+    acceptanceMethod: acceptanceValues.method,
+    acceptanceReference: acceptanceValues.reference,
+    recordedByUserId: acceptanceValues.recordedByUserId,
+    contentSha256: acceptanceValues.quoteSha256,
+    contentHashVersion: acceptanceValues.hashVersion,
+    acceptanceRenderLocale: acceptanceValues.renderLocale,
+  };
 
   // 2. Convert ONE-TIME lines to a draft invoice (Phase 2: recurring lines deferred to the Phase 4 Contract).
   //    document_locale is NOT copied onto the draft here: it is an issue-time
@@ -492,7 +532,13 @@ export async function acceptQuote(
       description: l.description,
       quantity: l.quantity,
       unitPrice: l.unitPrice,
-      costBasis: null,
+      // Per-unit cost snapshot for margin reporting (#9221). The quote line's
+      // unit_cost is stored in the quote currency, which is the invoice
+      // currency here; snapshotCost keeps it only when exact at the currency's
+      // minor unit, else NULL (unknown cost — never coerced to zero). Internal
+      // cost is not part of the acceptance hash (computeQuoteSha256 allowlists
+      // its line fields), so this cannot move a recorded quote_sha256.
+      costBasis: snapshotCost(l.unitCost, quote.currencyCode, quote.currencyCode),
       taxable: l.taxable,
       customerVisible: true,
       lineTotal,
@@ -626,6 +672,8 @@ export async function acceptQuote(
       orgId: quote.orgId,
       partnerId: quote.partnerId,
       quoteNumber: quote.quoteNumber ?? quote.id,
+      title: quote.title ?? null,
+      orgName: partner?.orgName ?? null,
       currencyCode: quote.currencyCode,
       terms: quote.terms ?? null,
     },
@@ -657,6 +705,13 @@ export async function acceptQuote(
     params.actorUserId ?? null,
   );
 
+  // #9303: read the org's existing live contracts BEFORE creating the new ones,
+  // so the on-behalf UI can say "this org already has a contract on the same
+  // cadence" — the double-billing trap when a hand-built draft already exists.
+  // A read only: the accept still creates its own draft(s) exactly as before.
+  // Explicit org filter: this transaction runs in SYSTEM scope.
+  const overlappingContracts = await findOverlappingExistingContracts(quote.orgId, contractSpecs);
+
   const contractIds: string[] = [];
   const contractLineLinks: Array<{ quoteLineId: string; contractLineId: string }> = [];
   for (const spec of contractSpecs) {
@@ -686,6 +741,7 @@ export async function acceptQuote(
     blocks,
     effectiveDate,
     renderLocale,
+    signedAgreementEvidence,
   );
 
   // Phase 5: stage any Pax8-backed fulfillment in this exact transaction,
@@ -721,8 +777,30 @@ export async function acceptQuote(
     contractIds,
     pax8OrderId: pax8Staged.orderId,
     contractDocumentIds,
+    overlappingContracts,
     superseded: supersededByClaim,
   };
+}
+
+/** The org's draft/active/paused contracts that bill on the same cadence over
+ *  an overlapping term as any contract this accept is about to create (#9303).
+ *  Empty when the quote has no recurring lines. */
+async function findOverlappingExistingContracts(
+  orgId: string,
+  specs: ReadonlyArray<{ intervalMonths: number; startDate: string; endDate?: string | null }>,
+): Promise<OverlappingExistingContract[]> {
+  if (specs.length === 0) return [];
+  const existing = await db.select({
+    id: contracts.id, name: contracts.name, status: contracts.status,
+    intervalMonths: contracts.intervalMonths, startDate: contracts.startDate, endDate: contracts.endDate,
+  }).from(contracts)
+    .where(and(eq(contracts.orgId, orgId), inArray(contracts.status, [...RELATED_CONTRACT_STATUSES])))
+    .orderBy(contracts.createdAt, contracts.id);
+  return existing
+    .filter((c) => specs.some((spec) => contractsOverlapCadence(c, { ...spec, endDate: spec.endDate ?? null })))
+    .map((c) => ({
+      id: c.id, name: c.name, status: c.status as RelatedContractStatus, intervalMonths: c.intervalMonths,
+    }));
 }
 
 /**

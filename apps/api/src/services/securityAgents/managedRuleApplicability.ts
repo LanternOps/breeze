@@ -34,7 +34,18 @@ import { vendorForIntegrationProvider, type VendorKey } from './securityAgentVen
 
 export type NotApplicableEntry = { catalogId: string; vendor: VendorKey | null; reason: ReadinessReason };
 
+export type DeviceVendorReadiness = { catalogId: string; vendor: VendorKey; result: ReadinessResult };
+
 export interface ManagedRuleApplicability {
+  /**
+   * Readiness of every known-vendor rule for one device, whether or not the
+   * device has a violation for it (#6960 W03: persisted as coverage state).
+   * Rules whose catalog row is not a vendor package are omitted: there is no
+   * vendor to key a status row on.
+   */
+  evaluateDevice(deviceId: string): DeviceVendorReadiness[];
+  /** Vendors this policy's rules resolve to, in rule order. */
+  vendors(): VendorKey[];
   filterViolations(
     deviceId: string,
     violations: SoftwarePolicyViolation[],
@@ -102,7 +113,19 @@ export async function loadManagedRuleApplicability(
     };
   }
 
+  const vendorRules: Array<{ catalogId: string; vendor: VendorKey }> = [];
+  for (const catalogId of catalogIds) {
+    const vendor = vendorByCatalogId.get(catalogId) ?? null;
+    if (vendor && !vendorRules.some((rule) => rule.vendor === vendor)) vendorRules.push({ catalogId, vendor });
+  }
+
   return {
+    evaluateDevice(deviceId) {
+      return vendorRules.map(({ catalogId, vendor }) => ({ catalogId, vendor, result: readiness(deviceId, catalogId).result }));
+    },
+    vendors() {
+      return vendorRules.map((rule) => rule.vendor);
+    },
     filterViolations(deviceId, violations) {
       const kept: SoftwarePolicyViolation[] = [];
       const notApplicable: NotApplicableEntry[] = [];

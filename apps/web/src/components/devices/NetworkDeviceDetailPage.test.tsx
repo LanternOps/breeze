@@ -357,6 +357,41 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.getByTestId('network-detail-ports').textContent).toContain('No open ports were found on the most recent scan');
   });
 
+  it('health card says "No SNMP health data" (not "Nothing is being monitored") when a network check is active (#9646)', async () => {
+    const observedAt = new Date(Date.now() - 60_000).toISOString();
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        data: {
+          ...baseAsset,
+          snmpMonitoringEnabled: false,
+          reachability: {
+            ...baseReachability,
+            source: 'network_check',
+            detail: { networkCheck: { state: 'online', observedAt, responseMs: 4, monitorId: 'm1' } },
+          },
+        },
+      }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    const empty = screen.getByTestId('network-detail-health-empty');
+    expect(empty).toHaveTextContent('No SNMP health data');
+    expect(empty).not.toHaveTextContent('Nothing is being monitored yet');
+  });
+
+  it('health card keeps "Nothing is being monitored yet" when no check and no SNMP (#9646)', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({ data: { ...baseAsset, snmpMonitoringEnabled: false, reachability: { ...baseReachability, detail: {} } } }),
+    );
+
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-detail');
+
+    expect(screen.getByTestId('network-detail-health-empty')).toHaveTextContent('Nothing is being monitored yet');
+  });
+
   it('falls back to hostname for the display name when no label is set', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({ data: { ...baseAsset, label: null } }),

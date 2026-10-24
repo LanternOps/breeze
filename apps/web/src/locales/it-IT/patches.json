@@ -39,9 +39,10 @@
     },
     "confirm": {
       "title": "Conferma approvazione patch",
-      "selectedOrganization": "l'organizzazione selezionata",
-      "messageOne": "Approvare la patch su {{count}} dispositivo in {{org}}?",
-      "messageMany": "Approvare la patch su {{count}} dispositivi in {{org}}?"
+      "selectedRing": "(senza nome)",
+      "messageRingOne": "Approvare la patch su {{count}} dispositivo in tutte le organizzazioni nell'anello {{ring}}?",
+      "messageRingMany": "Approvare la patch su {{count}} dispositivi in tutte le organizzazioni nell'anello {{ring}}?",
+      "messagePartnerWide": "Approvare la patch per tutte le organizzazioni del tuo partner?"
     },
     "checkingAccess": "Verifica dell’accesso in corso..."
   },
@@ -259,7 +260,9 @@
       "moderate": "Moderata",
       "low": "Bassa",
       "unrated": "Non valutata",
-      "unratedNote": "Non verrà approvata automaticamente"
+      "unratedNote": "Non verrà approvata automaticamente",
+      "derivedNote": "Valutazione derivata",
+      "derivedTooltip": "Il fornitore non ha pubblicato una valutazione per questo aggiornamento. Questa gravità è stata derivata dalla classificazione e dal titolo."
     },
     "approval": {
       "pending": "In sospeso",
@@ -307,6 +310,7 @@
       "os": "OS",
       "release": "Rilascio",
       "approval": "Approvazione",
+      "devices": "Dispositivi",
       "actions": "Azioni"
     },
     "releaseUnknown": "Sconosciuta",
@@ -319,6 +323,23 @@
       "badgeDevices_other": "Installazione non riuscita su {{count}} dispositivi",
       "noReason": "Nessun motivo segnalato dall'agente",
       "failedAt": "Ultimo tentativo di installazione non riuscito: {{when}}"
+    },
+    "outstandingDevices": {
+      "badge_one": "{{count}} dispositivo",
+      "badge_other": "{{count}} dispositivi",
+      "none": "Nessun dispositivo nell’ambito ha ancora bisogno di questa patch",
+      "open": "Mostra i dispositivi che hanno ancora bisogno di {{title}}",
+      "heading": "Dispositivi che hanno ancora bisogno di {{title}}",
+      "loading": "Caricamento dei dispositivi…",
+      "error": "Impossibile caricare l’elenco dei dispositivi.",
+      "showing": "{{shown}} di {{total}} visualizzati",
+      "loadMore": "Carica altri",
+      "lastChecked": "Ultimo controllo: {{when}}"
+    },
+    "disambiguator": {
+      "version": "Versione del pacchetto {{version}}",
+      "id": "ID catalogo {{id}}",
+      "title": "Un’altra voce del catalogo ha lo stesso titolo. Ognuna viene approvata separatamente."
     }
   },
   "patchesPage": {
@@ -359,7 +380,8 @@
       "createRing": "Impossibile creare l'anello di aggiornamento",
       "deleteRing": "Impossibile eliminare l'anello",
       "approveUnknown": "Stato di approvazione sconosciuto: non è stato possibile leggere la risposta del server. Aggiorna per verificare quali patch sono state approvate.",
-      "approveAbortedWithFailures": "{{message}} (Il server aveva inoltre rifiutato {{count}} patch in precedenza.)"
+      "approveAbortedWithFailures": "{{message}} (Il server aveva inoltre rifiutato {{count}} patch in precedenza.)",
+      "checkRingLinks": "Impossibile verificare quali criteri usano questo anello; non è stato eliminato nulla"
     },
     "toast": {
       "ringSaved": "Anello di aggiornamento salvato",
@@ -389,7 +411,13 @@
       "createTitle": "Crea anello di aggiornamento"
     },
     "truncatedNotice": "Vengono mostrate {{shown}} patch su {{total}}. I filtri qui restringono solo ciò che è già caricato, quindi il resto non è raggiungibile da questa vista: usa l'API delle patch per consultare il catalogo completo.",
-    "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto."
+    "shiftedNotice": "Vengono mostrate {{shown}} patch su {{total}}: il catalogo è cambiato durante il caricamento. Ricarica per vedere il resto.",
+    "ringDelete": {
+      "title": "Eliminare {{name}}?",
+      "messageOne": "1 criterio smetterà di applicare le patch pianificate finché non sceglierai un altro anello.",
+      "messageMany": "{{count}} criteri smetteranno di applicare le patch pianificate finché non sceglierai un altro anello.",
+      "confirm": "Elimina anello"
+    }
   },
   "patchJobsList": {
     "empty": "Nessun job di patch ancora. I job creati da criteri, anelli di aggiornamento o dall'assistente IA appariranno qui.",
@@ -591,5 +619,24 @@
     "orEnterAPackageIDManually": "Oppure inserisci manualmente un ID pacchetto",
     "removeRuleFor": "Rimuovi regola per {{application}}",
     "scopeNote": "Queste regole si applicano a ogni dispositivo il cui criterio di configurazione è collegato a questo anello."
+  },
+  "patchDetails": {
+    "unknown": "Sconosciuto",
+    "source": "Origine",
+    "packageId": "KB / ID pacchetto",
+    "severity": "Gravità",
+    "releaseDate": "Data di rilascio",
+    "firstSeen": "Prima rilevazione nel catalogo",
+    "rings": {
+      "title": "Anelli di aggiornamento",
+      "note": "Quando ogni anello approva automaticamente questa patch (regola a livello di anello; le eccezioni per categoria non sono mostrate).",
+      "none": "Nessun anello di aggiornamento configurato.",
+      "manual": "Nessuna approvazione automatica — richiede approvazione manuale",
+      "immediate": "Approvata automaticamente subito",
+      "needsDate": "In attesa — nessuna data di rilascio per avviare la finestra di {{count}} giorni",
+      "autoApproves": "Approvata automaticamente il {{date}}",
+      "hold_one": "Ritardo di {{count}} giorno",
+      "hold_other": "Ritardo di {{count}} giorni"
+    }
   }
 }

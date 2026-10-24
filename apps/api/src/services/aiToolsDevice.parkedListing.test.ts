@@ -57,3 +57,23 @@ describe('AI device listings exclude parked devices', () => {
     expect(renderedWheres().some((w) => w.includes("parked_org.type = 'unassigned_pool'"))).toBe(true);
   });
 });
+
+describe('query_devices tags filter (#9122)', () => {
+  it('requires ALL tags via containment, for both the page and count queries', async () => {
+    await aiTools.get('query_devices')!.handler({ tags: ['prod', 'db'] }, systemAuth());
+    const queries = recorded.where.filter(Boolean).map((c) => dialect.sqlToQuery(c as SQL));
+    expect(queries.length).toBe(2);
+    for (const q of queries) {
+      expect(q.sql).toContain('"devices"."tags" @> ARRAY[');
+      expect(q.params).toEqual(expect.arrayContaining(['prod', 'db']));
+    }
+  });
+
+  it('adds no tag predicate when tags is omitted, empty, or non-string', async () => {
+    for (const tags of [undefined, [], [1, null]]) {
+      recorded.where.length = 0;
+      await aiTools.get('query_devices')!.handler({ tags }, systemAuth());
+      for (const w of renderedWheres()) expect(w).not.toContain('@>');
+    }
+  });
+});

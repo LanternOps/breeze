@@ -71,7 +71,7 @@
         "autoIssue": "Émission auto",
         "renewal": "Renouvellement",
         "estimatedPerPeriod": "Est. / période",
-        "notes": "Notes",
+        "notes": "Notes internes",
         "invoiceNote": "Note de facturation"
       },
       "values": {
@@ -136,7 +136,14 @@
         "flaggedOverage": "{{count}} ligne(s) dépassent la quantité incluse et n'ont pas été facturées : {{names}}",
         "uncoveredDevices": "Facture générée, mais {{count}} appareil(s) ne sont facturés par aucune ligne de ce contrat : {{breakdown}}",
         "priceBookGaps": "{{count}} ligne(s) de catalogue facturée(s) au prix figé du contrat — aucun prix en {{currency}} dans le catalogue : {{lines}}",
-        "draftDeleted": "Brouillon supprimé"
+        "draftDeleted": "Brouillon supprimé",
+        "skipped": {
+          "already_billed": "Aucune facture générée : cette période de facturation a déjà été facturée.",
+          "not_due": "Aucune facture générée : ce contrat n’est pas encore à facturer.",
+          "renewal_pending": "Aucune facture générée : ce contrat a dépassé sa date de fin et attend son renouvellement.",
+          "expired": "Aucune facture générée : ce contrat est expiré.",
+          "unknown": "Aucune facture n’a été générée pour ce contrat."
+        }
       },
       "cancelConfirm": {
         "title": "Annuler ce contrat ?",
@@ -221,8 +228,8 @@
       },
       "content": {
         "title": "Contenu",
-        "notesOptional": "Notes (facultatif, ajoutées au bloc Notes des factures générées)",
-        "termsOptional": "Note de facturation (facultatif, ajoutée au bloc Notes des factures générées)",
+        "notesOptional": "Notes internes (jamais montrées au client)",
+        "termsOptional": "Note de facturation (facultatif, imprimée sur chaque facture générée)",
         "termsPlaceholder": "ex. Net 30. Renouvellement automatique sauf annulation 30 jours avant."
       },
       "lines": {
@@ -645,6 +652,38 @@
         "loadMore": "Charger plus",
         "invoiceRemoved": "Facture du dépassement supprimée — heures non facturées"
       }
+    },
+    "relatedNotice": {
+      "title_one": "Cette organisation a {{count}} autre contrat",
+      "title_other": "Cette organisation a {{count}} autres contrats",
+      "overlapWarning": "Un autre contrat facture au même rythme sur des dates qui se chevauchent. Si vous activez les deux, le client paie pour les deux.",
+      "sameCadence": "Même rythme, dates qui se chevauchent",
+      "perPeriod": "{{amount}} par période",
+      "estimateUnavailable": "Estimation par période indisponible",
+      "deliverables_one": "{{count}} livrable",
+      "deliverables_other": "{{count}} livrables",
+      "signedAgreements_one": "{{count}} convention signée",
+      "signedAgreements_other": "{{count}} conventions signées",
+      "activateConfirm": {
+        "title": "Activer en plus d’un autre contrat ?",
+        "message": "Cette organisation a déjà un contrat qui facture au même rythme sur des dates qui se chevauchent. Si vous activez celui-ci, le client paie pour les deux.",
+        "confirm": "Activer quand même"
+      },
+      "adopt": {
+        "action": "Intégrer à ce contrat",
+        "title": "Intégrer « {{name}} » à ce contrat ?",
+        "message": "Utilisez cette option lorsque « {{name}} » couvre les mêmes services que ce contrat, afin que le client ne soit pas facturé deux fois.",
+        "deliverables_one": "Son {{count}} livrable est déplacé ici, avec son historique.",
+        "deliverables_other": "Ses {{count}} livrables sont déplacés ici, avec leur historique.",
+        "agreements_one": "Sa {{count}} convention signée est rattachée à ce contrat.",
+        "agreements_other": "Ses {{count}} conventions signées sont rattachées à ce contrat.",
+        "noLines": "Ses lignes ne sont pas copiées. Les lignes et les prix de ce contrat restent inchangés.",
+        "deleted": "« {{name}} » est ensuite supprimé. Cette action est irréversible.",
+        "confirm": "Intégrer et supprimer le brouillon",
+        "success": "« {{name}} » a été intégré à ce contrat",
+        "error": "Impossible d'intégrer le brouillon à ce contrat",
+        "collision": "Ces noms de livrables existent déjà dans ce contrat : {{names}}. Renommez-les ou supprimez-les d'un côté, puis réessayez."
+      }
     }
   },
   "agreements": {
@@ -670,7 +709,16 @@
       "viewContract": "Voir le contrat",
       "notLinked": "Non liée",
       "rowSubtitle": "Acceptée avec le devis {{quoteNumber}} par {{signer}} le {{date}}",
-      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}"
+      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}",
+      "evidenceUnavailable": "Acceptée par devis — preuve d’acceptation non disponible",
+      "recordSigned": "Enregistrer une convention signée",
+      "source": {
+        "quote": "via le devis {{number}}",
+        "recorded": "enregistrée par le MSP — {{method}}"
+      },
+      "fileType": {
+        "image": "copie numérisée"
+      }
     },
     "templateEditor": {
       "usage": "Utilisé sur {{quotes}} devis · {{signed}} conventions signées",
@@ -684,7 +732,38 @@
       }
     },
     "contractPill": {
-      "under": "Sous {{template}} v{{n}}"
+      "under": "Sous {{template}} v{{n}}",
+      "fromQuote": "Issu du devis {{number}}"
+    },
+    "recordSigned": {
+      "title": "Enregistrer une convention signée",
+      "organization": "Organisation",
+      "organizationPlaceholder": "Sélectionner une organisation",
+      "orgFallback": "cette organisation",
+      "template": "Modèle de convention",
+      "templatePlaceholder": "Sélectionner un modèle de convention",
+      "templatesError": "Impossible de charger les modèles de convention.",
+      "orgsError": "Impossible de charger les organisations.",
+      "contractError": "Impossible de charger ce contrat.",
+      "contractsError": "Impossible de charger les contrats de cette organisation. Vous pouvez tout de même enregistrer la convention et la lier à un contrat plus tard.",
+      "contract": "Contrat (facultatif)",
+      "contractNone": "Non rattachée à un contrat",
+      "method": "Mode d'accord",
+      "reference": "Référence",
+      "referenceHelp": "Où un relecteur trouverait la convention signée — un numéro de bon de commande, un e-mail daté ou un ticket.",
+      "signerName": "Qui a donné son accord",
+      "signerEmail": "Son e-mail (facultatif)",
+      "signedAt": "Date de signature",
+      "file": "Copie signée (facultatif)",
+      "fileHelp": "PDF, PNG ou JPEG, jusqu'à 10 Mo. Si une copie signée est jointe, c'est ce fichier qui est archivé.",
+      "fileTooLarge": "Ce fichier dépasse 10 Mo.",
+      "fileWrongType": "Joignez un fichier PDF, PNG ou JPEG.",
+      "variables": "Informations de la convention",
+      "unresolved": "Renseignez une valeur pour : {{names}}",
+      "consequence": "Ceci archive une convention signée pour {{org}}. Elle ne pourra pas être supprimée ensuite.",
+      "submit": "Enregistrer la convention signée",
+      "success": "Convention signée enregistrée.",
+      "error": "Impossible d'enregistrer la convention signée."
     }
   },
   "quotes": {
@@ -1271,8 +1350,10 @@
         "signerNameLabel": "Qui a donné son accord",
         "signerEmailLabel": "Son e-mail (facultatif)",
         "consequenceInvoice": "Une facture de {{amount}} sera émise et numérotée maintenant.",
+        "consequenceInvoiceDraft": "Une facture brouillon sera créée. Elle n’est pas encore émise ni numérotée.",
         "consequenceContracts": "Les lignes récurrentes deviennent des contrats en brouillon que vous activez plus tard.",
         "consequenceEmail": "La facture sera envoyée par e-mail à {{recipients}}.",
+        "consequenceEmailNotConfigured": "Aucun service e-mail n'est configuré ; la facture ne sera pas envoyée par e-mail. Partagez-la depuis la page de la facture.",
         "consequenceDraft": "Cette proposition n'a jamais été envoyée. La facture sera la première chose que le client en verra.",
         "submit": "Accepter et émettre la facture",
         "success": "Proposition acceptée. Facture {{number}} émise.",
@@ -1287,7 +1368,15 @@
         "evidenceAttached": "Justificatif joint.",
         "evidenceError": "L'acceptation a été enregistrée, mais le fichier justificatif n'a pas pu être joint. Joignez-le depuis la page de la proposition.",
         "consequenceEmailNoRecipient": "Aucun destinataire n'est enregistré sur ce devis ; la facture pourrait donc ne pas être envoyée par e-mail. Envoyez-la vous-même au client si nécessaire.",
-        "successNoRecipient": "Devis accepté. Facture {{number}} émise. Elle n'a peut-être pas été envoyée par e-mail : aucun destinataire n'est enregistré sur ce devis."
+        "successNoRecipient": "Devis accepté. Facture {{number}} émise. Elle n'a peut-être pas été envoyée par e-mail : aucun destinataire n'est enregistré sur ce devis.",
+        "successNoEmailService": "Devis accepté. Facture {{number}} émise. Elle n'a pas été envoyée par e-mail : aucun service e-mail n'est configuré. Partagez-la depuis la page de la facture.",
+        "overlap": {
+          "title": "Cette organisation a déjà un contrat au même rythme",
+          "body": "L’acceptation a créé un nouveau brouillon de contrat. Si vous l’activez en plus du contrat existant, le client paie pour les deux. Vérifiez les deux avant d’en activer un.",
+          "newContract": "Nouveau brouillon issu de ce devis",
+          "existingContract": "Contrat existant",
+          "done": "Terminé"
+        }
       },
       "declineOnBehalf": {
         "button": "Refuser pour le client",
@@ -1497,76 +1586,24 @@
     },
     "document": {
       "deviceSet": {
-        "badge": "Est.",
-        "estimate": "Quantité estimée — facturée selon le nombre réel de {{set}} à chaque période de facturation.",
         "setDevices": "appareils",
         "setSeats": "postes",
-        "setGroup": "appareils dans « {{name}} »",
-        "atSite": "{{set}} sur le site {{site}}",
-        "allowanceBill": "Comprend {{included}}; les unités supplémentaires sont facturées {{price}} chacune.",
-        "allowanceFlag": "Comprend {{included}}; les unités supplémentaires sont signalées pour révision, pas facturées automatiquement."
+        "setGroup": "appareils dans « {{name}} »"
       },
       "additionalItems": "Articles supplémentaires",
       "contract": {
-        "download": "Télécharger la convention",
-        "previewTitle": "Convention {{name}}",
         "unavailable": "Fichier de la convention indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
-      "agreements": {
-        "heading": "Conventions",
-        "termsTitle": "Conditions générales",
-        "read": "Lire",
-        "hide": "Masquer",
-        "readTime": "~{{minutes}} min de lecture",
-        "sectionsReadTime_one": "{{count}} section · ~{{minutes}} min de lecture",
-        "sectionsReadTime_other": "{{count}} sections · ~{{minutes}} min de lecture",
-        "pdfDocument": "Document PDF",
-        "unavailable": "Non disponible",
-        "untitled": "Convention"
-      },
-      "draft": "Brouillon",
-      "empty": "Cette proposition n'a encore aucun contenu.",
-      "imageUnavailable": "Image indisponible",
-      "issued": "Émis",
-      "preparedFor": "Préparé pour",
-      "taxId": "Identifiant fiscal : {{id}}",
-      "imageZoomAria": "Voir l'image en grand",
       "preview": {
         "description": "Voici ce que votre client voit sur son lien de proposition.",
         "downloadPdf": "Télécharger le PDF",
-        "preparing": "Préparation…"
-      },
-      "pricing": "Tarification",
-      "pricingScrollAria": "Tarification — faites défiler horizontalement pour plus de colonnes",
-      "proposal": "Proposition",
-      "proposalImageAlt": "Image de la proposition",
-      "recurrence": {
-        "annual": "Annuel",
-        "monthly": "Mensuel"
-      },
-      "table": {
-        "amount": "Montant",
-        "description": "Description",
-        "qty": "Qté",
-        "tax": "Taxe",
-        "unitPrice": "Prix unitaire"
-      },
-      "totals": {
-        "annualRecurring": "Récurrent annuel",
-        "depositDue": "Acompte dû",
-        "depositDueNow": "Acompte dû maintenant",
-        "dueOnAcceptance": "Dû à l'acceptation",
-        "firstPeriodSubtotal": "Sous-total de la première période",
-        "firstPeriodTotal": "Total de la première période",
-        "monthlyRecurring": "Récurrent mensuel",
-        "recurringNote": "L'acceptation de cette proposition facture maintenant les frais ponctuels. Les lignes récurrentes sont facturées selon leur propre calendrier.",
-        "remainingBalance": "Solde restant (selon les conditions)",
-        "subtotal": "Sous-total",
-        "tax": "Taxe"
-      },
-      "unsupportedBlock": "Ce type de bloc n'est pas encore pris en charge par cette visionneuse.",
-      "validUntil": "Valide jusqu'au"
+        "preparing": "Préparation…",
+        "loading": "Chargement de la vue client…",
+        "loadError": "Impossible de charger la vue client de cette proposition.",
+        "retry": "Réessayer",
+        "signatureInert": "Votre client signe ici"
+      }
     },
     "page": {
       "accessDenied": "Vous n'avez pas l'autorisation de consulter les devis.",
@@ -2113,36 +2150,16 @@
     }
   },
   "invoiceDocument": {
-    "billTo": "Facturer à",
-    "documentType": "Facture",
-    "due": "Échéance",
-    "empty": "Cette facture ne contient encore aucune ligne.",
-    "fallbackTitle": "Facture",
-    "issued": "Émise",
-    "laborLine": "Main-d’œuvre",
     "preview": {
       "description": "Voici ce que votre client voit sur sa facture.",
       "downloadError": "Impossible de télécharger le PDF de la facture.",
       "downloadPdf": "Télécharger le PDF",
-      "preparing": "Préparation…"
+      "loadError": "Impossible de charger la vue client de cette facture.",
+      "loading": "Chargement de la vue client…",
+      "preparing": "Préparation…",
+      "retry": "Réessayer"
     },
-    "table": {
-      "amount": "Montant",
-      "description": "Description",
-      "qty": "Qté",
-      "tax": "Taxe",
-      "unitPrice": "Prix unitaire"
-    },
-    "terms": "Conditions générales",
-    "ticketHeader": "Ticket n° {{number}}",
-    "ticketWork": "Travail lié au ticket",
-    "totals": {
-      "amountDue": "Montant dû",
-      "paid": "Payé",
-      "subtotal": "Sous-total",
-      "tax": "Taxe",
-      "total": "Total"
-    }
+    "ticketHeader": "Ticket n° {{number}}"
   },
   "invoiceWorkspace": {
     "backLabel": "Factures",
@@ -2429,7 +2446,7 @@
     "documents": "Documents",
     "connections": "Connexions",
     "rates": "Tarifs",
-    "payments": "Payments"
+    "payments": "Paiements"
   },
   "billingConnectionsTab": {
     "accounting": {
@@ -2767,6 +2784,10 @@
       "confirm": "Confirmer",
       "failed": "Échec de la vérification. Réessayez.",
       "unavailable": "Impossible de démarrer la vérification"
+    },
+    "notEnabled": {
+      "title": "Les paiements automatiques ne sont pas activés pour votre compte",
+      "hint": "Les paiements automatiques n'ont pas encore été activés. Demandez à votre administrateur Breeze de les activer, puis revenez demander l'inscription à vos clients."
     }
   },
   "reminders": {

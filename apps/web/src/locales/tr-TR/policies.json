@@ -158,7 +158,9 @@
       "organizationPolicyTitle": "Organizasyon politikası — yalnızca {{organization}} için geçerlidir",
       "summary": "{{filtered}} / {{total}} politikaları",
       "inheritsBadge": "Devralıyor",
-      "statusFilterLabel": "Durum"
+      "statusFilterLabel": "Durum",
+      "partnerPolicy": "İş ortağı",
+      "partnerPolicyAppliesOnlyWhereAssigned": "İş ortağı politikası — yalnızca atandığı yerde geçerlidir. İş ortağı çapında olması için tüm kuruluşlara atayın."
     },
     "configurationPoliciesPage": {
       "failedToFetchConfigurationPolicies": "Yapılandırma politikaları getirilemedi",
@@ -198,7 +200,9 @@
       "appliedToAllOrganizationsUncheckAllOrganizations": "Tüm kuruluşlara uygulanır. Bir alt küme seçmek için \"Tüm kuruluşlar\" seçeneğinin işaretini kaldırın.",
       "polite": "kibar",
       "loading": "Yükleniyor…",
-      "loadMoreOrganizations": "Daha fazla kuruluş yükle"
+      "loadMoreOrganizations": "Daha fazla kuruluş yükle",
+      "appliedToAllOrgs": "Politika artık tüm kuruluşlara uygulanıyor",
+      "removedFromAllOrgs": "Politika artık tüm kuruluşlara uygulanmıyor"
     },
     "featureTabs": {
       "automationTab": {
@@ -739,7 +743,7 @@
         "muteAlertNotificationsDuringWindow": "Pencere sırasında yeni uyarı oluşturulmaz.",
         "suppressAlerts2": "Uyarıları bastır",
         "suppressPatching": "Yamalamayı engelle",
-        "delayPatchInstallationsDuringWindow": "Pencere sırasında yama kurulumlarını geciktirin.",
+        "delayPatchInstallationsDuringWindow": "Pencere sırasında zamanlanan yüklemeler atlanır ve bir sonraki zamanlanmış çalışmada yapılır.",
         "suppressPatching2": "bastırmaYaması",
         "suppressAutomations": "Otomasyonları bastırın",
         "pauseAutomationRunsDuringWindow": "Pencere sırasında otomasyon çalışmalarını duraklatın.",
@@ -748,15 +752,16 @@
         "pauseScriptExecutionDuringWindow": "Pencere sırasında komut dosyasının yürütülmesini duraklatın.",
         "suppressScripts2": "bastırmaScriptleri",
         "rebootIfARebootIsPending": "Yeniden başlatma bekleniyorsa yeniden başlat",
-        "duringTheWindowRebootDevicesThatHave": "Pencere sırasında, yeniden başlatma bekleyen aygıtları yeniden başlatın. Windows oturum açmış kullanıcıyı yeniden başlatmadan ~5 dakika önce uyarır; Linux, oturum açmış kullanıcılara bir uyarı vererek yeniden başlatmayı 15 dakika sonrasına planlar. macOS desteklenmiyor.",
+        "duringTheWindowRebootDevicesThatHave": "Pencere sırasında, yeniden başlatması bekleyen cihazları yeniden başlatır. Uyarı süresi, cihazın yama ilkesindeki yeniden başlatma gecikmesinden gelir. macOS desteklenmez.",
         "rebootIfPending": "yeniden başlatma IfPending",
-        "maintenanceRebootIfPendingToggle": "bakım-yeniden başlatma-eğer-beklemede-geçiş",
         "notifyOnStart": "Başlangıçta bildir",
         "sendNotificationWhenWindowOpens": "Pencere açıldığında bildirim gönder.",
         "notifyOnStart2": "notifyOnStart",
         "notifyOnEnd": "Sonunda bildir",
         "sendNotificationWhenWindowCloses": "Pencere kapatıldığında bildirim gönder.",
-        "notifyOnEnd2": "notifyOnEnd"
+        "notifyOnEnd2": "notifyOnEnd",
+        "weeklyOpensEverySunday": "Haftalık pencereler, seçilen saat diliminde her pazar başlangıç saatinde açılır.",
+        "monthlyOpensOnTheFirst": "Aylık pencereler, seçilen saat diliminde her ayın 1'inde başlangıç saatinde açılır."
       },
       "monitorsTab": {
         "agentCollectionTitle": "Aracı toplama",
@@ -888,9 +893,9 @@
         "unavailableRingOption": "Kullanılamayan halka",
         "ringInvalidTitle": "Bağlantılı Güncelleme Halkası artık kullanılamıyor.",
         "ringInvalidBody": "Bu ilkenin yamaları, bir halka seçip kaydedene kadar bekletilir.",
-        "ringInvalidLegacyRules": "Bu ilke, kurallar halkalara taşınmadan önceki uygulama kurallarını hâlâ taşıyor ({{rules}}). Seçtiğiniz halkada bu kuralların tam olarak aynısı zaten bulunmalı — önce onları halkaya ekleyin.",
-        "approvalRulesMovedToRing": "Otomatik onay ve uygulama kuralları artık Güncelleme Halkasında ayarlanıyor. Bunları bağlantılı halkada düzenleyin. Bu sayfa güncellemeden önce açıksa yeniden yükleyip tekrar kaydedin.",
-        "ringLacksPolicyAppRules": "Seçtiğiniz Güncelleme Halkası bu ilkenin uygulama kurallarına sahip değil. Önce bu kuralların tam olarak aynısını o halkaya ekleyin veya bunlara zaten sahip bir halka seçin."
+        "ringDetailsNoHold": "Kullanıma sunma sırası {{order}} · onay öncesi bekleme yok",
+        "ringDetailsWithHold_one": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme",
+        "ringDetailsWithHold_other": "Kullanıma sunma sırası {{order}} · onay öncesi {{count}} gün bekleme"
       },
       "peripheralControlTab": {
         "linkPeripheralPolicy": "Bağlantı Çevre Birimi Politikası",
@@ -1017,7 +1022,25 @@
         "fullScan": "Tam tarama",
         "maxFileSizeMb": "Maksimum dosya boyutu (MB)",
         "scanTimeoutMinutes": "Tarama zaman aşımı (dakika)",
-        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur."
+        "scanRunsServerSideDescription": "Breeze bu taramayı sunucudan başlatır — cihazın yerel bir zamanlamaya ihtiyacı yoktur.",
+        "ruleSets": {
+          "title": "Tespit kural kümeleri",
+          "description": "Bu ilkenin IOC taramalarının kullandığı kural kümeleri.",
+          "manageLink": "Tespit kurallarını yönet",
+          "loading": "Kural kümeleri yükleniyor…",
+          "loadError": "Kural kümeleri yüklenemedi. İlke mevcut kural kümelerini korur; diğer ayarları yine de kaydedebilirsiniz.",
+          "none": "Bu ilke için kullanılabilir kural kümesi yok.",
+          "legacyNote": "Kural kümesi yok: taramalar yalnızca yerleşik eski imzaları kullanır.",
+          "cap": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+          "unavailable": "Kullanılamayan kural kümesi",
+          "blocking": "Bu ilke kullanılamayan kural kümelerini (silinmiş, taşınmış veya başka bir kuruluşa ait) kullanamaz. Kaydetmeden önce bunları kaldırın.",
+          "overrideDraft": "Devralınan ayarlar bu ilkenin kullanamayacağı kural kümeleri içeriyor. Kullanılamayan kural kümelerini kaldırın, ardından kaydedin.",
+          "errors": {
+            "tooMany": "Bir ilke en fazla {{max}} kural kümesi kullanabilir.",
+            "invalidIds": "Kural kümesi listesi geçerli değil. Sayfayı yeniden yükleyip tekrar deneyin.",
+            "notAttachable": "Bu ilke seçilen kural kümelerinden bazılarını kullanamaz. Aşağıda vurgulanmıştır."
+          }
+        }
       },
       "sensitiveDataTab": {
         "credentials": "Kimlik Bilgileri",
@@ -1134,13 +1157,17 @@
         "platformWindows": "Windows: otomatik olarak yüklenir.",
         "platformMacos": "macOS: MDM onayı gerektirir, bu nedenle Breeze otomatik olarak yüklemez. Bu cihazlar uygulanamaz olarak gösterilir.",
         "platformLinux": "Linux: desteklenmiyor.",
-        "keysNotice": "Yüklemeler, Huntress entegrasyonundaki müşteriye özel anahtarları kullanır. Bu entegrasyonda eşlenmemiş kuruluşlar atlanır ve başarısız dağıtım olmadan uygulanamaz olarak gösterilir. Bir sağlayıcıyı kapatmak uygulamayı durdurur ancak aracıyı asla kaldırmaz.",
+        "keysNotice": "Yüklemeler, sağlayıcı entegrasyonundaki müşteriye özel anahtarları kullanır (Huntress kuruluş anahtarları, SentinelOne site belirteçleri). Bu entegrasyonda eşlenmemiş kuruluşlar atlanır ve başarısız dağıtım olmadan uygulanamaz olarak gösterilir. Bir sağlayıcıyı kapatmak uygulamayı durdurur ancak aracıyı asla kaldırmaz.",
         "closerWarning": "Cihaza daha yakın atanmış (site, grup veya cihaz ya da miras alan alt politika) ve kendi Güvenlik Aracıları ayarlarına sahip bir yapılandırma politikası, bu cihazlar için bu ayarların yerine tamamen geçer. Orada atlanan bir sağlayıcı uygulanmaz.",
         "partnerWideBadge": "Tüm kuruluşlara uygulanır",
         "noneEnabledNote": "Hiçbir sağlayıcı etkin değil: bu politikanın eriştiği cihazlar tüm güvenlik aracılarının dışında tutulur.",
-        "catalogMissing": "Huntress bu iş ortağı için henüz kurulmadı. Önce Huntress entegrasyonunu bağlayın, ardından tekrar kaydedin.",
-        "catalogMissingLink": "Huntress’i bağla",
-        "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin."
+        "catalogMissing": "Bu iş ortağı için şu sağlayıcı henüz kurulmadı: {{vendors}}. Önce entegrasyonu bağlayın, ardından tekrar kaydedin.",
+        "catalogMissingLink": "Entegrasyonu bağla",
+        "executeRequired": "Yüklemeleri açmak için cihazlarda komut çalıştırma izni (MFA ile) gerekir. Bu izne sahip bir yöneticiden bu ayarı kaydetmesini isteyin.",
+        "binaryMissing": "Yerleşik paketin dağıtılabilir bir yükleyicisi olana kadar şu sağlayıcı açılamaz: {{vendors}}. En son sürüm, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içeren bir Windows MSI olmalıdır. Bunu paketin Sürümler sekmesinde düzeltin, ardından tekrar kaydedin.",
+        "binaryMissingLink": "Sürümler sekmesini aç",
+        "platformMacosUnsupported": "macOS: desteklenmiyor.",
+        "sentinelOneMsiNote": "Önce SentinelOne MSI dosyasını, yükleme bağımsız değişkenleri SITE_TOKEN={s1_site_token} içerecek şekilde yerleşik SentinelOne paketinin Sürümler sekmesine ekleyin. Breeze yükleyiciyi sağlamaz ve dosya eklenene kadar SentinelOne açılamaz."
       },
       "warrantyTab": {
         "warrantyAlertingIsOptInDevicesWith": "Garanti uyarısı isteğe bağlıdır: herhangi bir garanti politikası atanmamış cihazlar asla uyarı vermez. Aşağıdaki eşikler yalnızca sabit vadeli kapsam için geçerlidir; aktif AppleCare abonelikler sona ermek yerine yenilenir, dolayısıyla sona erme uyarıları her zaman bastırılır.",
@@ -1330,9 +1357,8 @@
       "noSoftwarePoliciesFoundCreateOneTo": "Hiçbir yazılım ilkesi bulunamadı. Başlamak için bir tane oluşturun.",
       "recentViolations": "Son İhlaller",
       "noCurrentSoftwareViolations": "Mevcut yazılım ihlali yok.",
-      "violationS": "ihlalleri",
-      "remediation": "Düzeltme:",
-      "checked": "Kontrol edildi:",
+      "remediation": "Düzeltme: {{value}}",
+      "checked": "Kontrol edildi: {{date}}",
       "deactivatePolicy": "Politikayı Devre Dışı Bırak",
       "areYouSureYouWantToDeactivate": "Devre dışı bırakmak istediğinizden emin misiniz?",
       "thePolicyWillBeMarkedInactiveAnd": "? Politika etkin değil olarak işaretlenecek ve uyumluluk verileri temizlenecek.",
@@ -1362,7 +1388,16 @@
       "installAttempts": "{{count}} deneme",
       "installLastAttempt": "Son yükleme denemesi: ",
       "managedByConfigPolicy": "Yapılandırma politikası tarafından yönetilir",
-      "managedByConfigPolicyHint": "Bu politika bir yapılandırma politikasından oluşturulmuştur ve burada salt okunurdur. Yapılandırma Politikaları bölümünden değiştirin."
+      "managedByConfigPolicyHint": "Bu politika bir yapılandırma politikasından oluşturulmuştur ve burada salt okunurdur. Yapılandırma Politikaları bölümünden değiştirin.",
+      "securityAgentCoverage": "Güvenlik aracısı kapsamı",
+      "coverageDevice": "Cihaz",
+      "coverageVendor": "Sağlayıcı",
+      "coverageReason": "Neden",
+      "vendorOnlyAgent": "Yalnızca sağlayıcıda bilinen aracı",
+      "coverageRowsNote": "{{total}} kayıttan {{shown}} tanesi gösteriliyor",
+      "violationCount": "{{count}} ihlal",
+      "violationCount_one": "{{count}} ihlal",
+      "violationCount_other": "{{count}} ihlal"
     },
     "deploymentList": {
       "running": "Koşuyor",
@@ -1425,6 +1460,8 @@
       "error": "Hata",
       "deploymentComplete": "Dağıtım tamamlandı",
       "inProgress": "Devam ediyor",
+      "completedWithErrors": "Hatalarla tamamlandı",
+      "scheduledFor": "Zamanlandı: {{time}}",
       "autoRefreshing": "Her 5 saniyede bir otomatik olarak yenilenir",
       "queuedOffline": "Sıraya alındı — cihaz çevrimdışı",
       "cancelled": "İptal edildi",
@@ -1576,20 +1613,21 @@
       "registry": "kayıt defteri",
       "fileExists": "file_exists",
       "msiProductCode": "msi_product_code",
-      "fileVersion": "file_version"
+      "fileVersion": "file_version",
+      "serviceRunning": "Hizmet çalışıyor",
+      "readOnlyHint": "API ile oluşturuldu. Burada düzenlenemez; kaydettiğinizde olduğu gibi korunur."
     },
     "deviceDrawer": {
       "failedToFetchDevices": "Cihazlar getirilemedi",
-      "devicesWith": "Cihazlar",
-      "by": "yazan",
+      "devicesWith": "{{name}} yüklü cihazlar",
+      "by": "yayıncı: {{vendor}}",
       "noDevicesFoundWithThisSoftware": "Bu yazılıma sahip cihaz bulunamadı.",
       "hostname": "Ana Bilgisayar Adı",
       "oS": "İşletim Sistemi",
       "version": "Sürüm",
       "lastSeen": "Son Görülme",
-      "device": "cihaz",
-      "total": "toplam",
-      "s": "s"
+      "deviceTotal_one": "toplam {{count}} cihaz",
+      "deviceTotal_other": "toplam {{count}} cihaz"
     },
     "policyForm": {
       "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",

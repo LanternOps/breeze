@@ -28,6 +28,11 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // YARA rule test upload (#6263 W04-2): the sandboxed `breeze-yarac match`
+  // child runs up to 30 s; inside the request transaction it would pin a
+  // pooled connection idle-in-transaction (#1105). The handler reads the set
+  // in a short caller-scoped context and audits afterwards.
+  { method: 'POST', pattern: /^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test\/?$/i },
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/autopay\/charge-now\/?$/ },
   // Autopay routes own short authorized contexts; no outer request transaction.
   { method: 'GET', pattern: /^\/api\/v1\/billing\/autopay\/?$/ },
@@ -119,6 +124,16 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // #5861 PR 2: the per-asset list opens the same org-scoped context as the
   // overview, so it must opt out of the portal request transaction too.
   { method: 'GET', pattern: /^\/api\/v1\/portal\/network\/assets\/?$/ },
+  // #8973 W4 Gate B1: portal ticket create. portalTicketsEnabledMiddleware
+  // opens one org-scoped context with currentPartnerId (the validated owning
+  // partner) BEFORE its enable_tickets read, so createTicket's business-calendar
+  // resolver can read a partner-wide default through the SELECT-only branch.
+  // Every other portal ticket route keeps the generic request transaction.
+  { method: 'POST', pattern: /^\/api\/v1\/portal\/tickets\/?$/ },
+  // #8973 W4 D12 apply-revision: walks open tickets in 500-row chunks, each
+  // in its own short caller-scoped transaction (FOR UPDATE SKIP LOCKED), so
+  // no request transaction holds every touched ticket's row lock to the end.
+  { method: 'POST', pattern: /^\/api\/v1\/business-calendars\/[0-9a-f-]{36}\/apply-revision\/?$/i },
   // Stripe key verification — savePartnerStripeKey calls accounts.retrieve.
   { method: 'POST', pattern: /^\/api\/v1\/partner\/stripe-connect\/key\/?$/ },
   // Stripe cache lazy refresh — getPartnerStripeAccountSnapshot may call accounts.retrieve.
@@ -425,6 +440,13 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // for the length of the accept. The handler opens its own short
   // withAuthDbAccessContext for the org-scoped lookup instead.
   { method: 'POST', pattern: /^\/api\/v1\/quotes\/[^/]+\/accept-on-behalf\/?$/ },
+  // Record signed agreement (#8865 W1c) — the agreement counterpart of
+  // accept-on-behalf, same reason: the handler reads the org owner + template
+  // in a short withAuthDbAccessContext, then runs the request insert + freeze
+  // as ONE transaction under runOutsideDbContext(withSystemDbAccessContext).
+  // Without this entry the ambient request transaction stays held alongside
+  // the system one — two pooled connections for the whole freeze.
+  { method: 'POST', pattern: /^\/api\/v1\/contracts\/agreement-requests\/record-signed\/?$/ },
   // #3922 review round 2 — revision AUTHORING is the second network-touching
   // route on this surface, and the quieter one. `createRevision` runs
   // `validateBaseUrl` → `assertSafeUrl` on the operator-supplied base URL,
@@ -557,6 +579,11 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // transaction — between them, with no context held. clientAiAuth and
   // helperAuth consult this registry too; only the send POST opts out.
   { method: 'POST', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/messages\/?$/ },
+  // #9427 — the AI chat attach stream stays open for a whole turn. It reads the
+  // owner-bound session in one short withAuthDbAccessContext before streaming
+  // and does no DB work inside the stream; under the ambient request
+  // transaction it would pin a pooled connection for the turn's length (#1105).
+  { method: 'GET', pattern: /^\/api\/v1\/ai\/sessions\/[^/]+\/stream\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/ai\/script-builder\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/client-ai\/sessions\/[^/]+\/messages\/?$/ },
   { method: 'POST', pattern: /^\/api\/v1\/helper\/chat\/sessions\/[^/]+\/messages\/?$/ },

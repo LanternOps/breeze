@@ -1,9 +1,10 @@
 import { and, eq, exists, gt, inArray, ne, sql } from 'drizzle-orm';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
+import { hasSatisfiedMfa, isInteractiveUserSession, type AuthContext } from '../../middleware/auth';
 import { approvalRequests } from '../../db/schema/approvals';
 import { elevationRequests, elevationAudit } from '../../db/schema/elevations';
+import { normalizePamDenialReason } from '../pamDenialReason';
 import { aiToolExecutions, aiSessions } from '../../db/schema/ai';
 import {
   actionIntents,
@@ -54,7 +55,7 @@ import {
 } from '../diagnosticAccess/grants';
 import { checkToolPermission } from '../aiGuardrails';
 import { loadPartnerPolicy, isEnforcing } from '../authenticatorPolicy';
-import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg } from '../permissions';
+import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg, canAccessSite } from '../permissions';
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
@@ -572,20 +573,21 @@ export async function decideApprovalRequest(
   // no-op passthrough (db/index.ts), so `runOutsideDbContext` is required to
   // actually elevate.
   if (existing.elevationRequestId && !existing.intentId) {
-    const elevationOrgId = await runOutsideDbContext(() =>
+    const elevationTarget = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
         const [row] = await db
-          .select({ orgId: elevationRequests.orgId })
+          .select({ orgId: elevationRequests.orgId, flowType: elevationRequests.flowType, deviceId: elevationRequests.deviceId })
           .from(elevationRequests)
           .where(eq(elevationRequests.id, existing.elevationRequestId as string));
-        return row?.orgId ?? null;
+        return row ?? null;
       }),
     );
-    if (!elevationOrgId) {
+    if (!elevationTarget) {
       // Should be unreachable (ON DELETE SET NULL leaves elevationRequestId
       // null rather than dangling), but fail closed rather than proceed blind.
       return { httpStatus: 404, body: { error: 'elevation_not_found' } };
     }
+    const elevationOrgId = elevationTarget.orgId;
 
     const deciderPerms = await runOutsideDbContext(() =>
       withSystemDbAccessContext(() =>
@@ -608,6 +610,25 @@ export async function decideApprovalRequest(
       !hasPermission(deciderPerms, 'pam', 'approve')
     ) {
       return { httpStatus: 403, body: { error: 'pam_approve_required' } };
+    }
+    if (status === 'approved' && elevationTarget.flowType === 'uac_intercept') {
+      if (!hasSatisfiedMfa(input.auth)) {
+        return { httpStatus: 403, body: { error: 'MFA required', code: 'MFA_REQUIRED' } };
+      }
+      if (!hasPermission(deciderPerms, 'devices', 'execute')) {
+        return { httpStatus: 403, body: { error: 'devices_execute_required' } };
+      }
+      const device = await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+        const [row] = await db.select({ orgId: devices.orgId, siteId: devices.siteId })
+          .from(devices).where(eq(devices.id, elevationTarget.deviceId));
+        return row;
+      }));
+      if (!device || device.orgId !== elevationOrgId) {
+        return { httpStatus: 404, body: { error: 'device_not_found' } };
+      }
+      if (!canAccessSite(deciderPerms, device.siteId ?? '')) {
+        return { httpStatus: 403, body: { error: 'site_access_denied' } };
+      }
     }
   }
 
@@ -1524,7 +1545,7 @@ export async function decideApprovalRequest(
                   : {
                       status: 'denied',
                       deniedByUserId: userId,
-                      denialReason: reason ?? null,
+                      denialReason: normalizePamDenialReason(reason),
                       updatedAt: now,
                       decidedAssuranceLevel: assurance.decidedAssuranceLevel,
                       decidedVia: assurance.decidedVia,

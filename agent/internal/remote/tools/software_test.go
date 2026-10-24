@@ -251,10 +251,11 @@ func TestValidateDownloadURLAndRedirectPolicy(t *testing.T) {
 func TestInstallSoftwareRejectsNonHTTPSDownloadURL(t *testing.T) {
 	t.Parallel()
 
+	fileType, fileName := hostInstaller("installer")
 	result := InstallSoftware(map[string]any{
-		"downloadUrl": "http://example.com/installer.exe",
-		"fileName":    "installer.exe",
-		"fileType":    "exe",
+		"downloadUrl": "http://example.com/" + fileName,
+		"fileName":    fileName,
+		"fileType":    fileType,
 	})
 	if result.Status != "failed" {
 		t.Fatalf("expected failed status, got %q", result.Status)

@@ -112,6 +112,15 @@ export default function OrgSwitcher() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Pages that state which organization they act on (the Integrations scope
+  // bar, #9318) offer a "Change" control; it asks this persisted island to open
+  // rather than duplicating the picker.
+  useEffect(() => {
+    const open = () => setIsOpen(true);
+    window.addEventListener('breeze:open-org-switcher', open);
+    return () => window.removeEventListener('breeze:open-org-switcher', open);
+  }, []);
+
   // Keyboard shortcut: Cmd+O to toggle org switcher; Escape closes it and
   // returns focus to the trigger; Arrow keys rove focus across the fleet/org
   // rows so the bar's most-used control matches the command palette.

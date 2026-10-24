@@ -44,6 +44,11 @@ import type { OccurrenceStatus } from '../serviceDeliverableState';
  *     report definition is `portal_self_service`.
  *  4. A delivered occurrence with a required artifact and no publishable
  *     evidence reports `held_by_msp`. Nothing pretends evidence exists.
+ *  5. Signed-agreement evidence (`contract_document`, #9312) never publishes
+ *     yet: the portal has no read path for contract_documents, so naming or
+ *     linking one here would expose an agreement the customer cannot otherwise
+ *     see. It publishes once the portal signed-agreements read model (#9082)
+ *     exists, through that model's own visibility rules.
  */
 
 /** The calendar date `now` falls on in `timezone`, as `YYYY-MM-DD`. */
@@ -99,8 +104,11 @@ interface EvidenceJoinRow {
   createdAt: Date;
 }
 
-/** Rules 2 and 3 of the publication contract, applied to one evidence row. */
+/** Rules 2, 3 and 5 of the publication contract, applied to one evidence row. */
 function publishableEvidence(row: EvidenceJoinRow, enableReports: boolean): PortalEvidenceRef | null {
+  // Rule 5. Refused by name, and every kind other than the two below is
+  // refused too: an unknown kind must never fall through to the report arm.
+  if (row.kind !== 'document' && row.kind !== 'report_run') return null;
   if (row.kind === 'document') {
     if (row.documentPortalVisible !== true || row.documentDeletedAt != null) return null;
     return {
@@ -184,6 +192,28 @@ function groupEvidence(
   return byOccurrence;
 }
 
+/** Contract statuses whose deliverables the customer has not agreed to (draft)
+ *  or no longer has (cancelled). Matches the contract-end key-date filter. */
+const HIDDEN_CONTRACT_STATUSES = ['draft', 'cancelled'] as const;
+
+/** #9307: a deliverable publishes when it is standalone or its contract is
+ *  past draft and not cancelled. Callers left-join `contracts` with
+ *  `deliverableContractJoin()`; a contract row the join cannot see comes back
+ *  NULL, and NULL `NOT IN` is not true, so it fails closed. */
+function contractPublishable() {
+  return or(
+    isNull(serviceDeliverables.contractId),
+    notInArray(contracts.status, [...HIDDEN_CONTRACT_STATUSES]),
+  );
+}
+
+function deliverableContractJoin() {
+  return and(
+    eq(contracts.id, serviceDeliverables.contractId),
+    eq(contracts.orgId, serviceDeliverables.orgId),
+  );
+}
+
 interface OccurrenceRow {
   id: string;
   deliverableId: string;
@@ -222,14 +252,12 @@ export async function serviceOverview(
       contractName: contracts.name,
     })
     .from(serviceDeliverables)
-    .leftJoin(contracts, and(
-      eq(contracts.id, serviceDeliverables.contractId),
-      eq(contracts.orgId, serviceDeliverables.orgId),
-    ))
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverables.orgId, orgId),
       eq(serviceDeliverables.portalVisible, true),
       eq(serviceDeliverables.active, true),
+      contractPublishable(),
       lte(serviceDeliverables.effectiveFrom, today),
       or(
         isNull(serviceDeliverables.effectiveUntil),
@@ -309,7 +337,7 @@ export async function serviceOverview(
       eq(contracts.orgId, orgId),
       sql`${contracts.endDate} IS NOT NULL`,
       gte(contracts.endDate, today),
-      notInArray(contracts.status, ['draft', 'cancelled']),
+      notInArray(contracts.status, [...HIDDEN_CONTRACT_STATUSES]),
     ))
     .orderBy(asc(contracts.endDate)) as unknown as Array<{
       id: string; name: string; endDate: string;
@@ -424,10 +452,12 @@ export async function deliverableOccurrences(
       artifactRequired: serviceDeliverables.artifactRequired,
     })
     .from(serviceDeliverables)
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverables.orgId, orgId),
       eq(serviceDeliverables.id, deliverableId),
       eq(serviceDeliverables.portalVisible, true),
+      contractPublishable(),
     ))
     .limit(1) as unknown as Array<{
       id: string; name: string; cadence: PortalDeliverableCadence; artifactRequired: boolean;
@@ -526,9 +556,11 @@ export async function serviceTile(
       eq(serviceDeliverables.id, serviceDeliverableOccurrences.deliverableId),
       eq(serviceDeliverables.orgId, serviceDeliverableOccurrences.orgId),
     ))
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverableOccurrences.orgId, orgId),
       eq(serviceDeliverables.portalVisible, true),
+      contractPublishable(),
       gte(serviceDeliverableOccurrences.dueAt, windowStart),
     )) as unknown as Array<{ onTime: number; late: number; missed: number }>;
 
@@ -542,9 +574,11 @@ export async function serviceTile(
       eq(serviceDeliverables.id, serviceDeliverableOccurrences.deliverableId),
       eq(serviceDeliverables.orgId, serviceDeliverableOccurrences.orgId),
     ))
+    .leftJoin(contracts, deliverableContractJoin())
     .where(and(
       eq(serviceDeliverableOccurrences.orgId, orgId),
       eq(serviceDeliverables.portalVisible, true),
+      contractPublishable(),
       inArray(serviceDeliverableOccurrences.status, [...LIVE_STATUSES]),
       gte(serviceDeliverableOccurrences.dueAt, today),
     ))

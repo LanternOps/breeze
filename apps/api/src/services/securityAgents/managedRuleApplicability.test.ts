@@ -116,10 +116,72 @@ describe('loadManagedRuleApplicability', () => {
     expect(a.filterViolations('d1', [unauthorized]).violations).toEqual([unauthorized]);
   });
 
+  // #6960 W03: coverage persists per-(device, vendor) applicability whether or
+  // not the device currently has a `missing` violation (an installed agent in
+  // an unmapped org is still not_applicable, not "covered by accident").
+  it('evaluateDevice reports every known-vendor rule, ready or not, with or without a violation', async () => {
+    prime();
+    orgReadiness.mockResolvedValueOnce(new Map([['org-1', { ok: false, reason: 'org_not_mapped' }], ['org-2', { ok: true }]]));
+    const a = await loadManagedRuleApplicability(POLICY, [
+      { deviceId: 'd1', orgId: 'org-1', osType: 'windows' },
+      { deviceId: 'd2', orgId: 'org-2', osType: 'windows' },
+    ]);
+    expect(a.evaluateDevice('d1')).toEqual([
+      { catalogId: HUNTRESS_CATALOG, vendor: 'huntress', result: { ok: false, reason: 'org_not_mapped' } },
+    ]);
+    expect(a.evaluateDevice('d2')).toEqual([{ catalogId: HUNTRESS_CATALOG, vendor: 'huntress', result: { ok: true } }]);
+    expect(a.vendors()).toEqual(['huntress']);
+  });
+
+  it('evaluateDevice omits rules whose catalog row is not a known vendor (no vendor to key a status row on)', async () => {
+    prime({ catalog: [{ id: UNKNOWN_CATALOG, integrationProvider: null }] });
+    const a = await loadManagedRuleApplicability(
+      { ...POLICY, rules: { software: [{ name: 'X', catalogId: UNKNOWN_CATALOG }], allowUnknown: true } },
+      [{ deviceId: 'd1', orgId: 'org-1', osType: 'windows' }],
+    );
+    expect(a.evaluateDevice('d1')).toEqual([]);
+    expect(a.vendors()).toEqual([]);
+  });
+
   it('an unknown device is treated as not applicable rather than assumed ready', async () => {
     prime();
     orgReadiness.mockResolvedValueOnce(new Map());
     const a = await loadManagedRuleApplicability(POLICY, []);
     expect(a.filterViolations('ghost', [missing(HUNTRESS_CATALOG)]).violations).toEqual([]);
+  });
+});
+
+describe('loadManagedRuleApplicability — SentinelOne rule (#6960 W04, vendor-generic path)', () => {
+  const S1_CATALOG = 'cat-s1';
+  const S1_POLICY = {
+    id: 'policy-s1',
+    managedByLinkId: 'link-s1',
+    rules: { software: [{ name: 'Sentinel Agent*', catalogId: S1_CATALOG }], allowUnknown: true },
+  };
+  const s1Missing: SoftwarePolicyViolation = {
+    type: 'missing', rule: { name: 'Sentinel Agent*', catalogId: S1_CATALOG }, severity: 'high', detectedAt: '2026-01-01T00:00:00Z',
+  };
+
+  it("reads SentinelOne readiness for the DEVICE orgs; an unmapped org's violation becomes not_applicable/org_not_mapped", async () => {
+    prime({
+      catalog: [{ id: S1_CATALOG, integrationProvider: 'sentinelone' }],
+      link: [{ inlineSettings: { version: 1, agents: [{ vendor: 'sentinelone', enabled: true }] } }],
+    });
+    orgReadiness.mockResolvedValueOnce(new Map([['org-mapped', { ok: true }], ['org-unmapped', { ok: false, reason: 'org_not_mapped' }]]));
+    const a = await loadManagedRuleApplicability(S1_POLICY, [
+      { deviceId: 'd-mapped', orgId: 'org-mapped', osType: 'windows' },
+      { deviceId: 'd-unmapped', orgId: 'org-unmapped', osType: 'windows' },
+      { deviceId: 'd-mac', orgId: 'org-mapped', osType: 'macos' },
+    ]);
+    expect(orgReadiness).toHaveBeenCalledWith('sentinelone', ['org-mapped', 'org-unmapped']);
+    expect(a.vendors()).toEqual(['sentinelone']);
+    expect(a.filterViolations('d-mapped', [s1Missing])).toEqual({ violations: [s1Missing], notApplicable: [] });
+    expect(a.filterViolations('d-unmapped', [s1Missing])).toEqual({
+      violations: [],
+      notApplicable: [{ catalogId: S1_CATALOG, vendor: 'sentinelone', reason: 'org_not_mapped' }],
+    });
+    expect(a.filterViolations('d-mac', [s1Missing]).notApplicable).toEqual([
+      { catalogId: S1_CATALOG, vendor: 'sentinelone', reason: 'platform_unsupported' },
+    ]);
   });
 });

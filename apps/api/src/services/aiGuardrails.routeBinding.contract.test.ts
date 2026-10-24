@@ -324,6 +324,8 @@ const BINDINGS: readonly Binding[] = [
   { tool: 'manage_ticket_checklist', action: 'delete_item', routeFile: 'tickets/checklist.ts', method: 'delete', path: '/checklist/:itemId' },
   { tool: 'manage_ticket_checklist', action: 'reorder', routeFile: 'tickets/checklist.ts', method: 'post', path: '/:id/checklist/reorder' },
   { tool: 'manage_ticket_checklist', action: 'apply_template', routeFile: 'tickets/checklist.ts', method: 'post', path: '/:id/checklist/apply-template' },
+  { tool: 'manage_ticket_checklist', action: 'save_as_template', routeFile: 'tickets/checklist.ts', method: 'post', path: '/:id/checklist/save-as-template' },
+  { tool: 'manage_ticket_checklist', action: 'duplicate_template', routeFile: 'ticketChecklistTemplates.ts', method: 'post', path: '/:id/duplicate' },
   { tool: 'manage_ticket_checklist', action: 'list_templates', routeFile: 'ticketChecklistTemplates.ts', method: 'get', path: '/' },
   { tool: 'manage_ticket_checklist', action: 'get_template', routeFile: 'ticketChecklistTemplates.ts', method: 'get', path: '/:id' },
 

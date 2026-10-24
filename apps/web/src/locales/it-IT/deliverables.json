@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Deliverable del servizio",
+    "pausedDraft": "In pausa finché il contratto non viene attivato. Una bozza non apre ticket; all'attivazione, i deliverable non ancora avviati passano alla data di inizio del contratto (o a oggi, se è già passata).",
     "empty": "Nessun deliverable ancora. Aggiungi i report e le revisioni periodiche dovuti a questo cliente."
   },
   "table": {
@@ -46,7 +47,8 @@
     "addEvidence": "Aggiungi evidenza",
     "removeEvidence": "Rimuovi evidenza",
     "save": "Salva",
-    "cancel": "Annulla"
+    "cancel": "Annulla",
+    "retry": "Riprova"
   },
   "form": {
     "name": "Nome",
@@ -90,6 +92,7 @@
     "evidence": "Evidenze",
     "noEvidence": "Nessuna evidenza allegata",
     "late": "In ritardo",
+    "awaitingEvidenceHint": "Ticket risolto — allega un'evidenza per completare",
     "rescheduledFrom": "Ripianificata dal {{date}}",
     "deliveryNote": "Nota di consegna",
     "waivedReason": "Motivo dell'esonero",
@@ -100,11 +103,23 @@
     "upload": "Carica",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Mostra checklist",
-    "hideChecklist": "Nascondi checklist"
+    "hideChecklist": "Nascondi checklist",
+    "linkDocument": "Collega un documento esistente",
+    "linkDocumentSelect": "Scegli un documento da collegare come prova",
+    "linkDocumentLoading": "Caricamento dei documenti…",
+    "linkDocumentPlaceholder": "Scegli un documento…",
+    "linkDocumentEmpty": "Nessun documento nella libreria di questa organizzazione.",
+    "linkAgreement": "Collega un accordo firmato",
+    "linkAgreementSelect": "Scegli un accordo firmato da collegare come prova",
+    "linkAgreementLoading": "Caricamento degli accordi firmati…",
+    "linkAgreementPlaceholder": "Scegli un accordo firmato…",
+    "linkAgreementEmpty": "Nessun accordo firmato per questa organizzazione.",
+    "link": "Collega"
   },
   "evidence": {
     "reportRun": "Esecuzione del report",
     "document": "Documento",
+    "signedAgreement": "Accordo firmato",
     "reportRunId": "ID dell'esecuzione del report"
   },
   "upcoming": {
@@ -123,7 +138,11 @@
     "uploadFailed": "Impossibile caricare il file di evidenza.",
     "tooLarge": "Questo file supera i 10 MB.",
     "unsupportedType": "È possibile allegare solo file PDF, JPEG, PNG e WebP.",
-    "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve."
+    "storageUnavailable": "Lo storage dei documenti non è al momento disponibile. Riprova a breve.",
+    "linkFailed": "Impossibile collegare il documento.",
+    "libraryLoadFailed": "Impossibile caricare la libreria documenti.",
+    "agreementsLoadFailed": "Impossibile caricare gli accordi firmati.",
+    "agreementsForbidden": "Non hai l’autorizzazione per visualizzare gli accordi firmati."
   },
   "confirm": {
     "deactivate": "Disattivare {{name}}? Le occorrenze aperte verranno chiuse e non ne verranno pianificate di nuove.",
@@ -169,7 +188,8 @@
     "evidenceAdded": "Evidenza aggiunta",
     "evidenceRemoved": "Evidenza rimossa",
     "deactivated": "Deliverable disattivato",
-    "evidenceUploaded": "Evidenza caricata"
+    "evidenceUploaded": "Evidenza caricata",
+    "evidenceLinked": "Documento collegato come prova"
   },
   "templates": {
     "pageTitle": "Modelli di deliverable",
@@ -232,5 +252,33 @@
       "itemDeleted": "Deliverable rimosso",
       "applied": "Set di modelli applicato"
     }
+  },
+  "move": {
+    "action": "Sposta in un contratto…",
+    "toTitle": "Sposta i deliverable in un contratto",
+    "selected": "Selezionati: {{count}}",
+    "selectRow": "Seleziona {{name}}",
+    "target": "Contratto di destinazione",
+    "confirm": "Sposta",
+    "moved": "Deliverable spostati",
+    "hereAction": "Sposta qui i deliverable da…",
+    "hereTitle": "Sposta qui i deliverable",
+    "hereHelp": "Scegli i deliverable degli altri contratti di questa organizzazione da spostare su questo.",
+    "hereEmpty": "Non ci sono altri deliverable in questa organizzazione.",
+    "collision": "Non è stato spostato nulla. Questi nomi esistono già nel contratto di destinazione: {{names}}"
+  },
+  "bulk": {
+    "select": "Seleziona {{name}}",
+    "selectAll": "Seleziona tutti i deliverable",
+    "count_one": "{{count}} selezionato",
+    "count_other": "{{count}} selezionati",
+    "reschedule": "Riprogramma selezione",
+    "clear": "Cancella",
+    "newDate": "Nuova data di scadenza",
+    "done_one": "{{count}} occorrenza riprogrammata",
+    "done_other": "{{count}} occorrenze riprogrammate",
+    "partial": "{{moved}} riprogrammate, {{refused}} non spostabili",
+    "none": "Nessuno dei deliverable selezionati ha un’occorrenza aperta da riprogrammare.",
+    "failed": "Impossibile riprogrammare le occorrenze selezionate."
   }
 }

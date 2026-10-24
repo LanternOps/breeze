@@ -320,4 +320,81 @@ describe('OrgTicketSettingsEditor', () => {
       expect(approvalPatch()).toEqual({ enforcement: 'soft', budgetTrigger: false });
     });
   });
+
+  describe('business calendar override (#8973)', () => {
+    const CAL_A = '11111111-1111-4111-8111-111111111111';
+    const CAL_B = '22222222-2222-4222-8222-222222222222';
+    const OVERRIDE_URL = `/business-calendars/orgs/${ORG_ID}/override`;
+    const cal = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
+      id, name, ownerScope: 'partner', orgId: null, partnerId: 'p', isPartnerDefault: false,
+      archivedAt: null, inherited: true, currentRevision: null, holidays: [], ...extra,
+    });
+
+    function mockCalendars(resolved: Record<string, unknown>, list: unknown[]) {
+      mockApi();
+      const base = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url === `/business-calendars?orgId=${ORG_ID}`) return makeJsonResponse({ data: list });
+        if (url === `/business-calendars/resolved?orgId=${ORG_ID}`) {
+          return makeJsonResponse({ data: { calendarId: null, revisionId: null, ...resolved } });
+        }
+        if (url === OVERRIDE_URL && init?.method === 'PUT') return makeJsonResponse({ data: {} });
+        return base(input, init);
+      });
+    }
+    const overrideCalls = () =>
+      fetchMock.mock.calls.filter(([u, init]) => String(u) === OVERRIDE_URL && (init as RequestInit)?.method === 'PUT');
+
+    it('blank picker shows the inherited calendar and where it comes from', async () => {
+      mockCalendars(
+        { source: 'partner', calendarName: 'Support hours', overrideCalendarId: null },
+        [cal(CAL_A, 'Support hours', { isPartnerDefault: true })],
+      );
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      const source = await screen.findByTestId('org-business-calendar-source');
+      expect(source.textContent).toBe('Inherited: Support hours (partner default)');
+      expect((screen.getByTestId('org-business-calendar') as HTMLSelectElement).value).toBe('');
+    });
+
+    it('shows 24x7 when there is no partner default', async () => {
+      mockCalendars({ source: 'none', calendarName: null, overrideCalendarId: null }, []);
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      const source = await screen.findByTestId('org-business-calendar-source');
+      expect(source.textContent).toBe('Inherited: 24×7 (no partner default)');
+    });
+
+    it('saving a chosen calendar PUTs its id; archived calendars are not offered', async () => {
+      mockCalendars(
+        { source: 'partner', calendarName: 'Support hours', overrideCalendarId: null },
+        [cal(CAL_A, 'Support hours', { isPartnerDefault: true }), cal(CAL_B, 'Old', { archivedAt: '2026-01-01T00:00:00Z' })],
+      );
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-business-calendar-source');
+      const select = screen.getByTestId('org-business-calendar') as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.value)).toEqual(['', CAL_A]);
+      fireEvent.change(select, { target: { value: CAL_A } });
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(overrideCalls()).toHaveLength(1));
+      expect(JSON.parse((overrideCalls()[0][1] as RequestInit).body as string)).toEqual({ calendarId: CAL_A });
+    });
+
+    it('clearing an override PUTs calendarId null; an unchanged picker does not PUT', async () => {
+      mockCalendars(
+        { source: 'org', calendarName: 'Support hours', overrideCalendarId: CAL_A },
+        [cal(CAL_A, 'Support hours')],
+      );
+      render(<OrgTicketSettingsEditor orgId={ORG_ID} onDirty={onDirty} onSave={onSave} />);
+      await screen.findByTestId('org-business-calendar');
+      await waitFor(() => expect((screen.getByTestId('org-business-calendar') as HTMLSelectElement).value).toBe(CAL_A));
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(overrideCalls()).toHaveLength(0);
+
+      fireEvent.change(screen.getByTestId('org-business-calendar'), { target: { value: '' } });
+      fireEvent.click(screen.getByTestId('org-ticket-save'));
+      await waitFor(() => expect(overrideCalls()).toHaveLength(1));
+      expect(JSON.parse((overrideCalls()[0][1] as RequestInit).body as string)).toEqual({ calendarId: null });
+    });
+  });
 });

@@ -20,25 +20,18 @@ async function signingFixture() {
   };
 }
 
-function completeResult() {
+function identityResult() {
   return {
     success: true as const,
     tenantId: TENANT_ID,
-    applicationId: APPLICATION_ID,
     administratorObjectId: ADMIN_ID,
-    organizationDisplayName: 'Contoso',
-    manifestVersion: 2,
+    administratorUsername: 'admin@tenant.example',
     verifiedAt: '2026-07-14T16:00:00.000Z',
-    grantReconciliation: 'complete' as const,
-    observedGrants: [],
-    missingGrants: [],
-    unexpectedGrants: [],
-    grantsVerifiedAt: '2026-07-14T16:00:00.000Z',
   };
 }
 
 describe('Graph-read executor client', () => {
-  it('serializes once and signs the exact complete-consent body and operation', async () => {
+  it('serializes once and signs the exact verify-identity body and operation', async () => {
     const { privateJwk, publicKey } = await signingFixture();
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = String(init?.body);
@@ -53,11 +46,11 @@ describe('Graph-read executor client', () => {
       expect(verified.protectedHeader).toMatchObject({ alg: 'EdDSA', kid: 'api-key-1' });
       expect(verified.payload).toMatchObject({
         correlationId: CORRELATION_ID,
-        operation: 'complete-consent',
+        operation: 'verify-identity',
         bodySha256: createHash('sha256').update(body).digest('base64url'),
       });
       expect((verified.payload.exp as number) - (verified.payload.iat as number)).toBeLessThanOrEqual(60);
-      return new Response(JSON.stringify(completeResult()), {
+      return new Response(JSON.stringify(identityResult()), {
         headers: { 'content-type': 'application/json' },
       });
     });
@@ -73,17 +66,19 @@ describe('Graph-read executor client', () => {
     const input = {
       correlationId: CORRELATION_ID,
       consentAttemptId: ATTEMPT_ID,
-      tenantHint: TENANT_ID,
+      expectedTenantId: TENANT_ID,
       authorizationCode: 'authorization-code',
       codeVerifier: 'v'.repeat(43),
       nonce: 'nonce',
       redirectUri: 'https://console.example.test/api/v1/m365/consent/callback',
     };
 
-    await expect(client.completeIdentityVerification(input)).resolves.toEqual(completeResult());
+    await expect(client.verifyConsentIdentity(input)).resolves.toEqual(identityResult());
+    // #7910 W04: the legacy single-call consent method is gone.
+    expect(client).not.toHaveProperty('completeIdentityVerification');
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      'https://executor.internal.example.test/v1/complete-consent',
+      'https://executor.internal.example.test/v1/verify-identity',
     );
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', redirect: 'error' });
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(input);
@@ -435,14 +430,31 @@ describe('Graph-read executor client — sync-action', () => {
       .resolves.toEqual({ success: false, code: 'continuation_invalid' });
   });
 
+  it('returns graph_provider_rejected rather than treating it as an invalid body (#9393)', async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ success: false, code: 'graph_provider_rejected' }),
+      { headers: { 'content-type': 'application/json' } },
+    ));
+    const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
+    await expect(client.syncAction(syncInput()))
+      .resolves.toEqual({ success: false, code: 'graph_provider_rejected' });
+  });
+
   it('still THROWS executor_unavailable for a 504, a wrong content type, and a bad body', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('{"error":"sync_timeout"}', { status: 504, headers: { 'content-type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(SYNC_RESULT), { headers: { 'content-type': 'text/html' } }))
       .mockResolvedValueOnce(new Response('{"success":true,"kind":"collection","items":[]}', { headers: { 'content-type': 'application/json' } }));
     const client = await syncClient(fetchMock as unknown as typeof globalThis.fetch);
-    for (let i = 0; i < 3; i += 1) {
-      await expect(client.syncAction(syncInput())).rejects.toBeInstanceOf(GraphReadExecutorClientError);
+    const expected = [
+      { cause: 'http_status', httpStatus: 504 },
+      { cause: 'content_type' },
+      { cause: 'schema_mismatch' },
+    ];
+    for (const shape of expected) {
+      const error = await client.syncAction(syncInput()).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+      expect(error).toMatchObject({ code: 'executor_unavailable', operation: 'sync-action', ...shape });
     }
   });
 
@@ -567,5 +579,125 @@ describe('Graph-read executor client: verify-identity', () => {
     expect(error).toBeInstanceOf(GraphReadExecutorClientError);
     expect(error).toMatchObject({ code: 'executor_unavailable', message: 'executor_unavailable' });
     expect(String(error)).not.toContain('leak');
+  });
+});
+
+describe('Graph-read executor client: failure classification (#9322)', () => {
+  const verifyInput = {
+    correlationId: CORRELATION_ID,
+    consentAttemptId: ATTEMPT_ID,
+    expectedTenantId: null,
+    authorizationCode: 'authorization-code-secret',
+    codeVerifier: 'v'.repeat(43),
+    nonce: 'nonce-secret',
+    redirectUri: 'https://console.example.test/api/v1/m365/consent/callback',
+  };
+
+  async function clientFor(fetchMock: unknown, maxResponseBytes?: number) {
+    const { privateJwk } = await signingFixture();
+    return createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: privateJwk,
+      signingKid: 'api-key-1',
+      fetch: fetchMock as typeof globalThis.fetch,
+      ...(maxResponseBytes ? { maxResponseBytes } : {}),
+    });
+  }
+
+  const json = (body: string, status = 200, contentType = 'application/json') =>
+    new Response(body, { status, headers: { 'content-type': contentType } });
+
+  it.each([
+    ['fetch reject', () => Promise.reject(new TypeError('fetch failed')), { cause: 'network' }],
+    ['abort', () => Promise.reject(new DOMException('The operation was aborted.', 'AbortError')), { cause: 'timeout' }],
+    ['signal timeout', () => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError')), { cause: 'timeout' }],
+    ['404', () => Promise.resolve(json('{"error":"not_found"}', 404)), { cause: 'http_status', httpStatus: 404 }],
+    ['401', () => Promise.resolve(json('{"error":"unauthorized"}', 401)), { cause: 'http_status', httpStatus: 401 }],
+    ['500', () => Promise.resolve(json('{"error":"internal_error"}', 500)), { cause: 'http_status', httpStatus: 500 }],
+    ['200 text/html', () => Promise.resolve(json('<html></html>', 200, 'text/html')), { cause: 'content_type' }],
+    ['200 malformed JSON', () => Promise.resolve(json('{not-json')), { cause: 'malformed_json' }],
+    ['200 extra JSON field', () => Promise.resolve(json(JSON.stringify({ ...identityResult(), extra: 'x' }))), { cause: 'schema_mismatch' }],
+  ] as const)('%s → executor_unavailable with its cause', async (_label, respond, expected) => {
+    const client = await clientFor(vi.fn(respond));
+    const error = await client.verifyConsentIdentity(verifyInput).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+    expect(error).toMatchObject({
+      code: 'executor_unavailable',
+      message: 'executor_unavailable',
+      operation: 'verify-identity',
+      ...expected,
+    });
+    if (!('httpStatus' in expected)) expect((error as GraphReadExecutorClientError).httpStatus).toBeUndefined();
+    // Nothing from the request (code, verifier, nonce) rides on the error.
+    const serialized = JSON.stringify(error) + String(error);
+    for (const secret of ['authorization-code-secret', 'nonce-secret', 'v'.repeat(43)]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  it('an oversized response is response_too_large', async () => {
+    const client = await clientFor(vi.fn().mockResolvedValue(json('x'.repeat(64))), 16);
+    await expect(client.retestCustomerGraphRead({ correlationId: CORRELATION_ID, tenantId: TENANT_ID }))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'response_too_large', operation: 'retest' });
+  });
+
+  it('a signing key that cannot sign is signing_failed and never reaches the executor', async () => {
+    const fetchMock = vi.fn();
+    const client = createGraphReadExecutorClient({
+      executorUrl: 'https://executor.internal.example.test',
+      executorAudience: 'm365-graph-read-executor',
+      signingPrivateJwk: { kty: 'OKP', crv: 'Ed25519', x: 'not-a-key' },
+      signingKid: 'api-key-1',
+      fetch: fetchMock,
+    });
+    await expect(client.verifyConsentIdentity(verifyInput))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'signing_failed', operation: 'verify-identity' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a body stream that fails mid-read is network, still the client error', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"success":'));
+      },
+      pull(controller) {
+        controller.error(new TypeError('socket hang up'));
+      },
+    });
+    const client = await clientFor(vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/json' } })));
+    const error = await client.verifyConsentIdentity(verifyInput).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GraphReadExecutorClientError);
+    expect(error).toMatchObject({ cause: 'network', operation: 'verify-identity' });
+  });
+
+  it.each([
+    ['a non-JSON 503', () => new Response('<html>busy</html>', { status: 503, headers: { 'content-type': 'text/html' } })],
+    ['a malformed JSON 503', () => json('{not-json', 503)],
+    ['a 503 that is not a capacity refusal', () => json('{"error":"unavailable"}', 503)],
+  ])('sync-action: %s is http_status 503, not a body problem', async (_label, respond) => {
+    const client = await clientFor(vi.fn().mockImplementation(async () => respond()));
+    await expect(client.syncAction(syncInput()))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'http_status', httpStatus: 503, operation: 'sync-action' });
+  });
+
+  it('a body read aborted by the request timeout is timeout, not network', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new DOMException('The operation timed out.', 'TimeoutError'));
+      },
+    });
+    const client = await clientFor(vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'application/json' } })));
+    await expect(client.verifyConsentIdentity(verifyInput))
+      .rejects.toMatchObject({ cause: 'timeout', operation: 'verify-identity' });
+  });
+
+  it('a request that fails its own schema is request_invalid and never reaches the executor', async () => {
+    const fetchMock = vi.fn();
+    const client = await clientFor(fetchMock);
+    await expect(client.verifyConsentIdentity({ ...verifyInput, correlationId: 'not-a-uuid' }))
+      .rejects.toMatchObject({ code: 'executor_unavailable', cause: 'request_invalid', operation: 'verify-identity' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

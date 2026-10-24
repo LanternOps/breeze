@@ -127,12 +127,12 @@ declare module 'hono' {
 
 // 120 requests per 60-second window per agent
 const AGENT_RATE_LIMIT = 120;
-const AGENT_RATE_WINDOW_SECONDS = 60;
+export const AGENT_RATE_WINDOW_SECONDS = 60;
 // Task 19: per-(agent, source-IP) bucket. A stolen token used from a second
 // IP can no longer eat the legit agent's 120/min budget — it has its own
 // smaller 30/min ceiling, and the legit agent keeps its own.
 const AGENT_PER_IP_RATE_LIMIT = 30;
-const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
+export const AGENT_PER_IP_RATE_WINDOW_SECONDS = 60;
 // Dedup TTL for `agent.source.ip.changed` audits: log a given (device, IP)
 // pair at most once per day so noisy mobile/roaming agents don't drown ops
 // in events.
@@ -398,6 +398,11 @@ const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set([
  */
 const SELF_MANAGED_DB_CONTEXT_TWO_SEGMENT_ACTIONS: ReadonlyArray<readonly [string, string]> = [
   ['pam', 'reconciliation-bindings'],
+  // #9517: the elevation-unable report runs its per-device rate limit (a Redis
+  // round-trip) before opening its own org-scoped context, and expires the
+  // request's mobile approval rows in system scope after that context exits —
+  // the same #1105 shape as reconciliation-bindings.
+  ['pam', 'elevation-unable'],
   // M2 #5998 D14: parses a 4 MiB adjacency body and resolves topology flags
   // (a partner-axis read) BEFORE its own short org-scoped admission
   // transaction; a request-long wrap would hold a pooled connection across

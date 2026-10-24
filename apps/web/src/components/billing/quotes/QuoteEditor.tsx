@@ -67,6 +67,7 @@ import {
   lineTitle,
 } from './quoteTypes';
 import { useStableT } from '@/lib/i18n/useStableT';
+import { useRegisterDirtyForm } from '@/lib/keyboard/useRegisterDirtyForm';
 
 // Phase 2: the add-block menu now offers `image` as well. An image block is
 // created with its uploaded `imageId` already in `content` — the editor uploads
@@ -357,6 +358,8 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
   // "Saving changes…" up over a save that had already given up.
   const hasPendingEdits = pending.size > 0
     || pendingDeletedLineIds.size > 0 || pendingDeletedBlockIds.size > 0;
+  // Unsaved input blocks the g/c chords and queue keys (see useRegisterDirtyForm).
+  useRegisterDirtyForm(hasPendingEdits || termsDirty || footerDirty);
   useEffect(() => { onPendingEditsChange?.(hasPendingEdits); }, [hasPendingEdits, onPendingEditsChange]);
   // Clear on unmount so a stale `true` can't lock Send after the editor is gone
   // (e.g. the quote was just issued and the tab switched).
@@ -2626,7 +2629,7 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                 <span className="mb-1 block text-xs text-muted-foreground">{t('quotes.editor.coverPage.imageLabel')}</span>
                 {cover.coverImageId ? (
                   <div className="flex items-center gap-3">
-                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} />
+                    <QuoteImagePreview quoteId={quote.id} imageId={cover.coverImageId} caption={cover.title ?? ''} crop={detail.presentation?.pageSize ?? 'a4'} />
                     <button
                       type="button"
                       onClick={() => saveCover({ ...cover, coverImageId: null })}

@@ -15,10 +15,13 @@ function ok(b: unknown) {
   return { ok: true, status: 200, json: async () => b } as Response;
 }
 
-function routeStatus(s1: unknown, huntress: unknown) {
+function routeStatus(s1: unknown, huntress: unknown, coverage?: unknown) {
   fetchWithAuth.mockImplementation((url: string) => {
     if (url.startsWith('/s1/status')) return Promise.resolve(ok(s1));
     if (url.startsWith('/huntress/status')) return Promise.resolve(ok(huntress));
+    if (url.startsWith('/edr/security-agents/coverage') && coverage !== undefined) {
+      return Promise.resolve(ok(coverage));
+    }
     return Promise.resolve(ok({}));
   });
 }
@@ -163,5 +166,118 @@ describe('EdrSummaryPanel', () => {
       expect(screen.getByTestId('edr-card-huntress-open-incidents')).toHaveTextContent('2')
     );
     expect(screen.queryByTestId('edr-card-s1-active-threats')).toBeNull();
+  });
+});
+
+const huntressConfigured = {
+  integration: { id: 'h1' },
+  coverage: { totalAgents: 5, mappedAgents: 5, unmappedAgents: 0, offlineAgents: 0 },
+  incidents: { open: 0, bySeverity: [], byStatus: [] }
+};
+const s1Unconfigured = {
+  integration: null,
+  summary: {
+    totalAgents: 0,
+    mappedDevices: 0,
+    infectedAgents: 0,
+    activeThreats: 0,
+    highOrCriticalThreats: 0,
+    pendingActions: 0,
+    reportedThreatCount: 0
+  }
+};
+const huntressUnconfigured = {
+  integration: null,
+  coverage: { totalAgents: 0, mappedAgents: 0, unmappedAgents: 0, offlineAgents: 0 },
+  incidents: { open: 0, bySeverity: [], byStatus: [] }
+};
+const coveragePayload = {
+  summary: [
+    {
+      vendor: 'huntress',
+      total: 6,
+      counts: {
+        covered: 1,
+        gap: 2,
+        vendor_only: 0,
+        vendor_offline: 3,
+        mismatched_org: 4,
+        not_applicable: 5,
+        pending: 7
+      }
+    }
+  ],
+  data: [],
+  pagination: { limit: 50, offset: 0, total: 6 }
+};
+
+describe('EdrSummaryPanel security agent coverage', () => {
+  it('renders per-vendor coverage counts and keeps the existing cards', async () => {
+    routeStatus(s1Unconfigured, huntressConfigured, coveragePayload);
+    render(<EdrSummaryPanel />);
+    const section = await screen.findByTestId('edr-security-agent-coverage');
+    expect(section).toHaveTextContent('Huntress');
+    expect(screen.getByTestId('coverage-count-huntress-covered')).toHaveTextContent('1');
+    expect(screen.getByTestId('coverage-count-huntress-gap')).toHaveTextContent('2');
+    expect(screen.getByTestId('coverage-count-huntress-vendor_offline')).toHaveTextContent('3');
+    expect(screen.getByTestId('coverage-count-huntress-mismatched_org')).toHaveTextContent('4');
+    expect(screen.getByTestId('coverage-count-huntress-not_applicable')).toHaveTextContent('5');
+    expect(screen.getByTestId('coverage-count-huntress-vendor_only')).toHaveTextContent('0');
+    expect(screen.getByTestId('coverage-count-huntress-pending')).toHaveTextContent('7');
+    expect(section).toHaveTextContent(/mismatched org/i);
+    expect(screen.getByTestId('edr-card-huntress-coverage')).toBeInTheDocument();
+  });
+
+  it('renders the coverage section even when neither integration is configured', async () => {
+    routeStatus(s1Unconfigured, huntressUnconfigured, coveragePayload);
+    render(<EdrSummaryPanel />);
+    expect(await screen.findByTestId('edr-security-agent-coverage')).toBeInTheDocument();
+  });
+
+  it('omits the section when the coverage summary is empty', async () => {
+    routeStatus(s1Unconfigured, huntressConfigured, { summary: [], data: [], pagination: { limit: 50, offset: 0, total: 0 } });
+    render(<EdrSummaryPanel />);
+    await screen.findByTestId('edr-card-huntress-coverage');
+    expect(screen.queryByTestId('edr-security-agent-coverage')).toBeNull();
+  });
+
+  it('logs and omits the section when the coverage fetch fails, leaving the panel intact', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url.startsWith('/s1/status')) return Promise.resolve(ok(s1Unconfigured));
+      if (url.startsWith('/huntress/status')) return Promise.resolve(ok(huntressConfigured));
+      return Promise.resolve({ ok: false, status: 500, statusText: 'err', json: async () => ({}) } as Response);
+    });
+    render(<EdrSummaryPanel />);
+    expect(await screen.findByTestId('edr-card-huntress-coverage')).toBeInTheDocument();
+    expect(screen.queryByTestId('edr-security-agent-coverage')).toBeNull();
+    expect(errSpy.mock.calls.some((c) => String(c[0]).includes('security-agents/coverage'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it.each([[500, /edr status couldn't be loaded/i, 'edr-summary-unavailable'], [403, null, 'edr-summary-denied']])(
+    'shows the failure notice and the coverage section when both status fetches return %s',
+    async (status, text, testId) => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      fetchWithAuth.mockImplementation((url: string) => {
+        if (url.startsWith('/edr/security-agents/coverage')) return Promise.resolve(ok(coveragePayload));
+        return Promise.resolve({ ok: false, status, statusText: 'err', json: async () => ({}) } as Response);
+      });
+      render(<EdrSummaryPanel />);
+      expect(await screen.findByTestId('edr-security-agent-coverage')).toBeInTheDocument();
+      if (text) expect(screen.getByText(text)).toBeInTheDocument();
+      else expect(screen.getByTestId(testId)).toBeInTheDocument();
+      errSpy.mockRestore();
+    }
+  );
+
+  it('treats a malformed coverage body as a failure: logs and omits the section', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    routeStatus(s1Unconfigured, huntressConfigured, { nope: true });
+    render(<EdrSummaryPanel />);
+    expect(await screen.findByTestId('edr-card-huntress-coverage')).toBeInTheDocument();
+    expect(screen.queryByTestId('edr-security-agent-coverage')).toBeNull();
+    expect(errSpy.mock.calls.some((c) => String(c[1]).includes('malformed coverage response'))).toBe(true);
+    errSpy.mockRestore();
   });
 });

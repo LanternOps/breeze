@@ -74,15 +74,21 @@ describe('TicketQueueList type chip (#7900)', () => {
   });
 });
 
-describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
-  it('links the org name to the org record without selecting the row', () => {
+describe('TicketQueueList org label and row activation (#9564)', () => {
+  it('shows the org as a plain label, not a link that steals the row click', () => {
     const onSelect = vi.fn();
-    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
-    const link = screen.getByTestId('org-record-link');
-    expect(link).toHaveAttribute('href', '/organizations/org-1');
-    expect(link).toHaveTextContent('Acme');
-    fireEvent.click(link);
-    expect(onSelect).not.toHaveBeenCalled();
+    const ticket = makeTicket({ id: 'tk-1' });
+    render(<TicketQueueList tickets={[ticket]} selectedId={null} onSelect={onSelect} loading={false} />);
+    const row = screen.getByTestId('ticket-row-tk-1');
+    const org = screen.getByTestId('ticket-org-tk-1');
+    expect(org).toHaveTextContent('Acme');
+    // No anchor anywhere in the row: a click in the middle (where the org name
+    // sits) must open the ticket, never navigate to /organizations/<id>.
+    expect(row.querySelector('a')).toBeNull();
+    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    fireEvent.click(org);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(ticket);
   });
 
   it('selects on row click, Enter and Space', () => {
@@ -99,22 +105,15 @@ describe('TicketQueueList org link and row activation (ui-flow W03)', () => {
     expect(onSelect).toHaveBeenCalledWith(ticket);
   });
 
-  it('does not hijack Enter pressed on the org link inside the row', () => {
-    const onSelect = vi.fn();
-    render(<TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={onSelect} loading={false} />);
-    fireEvent.keyDown(screen.getByTestId('org-record-link'), { key: 'Enter' });
-    expect(onSelect).not.toHaveBeenCalled();
-  });
-
-  it('renders no org link when hideOrg or orgName is null', () => {
+  it('renders no org label when hideOrg or orgName is null', () => {
     const { unmount } = render(
       <TicketQueueList tickets={[makeTicket({ id: 'tk-1' })]} selectedId={null} onSelect={vi.fn()} loading={false} hideOrg />
     );
-    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-org-tk-1')).toBeNull();
     unmount();
     render(
       <TicketQueueList tickets={[makeTicket({ id: 'tk-2', orgName: null })]} selectedId={null} onSelect={vi.fn()} loading={false} />
     );
-    expect(screen.queryByTestId('org-record-link')).toBeNull();
+    expect(screen.queryByTestId('ticket-org-tk-2')).toBeNull();
   });
 });

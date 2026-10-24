@@ -27,7 +27,7 @@
     "viewTask": "Voir la tâche",
     "badgeTitle": "Créée par une tâche de l'Opérateur IA. Cochez-la une fois le travail fait et la tâche se poursuivra."
   },
-  "editDoneWarning": "Modifier une étape terminée efface qui l'a terminée et quand.",
+  "editDoneWarning": "Modifier le texte de l’étape efface qui l’a terminée et quand. Modifier seulement la note conserve la coche.",
   "resolveConfirm": {
     "title": "Liste de contrôle incomplète",
     "body_one": "{{count}} étape sur {{total}} n'est pas cochée. Résoudre quand même ?",
@@ -74,7 +74,20 @@
       "loadFailed": "Impossible de charger les modèles de liste de contrôle.",
       "saveFailed": "Impossible d'enregistrer le modèle de liste de contrôle.",
       "applyFailed": "Impossible d'appliquer le modèle de liste de contrôle.",
-      "operatorStepWaiting": "Une tâche de l'Opérateur attend une étape non cochée de ce ticket : le modèle ne peut donc pas les remplacer. Choisissez plutôt « Ajouter ces étapes à la liste de contrôle existante », cochez l'étape une fois le travail fait, ou arrêtez d'abord la tâche."
+      "operatorStepWaiting": "Une tâche de l'Opérateur attend une étape non cochée de ce ticket : le modèle ne peut donc pas les remplacer. Choisissez plutôt « Ajouter ces étapes à la liste de contrôle existante », cochez l'étape une fois le travail fait, ou arrêtez d'abord la tâche.",
+      "saveAsFailed": "Échec de l’enregistrement de la liste comme modèle.",
+      "noSteps": "Ce ticket n’a aucune étape réutilisable à enregistrer.",
+      "duplicateFailed": "Échec de la duplication du modèle de liste de contrôle."
+    },
+    "duplicate": "Dupliquer",
+    "duplicateSuccess": "Dupliqué sous « {{name}} ».",
+    "saveAs": {
+      "cta": "Enregistrer comme modèle",
+      "name": "Nom du modèle",
+      "allOrganizations": "Rendre disponible pour toutes les organisations",
+      "submit": "Enregistrer le modèle",
+      "success": "Enregistrée comme modèle « {{name}} ».",
+      "skipped": "Exclues : {{operator}} étape(s) Operator et {{duplicates}} étape(s) en double."
     }
   }
 }

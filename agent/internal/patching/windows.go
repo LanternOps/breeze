@@ -3,7 +3,6 @@
 package patching
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 
 	"github.com/breeze-rmm/agent/internal/config"
-	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
 // `var log` moved to the untagged log.go in #3197 — reboot_manager.go is
@@ -63,8 +61,20 @@ func (w *WindowsUpdateProvider) Scan() ([]AvailablePatch, error) {
 	})
 }
 
+// Without this the manager would silently fall back to calling the #4609
+// checkpoint hook before Install, i.e. before the skip check and download.
+var _ HookedInstaller = (*WindowsUpdateProvider)(nil)
+
 // Install installs a Windows Update by update ID.
 func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
+	return w.InstallWithHook(patchID, nil)
+}
+
+// InstallWithHook is Install calling before (when non-nil) at the true
+// mutation boundary: after the "no longer offered / already installed" skip
+// and the download, immediately before the installer is created. It is never
+// called for a skipped update.
+func (w *WindowsUpdateProvider) InstallWithHook(patchID string, before BeforeInstallFunc) (InstallResult, error) {
 	var result InstallResult
 	result.PatchID = patchID
 
@@ -97,7 +107,7 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			log.Warn("EULA acceptance failed", "patchId", patchID, "error", err)
 		}
 
-		// Retrieve title early for logging and restore point
+		// Retrieve title early for logging
 		title, _ := w.getStringProperty(update, "Title")
 
 		// Auto-download if not already downloaded
@@ -109,21 +119,12 @@ func (w *WindowsUpdateProvider) Install(patchID string) (InstallResult, error) {
 			}
 		}
 
-		// Create restore point before install (best-effort, skip for definitions).
-		//
-		// Still PER UPDATE and still best-effort: #4609 W07 moves the
-		// checkpoint up to one per install_patches command, where the server's
-		// policy decision is available. This wave only changes which package
-		// makes the call.
-		category := w.mapCategory(update)
-		if category != "definitions" {
-			out := systemrestore.Create(context.Background(), systemrestore.Request{
-				Label: "Before install: " + title,
-			})
-			if out.Status != systemrestore.StatusCreated {
-				log.Debug("restore point not created (non-fatal)",
-					"status", string(out.Status), "message", out.Message)
-			}
+		// #4609 W07: the install_patches handler's before-mutation hook runs
+		// HERE — the spot the old per-update restore point used — and takes
+		// at most ONE checkpoint per command (heartbeat.handleInstallPatches).
+		// The category lets it skip definitions updates as the old code did.
+		if before != nil {
+			before(w.mapCategory(update))
 		}
 
 		installer, err := w.createInstaller(session, update)
@@ -384,13 +385,17 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 
 	title, _ := w.getStringProperty(update, "Title")
 	description, _ := w.getStringProperty(update, "Description")
-	severity, _ := w.getStringProperty(update, "MsrcSeverity")
+	msrcSeverity, _ := w.getStringProperty(update, "MsrcSeverity")
 	isDownloaded, _ := w.getBoolProperty(update, "IsDownloaded")
 	maxSize, _ := w.getIntProperty(update, "MaxDownloadSize")
 	rebootBehavior, _ := w.getIntProperty(update, "RebootBehavior")
 
 	kbNumber := w.getKBNumber(update)
-	category := w.mapCategory(update)
+	categoryNames := w.categoryNames(update)
+	category := classifyWindowsUpdateCategory(categoryNames)
+	// Microsoft's MSRC rating when present, otherwise a rating derived from
+	// the classification and title, labelled as derived (#9387).
+	severity, severitySource := windowsSeverity(msrcSeverity, categoryNames, title)
 	eulaAccepted, _ := w.getBoolProperty(update, "EulaAccepted")
 
 	// IUpdate exposes no true "release date"; LastDeploymentChangeTime is the
@@ -409,15 +414,12 @@ func (w *WindowsUpdateProvider) updateToPatch(update *ole.IDispatch) (AvailableP
 		updateType = "feature"
 	}
 
-	if severity == "" {
-		severity = "unknown"
-	}
-
 	return AvailablePatch{
 		ID:             updateID,
 		Title:          title,
 		Description:    description,
-		Severity:       strings.ToLower(severity),
+		Severity:       severity,
+		SeveritySource: severitySource,
 		Category:       category,
 		KBNumber:       kbNumber,
 		Size:           int64(maxSize),
@@ -465,27 +467,34 @@ func (w *WindowsUpdateProvider) getKBNumber(update *ole.IDispatch) string {
 	return kb
 }
 
-// mapCategory extracts and maps the first WUA category to a normalized name.
+// mapCategory maps the update's WUA categories to a normalized name.
 func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
+	return classifyWindowsUpdateCategory(w.categoryNames(update))
+}
+
+// categoryNames returns every WUA category name on the update (classification
+// plus product names). Nil when the categories cannot be read, which
+// classifyWindowsUpdateCategory maps to "application".
+func (w *WindowsUpdateProvider) categoryNames(update *ole.IDispatch) []string {
 	catsVar, err := oleutil.GetProperty(update, "Categories")
 	if err != nil {
-		return "application"
+		return nil
 	}
 
 	cats := catsVar.ToIDispatch()
 	if cats == nil {
-		return "application"
+		return nil
 	}
 	defer cats.Release()
 
 	countVar, err := oleutil.GetProperty(cats, "Count")
 	if err != nil {
-		return "application"
+		return nil
 	}
 	catCount := int(countVar.Val)
 	countVar.Clear()
 	if catCount == 0 {
-		return "application"
+		return nil
 	}
 
 	// Collect ALL category names, not just index 0. A single update carries
@@ -509,7 +518,7 @@ func (w *WindowsUpdateProvider) mapCategory(update *ole.IDispatch) string {
 		}
 	}
 
-	return classifyWindowsUpdateCategory(names)
+	return names
 }
 
 func (w *WindowsUpdateProvider) findUpdate(session *ole.IDispatch, criteria, patchID string) (*ole.IDispatch, error) {

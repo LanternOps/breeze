@@ -62,6 +62,14 @@ const LIST_ROW = {
   templateVersionNumber: 2,
   signerName: 'Jane Doe',
   signedAt: '2026-06-01T00:00:00Z',
+  signerEmail: 'jane@example.test',
+  acceptanceOrigin: 'customer',
+  acceptanceMethod: 'typed-signature',
+  acceptanceReference: null,
+  evidenceAvailable: true,
+  sourceKind: 'quote',
+  agreementRequestId: null,
+  mime: 'application/pdf',
   quoteNumber: 'Q-2026-0001',
   byteSize: 1024,
   sha256: 'a'.repeat(64),
@@ -126,6 +134,39 @@ describe('contract document routes', () => {
       rowCount: 1,
       byteCount: pdfBytes.length,
     });
+  });
+
+  it('GET /:id/pdf names a PDF signed-agreement-<id>.pdf, as an attachment, nosniff', async () => {
+    const pdfBytes = Buffer.from('%PDF-1.7\n%%EOF');
+    (svc.getContractDocumentPdf as any).mockResolvedValue({
+      pdfData: pdfBytes, mime: 'application/pdf', byteSize: pdfBytes.length, sha256: 'a'.repeat(64), orgId: ORG_ID,
+    });
+    const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment; filename="signed-agreement-${DOC_ID}\\.pdf"`));
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  it('GET /:id/pdf names an externally signed PNG by its stored MIME — .png, attachment (never inline)', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    (svc.getContractDocumentPdf as any).mockResolvedValue({
+      pdfData: pngBytes, mime: 'image/png', byteSize: pngBytes.length, sha256: 'b'.repeat(64), orgId: ORG_ID,
+    });
+    const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment; filename="signed-agreement-${DOC_ID}\\.png"`));
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(Buffer.from(await res.arrayBuffer()).equals(pngBytes)).toBe(true);
+  });
+
+  it('GET /:id/pdf names a JPEG .jpg', async () => {
+    const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]);
+    (svc.getContractDocumentPdf as any).mockResolvedValue({
+      pdfData: jpgBytes, mime: 'image/jpeg', byteSize: jpgBytes.length, sha256: 'c'.repeat(64), orgId: ORG_ID,
+    });
+    const res = await app().request(`${BASE}/${DOC_ID}/pdf`, { method: 'GET' });
+    expect(res.headers.get('content-disposition')).toMatch(new RegExp(`^attachment; filename="signed-agreement-${DOC_ID}\\.jpg"`));
   });
 
   it('GET /:id/pdf maps DOCUMENT_NOT_FOUND to 404', async () => {

@@ -20,6 +20,7 @@
     "state": {
       "met": "Buluştuk",
       "notMet": "Karşılanılmadı",
+      "metLate": "Geç karşılandı",
       "breached": "İhlal edildi",
       "pausedLeft": "Duraklatıldı · {{relative}} kaldı",
       "left": "{{relative}} kaldı"
@@ -81,7 +82,9 @@
       "high": "Yüksek",
       "normal": "Normal",
       "low": "Düşük"
-    }
+    },
+    "checklistProgress": "{{done}}/{{total}} adım",
+    "checklistTitle": "Kontrol listesi: {{total}} adımın {{done}} tanesi tamamlandı"
   },
   "ticketArchivedList": {
     "emptyTitle": "Arşivlenmiş bilet yok.",
@@ -233,6 +236,8 @@
     },
     "billedVsWorked": "{{worked}} sa çalışıldı · {{billed}} sa faturalandı",
     "includedMinutes": "{{hours}} sa sözleşmeye dahil",
+    "laborBreakdown": "{{hours}} sa × {{rate}} = {{amount}}",
+    "laborRule": "Her kayıt, saate yuvarlanan dakikaları (2 ondalık) × ücreti üzerinden faturalanır.",
     "missingRateCount_one": "1 kayıtta saatlik ücret yok — yukarıdaki tutara dahil değil",
     "missingRateCount_other": "{{count}} kayıtta saatlik ücret yok — yukarıdaki tutara dahil değil",
     "deleteEntry": "{{tech}} tarafından girilen {{duration}} zaman girişini sil",
@@ -331,6 +336,11 @@
     "selectedCount_other": "{{count}} seçildi",
     "clearSelection": "Temizle",
     "noSelection": "Bir bilet seçin. Taşımak için j/k'yi, genişletmek için Enter'ı kullanın.",
+    "ticketNotInView": "{{number}} numaralı bilet bu görünümde değil.",
+    "movedToClosed": {
+      "message": "{{status}} — artık {{tab}} altında",
+      "view": "{{tab}} içinde görüntüle"
+    },
     "ticketingSettings": "Biletleme ayarları",
     "assignFailed": "Atama başarısız oldu. Tekrar dene.",
     "assignedToYou": "Size atandı",
@@ -522,7 +532,11 @@
     },
     "device": {
       "none": "Cihaz yok",
-      "unlink": "Bağlantıyı kaldır"
+      "unlink": "Bağlantıyı kaldır",
+      "link": "Cihaz bağla",
+      "change": "Cihazı değiştir",
+      "cancel": "İptal",
+      "assigneeWarning": "Cihazı değiştirmek atanan kişiyi yeniden doğrular. Yeni cihaza erişimi olmayan teknisyenin ataması kaldırılır."
     },
     "toast": {
       "statusUpdated": "Durum güncellendi",

@@ -14,8 +14,9 @@ import { createQuotePayLink } from '../../services/quotePay';
 import { computeQuoteTotals, toQuoteDepositConfig, type QuoteLineForMath } from '../../services/quoteMath';
 import { readQuoteImage, loadCustomerLineImage } from '../../services/quoteImageStorage';
 import { QuoteServiceError } from '../../services/quoteTypes';
-import { toCustomerLines, attachCustomerLineImages, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
-import { loadContractBlockRenderData, renderContractBlocksForClient, loadContractPdfInputs } from '../../services/contractTemplateRender';
+import { toCustomerLines, sanitizeQuoteBlocksForRead } from '../../services/quoteService';
+import { loadContractBlockRenderData, loadContractPdfInputs } from '../../services/contractTemplateRender';
+import { assembleCustomerQuoteDocument } from '../../services/customerQuoteDocument';
 import { ContractTemplateServiceError } from '../../services/contractTemplateService';
 import { PdfMergeError } from '../../services/pdfMerge';
 import { InvoiceServiceError } from '../../services/invoiceTypes';
@@ -52,37 +53,21 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
   const auth = c.get('portalAuth'); const { id } = c.req.valid('param');
   const [quote] = await db.select().from(quotes).where(and(eq(quotes.id, id), eq(quotes.orgId, auth.user.orgId))).limit(1);
   if (!quote || quote.status === 'draft') return c.json({ error: 'Quote not found', code: ERROR_CODES.NOT_FOUND }, 404);
-  const rawBlocks = sanitizeQuoteBlocksForRead(await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder));
-  const lines = toCustomerLines((await db.select().from(quoteLines).where(eq(quoteLines.quoteId, id)).orderBy(quoteLines.sortOrder)).filter((l) => l.customerVisible));
-  try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
-  // Derive the amount accept actually invoices (one-time only) so the customer
-  // sees an accurate "due on acceptance" instead of the recurring-inclusive total,
-  // plus the deposit due + per-category subtotals for the summary panel.
-  const totals = computeQuoteTotals(lines as QuoteLineForMath[], quote.taxRate ? parseFloat(quote.taxRate) : null, toQuoteDepositConfig(quote.depositType, quote.depositPercent), quote.currencyCode);
-  // Branding parity with the public token view (quotesPublic.ts): partners is a
-  // partner-axis RLS table invisible to this org scope (#1375 class — 0 rows, no
-  // error), so the name reads under SYSTEM scope like the /pdf route below;
-  // portal_branding is org-scoped and reads fine here.
-  const [partner] = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-    db.select({ name: partners.name, documentTheme: partners.documentTheme, documentPageSize: partners.documentPageSize, settings: partners.settings }).from(partners).where(eq(partners.id, quote.partnerId)).limit(1)));
-  // Support contact rides along for branding parity with the public token view.
-  const [brand] = await db.select({ logoUrl: portalBranding.logoUrl, primaryColor: portalBranding.primaryColor, supportEmail: portalBranding.supportEmail, supportPhone: portalBranding.supportPhone }).from(portalBranding).where(eq(portalBranding.orgId, quote.orgId)).limit(1);
-  // Snapshot-first precedence (Task 5, shared with resolveQuoteBranding): a
-  // sent quote's frozen presentation always wins over the partner's live
-  // theme/pageSize columns.
-  const presentationSnap = quote.presentationSnapshot as { theme?: string; pageSize?: string } | null;
   try {
-    // Resolves every `contract` block's pinned template version (system context,
-    // ahead of the response we're about to build below) and replaces its raw
-    // authoring content with the render contract the portal understands.
-    // Portal serves sent (stamped) quotes: quote.documentLocale is the render
-    // locale; null only for pre-wave-5 sends, which resolve to the partner's
-    // language — the SAME fallback the /pdf route below uses, so contract
-    // clauses and the downloadable PDF never disagree on a legacy quote.
-    const blocks = await renderContractBlocksForClient(rawBlocks, quote, (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`, quote.documentLocale ?? resolvePartnerDocumentLocale(partner));
-    const serializedLines = attachCustomerLineImages(lines, (lineId) => `/portal/quotes/${id}/line-image/${lineId}`);
-    const theme = resolveThemeId(presentationSnap?.theme ?? partner?.documentTheme);
-    const pageSize = resolvePageSize(presentationSnap?.pageSize ?? partner?.documentPageSize);
+    // The customer document (#9418, D19): the same assembler and header
+    // allowlist as the public link — never the raw quote row. 'portal' keeps
+    // the raw status and serves a superseded quote (the page's "Replaced"
+    // notice). The locale it renders contract clauses in is the /pdf route's
+    // (quote stamp → partner language), so the two never disagree.
+    const doc = await assembleCustomerQuoteDocument(quote, 'portal', {
+      assets: {
+        lineImage: (l) => `/portal/quotes/${id}/line-image/${l.id}`,
+        contractFile: (blockId) => `/portal/quotes/${id}/contract-file/${blockId}`,
+      },
+    });
+    // Cosmetic view-stamping only — must never fail the render.
+    try { await markQuoteViewed(id, auth.user.orgId); } catch (err) { console.error('[portal] quote markViewed failed', { id, err }); }
+    const { theme, pageSize } = doc.branding;
     // Draft successors stay private until sent; customers must not learn that a
     // revision is still being prepared for them.
     const [successor] = await db.select({ id: quotes.id }).from(quotes)
@@ -96,11 +81,16 @@ quoteRoutes.get('/quotes/:id', zValidator('param', idParam), async (c) => {
       .where(and(eq(quoteAcceptances.quoteId, id), eq(quoteAcceptances.orgId, auth.user.orgId)))
       .orderBy(desc(quoteAcceptances.signedAt))
       .limit(1);
-    return c.json({ data: { quote: { ...quote, supersededByQuoteId: successor?.id ?? null, acceptanceOrigin: acceptance?.origin ?? null, dueOnAcceptanceTotal: totals.dueOnAcceptanceTotal, depositDueTotal: totals.depositDueTotal, categoryBreakdown: totals.categoryBreakdown }, blocks, lines: serializedLines, branding: {
-      partnerName: partner?.name ?? 'Proposal', ...resolveDocumentBrand(brand, partner?.settings),
-      supportEmail: brand?.supportEmail ?? null, supportPhone: brand?.supportPhone ?? null,
-      theme, pageSize,
-    }, presentation: { theme, pageSize } } });
+    // Beside the document: the three fields the logged-in page reads that the
+    // public link has no use for. acceptedAt is the one raw column it keeps.
+    return c.json({ data: {
+      quote: { ...doc.quote, supersededByQuoteId: successor?.id ?? null, acceptanceOrigin: acceptance?.origin ?? null, acceptedAt: quote.acceptedAt },
+      blocks: doc.blocks,
+      lines: doc.lines,
+      branding: { ...doc.branding, partnerName: doc.branding.partnerName ?? 'Proposal' },
+      presentation: { theme, pageSize },
+      documentLocale: doc.documentLocale,
+    } });
   } catch (err) {
     if (err instanceof ContractTemplateServiceError) return c.json({ error: err.message, code: err.code }, err.status);
     throw err;

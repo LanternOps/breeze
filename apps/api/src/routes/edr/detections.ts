@@ -12,6 +12,7 @@ import {
   listEdrDetections,
   resolveEdrReadScope,
 } from '../../services/edrProviders/read';
+import { COVERAGE_MAX_LIMIT, readSecurityAgentCoverage } from '../../services/securityAgents/coverageRead';
 
 /**
  * EDR-framework detection reads (#8166 W02). Thin over the shared read model
@@ -115,6 +116,64 @@ edrDetectionRoutes.get(
     try {
       const scope = await resolveEdrReadScope(auth, perms);
       return c.json({ data: await getEdrStatus(scope, { orgId: q.orgId }) });
+    } catch (err) {
+      if (err instanceof EdrReadError) return c.json({ error: err.message }, err.status as ContentfulStatusCode);
+      throw err;
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Security agent coverage (#6960 W03)
+// ---------------------------------------------------------------------------
+//
+// READ-ONLY. Coverage is derived state written by the software compliance
+// worker and the coverage reconciler; nothing here mutates it. It lives on the
+// EDR read surface because that is where it is shown (EDR summary, device EDR
+// panel) and it shares the same org/site read scope.
+
+const COVERAGE_STATES = ['covered', 'gap', 'vendor_only', 'vendor_offline', 'mismatched_org', 'not_applicable', 'pending'] as const;
+const COVERAGE_VENDORS = ['huntress', 'sentinelone', 'controld', 'nextdns'] as const;
+
+const coverageStateList = z
+  .string()
+  .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean))
+  .pipe(z.array(z.enum(COVERAGE_STATES)).min(1));
+
+const coverageQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+  deviceId: z.string().guid().optional(),
+  vendor: z.enum(COVERAGE_VENDORS).optional(),
+  state: coverageStateList.optional(),
+  limit: z.coerce.number().int().min(1).default(50).transform((n) => Math.min(n, COVERAGE_MAX_LIMIT)),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+// GET /edr/security-agents/coverage
+edrDetectionRoutes.get(
+  '/security-agents/coverage',
+  requireScope('organization', 'partner', 'system'),
+  requireDevicesRead,
+  zValidator('query', coverageQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    const q = c.req.valid('query');
+    try {
+      const scope = await resolveEdrReadScope(auth, perms);
+      const result = await readSecurityAgentCoverage(scope, {
+        orgId: q.orgId,
+        deviceId: q.deviceId,
+        vendor: q.vendor,
+        states: q.state,
+        limit: q.limit,
+        offset: q.offset,
+      });
+      return c.json({
+        summary: result.summary,
+        data: result.rows,
+        pagination: { limit: q.limit, offset: q.offset, total: result.total },
+      });
     } catch (err) {
       if (err instanceof EdrReadError) return c.json({ error: err.message }, err.status as ContentfulStatusCode);
       throw err;

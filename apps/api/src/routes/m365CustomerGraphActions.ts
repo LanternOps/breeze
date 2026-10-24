@@ -32,7 +32,8 @@ import {
 } from '../services/m365ControlPlane/writeActionConnectionService';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../services/siteCeilingAccess';
 import { buildM365ActionsConsentBindingCookie } from '../services/m365ControlPlane/browserBinding';
-import { isM365CustomerGraphActionsOnboardingEnabledForOrg } from '../services/m365ControlPlane/writeActionRuntimeConfig';
+import type { M365Availability } from '../services/m365ControlPlane/availability';
+import { isM365CustomerGraphActionsOnboardingEnabledForOrg, m365CustomerGraphActionsOnboardingAvailability } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import {
   canManagePartnerWidePolicies,
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
@@ -112,6 +113,7 @@ export interface CustomerGraphActionsEnvelope {
     requiredGrants: M365ApplicationGrant[];
   };
   onboardingEnabled: boolean;
+  onboardingAvailability: M365Availability;
   connection: CustomerGraphActionsConnectionDto | null;
 }
 
@@ -155,6 +157,8 @@ function envelope(
       requiredGrants: [...(profileManifest.applicationPermissionAssignments ?? [])],
     },
     onboardingEnabled: isM365CustomerGraphActionsOnboardingEnabledForOrg(orgId),
+    // Which switch is off (#9319); onboardingEnabled stays for compatibility.
+    onboardingAvailability: m365CustomerGraphActionsOnboardingAvailability(orgId),
     connection: connection ? toConnectionDto(connection) : null,
   };
 }

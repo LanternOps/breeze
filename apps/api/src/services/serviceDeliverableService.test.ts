@@ -12,6 +12,13 @@ const results: QueuedQuery[] = [];
 function queueResult(rows: unknown[]) { results.push({ rows }); }
 function queueError(error: unknown) { results.push({ error }); }
 
+// #8972 W0: every ticket-child writer now locks the ticket row first; the lock is
+// mocked here (real SQL is covered by ticketChildLockOrder.integration.test.ts).
+const { lockTicketForWriteMock } = vi.hoisted(() => ({
+  lockTicketForWriteMock: vi.fn(async (_tx: unknown, id: string) => ({ id, orgId: 'o-1', partnerId: 'p-1', status: 'open', deletedAt: null as Date | null, workKind: 'support' })),
+}));
+vi.mock('./ticketRowLock', () => ({ lockTicketForWrite: lockTicketForWriteMock, lockTicketsForWrite: vi.fn(async () => []) }));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -53,8 +60,8 @@ import { db } from '../db';
 import {
   addEvidence, createDeliverable, deactivateDeliverable, deliverOccurrence, getDeliverable, listOccurrences,
   materializeOccurrences, openOccurrence, markOccurrenceMissed, applyTicketStatusChange, markDueOccurrencesMissedForDeliverable,
-  openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables,
-  removeEvidence, reopenOccurrence, rescheduleOccurrence, summarizeStatus, updateDeliverable, waiveOccurrence,
+  openDueOccurrencesForDeliverable, periodLabel, applyContractCancelledToDeliverables, moveDeliverables,
+  removeEvidence, reopenOccurrence, rescheduleOccurrence, rescheduleOccurrences, summarizeStatus, updateDeliverable, waiveOccurrence,
   DeliverableServiceError, getOccurrenceOr404,
 } from './serviceDeliverableService';
 
@@ -79,6 +86,14 @@ function updateWhereParams(): unknown[] {
   const i = chain.where.mock.invocationCallOrder.findIndex((o) => o > setOrder);
   if (i === -1) throw new Error('no .where() call after the last .set()');
   return boundParams(chain.where.mock.calls[i]?.[0]);
+}
+// SQL text of the UPDATE's own WHERE (see updateWhereParams) — distinguishes
+// `not in (...)` from `in (...)`, which bound params alone cannot.
+function updateWhereSql(): string {
+  const setOrder = chain.set.mock.invocationCallOrder.at(-1);
+  if (setOrder === undefined) throw new Error('no .set() call recorded');
+  const i = chain.where.mock.invocationCallOrder.findIndex((o) => o > setOrder);
+  return new PgDialect().sqlToQuery(chain.where.mock.calls[i]?.[0] as SQL).sql;
 }
 const summaryRow = (over: Record<string, unknown> = {}, contractName: string | null = null) => ({
   deliverable: { id: 'd1', orgId: 'org1', ...base, effectiveFrom: '2020-01-01', active: true, effectiveUntil: null, contractId: null, ...over },
@@ -142,6 +157,13 @@ describe('serviceDeliverableService', () => {
       queueResult([]); // contract lookup returns nothing
       await expect(createDeliverable('org1', { ...base, contractId: CONTRACT_ID }, actor))
         .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
+    it('rejects a cancelled contract on create (CONTRACT_NOT_ASSIGNABLE)', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
+      await expect(createDeliverable('org1', { ...base, contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
       expect(chain.insert.mock.calls).toHaveLength(0);
     });
 
@@ -283,6 +305,32 @@ describe('serviceDeliverableService', () => {
       expect(out).toMatchObject({ contractId: CONTRACT_ID, contractName: 'Managed Services', status: 'missed', nextDue: '2020-01-01', openCount: 1 });
     });
 
+    it('rejects moving onto a cancelled contract (CONTRACT_NOT_ASSIGNABLE)', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]);
+      queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
+      await expect(updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('re-sending the unchanged contractId of a cancelled contract is not a move', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: CONTRACT_ID }]); // existing
+      queueResult([]); // name pre-check
+      queueResult([{ id: 'd1' }]); // update returning
+      queueResult([summaryRow({ contractId: CONTRACT_ID }, 'Old')]);
+      queueResult([]);
+      await expect(updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID, description: 'x' }, actor)).resolves.toBeTruthy();
+      expect(chain.update.mock.calls).toHaveLength(1);
+    });
+
+    it('rejects moving onto a contract in another org (CONTRACT_NOT_IN_ORG)', async () => {
+      queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]);
+      queueResult([]);
+      await expect(updateDeliverable('org1', 'd1', { contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
     it('a PATCH that deactivates still resolves the summary (includeInactive) and reports inactive', async () => {
       queueResult([{ id: 'd1', orgId: 'org1', name: base.name, contractId: null }]); // existing
       queueResult([{ id: 'd1' }]); // update returning
@@ -310,6 +358,125 @@ describe('serviceDeliverableService', () => {
       queueResult([]); // pre-check clear
       queueError({ code: '23505' });
       await expect(updateDeliverable('org1', 'd1', { name: 'dup' }, actor)).rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
+    });
+  });
+
+  describe('moveDeliverables (#9302)', () => {
+    const ID1 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    const ID2 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2';
+    const rows = [{ id: ID1, name: 'Backups' }, { id: ID2, name: 'Patching' }];
+
+    it('moves every deliverable in one UPDATE and touches nothing else', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'draft' }]); // target contract
+      queueResult(rows); // deliverables in org
+      queueResult([]); // no name collision in target
+      queueResult([{ id: ID1 }, { id: ID2 }]); // update returning
+      const out = await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor);
+      expect(out).toEqual({ moved: 2 });
+      expect(chain.transaction.mock.calls).toHaveLength(1);
+      expect(chain.update.mock.calls).toHaveLength(1);
+      expect(lastSet()).toMatchObject({ contractId: CONTRACT_ID });
+      expect(lastSet().updatedAt).toBeInstanceOf(Date);
+      // occurrences/evidence are history — only the deliverable rows are written
+      expect(Object.keys(lastSet()).sort()).toEqual(['contractId', 'updatedAt']);
+      expect(chain.delete.mock.calls).toHaveLength(0);
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
+    it('moves to "no contract" (null) without a contract lookup', async () => {
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }, { id: ID2 }]);
+      await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: null }, actor);
+      expect(lastSet()).toMatchObject({ contractId: null });
+    });
+
+    it('404s and writes nothing when any id is outside the org', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult([rows[0]]); // only one of two found in org
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('404s an actor without access to the org', async () => {
+      await expect(moveDeliverables('org2', { deliverableIds: [ID1], contractId: null }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.select.mock.calls).toHaveLength(0);
+    });
+
+    it('409s listing the colliding names and writes nothing', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([{ name: 'Patching' }]); // target already has Patching
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME', details: { names: ['Patching'] } });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('409s when two moved deliverables share a name', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult([{ id: ID1, name: 'Backups' }, { id: ID2, name: 'Backups' }]);
+      queueResult([]);
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME', details: { names: ['Backups'] } });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('rolls back (throws) when the UPDATE touches fewer rows than requested', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }]); // only one of two updated
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ code: 'MOVE_INCOMPLETE' });
+    });
+
+    it('collision query is scoped to the target contract and excludes the moved ids themselves', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }, { id: ID2 }]);
+      await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor);
+      const dialect = new PgDialect();
+      const sqls = chain.where.mock.calls.map((c) => dialect.sqlToQuery(c[0] as SQL));
+      const collision = sqls.find((q) => /not in/i.test(q.sql));
+      expect(collision).toBeDefined();
+      expect(collision!.params).toEqual(expect.arrayContaining(['org1', CONTRACT_ID, 'Backups', 'Patching', ID1, ID2]));
+      expect(collision!.sql).toMatch(/"contract_id" = \$/);
+    });
+
+    it('a null target collides only against standalone rows (contract_id IS NULL)', async () => {
+      queueResult(rows);
+      queueResult([]);
+      queueResult([{ id: ID1 }, { id: ID2 }]);
+      await moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: null }, actor);
+      const dialect = new PgDialect();
+      const collision = chain.where.mock.calls.map((c) => dialect.sqlToQuery(c[0] as SQL)).find((q) => /not in/i.test(q.sql));
+      expect(collision!.sql).toMatch(/"contract_id" is null/i);
+    });
+
+    it('maps a concurrent 23505 to 409 DUPLICATE_NAME', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'active' }]);
+      queueResult(rows);
+      queueResult([]);
+      queueError({ code: '23505' });
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1, ID2], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 409, code: 'DUPLICATE_NAME' });
+    });
+
+    it('rejects a cancelled target', async () => {
+      queueResult([{ id: CONTRACT_ID, status: 'cancelled' }]);
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_ASSIGNABLE' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('rejects a foreign-org target', async () => {
+      queueResult([]);
+      await expect(moveDeliverables('org1', { deliverableIds: [ID1], contractId: CONTRACT_ID }, actor))
+        .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+      expect(chain.update.mock.calls).toHaveLength(0);
     });
   });
 
@@ -357,6 +524,46 @@ describe('serviceDeliverableService', () => {
       const view = await deliverOccurrence('org1', 'o1', { evidence: [{ kind: 'document', documentId: DOC_ID }] }, actor);
       expect(view.status).toBe('delivered');
       expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'explicit' });
+    });
+  });
+
+  describe('signed agreement evidence (#9312)', () => {
+    const CDOC_ID = '44444444-4444-4444-8444-444444444444';
+
+    it('links a signed agreement of the same org by reference (no copy into the library)', async () => {
+      queueResult([occ({ status: 'open' })]); // load
+      queueResult([{ id: CDOC_ID }]); // contract document lookup (org-scoped)
+      queueResult([]); // insert
+      queueResult([occ({ status: 'open' })]); // reload
+      queueResult([{ id: 'e1', kind: 'contract_document', documentId: null, reportId: null, reportRunId: null, contractDocumentId: CDOC_ID, createdAt: new Date('2026-10-20T00:00:00Z') }]);
+      const view = await addEvidence('org1', 'o1', { kind: 'contract_document', contractDocumentId: CDOC_ID }, actor);
+      expect(lastValues()).toMatchObject({
+        orgId: 'org1', occurrenceId: 'o1', kind: 'contract_document', contractDocumentId: CDOC_ID,
+        documentId: null, reportId: null, reportRunId: null, createdByUserId: 'u1',
+      });
+      expect(view.evidence[0]).toMatchObject({ kind: 'contract_document', contractDocumentId: CDOC_ID });
+    });
+
+    it('a signed agreement of another org is 404 and nothing is inserted', async () => {
+      queueResult([occ({ status: 'open' })]);
+      queueResult([]); // lookup filtered by org_id finds nothing
+      await expect(addEvidence('org1', 'o1', { kind: 'contract_document', contractDocumentId: CDOC_ID }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+      const params = chain.where.mock.calls.flatMap((c) => boundParams(c[0]));
+      expect(params).toEqual(expect.arrayContaining([CDOC_ID, 'org1']));
+    });
+
+    it('delivering with a signed agreement satisfies artifactRequired', async () => {
+      queueResult([occ({ status: 'open', artifactRequired: true })]); // load
+      queueResult([{ id: CDOC_ID }]); // lookup
+      queueResult([]); // insert
+      queueResult([{ n: 1 }]); // evidence count
+      queueResult([{ id: 'o1' }]); // update returning
+      queueResult([occ({ status: 'delivered', deliveredAt: new Date('2026-10-20T00:00:00Z'), deliveredVia: 'explicit' })]);
+      queueResult([{ id: 'e1', kind: 'contract_document', documentId: null, reportId: null, reportRunId: null, contractDocumentId: CDOC_ID, createdAt: new Date('2026-10-20T00:00:00Z') }]);
+      const view = await deliverOccurrence('org1', 'o1', { evidence: [{ kind: 'contract_document', contractDocumentId: CDOC_ID }] }, actor);
+      expect(view.status).toBe('delivered');
     });
   });
 
@@ -415,7 +622,7 @@ describe('serviceDeliverableService', () => {
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'open']));
       expect(view.status).toBe('delivered');
       expect(view.late).toBe(false);
-      expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, createdAt: '2026-10-20T00:00:00.000Z' }]);
+      expect(view.evidence).toEqual([{ id: 'e1', kind: 'report_run', documentId: null, reportId: 'r1', reportRunId: RUN_ID, contractDocumentId: null, createdAt: '2026-10-20T00:00:00.000Z' }]);
       expect(view).not.toHaveProperty('artifactRequired');
     });
 
@@ -552,6 +759,86 @@ describe('serviceDeliverableService', () => {
     });
   });
 
+  describe('rescheduleOccurrence → ticket due date (#9314)', () => {
+    it('moves the linked ticket due_date, scoped to the org and excluding resolved/closed', async () => {
+      queueResult([occ({ status: 'open', ticketId: 't1' })]);
+      queueResult([{ id: 'o1' }]); // occurrence update
+      queueResult([]);             // ticket update
+      queueResult([occ({ status: 'open', ticketId: 't1', dueAt: '2026-11-30' })]);
+      queueResult([]);
+      await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, actor);
+      expect(lastSet()).toMatchObject({ dueDate: new Date('2026-11-30T00:00:00.000Z') });
+      const p = updateWhereParams();
+      expect(p).toEqual(expect.arrayContaining(['t1', 'org1', 'resolved', 'closed']));
+      expect(updateWhereSql()).toMatch(/not in/i); // resolved/closed are EXCLUDED, not targeted
+    });
+
+    it('does not touch tickets when the occurrence has no ticket', async () => {
+      queueResult([occ({ status: 'open', ticketId: null })]);
+      queueResult([{ id: 'o1' }]);
+      queueResult([occ({ dueAt: '2026-11-30' })]);
+      queueResult([]);
+      await rescheduleOccurrence('org1', 'o1', { dueAt: '2026-11-30' }, actor);
+      expect(chain.update.mock.calls).toHaveLength(1);
+    });
+  });
+
+  describe('rescheduleOccurrences (bulk, #9314)', () => {
+    it('moves every live occurrence; reports delivered/waived/foreign ids as refused while the rest still move', async () => {
+      queueResult([occ({ id: 'a', status: 'open' })]);      // a: load
+      queueResult([{ id: 'a' }]);                           // a: update
+      queueResult([occ({ id: 'a', dueAt: '2026-11-30' })]); // a: view
+      queueResult([]);                                      // a: evidence
+      queueResult([occ({ id: 'b', status: 'delivered' })]); // b: refused
+      queueResult([]);                                      // c: foreign → not found
+      queueResult([occ({ id: 'd', status: 'missed', graceDays: 14 })]);
+      queueResult([{ id: 'd' }]);
+      queueResult([occ({ id: 'd', dueAt: '2026-11-30' })]);
+      queueResult([]);
+      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['a', 'b', 'c', 'd', 'a'], dueAt: '2026-11-30' }, actor);
+      expect(out.map((r) => [r.occurrenceId, r.ok])).toEqual([['a', true], ['b', false], ['c', false], ['d', true]]);
+      expect(out[1]).toMatchObject({ status: 409, code: 'INVALID_OCCURRENCE_TRANSITION' });
+      expect(out[2]).toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.transaction.mock.calls).toHaveLength(1 + 4); // outer + one savepoint per distinct id
+      // only a and d were written, and originalDueAt never is
+      expect(chain.set.mock.calls.every((c) => !('originalDueAt' in (c[0] as object)))).toBe(true);
+      expect(chain.set.mock.calls.filter((c) => 'dueAt' in (c[0] as object))).toHaveLength(2);
+    });
+
+    it('moves the ticket due_date on the bulk path too', async () => {
+      queueResult([occ({ id: 'a', status: 'open', ticketId: 't1' })]);
+      queueResult([{ id: 'a' }]);
+      queueResult([]); // ticket update
+      queueResult([occ({ id: 'a' })]);
+      queueResult([]);
+      await rescheduleOccurrences('org1', { occurrenceIds: ['a'], dueAt: '2026-11-30' }, actor);
+      expect(chain.set.mock.calls.some((c) => (c[0] as Record<string, unknown>).dueDate instanceof Date)).toBe(true);
+    });
+
+    it('scopes every lookup/write to the request org (foreign ids cannot be touched)', async () => {
+      queueResult([]); // foreign id → not found
+      const out = await rescheduleOccurrences('org1', { occurrenceIds: ['x'], dueAt: '2026-11-30' }, actor);
+      expect(out[0]).toMatchObject({ ok: false, status: 404 });
+      expect(chain.update.mock.calls).toHaveLength(0);
+      expect(boundParams(chain.where.mock.calls[0]?.[0])).toEqual(expect.arrayContaining(['x', 'org1']));
+    });
+
+    it('shiftDays offsets each occurrence from its own dueAt', async () => {
+      queueResult([occ({ id: 'a', status: 'open', dueAt: '2026-10-31' })]);
+      queueResult([{ id: 'a' }]);
+      queueResult([occ({ id: 'a' })]);
+      queueResult([]);
+      await rescheduleOccurrences('org1', { occurrenceIds: ['a'], shiftDays: 7 }, actor);
+      expect(chain.set.mock.calls.find((c) => 'dueAt' in (c[0] as object))?.[0]).toMatchObject({ dueAt: '2026-11-07' });
+    });
+
+    it('404s a foreign org without touching the db', async () => {
+      await expect(rescheduleOccurrences('org1', { occurrenceIds: ['a'], dueAt: '2026-11-30' }, { ...actor, accessibleOrgIds: ['org9'] }))
+        .rejects.toMatchObject({ status: 404 });
+      expect(chain.select.mock.calls).toHaveLength(0);
+    });
+  });
+
   describe('addEvidence', () => {
     it('with a run of another org\'s report → 404 NOT_FOUND', async () => {
       queueResult([occ({ status: 'open' })]);
@@ -585,6 +872,41 @@ describe('serviceDeliverableService', () => {
       expect(set.deliveredAt).toBeInstanceOf(Date);
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'awaiting_evidence']));
       expect(view.evidence).toHaveLength(1);
+    });
+
+    it.each(['resolved', 'closed'])('on a missed occurrence whose ticket is %s completes the delivery (#9310)', async (ticketStatus) => {
+      queueResult([occ({ status: 'missed', ticketId: 't1' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: ticketStatus }]); // ticket status lookup
+      queueResult([{ id: 'o1' }]); // update returning
+      queueResult([occ({ status: 'delivered', deliveredVia: 'ticket' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(lastSet()).toMatchObject({ status: 'delivered', deliveredVia: 'ticket', deliveredByUserId: 'u1' });
+      expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'org1', 'missed']));
+    });
+
+    it('on a missed explicit-mode occurrence never completes from a resolved ticket (#9310)', async () => {
+      queueResult([occ({ status: 'missed', ticketId: 't1', completionMode: 'explicit' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: 'resolved' }]); // would be the ticket lookup if (wrongly) issued
+      queueResult([occ({ status: 'missed', ticketId: 't1', completionMode: 'explicit' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(chain.update.mock.calls).toHaveLength(0);
+    });
+
+    it('on a missed occurrence whose ticket is still open changes nothing (#9310)', async () => {
+      queueResult([occ({ status: 'missed', ticketId: 't1' })]);
+      queueResult([{ id: RUN_ID, reportId: 'r1' }]);
+      queueResult([]); // insert
+      queueResult([{ status: 'open' }]); // ticket status lookup
+      queueResult([occ({ status: 'missed', ticketId: 't1' })]);
+      queueResult([]);
+      await addEvidence('org1', 'o1', { kind: 'report_run', reportRunId: RUN_ID }, actor);
+      expect(chain.update.mock.calls).toHaveLength(0);
     });
 
     it('409s when the awaiting_evidence → delivered UPDATE matches zero rows', async () => {
@@ -729,11 +1051,47 @@ describe('serviceDeliverableService', () => {
       expect(s.name).toBe(base.name);
     });
 
-    it('a deliverable with no occurrences has null nextDue/lastDelivered and skips the occurrence query', async () => {
+    it('a deliverable with no occurrences reports its planned nextDue (#9308), null lastDelivered', async () => {
       queueResult([{ deliverable: { id: 'd1', orgId: 'org1', ...base, active: true, effectiveUntil: null, contractId: null }, contractName: null }]);
       queueResult([]);
       const s = await getDeliverable('org1', 'd1', actor);
-      expect(s).toMatchObject({ contractName: null, nextDue: null, lastDelivered: null, openCount: 0 });
+      expect(s).toMatchObject({ contractName: null, nextDue: '2026-10-31', lastDelivered: null, openCount: 0 });
+    });
+  });
+
+  describe('getDeliverable planned nextDue (#9308)', () => {
+    const row = (over: Record<string, unknown>) => ({
+      deliverable: { id: 'd1', orgId: 'org1', ...base, anchorDueDate: '2999-01-31', effectiveFrom: '2999-01-31', active: true, effectiveUntil: null, contractId: null, ...over },
+      contractName: null,
+    });
+    it('one-time with no occurrences reports its anchor as nextDue and is not inactive', async () => {
+      queueResult([row({ cadence: 'one_time' })]);
+      queueResult([]);
+      const s = await getDeliverable('org1', 'd1', actor);
+      expect(s.nextDue).toBe('2999-01-31');
+      expect(s.status).not.toBe('inactive');
+    });
+    it('an expired deliverable does not plan a past nextDue', async () => {
+      queueResult([row({ cadence: 'monthly', anchorDueDate: '2020-01-31', effectiveFrom: '2020-01-01', effectiveUntil: '2020-06-30' })]);
+      queueResult([]);
+      const s = await getDeliverable('org1', 'd1', actor);
+      expect(s.nextDue).toBeNull();
+      expect(s.status).toBe('inactive');
+    });
+    it('a deactivated one-time stays inactive', async () => {
+      queueResult([row({ cadence: 'one_time', active: false })]);
+      queueResult([]);
+      expect((await getDeliverable('org1', 'd1', actor)).status).toBe('inactive');
+    });
+    it('a waived one-time does not re-plan its anchor', async () => {
+      queueResult([row({ cadence: 'one_time' })]);
+      queueResult([{ id: 'o1', deliverableId: 'd1', status: 'waived', dueAt: '2999-01-31', originalDueAt: '2999-01-31', deliveredAt: null, deliveryNote: null }]);
+      expect((await getDeliverable('org1', 'd1', actor)).nextDue).toBeNull();
+    });
+    it('recurring with no occurrences reports the first planned due date', async () => {
+      queueResult([row({ cadence: 'monthly', effectiveFrom: '2999-01-01' })]);
+      queueResult([]);
+      expect((await getDeliverable('org1', 'd1', actor)).nextDue).toBe('2999-01-31');
     });
   });
 
@@ -743,9 +1101,12 @@ describe('serviceDeliverableService', () => {
 
     it('inactive when !active or today outside the effective range', () => {
       expect(summarizeStatus({ ...d, active: false }, [{ status: 'missed', dueAt: '2026-10-01' }], today)).toBe('inactive');
-      expect(summarizeStatus({ ...d, effectiveFrom: '2026-11-01' }, [], today)).toBe('inactive');
       expect(summarizeStatus({ ...d, effectiveUntil: '2026-10-14' }, [], today)).toBe('inactive');
       expect(summarizeStatus({ ...d, effectiveUntil: '2026-10-15' }, [], today)).toBe('on_track');
+    });
+    it('a not-yet-started active deliverable is not inactive (#9308)', () => {
+      expect(summarizeStatus({ ...d, effectiveFrom: '2026-11-01' }, [], today)).toBe('on_track');
+      expect(summarizeStatus({ ...d, active: false, effectiveFrom: '2026-11-01' }, [], today)).toBe('inactive');
     });
     it('missed beats late', () => {
       expect(summarizeStatus(d, [{ status: 'missed', dueAt: '2026-09-01' }, { status: 'open', dueAt: '2026-10-01' }], today)).toBe('missed');
@@ -775,6 +1136,8 @@ describe('serviceDeliverableService', () => {
       expect(lastSet().deliveredAt).toBeInstanceOf(Date);
       // CAS on the status the decision was made from.
       expect(updateWhereParams()).toEqual(expect.arrayContaining(['o1', 'open']));
+      // #8972 W0: the ticket row is locked before the occurrence CAS update
+      expect(lockTicketForWriteMock).toHaveBeenCalledWith(expect.anything(), 't1');
     });
 
     it('resolve without an artifact requirement delivers even with no evidence', async () => {
@@ -791,6 +1154,36 @@ describe('serviceDeliverableService', () => {
       expect(patch.deliveredAt).toBeUndefined();
       expect(patch.deliveredByUserId).toBeUndefined();
       expect(patch.deliveredVia).toBeUndefined();
+    });
+
+    it('posts exactly one internal, non-public system comment when resolution lands in awaiting_evidence (#9310)', async () => {
+      queueResult([occRow()]); queueResult([]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(chain.values.mock.calls).toHaveLength(1);
+      expect(lastValues()).toMatchObject({
+        ticketId: 't1', userId: null, authorType: 'system', commentType: 'internal', isPublic: false, originPrincipalKind: 'system',
+      });
+      expect(String(lastValues().content)).toContain('needs evidence');
+    });
+
+    it('posts no comment when the resolution delivers directly (#9310)', async () => {
+      queueResult([occRow()]); queueResult([{ id: 'e1' }]); queueResult([{ id: 'o1' }]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(lastSet()).toMatchObject({ status: 'delivered' });
+      expect(chain.values.mock.calls).toHaveLength(0);
+    });
+
+    it('re-delivering the same resolution adds no second comment (#9310)', async () => {
+      queueResult([occRow({ status: 'awaiting_evidence' })]); queueResult([]);
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(chain.update.mock.calls).toHaveLength(0);
+      expect(chain.values.mock.calls).toHaveLength(0);
+    });
+
+    it('posts no comment when the CAS update loses a race (#9310)', async () => {
+      queueResult([occRow()]); queueResult([]); queueResult([]); // update returns no row
+      await applyTicketStatusChange({ ticketId: 't1', orgId: 'org1', to: 'resolved', actorUserId: 'u7', resolutionNote: 'n' });
+      expect(chain.values.mock.calls).toHaveLength(0);
     });
 
     it('a late resolution of a missed occurrence still records the delivery', async () => {

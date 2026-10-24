@@ -56,6 +56,8 @@ const EXPECTED_WORKER_NAMES = [
   'filesystemCleanupRunRetention',
   // #8581 — daily prune of device_restore_point_attempts.
   'restorePointAttemptRetention',
+  // #9128 — daily prune of terminal webhook_deliveries rows.
+  'webhookDeliveryRetention',
   'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup',
@@ -76,6 +78,8 @@ const EXPECTED_WORKER_NAMES = [
   'backupProviderSyncWorker',
   // EDR provider framework W01 (#8164).
   'edrProviderSyncWorker',
+  // Security agent coverage reconciliation (#6960 W03).
+  'securityAgentCoverageWorker',
   'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'backupSnapshotFileIndexWorker', 'backupSnapshotAttestationWorker', 'backupWriteSessionJanitor', 'sensitiveDataWorker',
@@ -90,7 +94,7 @@ const EXPECTED_WORKER_NAMES = [
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
-  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
+  'callerVerificationPublisher', 'callerVerificationReconciliation', 'ticketSlaWorker', 'businessCalendarRecomputeWorker', 'inboundEmailWorker', 'gmailMarkHandledWorker', 'ticketMailboxPollWorker', 'invoiceWorker', 'autopayWorker',
   'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'aiInvocationRetention', 'llmEgressRetention',
   // AI chargeback W10 (#7608) — daily monthly-close sweep.
@@ -146,7 +150,8 @@ describe('workerRegistry: losslessness', () => {
     const loaded = await entry!.load();
     expect(typeof loaded.init).toBe('function');
     expect(typeof loaded.shutdown).toBe('function');
-  });
+    // #9198: first dynamic import of the job's module graph is slow on a loaded runner.
+  }, 60_000);
 
   it('registers the m365 sync worker as a socket-owner-placement entry', () => {
     // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but

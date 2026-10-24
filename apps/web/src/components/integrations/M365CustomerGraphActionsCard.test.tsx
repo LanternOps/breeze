@@ -208,6 +208,19 @@ describe("M365CustomerGraphActionsCard", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("says the org is not enabled, not the instance, for org_not_enabled (#9319)", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ onboardingEnabled: false, onboardingAvailability: "org_not_enabled", connection: null })),
+    );
+
+    render(<M365CustomerGraphActionsCard />);
+
+    expect(await screen.findByText(
+      "Not enabled for this organization yet. Ask your Breeze administrator to enable it.",
+    )).toBeInTheDocument();
+    expect(screen.queryByText("Not available on this Breeze instance yet.")).not.toBeInTheDocument();
+  });
+
   it("keeps connection management when onboarding is off but a connection exists", async () => {
     fetchWithAuthMock.mockResolvedValue(
       makeResponse(envelope({ onboardingEnabled: false, connection: connection() })),
@@ -339,6 +352,21 @@ describe("M365CustomerGraphActionsCard", () => {
 
     expect(await screen.findAllByText("Microsoft returned an error during sign-in. Try again; if it repeats, check the tenant's sign-in logs.")).not.toHaveLength(0);
     expect(screen.queryByText("consent_provider_error")).not.toBeInTheDocument();
+  });
+
+  it("accepts user_consent_blocked as a callback result and localizes it as a stored code (#9322)", async () => {
+    expect(M365_CUSTOMER_GRAPH_ACTIONS_CALLBACK_RESULTS).toContain("user_consent_blocked");
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({
+        status: "pending-consent",
+        lastErrorCode: "user_consent_blocked",
+      }) })),
+    );
+    // No callback banner: the stored code alone must resolve to the copy.
+    render(<M365CustomerGraphActionsCard />);
+
+    expect(await screen.findByText("Your organization requires an administrator to approve sign-in to this app. Sign in with a Global Administrator, or approve it in Entra → Enterprise applications → Admin consent requests.")).toBeInTheDocument();
+    expect(screen.queryByText("user_consent_blocked")).not.toBeInTheDocument();
   });
 
   it("starts consent through runAction and navigates only to the validated Microsoft URL", async () => {
@@ -836,5 +864,96 @@ describe("M365CustomerGraphActionsCard — identity-first consent (W03)", () => 
       await screen.findByTestId("m365-actions-upgrade-notice");
       expect(screen.queryByTestId("m365-actions-revoked-grant")).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("M365CustomerGraphActionsCard — executor_unavailable copy (#9323)", () => {
+  const PENDING_COPY = "Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.";
+  const RETEST_COPY = "The verification service is unavailable. Retest later.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  it("shows the sentence exactly once when the callback and the connection carry the same code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="executor_unavailable" />);
+    await screen.findByRole("button", { name: "Re-consent" });
+    expect(screen.getAllByText(RETEST_COPY)).toHaveLength(1);
+  });
+
+  it("still shows the connection error when the callback result is a different code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="consent_expired" />);
+    expect(await screen.findByText(RETEST_COPY)).toBeInTheDocument();
+    expect(screen.getByText("The consent session expired. Start consent again.")).toBeInTheDocument();
+  });
+
+  it("pending-consent: no Retest wording, one sentence, Re-consent present", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "pending-consent", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="executor_unavailable" />);
+    expect(await screen.findByRole("button", { name: "Re-consent" })).toBeInTheDocument();
+    expect(screen.getAllByText(PENDING_COPY)).toHaveLength(1);
+    expect(document.body).not.toHaveTextContent(/retest/i);
+  });
+
+  it("pending-consent without a callback: connection box uses the no-Retest copy", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "pending-consent", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText(PENDING_COPY)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/retest/i);
+  });
+
+  it("degraded keeps the Retest wording", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText(RETEST_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retest" })).toBeInTheDocument();
+  });
+});
+
+describe("M365CustomerGraphActionsCard — executor_unavailable edge cases (#9323)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.currentOrgId = ORG_A;
+    state.jwtScope = "partner";
+    state.jwtOrgId = null;
+    state.canWrite = true;
+    state.successMessages = [];
+    state.errorMessages = [];
+  });
+
+  it("keeps both messages when the callback code differs from the connection code", async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status: "degraded", lastErrorCode: "admin_role_required" }) })),
+    );
+    render(<M365CustomerGraphActionsCard callbackResult="executor_unavailable" />);
+    expect(await screen.findByText("A Global Administrator or Privileged Role Administrator must grant consent.")).toBeInTheDocument();
+    expect(screen.getByText("The verification service is unavailable. Retest later.")).toBeInTheDocument();
+  });
+
+  it.each(["verifying", "suspended", "revoked"])("%s has no Retest button, so it gets the no-Retest copy", async (status) => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeResponse(envelope({ connection: connection({ status, lastErrorCode: "executor_unavailable" }) })),
+    );
+    render(<M365CustomerGraphActionsCard />);
+    expect(await screen.findByText("Couldn't finish connecting. Try Connect again; if it keeps failing, contact support.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retest" })).not.toBeInTheDocument();
   });
 });

@@ -42,9 +42,11 @@ import { usePermissions } from '../../lib/permissions';
 import { BILLABLE_DEVICE_ROLES, getDeviceRoleIcon, getDeviceRoleLabel, type DeviceRole } from '@/lib/deviceRoles';
 import { LINE_TYPE_LABELS, AUTO_QTY_TYPES, ALLOWANCE_TYPES, SITE_SCOPED_TYPES, HOUR_BLOCK_TYPE } from './lineTypes';
 import DeviceCoverageNotice from './DeviceCoverageNotice';
+import RelatedContractsNotice, { ActivateOverlapConfirm, overlappingSiblings } from './RelatedContractsNotice';
 import AllowanceCell, { OverageNotice } from './AllowanceCell';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { EntityLink } from '@/components/shared/EntityLink';
+import { localDateInputValue } from '@/lib/localDate';
 
 interface Organization { id: string; name: string }
 interface Site { id: string; name: string }
@@ -219,6 +221,10 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   const scheduleEditable = isCreate || contract?.status === 'draft';
 
   const [busy, setBusy] = useState(false);
+  // #9303: Activate confirms first when another live contract in the org bills
+  // on the same cadence over an overlapping term (double-billing guard).
+  const overlapping = useMemo(() => overlappingSiblings(detail?.relatedContracts), [detail?.relatedContracts]);
+  const [activateOverlapOpen, setActivateOverlapOpen] = useState(false);
 
   // ---- header form ---------------------------------------------------------
   const [orgId, setOrgId] = useState(contract?.orgId ?? presetOrgId ?? '');
@@ -232,7 +238,7 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
   // reads as invalid → inline error, not a silent snap-back to 0).
   const [customMonths, setCustomMonths] = useState<string>(String(contract?.intervalMonths ?? 1));
   const [startDate, setStartDate] = useState(
-    contract?.startDate ?? new Date().toISOString().slice(0, 10),
+    contract?.startDate ?? localDateInputValue(),
   );
   const [endDate, setEndDate] = useState(contract?.endDate ?? '');
   const [autopayExcluded, setAutopayExcluded] = useState(contract?.autopayExcluded ?? false);
@@ -926,6 +932,12 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
       <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
         {/* ── header form + lines ─────────────────────────────────────── */}
         <div className="space-y-6">
+          <RelatedContractsNotice
+            related={detail?.relatedContracts}
+            adopt={contract && canWrite && (contract.status === 'draft' || contract.status === 'active')
+              ? { contractId: contract.id, onAdopted: refresh }
+              : undefined}
+          />
           <div className="space-y-6 rounded-lg border bg-card p-4 shadow-xs" data-testid="contract-header-form">
             {/* Existing contracts blur-autosave per field; a single polite live
                 region announces the "Saved" that the amber→green ring shows. */}
@@ -2003,7 +2015,9 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
                     field. Status transitions (Activate) stay explicit. */}
                 {can('contracts', 'manage') && contract?.status === 'draft' && (
                   <button
-                    type="button" onClick={() => void activate()} disabled={busy || lines.length === 0}
+                    type="button"
+                    onClick={() => (overlapping.length > 0 ? setActivateOverlapOpen(true) : void activate())}
+                    disabled={busy || lines.length === 0}
                     data-testid="activate-contract-btn"
                     className="inline-flex w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
                   >
@@ -2042,6 +2056,14 @@ export default function ContractEditor({ detail, presetOrgId, onChanged, autopay
           onLinked={refresh}
         />
       )}
+
+      <ActivateOverlapConfirm
+        open={activateOverlapOpen}
+        siblings={overlapping}
+        busy={busy}
+        onClose={() => setActivateOverlapOpen(false)}
+        onConfirm={() => { setActivateOverlapOpen(false); void activate(); }}
+      />
 
       <ConfirmDialog
         open={pendingRemove !== null}

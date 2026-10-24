@@ -304,8 +304,9 @@ export const configPolicyPatchSettings = pgTable('config_policy_patch_settings',
   id: uuid('id').primaryKey().defaultRandom(),
   featureLinkId: uuid('feature_link_id').notNull().unique().references(() => configPolicyFeatureLinks.id, { onDelete: 'cascade' }),
   sources: text('sources').array().notNull().default(['os']),
-  autoApprove: boolean('auto_approve').notNull().default(false),
-  autoApproveSeverities: text('auto_approve_severities').array().default([]),
+  // auto_approve / auto_approve_severities dropped by
+  // 2026-12-31-160000-drop-policy-patch-auto-approve.sql (#8188): the Update
+  // Ring owns auto-approval.
   scheduleFrequency: varchar('schedule_frequency', { length: 20 }).notNull().default('weekly'),
   scheduleTime: varchar('schedule_time', { length: 10 }).notNull().default('02:00'),
   scheduleDayOfWeek: varchar('schedule_day_of_week', { length: 10 }).default('sun'),

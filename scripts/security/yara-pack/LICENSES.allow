@@ -1,0 +1,13 @@
+# SPDX licence ids the built-in YARA pack may ship (#6263 W03b, spec §5 step 5).
+#
+# A rule is kept only when its repository licence (as YARA Forge embeds it)
+# AND any per-rule `meta: license` both classify to an id listed here. A rule
+# with no licence is dropped. filter.go refuses any id outside its permissive
+# ceiling (Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, CC0-1.0): GPL, DRL,
+# Elastic License, CC-BY and non-commercial terms cannot be enabled from here.
+# Changing this file changes the pack: bump `version` in pack.lock.
+Apache-2.0
+MIT
+BSD-2-Clause
+BSD-3-Clause
+CC0-1.0

@@ -43,7 +43,12 @@ import {
 } from '../services/remoteDesktopStartIntent';
 import { releaseDesktopStartInFlight } from '../services/desktopStartInFlight';
 import { webrtcOfferSchema } from './remote/schemas';
-import { sendCommandToAgent, isAgentConnected } from './agentWs';
+import { sendCommandToAgent, sendDesktopIceCandidateToAgent, isAgentConnected } from './agentWs';
+import {
+  agentIceCandidatesForViewer,
+  submitViewerIceCandidate,
+  viewerIceCandidateBodySchema,
+} from '../services/remoteDesktopIceTrickle';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
 import {
   AGENT_UPGRADE_REQUIRED_CODE,
@@ -2094,6 +2099,43 @@ export function createDesktopWsRoutes(
     }
   );
 
+  // POST /desktop-ws/:id/viewer/ice — trickle ICE (#9182).
+  //
+  // The viewer gathers for a few seconds before it sends its offer; a
+  // candidate it gathers after that (typically a TURN relay) arrives here,
+  // after the agent's answer, and is relayed to the agent. Same authorization
+  // as the offer; the write is guarded to the session's current start and the
+  // relay only follows a successful write.
+  app.post(
+    '/:id/viewer/ice',
+    zValidator('param', desktopSessionIdParamSchema),
+    zValidator('json', viewerIceCandidateBodySchema),
+    async (c) => {
+      const { id: sessionId } = c.req.valid('param');
+      const { candidate } = c.req.valid('json');
+      const access = await validateViewerSessionAccess(c.req.header('Authorization'), sessionId);
+      if (!access.valid) {
+        return c.json({ error: access.error }, access.status);
+      }
+
+      const result = await withSystemDbAccessContext(() =>
+        submitViewerIceCandidate({
+          session: access.session,
+          agentId: access.device.agentId ?? null,
+          candidate,
+          send: sendDesktopIceCandidateToAgent,
+        })
+      );
+      if (!result.ok) {
+        return c.json({
+          error: 'Cannot add ICE candidate for session in current state',
+          status: access.session.status,
+        }, 409);
+      }
+      return c.json({ accepted: true, forwarded: result.forwarded });
+    }
+  );
+
   // POST /desktop-ws/:id/viewer/lease/renew
   //
   // The viewer-token twin of POST /remote/sessions/:id/lease/renew. apps/viewer
@@ -2166,6 +2208,11 @@ export function createDesktopWsRoutes(
         status: access.session.status,
         terminationPhase,
         webrtcAnswer: answerWithheld ? null : access.session.webrtcAnswer,
+        // #9182: the agent's candidates gathered after its answer, for the
+        // current start only, ordered by seq. Withheld exactly like the answer.
+        agentIceCandidates: answerWithheld
+          ? []
+          : agentIceCandidatesForViewer(access.session.iceCandidates, access.session.desktopStartGeneration),
         errorMessage: access.session.errorMessage,
         // #6818: in consent mode the agent answers only after the end user
         // does, so the viewer extends its answer poll to this budget.

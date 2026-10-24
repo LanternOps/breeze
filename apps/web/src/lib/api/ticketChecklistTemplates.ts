@@ -15,6 +15,7 @@ import type {
   UpdateChecklistTemplateInput,
   CreateChecklistTemplateItemInput,
   UpdateChecklistTemplateItemInput,
+  DuplicateChecklistTemplateInput,
 } from '@breeze/shared';
 import { unwrapData, type Fetcher } from './serviceDeliverables';
 
@@ -73,6 +74,15 @@ export async function updateChecklistTemplate(
   body: UpdateChecklistTemplateInput,
 ): Promise<ChecklistTemplate> {
   return unwrapData<ChecklistTemplate>(await f(templatePath(id), jsonInit('PATCH', body)));
+}
+
+/** Copy a template (same owner as the source). Omit `name` for "Copy of <name>". */
+export async function duplicateChecklistTemplate(
+  f: Fetcher,
+  id: string,
+  body: DuplicateChecklistTemplateInput = {},
+): Promise<ChecklistTemplate> {
+  return unwrapData<ChecklistTemplate>(await f(`${templatePath(id)}/duplicate`, jsonInit('POST', body)));
 }
 
 export async function deleteChecklistTemplate(f: Fetcher, id: string): Promise<void> {

@@ -140,6 +140,104 @@ describe('SYSTEM_LIBRARY_SCRIPTS definitions', () => {
   });
 });
 
+
+const deleteByName = SYSTEM_LIBRARY_SCRIPTS.find((s) => s.name === 'Delete Printer by Name (Windows)');
+const deleteExcept = SYSTEM_LIBRARY_SCRIPTS.find((s) => s.name === 'Delete All Printers Except Listed (Windows)');
+
+// #8290 - printer cleanup scripts.
+describe('printer cleanup scripts (#8290)', () => {
+  const entries = [
+    ['Delete Printer by Name (Windows)', deleteByName, 'printer_name', 'BREEZE_PARAM_PRINTER_NAME'],
+    ['Delete All Printers Except Listed (Windows)', deleteExcept, 'keep_printers', 'BREEZE_PARAM_KEEP_PRINTERS'],
+  ] as const;
+
+  it('keeps the edition migration first (fixMemory integration test indexes [0])', () => {
+    expect(SYSTEM_LIBRARY_SCRIPTS[0]!.name).toBe('Migrate Agent Edition (Windows)');
+  });
+
+  for (const [name, def, param, env] of entries) {
+    describe(name, () => {
+      it('has the expected dispatch shape and declares its runtime parameter', () => {
+        expect(def).toBeDefined();
+        expect(def!.language).toBe('powershell');
+        expect(def!.osTypes).toEqual(['windows']);
+        expect(def!.runAs).toBe('system');
+        expect(def!.timeoutSeconds).toBe(300);
+        const p = def!.parameters!.find((x) => x.name === param);
+        expect(p).toMatchObject({ type: 'string', required: true, source: 'runtime' });
+        const dry = def!.parameters!.find((x) => x.name === 'dry_run');
+        expect(dry).toMatchObject({ type: 'select', options: 'no,yes', defaultValue: 'no' });
+        expect(def!.parameters).toHaveLength(2);
+      });
+
+      it('reads its parameters from the environment', () => {
+        expect(def).toBeDefined();
+        expect(def!.content).toContain(`$env:${env}`);
+        expect(def!.content).toContain('$env:BREEZE_PARAM_DRY_RUN');
+        expect(scriptParameterEnvName(param)).toBe(env);
+      });
+
+      it('only removes printers - never ports or drivers', () => {
+        expect(def).toBeDefined();
+        expect(def!.content).toContain('Remove-Printer ');
+        expect(def!.content).toContain('Get-Printer');
+        expect(def!.content).not.toMatch(/Remove-PrinterPort/i);
+        expect(def!.content).not.toMatch(/Remove-PrinterDriver/i);
+        expect(def!.content).not.toMatch(/Remove-Item/i);
+        expect(def!.content).toContain("$ErrorActionPreference = 'Stop'");
+        expect(def!.content).toContain('-like');
+      });
+
+      it('exits 1 on a blank parameter, an unavailable spooler, and failed removals', () => {
+        expect(def).toBeDefined();
+        expect(def!.content).toMatch(/exit 1/);
+        expect(def!.content).toMatch(/spooler/i);
+        expect(def!.content).toMatch(/\$failed/);
+      });
+
+      it('documents the SYSTEM-context per-user printer limitation', () => {
+        expect(def).toBeDefined();
+        expect(def!.description).toMatch(/per-user/i);
+      });
+    });
+  }
+
+  it('matches names literally before falling back to wildcards (names may contain [ ])', () => {
+    expect(deleteByName!.content).toContain('($_.Name -ieq $pattern) -or ($_.Name -like $pattern)');
+    expect(deleteExcept!.content).toContain('($p.Name -ieq $k) -or ($p.Name -like $k)');
+  });
+
+  it('by-name: reports no match and exits 0', () => {
+    expect(deleteByName).toBeDefined();
+    expect(deleteByName!.content).toMatch(/no printers matched/i);
+  });
+
+  it('except-listed: refuses an empty keep-list before enumerating or removing anything', () => {
+    expect(deleteExcept).toBeDefined();
+    const c = deleteExcept!.content;
+    const empty = c.search(/Count -eq 0/);
+    expect(empty).toBeGreaterThan(-1);
+    expect(c.indexOf('exit 1', empty)).toBeGreaterThan(empty);
+    expect(empty).toBeLessThan(c.indexOf('Get-Printer'));
+    expect(empty).toBeLessThan(c.indexOf('Remove-Printer '));
+    expect(deleteExcept!.description).toMatch(/Microsoft Print to PDF/);
+  });
+
+  const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
+  it.runIf(hasPwsh)('both printer scripts parse without PowerShell syntax errors', () => {
+    expect(deleteByName).toBeDefined();
+    expect(deleteExcept).toBeDefined();
+    for (const def of [deleteByName!, deleteExcept!]) {
+      const r = spawnSync(
+        'pwsh',
+        ['-NoProfile', '-Command', '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(), [ref]$null, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.ToString() }; exit 1 }'],
+        { input: def.content, encoding: 'utf8' },
+      );
+      expect(r.status, `${def.name}: ${r.stdout}${r.stderr}`).toBe(0);
+    }
+  });
+});
+
 // #5016 — the script used to run the whole uninstall -> restore -> install
 // dance inside the agent's own script process. The uninstall stops that agent,
 // and a script cannot outlive its agent: current agents contain every script in
@@ -259,6 +357,18 @@ describe('ensureSystemLibraryScripts', () => {
     vi.mocked(db.select).mockReturnValue({ from } as never);
   }
 
+  // One matching stored row per shipped definition, in sync order (the sync
+  // selects once per definition).
+  function mockExistingAll(first?: Record<string, unknown>) {
+    const limit = vi.fn();
+    SYSTEM_LIBRARY_SCRIPTS.forEach((def, i) => {
+      limit.mockResolvedValueOnce([i === 0 && first ? first : existingRowFor(def)]);
+    });
+    const where = vi.fn(() => ({ limit }));
+    const from = vi.fn(() => ({ where }));
+    vi.mocked(db.select).mockReturnValue({ from } as never);
+  }
+
   function mockInsert() {
     const values = vi.fn((vals: Record<string, unknown>) => ({
       returning: vi.fn().mockResolvedValue([{ id: `created-${vals.name as string}` }]),
@@ -274,7 +384,7 @@ describe('ensureSystemLibraryScripts', () => {
     return { set, where };
   }
 
-  function existingRowFor(def: NonNullable<typeof editionMigration>): Record<string, unknown> {
+  function existingRowFor(def: (typeof SYSTEM_LIBRARY_SCRIPTS)[number]): Record<string, unknown> {
     return {
       id: '3f6f0a4e-8c7e-4a6a-9a53-0d1e51f9a001',
       description: def.description,
@@ -311,13 +421,13 @@ describe('ensureSystemLibraryScripts', () => {
   });
 
   it('no-ops when the stored row already matches the definition', async () => {
-    mockExisting([existingRowFor(editionMigration!)]);
+    mockExistingAll();
     const values = mockInsert();
     const { set } = mockUpdate();
 
     const result = await ensureSystemLibraryScripts();
 
-    expect(result.unchanged).toBeGreaterThan(0);
+    expect(result.unchanged).toBe(SYSTEM_LIBRARY_SCRIPTS.length);
     expect(result.created).toBe(0);
     expect(result.updated).toBe(0);
     expect(values).not.toHaveBeenCalled();
@@ -328,7 +438,7 @@ describe('ensureSystemLibraryScripts', () => {
     const stale = existingRowFor(editionMigration!);
     stale.content = '# stale content';
     stale.version = 3;
-    mockExisting([stale]);
+    mockExistingAll(stale);
     const { set } = mockUpdate();
 
     const result = await ensureSystemLibraryScripts();
@@ -361,7 +471,7 @@ describe('ensureSystemLibraryScripts', () => {
   });
 
   it('cuts nothing when every shipped definition is unchanged', async () => {
-    mockExisting([existingRowFor(editionMigration!)]);
+    mockExistingAll();
     mockInsert();
     mockUpdate();
 
@@ -381,7 +491,7 @@ describe('ensureSystemLibraryScripts', () => {
     stale.acknowledgedSecurityPatterns = ['PowerShell HKLM modification'];
     stale.securityAcknowledgedBy = 'someone-who-approved-the-old-body';
     stale.securityAcknowledgedAt = new Date('2026-01-01T00:00:00.000Z');
-    mockExisting([stale]);
+    mockExistingAll(stale);
     const { set } = mockUpdate();
 
     await ensureSystemLibraryScripts();
@@ -404,7 +514,7 @@ describe('ensureSystemLibraryScripts', () => {
     metadataOnly.timeoutSeconds = (editionMigration!.timeoutSeconds ?? 300) + 60;
     metadataOnly.acknowledgedSecurityPatterns = ['PowerShell HKLM modification'];
     metadataOnly.securityAcknowledgedBy = 'admin-who-approved-this-body';
-    mockExisting([metadataOnly]);
+    mockExistingAll(metadataOnly);
     const { set } = mockUpdate();
 
     await ensureSystemLibraryScripts();
@@ -428,7 +538,7 @@ describe('ensureSystemLibraryScripts', () => {
     // sync (that would skip a number and break UNIQUE-backed history).
     const stale = existingRowFor(editionMigration!);
     stale.origin = 'human';
-    mockExisting([stale]);
+    mockExistingAll(stale);
     const values = mockInsert();
     const { set } = mockUpdate();
 
@@ -443,14 +553,14 @@ describe('ensureSystemLibraryScripts', () => {
     expect(values).not.toHaveBeenCalled();
     expect(h.cuts).toEqual([]);
     expect(result.updated).toBeGreaterThan(0);
-    expect(result.unchanged).toBe(0);
+    expect(result.unchanged).toBe(SYSTEM_LIBRARY_SCRIPTS.length - 1);
   });
 
   it('#5948: corrects a stale origin="human" row AND cuts a version when the definition also changed', async () => {
     const stale = existingRowFor(editionMigration!);
     stale.origin = 'human';
     stale.content = '# stale content';
-    mockExisting([stale]);
+    mockExistingAll(stale);
     const { set } = mockUpdate();
 
     await ensureSystemLibraryScripts();
@@ -466,7 +576,7 @@ describe('ensureSystemLibraryScripts', () => {
     const deleted = existingRowFor(editionMigration!);
     deleted.deletedAt = new Date('2026-08-01T00:00:00Z');
     deleted.content = '# stale content';
-    mockExisting([deleted]);
+    mockExistingAll(deleted);
     const values = mockInsert();
     const { set } = mockUpdate();
 

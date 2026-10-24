@@ -35,6 +35,8 @@ vi.mock('../db/schema', () => ({
     desktopStartGeneration: 'remoteSessions.desktopStartGeneration',
     terminalGeneration: 'remoteSessions.terminalGeneration',
     terminationPhase: 'remoteSessions.terminationPhase',
+    type: 'remoteSessions.type',
+    iceCandidates: 'remoteSessions.iceCandidates',
   },
   devices: { id: 'devices.id' },
   users: { id: 'users.id', status: 'users.status' },
@@ -70,6 +72,7 @@ vi.mock('../services/viewerTokenRevocation', () => ({
 
 vi.mock('./agentWs', () => ({
   sendCommandToAgent: vi.fn(() => true),
+  sendDesktopIceCandidateToAgent: vi.fn(() => true),
   isAgentConnected: vi.fn(() => true),
 }));
 
@@ -154,7 +157,7 @@ vi.mock('../services/remoteWsAuthorization', () => ({
 import { db } from '../db';
 import { verifyViewerAccessToken } from '../services/jwt';
 import { isViewerJtiRevoked, isViewerSessionRevoked } from '../services/viewerTokenRevocation';
-import { sendCommandToAgent } from './agentWs';
+import { sendCommandToAgent, sendDesktopIceCandidateToAgent } from './agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
 import { createDesktopWsRoutes } from './desktopWs';
 import { RemoteSessionPromptPolicyError } from './remote/consentGate';
@@ -976,3 +979,117 @@ describe('POST /:id/viewer/offer — concurrent second offer (#8947)', () => {
   });
 });
 
+
+
+// #9182: trickle ICE. The viewer posts candidates it gathered after its offer
+// (relayed to the agent), and reads the agent's late candidates back from the
+// session poll.
+describe('trickle ICE viewer routes (#9182)', () => {
+  const RELAY = 'candidate:9 1 udp 16777215 198.51.100.7 3478 typ relay raddr 203.0.113.5 rport 50000';
+  const LIVE = { ...ACTIVE_SESSION, desktopStartGeneration: 3n, webrtcAnswer: 'v=0 answer', iceCandidates: [] as unknown[] };
+
+  const postIce = (body: unknown, token: string | null = 'valid.viewer.token') => buildApp().request(`/${SESSION_ID}/viewer/ice`, {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const getSession = () => buildApp().request(`/${SESSION_ID}/viewer/session`, {
+    headers: { Authorization: 'Bearer valid.viewer.token' },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeHappyPath();
+    mockViewerSelect({ session: LIVE, device: DEVICE, user: USER });
+    vi.mocked(sendDesktopIceCandidateToAgent).mockReturnValue(true);
+  });
+
+  it('stores a late viewer candidate and relays it to the agent for the current start', async () => {
+    mockUpdateReturning({ iceCandidates: [{}] });
+
+    const res = await postIce({ candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0, usernameFragment: 'abcd' } });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: true, forwarded: true });
+    expect(db.update).toHaveBeenCalledTimes(1);
+    expect(sendDesktopIceCandidateToAgent).toHaveBeenCalledWith(AGENT_ID, {
+      type: 'desktop_ice_candidate',
+      sessionId: SESSION_ID,
+      startGeneration: '3',
+      candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0, usernameFragment: 'abcd' },
+    });
+    expect(sendCommandToAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty candidate (the browser end-of-candidates signal)', async () => {
+    const res = await postIce({ candidate: { candidate: '' } });
+    expect(res.status).toBe(400);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendDesktopIceCandidateToAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a request without a viewer token', async () => {
+    const res = await postIce({ candidate: { candidate: RELAY } }, null);
+    expect(res.status).toBe(401);
+    expect(sendDesktopIceCandidateToAgent).not.toHaveBeenCalled();
+  });
+
+  it('refuses a session that has no start in flight', async () => {
+    mockViewerSelect({ session: { ...LIVE, status: 'pending' }, device: DEVICE, user: USER });
+    const res = await postIce({ candidate: { candidate: RELAY } });
+    expect(res.status).toBe(409);
+    expect(db.update).not.toHaveBeenCalled();
+    expect(sendDesktopIceCandidateToAgent).not.toHaveBeenCalled();
+  });
+
+  it('does not relay a candidate the guarded write refused', async () => {
+    mockUpdateReturning(undefined);
+    const res = await postIce({ candidate: { candidate: RELAY } });
+    expect(res.status).toBe(409);
+    expect(sendDesktopIceCandidateToAgent).not.toHaveBeenCalled();
+  });
+
+  it('returns the agent\'s late candidates for the current start with the answer', async () => {
+    mockViewerSelect({
+      session: {
+        ...LIVE,
+        iceCandidates: [
+          { source: 'agent', generation: '2', seq: 0, candidate: { candidate: 'stale' } },
+          { source: 'viewer', generation: '3', candidate: { candidate: 'viewer-own' } },
+          { source: 'agent', generation: '3', seq: 1, complete: true },
+          { source: 'agent', generation: '3', seq: 0, candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0 } },
+        ],
+      },
+      device: DEVICE,
+      user: USER,
+    });
+
+    const res = await getSession();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.webrtcAnswer).toBe('v=0 answer');
+    expect(body.agentIceCandidates).toEqual([
+      { seq: 0, candidate: { candidate: RELAY, sdpMid: '0', sdpMLineIndex: 0 } },
+      { seq: 1, complete: true },
+    ]);
+  });
+
+  it('withholds the agent\'s candidates whenever the answer is withheld', async () => {
+    mockViewerSelect({
+      session: {
+        ...LIVE,
+        terminationPhase: 'pending',
+        iceCandidates: [{ source: 'agent', generation: '3', seq: 0, candidate: { candidate: RELAY } }],
+      },
+      device: DEVICE,
+      user: USER,
+    });
+
+    const body = await (await getSession()).json();
+    expect(body.webrtcAnswer).toBeNull();
+    expect(body.agentIceCandidates).toEqual([]);
+  });
+});

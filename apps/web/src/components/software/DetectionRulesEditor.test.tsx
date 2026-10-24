@@ -77,4 +77,29 @@ describe('DetectionRulesEditor', () => {
     fireEvent.click(screen.getAllByTestId('detection-rule-remove')[0]!);
     expect(onChange).toHaveBeenCalledWith([{ type: 'file_exists', path: 'C:\\b' }]);
   });
+
+  it('renders a service_running rule read-only (type + service name) and leaves it untouched on edits', () => {
+    const svc: DetectionRule = { type: 'service_running', serviceName: 'Spooler' };
+    const rules: DetectionRule[] = [svc, { type: 'file_exists', path: '' }];
+    const onChange = vi.fn();
+    render(<DetectionRulesEditor rules={rules} onChange={onChange} />);
+
+    const readOnly = screen.getByTestId('detection-rule-readonly');
+    expect(readOnly.textContent).toContain('Service running');
+    expect(readOnly.textContent).toContain('Spooler');
+    // No editable controls (and no misleading registry select) inside the read-only row.
+    expect(readOnly.querySelector('input, select')).toBeNull();
+    expect(screen.queryByLabelText('Registry hive')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('File or folder path'), { target: { value: 'C:\\app.exe' } });
+    expect(onChange).toHaveBeenCalledWith([svc, { type: 'file_exists', path: 'C:\\app.exe' }]);
+  });
+
+  it('lets a read-only rule be removed', () => {
+    const svc: DetectionRule = { type: 'service_running', serviceName: 'Spooler' };
+    const onChange = vi.fn();
+    render(<DetectionRulesEditor rules={[svc]} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId('detection-rule-remove'));
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
 });

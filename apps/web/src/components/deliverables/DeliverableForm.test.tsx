@@ -122,6 +122,92 @@ describe('DeliverableForm contract picker', () => {
   });
 });
 
+describe('DeliverableForm effectiveFrom default (#9308)', () => {
+  const effectiveFromInput = (container: HTMLElement) => container.querySelector('input[id$="-from"]') as HTMLInputElement;
+
+  it('defaults effectiveFrom to the pinned contract start date', () => {
+    const { container } = render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" contractStartDate="2026-03-01" onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(effectiveFromInput(container).value).toBe('2026-03-01');
+  });
+
+  it('follows the picked contract start until the user edits the field', () => {
+    const { container } = render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[{ id: 'ct-1', name: 'Acme MSA', startDate: '2026-03-01' }]} onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: 'ct-1' } });
+    expect(effectiveFromInput(container).value).toBe('2026-03-01');
+    fireEvent.change(effectiveFromInput(container), { target: { value: '2026-04-01' } });
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: '' } });
+    expect(effectiveFromInput(container).value).toBe('2026-04-01');
+  });
+});
+
+describe('DeliverableForm edit-mode contract move (#9302)', () => {
+  const editing: Deliverable = { ...saved, id: 'd-1', contractId: 'ct-1' };
+  const MOVE_OPTIONS = [{ id: 'ct-1', name: 'Acme MSA' }, { id: 'ct-2', name: 'Acme Onboarding' }];
+
+  it('shows the picker preselected to the current contract even when a contract is pinned', () => {
+    render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" contractOptions={MOVE_OPTIONS}
+        initial={editing} onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    const picker = screen.getByTestId('deliverable-form-contract') as HTMLSelectElement;
+    expect(picker.value).toBe('ct-1');
+    expect(Array.from(picker.options).map((o) => o.value)).toEqual(['', 'ct-1', 'ct-2']);
+  });
+
+  it('keeps the current contract selectable when it is missing from the options', () => {
+    render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    const picker = screen.getByTestId('deliverable-form-contract') as HTMLSelectElement;
+    expect(picker.value).toBe('ct-1');
+    expect(picker.options[picker.selectedIndex].textContent).toBe('Acme MSA');
+  });
+
+  it('PATCHes null when "No contract" is chosen', async () => {
+    const fetcher = makeFetcher();
+    render(
+      <DeliverableForm fetcher={fetcher} orgId="org-1" contractOptions={MOVE_OPTIONS} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const [, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).contractId).toBeNull();
+  });
+
+  it('an untouched picker re-sends the current contract id (no silent move)', async () => {
+    const fetcher = makeFetcher();
+    render(
+      <DeliverableForm fetcher={fetcher} orgId="org-1" contractOptions={MOVE_OPTIONS} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const [, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).contractId).toBe('ct-1');
+  });
+
+  it('PATCHes the newly chosen contract id', async () => {
+    const fetcher = makeFetcher();
+    render(
+      <DeliverableForm fetcher={fetcher} orgId="org-1" contractOptions={MOVE_OPTIONS} initial={editing}
+        onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    fireEvent.change(screen.getByTestId('deliverable-form-contract'), { target: { value: 'ct-2' } });
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => expect(fetcher.mock.calls.some(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH')).toBe(true));
+    const [path, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(path).toBe('/orgs/org-1/deliverables/d-1');
+    expect(JSON.parse(String(init.body))).toMatchObject({ contractId: 'ct-2' });
+  });
+});
+
 describe('DeliverableForm auto-evidence report picker', () => {
   it('renders the evidence report picker bound to empty when None', () => {
     render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} onSaved={vi.fn()} onCancel={vi.fn()} />);
@@ -266,5 +352,53 @@ describe('DeliverableForm checklist fields (#5808 W03)', () => {
 
     expect(await screen.findByTestId('deliverable-form-error')).toHaveTextContent('Deliverable not found');
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+});
+
+// #9315 — one-time deliverables are usually internal onboarding steps, so the
+// portal default follows the cadence until the user makes a deliberate choice.
+describe('DeliverableForm portal-visible default', () => {
+  const portal = () => screen.getByTestId('deliverable-form-portal-visible') as HTMLInputElement;
+  const cadence = () => screen.getByTestId('deliverable-form-cadence');
+
+  it('starts on for the default recurring cadence and turns off when cadence becomes One-time', () => {
+    render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    expect(portal().checked).toBe(true);
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(false);
+    fireEvent.change(cadence(), { target: { value: 'quarterly' } });
+    expect(portal().checked).toBe(true);
+  });
+
+  it('leaves the toggle alone once the user has touched it', () => {
+    render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(portal()); // user turns it off on a monthly item
+    fireEvent.click(portal()); // ...and back on, deliberately
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(true);
+  });
+
+  it('POSTs portalVisible:false for an untouched One-time deliverable', async () => {
+    const fetcher = makeFetcher();
+    render(<DeliverableForm fetcher={fetcher} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Billing configured' } });
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    fireEvent.click(screen.getByTestId('deliverable-form-save'));
+    await waitFor(() => {
+      expect(fetcher.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(true);
+    });
+    const [, init] = fetcher.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'POST') as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ cadence: 'one_time', portalVisible: false });
+  });
+
+  it('edit mode keeps the stored value even if a cadence change event fires', () => {
+    render(
+      <DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractId="ct-1" initial={{ ...saved, cadence: 'monthly', portalVisible: true }} onSaved={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(portal().checked).toBe(true);
+    // The select is disabled in edit mode, but the stored value must not hinge
+    // on that alone: edit mode starts "touched".
+    fireEvent.change(cadence(), { target: { value: 'one_time' } });
+    expect(portal().checked).toBe(true);
   });
 });

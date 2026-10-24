@@ -6,6 +6,7 @@ vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 vi.mock('../../lib/authScope', () => ({ getJwtClaims: vi.fn(() => ({ scope: null, orgId: null, partnerId: null })) }));
+vi.mock('../auth/MfaPolicyOffBanner', () => ({ PARTNER_SETTINGS_SAVED_EVENT: 'breeze:partner-settings-saved', default: () => null }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 
 import PartnerSettingsPage from './PartnerSettingsPage';
@@ -32,7 +33,7 @@ describe('PartnerSettingsPage Modules tab (M7)', () => {
       makeJsonResponse({
         id: 'partner-1', name: 'Acme MSP', slug: 'acme', type: 'partner', plan: 'pro',
         createdAt: '2026-02-09T00:00:00.000Z', serviceManagementMode: 'native',
-        settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', businessHours: { preset: 'business' }, contact: {}, address: {} },
+        settings: { timezone: 'UTC', dateFormat: 'MM/DD/YYYY', timeFormat: '12h', language: 'en', contact: {}, address: {} },
       })
     );
 

@@ -41,7 +41,9 @@ export type BodyLimitRule =
   | 'ticket-attachment'
   | 'org-document'
   | 'quote-acceptance-evidence'
+  | 'agreement-signed-copy'
   | 'edr-webhook'
+  | 'yara-test-sample'
   // Route-level limits TIGHTER than the global default, so `bodyLimitForPath`
   // never returns them — the route's own gate is the one that answers. They
   // share this namespace so all body-limit 413s group on one tag.
@@ -175,6 +177,23 @@ export function bodyLimitForPath(path: string): BodyLimitPolicy {
       maxSize: 10 * 1024 * 1024 + 64 * 1024,
       error: 'Evidence file too large (max 10 MB)',
     };
+  }
+  // Record signed agreement (#8865 W1c): one multipart form with an optional
+  // externally signed copy (PDF/PNG/JPEG), capped at 10 MiB by the route and
+  // agreementRequestService. Same 64 KiB slack as the evidence carve-out.
+  if (path.match(/^\/api\/v1\/contracts\/agreement-requests\/record-signed$/)) {
+    return {
+      rule: 'agreement-signed-copy',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Signed copy too large (max 10 MB)',
+    };
+  }
+  // YARA rule test upload (#6263 W04-2): one raw octet-stream sample, capped
+  // at 10 MiB (YARA_TEST_SAMPLE_MAX_BYTES) by the route's own exact check,
+  // which answers YARA_TEST_TOO_LARGE inside this 64 KiB slack. Every other
+  // /security/yara path stays at the default.
+  if (/^\/api\/v1\/security\/yara\/rule-sets\/[0-9a-f-]{36}\/test$/i.test(path)) {
+    return { rule: 'yara-test-sample', maxSize: 10 * 1024 * 1024 + 64 * 1024, error: 'File too large (max 10 MB)' };
   }
   if (path === '/api/v1/users/me/avatar') {
     return {

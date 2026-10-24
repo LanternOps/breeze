@@ -21,12 +21,36 @@ function executeActionRequestBody(overrides: Record<string, unknown> = {}) {
 }
 
 describe('executor HTTP app — execute-action', () => {
+  it('has no /v1/complete-consent route: a signed request is a 404 and reaches no dependency', async () => {
+    const verify = vi.fn().mockResolvedValue({ correlationId: '11111111-1111-4111-8111-111111111111' });
+    const deps = {
+      authenticator: { verify },
+      verifyIdentity: vi.fn(),
+      retest: vi.fn(),
+      executeAction: vi.fn(),
+    };
+    const app = createExecutorApp(deps as unknown as Parameters<typeof createExecutorApp>[0]);
+
+    const response = await app.request('/v1/complete-consent', {
+      method: 'POST',
+      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({ correlationId: '11111111-1111-4111-8111-111111111111' }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'not_found' });
+    expect(verify).not.toHaveBeenCalled();
+    for (const dependency of [deps.verifyIdentity, deps.retest, deps.executeAction]) {
+      expect(dependency).not.toHaveBeenCalled();
+    }
+  });
+
   it('authenticates the exact raw body before parsing JSON', async () => {
     const verify = vi.fn().mockRejectedValue(new Error('unauthorized'));
     const executeAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -42,13 +66,46 @@ describe('executor HTTP app — execute-action', () => {
     expect(executeAction).not.toHaveBeenCalled();
   });
 
+  it('serves unauthenticated GET /version with the build version and sha, and nothing else', async () => {
+    const verify = vi.fn();
+    const app = createExecutorApp({
+      authenticator: { verify },
+      verifyIdentity: vi.fn(),
+      retest: vi.fn(),
+      executeAction: vi.fn(),
+      buildInfo: { version: '1.2.3', gitSha: 'abc1234' },
+    });
+    const response = await app.request('/version');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ version: '1.2.3', gitSha: 'abc1234' });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('GET /version defaults to the baked APP_VERSION / GIT_SHA, reporting unknown for unusable values', async () => {
+    const previous = { v: process.env.APP_VERSION, s: process.env.GIT_SHA };
+    process.env.APP_VERSION = '9.9.9';
+    process.env.GIT_SHA = 'not a sha';
+    try {
+      const app = createExecutorApp({
+        authenticator: { verify: vi.fn() },
+        verifyIdentity: vi.fn(),
+        retest: vi.fn(),
+        executeAction: vi.fn(),
+      });
+      expect(await (await app.request('/version')).json()).toEqual({ version: '9.9.9', gitSha: 'unknown' });
+    } finally {
+      if (previous.v === undefined) delete process.env.APP_VERSION; else process.env.APP_VERSION = previous.v;
+      if (previous.s === undefined) delete process.env.GIT_SHA; else process.env.GIT_SHA = previous.s;
+    }
+  });
+
   it('passes the exact UTF-8 bytes and fixed operation to auth before executing', async () => {
     const body = executeActionRequestBody();
     const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });
     const executeAction = vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -72,7 +129,7 @@ describe('executor HTTP app — execute-action', () => {
     const verify = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
       maxBodyBytes: 8,
@@ -92,7 +149,7 @@ describe('executor HTTP app — execute-action', () => {
   it('sanitizes operation exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID }) },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn().mockRejectedValue(new Error('provider body with secret access-token')),
     });
@@ -110,7 +167,7 @@ describe('executor HTTP app — execute-action', () => {
     const serve = vi.fn().mockReturnValue({ close });
     const app = createExecutorApp({
       authenticator: { verify: vi.fn() },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
     });
@@ -126,7 +183,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn().mockResolvedValue(stubbedResult);
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -148,7 +205,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -168,7 +225,7 @@ describe('executor HTTP app — execute-action', () => {
     const executeAction = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction,
     });
@@ -185,7 +242,7 @@ describe('executor HTTP app — execute-action', () => {
   });
 });
 
-describe('executor HTTP app — complete-consent / retest', () => {
+describe('executor HTTP app — retest', () => {
   function retestBody(overrides: Record<string, unknown> = {}) {
     return JSON.stringify({ correlationId: CORRELATION_ID, tenantId: TENANT_ID, ...overrides });
   }
@@ -196,7 +253,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const retest = vi.fn().mockResolvedValue({ success: false, errorCode: 'application_token_invalid' });
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest,
       executeAction: vi.fn(),
     });
@@ -219,7 +276,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
   it('sanitizes retest exceptions instead of classifying them as caller errors', async () => {
     const app = createExecutorApp({
       authenticator: { verify: vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID }) },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn().mockRejectedValue(new Error('provider body with secret access-token')),
       executeAction: vi.fn(),
     });
@@ -232,100 +289,12 @@ describe('executor HTTP app — complete-consent / retest', () => {
     expect(await response.json()).toEqual({ error: 'internal_error' });
   });
 
-  it('serves POST /v1/complete-consent with the stubbed dependency result', async () => {
-    const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });
-    const stubbedResult = { success: false, errorCode: 'identity_token_invalid' };
-    const completeConsent = vi.fn().mockResolvedValue(stubbedResult);
-    const app = createExecutorApp({
-      authenticator: { verify },
-      completeConsent, verifyIdentity: vi.fn(),
-      retest: vi.fn(),
-      executeAction: vi.fn(),
-    });
-
-    const response = await app.request('/v1/complete-consent', {
-      method: 'POST',
-      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        correlationId: CORRELATION_ID,
-        consentAttemptId: '33333333-3333-4333-8333-333333333333',
-        tenantHint: TENANT_ID,
-        authorizationCode: 'code',
-        codeVerifier: 'v'.repeat(43),
-        nonce: 'nonce',
-        redirectUri: 'https://console.example.test/api/v1/m365/actions-consent/callback',
-      }),
-    });
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(stubbedResult);
-    expect(verify).toHaveBeenCalledWith(expect.objectContaining({ operation: 'complete-consent' }));
-    expect(completeConsent).toHaveBeenCalledOnce();
-  });
-
-  it('rejects a complete-consent body whose correlationId does not match the authenticated one', async () => {
-    const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });
-    const completeConsent = vi.fn();
-    const app = createExecutorApp({
-      authenticator: { verify },
-      completeConsent, verifyIdentity: vi.fn(),
-      retest: vi.fn(),
-      executeAction: vi.fn(),
-    });
-
-    const response = await app.request('/v1/complete-consent', {
-      method: 'POST',
-      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        correlationId: '99999999-9999-4999-8999-999999999999',
-        consentAttemptId: '33333333-3333-4333-8333-333333333333',
-        tenantHint: TENANT_ID,
-        authorizationCode: 'code',
-        codeVerifier: 'v'.repeat(43),
-        nonce: 'nonce',
-        redirectUri: 'https://console.example.test/api/v1/m365/actions-consent/callback',
-      }),
-    });
-
-    expect(response.status).toBe(401);
-    expect(completeConsent).not.toHaveBeenCalled();
-  });
-
-  it('rejects an invalid complete-consent body', async () => {
-    const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });
-    const completeConsent = vi.fn();
-    const app = createExecutorApp({
-      authenticator: { verify },
-      completeConsent, verifyIdentity: vi.fn(),
-      retest: vi.fn(),
-      executeAction: vi.fn(),
-    });
-
-    const response = await app.request('/v1/complete-consent', {
-      method: 'POST',
-      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        correlationId: CORRELATION_ID,
-        consentAttemptId: '33333333-3333-4333-8333-333333333333',
-        tenantHint: 'not-a-guid',
-        authorizationCode: 'code',
-        codeVerifier: 'v'.repeat(43),
-        nonce: 'nonce',
-        redirectUri: 'https://console.example.test/api/v1/m365/actions-consent/callback',
-      }),
-    });
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: 'invalid_request' });
-    expect(completeConsent).not.toHaveBeenCalled();
-  });
-
   it('rejects a retest body whose correlationId does not match the authenticated one', async () => {
     const verify = vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID });
     const retest = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest,
       executeAction: vi.fn(),
     });
@@ -345,7 +314,7 @@ describe('executor HTTP app — complete-consent / retest', () => {
     const retest = vi.fn();
     const app = createExecutorApp({
       authenticator: { verify },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest,
       executeAction: vi.fn(),
     });
@@ -375,7 +344,7 @@ describe('executor process lifecycle', () => {
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const app = createExecutorApp({
       authenticator: { verify: vi.fn() },
-      completeConsent: vi.fn(), verifyIdentity: vi.fn(),
+      verifyIdentity: vi.fn(),
       retest: vi.fn(),
       executeAction: vi.fn(),
     });
@@ -406,5 +375,111 @@ describe('executor process lifecycle', () => {
 
     expect(errorLog).toHaveBeenCalledWith('[m365-graph-actions-executor] startup failed: unknown error');
     expect(process.exitCode).toBe(1);
+  });
+});
+
+describe('executor HTTP app: failure logging (#9322)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const FAILURE_LOG = '[m365-graph-actions-executor] request failed';
+  const verifyBody = JSON.stringify({
+    correlationId: CORRELATION_ID,
+    consentAttemptId: '33333333-3333-4333-8333-333333333333',
+    expectedTenantId: null,
+    authorizationCode: 'auth-code-secret-9322',
+    codeVerifier: 'v'.repeat(43),
+    nonce: 'nonce-secret-9322',
+    redirectUri: 'https://console.example.test/api/v1/m365/actions-consent/callback',
+  });
+
+  function captureLogs() {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const calls = () => [...warn.mock.calls, ...error.mock.calls];
+    return {
+      lines: () => calls().filter((call) => call[0] === FAILURE_LOG).map((call) => call[1] as Record<string, unknown>),
+      serialized: () => JSON.stringify(calls()),
+    };
+  }
+
+  function deps(verify: unknown, verifyIdentity: unknown = vi.fn()) {
+    return {
+      authenticator: { verify }, verifyIdentity, retest: vi.fn(), executeAction: vi.fn(),
+    } as unknown as Parameters<typeof createExecutorApp>[0];
+  }
+
+  function expectNoSecrets(serialized: string) {
+    for (const secret of ['auth-code-secret-9322', 'nonce-secret-9322', 'v'.repeat(43), 'Bearer ', 'signed-token']) {
+      expect(serialized).not.toContain(secret);
+    }
+  }
+
+  it('a 401 from a token that does not verify logs one line with the operation and no correlation ID', async () => {
+    const logs = captureLogs();
+    const app = createExecutorApp(deps(vi.fn().mockRejectedValue(new Error('unauthorized'))));
+
+    const response = await app.request('/v1/verify-identity', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(401);
+    expect(logs.lines()).toEqual([{ operation: 'verify-identity', status: 401, error: 'unauthorized' }]);
+    expectNoSecrets(logs.serialized());
+  });
+
+  it('a 401 for a verified token whose correlation ID disagrees logs the verified correlation ID', async () => {
+    const logs = captureLogs();
+    const app = createExecutorApp(deps(vi.fn().mockResolvedValue({ correlationId: '99999999-9999-4999-8999-999999999999' })));
+
+    const response = await app.request('/v1/verify-identity', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(401);
+    expect(logs.lines()).toEqual([{
+      operation: 'verify-identity', correlationId: '99999999-9999-4999-8999-999999999999', status: 401, error: 'unauthorized',
+    }]);
+    expectNoSecrets(logs.serialized());
+  });
+
+  it('a 404 for a route this executor does not serve logs one line naming the requested operation', async () => {
+    const logs = captureLogs();
+    const verify = vi.fn();
+    const app = createExecutorApp(deps(verify));
+
+    const response = await app.request('/v1/not-yet-shipped', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(404);
+    expect(logs.lines()).toEqual([{ operation: 'not-yet-shipped', status: 404, error: 'not_found' }]);
+    expect(verify).not.toHaveBeenCalled();
+    expectNoSecrets(logs.serialized());
+  });
+
+  it('a 500 from a throwing operation logs its operation, correlation ID and error class only', async () => {
+    const logs = captureLogs();
+    const verifyIdentity = vi.fn().mockRejectedValue(Object.assign(new Error('token auth-code-secret-9322 leaked'), { name: 'TokenRedeemError' }));
+    const app = createExecutorApp(deps(vi.fn().mockResolvedValue({ correlationId: CORRELATION_ID }), verifyIdentity));
+
+    const response = await app.request('/v1/verify-identity', {
+      method: 'POST',
+      headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' },
+      body: verifyBody,
+    });
+
+    expect(response.status).toBe(500);
+    expect(logs.lines()).toEqual([{
+      operation: 'verify-identity', correlationId: CORRELATION_ID, status: 500, error: 'internal_error', errorName: 'TokenRedeemError',
+    }]);
+    expectNoSecrets(logs.serialized());
   });
 });

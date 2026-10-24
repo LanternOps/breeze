@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { MCP_SERVER_INSTRUCTIONS, MCP_PROMPTS, listMcpPrompts, getMcpPrompt } from './mcpGuidance';
-import { BREEZE_AI_GUARDRAILS_CORE } from './aiAgentSystemPrompt';
+import { MCP_SERVER_INSTRUCTIONS, buildMcpServerInstructions, MCP_PROMPTS, listMcpPrompts, getMcpPrompt } from './mcpGuidance';
+import { BREEZE_AI_GUARDRAILS_CORE, BREEZE_MCP_GUARDRAILS_CORE, buildMcpGuardrailsCore } from './aiAgentSystemPrompt';
 
 describe('MCP_SERVER_INSTRUCTIONS', () => {
   it('orients the client on the tenant hierarchy and tool selection', () => {
@@ -9,12 +9,67 @@ describe('MCP_SERVER_INSTRUCTIONS', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toMatch(/read before write/i);
   });
 
-  it('embeds the shared guardrails core (no drift)', () => {
-    expect(MCP_SERVER_INSTRUCTIONS).toContain(BREEZE_AI_GUARDRAILS_CORE);
+  // #9306 — MCP has no approval surface: routes/mcpServer.ts refuses
+  // effective-Tier-3 calls with MCP_APPROVAL_REQUIRED (bar operator-designated
+  // unattended principals). The instructions must not
+  // promise the in-app chat's Approve/Deny prompt.
+  it('does not promise an Approve/Deny prompt and names MCP_APPROVAL_REQUIRED (#9306)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/Approve\/Deny prompt/i);
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('MCP_APPROVAL_REQUIRED');
+    expect(MCP_SERVER_INSTRUCTIONS).toMatch(/Breeze web app AI assistant/);
+    expect(MCP_SERVER_INSTRUCTIONS).toMatch(/do not retry/i);
+  });
+
+  it('ships the MCP guardrails core, not the in-app approval rules (#9306)', () => {
+    expect(MCP_SERVER_INSTRUCTIONS).toContain(BREEZE_MCP_GUARDRAILS_CORE);
+    expect(MCP_SERVER_INSTRUCTIONS).not.toContain(BREEZE_AI_GUARDRAILS_CORE);
+    // The in-app 3b/3c describe approved-and-running results MCP never returns.
+    expect(MCP_SERVER_INSTRUCTIONS).not.toMatch(/approved and already executing/i);
+  });
+
+  it('keeps every non-approval guardrail rule verbatim (no drift from the in-app core)', () => {
+    const approvalRule = /^3[abc]?\. /;
+    const shared = BREEZE_AI_GUARDRAILS_CORE.split('\n').filter((line) => !approvalRule.test(line));
+    expect(shared.length).toBeGreaterThan(5);
+    for (const line of shared) expect(MCP_SERVER_INSTRUCTIONS).toContain(line);
   });
 
   it('points clients to the workflow prompts', () => {
     expect(MCP_SERVER_INSTRUCTIONS).toMatch(/breeze-/);
+  });
+});
+
+describe('approval-aware instructions (B-W04 D-B34)', () => {
+  it('flag off equals the exported constants', () => {
+    expect(buildMcpServerInstructions(false)).toBe(MCP_SERVER_INSTRUCTIONS);
+    expect(buildMcpGuardrailsCore(false)).toBe(BREEZE_MCP_GUARDRAILS_CORE);
+  });
+
+  it('flag on describes pending approval and status polling', () => {
+    const on = buildMcpServerInstructions(true);
+    expect(on).toContain('get_action_status');
+    expect(on).toContain('pending_approval');
+    expect(on).toContain('outcome is uncertain');
+    expect(on).toContain('unattended execution');
+    expect(on).not.toContain('this connection has no approval prompt');
+    expect(on).not.toBe(MCP_SERVER_INSTRUCTIONS);
+    // the flag-off text does carry that phrase, so the negative above discriminates
+    expect(MCP_SERVER_INSTRUCTIONS).toContain('this connection has no approval prompt');
+  });
+
+  it('flag on guardrails core carries the intents rules and the shared rules', () => {
+    const on = buildMcpGuardrailsCore(true);
+    expect(on).toContain('get_action_status');
+    expect(on).not.toContain('this connection has no approval prompt');
+    expect(on).not.toBe(BREEZE_MCP_GUARDRAILS_CORE);
+    const approvalRule = /^3[abc]?\. /;
+    for (const line of BREEZE_MCP_GUARDRAILS_CORE.split('\n').filter((l) => !approvalRule.test(l))) {
+      expect(on).toContain(line);
+    }
+  });
+
+  it('flag on server instructions embed the flag-on core', () => {
+    expect(buildMcpServerInstructions(true)).toContain(buildMcpGuardrailsCore(true));
   });
 });
 

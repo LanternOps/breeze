@@ -13,7 +13,7 @@ The **Devices** page is the home view for every managed endpoint — servers, wo
 
 ### Columns
 
-The list shows a compact set of columns by default — hostname, class, organization, site, OS, role, status, CPU, RAM, and last seen. Many more columns are available but hidden until you enable them through the **column-visibility picker** in the list toolbar, including:
+The list shows a compact set of columns by default — hostname, class, organization, site, OS, role, status, **Attention** (v0.124.0: the device's open alerts by severity and open tickets, or **Nothing open**), CPU, RAM, and last seen. Many more columns are available but hidden until you enable them through the **Columns** chooser in the list toolbar (v0.124.0: type to filter the column list by name), including:
 
 - **OS version / OS build / architecture**
 - **Pending reboot** and **headless** indicators
@@ -48,6 +48,10 @@ Above the list you can:
 - Build **structured filters** with the filter toolbar — status, OS, role, organization, site, group, hardware attributes, and more, combinable into saved filter conditions.
 - Switch the **class facet** between All, Agent (endpoints running the Breeze agent), Network (devices found by network discovery), and Manual (hand-entered assets — see [Manual Assets](#manual-assets)). The list opens on **Agent** by default and remembers the last facet you chose.
 - Filter by **VPN** when the VPN column is enabled (see below).
+
+### Bulk power and lock actions
+
+Selecting several devices and choosing **Reboot**, **Reboot into safe mode**, **Shut down**, **Lock**, **Wake** or **End maintenance** from the bulk actions bar asks for confirmation first (v0.124.0). The dialog names the action and the device count, the organization (or how many organizations) the devices belong to, and splits the count into devices that are **online now** and devices that will be **queued for next check-in** — see [Queued Actions](#queued-actions).
 
 ---
 
@@ -190,6 +194,11 @@ Agents on Windows, macOS, and Linux detect active VPN and overlay-network client
 - **ZeroTier**
 - **OpenVPN**
 - **Cloudflare WARP**
+- **Zscaler** (Zscaler Client Connector)
+- **GlobalProtect**
+- **Cisco Secure Client** (including AnyConnect)
+- **FortiClient**
+- **Netskope**
 - A generic **VPN** fallback for active tunnel interfaces that don't match a known provider
 
 Detection works purely from **local signals on the device** — tunnel interface names and addresses, corroborated by the provider's running service or process. It is read-only telemetry: Breeze does not read keys, peer lists, or any VPN configuration, and cannot manage the VPN. For Tailscale, the device's own DNS name is also reported.
@@ -206,6 +215,14 @@ A provider is only ever reported when the device gives a concrete signal for it 
 <Aside type="note">
   A VPN whose client is not running at all is not reported. "Disconnected" means the client is running with no tunnel up, which is the state operators usually care about; a stopped client is indistinguishable from an uninstalled one without scanning the filesystem, which the agent deliberately does not do.
 </Aside>
+
+### Clients without a tunnel adapter
+
+Some security-service clients do not create a network adapter of their own. **Zscaler Client Connector on Windows** steers traffic through a filter driver bound to the existing Ethernet and Wi-Fi adapters, so there is normally no tunnel interface for the agent to see. Breeze can confirm the client is running, but not whether its tunnel is up, so on Windows Zscaler is usually shown as **Disconnected** (client running). Treat that state as "installed and running", not as proof the tunnel is down. Netskope may behave the same way.
+
+For Cisco Secure Client and FortiClient, only the VPN component counts: the Cisco VPN agent and the FortiClient SSL-VPN daemon. Their other modules (Cisco Umbrella, FortiClient antivirus and web filtering) are not reported as a VPN. Cisco's VPN agent is part of the core install, so a device running Cisco Secure Client only for Umbrella can still show **Cisco Secure Client — Disconnected**.
+
+On macOS, Zscaler's tunnel is a plain `utun` with no network-extension owner, so it is named by the single-running-client rule described below.
 
 ### Naming tunnels on macOS
 
@@ -292,6 +309,8 @@ The same data is available outside the UI:
 
 ## The Device Info Tab
 
+The device page header (v0.124.0) shows the display name once, with the hostname in the sub-line, and an **Offline · last seen …** pill when the device is not checking in; CPU and RAM read **—** while the device is offline or its last sample is stale. When the device belongs to an organization other than your working organization, the header says **Viewing a *Org* device** with a **Switch to *Org*** action that changes your working organization and keeps you on the record.
+
 Opening a device and selecting **Info** shows the device's identity and inventory at a glance:
 
 | Section | Contents |
@@ -313,7 +332,7 @@ A device's physical placement (room, rack, rack unit and height) can be recorded
 
 ### System Restore tab
 
-Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. Until a device runs a future agent release that reports outcomes, entries read **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point exists. See [System Protection](/features/configuration-policies/#system-protection). Entries are kept for 90 days from the request (set `RESTORE_POINT_ATTEMPT_RETENTION_DAYS`, up to 365). An entry still awaiting the device is removed only once it is past that window and its command can no longer report back.
+Separately from the Info tab, Windows devices have a **System Restore** tab (`#system-restore`) that lists each time Breeze asked for a System Restore checkpoint: when it was requested, what triggered it (patch install, script run or software install) and the outcome. From **agent 0.124.0** the device takes one restore point per command, just before its first change, and reports the outcome here; a device on an older agent keeps reading **Awaiting the device**. The list records requests and what the device reported; it does not mean a restore point still exists. See [System Protection](/features/configuration-policies/#system-protection). Entries are kept for 90 days from the request (set `RESTORE_POINT_ATTEMPT_RETENTION_DAYS`, up to 365). An entry still awaiting the device is removed only once it is past that window and its command can no longer report back.
 
 ### Device function
 
@@ -339,7 +358,10 @@ there if you no longer want it to run.
 
 Elsewhere in the product a waiting step reads **"Queued — device offline"**
 rather than Failed, so a nightly automation over a fleet of sleeping laptops no
-longer shows a wall of red. The trade-off is worth knowing: **work that used to
+longer shows a wall of red. A script run reads **"Queued — waiting for the
+device to pick it up"** instead when the device itself still reports online but
+no agent session has taken the command yet; it is delivered on the agent's next
+check-in. The trade-off is worth knowing: **work that used to
 fail fast now sits pending for up to a week.** If a step is only meaningful
 against a live device, set it to skip instead — see the offline behaviour control
 in [Automations](/features/automations/) and the patch-policy equivalent in

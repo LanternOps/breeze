@@ -256,6 +256,32 @@ describe('reapStaleDeviceCommands — two clocks (#5128)', () => {
     expect(updateMock).not.toHaveBeenCalled();
   });
 
+  // #9162: the agent takes the restore-point checkpoint on its own 5-minute
+  // budget before the script starts, so a stamped (enabled) block extends the
+  // execution deadline by that much. 60 s script, sent 8 min ago: past
+  // 60 s + 5 min grace, but inside 60 s + 5 min + 5 min.
+  it('a sent script with an enabled restore-point block gets the checkpoint budget on top', async () => {
+    const executedAt = new Date(NOW - 8 * 60 * 1000);
+    selectMock.mockReturnValue(selectChain([scriptRow({
+      status: 'sent',
+      executedAt,
+      payload: { timeoutSeconds: 60, restorePoint: { v: 1, enabled: true } },
+    })]));
+    expect(await reapStaleDeviceCommands()).toBe(0);
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('a sent script with a DISABLED restore-point block keeps the plain deadline', async () => {
+    const executedAt = new Date(NOW - 8 * 60 * 1000);
+    selectMock.mockReturnValue(selectChain([scriptRow({
+      status: 'sent',
+      executedAt,
+      payload: { timeoutSeconds: 60, restorePoint: { v: 1, enabled: false } },
+    })]));
+    routeUpdates([{ id: 'c1' }]);
+    expect(await reapStaleDeviceCommands()).toBe(1);
+  });
+
   it('a sent row past its execution timeout is failed as timeout, not expired', async () => {
     const executedAt = new Date(NOW - HOUR);
     selectMock.mockReturnValue(

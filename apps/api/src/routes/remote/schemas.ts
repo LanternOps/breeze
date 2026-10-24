@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { viewerIceCandidateBodySchema } from '../../services/remoteDesktopIceTrickle';
 
 // Session schemas
 export const createSessionSchema = z.object({
@@ -31,11 +32,6 @@ export const webrtcOfferSchema = z.object({
   targetSessionId: z.number().int().min(0).max(65535).optional()
 });
 
-export const iceCandidateSchema = z.object({
-  candidate: z.object({
-    candidate: z.string(),
-    sdpMid: z.string().nullable().optional(),
-    sdpMLineIndex: z.number().nullable().optional(),
-    usernameFragment: z.string().nullable().optional()
-  })
-});
+// Same bounds as the viewer-token rail (#9182): both feed the trickle path in
+// services/remoteDesktopIceTrickle.ts.
+export const iceCandidateSchema = viewerIceCandidateBodySchema;

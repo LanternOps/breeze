@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/patching"
+	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
 // managerDeps bundles the OS-facing dependencies installViaManager needs, so
@@ -48,6 +49,16 @@ func liveBrewEnsure(kind, name, softwareName string) (string, bool, error) {
 // with an install verb, never its upgrade verb. An exact-version miss is
 // always a failure, never a silent fallback to latest.
 func installViaManager(payload map[string]any, deps managerDeps) (result CommandResult) {
+	cp := newSoftwareCheckpoint(payload)
+	defer func() { result.RestorePoint = cp.Report() }()
+	return installViaManagerWithCheckpoint(payload, deps, cp)
+}
+
+// installViaManagerWithCheckpoint is installViaManager with the command's
+// restore-point checkpoint supplied by the caller, which owns reporting it.
+// cp is taken immediately before each manager MUTATION — never before the
+// read-only already-installed probe.
+func installViaManagerWithCheckpoint(payload map[string]any, deps managerDeps, cp *systemrestore.Checkpoint) (result CommandResult) {
 	startTime := time.Now()
 	defer func() {
 		result.StartedAt = startTime.UTC().Format(time.RFC3339Nano)
@@ -70,11 +81,15 @@ func installViaManager(payload map[string]any, deps managerDeps) (result Command
 		if err := validateSoftwarePackageID(packageID); err != nil {
 			return NewErrorResult(err, time.Since(startTime).Milliseconds())
 		}
-		return installWingetManaged(packageID, versionMode, requestedVersion, forceReinstall, deps, startTime)
+		return installWingetManaged(packageID, versionMode, requestedVersion, forceReinstall, deps, startTime, cp)
 	case "homebrew_cask", "homebrew_formula":
 		if err := patching.ValidateBrewPackageName(packageID); err != nil {
 			return NewErrorResult(err, time.Since(startTime).Milliseconds())
 		}
+		// brewEnsure probes and installs in one call, so the checkpoint goes
+		// before it. Homebrew is macOS-only, where Create reports
+		// `unsupported` with no side effects.
+		takeSoftwareCheckpoint(cp)
 		output, alreadyInstalled, err := deps.brewEnsure(kind, packageID, softwareName)
 		if err != nil {
 			// errors.Is, not a string prefix check: patching.EnsureBrewInstalled
@@ -104,7 +119,7 @@ func installViaManager(payload map[string]any, deps managerDeps) (result Command
 // installWingetManaged runs the winget ensure-present path: resolve winget,
 // short-circuit on an already-installed package (unless forceReinstall),
 // otherwise install (never upgrade) at MACHINE scope.
-func installWingetManaged(packageID, versionMode, requestedVersion string, forceReinstall bool, deps managerDeps, startTime time.Time) CommandResult {
+func installWingetManaged(packageID, versionMode, requestedVersion string, forceReinstall bool, deps managerDeps, startTime time.Time, cp *systemrestore.Checkpoint) CommandResult {
 	if deps.goos != "windows" {
 		return NewErrorResult(fmt.Errorf("manager_unavailable: winget is Windows-only"), time.Since(startTime).Milliseconds())
 	}
@@ -143,6 +158,10 @@ func installWingetManaged(packageID, versionMode, requestedVersion string, force
 	if versionMode == "exact" {
 		version = requestedVersion
 	}
+
+	// #4609: after the already-installed probe, immediately before the one
+	// mutating exec.
+	takeSoftwareCheckpoint(cp)
 
 	installResult, err := provider.InstallExact(packageID, version)
 	if err != nil {

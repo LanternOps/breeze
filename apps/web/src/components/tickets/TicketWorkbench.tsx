@@ -58,6 +58,7 @@ import { formatDateTime } from '@/lib/dateTimeFormat';
 import { useStableT } from '@/lib/i18n/useStableT';
 import { usePageItemName } from '../layout/usePageItemName';
 import { EntityLink } from '@/components/shared/EntityLink';
+import { TicketDeviceEditor } from './TicketDeviceEditor';
 
 // ─── TagEditor ───────────────────────────────────────────────────────────────
 
@@ -130,6 +131,9 @@ interface Props {
   // the instant a mutation lands, so the list reflects the change without waiting
   // for (or paying for) a full list refetch. `onChanged` still reconciles after.
   onTicketPatched?: (id: string, patch: Partial<TicketDetail>) => void;
+  // Fired after a successful soft-delete, so a host holding this ticket in its
+  // pane (TicketsPage's post-resolve hold, #9564) lets go of it.
+  onDeleted?: (id: string) => void;
   expanded?: boolean;            // full-page mode
   resolveRequestToken?: number;  // increments when the page-level `e` shortcut asks to open the resolve form
   refreshToken?: number;         // bumped by bulk actions in the queue after they mutate tickets
@@ -165,7 +169,7 @@ type TicketAiDraft = {
   runId: string | null;
 };
 
-export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
+export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, onDeleted, expanded, resolveRequestToken, refreshToken, assignees: assigneesProp, categories = [] }: Props) {
   const { t } = useTranslation('tickets');
   const stableT = useStableT(t); // #3632: effect-safe translator; JSX keeps `t`
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
@@ -272,6 +276,10 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // (or a failed/forbidden load) simply hides the picker.
   const [cannedTemplates, setCannedTemplates] = useState<CannedResponse[]>([]);
   const agentName = useAuthStore((s) => s.user?.name) ?? '';
+  // #9180: offer "all organizations" when saving checklist steps as a template.
+  // UI hint only — the API re-checks canManagePartnerWidePolicies.
+  // Checklists are partner/system-scope only, so this flag alone is the gate.
+  const canSavePartnerWideChecklist = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
 
   // null = picker hidden (no USERS_READ etc.); degrade to a label + unassign-only button.
   const [fetchedAssignees, setFetchedAssignees] = useState<Array<{ id: string; name: string | null; email: string }> | null>(null);
@@ -749,6 +757,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
         onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
       });
       setDeleteOpen(false);
+      onDeleted?.(ticketId);
       onChanged?.();
       if (expanded) void navigateTo('/tickets');
     } catch (err) {
@@ -756,7 +765,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     } finally {
       setDeleting(false);
     }
-  }, [deleting, ticketId, onChanged, expanded, t]);
+  }, [deleting, ticketId, onChanged, onDeleted, expanded, t]);
 
   const applyTriageSuggestion = useCallback(async () => {
     if (!triageSuggestion || applyingTriage) return;
@@ -961,13 +970,23 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
       }
       return; // keep the form open and the typed note intact on failure
     }
-    afterMutation({ status: 'resolved', resolutionNote: note });
+    // The patch must carry the resolved status's own name/colour: the host's
+    // "now under Closed" banner reads `statusName`, and omitting it left the
+    // previous status name ("Open — now under Closed"). A plain core resolve
+    // has no custom name (null falls back to the translated core label).
+    const resolvedRow = pendingStatusId ? config?.statuses.find((s) => s.id === pendingStatusId) : undefined;
+    afterMutation({
+      status: 'resolved',
+      resolutionNote: note,
+      statusName: resolvedRow?.name ?? null,
+      statusColor: resolvedRow?.color ?? null,
+    });
     if (resolveDraftId) setAiDrafts((prev) => prev.filter((d) => d.id !== resolveDraftId));
     setResolveOpen(false);
     setResolutionNote('');
     setPendingStatusId(null);
     setResolveDraftId(null);
-  }, [afterMutation, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
+  }, [afterMutation, config, pendingStatusId, refetchAiDrafts, resolutionNote, resolveDraftId, t, ticketId]);
 
   const submitPending = useCallback(async () => {
     if (!pendingOpen) return;
@@ -1743,7 +1762,7 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 </div>
               )}
             </div>
-            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} />
+            <TicketChecklistCard ticketId={ticket.id} onCountsChange={setChecklistCounts} canSavePartnerWide={canSavePartnerWideChecklist} />
             <TicketLinksCard key={ticket.id} ticketId={ticket.id} orgId={ticket.orgId} ticketType={ticket.ticketType} canWrite={canWrite} />
             <TicketFeed
               ticketId={ticket.id}
@@ -1888,17 +1907,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                       ) : (
                         <span>{t('ticketWorkbench.device.none')}</span>
                       )}
-                      {ticket.deviceId && (
-                        <button
-                          type="button"
-                          data-testid="ticket-workbench-device-unlink"
-                          className="hover:text-destructive"
-                          onClick={() => handleFieldSave({ deviceId: null })}
-                        >
-                          {t('ticketWorkbench.device.unlink')}
-                        </button>
-                      )}
                     </div>
+                    <TicketDeviceEditor
+                      orgId={ticket.orgId}
+                      hasDevice={!!ticket.deviceId}
+                      hasAssignee={!!ticket.assignedTo}
+                      onSelect={(deviceId) => handleFieldSave({ deviceId })}
+                      onUnlink={() => handleFieldSave({ deviceId: null })}
+                    />
                   </dd>
                 </div>
                 {ticket.pendingReason && <div><dt className="text-xs text-muted-foreground">{t('ticketWorkbench.waitingOn')}</dt><dd>{ticket.pendingReason}</dd></div>}

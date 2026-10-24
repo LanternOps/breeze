@@ -267,6 +267,7 @@ describe('bodyLimitForPath', () => {
       'image-upload': '/api/v1/catalog/item-1/image',
       avatar: '/api/v1/users/me/avatar',
       'contract-template': '/api/v1/contracts/contract-templates/tpl-1/versions/upload',
+      'agreement-signed-copy': '/api/v1/contracts/agreement-requests/record-signed',
       'agent-ingest': '/api/v1/agents/agent-1/software',
       'agent-hardware-health': '/api/v1/agents/agent-1/hardware-health',
       'agent-time-status': '/api/v1/agents/agent-1/time-status',
@@ -336,6 +337,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     globalMaxSize: 5 * MB + 64 * KB,
     note: 'carved out — 5MB product image',
   },
+  'contracts/agreementRequests.ts': {
+    paths: ['/api/v1/contracts/agreement-requests/record-signed'],
+    globalMaxSize: 10 * MB + 64 * KB,
+    note: 'carved out — 10MB externally signed agreement copy (#8865 W1c)',
+  },
   'contracts/templates.ts': {
     paths: ['/api/v1/contracts/contract-templates/tpl-1/versions/upload'],
     globalMaxSize: 10 * MB + 64 * KB,
@@ -380,6 +386,11 @@ const ROUTE_LEVEL_BODY_LIMITS: Record<
     paths: ['/api/v1/agents/agent-1/connections'],
     globalMaxSize: 5 * MB,
     note: 'carved out — 5MB agent connections ingest (#3516); same shape as heartbeat/inventory.',
+  },
+  'agents/pamElevationUnable.ts': {
+    paths: ['/api/v1/agents/agent-1/pam/elevation-unable'],
+    globalMaxSize: 1 * MB,
+    note: 'tighter than the gate — 8 KiB device-unable report (#9517), enforced on bytes read so a chunked body is capped too.',
   },
   'agents/hardwareHealth.ts': {
     paths: ['/api/v1/agents/agent-1/hardware-health'],
@@ -533,8 +544,43 @@ describe('quote acceptance evidence carve-out (#6633)', () => {
     });
   });
 
+  it('gives record-signed the signed-copy headroom and nothing else under agreement-requests (#8865 W1c)', () => {
+    expect(bodyLimitForPath('/api/v1/contracts/agreement-requests/record-signed')).toEqual({
+      rule: 'agreement-signed-copy',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'Signed copy too large (max 10 MB)',
+    });
+    expect(bodyLimitForPath('/api/v1/contracts/agreement-requests').rule).toBe('default');
+    expect(bodyLimitForPath('/api/v1/contracts/agreement-requests/record-signed/extra').rule).toBe('default');
+  });
+
   it('does NOT widen the quote JSON routes', () => {
     expect(bodyLimitForPath(`/api/v1/quotes/${Q}/accept-on-behalf`).rule).toBe('default');
     expect(bodyLimitForPath(`/api/v1/quotes/${Q}/acceptance`).rule).toBe('default');
+  });
+});
+
+describe('YARA rule test sample carve-out (#6263 W04-2)', () => {
+  const SET = '22222222-2222-4222-8222-222222222222';
+
+  it('gives the test upload 10 MiB + 64 KiB so the route answers its own 413', () => {
+    expect(bodyLimitForPath(`/api/v1/security/yara/rule-sets/${SET}/test`)).toEqual({
+      rule: 'yara-test-sample',
+      maxSize: 10 * 1024 * 1024 + 64 * 1024,
+      error: 'File too large (max 10 MB)',
+    });
+  });
+
+  it('leaves every other /security/yara path at the default', () => {
+    for (const p of [
+      `/api/v1/security/yara/rule-sets/${SET}`,
+      `/api/v1/security/yara/rule-sets/${SET}/rules`,
+      `/api/v1/security/yara/rule-sets/${SET}/ioc-import`,
+      `/api/v1/security/yara/rule-sets/${SET}/test/extra`,
+      '/api/v1/security/yara/rule-sets/not-a-uuid/test',
+      '/api/v1/security/yara/rules/33333333-3333-4333-8333-333333333333',
+    ]) {
+      expect(bodyLimitForPath(p).rule, p).toBe('default');
+    }
   });
 });

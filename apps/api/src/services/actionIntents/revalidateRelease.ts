@@ -8,6 +8,7 @@ import { getActiveOrgTenant } from '../tenantStatus';
 import { policyDecideEnabled } from '../../config/env';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { buildAuthContextForIntent } from './actorContext';
+import { isMcpOriginIntent } from '../mcpIntentEligibility';
 import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { isOrgWideGovernanceIntent } from './orgWideGovernanceTools';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
@@ -481,13 +482,30 @@ async function revalidateApprovedIntentCore(
   // where it gets there first (a policy-decided intent, or a future caller
   // that skips this step).
   let auth: AuthContext | null;
-  try {
-    auth = await buildAuthContextForIntent(intent);
-  } catch (error) {
-    if (error instanceof IntentScopeLostError) {
-      return { ok: false, errorCode: error.code, details: { reason: error.message } };
+  if (isMcpOriginIntent(intent)) {
+    // B-W04 (#6158, D-B26): rebuild from the live origin credential directly
+    // (not via buildAuthContextForIntent's null-collapsing branch) to keep the
+    // specific errorCode, then re-run the creation gates against live state.
+    // RBAC and the governance site ceiling below still run, unchanged.
+    const { rebuildMcpOriginAuthContext, checkMcpOriginReleaseAuthority } = await import('../mcpPrincipalAuth');
+    const rebuilt = await rebuildMcpOriginAuthContext(intent);
+    if ('error' in rebuilt) {
+      return { ok: false, errorCode: rebuilt.error };
     }
-    throw error;
+    const authority = checkMcpOriginReleaseAuthority(intent, rebuilt);
+    if (!authority.ok) {
+      return { ok: false, errorCode: authority.errorCode };
+    }
+    auth = rebuilt.auth;
+  } else {
+    try {
+      auth = await buildAuthContextForIntent(intent);
+    } catch (error) {
+      if (error instanceof IntentScopeLostError) {
+        return { ok: false, errorCode: error.code, details: { reason: error.message } };
+      }
+      throw error;
+    }
   }
   if (!auth) {
     return { ok: false, errorCode: 'actor_invalid' };

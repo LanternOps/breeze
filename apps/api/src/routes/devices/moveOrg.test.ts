@@ -28,6 +28,13 @@ const {
   siteDenied: Symbol('SITE_ACCESS_DENIED'),
 }));
 
+// #8973 W4: moved tickets re-resolve their business calendar; the real read
+// runs in businessCalendarDeviceMove.integration.test.ts. The tx stub here
+// does not model that select, so the helper is a no-op in this suite.
+vi.mock('../../services/businessCalendars/reresolve', () => ({
+  reresolveMovedTicketCalendars: vi.fn(async () => 0),
+  calendarPatchForOrgMove: vi.fn(async () => ({})),
+}));
 vi.mock('../../jobs/peripheralJobs', () => ({
   schedulePeripheralPolicyDevice: schedulePeripheralPolicyDeviceMock,
 }));
@@ -720,6 +727,7 @@ describe('POST /devices/:id/move-org', () => {
         'agent_rollback_events',
         'peripheral_policy_delivery_events',
         'device_restore_point_attempts',
+        'security_agent_device_status',
       ]);
       // ...and the loop must actually skip it: no app-role UPDATE (its
       // composite FK's ON UPDATE CASCADE restamps it). Positive control: an

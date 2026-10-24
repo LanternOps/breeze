@@ -22,7 +22,9 @@ import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { FilterSelect } from '../shared/FilterSelect';
+import { formatDateOnly } from '../../lib/dateOnly';
 import { usePatchSelection } from './usePatchSelection';
+import { PatchDevicesPopover, type LoadPatchDevices } from './PatchDevicesPopover';
 
 export type PatchSeverity = 'critical' | 'important' | 'moderate' | 'low' | 'unrated';
 export type PatchApprovalStatus = 'pending' | 'approved' | 'declined' | 'deferred';
@@ -50,6 +52,21 @@ export type Patch = {
   vendor?: string | null;
   cveIds?: string[];
   installFailure?: PatchInstallFailure;
+  /** Devices in the caller's scope that still need the patch (#8728). */
+  outstandingDeviceCount?: number;
+  /**
+   * Where a device-reported severity came from (#9387): 'derived' when the
+   * agent inferred it from the update's classification because the vendor
+   * published no rating. Undefined for the trusted catalog value or unknown.
+   */
+  severitySource?: 'vendor' | 'derived';
+  /** Catalog identity (source + externalId is unique) — shown when titles collide (#9533). */
+  externalId?: string;
+  version?: string | null;
+  /** Package / KB identifier from the catalog (patches.package_id). */
+  packageId?: string | null;
+  /** When the catalog first imported the patch (patches.created_at). */
+  firstSeenAt?: string;
 };
 
 type PatchListProps = {
@@ -68,6 +85,9 @@ type PatchListProps = {
   loading?: boolean;
   error?: string;
   onRetry?: () => void;
+  /** Loads the devices behind a row's outstanding count (#8728). The Devices
+   * column only renders when this is given — the ring view has no count. */
+  loadPatchDevices?: LoadPatchDevices;
 };
 
 const severityConfig: Record<PatchSeverity, { labelKey: string; color: string }> = {
@@ -85,18 +105,7 @@ const approvalConfig: Record<PatchApprovalStatus, { labelKey: string; color: str
   deferred: { labelKey: 'patchList.approval.deferred', color: 'bg-blue-500/20 text-blue-700 border-blue-500/40', icon: Clock }
 };
 
-const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-function formatDate(dateString: string): string {
-  // A bare YYYY-MM-DD parses as UTC midnight, which renders a day early in
-  // zones west of UTC. Build it as a local calendar date instead.
-  const dateOnly = DATE_ONLY_RE.exec(dateString);
-  const date = dateOnly
-    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
-    : new Date(dateString);
-  if (Number.isNaN(date.getTime())) return dateString;
-  return date.toLocaleDateString();
-}
+const formatDate = formatDateOnly;
 
 type SortKey = 'title' | 'severity' | 'source' | 'os' | 'releaseDate' | 'approvalStatus';
 type SortDir = 'asc' | 'desc';
@@ -107,15 +116,13 @@ const DEFAULT_PAGE_SIZE = 25;
 // Semantic ordering for severity / approval so a sort reflects priority rather
 // than raw alphabetical order of the enum value.
 //
-// WARNING (sort divergence): this client-side severity sort uses SEMANTIC
-// priority (critical=0 … low=3), whereas the API sorts severity ALPHABETICALLY
-// (asc(patches.severity) in routes/patches/list.ts). These currently never
-// disagree because the web does 100% client-side sort/paginate over the
-// paged-in catalog and never sends sortBy/sortDir. Whoever later pushes sorting
-// down to the server (via fetchPatches) MUST reconcile the two or severity
-// ordering will silently change. Note also that `os` and `approvalStatus` are
-// SortKeys here with no matching column in the API's PATCH_SORT_COLUMNS — they
-// can't be pushed down without server-side support.
+// Server-side sort: the API's sortBy=severity orders the resolved
+// `patch_severity` enum (routes/patches/list.ts), and Postgres sorts enums in
+// declaration order (critical, important, moderate, low, unknown) — the same
+// priority as this client-side rank. The web still sorts/paginates 100%
+// client-side and never sends sortBy/sortDir. Note that `os` and
+// `approvalStatus` are SortKeys here with no matching column in the API's
+// PATCH_SORT_COLUMNS — they can't be pushed down without server-side support.
 //
 // The "never disagree" claim has one limit: PatchesPage walks at most
 // PATCH_FETCH_MAX_PAGES x 200 = 5,000 patches. Past that the client holds only
@@ -167,7 +174,8 @@ export default function PatchList({
   initialPageSize = DEFAULT_PAGE_SIZE,
   loading,
   error,
-  onRetry
+  onRetry,
+  loadPatchDevices
 }: PatchListProps) {
   const { t } = useTranslation('patches');
   const [query, setQuery] = useState('');
@@ -310,6 +318,28 @@ export default function PatchList({
     }
   }, [onBulkDecline, selectedDeclinableIds, clearSelection, t]);
 
+  // #9533: distinct catalog entries can share a title (one update id per OS
+  // build, or the same app from two feeds). Side by side with identical Review
+  // buttons they read as one patch listed twice, so rows whose title repeats in
+  // the current view say what tells them apart.
+  const repeatedTitles = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of filteredPatches) {
+      const key = p.title.trim().toLowerCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return new Set([...counts].filter(([, n]) => n > 1).map(([key]) => key));
+  }, [filteredPatches]);
+
+  const disambiguator = (patch: Patch): string | null => {
+    if (!repeatedTitles.has(patch.title.trim().toLowerCase())) return null;
+    const parts = [
+      patch.version ? t('patchList.disambiguator.version', { version: patch.version }) : null,
+      patch.externalId ? t('patchList.disambiguator.id', { id: patch.externalId }) : null,
+    ].filter((p): p is string => p !== null);
+    return parts.length > 0 ? parts.join(' · ') : null;
+  };
+
   // Row pieces shared by the desktop table and the mobile cards so the two
   // surfaces can't drift.
   const renderTitleCell = (patch: Patch) => (
@@ -325,6 +355,15 @@ export default function PatchList({
           </span>
         )}
       </div>
+      {disambiguator(patch) && (
+        <div
+          data-testid={`patch-row-${patch.id}-disambiguator`}
+          title={t('patchList.disambiguator.title')}
+          className="mt-0.5 break-all text-xs text-muted-foreground"
+        >
+          {disambiguator(patch)}
+        </div>
+      )}
       {patch.cveIds && patch.cveIds.length > 0 && (
         <div className="mt-1 flex flex-wrap gap-1">
           {patch.cveIds.slice(0, 3).map((cve) => (
@@ -370,6 +409,15 @@ export default function PatchList({
         {patch.severity === 'unrated' && (
           <span className="text-[10px] text-muted-foreground">{t('patchList.severity.unratedNote')}</span>
         )}
+        {patch.severity !== 'unrated' && patch.severitySource === 'derived' && (
+          <span
+            className="w-fit cursor-help text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2"
+            title={t('patchList.severity.derivedTooltip')}
+            data-testid={`patch-row-${patch.id}-severity-derived`}
+          >
+            {t('patchList.severity.derivedNote')}
+          </span>
+        )}
       </span>
     );
   };
@@ -404,6 +452,29 @@ export default function PatchList({
         <span className="break-words text-xs text-muted-foreground">{reason}</span>
         {patch.approvalStatus !== 'pending' && approvalBadge}
       </span>
+    );
+  };
+
+  const renderDevicesCell = (patch: Patch) => {
+    const count = patch.outstandingDeviceCount ?? 0;
+    if (!loadPatchDevices || count === 0) {
+      return (
+        <span
+          data-testid={`patch-row-${patch.id}-devices-none`}
+          title={t('patchList.outstandingDevices.none')}
+          className="text-muted-foreground"
+        >
+          —
+        </span>
+      );
+    }
+    return (
+      <PatchDevicesPopover
+        patchId={patch.id}
+        patchTitle={patch.title}
+        count={count}
+        loadDevices={loadPatchDevices}
+      />
     );
   };
 
@@ -740,13 +811,14 @@ export default function PatchList({
                     </th>
                   );
                 })}
+                {loadPatchDevices && <th className="px-4 py-3">{t('patchList.table.devices')}</th>}
                 <th className="px-4 py-3 text-right">{t('patchList.table.actions')}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {paginatedPatches.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  <td colSpan={loadPatchDevices ? 9 : 8} className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {t('patchList.empty')}
                   </td>
                 </tr>
@@ -780,6 +852,7 @@ export default function PatchList({
                       <td className="px-4 py-3 text-muted-foreground">{patch.os}</td>
                       <td className="px-4 py-3 text-muted-foreground">{renderReleaseDate(patch)}</td>
                       <td className="px-4 py-3">{renderApprovalBadge(patch)}</td>
+                      {loadPatchDevices && <td className="px-4 py-3">{renderDevicesCell(patch)}</td>}
                       <td className="px-4 py-3">{renderRowActions(patch)}</td>
                     </tr>
                   );
@@ -831,6 +904,9 @@ export default function PatchList({
                         <span className="text-muted-foreground">{renderReleaseDate(patch)}</span>
                       </CardField>
                       <CardField label={t('patchList.table.approval')}>{renderApprovalBadge(patch)}</CardField>
+                      {loadPatchDevices && (
+                        <CardField label={t('patchList.table.devices')}>{renderDevicesCell(patch)}</CardField>
+                      )}
                     </div>
                     <CardActions>{renderRowActions(patch)}</CardActions>
                   </DataCard>

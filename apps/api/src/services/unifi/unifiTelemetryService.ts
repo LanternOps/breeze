@@ -28,6 +28,10 @@ export interface TelemetryPayload {
   // collector's collector_device_id, so an agent cannot write another org's
   // collector by guessing a collectorId (RLS is bypassed on the system path).
   deviceId?: string;
+  // Server-derived, never client-supplied: true when the request carried a `topologyV2` companion
+  // (accepted or not). On such a request the v2 materializer is the sole writer of uptime/cpu/mem/
+  // num_clients, so this reconcile leaves them alone (a rejected v2 attempt keeps the previous value).
+  topologyV2Present?: boolean;
 }
 export interface ReconcileResult { devicesUpserted: number; devicesStaled: number; clientsUpserted: number; clientsStaled: number; }
 
@@ -173,15 +177,20 @@ export async function reconcileTelemetry(
       uptimeSeconds: d.uptimeSeconds ?? null, cpuPct: d.cpuPct ?? null, memPct: d.memPct ?? null,
       txBytes: d.txBytes ?? null, rxBytes: d.rxBytes ?? null, numClients: d.numClients ?? null,
     };
+    // v2 writer fence: the legacy body's `undefined -> NULL` would erase a v2 value right after the topology
+    // transaction committed. v1 / old-agent requests keep the existing behaviour for every field.
+    const { uptimeSeconds: _legacyUptime, cpuPct: _legacyCpu, memPct: _legacyMem, numClients: _legacyClients, ...legacyOnlyMetrics } = metrics;
+    const insertMetrics = payload.topologyV2Present ? { ...legacyOnlyMetrics, uptimeSeconds: null, cpuPct: null, memPct: null, numClients: null } : metrics;
+    const updateMetrics = payload.topologyV2Present ? legacyOnlyMetrics : metrics;
     await db.insert(unifiDeviceTelemetry).values({
       collectorId: collector.id, orgId, siteId, unifiDeviceId: d.unifiDeviceId, mac, name: d.name,
-      ...metrics,
+      ...insertMetrics,
       discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw), isStale: false, lastSeenAt: seenAt,
       lastSyncedAt: now, updatedAt: now,
     }).onConflictDoUpdate({
       target: [unifiDeviceTelemetry.collectorId, unifiDeviceTelemetry.unifiDeviceId],
       set: {
-        orgId, siteId, mac, name: d.name, ...metrics,
+        orgId, siteId, mac, name: d.name, ...updateMetrics,
         discoveredAssetId, poePorts: d.poePorts ?? null, raw: rawOrEmpty(d.raw),
         isStale: false, lastSeenAt: seenAt, lastSyncedAt: now, updatedAt: now,
       },

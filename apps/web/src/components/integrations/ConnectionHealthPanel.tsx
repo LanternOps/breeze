@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
 import { fetchWithAuth } from "../../stores/auth";
 import { formatTimeAgo } from "../../lib/formatTime";
+import { claimSamePageHashClick } from "../../lib/samePageHashClick";
 
 export const KNOWN_CONDITIONS = [
   "sync_failed",
@@ -37,6 +38,8 @@ type Incident = {
   detail: string | null;
   displayName: string;
   fixHref: string;
+  /** Set when the only remedy is outside Breeze (no repair page to link to). */
+  remedy?: { kind: "reconnect" } | null;
   firstFailedAt: string;
   openedAt: string | null;
   lastObservedAt: string;
@@ -182,10 +185,18 @@ export default function ConnectionHealthPanel() {
                           {inc.detail}
                         </p>
                       ) : null}
+                      {inc.remedy?.kind === "reconnect" ? (
+                        <p className="mt-0.5 break-words text-xs font-medium">
+                          {t("connectionHealthPanel.remedy.reconnect")}
+                        </p>
+                      ) : null}
                     </div>
-                    {isSafeHref(inc.fixHref) ? (
+                    {inc.remedy?.kind === "reconnect" ? null : isSafeHref(inc.fixHref) ? (
                       <a
                         href={inc.fixHref}
+                        // Same-page fix links (/integrations#huntress) must fire a
+                        // real hashchange or the Integrations tab never switches.
+                        onClick={(e) => claimSamePageHashClick(e, inc.fixHref)}
                         className="shrink-0 text-xs font-medium text-primary hover:underline"
                       >
                         {t("connectionHealthPanel.fix")}

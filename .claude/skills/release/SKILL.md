@@ -459,6 +459,16 @@ Caveats:
 
 Rolling the fleet is a user-facing change — get Todd's go-ahead before promoting, and don't promote until both regions are deployed and healthy.
 
+**Canary pins must be cleared at promote time.** The canary step pins the canary orgs (OliveTech + Silberman Law on US) to the release via `organizations.settings->'defaults'->'agentVersionPins'`. A pin is upgrade-only *to the pinned version*, so once the next release is promoted fleet-wide the canary orgs are the ONLY tenants left behind (10-22: Silberman stuck on 0.123.0 five days after 0.124.0 went out). In the same session as the promote, run per region and expect zero rows afterwards for the canary orgs:
+```sql
+SELECT set_config('breeze.scope','system',true);
+UPDATE organizations SET settings = jsonb_set(settings,'{defaults,agentVersionPins}','{}'::jsonb), updated_at=now()
+ WHERE settings->'defaults'->'agentVersionPins' @> '{"agent":"0.X.Y"}'::jsonb;   -- the version the canary was pinned to
+SELECT name, settings->'defaults'->'agentVersionPins' FROM organizations
+ WHERE settings->'defaults'->'agentVersionPins' NOT IN ('{}'::jsonb,'null'::jsonb);
+```
+Leave any pin that is NOT the canary version alone (August 2026 pins to 0.105.1/0.107.0 are deliberate holdbacks).
+
 **Security releases:** publish the GHSA advisory **after** rollout completes, never before (fix → quiet release → roll out → then publish). Internal cadence docs: `internal/security-disclosure-policy.md` (the decision doc), `internal/security-advisory-queue.md` (what's owed), `internal/security-hardening-tracker.md`.
 
 ### Advisory-debt pre-flight — run this FIRST, every release, no exceptions
@@ -533,6 +543,6 @@ and per-severity clocks: `internal/security-disclosure-policy.md`.
 - **Reference, don't reinvent:** `gh release view <prev-tag>` is the best style guide for the body. Match its section order and tone.
 - **Operator language vs marketing language differ:** the GitHub body is for self-hosters/operators (precise about env vars, flags, migrations); the marketing notes (`/update-breeze-release-notes`) are for MSP buyers (benefit-led). Don't copy-paste between them.
 - **A release is comms + rollout, not just a tag.** Cutting the release is meant to flow into rollout, but deploy + agent-promote are **confirm-with-Todd-first** and still manual (the tag only built images + registered binaries). Deploy the night region first; promote the fleet via the slot-aware DB row change once both regions are healthy.
-- **Signing jobs and GitHub environments.** The Windows signing job authenticates to Azure with GitHub OIDC, and a job that declares an `environment:` presents `repo:LanternOps/breeze:environment:<name>` as its subject. Whenever a release job gains, loses or renames an environment, check the Azure federated credentials before the first tag after the change; a mismatch fails `azure/login` on the tag build, not before.
+- **Signing jobs and GitHub environments.** The Windows signing job (SSL.com eSigner; the Azure lane is retired and its secrets deleted) reads its `SSLCOM_*` secrets from the job's `environment:` (`signing-production` or `signing-prerelease`) and refuses to sign when `SSLCOM_ENVIRONMENT_LABEL` does not match that environment. Whenever a release job gains, loses or renames an environment, confirm the six `SSLCOM_*` secrets exist in it with the right label before the first tag after the change; a mismatch fails the signing job on the tag build, not before.
 - **Release to-do carries per-release gates.** Put one-off pre-cut items for the next tag in `docs/release-notes/next-release-draft.md` → "Release to-do" (Step 0.2 reads it), and keep this file for rules that apply to every release.
 - **No infra literals in this file.** Droplet IPs, firewall IDs, bastion names, bucket names, and dump-size baselines belong in `internal/ops/release-infra.md` (gitignored) — this skill is committed to a public repo. Keep it that way when editing.

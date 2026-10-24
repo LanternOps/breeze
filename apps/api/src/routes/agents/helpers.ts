@@ -95,15 +95,15 @@ import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kind
 import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
-  normalizeAgentUpdatePolicy,
-  type AgentUpdateSettings,
-} from './agentUpdatePolicy';
+  resolveAgentUpdateConfig,
+  type AgentUpdateConfig,
+  type AgentVersionPins,
+} from '../../services/agentUpdateConfig';
+import { type AgentUpdateSettings } from './agentUpdatePolicy';
 import {
   normalizeScanPath,
   osRootScanPath,
-  isAlwaysMaintenanceWindow,
   parseMaintenanceWindow,
-  resolveInheritedAgentVersionPins,
 } from '@breeze/shared';
 import {
   type SecurityProviderValue,
@@ -285,6 +285,9 @@ export function normalizeProvider(raw: unknown): SecurityProviderValue {
     case 'f_secure':
     case 'fsecure':
       return 'withsecure';
+    // CylancePROTECT, rebranded Aurora Endpoint Defense (#9178).
+    case 'cylance':
+      return 'cylance';
     case 'unknown':
       return 'unknown';
     default:
@@ -648,6 +651,56 @@ async function updateThreatStatusForAction(command: typeof deviceCommands.$infer
   }
 }
 
+const SCAN_RULE_SET_ERRORS_MAX = 50;
+const SCAN_RULE_SET_ERROR_DETAIL_MAX = 512;
+
+type ScanRuleSetError = { id: string; version?: number; code: string; detail?: string };
+
+function parseScanEngine(raw: unknown): 'yara' | 'legacy' | undefined {
+  return raw === 'yara' || raw === 'legacy' ? raw : undefined;
+}
+
+/**
+ * W02 C3 `ruleSetErrors`, bounded and shape-checked: entries without a string
+ * id and code are dropped, detail is capped at 512 chars, at most 50 entries.
+ * `undefined` when the agent sent no array at all (an agent older than W02).
+ */
+function parseRuleSetErrors(raw: unknown): ScanRuleSetError[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ScanRuleSetError[] = [];
+  for (const item of raw) {
+    if (!isObject(item)) continue;
+    const id = asString(item.id);
+    const code = asString(item.code);
+    if (!id || !code) continue;
+    const entry: ScanRuleSetError = { id: id.slice(0, 64), code: code.slice(0, 64) };
+    if (typeof item.version === 'number' && Number.isInteger(item.version) && item.version > 0) entry.version = item.version;
+    const detail = asString(item.detail);
+    if (detail) entry.detail = detail.slice(0, SCAN_RULE_SET_ERROR_DETAIL_MAX);
+    out.push(entry);
+    if (out.length >= SCAN_RULE_SET_ERRORS_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * Dispatch-time errors first, then the agent's, de-duplicated on
+ * (id, version, code) so a retried result does not append twice; null when
+ * there are none.
+ */
+function mergeRuleSetErrors(existing: unknown, reported: ScanRuleSetError[]): ScanRuleSetError[] | null {
+  const merged: ScanRuleSetError[] = [];
+  const seen = new Set<string>();
+  for (const e of [...(parseRuleSetErrors(existing) ?? []), ...reported]) {
+    const key = `${e.id}|${e.version ?? ''}|${e.code}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(e);
+    if (merged.length >= SCAN_RULE_SET_ERRORS_MAX) break;
+  }
+  return merged.length > 0 ? merged : null;
+}
+
 export async function handleSecurityCommandResult(
   command: typeof deviceCommands.$inferSelect,
   resultData: z.infer<typeof commandResultSchema>
@@ -693,13 +746,31 @@ export async function handleSecurityCommandResult(
       ? 'failed'
       : timedOut ? 'timed_out' : 'completed';
 
-    let existingScan: { id: string } | undefined;
+    // #6263 W03 (W02 C3): the agent's engine + per-set errors. Absent on
+    // agents that predate W02, in which case the dispatch outcome stands.
+    const agentEngine = parseScanEngine(resultJson?.engine);
+    const agentRuleSetErrors = parseRuleSetErrors(resultJson?.ruleSetErrors);
+
+    let existingScan: { id: string; engine: string | null; ruleSetErrors: unknown } | undefined;
     if (isUuid(scanRecordId)) {
       [existingScan] = await db
-        .select({ id: securityScans.id })
+        .select({ id: securityScans.id, engine: securityScans.engine, ruleSetErrors: securityScans.ruleSetErrors })
         .from(securityScans)
         .where(and(eq(securityScans.id, scanRecordId), eq(securityScans.deviceId, command.deviceId)))
         .limit(1);
+    }
+
+    // Dispatched as YARA but the agent did not confirm an engine (a malformed
+    // value, or a build without the W02 result keys): never leave it looking
+    // like a clean YARA scan.
+    let reportedErrors = agentRuleSetErrors;
+    if (existingScan?.engine === 'yara' && !agentEngine) {
+      if (resultJson?.engine !== undefined) {
+        console.warn('[agents/helpers] security_scan reported an unknown engine', {
+          deviceId: command.deviceId, scanRecordId, engine: String(resultJson.engine).slice(0, 32),
+        });
+      }
+      reportedErrors = [...(agentRuleSetErrors ?? []), { id: '*', code: 'engine_unreported' }];
     }
 
     if (existingScan) {
@@ -710,7 +781,11 @@ export async function handleSecurityCommandResult(
           completedAt,
           duration: durationSeconds,
           threatsFound,
-          itemsScanned
+          itemsScanned,
+          ...(agentEngine ? { engine: agentEngine } : {}),
+          ...(reportedErrors !== undefined
+            ? { ruleSetErrors: mergeRuleSetErrors(existingScan.ruleSetErrors, reportedErrors) }
+            : {}),
         })
         .where(eq(securityScans.id, existingScan.id));
     } else {
@@ -724,7 +799,9 @@ export async function handleSecurityCommandResult(
         completedAt,
         threatsFound,
         duration: durationSeconds,
-        itemsScanned
+        itemsScanned,
+        engine: agentEngine ?? null,
+        ruleSetErrors: agentRuleSetErrors && agentRuleSetErrors.length > 0 ? agentRuleSetErrors : null,
       });
     }
 
@@ -1531,9 +1608,22 @@ export async function handleCisCommandResult(
     return;
   }
 
-  const completed = resultData.status === 'completed';
   const payloadDetails = isObject(payload.details) ? payload.details : null;
   const resultPayload = parseResultJson(resultData.stdout);
+  // #9604: the remediation's own `success` flag decides too, not just the
+  // command status. Agents before the fix report a remediation they could not
+  // apply as a COMPLETED command whose stdout says `{ success: false, error }`;
+  // fixed agents send a failed command. Only an explicit `false` flips the
+  // outcome, so a stdout without the field keeps the command status.
+  const agentReportedNotApplied = resultPayload?.success === false;
+  const completed = resultData.status === 'completed' && !agentReportedNotApplied;
+  const failureError = completed
+    ? null
+    : readTrimmedString(resultData.error)
+      ?? readTrimmedString(resultPayload?.error)
+      ?? (agentReportedNotApplied
+        ? 'Agent reported the remediation was not applied'
+        : `Remediation command ${resultData.status}`);
   const resultDetails = resultPayload && isObject(resultPayload.details)
     ? resultPayload.details
     : null;
@@ -1564,7 +1654,10 @@ export async function handleCisCommandResult(
     commandId: command.id,
     commandStatus: resultData.status,
     exitCode: resultData.exitCode ?? null,
-    error: resultData.error ?? null,
+    error: completed ? (resultData.error ?? null) : failureError,
+    // Older agents send `completed` + `success:false`; this explains why the
+    // action reads failed while commandStatus reads completed.
+    ...(agentReportedNotApplied ? { agentReportedNotApplied: true } : {}),
     stderr: resultData.stderr ?? null,
     completedAt: new Date().toISOString(),
   };
@@ -2942,25 +3035,10 @@ function extractSettingsDefaults(settings: unknown): Record<string, unknown> {
   return isObject(root.defaults) ? root.defaults : {};
 }
 
-/**
- * Effective per-component update version pins (issue #2124). `null` means "no
- * pin" → track the globally promoted latest version (historical behaviour).
- */
-export interface AgentVersionPins {
-  agent: string | null;
-  watchdog: string | null;
-}
-
-/**
- * The full effective agent-update config for an org: the update-policy gate
- * inputs PLUS the version pins. Both are resolved from the SAME single org⋈
- * partner join (see getOrgAgentUpdateConfig) so the heartbeat hot path pays one
- * round trip for everything it needs.
- */
-export interface AgentUpdateConfig {
-  settings: AgentUpdateSettings;
-  pins: AgentVersionPins;
-}
+// The pure resolution (#9170) and its types live in services/agentUpdateConfig.ts
+// so the partner settings inheritance read model can call it without this
+// module's import graph. Re-exported for existing importers.
+export type { AgentVersionPins, AgentUpdateConfig };
 
 /**
  * Resolve the EFFECTIVE agent update config for an org (Org > General). The
@@ -3006,34 +3084,14 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
     .where(eq(organizations.id, orgId))
     .limit(1);
 
-  const orgDefaults = extractSettingsDefaults(row?.orgSettings);
-  const partnerDefaults = extractSettingsDefaults(row?.partnerSettings);
-
-  // Effective merge, per field (mirrors effectiveSettings.mergeCategory): a
-  // partner-set field wins and locks; the org value fills the gap only where the
-  // partner has not set that field. `in` (not truthiness) matches mergeCategory,
-  // which locks any key the partner has present.
-  const effectivePolicy =
-    'agentUpdatePolicy' in partnerDefaults
-      ? partnerDefaults.agentUpdatePolicy
-      : orgDefaults.agentUpdatePolicy;
-  const effectiveWindow =
-    'maintenanceWindow' in partnerDefaults
-      ? partnerDefaults.maintenanceWindow
-      : orgDefaults.maintenanceWindow;
-  // Version pins: inherit-with-override, per component (issue #2124). Resolved
-  // via the shared `resolveInheritedAgentVersionPins` (packages/shared) — the
-  // SAME function `getOrgAgentVersionPinsBatch`
-  // (services/orgAgentVersionPins.ts, issue #5285) calls, so the two resolvers
-  // can never silently drift apart. See that function's docstring for the
-  // full precedence contract.
-  const pins: AgentVersionPins = resolveInheritedAgentVersionPins(orgDefaults, partnerDefaults);
-
-  const policy = normalizeAgentUpdatePolicy(effectivePolicy);
-  const rawWindow = typeof effectiveWindow === 'string' ? effectiveWindow.trim() : '';
-  // The explicit "24/7"/empty always-state means "no restriction" → null, same
-  // as an absent window. Only a real window string is carried through to the gate.
-  const maintenanceWindow = rawWindow && !isAlwaysMaintenanceWindow(rawWindow) ? rawWindow : null;
+  // Effective merge (partner-locks for the policy fields, inherit-with-override
+  // for the version pins via the shared `resolveInheritedAgentVersionPins`, the
+  // SAME function `getOrgAgentVersionPinsBatch` calls): see the pure core.
+  const config = resolveAgentUpdateConfig(
+    extractSettingsDefaults(row?.partnerSettings),
+    extractSettingsDefaults(row?.orgSettings),
+  );
+  const { maintenanceWindow } = config.settings;
   // New writes are validated at save time (issue #1963), but a legacy malformed
   // value still parses to null in the gate and fails open (lifts the time
   // restriction). Surface that so the silently-lifted restriction is observable
@@ -3051,7 +3109,7 @@ export async function getOrgAgentUpdateConfig(orgId: string): Promise<AgentUpdat
       `agent updates are NOT time-restricted (failing open). value=${JSON.stringify(maintenanceWindow)}`,
     );
   }
-  return { settings: { policy, maintenanceWindow }, pins };
+  return config;
 }
 
 /**

@@ -94,7 +94,7 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   // Hierarchy
   { key: 'orgId', label: 'Organization', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
   { key: 'siteId', label: 'Site', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
-  { key: 'groupId', label: 'Device Group', category: 'hierarchy', type: 'string', operators: ['equals', 'in'] },
+  { key: 'groupId', label: 'Device Group', category: 'hierarchy', type: 'string', operators: ['equals', 'notEquals', 'in', 'notIn'], description: 'Group membership. Excluding a dynamic group uses its last evaluated membership.' },
 
   // Computed
   { key: 'daysSinceLastSeen', label: 'Days Since Last Seen', category: 'computed', type: 'number', operators: N, computed: true },

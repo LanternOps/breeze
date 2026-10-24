@@ -456,6 +456,22 @@ describe('generateIdentityAccessReport', () => {
     expect(s.coverage?.generatedAt).toBe('2026-09-30T05:18:00.000Z');
   });
 
+  it.each([
+    ['last_7_days', '2026-10-14'],
+    ['last_90_days', '2026-07-23'],
+  ])('honours a %s dateRange preset on an ad-hoc run (#9562)', async (preset, expectedStart) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-21T12:00:00.000Z'));
+    try {
+      queueHappyPath();
+      const s = summaryOf(await generateIdentityAccessReport(ORG_ID, { dateRange: { preset } }, authority()));
+      expect(s.coverage?.periodStart).toBe(expectedStart);
+      expect(s.coverage?.periodEnd).toBe('2026-10-21');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reads freshness from last_complete_snapshot_at, exposed as coverage.asOf', async () => {
     queueHappyPath();
     const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));

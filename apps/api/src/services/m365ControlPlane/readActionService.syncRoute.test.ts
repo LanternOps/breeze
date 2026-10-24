@@ -217,6 +217,15 @@ describe('callGraphReadExecutor', () => {
     expect((result as { message: string }).message).not.toContain('undefined');
   });
 
+  it('maps graph_provider_rejected to its own code and a message distinct from graph_response_invalid (#9393)', async () => {
+    executorMocks.syncAction.mockResolvedValue({ success: false, code: 'graph_provider_rejected' });
+    const result = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5d' });
+    expect(result).toMatchObject({ ok: false, code: 'graph_provider_rejected' });
+    const message = (result as { message: string }).message;
+    expect(message).toMatch(/refused/i);
+    expect(message).not.toBe(syncFailureMessage('graph_response_invalid'));
+  });
+
   it('labels the executor histogram with opts.domain, falling back to the action id', async () => {
     executorMocks.syncAction.mockResolvedValue(SYNC_OK);
     await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-5c', domain: 'users' });
@@ -228,7 +237,7 @@ describe('callGraphReadExecutor', () => {
   });
 
   it('collapses a transport-level executor error to executor_unavailable on the sync route', async () => {
-    executorMocks.syncAction.mockRejectedValue(new GraphReadExecutorClientError());
+    executorMocks.syncAction.mockRejectedValue(new GraphReadExecutorClientError({ cause: 'network', operation: 'sync-action' }));
     const result = await callGraphReadExecutor(SNAPSHOT, SYNC_ACTION, { route: 'sync', correlationId: 'c-7' });
     expect(result).toMatchObject({ ok: false, code: 'executor_unavailable' });
   });
@@ -291,11 +300,11 @@ describe('syncFailureMessage', () => {
     // M365ReadActionRefusalCode
     'tools_disabled', 'site_scope_denied', 'org_context_required',
     'connection_not_ready', 'read_rate_limited', 'executor_unavailable',
-    // M365SyncFailureCode (= ReadActionFailureCode + continuation_invalid)
+    // M365SyncFailureCode (= ReadActionFailureCode + continuation_invalid + graph_provider_rejected)
     'credential_unavailable', 'application_token_invalid', 'graph_permission_missing',
     'graph_license_required', 'graph_not_found', 'graph_throttled',
     'graph_response_too_large', 'graph_request_timeout', 'graph_transport_failed',
-    'graph_response_invalid', 'continuation_invalid',
+    'graph_response_invalid', 'continuation_invalid', 'graph_provider_rejected',
     // sync-only
     'sync_capacity',
   ] as const satisfies readonly M365SyncCallFailureCode[];

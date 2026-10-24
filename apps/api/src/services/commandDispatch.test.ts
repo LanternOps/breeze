@@ -137,6 +137,8 @@ const DEFAULT_CANDIDATE = {
   deviceOrgId: 'org-1',
   deviceStatus: 'online',
   orgType: 'customer',
+  deviceIncarnation: 1,
+  deviceInstallIncarnation: 1,
 };
 let candidateFor: ReturnType<typeof vi.fn>;
 function stubSingleClaimCandidate(
@@ -568,7 +570,7 @@ describe('command dispatch helpers', () => {
       expect(partitionClaimableMock).toHaveBeenCalledTimes(1);
       const [tx, device, rows] = partitionClaimableMock.mock.calls[0]!;
       expect(tx).toBe(db);
-      expect(device).toEqual({ id: 'dev-1', orgId: 'org-2', status: 'online', orgType: 'customer' });
+      expect(device).toEqual({ id: 'dev-1', orgId: 'org-2', status: 'online', orgType: 'customer', installIncarnation: 1 });
       expect(rows).toEqual([
         expect.objectContaining({ id: 'cmd-1', type: 'script', createdBy: 'user-1', submittedOrgId: 'org-1' }),
       ]);

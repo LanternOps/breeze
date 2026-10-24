@@ -62,6 +62,8 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  // --- business calendars (#8973 W4) ------------------------------------------
+  'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
   // `network_check` monitor definition — the compiler is its only writer, and
@@ -108,6 +110,14 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // tenant records a licence denial. No caller-chosen value reaches either
   // row; the caller-facing config write (PATCH actionsEnabled) is gated in
   // routes/edr/connections.ts by requireEdrPartnerAdmin.
+  // #6263 W03a. The publisher writes only a set's version/publish columns and
+  // its rules' compile_error, for a set it re-locks FOR UPDATE under the
+  // caller's RLS (read-only partner-wide/built-in rows are not lockable). Its
+  // only callers are the mutating routes in routes/security/yara.ts, each of
+  // which runs `set.orgId === null && !canManagePartnerWidePolicies(auth)`
+  // (writeDenial) first; it refuses the built-in set outright.
+  'services/yaraBuiltinPackStore.ts': 'boot-only system-scope upsert of THE built-in set (both owners NULL); never reachable from a route or a caller — routes 403 the built-in set (#6263 W03b)',
+  'services/yaraRuleSetPublisher.ts': 'writes only version/publish columns + compile_error of a set the caller already passed routes/security/yara.ts writeDenial (canManagePartnerWidePolicies for partner-wide); re-locks FOR UPDATE under the caller RLS; refuses the built-in set',
   'services/edrProviders/actions.ts': 'vendor-outcome bookkeeping only (reauth_required on a rejected key, a licence denial on the acted-on tenant), system context, ids from the authorized row; no caller-chosen value',
   'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
@@ -406,6 +416,10 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/reportSeries/reconcile.ts': 'the multi-org report reconciler writes only ORG-owned series children: inserts carry a concrete org_id from the eligible target set, updates key on id + org_id + series_id, and reports_series_child_shape_chk forbids a partner-owned child. Its callers are services/reportSeries/store.ts (every entry point gated by canManagePartnerWidePolicies through requireSeriesPartner) and the schedule worker gate / repair sweep (system context, no caller)',
   'services/emailDomains/domainSync.ts': 'the sending-domain state machine runs only inside the sending-domains BullMQ worker, under system DB scope, with no caller and no auth context: it takes a domain id from a job payload, advances that ONE row between provider-observed statuses, and creates no partner-owned configuration. Every caller-facing create/update/delete of partner_sending_domains goes through routes/partnerSendingDomains.ts, which carries the canManagePartnerWidePolicies gate',
   'services/migrationWindows.ts': 'system sweep and admin-gated close: every caller-facing write of migration_windows / migration_window_orgs goes through routes/migrationWindows.ts, whose open and close routes carry the canManagePartnerWidePolicies gate (open is further owner-only and step-up bound); the remaining writer is the migration-window-sweep worker under system scope, with no caller',
+  // Partner Entitlements W1 (#9907). partner_entitlements rows are COMMERCIAL
+  // facts, not partner-wide configuration: a partner must never write them, so
+  // canManagePartnerWidePolicies (which a partner admin passes) is the wrong gate.
+  'services/entitlements.ts': 'commercial entitlement facts written only in system context by the platform-admin route routes/admin/entitlements.ts (platformAdminMiddleware + requireMfa) and, from W2, the billing/licence writers; no partner-scoped caller ever reaches these write primitives',
 };
 
 /**

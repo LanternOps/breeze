@@ -445,6 +445,14 @@
         "message": "Installiert Homebrew als der aktuell angemeldete Benutzer mit einer fest gepinnten, per Prüfsumme verifizierten Kopie des offiziellen Installationsprogramms. Erfordert eine Konsolensitzung mit Administratorrechten und eine aktive oder kennwortlose sudo-Berechtigung; andernfalls schlägt die Installation fehl und der Fehler wird zurückgemeldet.",
         "confirm": "Homebrew installieren"
       },
+      "restartAgent": {
+        "title": "Breeze-Agent neu starten?",
+        "message": "Den Watchdog auf {{hostname}} anweisen, den Breeze-Agent-Dienst neu zu starten. Der Watchdog übernimmt das beim nächsten Check-in, meist innerhalb einer Minute, und meldet sich nur, solange der Agent nicht läuft.",
+        "watchdogLastSeen": "Letzte Meldung des Watchdogs: {{date}}.",
+        "watchdogStale": "Der Watchdog hat sich zuletzt {{date}} gemeldet, zu lange her, um die Anfrage anzunehmen; sie wird abgelehnt, bis er sich wieder meldet.",
+        "watchdogNeverSeen": "Der Watchdog hat sich noch nicht gemeldet; die Anfrage wird abgelehnt, bis er sich meldet.",
+        "confirm": "Agent neu starten"
+      },
       "bulkDeleteManual": {
         "title": "{{count}} manuelle Assets löschen?",
         "message": "Dadurch werden die ausgewählten manuellen Assets dauerhaft gelöscht. Dies kann nicht rückgängig gemacht werden.",
@@ -477,6 +485,10 @@
     "reRunAgentInventoryCollectorsSo": "Bestandsdaten jetzt neu erfassen",
     "refresh": "Aktualisieren",
     "reboot": "Neu starten",
+    "forceRebootNow": "Jetzt erzwungen neu starten",
+    "forceRebootHint": "Sofort neu starten und laufende Apps schließen. Nicht gespeicherte Arbeit geht verloren.",
+    "forceRebootAgentUpgradeRequired": "Agent-Update erforderlich: Der erzwungene Neustart benötigt Agent {{version}} oder neuer",
+    "forceRebootQueued": "Erzwungener Neustart für {{hostname}} in die Warteschlange gestellt. Er läuft, sobald auf dem Gerät nichts anderes mehr läuft.",
     "wake": "Aufwecken",
     "rebootToSafeMode": "Im abgesicherten Modus neu starten",
     "deploySoftware": "Software bereitstellen",
@@ -492,7 +504,8 @@
     "power": "Energie",
     "shutdown": "Herunterfahren",
     "deviceSettings": "Geräteeinstellungen",
-    "installHomebrew": "Homebrew installieren"
+    "installHomebrew": "Homebrew installieren",
+    "restartAgent": "Agent neu starten"
   },
   "deviceActivityFeed": {
     "activity": "Aktivität",
@@ -868,7 +881,12 @@
     "devices": "Geräte",
     "devicesCrumbOtherOrg": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation bleibt {{workingOrg}}",
     "devicesCrumbOtherOrgUnnamed": "Öffnet den Tab „Geräte“ von {{deviceOrg}}; Ihre Arbeitsorganisation ändert sich nicht",
-    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen."
+    "switchOrgFailed": "Organisation konnte nicht gewechselt werden. Bitte erneut versuchen.",
+    "restartAgent": {
+      "queued": "Neustart des Agents für {{hostname}} angefordert. Der Watchdog führt ihn beim nächsten Check-in aus.",
+      "alreadyPending": "Für {{hostname}} wartet bereits ein Agent-Neustart auf den Watchdog.",
+      "failed": "Neustart des Agents für {{hostname}} konnte nicht angefordert werden"
+    }
   },
   "deviceDetails": {
     "overview": "Übersicht",
@@ -983,7 +1001,9 @@
     "sentineloneWillCutTheDeviceOff": "SentinelOne trennt das Gerät vom Netzwerk, bis Sie die Isolierung aufheben. Aktive Sitzungen werden gelöscht.",
     "sentineloneWillRestoreThisDeviceS": "SentinelOne stellt die Netzwerkkonnektivität dieses Geräts wieder her.",
     "cancel": "Abbrechen",
-    "isolate": "Isolieren"
+    "isolate": "Isolieren",
+    "managedSecurityAgents": "Verwaltete Sicherheits-Agents",
+    "since": "Seit {{date}}"
   },
   "deviceEffectiveConfigTab": {
     "loadingEffectiveConfiguration": "Effektive Konfiguration wird geladen...",
@@ -1015,7 +1035,9 @@
       "label": "Genehmigung",
       "byRing": "durch den verknüpften Update-Ring festgelegt",
       "manualOnly": "nur manuelle Genehmigungen (kein Update-Ring verknüpft)"
-    }
+    },
+    "chainResolutionRule": "Zuerst entscheidet die Ebene: Gerät vor Gerätegruppe, dann Standort, Organisation und Partner. Die Priorität (niedrigere Zahl gewinnt) entscheidet nur zwischen Richtlinien auf derselben Ebene. Durchgestrichene Funktionen wurden von einer näheren Richtlinie überschrieben.",
+    "featureOverriddenBy": "Überschrieben von {{policy}}"
   },
   "deviceEventLogViewer": {
     "failedToFetchActivities": "Aktivitäten konnten nicht abgerufen werden",
@@ -1340,6 +1362,7 @@
     "drive": "Laufwerk",
     "size": "Größe",
     "used": "Verwendet",
+    "usedPercent": "Belegt %",
     "health": "Zustand",
     "noDiskInventoryReported": "Kein Festplatteninventar gemeldet.",
     "networkAdapters": "Netzwerkadapter",
@@ -1369,8 +1392,6 @@
     "ratedSpeed": "Nennwert {{speed}}"
   },
   "deviceInfoTab": {
-    "logsSilent": "Dieses Gerät ist online, hat aber seit {{since}} keine Protokolle gesendet. Der Protokollversand ist möglicherweise deaktiviert, fehlgeschlagen oder erreicht den Server nicht — prüfen Sie die Protokollversand-Konfiguration des Agents auf dem Gerät.",
-    "logsSilentNeverShipped": "Dieses Gerät ist online, hat aber noch nie ein Protokoll gesendet. Der Protokollversand ist möglicherweise deaktiviert, fehlgeschlagen oder erreicht den Server nicht — prüfen Sie die Protokollversand-Konfiguration des Agents auf dem Gerät.",
     "updateStuck": "Das Agent-Update auf {{target}} scheint festzuhängen: {{attempts}} Versuche seit {{since}}, und das Gerät ist noch auf seiner alten Version. Der Updater versucht es bei jedem Heartbeat erneut; prüfen Sie die Agent-Protokolle oder das Gerät selbst, falls es keine sendet.",
     "updateOfferWithheld": "Update-Angebote werden für dieses Gerät zurückgehalten (seit {{since}}): Es lässt sich nicht bestätigen, dass der Agent-Build die von diesem Server bereitgestellte Edition akzeptiert, daher bleibt er auf seiner aktuellen Version. Stellen Sie ihn mit einem Installer der bereitgestellten Edition oder einem Agent-Release wieder her, das seine Edition meldet.",
     "helperInstallIssue": {
@@ -1765,8 +1786,6 @@
       "manual": "Manuell"
     },
     "updateWithheld": "Updates zurückgehalten",
-    "logsSilent": "Protokolle still",
-    "logsSilentTooltip": "Dieses Gerät ist online, hat aber seit über 6 Stunden keine Protokolle gesendet. Der Protokollversand ist möglicherweise deaktiviert, fehlgeschlagen oder erreicht den Server nicht.",
     "updateStuck": "Update hängt",
     "updateStuckTooltip": "Dieses Gerät versucht seit über einer Stunde erfolglos, sein Agent-Update auf {{target}} abzuschließen.",
     "updateWithheldTooltip": "Der Server bietet diesem Gerät keine Updates an, weil sich nicht bestätigen lässt, dass sein Agent-Build die bereitgestellte Edition akzeptiert. Er bleibt bis zur Wiederherstellung auf seiner aktuellen Version.",
@@ -1931,6 +1950,7 @@
     "title": "Aktive Netzwerkverbindungen"
   },
   "devicePatchStatusTab": {
+    "released": "Veröffentlicht am {{date}}",
     "compliance": {
       "compliant": "{{percent}} % konform",
       "description": "Ausstehende vs. installierte Updates",
@@ -2054,6 +2074,7 @@
       "excludedCategoryTitle": "Der Update-Ring {{ring}} schließt die Kategorie dieses Patches aus, daher überspringen geplante Patch-Läufe ihn.",
       "excludedAppRuleTitle": "Eine App-Sperr- oder Pin-Regel des verknüpften Update-Rings hält diesen Patch zurück, daher überspringen geplante Patch-Läufe ihn.",
       "excludedRingReferenceTitle": "Zurückgehalten: Die Patch-Richtlinie dieses Geräts verweist auf einen Update-Ring, der nicht mehr existiert oder für diesen Partner nicht verfügbar ist. Korrigieren Sie den Update-Ring der Richtlinie, um das Patchen fortzusetzen.",
+      "excludedDeclinedTitle": "Abgelehnt: Dieser Patch wurde ausdrücklich abgelehnt, daher installiert ihn die automatische Genehmigung des Rings nicht. Genehmigen Sie ihn erneut, um ihn zuzulassen.",
       "pending": "Genehmigung ausstehend",
       "needsApprovalRingTitle": "Der Update-Ring {{ring}} genehmigt diesen Patch nicht automatisch. Genehmigen Sie ihn manuell, um ihn zu installieren.",
       "needsApprovalNoRingTitle": "Mit der Patch-Richtlinie dieses Geräts ist kein Update-Ring verknüpft, daher wird dieser Patch nur nach manueller Genehmigung installiert.",
@@ -2478,7 +2499,7 @@
     "showFindings": "Befunde anzeigen",
     "stats": {
       "accepted": "Akzeptiert",
-      "kev": "Kev",
+      "kev": "Bekanntermaßen ausgenutzt",
       "mitigated": "Abgemildert",
       "open": "Offen",
       "patchReady": "Patch bereit",
@@ -2496,9 +2517,9 @@
     "statusLabel": "Statusetikett",
     "table": {
       "actions": "Aktionen",
-      "cve": "Cve",
-      "cvss": "Lebenslauf",
-      "kev": "Kev",
+      "cve": "CVE",
+      "cvss": "CVSS",
+      "kev": "KEV",
       "risk": "Risiko",
       "severity": "Schweregrad",
       "status": "Status"
@@ -2553,7 +2574,7 @@
       "shutdown": "Herunterfahren"
     },
     "addDevice": "Gerät hinzufügen",
-    "importFromRmm": "Von einer anderen RMM importieren",
+    "importFromRmm": "Benutzerdefinierte Felder aus einer anderen RMM importieren",
     "bulkPurge": {
       "andMore": "und {{count}} weitere",
       "confirm": "Endgültig löschen",
@@ -3016,6 +3037,29 @@
     "cancel": "Abbrechen",
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
   },
+  "forceRebootDialog": {
+    "title": "Jetzt erzwungen neu starten",
+    "description": "Startet {{hostname}} sofort neu und schließt laufende Apps, statt auf sie zu warten.",
+    "hostnameLabel": "Gerät",
+    "osLabel": "Betriebssystem",
+    "commandLabel": "Befehl",
+    "noEffectOnOs": "Unter {{os}} wartet ein Neustart nie auf Apps; dies entspricht also einem normalen sofortigen Neustart.",
+    "warning": "Nicht gespeicherte Arbeit in geöffneten Apps auf diesem Gerät geht verloren. Der Neustart wartet weiterhin auf Befehle, die bereits auf dem Gerät laufen.",
+    "typeHostname": "Geben Sie zur Bestätigung {{hostname}} ein",
+    "stepUpHeading": "Bestätigen Sie Ihre Identität",
+    "stepUpPasskeyNote": "Sie bestätigen mit Ihrem Passkey.",
+    "stepUpCodeLabel": "Authenticator-Code",
+    "noStepUpFactor": "Fügen Sie Ihrem Konto eine Authenticator-App oder einen Passkey hinzu, bevor Sie ein Gerät erzwungen neu starten.",
+    "mfaRequired": "Schließen Sie zuerst die MFA-Anmeldung ab und versuchen Sie es erneut.",
+    "stepUpFailed": "Die Bestätigung ist fehlgeschlagen. Geben Sie einen neuen Code ein und versuchen Sie es erneut.",
+    "deviceOffline": "Dieses Gerät ist nicht online. Ein erzwungener Neustart wird nur an ein Gerät gesendet, das jetzt online ist.",
+    "agentUpgradeRequired": "Der Agent dieses Geräts ist für einen erzwungenen Neustart zu alt. Aktualisieren Sie zuerst den Agent.",
+    "genericError": "Der erzwungene Neustart konnte nicht gesendet werden.",
+    "cancel": "Abbrechen",
+    "confirm": "Jetzt erzwungen neu starten",
+    "submitStepUp": "Bestätigen und erzwungen neu starten",
+    "submitting": "Wird gesendet…"
+  },
   "moveDeviceOrgDialog": {
     "title": "In eine andere Organisation verschieben",
     "description": "Verschiebt {{hostname}} aus {{orgName}}. Verlauf, Tickets und Richtlinien wandern mit, und der Agent verbindet sich unter der neuen Organisation neu.",
@@ -3441,6 +3485,8 @@
     "health": {
       "empty": {
         "title": "Es wird noch nichts überwacht",
+        "titleWithCheck": "Keine SNMP-Integritätsdaten",
+        "descriptionWithCheck": "Für dieses Gerät ist eine Netzwerkprüfung aktiv, daher wird die Erreichbarkeit weiterhin erfasst. Aktivieren Sie SNMP, um zusätzlich Integritätsdaten zu erfassen.",
         "action": "Überwachung einrichten",
         "benefit": {
           "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",

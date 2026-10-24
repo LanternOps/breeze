@@ -654,6 +654,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #9128 — daily prune of terminal webhook_deliveries rows.
+    name: 'webhookDeliveryRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/webhookDeliveryRetention');
+      return {
+        init: m.initializeWebhookDeliveryRetention,
+        shutdown: m.shutdownWebhookDeliveryRetention,
+      };
+    },
+  },
+  {
     name: 'oauthCleanup',
     placement: 'global',
     load: async () => {
@@ -1069,6 +1081,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // Security agent coverage reconciliation (#6960 W03). 'global': its import
+    // closure reaches alertService + eventBus (createSourcedAlert) but no
+    // socket-local dispatch, the same shape as edrProviderSyncWorker.
+    name: 'securityAgentCoverageWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/securityAgentCoverageWorker');
+      return { init: m.initializeSecurityAgentCoverageWorker, shutdown: m.shutdownSecurityAgentCoverageWorker };
+    },
+  },
+  {
     // socket-owner, not global: its runtime import closure reaches
     // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
     // -> services/m365ControlPlane/readActionService.ts ->
@@ -1400,7 +1423,10 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   },
   {
     name: 'pamActuationWorker',
-    placement: 'global',
+    // Immediate delivery uses the canonical command claim, whose cancellation
+    // propagation reaches socket-local command services. Keep that closure on
+    // API processes; the relay still delivers to agents owned by another API.
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/pamActuationWorker');
       return { init: m.initializePamActuationWorker, shutdown: m.shutdownPamActuationWorker };
@@ -1514,6 +1540,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/ticketSlaWorker');
       return { init: m.initializeTicketSlaWorker, shutdown: m.shutdownTicketSlaWorker };
+    },
+  },
+  {
+    // #8973 W4: one-shot holiday recompute of business-calendar SLA deadlines.
+    name: 'businessCalendarRecomputeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/businessCalendarRecomputeWorker');
+      return { init: m.initializeBusinessCalendarRecomputeWorker, shutdown: m.shutdownBusinessCalendarRecomputeWorker };
     },
   },
   {

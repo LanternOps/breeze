@@ -59,6 +59,11 @@ function isLoopbackHost(hostname: string): boolean {
   return LOOPBACK_HOSTS.has(hostname);
 }
 
+/** The loopback set redirect_uris may use over plain http (consent warning, B-W03 #6157). */
+export function isLoopbackRedirectHost(hostname: string): boolean {
+  return isLoopbackHost(hostname);
+}
+
 function validateOne(uri: unknown): RedirectUriValidation {
   if (typeof uri !== 'string' || uri.length === 0) {
     return { ok: false, reason: 'redirect_uri must be a non-empty string' };

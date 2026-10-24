@@ -12,6 +12,7 @@ import type {
   ChecklistItemPatchInput,
   ChecklistItemSource,
 } from '@breeze/shared';
+import { lockTicketForWrite } from './ticketRowLock';
 
 /** `db` or a transaction handle, so the W03 sweep can seed inside its own tx. */
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -154,6 +155,10 @@ export async function getChecklistItemOr404(itemId: string): Promise<TicketCheck
  * null when the item does not exist.
  */
 export async function isChecklistItemTickedForUpdate(itemId: string): Promise<boolean | null> {
+  // #8972 W0: the item's TICKET first, so the caller's later item write
+  // (patch / delete, which lock the ticket too) never takes the ticket while
+  // holding this item lock.
+  if (!(await lockItemTicket(itemId))) return null;
   const [row] = (await db
     .select({ doneAt: ticketChecklistItems.doneAt })
     .from(ticketChecklistItems)
@@ -163,12 +168,31 @@ export async function isChecklistItemTickedForUpdate(itemId: string): Promise<bo
   return row.doneAt !== null;
 }
 
+/**
+ * #8972 W0: lock the TICKET of a checklist item (services/ticketRowLock.ts),
+ * read unlocked first. False when the item, or its ticket, is not visible.
+ * Item-addressed writers call it before they lock or write the item.
+ */
+async function lockItemTicket(itemId: string): Promise<boolean> {
+  const [peek] = (await db
+    .select({ ticketId: ticketChecklistItems.ticketId })
+    .from(ticketChecklistItems)
+    .where(eq(ticketChecklistItems.id, itemId))
+    .limit(1)) as Array<{ ticketId: string }>;
+  if (!peek) return false;
+  return (await lockTicketForWrite(db, peek.ticketId)) !== null;
+}
+
 export async function addChecklistItem(
   ticket: { id: string; orgId: string },
   input: ChecklistItemCreateInput,
   actor: ChecklistActor,
   exec: DbExecutor = db,
 ): Promise<ChecklistItemView> {
+  // #8972 W0: ticket first (it also serializes the MAX(position) read below).
+  // The caller authorized `ticket`; one this context cannot lock is written
+  // exactly as before.
+  await lockTicketForWrite(exec, ticket.id);
   const [agg] = (await exec
     .select({ maxPosition: sql<number | null>`MAX(${ticketChecklistItems.position})` })
     .from(ticketChecklistItems)
@@ -204,6 +228,9 @@ export async function patchChecklistItem(
   patch: ChecklistItemPatchInput,
   actor: ChecklistActor,
 ): Promise<ChecklistItemView> {
+  // #8972 W0: read unlocked, lock the item's ticket, re-read under it (the
+  // attestation rules below decide on the row as it is now).
+  if (!(await lockItemTicket(itemId))) throw notFound();
   const existing = await getChecklistItemOr404(itemId);
   const now = new Date();
   const editsText = patch.label !== undefined || patch.detail !== undefined;
@@ -247,16 +274,22 @@ export async function patchChecklistItem(
     set.doneByUserId = null;
   }
 
-  // RULE 3 — editing the text of a COMPLETED item clears the attestation. The
-  // tick attested to the OLD text; carrying it onto new text is a falsified
+  // RULE 3 — editing the LABEL of a COMPLETED item clears the attestation. The
+  // tick attested to the OLD label; carrying it onto new text is a falsified
   // record. Only fires when the row is currently done, so an ordinary typo fix
-  // on an unticked step touches neither column.
+  // on an unticked step touches neither column. The note (`detail`) is working
+  // commentary, not what was attested to, so a detail-only edit of a done item
+  // keeps the tick (#9180).
   //
-  // `done: true` ARRIVING WITH a text edit is treated as an edit too: the text
-  // changes and the item ends UNTICKED, because the caller cannot attest to
-  // text they are changing in the same request. The UI never sends this
-  // combination; the rule exists so the API has one answer rather than none.
-  if (editsText && (existing.doneAt !== null || patch.done === true)) {
+  // `done: true` ARRIVING WITH a text edit (label or note) is treated as an
+  // edit too: the text changes and the item ends UNTICKED, because the caller
+  // cannot attest to text they are changing in the same request. The UI never
+  // sends this combination; the rule exists so the API has one answer rather
+  // than none.
+  if (
+    (patch.label !== undefined && patch.label !== existing.label && existing.doneAt !== null) ||
+    (editsText && patch.done === true)
+  ) {
     set.doneAt = null;
     set.doneByUserId = null;
   }
@@ -291,6 +324,8 @@ export async function reorderChecklist(
   ticketId: string,
   itemIds: string[],
 ): Promise<ChecklistSummary> {
+  // #8972 W0: ticket first; the same-set check below then reads under it.
+  await lockTicketForWrite(db, ticketId);
   const current = (await db
     .select({ id: ticketChecklistItems.id })
     .from(ticketChecklistItems)
@@ -332,6 +367,8 @@ export async function deleteChecklistItem(itemId: string): Promise<void> {
   // database would happily accept this and leave a live task waiting on a
   // dependency that no longer exists — a stuck task with no error anywhere.
   // There is nothing for Postgres to raise here; this guard IS the constraint.
+  // #8972 W0: under the item's ticket lock, taken first.
+  if (!(await lockItemTicket(itemId))) throw notFound();
   await assertChecklistItemDeletable(itemId, db);
 
   const deleted = (await db

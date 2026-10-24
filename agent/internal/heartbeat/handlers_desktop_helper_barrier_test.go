@@ -150,7 +150,13 @@ func TestStartDesktopOnSessionSeedsOncePerHelperSession(t *testing.T) {
 			t.Fatalf("start %d failed: %q", i, result.Error)
 		}
 	}
-	want := []string{ipc.TypeDesktopFenceSync, ipc.TypeDesktopStart, ipc.TypeDesktopStart}
+	// Each completed start is followed by its trickle begin (#9182), sent
+	// once the helper is recorded as the session's owner.
+	want := []string{
+		ipc.TypeDesktopFenceSync,
+		ipc.TypeDesktopStart, ipc.TypeDesktopICETrickleBegin,
+		ipc.TypeDesktopStart, ipc.TypeDesktopICETrickleBegin,
+	}
 	for i, expect := range want {
 		if got := rig.nextType(t); got != expect {
 			t.Fatalf("message %d was %q, want %q (the seed must cost one round trip per helper session, not per start)", i, got, expect)

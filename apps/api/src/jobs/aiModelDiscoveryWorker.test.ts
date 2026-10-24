@@ -1,7 +1,7 @@
 // apps/api/src/jobs/aiModelDiscoveryWorker.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, syncMock, syncConnectionMock, verifyMock, dbState, capturedProcessor } = vi.hoisted(() => ({
+const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, syncMock, syncConnectionMock, verifyMock, dbState, capturedProcessor, capturedWorker } = vi.hoisted(() => ({
   syncConnectionMock: vi.fn(),
   verifyMock: vi.fn(),
   dbState: { activeConnectionIds: [] as string[], whereArg: null as unknown },
@@ -11,6 +11,7 @@ const { addMock, getJobMock, getRepeatableJobsMock, removeRepeatableByKeyMock, s
   removeRepeatableByKeyMock: vi.fn(),
   syncMock: vi.fn(),
   capturedProcessor: { current: null as null | ((job: unknown) => Promise<unknown>) },
+  capturedWorker: { current: null as null | { on: ReturnType<typeof vi.fn> } },
 }));
 
 vi.mock('bullmq', () => ({
@@ -28,6 +29,7 @@ vi.mock('bullmq', () => ({
     constructor(name: string, processor: (job: unknown) => Promise<unknown>) {
       this.name = name;
       capturedProcessor.current = processor;
+      capturedWorker.current = this as unknown as { on: ReturnType<typeof vi.fn> };
     }
     on = vi.fn();
     close = vi.fn();
@@ -59,7 +61,9 @@ vi.mock('../db', () => ({
   },
 }));
 
+import type { Job } from 'bullmq';
 import type { SQL } from 'drizzle-orm';
+import { attachWorkerObservability, type WorkerObservabilityOptions } from './workerObservability';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { GATEWAY_CONNECTION_KINDS } from '@breeze/shared';
 import {
@@ -72,6 +76,8 @@ import {
   enqueueOfferingVerification,
   enqueuePlatformModelSync,
   initializeAiModelDiscoveryWorker,
+  OfferingVerificationRetry,
+  PlatformModelSyncFailed,
   processAiModelDiscoveryJob,
   scheduleAiModelDiscoveryJobs,
   shutdownAiModelDiscoveryWorker,
@@ -183,6 +189,54 @@ describe('ai-model-discovery queue', () => {
     syncMock.mockResolvedValueOnce({ status: 'skipped', reason: 'no_platform_key' });
     await expect(processAiModelDiscoveryJob({ data: { type: 'sync-platform', trigger: 'manual' } }))
       .resolves.toEqual({ status: 'skipped', reason: 'no_platform_key' });
+  });
+
+  // #9534: each boot-sync failure was logged twice — once by
+  // attachWorkerObservability ([aiModelDiscoveryWorker]) and again by the
+  // worker's own handlers ([aiModelDiscovery]) — each with a full stack that
+  // points at this file, not the provider. One line with the provider error.
+  describe('failure logging (#9534)', () => {
+    async function classifier() {
+      await initializeAiModelDiscoveryWorker();
+      const call = vi.mocked(attachWorkerObservability).mock.calls.at(-1);
+      await shutdownAiModelDiscoveryWorker();
+      expect(call?.[1]).toBe('aiModelDiscoveryWorker');
+      const classify = (call?.[2] as WorkerObservabilityOptions | undefined)?.classifyFailure;
+      expect(classify).toBeTypeOf('function');
+      return classify!;
+    }
+
+    it('registers no failed/error handler of its own (attachWorkerObservability already logs and reports)', async () => {
+      await initializeAiModelDiscoveryWorker();
+      const events = capturedWorker.current!.on.mock.calls.map((c) => c[0]);
+      await shutdownAiModelDiscoveryWorker();
+      expect(events).not.toContain('failed');
+      expect(events).not.toContain('error');
+    });
+
+    it('a failed platform sync throws a one-line error carrying the provider error, not a stack', async () => {
+      syncMock.mockResolvedValueOnce({ status: 'failed', error: 'HTTP 401: invalid x-api-key' });
+      const err = await processAiModelDiscoveryJob({ data: { type: 'sync-platform', trigger: 'boot' } }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PlatformModelSyncFailed);
+      expect((err as Error).message).toContain('HTTP 401: invalid x-api-key');
+      expect((err as Error).stack).not.toContain('\n');
+      expect((err as Error).stack).toContain('HTTP 401: invalid x-api-key');
+    });
+
+    it('classifies a platform sync failure to report once, when its retries are exhausted', async () => {
+      const classify = await classifier();
+      expect(classify(undefined as unknown as Job, new PlatformModelSyncFailed('HTTP 401'))).toEqual(
+        expect.objectContaining({ level: 'error', reportOnlyWhenExhausted: true }),
+      );
+    });
+
+    it('classifies a verification retry as an expected warning, and leaves real faults at the default', async () => {
+      const classify = await classifier();
+      expect(classify(undefined as unknown as Job, new OfferingVerificationRetry('off-1'))).toEqual(
+        expect.objectContaining({ level: 'warning', reportOnlyWhenExhausted: true }),
+      );
+      expect(classify(undefined as unknown as Job, new Error('db down'))).toBeNull();
+    });
   });
 
   it('rejects an unknown job type', async () => {

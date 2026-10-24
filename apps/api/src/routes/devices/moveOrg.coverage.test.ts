@@ -210,6 +210,7 @@ describe('getDeviceOrgDenormalizedTables() coverage', () => {
       'peripheral_policy_delivery_events',
       // #4755: composite (device_id, org_id) FK ON UPDATE CASCADE restamps it.
       'device_restore_point_attempts',
+      'security_agent_device_status',
     ]);
     expect(deviceOrgDenormalizedTables).toEqual(
       expect.arrayContaining([...DEVICE_ORG_FK_CASCADE_TABLES]),

@@ -25,6 +25,9 @@ export const s1Integrations = pgTable('s1_integrations', {
   managementUrl: text('management_url').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   lastSyncAt: timestamp('last_sync_at'),
+  // Last agent sync that listed EVERY agent (no updatedAt filter) and was not
+  // truncated; the only run allowed to mark missing s1_agents rows absent (#9248).
+  lastFullAgentSyncAt: timestamp('last_full_agent_sync_at'),
   lastSyncStatus: varchar('last_sync_status', { length: 20 }),
   lastSyncError: text('last_sync_error'),
   createdBy: uuid('created_by').references(() => users.id),

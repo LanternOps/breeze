@@ -16,6 +16,9 @@ export default defineConfig({
     // #6605: `node dist/scripts/upgrade-preflight.cjs [--strict]` — run the new
     // image against the current database before upgrading.
     'scripts/upgrade-preflight': 'scripts/upgrade-preflight.ts',
+    // #8865 W1a: `node dist/scripts/verify-acceptance-hashes.cjs --limit 100` —
+    // re-verify stored quote acceptance hashes after a freeze-path deploy.
+    'scripts/verify-acceptance-hashes': 'scripts/verify-acceptance-hashes.ts',
   },
   format: ['cjs'],
   // @breeze/api is a deployed application, not a consumed library: package.json

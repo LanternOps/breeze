@@ -5,7 +5,7 @@ import { quotes, quoteLines, quoteBlocks, quoteImages, quoteRecipients } from '.
 import { invoices } from '../db/schema/invoices';
 import { organizations, partners, sites } from '../db/schema/orgs';
 import { deviceGroups } from '../db/schema/devices';
-import { contractTemplates, contractTemplateVersions } from '../db/schema/contractDocuments';
+import { assertTemplateVersionUsable, ContractTemplateServiceError } from './contractTemplateService';
 import { catalogItems } from '../db/schema/catalog';
 import { pax8OrderLines, pax8Orders } from '../db/schema/pax8Orders';
 import { listQuoteOrders } from './quoteOrderService';
@@ -1032,10 +1032,21 @@ export async function reviseQuote(id: string, actor: QuoteActor) {
   }
 }
 
-export async function getQuote(id: string, actor: QuoteActor) {
+/**
+ * The staff read ownership path: the raw row under the caller's context, 404
+ * when RLS or a bad id hides it, then the org + site guard. `getQuote` and the
+ * staff customer-view route (#9418) both open with it, so the two reject a
+ * caller identically. Read-only: no tax-rate refresh, no view stamp.
+ */
+export async function getAccessibleQuoteRow(id: string, actor: QuoteActor) {
   const [q] = await db.select().from(quotes).where(eq(quotes.id, id)).limit(1);
   if (!q) throw new QuoteServiceError('Quote not found', 404, 'QUOTE_NOT_FOUND');
   assertQuoteAccess(actor, q);
+  return q;
+}
+
+export async function getQuote(id: string, actor: QuoteActor) {
+  const q = await getAccessibleQuoteRow(id, actor);
   const blocks = sanitizeQuoteBlocksForRead(
     await db.select().from(quoteBlocks).where(eq(quoteBlocks.quoteId, id)).orderBy(quoteBlocks.sortOrder)
   );
@@ -1583,27 +1594,13 @@ async function assertContractBlockValid(
   quote: { orgId: string; partnerId: string },
   dbc: Pick<typeof db, 'select'> = db,
 ): Promise<void> {
-  const [version] = await dbc.select({
-    templateId: contractTemplateVersions.templateId,
-    status: contractTemplateVersions.status,
-  }).from(contractTemplateVersions).where(eq(contractTemplateVersions.id, content.templateVersionId)).limit(1);
-  if (!version || version.templateId !== content.templateId || version.status !== 'published') {
-    throw new QuoteServiceError('Contract template version is not published', 422, 'INVALID_CONTRACT_TEMPLATE');
-  }
-  const [template] = await dbc.select({
-    status: contractTemplates.status,
-    orgId: contractTemplates.orgId,
-    partnerId: contractTemplates.partnerId,
-  }).from(contractTemplates).where(eq(contractTemplates.id, content.templateId)).limit(1);
-  if (!template || template.status === 'archived') {
-    throw new QuoteServiceError('Contract template is archived or no longer exists', 422, 'INVALID_CONTRACT_TEMPLATE');
-  }
-  // XOR ownership (contract_templates_one_owner_chk): org-owned templates are
-  // visible only to that org; partner-wide templates (orgId NULL) are visible
-  // to every org of that partner.
-  const visible = template.orgId !== null ? template.orgId === quote.orgId : template.partnerId === quote.partnerId;
-  if (!visible) {
-    throw new QuoteServiceError('Contract template is not visible to this organization', 422, 'INVALID_CONTRACT_TEMPLATE');
+  // The quote surface keeps its single 422 INVALID_CONTRACT_TEMPLATE code (and
+  // the same messages); the finer-grained codes are for agreement requests.
+  try {
+    await assertTemplateVersionUsable(content, quote, dbc);
+  } catch (e) {
+    if (e instanceof ContractTemplateServiceError) throw new QuoteServiceError(e.message, 422, 'INVALID_CONTRACT_TEMPLATE');
+    throw e;
   }
 }
 

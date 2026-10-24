@@ -6,7 +6,6 @@ const BODY_DIGEST = /^[A-Za-z0-9_-]{43}$/;
 const MAX_TOKEN_LIFETIME_SECONDS = 60;
 
 export type ExecutorOperation =
-  | 'complete-consent'
   | 'verify-identity'
   | 'retest'
   | 'read-action'

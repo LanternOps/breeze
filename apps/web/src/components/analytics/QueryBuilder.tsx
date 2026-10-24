@@ -144,7 +144,8 @@ export default function QueryBuilder({ value, onChange, onQueryResult, deviceIds
       });
 
       if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
+        const detail = (await response.json().catch(() => null)) as { error?: unknown } | null;
+        throw new Error(typeof detail?.error === 'string' ? detail.error : `${response.status} ${response.statusText}`);
       }
 
       const result = await response.json();

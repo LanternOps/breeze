@@ -41,6 +41,7 @@ vi.mock('../../services/partnerStripe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/partnerStripe')>();
   return {
     isPartnerOnlinePaymentAvailable: actual.isPartnerOnlinePaymentAvailable,
+    isPartnerOnlinePaymentAvailableOnCallerConnection: actual.isPartnerOnlinePaymentAvailableOnCallerConnection,
     getPartnerStripeClient: getPartnerStripeClientMock,
     PartnerStripeError,
   };

@@ -10,6 +10,7 @@ import type { TicketConfig } from '@/lib/ticketConfigApi';
 import { priorityConfig } from '../tickets/ticketConfig';
 import type { TicketPriority } from '../tickets/ticketConfig';
 import InheritedField from '../shared/InheritedField';
+import type { BusinessCalendarDto, ResolvedBusinessCalendarDto } from '@breeze/shared';
 
 const PRIORITIES = Object.keys(priorityConfig) as TicketPriority[];
 
@@ -61,6 +62,8 @@ function parseApproval(data: unknown): { draft: ApprovalDraft; resolved: Approva
   return { draft, resolved };
 }
 
+type CalendarEnvelope<T> = { data?: T };
+
 type OrgTicketSettingsEditorProps = {
   orgId: string;
   onDirty: () => void;
@@ -80,6 +83,13 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
   const [approvalResolved, setApprovalResolved] = useState<ApprovalResolved | null>(null);
   const [approvalLoadFailed, setApprovalLoadFailed] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+
+  // Business-hours calendar override (#8973). '' = inherit; the API returns the RESOLVED calendar.
+  const [calendarOptions, setCalendarOptions] = useState<BusinessCalendarDto[]>([]);
+  const [calendarResolved, setCalendarResolved] = useState<ResolvedBusinessCalendarDto | null>(null);
+  const [calendarBase, setCalendarBase] = useState('');
+  const [calendarDraft, setCalendarDraft] = useState('');
+  const [calendarLoadFailed, setCalendarLoadFailed] = useState(false);
 
   // Draft state for the form
   const [slaRows, setSlaRows] = useState<Record<TicketPriority, DraftSlaRow>>(
@@ -146,6 +156,30 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
 
   useEffect(() => { void loadApproval(); }, [loadApproval]);
 
+  const loadCalendars = useCallback(async () => {
+    setCalendarLoadFailed(false);
+    try {
+      const [listRes, resolvedRes] = await Promise.all([
+        fetchWithAuth(`/business-calendars?orgId=${orgId}`),
+        fetchWithAuth(`/business-calendars/resolved?orgId=${orgId}`),
+      ]);
+      if (!listRes.ok || !resolvedRes.ok) throw new Error('business calendar load failed');
+      const list = (await listRes.json()) as CalendarEnvelope<BusinessCalendarDto[]>;
+      const resolved = (await resolvedRes.json()) as CalendarEnvelope<ResolvedBusinessCalendarDto>;
+      if (!resolved.data) throw new Error('business calendar response malformed');
+      setCalendarOptions((list.data ?? []).filter((c) => !c.archivedAt));
+      setCalendarResolved(resolved.data);
+      setCalendarBase(resolved.data.overrideCalendarId ?? '');
+      setCalendarDraft(resolved.data.overrideCalendarId ?? '');
+    } catch (err) {
+      console.warn('[OrgTicketSettingsEditor] business calendar load failed', err);
+      setCalendarResolved(null);
+      setCalendarLoadFailed(true);
+    }
+  }, [orgId]);
+
+  useEffect(() => { void loadCalendars(); }, [loadCalendars]);
+
   const updateApproval = (field: ApprovalField, value: string) => {
     setApproval(prev => ({ ...prev, [field]: value }));
     onDirty();
@@ -196,6 +230,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         }
       }
       const hasApprovalPatch = Object.keys(approvalPatch).length > 0;
+      const hasCalendarPatch = calendarResolved !== null && calendarDraft !== calendarBase;
 
       await runAction({
         request: () => fetchWithAuth(`/orgs/organizations/${orgId}/ticket-settings`, {
@@ -204,7 +239,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         }),
         errorFallback: t('orgTicketSettingsEditor.errors.save'),
         // With an approval patch pending, toast once after BOTH succeed.
-        successMessage: hasApprovalPatch ? undefined : t('orgTicketSettingsEditor.toasts.saved'),
+        successMessage: hasApprovalPatch || hasCalendarPatch ? undefined : t('orgTicketSettingsEditor.toasts.saved'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
       if (hasApprovalPatch) {
@@ -214,11 +249,24 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
             body: JSON.stringify(approvalPatch)
           }),
           errorFallback: t('orgTicketSettingsEditor.errors.savedApprovalFailed'),
-          successMessage: t('orgTicketSettingsEditor.toasts.saved'),
+          successMessage: hasCalendarPatch ? undefined : t('orgTicketSettingsEditor.toasts.saved'),
           onUnauthorized: () => void navigateTo('/login', { replace: true })
         });
         // Re-fetch so a cleared field shows the inherited value and its source.
         await loadApproval();
+      }
+      if (hasCalendarPatch) {
+        // null = inherit the partner default.
+        await runAction({
+          request: () => fetchWithAuth(`/business-calendars/orgs/${orgId}/override`, {
+            method: 'PUT',
+            body: JSON.stringify({ calendarId: calendarDraft === '' ? null : calendarDraft })
+          }),
+          errorFallback: t('orgTicketSettingsEditor.businessCalendar.errors.save'),
+          successMessage: t('orgTicketSettingsEditor.toasts.saved'),
+          onUnauthorized: () => void navigateTo('/login', { replace: true })
+        });
+        await loadCalendars();
       }
       onSave();
     } catch (err) {
@@ -227,7 +275,7 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
     } finally {
       setSaving(false);
     }
-  }, [settings, saving, slaRows, orgId, onSave, t, approval, approvalBase, approvalResolved, loadApproval]);
+  }, [settings, saving, slaRows, orgId, onSave, t, approval, approvalBase, approvalResolved, loadApproval, calendarResolved, calendarDraft, calendarBase, loadCalendars]);
 
   // The inherited (partner-default) SLA number for a given priority+field, or
   // null when the partner has no value configured — feeds InheritedField's
@@ -313,6 +361,17 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
     { value: 'true', label: t('orgTicketSettingsEditor.approval.on') },
     { value: 'false', label: t('orgTicketSettingsEditor.approval.off') },
   ];
+
+  // "Inherited: <name> (<where>)" — what a blank picker resolves to right now.
+  const partnerDefaultCalendar = calendarOptions.find((c) => c.ownerScope === 'partner' && c.isPartnerDefault) ?? null;
+  const inheritedText = (() => {
+    const fromResolved = calendarBase === '' ? calendarResolved : null;
+    const name = fromResolved ? fromResolved.calendarName : partnerDefaultCalendar?.name ?? null;
+    return name
+      ? t('orgTicketSettingsEditor.businessCalendar.inheritedDefault', { name })
+      : t('orgTicketSettingsEditor.businessCalendar.inheritedNone');
+  })();
+  const overrideMissing = calendarDraft !== '' && !calendarOptions.some((c) => c.id === calendarDraft);
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">{t('orgTicketSettingsEditor.loading')}</p>;
@@ -430,6 +489,47 @@ export default function OrgTicketSettingsEditor({ orgId, onDirty, onSave }: OrgT
         {approvalError && (
           <p className="mt-2 text-sm text-destructive" data-testid="org-approval-error">{approvalError}</p>
         )}
+      </section>
+
+      <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="org-business-calendar-section">
+        <h2 className="text-lg font-semibold">{t('orgTicketSettingsEditor.businessCalendar.title')}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{t('orgTicketSettingsEditor.businessCalendar.description')}</p>
+        {calendarLoadFailed && (
+          <div className="mt-3 text-sm text-destructive" role="alert" data-testid="org-business-calendar-load-error">
+            {t('orgTicketSettingsEditor.businessCalendar.loadFailed')}{' '}
+            <button type="button" onClick={() => void loadCalendars()} className="underline">
+              {t('common:actions.retry')}
+            </button>
+          </div>
+        )}
+        <div className="mt-4 max-w-md">
+          <label className="text-sm font-medium" htmlFor="org-business-calendar">{t('orgTicketSettingsEditor.businessCalendar.label')}</label>
+          <select
+            id="org-business-calendar"
+            data-testid="org-business-calendar"
+            className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm disabled:opacity-50"
+            value={calendarDraft}
+            disabled={!calendarResolved}
+            onChange={(e) => { setCalendarDraft(e.target.value); onDirty(); }}
+          >
+            <option value="">{t('orgTicketSettingsEditor.businessCalendar.inherit')}</option>
+            {overrideMissing && (
+              <option value={calendarDraft}>{t('orgTicketSettingsEditor.businessCalendar.archivedOverride')}</option>
+            )}
+            {calendarOptions.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.ownerScope === 'partner'
+                  ? t('orgTicketSettingsEditor.businessCalendar.partnerWideOption', { name: c.name })
+                  : c.name}
+              </option>
+            ))}
+          </select>
+          {calendarResolved && calendarDraft === '' && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="org-business-calendar-source">
+              {inheritedText}
+            </p>
+          )}
+        </div>
       </section>
 
       <div className="flex justify-end">

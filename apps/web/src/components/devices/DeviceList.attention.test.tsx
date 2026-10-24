@@ -47,7 +47,6 @@ function device(id: string, hostname: string, overrides: Partial<Device> = {}): 
     siteId: 'site-1',
     siteName: 'HQ',
     agentVersion: '0.110.0',
-    lastLogAt: new Date().toISOString(),
     tags: [],
     ...overrides,
   };

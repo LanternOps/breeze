@@ -36,7 +36,8 @@ vi.mock('../services/remoteSessionAuth', () => ({
 }));
 
 vi.mock('./agentWs', () => ({
-  sendCommandToAgent: vi.fn(() => true)
+  sendCommandToAgent: vi.fn(() => true),
+  sendDesktopIceCandidateToAgent: vi.fn(() => true)
 }));
 
 vi.mock('../services/viewerTokenRevocation', () => ({
@@ -220,7 +221,7 @@ vi.mock('../services/redis', () => ({
 
 import { db } from '../db';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
-import { sendCommandToAgent } from './agentWs';
+import { sendCommandToAgent, sendDesktopIceCandidateToAgent } from './agentWs';
 import { remoteAccessInlineSettingsSchema } from '@breeze/shared/validators';
 
 /** Helper to build a fluent mock chain for db.select() */
@@ -804,7 +805,8 @@ describe('remote routes', () => {
         },
         device: {
           id: DEVICE_UUID,
-          orgId: 'org-123'
+          orgId: 'org-123',
+          agentId: 'agent-123'
         }
       };
 
@@ -833,6 +835,15 @@ describe('remote routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.iceCandidatesCount).toBe(2);
+      // #9182: the rail is no longer write-only — the candidate reaches the
+      // agent that hosts the session, tagged with the session's start.
+      expect(body.forwarded).toBe(true);
+      expect(vi.mocked(sendDesktopIceCandidateToAgent)).toHaveBeenCalledWith('agent-123', {
+        type: 'desktop_ice_candidate',
+        sessionId: SESSION_UUID,
+        startGeneration: '0',
+        candidate: { candidate: 'candidate-2', sdpMid: '0', sdpMLineIndex: 0 },
+      });
     });
   });
 

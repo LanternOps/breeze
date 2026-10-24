@@ -12,8 +12,14 @@ import type { SecurityAgentPlatform, SecurityAgentVendorKey } from '@breeze/shar
  *
  * `enableable` gates the link-write path: a link may list a vendor with
  * `enabled: true` only when the vendor's install path is wired end to end.
- * Huntress is; the others are listed but cannot be switched on yet
- * (`vendor_not_enableable`).
+ * Huntress (W02) and SentinelOne (W04) are; the DNS vendors are listed but
+ * cannot be switched on yet (`vendor_not_enableable`).
+ *
+ * `enableable` is static. Per-partner prerequisites are enforced by the
+ * generator at write time, not here: the partner's built-in catalog package
+ * must exist (`security_agents_catalog_missing`) and, for a package whose
+ * binary the partner uploads (SentinelOne's MSI, `requiresBinaryUpload`), it
+ * must have a deployable version (`security_agents_binary_missing`).
  */
 
 export type VendorKey = SecurityAgentVendorKey;
@@ -85,7 +91,9 @@ const VENDORS: Readonly<Record<VendorKey, SecurityAgentVendor>> = Object.freeze(
     setupPath: '/integrations#sentinelone',
     platforms: { windows: 'supported', macos: 'unsupported', linux: 'unsupported' },
     presence: {},
-    enableable: false,
+    // W04: readiness (site mapping + token), the s1_agents coverage source and
+    // the partner-uploaded MSI gate are wired.
+    enableable: true,
   }),
   controld: freezeVendor({
     key: 'controld',

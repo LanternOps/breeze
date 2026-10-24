@@ -40,6 +40,14 @@ vi.mock('../services/email', () => ({
   }))
 }));
 
+// #8972 W0: the comment POST locks the ticket row first (services/ticketRowLock.ts).
+vi.mock('../services/ticketRowLock', () => ({
+  lockTicketForWrite: vi.fn(async (_tx: unknown, id: string) => ({
+    id, orgId: 'org-123', partnerId: 'partner-1', status: 'open', deletedAt: null, workKind: 'support',
+  })),
+  lockTicketsForWrite: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
@@ -205,8 +213,6 @@ const mockSelectLimit = mockSelectResult;
 const mockSelectWhere = mockSelectResult;
 const mockSelectOrderLimitOffset = mockSelectResult;
 const mockSelectOrder = mockSelectResult;
-const mockSelectLeftJoinWhere = mockSelectResult;
-const mockSelectLeftJoinOrderLimitOffset = mockSelectResult;
 
 const mockUpdateReturning = (result: any) => ({
   set: vi.fn().mockReturnValue({
@@ -967,7 +973,7 @@ describe('portal routes', () => {
       expect(await res.json()).toMatchObject({ code: 'PORTAL_ASSET_CHECKOUT_DISABLED' });
     });
 
-    it('should return available assets', async () => {
+    it('returns the assets checked out to the portal user', async () => {
       vi.mocked(db.select)
         .mockReturnValueOnce(
           mockSelectLimit([
@@ -980,9 +986,10 @@ describe('portal routes', () => {
           ]) as any
         )
         .mockReturnValueOnce(mockSelectLimit([]) as any) // asset checkout defaults enabled
-        .mockReturnValueOnce(mockSelectLeftJoinWhere([{ count: 1 }]) as any)
+        .mockReturnValueOnce(mockSelectWhere([]) as any) // EXISTS(open checkout held by this user) subquery
+        .mockReturnValueOnce(mockSelectWhere([{ count: 1 }]) as any)
         .mockReturnValueOnce(
-          mockSelectLeftJoinOrderLimitOffset([
+          mockSelectOrderLimitOffset([
             {
               id: 'device-1',
               hostname: 'asset-1',

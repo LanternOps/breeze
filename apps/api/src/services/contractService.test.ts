@@ -58,6 +58,7 @@ vi.mock('./catalogPricing', async (importOriginal) => {
 });
 
 import * as svc from './contractService';
+import { summarizeActiveContractMrrByOrg } from './contractMrr';
 import { db } from '../db';
 import { contractLines, invoiceLineDevices, invoices, contractBillingPeriodOutcomes } from '../db/schema';
 import type { DeviceSnapshotRow } from './contractQuantities';
@@ -66,6 +67,7 @@ import { resolvePriceFrom } from './catalogPricing';
 import { createManualInvoice, addContractLine } from './invoiceService';
 import { countContractDevices, countContractSeats, snapshotContractDevices, groupMembersForBilling } from './contractQuantities';
 import { GroupEvaluationError } from './groupMembership';
+import { buildContractSpecsFromQuote } from './quoteToContract';
 import { isKnownCurrency, roundToCurrency } from '@breeze/shared';
 
 const resolvePriceMock = vi.mocked(resolvePrice);
@@ -524,6 +526,81 @@ describe('generateDueInvoice surfaces price-book gaps (#3775)', () => {
     expect(addContractLine).toHaveBeenNthCalledWith(1, 'inv1', expect.objectContaining({ catalogItemId: 'cat-1', unitPrice: '80.00', sourceId: 'cl-1' }), expect.anything());
   });
 
+  // #9304: a contract auto-created from an accepted quote must not print
+  // internal provenance on the customer's invoices — the generated invoice
+  // carries the quote's terms and nothing else.
+  it('a quote-created contract generates invoices whose notes are the terms only', async () => {
+    const [spec] = buildContractSpecsFromQuote(
+      { orgId: 'org1', partnerId: 'p1', quoteNumber: 'Q-1001', currencyCode: 'EUR', terms: 'Net 30' },
+      [{
+        sourceQuoteLineId: 'ql-1', recurrence: 'monthly', customerVisible: true, name: null,
+        description: 'Managed endpoint', unitPrice: '80.00', quantity: '1', taxable: false,
+        catalogItemId: null, termMonths: null, contractLineType: null, deviceRoles: null,
+        deviceGroupId: null, deviceGroupName: null, siteId: null, siteName: null,
+        includedQuantity: null, overageMode: null, overageUnitPrice: null,
+      }],
+      '2026-07-01',
+      'u1',
+    );
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    results.length = 0;
+    queueResult([{ ...contract, notes: spec!.notes, terms: spec!.terms }]);
+    queueResult([{ id: 'cl-1', lineType: 'manual', description: 'Managed endpoint', unitPrice: '80.00', taxable: false, catalogItemId: null, manualQuantity: '1', siteId: null, ...noAllowance }]);
+    queueResult([{ id: 'bp1' }]);
+    queueResult([]); queueResult([]); queueResult([]); queueResult([]);
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    expect(createManualInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: 'Net 30' }), expect.anything(),
+    );
+  });
+
+  // #9347: contract `notes` are internal-only. Generated invoices print the
+  // Invoice note (`terms`) and nothing else, whatever the internal notes say.
+  function queueFlatRun(header: { notes: string | null; terms: string | null }) {
+    results.length = 0;
+    queueResult([{ ...contract, ...header }]);
+    queueResult([{ id: 'cl-1', lineType: 'flat', description: 'Managed endpoint', unitPrice: '80.00', taxable: false, catalogItemId: null, manualQuantity: null, siteId: null, ...noAllowance }]);
+    queueResult([{ id: 'bp1' }]);
+    queueResult([]); queueResult([]); queueResult([]); queueResult([]);
+  }
+
+  it('never copies internal contract notes onto a generated invoice (#9347)', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueFlatRun({ notes: 'Customer is slow to pay - chase on day 3', terms: 'Net 30' });
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    const [input] = vi.mocked(createManualInvoice).mock.calls[0]!;
+    expect(input).toMatchObject({ notes: 'Net 30' });
+    expect(JSON.stringify(input)).not.toContain('chase on day 3');
+  });
+
+  it('a contract with internal notes and no invoice note generates an invoice with no notes (#9347)', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueFlatRun({ notes: 'Internal only', terms: null });
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    const [input] = vi.mocked(createManualInvoice).mock.calls[0]!;
+    expect(input.notes).toBeUndefined();
+  });
+
+  it('an empty-string invoice note generates an invoice with no notes (#9347)', async () => {
+    vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
+    vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'contract_snapshot' } as never);
+    queueFlatRun({ notes: 'Internal only', terms: '' });
+
+    const res = await svc.generateDueInvoice('c1', asOf);
+    expect(res.generated).toBe(true);
+    const [input] = vi.mocked(createManualInvoice).mock.calls[0]!;
+    expect(input.notes).toBeUndefined();
+  });
+
   it('returns an empty priceBookGaps array when every catalog line resolved from the price book', async () => {
     vi.mocked(createManualInvoice).mockResolvedValue({ id: 'inv1' } as never);
     vi.mocked(addContractLine).mockResolvedValue({ line: { id: 'il1' }, pricedFrom: 'price_book' } as never);
@@ -895,7 +972,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   }
 
   const contract = (over: Record<string, unknown> = {}) => ({
-    id: 'c1', orgId: 'org1', status: 'active', currencyCode: 'USD', intervalMonths: 1, ...over,
+    id: 'c1', orgId: 'org1', status: 'active', currencyCode: 'USD', intervalMonths: 1, startDate: '2025-01-01', ...over,
   });
   const line = (over: Record<string, unknown> = {}) => ({
     id: 'l1', contractId: 'c1', lineType: 'flat', unitPrice: '100.00',
@@ -904,14 +981,14 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   });
 
   it('returns an empty map without querying when no org ids are given', async () => {
-    const out = await svc.summarizeActiveContractMrrByOrg([]);
+    const out = await summarizeActiveContractMrrByOrg([]);
     expect(out.size).toBe(0);
     expect((db as unknown as { select: { mock: { calls: unknown[][] } } }).select.mock.calls.length).toBe(0);
   });
 
   it('filters on status=active and the requested org ids in the contract query', async () => {
     queueResult([]);
-    await svc.summarizeActiveContractMrrByOrg(['org1', 'org2']);
+    await summarizeActiveContractMrrByOrg(['org1', 'org2']);
     const where = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0];
     const params = collectParams(where);
     expect(params).toContain('active');
@@ -929,7 +1006,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
       startDate: '2025-09-01', endDate: '2026-07-31', nextBillingAt: '2026-09-01',
     })]);
     queueResult([line({ unitPrice: '1200.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
     expect(out.has('org1')).toBe(false);
   });
 
@@ -939,35 +1016,35 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
       startDate: '2025-09-01', endDate: '2026-09-01', nextBillingAt: '2026-09-01',
     })]);
     queueResult([line({ unitPrice: '1200.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
   });
 
   it('excludes an ACTIVE contract past its endDate with no nextBillingAt pointer', async () => {
     queueResult([contract({ endDate: '2026-07-31', nextBillingAt: null })]);
     queueResult([line({ unitPrice: '50.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
     expect(out.has('org1')).toBe(false);
   });
 
   it('keeps an open-ended (endDate null) contract', async () => {
     queueResult([contract({ endDate: null, nextBillingAt: '2026-09-01', billingTiming: 'advance' })]);
     queueResult([line({ unitPrice: '50.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
+    const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2026-08-23T00:00:00.000Z'));
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '50.00' }]);
   });
 
   it('amortises a 12-month contract of 1200.00 to 100.00 monthly', async () => {
     queueResult([contract({ intervalMonths: 12 })]);
     queueResult([line({ unitPrice: '1200.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
   });
 
   it('amortises a 3-month contract of 300.00 to 100.00 monthly', async () => {
     queueResult([contract({ intervalMonths: 3 })]);
     queueResult([line({ unitPrice: '300.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
   });
 
@@ -980,7 +1057,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
       line({ id: 'l1', contractId: 'c1', unitPrice: '1230.00' }),
       line({ id: 'l2', contractId: 'c2', unitPrice: '410.00' }),
     ]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(out.get('org1')).toEqual([
       { currencyCode: 'EUR', amount: '410.00' },
       { currencyCode: 'USD', amount: '1230.00' },
@@ -990,7 +1067,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   it('rounds each contract in its OWN currency — a JPY contract never yields a fractional yen', async () => {
     queueResult([contract({ currencyCode: 'JPY', intervalMonths: 2 })]);
     queueResult([line({ unitPrice: '201' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     // roundToCurrency returns the fixed-2 string the numeric(_,2) columns
     // store; for a zero-decimal currency that is a WHOLE major unit — 101.00,
     // never the 100.50 a naive 201/2 would emit.
@@ -1000,7 +1077,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
   it('omits an org with no active contracts from the map entirely', async () => {
     queueResult([contract({ orgId: 'org1' })]);
     queueResult([line({ unitPrice: '50.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1', 'org2']);
+    const out = await summarizeActiveContractMrrByOrg(['org1', 'org2']);
     expect(out.has('org2')).toBe(false);
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '50.00' }]);
   });
@@ -1015,7 +1092,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
       line({ id: `${contractId}-a`, contractId, lineType: 'per_device', unitPrice: '10.00' }),
       line({ id: `${contractId}-b`, contractId, lineType: 'per_device', unitPrice: '5.00' }),
     ]));
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1', 'org2', 'org3']);
+    const out = await summarizeActiveContractMrrByOrg(['org1', 'org2', 'org3']);
     expect(vi.mocked(snapshotContractDevices).mock.calls.length).toBe(3); // one snapshot per org
     expect(out.get('org2')).toEqual([{ currencyCode: 'USD', amount: '30.00' }]);
   });
@@ -1024,7 +1101,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     const orgIds = Array.from({ length: 120 }, (_, i) => `org${i}`);
     queueResult(orgIds.map((orgId, i) => contract({ id: `c${i}`, orgId })));
     queueResult(orgIds.map((_, i) => line({ id: `l${i}`, contractId: `c${i}`, unitPrice: '7.00' })));
-    const out = await svc.summarizeActiveContractMrrByOrg(orgIds);
+    const out = await summarizeActiveContractMrrByOrg(orgIds);
     expect(out.size).toBe(120);
     expect((db as unknown as { limit: { mock: { calls: unknown[][] } } }).limit.mock.calls.length).toBe(0);
   });
@@ -1034,7 +1111,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
     queueResult([]);                                   // no org overrides
     queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '42.00' }]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(vi.mocked(resolvePriceFrom)).toHaveBeenCalled();
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '42.00' }]);
   });
@@ -1051,7 +1128,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     queueResult([]); // no org overrides
     queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '11.11' }]);
 
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
 
     expect(out.get('org1')).toEqual([{
       currencyCode: 'USD',
@@ -1064,7 +1141,7 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
     queueResult([{ itemId: 'item-1', orgId: 'org1', currencyCode: 'USD', unitPrice: '33.00' }]);
     queueResult([{ itemId: 'item-1', currencyCode: 'USD', unitPrice: '42.00' }]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '33.00' }]);
   });
 
@@ -1073,16 +1150,240 @@ describe('summarizeActiveContractMrrByOrg (#3779)', () => {
     queueResult([line({ catalogItemId: 'item-1', unitPrice: '10.00' })]);
     queueResult([{ itemId: 'item-1', orgId: 'org1', currencyCode: 'EUR', unitPrice: '999.00' }]); // wrong-currency override
     queueResult([]);                                    // no USD book row (the gap)
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '10.00' }]);
   });
 
   it('never consults the resolver for a non-catalog line', async () => {
     queueResult([contract()]);
     queueResult([line({ catalogItemId: null, unitPrice: '10.00' })]);
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
     expect(vi.mocked(resolvePriceFrom)).not.toHaveBeenCalled();
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '10.00' }]);
+  });
+
+  // #9220 (spec #9218 T8): generateDueInvoice flips an ADVANCE contract to
+  // 'expired' the moment it bills the final period, so a one-year contract billed
+  // annually in advance is 'expired' right after its only invoice. It is still in
+  // term — paid for and being served — until end_date. Query order for a
+  // billed-final-term candidate: contracts → covering billing period → invoices
+  // (one query per void→replacement hop) → contract-sourced invoice lines →
+  // block-hours overage closed onto those invoices → (active rows) contract lines.
+  describe('billed final term (#9220)', () => {
+    const annual = (over: Record<string, unknown> = {}) => contract({
+      status: 'expired', billingTiming: 'advance', intervalMonths: 12,
+      startDate: '2026-01-01', endDate: '2027-01-01', nextBillingAt: null, ...over,
+    });
+    const MID_TERM = new Date('2026-06-15T12:00:00.000Z');
+
+    it('loads expired contracts alongside active ones in the contract query', async () => {
+      queueResult([]);
+      await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      const where = (db as unknown as { where: { mock: { calls: unknown[][] } } }).where.mock.calls[0]![0];
+      const params = collectParams(where);
+      expect(params).toContain('active');
+      expect(params).toContain('expired');
+      expect(params).toContain('2026-06-15');
+    });
+
+    it('counts an annual advance contract whose final (only) invoice exists, until end_date', async () => {
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'sent', replacedByInvoiceId: null }]);
+      queueResult([{ invoiceId: 'inv1', sourceContractId: 'c1', lineTotal: '1200.00' }]);
+      queueResult([]); // no block-hours overage on the invoice
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+    });
+
+    it('drops it on end_date — no billing lookups for a contract whose term is over', async () => {
+      queueResult([annual()]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], new Date('2027-01-01T00:00:00.000Z'));
+      expect(out.has('org1')).toBe(false);
+      expect((db as unknown as { select: { mock: { calls: unknown[][] } } }).select.mock.calls.length).toBe(1);
+    });
+
+    it('does not count an expired contract with no billed period covering asOf', async () => {
+      queueResult([annual()]);
+      queueResult([]); // no covering contract_billing_periods row
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+    });
+
+    it('follows a voided period invoice to its reissued replacement', async () => {
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'void', replacedByInvoiceId: 'inv2' }]);
+      queueResult([{ id: 'inv2', status: 'draft', replacedByInvoiceId: null }]);
+      queueResult([{ invoiceId: 'inv2', sourceContractId: 'c1', lineTotal: '1080.00' }]);
+      queueResult([]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '90.00' }]);
+    });
+
+    it('counts nothing (and warns) when the period invoice was voided with no replacement', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'void', replacedByInvoiceId: null }]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('final term'), 'c1', 'org1', 'invoice_voided');
+      warn.mockRestore();
+    });
+
+    it('counts nothing (and warns invoice_missing) when the period invoice was deleted (invoice_id SET NULL)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: null }]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('final term'), 'c1', 'org1', 'invoice_missing');
+      warn.mockRestore();
+    });
+
+    it('counts nothing (and warns invoice_missing) when the period invoice row is not visible', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([]); // invoice lookup finds nothing
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('final term'), 'c1', 'org1', 'invoice_missing');
+      warn.mockRestore();
+    });
+
+    it('follows a two-hop void chain to the live invoice', async () => {
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'void', replacedByInvoiceId: 'inv2' }]);
+      queueResult([{ id: 'inv2', status: 'void', replacedByInvoiceId: 'inv3' }]);
+      queueResult([{ id: 'inv3', status: 'sent', replacedByInvoiceId: null }]);
+      queueResult([
+        { invoiceId: 'inv3', sourceContractId: 'c1', lineTotal: '600.00' },
+        { invoiceId: 'inv1', sourceContractId: 'c1', lineTotal: '9999.00' }, // a voided copy never counts
+      ]);
+      queueResult([]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '50.00' }]);
+    });
+
+    it('gives up on a void cycle at the hop cap and warns reissue_chain_too_long', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'invA' }]);
+      for (let i = 0; i < 10; i++) {
+        queueResult(i % 2 === 0
+          ? [{ id: 'invA', status: 'void', replacedByInvoiceId: 'invB' }]
+          : [{ id: 'invB', status: 'void', replacedByInvoiceId: 'invA' }]);
+      }
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('final term'), 'c1', 'org1', 'reissue_chain_too_long');
+      // contracts + periods + exactly MAX_REISSUE_HOPS (10) invoice lookups, then stop.
+      expect((db as unknown as { select: { mock: { calls: unknown[][] } } }).select.mock.calls.length).toBe(12);
+      warn.mockRestore();
+    });
+
+    it('warns no_contract_lines when the live invoice carries none of the contract\'s lines', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueResult([annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'sent', replacedByInvoiceId: null }]);
+      queueResult([]); // every contract line removed from the draft
+      queueResult([]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('final term'), 'c1', 'org1', 'no_contract_lines');
+      warn.mockRestore();
+    });
+
+    it('sums only that contract\'s lines and excludes block-hours overage closed onto the invoice (usage, not MRR)', async () => {
+      queueResult([annual({ intervalMonths: 1, startDate: '2026-01-01', endDate: '2026-07-01' })]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'sent', replacedByInvoiceId: null }]);
+      queueResult([
+        { invoiceId: 'inv1', sourceContractId: 'c1', sourceId: 'blk', quantity: '1', unitPrice: '500.00', lineTotal: '500.00' }, // block fee
+        { invoiceId: 'inv1', sourceContractId: 'c1', sourceId: 'blk', quantity: '1.50', unitPrice: '100.00', lineTotal: '150.00' }, // last month's hours over block
+        { invoiceId: 'inv1', sourceContractId: 'c9', sourceId: 'x', quantity: '1', unitPrice: '75.00', lineTotal: '75.00' }, // another contract's line
+      ]);
+      queueResult([{ contractId: 'c1', contractLineId: 'blk', overageInvoiceId: 'inv1', overageHours: '1.50', overageUnitPrice: '100.00' }]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '500.00' }]);
+    });
+
+    it('excludes block-hours overage after a reissue: the hour period still points at the voided original', async () => {
+      queueResult([annual({ intervalMonths: 1, startDate: '2026-01-01', endDate: '2026-07-01' })]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'void', replacedByInvoiceId: 'inv2' }]);
+      queueResult([{ id: 'inv2', status: 'draft', replacedByInvoiceId: null }]);
+      queueResult([
+        { invoiceId: 'inv2', sourceContractId: 'c1', sourceId: 'blk', quantity: '1.00', unitPrice: '500.00', lineTotal: '500.00' },
+        { invoiceId: 'inv2', sourceContractId: 'c1', sourceId: 'blk', quantity: '1.50', unitPrice: '100.00', lineTotal: '150.00' },
+      ]);
+      queueResult([{ contractId: 'c1', contractLineId: 'blk', overageInvoiceId: 'inv1', overageHours: '1.50', overageUnitPrice: '100.00' }]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '500.00' }]);
+    });
+
+    it('excludes ONE line per closed hour period, even if an identical second line exists', async () => {
+      queueResult([annual({ intervalMonths: 1, startDate: '2026-01-01', endDate: '2026-07-01' })]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'sent', replacedByInvoiceId: null }]);
+      queueResult([
+        { invoiceId: 'inv1', sourceContractId: 'c1', sourceId: 'blk', quantity: '2.00', unitPrice: '100.00', lineTotal: '200.00' },
+        { invoiceId: 'inv1', sourceContractId: 'c1', sourceId: 'blk', quantity: '2.00', unitPrice: '100.00', lineTotal: '200.00' },
+      ]);
+      queueResult([{ contractId: 'c1', contractLineId: 'blk', overageInvoiceId: 'inv1', overageHours: '2.00', overageUnitPrice: '100.00' }]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '200.00' }]);
+    });
+
+    it('batches final terms across orgs and currencies; one unvaluable contract does not sink the others', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      queueResult([
+        annual({ id: 'c1', orgId: 'org1', currencyCode: 'USD' }),
+        annual({ id: 'c2', orgId: 'org2', currencyCode: 'EUR', intervalMonths: 6, endDate: '2026-07-01' }),
+        annual({ id: 'c3', orgId: 'org2', currencyCode: 'EUR' }),
+      ]);
+      queueResult([
+        { contractId: 'c1', invoiceId: 'inv1' },
+        { contractId: 'c2', invoiceId: 'inv2' },
+        { contractId: 'c3', invoiceId: null },
+      ]);
+      queueResult([
+        { id: 'inv1', status: 'sent', replacedByInvoiceId: null },
+        { id: 'inv2', status: 'paid', replacedByInvoiceId: null },
+      ]);
+      queueResult([
+        { invoiceId: 'inv1', sourceContractId: 'c1', lineTotal: '1200.00' },
+        { invoiceId: 'inv2', sourceContractId: 'c2', lineTotal: '600.00' },
+        { invoiceId: 'inv2', sourceContractId: 'c1', lineTotal: '777.00' }, // c1 line on c2's invoice: not c1's period invoice
+      ]);
+      queueResult([]);
+      const out = await summarizeActiveContractMrrByOrg(['org1', 'org2'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '100.00' }]);
+      expect(out.get('org2')).toEqual([{ currencyCode: 'EUR', amount: '100.00' }]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('final term'), 'c3', 'org2', 'invoice_missing');
+      warn.mockRestore();
+    });
+
+    it('adds a billed final term to the same org/currency bucket as live-resolved active contracts', async () => {
+      queueResult([contract({ id: 'c2', billingTiming: 'advance', endDate: null, nextBillingAt: '2026-07-01' }), annual()]);
+      queueResult([{ contractId: 'c1', invoiceId: 'inv1' }]);
+      queueResult([{ id: 'inv1', status: 'paid', replacedByInvoiceId: null }]);
+      queueResult([{ invoiceId: 'inv1', sourceContractId: 'c1', lineTotal: '1200.00' }]);
+      queueResult([]);
+      queueResult([line({ id: 'l2', contractId: 'c2', unitPrice: '50.00' })]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '150.00' }]);
+    });
+
+    it('excludes an active contract that has not started yet', async () => {
+      queueResult([contract({ startDate: '2026-07-01', billingTiming: 'advance', endDate: null, nextBillingAt: '2026-07-01' })]);
+      const out = await summarizeActiveContractMrrByOrg(['org1'], MID_TERM);
+      expect(out.has('org1')).toBe(false);
+    });
   });
 });
 
@@ -1443,7 +1744,7 @@ describe('per_device_group quantities (#3205 W02)', () => {
     queueResult([groupLine(), groupLine({ id: 'l2', deviceGroupId: 'group-2', deviceGroupName: 'Workstations' })]);
     queueResult([group, group2]);
 
-    await svc.summarizeActiveContractMrrByOrg(['org1']);
+    await summarizeActiveContractMrrByOrg(['org1']);
 
     expect(whereCallIncludes('group-1', 'group-2')).toBe(true);
   });
@@ -1476,7 +1777,7 @@ describe('per_device_group quantities (#3205 W02)', () => {
     queueResult([contract({ status: 'active' })]);
     queueResult([groupLine({ deviceGroupId: null, deviceGroupName: 'Retired group' })]);
 
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
 
     expect(out.get('org1')).toEqual([{ currencyCode: 'USD', amount: '0.00' }]);
     expect(warn).toHaveBeenCalledOnce();
@@ -1510,7 +1811,7 @@ describe('per_device_group quantities (#3205 W02)', () => {
     queueResult([groupLine(), groupLine({ id: 'l2', contractId: 'c2' })]);
     queueResult([group]);
 
-    const out = await svc.summarizeActiveContractMrrByOrg(['org1']);
+    const out = await summarizeActiveContractMrrByOrg(['org1']);
 
     expect(out.has('org1')).toBe(false);
     expect(warn).toHaveBeenCalledTimes(2);

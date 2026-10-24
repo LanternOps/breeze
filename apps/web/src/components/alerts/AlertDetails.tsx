@@ -15,9 +15,6 @@ import {
   Ticket
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { runAction, ActionError } from '../../lib/runAction';
-import { fetchWithAuth } from '../../stores/auth';
-import { navigateTo } from '@/lib/navigation';
 import { usePermissions } from '../../lib/permissions';
 import {
   severityConfig,
@@ -25,12 +22,12 @@ import {
   formatRelativeTime,
   formatDateTime,
   type AlertSeverity,
-  type AlertStatus,
 } from './alertConfig';
 import type { Alert } from './AlertList';
 import AlertVerdictBadge, { submitVerdictFeedback } from './AlertVerdictBadge';
 import RemediationSuggestionsPanel from '../remediation/RemediationSuggestionsPanel';
 import AlertDeviceInfo from './AlertDeviceInfo';
+import CreateTicketFromAlertDialog from './CreateTicketFromAlertDialog';
 import { anomalyDeepLinkHash, formatAnomalyConfidence, formatAnomalyType, formatAnomalyValue } from './alertMlContext';
 
 export type NotificationHistory = {
@@ -41,21 +38,30 @@ export type NotificationHistory = {
   sentAt: string;
   status: 'sent' | 'failed' | 'pending';
   recipient?: string;
+  /** Delivery failure reason from the dispatcher, shown on failed rows. */
+  errorMessage?: string | null;
 };
 
-export type StatusChange = {
+/** A ticket linked to the alert (GET /alerts/:id/tickets). */
+export type LinkedAlertTicket = {
   id: string;
-  fromStatus: AlertStatus | null;
-  toStatus: AlertStatus;
-  changedAt: string;
-  changedBy?: string;
-  note?: string;
+  internalNumber: string | null;
+  subject: string;
+  status: string;
 };
+
+// Statuses that no longer count as "open" for the duplicate-ticket guard.
+const NON_OPEN_TICKET_STATUSES = ['resolved', 'closed'];
 
 type AlertDetailsProps = {
   alert: Alert;
-  statusHistory?: StatusChange[];
   notificationHistory?: NotificationHistory[];
+  /** Org Service Management mode; the ticket action is offered only in 'native'. */
+  serviceManagementMode?: string | null;
+  linkedTickets?: LinkedAlertTicket[];
+  /** True when the linked-tickets lookup failed — the duplicate check is unknown. */
+  linkedTicketsFailed?: boolean;
+  onTicketCreated?: () => void;
   isOpen: boolean;
   onClose: () => void;
   onAcknowledge?: (alert: Alert) => void;
@@ -76,8 +82,11 @@ const channelIcons: Record<string, typeof Mail> = {
 
 export default function AlertDetails({
   alert,
-  statusHistory = [],
   notificationHistory = [],
+  serviceManagementMode,
+  linkedTickets = [],
+  linkedTicketsFailed = false,
+  onTicketCreated,
   isOpen,
   onClose,
   onAcknowledge,
@@ -91,7 +100,12 @@ export default function AlertDetails({
   // UX gate only — mirrors requirePermission on the /alerts/:id/* routes.
   const canAck = can('alerts', 'acknowledge');
   const canWrite = can('alerts', 'write');
-  const canCreateTicket = can('tickets', 'write');
+  // Same gate as the full alert page (#5075 W04): 'off' is refused by the API
+  // (409) and 'external' must not strand a Breeze-side ticket outside the
+  // partner's system of record.
+  const canCreateTicket = serviceManagementMode === 'native' && can('tickets', 'write');
+  const openLinkedTicket = linkedTickets.find((tk) => !NON_OPEN_TICKET_STATUSES.includes(tk.status));
+  const [ticketDialogOpen, setTicketDialogOpen] = useState(false);
   const [resolutionNote, setResolutionNote] = useState('');
   const [showResolveForm, setShowResolveForm] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -294,59 +308,6 @@ export default function AlertDetails({
             </div>
           </div>
 
-          {/* Status Timeline */}
-          {statusHistory.length > 0 && (
-            <div className="rounded-md border p-4">
-              <h3 className="text-sm font-semibold mb-3">{t('alertDetails.statusHistory')}</h3>
-              <div className="relative space-y-4">
-                {statusHistory.map((change, index) => (
-                  <div key={change.id} className="flex gap-3">
-                    <div className="relative flex flex-col items-center">
-                      <div
-                        className={cn(
-                          'flex h-8 w-8 items-center justify-center rounded-full border',
-                          statusConfig[change.toStatus].color
-                        )}
-                      >
-                        {change.toStatus === 'active' && <Bell className="h-4 w-4" />}
-                        {change.toStatus === 'acknowledged' && <CheckCircle className="h-4 w-4" />}
-                        {change.toStatus === 'resolved' && <CheckCircle className="h-4 w-4" />}
-                        {change.toStatus === 'suppressed' && <Bell className="h-4 w-4" />}
-                      </div>
-                      {index < statusHistory.length - 1 && (
-                        <div className="absolute top-8 h-full w-px bg-border" />
-                      )}
-                    </div>
-                    <div className="flex-1 pb-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">
-                          {change.fromStatus
-                            ? t('alertDetails.statusChange', {
-                                from: t(/* i18n-dynamic */ `alertDetails.status.${change.fromStatus}`),
-                                to: t(/* i18n-dynamic */ `alertDetails.status.${change.toStatus}`),
-                              })
-                            : t(/* i18n-dynamic */ `alertDetails.status.${change.toStatus}`)}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {formatRelativeTime(change.changedAt)}
-                        </span>
-                      </div>
-                      {change.changedBy && (
-                        <p className="text-xs text-muted-foreground flex items-center gap-1">
-                          <User className="h-3 w-3" />
-                          {change.changedBy}
-                        </p>
-                      )}
-                      {change.note && (
-                        <p className="mt-1 text-sm text-muted-foreground">{change.note}</p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Context Data */}
           {alert.contextData && Object.keys(alert.contextData).length > 0 && (
             <div className="rounded-md border p-4">
@@ -375,6 +336,9 @@ export default function AlertDetails({
                           <p className="text-sm font-medium">{notification.channelName ?? '—'}</p>
                           {notification.recipient && (
                             <p className="text-xs text-muted-foreground">{notification.recipient}</p>
+                          )}
+                          {notification.status === 'failed' && notification.errorMessage && (
+                            <p className="text-xs text-destructive">{notification.errorMessage}</p>
                           )}
                         </div>
                       </div>
@@ -436,29 +400,31 @@ export default function AlertDetails({
         </div>
 
         {/* Footer Actions — pinned to bottom */}
-        <div className="flex items-center justify-end gap-2 border-t px-6 py-4">
+        <div data-testid="alert-details-footer" className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
           <button
             type="button"
             onClick={onClose}
-            className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+            className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium hover:bg-muted"
           >
             {t('alertDetails.close')}
           </button>
-          {canCreateTicket && (
+          {canCreateTicket && openLinkedTicket && (
+            <a
+              href={`/tickets#${openLinkedTicket.internalNumber ?? openLinkedTicket.id}`}
+              title={openLinkedTicket.subject}
+              className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium leading-9 hover:bg-muted"
+              data-testid="alert-view-ticket"
+            >
+              <Ticket className="mr-1.5 inline-block h-4 w-4" />
+              {t('alertDetails.viewTicket', { ticket: openLinkedTicket.internalNumber ?? '' })}
+            </a>
+          )}
+          {canCreateTicket && !openLinkedTicket && (
           <button
             type="button"
-            onClick={() => {
-              void runAction<{ data: { id: string; internalNumber: string | null } }>({
-                request: () => fetchWithAuth(`/alerts/${alert.id}/create-ticket`, { method: 'POST', body: JSON.stringify({}) }),
-                errorFallback: t('alertDetails.ticketCreationFailedRetry'),
-                successMessage: (r) => t('alertDetails.ticketCreated', { ticket: r.data.internalNumber ?? '' }),
-                onUnauthorized: () => void navigateTo('/login', { replace: true })
-              })
-                .then((r) => void navigateTo(`/tickets#${r.data.internalNumber ?? r.data.id}`))
-                .catch((err) => { if (!(err instanceof ActionError)) throw err; }); // runAction already surfaced ActionError via toast
-            }}
+            onClick={() => setTicketDialogOpen(true)}
             title={t('alertDetails.createALinkedTicketPreFilledFrom')}
-            className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+            className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium hover:bg-muted"
             data-testid="alert-create-ticket-button"
           >
             <Ticket className="mr-1.5 inline-block h-4 w-4" />
@@ -471,7 +437,7 @@ export default function AlertDetails({
               onClick={() => onSuppress?.(alert)}
               disabled={submitting}
               title={t('alertDetails.silenceThisAlertStopsNotificationsWithoutResolving')}
-              className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               {t('alertDetails.suppress')}
             </button>
@@ -482,7 +448,7 @@ export default function AlertDetails({
               onClick={() => onDismiss?.(alert)}
               disabled={submitting}
               title={t('alertDetails.dismissPermanentlyHidesThisAlertForGood')}
-              className="h-9 rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
             >
               {t('alertDetails.dismiss')}
             </button>
@@ -494,7 +460,7 @@ export default function AlertDetails({
               disabled={submitting}
               title={t('alertDetails.markAsSeenStopsEscalationButKeeps')}
               className={cn(
-                'h-9 rounded-md border px-4 text-sm font-medium disabled:opacity-50',
+                'h-9 whitespace-nowrap rounded-md border px-4 text-sm font-medium disabled:opacity-50',
                 'border-warning/40 bg-warning/10 text-warning hover:bg-warning/20'
               )}
             >
@@ -514,7 +480,7 @@ export default function AlertDetails({
               onClick={() => setShowResolveForm(true)}
               disabled={submitting}
               title={t('alertDetails.closeThisAlertMarksTheIssueAs')}
-              className="h-9 rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
+              className="h-9 whitespace-nowrap rounded-md bg-success px-4 text-sm font-medium text-success-foreground hover:bg-success/90 disabled:opacity-50"
             >
               <CheckCircle className="mr-1.5 inline-block h-4 w-4" />
               {t('alertDetails.resolve')}
@@ -522,6 +488,20 @@ export default function AlertDetails({
           )}
         </div>
       </div>
+      {ticketDialogOpen && (
+        <CreateTicketFromAlertDialog
+          alertId={alert.id}
+          alertTitle={alert.title}
+          alertSeverity={alert.severity}
+          openTicketNumber={null}
+          duplicateCheckFailed={linkedTicketsFailed}
+          onClose={() => setTicketDialogOpen(false)}
+          onCreated={() => {
+            setTicketDialogOpen(false);
+            onTicketCreated?.();
+          }}
+        />
+      )}
     </div>
   );
 }

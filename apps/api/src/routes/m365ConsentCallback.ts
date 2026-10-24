@@ -58,11 +58,17 @@ import { loadM365CustomerGraphReadRuntimeConfig } from '../services/m365ControlP
 import { actionsConnectionService } from '../services/m365ControlPlane/writeActionConnectionService';
 import { loadM365CustomerGraphActionsRuntimeConfig } from '../services/m365ControlPlane/writeActionRuntimeConfig';
 import {
+  recordM365ConsentFailureCause,
   recordM365CustomerGraphActionsEvent,
   recordM365CustomerGraphActionsMetric,
   recordM365CustomerGraphReadEvent,
   recordM365CustomerGraphReadMetric,
+  type M365ConsentFailureCause,
 } from '../services/m365ControlPlane/metrics';
+import {
+  M365ExecutorClientError,
+  type ExecutorClientFailureCause,
+} from '../services/m365ControlPlane/executorClientFailure';
 import { onConnectionConsented, onConnectionUpgraded } from '../services/m365Sync/lifecycle';
 
 /**
@@ -108,7 +114,7 @@ export type ParsedM365ConsentCallback =
  * can show a specific outcome without echoing any Microsoft-supplied text.
  * Identical for both identity-first phases.
  */
-export type M365ProviderErrorReason = 'cancelled' | 'conditional_access' | 'other';
+export type M365ProviderErrorReason = 'cancelled' | 'conditional_access' | 'user_consent_blocked' | 'other';
 
 /**
  * Extra keys Microsoft's error redirects carry alongside `error`. They are
@@ -134,6 +140,17 @@ const PROVIDER_ERROR_EXTRA_KEYS: ReadonlyMap<string, number> = new Map([
  * device, blocked location, external MFA challenge) stopped the sign-in.
  */
 const CONDITIONAL_ACCESS_AADSTS_CODES = new Set([50097, 50158, 53000, 53001, 53003]);
+
+/**
+ * AADSTS codes that mean the tenant requires an administrator to approve the
+ * app and the person signing in cannot (#9322): 90094 (admin consent
+ * required — user consent disabled), 90095 (same, admin-consent-request
+ * workflow enabled), 65001 (no consent recorded for the app). Microsoft's
+ * `consent_required` error code means the same. From Microsoft's AADSTS
+ * reference; not yet confirmed against a live capture from a tenant with user
+ * consent disabled. 65004 (the user declined) stays a cancel.
+ */
+const USER_CONSENT_BLOCKED_AADSTS_CODES = new Set([90094, 90095, 65001]);
 
 const GUID_ANYCASE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -169,13 +186,20 @@ function parseProviderError(
   const subcode = params.get('error_subcode')?.toLowerCase() ?? null;
   // Conditional Access first: Entra reports a CA block on the authorize
   // endpoint as `access_denied` + AADSTS53003, which is not a user cancel.
+  // A user-consent block likewise arrives as `access_denied` (sometimes with
+  // subcode=cancel), so it is checked before the cancel fallback.
   const reason: M365ProviderErrorReason = codes.some((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code))
     ? 'conditional_access'
-    : error === 'access_denied' || subcode === 'cancel'
-      ? 'cancelled'
-      : 'other';
+    : error === 'consent_required' || codes.some((code) => USER_CONSENT_BLOCKED_AADSTS_CODES.has(code))
+      ? 'user_consent_blocked'
+      : error === 'access_denied' || subcode === 'cancel'
+        ? 'cancelled'
+        : 'other';
   // Prefer the AADSTS number that drove the classification, if any.
-  const aadstsCode = codes.find((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code)) ?? codes[0] ?? null;
+  const aadstsCode = codes.find((code) => CONDITIONAL_ACCESS_AADSTS_CODES.has(code))
+    ?? codes.find((code) => USER_CONSENT_BLOCKED_AADSTS_CODES.has(code))
+    ?? codes[0]
+    ?? null;
   const correlationParam = params.get('correlation_id');
   const correlationSource = correlationParam && GUID_ANYCASE.test(correlationParam)
     ? correlationParam
@@ -272,7 +296,8 @@ type PublicOutcome =
   | 'grant_unexpected'
   | 'manifest_stale'
   | 'organization_probe_failed'
-  | 'executor_unavailable';
+  | 'executor_unavailable'
+  | 'user_consent_blocked';
 
 const PUBLIC_OUTCOMES = new Set<PublicOutcome>([
   'active', 'degraded', 'consent_expired', 'consent_state_mismatch',
@@ -280,8 +305,95 @@ const PUBLIC_OUTCOMES = new Set<PublicOutcome>([
   'tenant_already_bound', 'credential_unavailable', 'identity_token_invalid',
   'application_token_invalid', 'grant_reconciliation_unavailable', 'grant_missing',
   'grant_unexpected', 'manifest_stale', 'organization_probe_failed', 'executor_unavailable',
-  'conditional_access_blocked', 'consent_provider_error',
+  'conditional_access_blocked', 'consent_provider_error', 'user_consent_blocked',
 ]);
+
+const FAILURE_LOG_MESSAGE = '[m365ConsentCallback] consent verification failed';
+
+/**
+ * Internal diagnosis of a failure whose PUBLIC outcome stays generic (#9322).
+ * Goes to the server log (keyed by correlation ID), the audit details
+ * allowlist, and a bounded metric — never to the browser.
+ */
+interface FailureDiagnostic {
+  failureCause: M365ConsentFailureCause;
+  httpStatus?: number;
+  /** The executor operation that failed, when one did. */
+  operation?: string;
+  /** The executor client's own finer-grained label (log only). */
+  executorCause?: ExecutorClientFailureCause;
+  /** A stored connection error code with no public outcome (log only; server-written, bounded). */
+  unmappedErrorCode?: string | null;
+  /**
+   * An API-side throw (not an executor client error). Only its class name,
+   * driver code and stack frames are logged — never its message — and it is
+   * never audited. Executor client errors are not attached: their bounded
+   * fields above are the whole diagnosis.
+   */
+  error?: unknown;
+}
+
+/**
+ * What an internal throw may contribute to a log line: its class name, a
+ * bounded driver code (e.g. a Postgres SQLSTATE), and its stack FRAMES. The
+ * message is dropped on purpose — a Drizzle query error embeds the failed
+ * query's bound parameters there, and the consent bookkeeping binds state,
+ * session and verified-identity values.
+ */
+export function sanitizedErrorFields(error: unknown): Record<string, string> {
+  if (!(error instanceof Error)) return { errorName: typeof error };
+  const fields: Record<string, string> = {
+    errorName: /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(error.name) ? error.name : 'Error',
+  };
+  const driverCode = [error, (error as { cause?: unknown }).cause]
+    .map((candidate) => (candidate && typeof candidate === 'object' ? (candidate as { code?: unknown }).code : undefined))
+    .find((code): code is string => typeof code === 'string' && /^[A-Za-z0-9_]{1,40}$/.test(code));
+  if (driverCode) fields.errorCode = driverCode;
+  const frames = (error.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line)).slice(0, 15);
+  if (frames.length > 0) fields.errorStack = frames.map((line) => line.trim()).join('\n');
+  return fields;
+}
+
+function failureCauseForStatus(status: number | undefined): M365ConsentFailureCause {
+  if (status === 404) return 'executor_route_missing';
+  if (status === 401 || status === 403) return 'executor_auth_rejected';
+  if (status !== undefined && status >= 500) return 'executor_error';
+  if (status !== undefined && status >= 400) return 'executor_request_rejected';
+  return 'executor_response_invalid';
+}
+
+/**
+ * Classifies a throw from an executor call. Anything that is not the executor
+ * client's own error — or is one raised before a request was sent (an invalid
+ * request or configuration, a signing failure) — is the API's own fault.
+ */
+export function classifyExecutorFailure(error: unknown): FailureDiagnostic {
+  if (!(error instanceof M365ExecutorClientError)) return { failureCause: 'internal_error', error };
+  const base = {
+    executorCause: error.cause,
+    ...(error.operation === undefined ? {} : { operation: error.operation }),
+  };
+  switch (error.cause) {
+    case 'network':
+      return { failureCause: 'executor_unreachable', ...base };
+    case 'timeout':
+      return { failureCause: 'executor_timeout', ...base };
+    case 'http_status':
+      return {
+        failureCause: failureCauseForStatus(error.httpStatus),
+        ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+        ...base,
+      };
+    case 'content_type':
+    case 'response_too_large':
+    case 'malformed_json':
+    case 'schema_mismatch':
+      return { failureCause: 'executor_response_invalid', ...base };
+    case 'request_invalid':
+    case 'signing_failed':
+      return { failureCause: 'internal_error', ...base };
+  }
+}
 interface CallbackRuntimeConfig {
   clientId: string;
   callbackUrl: string;
@@ -353,11 +465,13 @@ interface CallbackAuditInput {
   correlationId?: string;
   verifiedTenantId?: string;
   verifiedAdministratorObjectId?: string;
+  /** #9322: internal cause of a failure whose public outcome is generic. */
+  failureCause?: M365ConsentFailureCause;
+  httpStatus?: number;
   actorId?: string;
 }
 
-/** `legacy` = a correctly-signed cookie from the pre-identity-first flow. */
-type BindingVerification = M365ConsentBrowserBinding | 'expired' | 'legacy' | null;
+type BindingVerification = M365ConsentBrowserBinding | 'expired' | null;
 
 interface CallbackDependencies {
   profile: CallbackProfile;
@@ -389,6 +503,8 @@ interface CallbackDependencies {
   correlationId(): string;
   audit(c: Context, input: CallbackAuditInput): void;
   metric(event: string, outcome: PublicOutcome): void;
+  /** #9322: counts a classified failure on the bounded cause counter. */
+  failureCauseMetric(cause: M365ConsentFailureCause): void;
   /**
    * Tenant-sync lifecycle (W05, spec §5.8). A verified first-time/re-consent
    * seeds the sync; an upgrade that promoted the manifest re-arms domains
@@ -560,7 +676,6 @@ function buildDefaultDependencies(
     verifyBindingCookie: (header) => {
       const inspected = binding.inspect(header);
       if (inspected.status === 'expired') return 'expired';
-      if (inspected.status === 'legacy') return 'legacy';
       return inspected.status === 'valid' ? inspected.binding : null;
     },
     buildBindingCookie: (bound) => binding.build(bound),
@@ -583,6 +698,7 @@ function buildDefaultDependencies(
     correlationId: randomUUID,
     audit: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsEvent : recordM365CustomerGraphReadEvent,
     metric: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsMetric : recordM365CustomerGraphReadMetric,
+    failureCauseMetric: (cause) => recordM365ConsentFailureCause(profile, cause),
     onSyncConsented: profile === 'customer-graph-read' ? onConnectionConsented : NO_SYNC_HOOK,
     onSyncUpgraded: profile === 'customer-graph-read' ? onConnectionUpgraded : NO_SYNC_HOOK,
   };
@@ -655,6 +771,15 @@ function errorOutcome(error: unknown): PublicOutcome {
   return 'executor_unavailable';
 }
 
+/**
+ * The diagnostic for a throw from the API's own consent bookkeeping: a
+ * lifecycle conflict has its own public outcome and needs none; anything else
+ * (DB, code) is `internal_error` behind the generic public outcome.
+ */
+function errorDiagnostic(error: unknown): FailureDiagnostic | undefined {
+  return lifecycleCode(error) === null ? { failureCause: 'internal_error', error } : undefined;
+}
+
 export interface CreateM365ConsentCallbackRoutesOverrides extends Partial<CallbackDependencies> {
   /** Full runtime-config loader (superset of `loadConfig`'s clientId/callbackUrl). */
   loadRuntimeConfig?: () => CallbackExecutorRuntimeConfig;
@@ -689,15 +814,45 @@ export function createM365ConsentCallbackRoutes(
 
   routes.get(callbackPath, async (c) => {
     const correlationId = dependencies.correlationId();
+    // Set once the browser binding is verified; only used to label diagnostics.
+    let currentPhase: M365ConsentBindingPhase | null = null;
     const terminalRedirect = (outcome: PublicOutcome | 'confirm-tenant') => {
       c.header('Set-Cookie', dependencies.clearBindingCookie(), { append: true });
       return c.redirect(`${dependencies.redirectBase}/${outcome}`);
+    };
+    /**
+     * One structured line per diagnosed failure (#9322), keyed by correlation
+     * ID. Carries only bounded labels — never the code, PKCE verifier, nonce,
+     * a token, a response body, or an error message. An internal throw adds
+     * its class name, driver code and stack frames (sanitizedErrorFields).
+     */
+    const reportFailure = (diagnostic: FailureDiagnostic, attempt?: CallbackAttemptSnapshot) => {
+      const line = {
+        ...(diagnostic.error === undefined ? {} : sanitizedErrorFields(diagnostic.error)),
+        profile: dependencies.profile,
+        phase: currentPhase,
+        correlationId,
+        consentAttemptId: attempt?.consentAttemptId ?? null,
+        failureCause: diagnostic.failureCause,
+        ...(diagnostic.httpStatus === undefined ? {} : { httpStatus: diagnostic.httpStatus }),
+        ...(diagnostic.operation === undefined ? {} : { operation: diagnostic.operation }),
+        ...(diagnostic.executorCause === undefined ? {} : { executorCause: diagnostic.executorCause }),
+        ...(diagnostic.unmappedErrorCode === undefined ? {} : { unmappedErrorCode: diagnostic.unmappedErrorCode }),
+      };
+      if (diagnostic.error !== undefined || diagnostic.failureCause === 'internal_error') {
+        console.error(FAILURE_LOG_MESSAGE, line);
+      } else {
+        console.warn(FAILURE_LOG_MESSAGE, line);
+      }
+      dependencies.failureCauseMetric(diagnostic.failureCause);
     };
     const terminalFailure = (
       outcome: PublicOutcome,
       attempt?: CallbackAttemptSnapshot,
       actorId?: string,
+      diagnostic?: FailureDiagnostic,
     ) => {
+      if (diagnostic) reportFailure(diagnostic, attempt);
       if (attempt) {
         dependencies.audit(c, {
           event: dependencies.events.verificationFailed,
@@ -709,13 +864,16 @@ export function createM365ConsentCallbackRoutes(
           outcome,
           correlationId,
           ...(actorId ? { actorId } : {}),
+          ...(diagnostic ? { failureCause: diagnostic.failureCause } : {}),
+          ...(diagnostic?.httpStatus === undefined ? {} : { httpStatus: diagnostic.httpStatus }),
         });
       } else {
         dependencies.metric(dependencies.events.verificationFailed, outcome);
       }
       return terminalRedirect(outcome);
     };
-    const temporarilyUnavailable = () => {
+    const temporarilyUnavailable = (error: unknown, attempt: CallbackAttemptSnapshot) => {
+      reportFailure({ failureCause: 'internal_error', error }, attempt);
       dependencies.metric(dependencies.events.verificationFailed, 'executor_unavailable');
       return c.json({ error: 'M365 consent callback temporarily unavailable' }, 503);
     };
@@ -730,15 +888,27 @@ export function createM365ConsentCallbackRoutes(
       attempt: CallbackAttemptSnapshot,
       isUpgrade: boolean,
       actorId: string,
+      diagnostic?: FailureDiagnostic,
     ) => {
       if (!isUpgrade) {
         try {
           await dependencies.markAttemptFailed(attempt, outcome);
-        } catch {
-          return terminalFailure('consent_state_mismatch', attempt, actorId);
+        } catch (error) {
+          // Recording the failure itself failed. Report that (it is why the
+          // outcome becomes consent_state_mismatch); the original diagnosis
+          // still explains why we got here.
+          console.error('[m365ConsentCallback] could not record the failed consent attempt', {
+            profile: dependencies.profile,
+            phase: currentPhase,
+            correlationId,
+            consentAttemptId: attempt.consentAttemptId,
+            intendedOutcome: outcome,
+            ...sanitizedErrorFields(error),
+          });
+          return terminalFailure('consent_state_mismatch', attempt, actorId, diagnostic);
         }
       }
-      return terminalFailure(outcome, attempt, actorId);
+      return terminalFailure(outcome, attempt, actorId, diagnostic);
     };
 
     /**
@@ -767,18 +937,17 @@ export function createM365ConsentCallbackRoutes(
         ? 'consent_cancelled'
         : providerError.reason === 'conditional_access'
           ? 'conditional_access_blocked'
-          : 'consent_provider_error';
+          : providerError.reason === 'user_consent_blocked'
+            ? 'user_consent_blocked'
+            : 'consent_provider_error';
       return failAttempt(outcome, attempt, isUpgrade, actorId);
     };
 
     const binding = dependencies.verifyBindingCookie(c.req.header('cookie'));
-    if (binding === 'expired' || binding === 'legacy') {
-      // A legacy cookie is an in-flight attempt from before the identity-first
-      // deploy; like an expired one, the only remedy is an explicit restart.
+    if (binding === 'expired') {
       console.warn('[m365ConsentCallback] browser binding expired', {
         profile: dependencies.profile,
         correlationId,
-        legacy: binding === 'legacy',
       });
       return terminalFailure('consent_expired');
     }
@@ -803,6 +972,7 @@ export function createM365ConsentCallbackRoutes(
       });
       return terminalFailure('consent_state_mismatch');
     }
+    currentPhase = binding.phase;
 
     const purpose = await dependencies.readSessionPurpose({
       rawState: binding.rawState,
@@ -824,8 +994,8 @@ export function createM365ConsentCallbackRoutes(
       let config: CallbackRuntimeConfig;
       try {
         config = dependencies.loadConfig();
-      } catch {
-        return temporarilyUnavailable();
+      } catch (error) {
+        return temporarilyUnavailable(error, attempt);
       }
 
       const session = await dependencies.consumeSession({
@@ -874,9 +1044,10 @@ export function createM365ConsentCallbackRoutes(
           nonce: session.nonce,
           redirectUri: config.callbackUrl,
         });
-      } catch {
-        // Includes a pre-W1 executor that 404s /v1/verify-identity.
-        return failAttempt('executor_unavailable', attempt, isUpgrade, actorId);
+      } catch (error) {
+        // A pre-W1 executor that 404s /v1/verify-identity lands here as
+        // executor_route_missing.
+        return failAttempt('executor_unavailable', attempt, isUpgrade, actorId, classifyExecutorFailure(error));
       }
       if (!identity.success) {
         return failAttempt(identity.errorCode, attempt, isUpgrade, actorId);
@@ -929,7 +1100,7 @@ export function createM365ConsentCallbackRoutes(
       } catch (error) {
         const outcome = errorOutcome(error);
         if (outcome === 'consent_state_mismatch') return terminalFailure(outcome, attempt, actorId);
-        return failAttempt(outcome, attempt, isUpgrade, actorId);
+        return failAttempt(outcome, attempt, isUpgrade, actorId, errorDiagnostic(error));
       }
 
       if (needsTenantConfirmation) {
@@ -956,8 +1127,11 @@ export function createM365ConsentCallbackRoutes(
           expectedCallbackPath,
           state: consentState,
         });
-      } catch {
-        return failAttempt('executor_unavailable', attempt, isUpgrade, actorId);
+      } catch (error) {
+        return failAttempt('executor_unavailable', attempt, isUpgrade, actorId, {
+          failureCause: 'consent_url_build_failed',
+          error,
+        });
       }
       c.header('Set-Cookie', consentCookie, { append: true });
       return c.redirect(consentUrl);
@@ -989,7 +1163,7 @@ export function createM365ConsentCallbackRoutes(
       if (lifecycleCode(error) === null) {
         // Nothing was consumed (the consume and the CAS share a rolled-back
         // transaction), so the same callback stays retryable.
-        return temporarilyUnavailable();
+        return temporarilyUnavailable(error, attempt);
       }
       return terminalFailure(errorOutcome(error), attempt);
     }
@@ -1021,8 +1195,8 @@ export function createM365ConsentCallbackRoutes(
     let result: RetestResult;
     try {
       result = await dependencies.finalize({ correlationId, tenantId: verified.tenantId });
-    } catch {
-      return failAttempt('executor_unavailable', working, isUpgrade, actorId);
+    } catch (error) {
+      return failAttempt('executor_unavailable', working, isUpgrade, actorId, classifyExecutorFailure(error));
     }
 
     const finalization: ConsentFinalization = { verifiedTenantId: verified.tenantId, result };
@@ -1104,9 +1278,16 @@ export function createM365ConsentCallbackRoutes(
         }
         return terminalRedirect(outcome);
       }
-      return terminalFailure(outcome, working, actorId);
+      // outcomeFromConnection folds a stored code it does not recognise into
+      // executor_unavailable; say so rather than blame the executor.
+      const unmapped = outcome === 'executor_unavailable'
+        && applied.status !== 'active' && applied.status !== 'degraded'
+        && applied.lastErrorCode !== 'executor_unavailable';
+      return terminalFailure(outcome, working, actorId, unmapped
+        ? { failureCause: 'internal_error', unmappedErrorCode: applied.lastErrorCode ?? null }
+        : undefined);
     } catch (error) {
-      return terminalFailure(errorOutcome(error), working, actorId);
+      return terminalFailure(errorOutcome(error), working, actorId, errorDiagnostic(error));
     }
   });
 

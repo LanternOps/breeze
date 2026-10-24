@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { CompleteConsentRequest, VerifyConsentIdentityRequest } from '@breeze/shared/m365';
+import type { VerifyConsentIdentityRequest } from '@breeze/shared/m365';
 import { GraphClientError } from './microsoft/graphClient';
 import { MicrosoftIdentityFailure } from './microsoft/identity';
 import { MicrosoftTokenClientError } from './microsoft/tokenClient';
 import {
-  completeConsentOperation,
+  retestOperation,
   createExecutorOperations,
   verifyIdentityOperation,
   type ExecutorOperationDependencies,
@@ -56,19 +56,6 @@ function verifyRequest(overrides: Partial<VerifyConsentIdentityRequest> = {}): V
     correlationId: CORRELATION_ID,
     consentAttemptId: '66666666-6666-4666-8666-666666666666',
     expectedTenantId: null,
-    authorizationCode: 'authorization-code',
-    codeVerifier: 'v'.repeat(43),
-    nonce: 'nonce',
-    redirectUri: CALLBACK_URL,
-    ...overrides,
-  };
-}
-
-function completeRequest(overrides: Partial<CompleteConsentRequest> = {}): CompleteConsentRequest {
-  return {
-    correlationId: CORRELATION_ID,
-    consentAttemptId: '66666666-6666-4666-8666-666666666666',
-    tenantHint: TENANT_ID,
     authorizationCode: 'authorization-code',
     codeVerifier: 'v'.repeat(43),
     nonce: 'nonce',
@@ -188,51 +175,35 @@ describe('verifyIdentityOperation', () => {
   });
 });
 
-describe('completeConsentOperation (legacy flow, unchanged behavior)', () => {
-  it('redeems at the tenant hint, requires it, and proves the app with one credential and one token client', async () => {
-    const { deps, tokenClient, credential } = dependencies();
-    const result = await completeConsentOperation(completeRequest(), asDeps(deps));
+describe('retestOperation (application proof)', () => {
+  const retestRequest = { correlationId: CORRELATION_ID, tenantId: TENANT_ID };
 
+  it('proves the app with one credential and one token client, then wipes the credential', async () => {
+    const { deps, tokenClient, credential } = dependencies();
+    const result = await retestOperation(retestRequest, asDeps(deps));
     expect(deps.certificateProvider.getConfiguredCertificate).toHaveBeenCalledOnce();
     expect(deps.createTokenClient).toHaveBeenCalledOnce();
-    expect(tokenClient.exchangeAuthorizationCode).toHaveBeenCalledWith({
-      authority: TENANT_ID,
-      code: 'authorization-code',
-      codeVerifier: 'v'.repeat(43),
-    });
-    expect(deps.verifyIdentity).toHaveBeenCalledWith('identity-token', {
-      expectedTenantId: TENANT_ID,
-      clientId: CLIENT_ID,
-      nonce: 'nonce',
-    });
     expect(tokenClient.acquireGraphAppToken).toHaveBeenCalledWith({ tenantId: TENANT_ID });
     expect(deps.graphClient.probeTenant).toHaveBeenCalledWith({ tenantId: TENANT_ID, accessToken: 'access-token' });
-    expect(result).toMatchObject({ success: true, tenantId: TENANT_ID, administratorObjectId: ADMIN_ID });
-    // the legacy result carries no username
-    expect(result).not.toHaveProperty('administratorUsername');
+    expect(result).toMatchObject({ success: true, tenantId: TENANT_ID });
     expect(credential).toEqual({ certificatePem: '', privateKeyPem: '' });
   });
 
   it.each([
-    ['tenant mismatch from identity', 'verify', new MicrosoftIdentityFailure('tenant_mismatch'), 'tenant_mismatch'],
-    ['missing admin role', 'verify', new MicrosoftIdentityFailure('admin_role_required'), 'admin_role_required'],
-    ['rejected code', 'exchange', new MicrosoftTokenClientError('token_provider_rejected'), 'identity_token_invalid'],
     ['rejected app token', 'app', new MicrosoftTokenClientError('token_provider_rejected'), 'application_token_invalid'],
     ['failed probe', 'probe', new GraphClientError('graph_provider_rejected'), 'organization_probe_failed'],
-  ] as const)('keeps mapping %s', async (_label, stage, error, code) => {
+  ] as const)('maps %s', async (_label, stage, error, code) => {
     const { deps, tokenClient } = dependencies();
-    if (stage === 'verify') deps.verifyIdentity.mockRejectedValue(error);
-    if (stage === 'exchange') tokenClient.exchangeAuthorizationCode.mockRejectedValue(error);
     if (stage === 'app') tokenClient.acquireGraphAppToken.mockRejectedValue(error);
     if (stage === 'probe') deps.graphClient.probeTenant.mockRejectedValue(error);
-    expect(await completeConsentOperation(completeRequest(), asDeps(deps))).toEqual({ success: false, errorCode: code });
+    expect(await retestOperation(retestRequest, asDeps(deps))).toEqual({ success: false, errorCode: code });
   });
 
-  it('keeps failing a probe for a different tenant as tenant_mismatch', async () => {
+  it('fails a probe for a different tenant as tenant_mismatch', async () => {
     const { deps } = dependencies();
     deps.graphClient.probeTenant.mockResolvedValue({
       tenantId: '77777777-7777-4777-8777-777777777777', applicationId: CLIENT_ID, organizationDisplayName: 'Other', observedGrants: null,
     });
-    expect(await completeConsentOperation(completeRequest(), asDeps(deps))).toEqual({ success: false, errorCode: 'tenant_mismatch' });
+    expect(await retestOperation(retestRequest, asDeps(deps))).toEqual({ success: false, errorCode: 'tenant_mismatch' });
   });
 });

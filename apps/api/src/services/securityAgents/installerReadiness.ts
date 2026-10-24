@@ -1,6 +1,6 @@
 import { and, inArray, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { huntressIntegrations, huntressOrgMappings, organizations } from '../../db/schema';
+import { huntressIntegrations, huntressOrgMappings, organizations, s1Integrations, s1OrgMappings } from '../../db/schema';
 import { getVendor, type VendorKey } from './securityAgentVendors';
 
 /**
@@ -15,8 +15,9 @@ import { getVendor, type VendorKey } from './securityAgentVendors';
  * integration, never against the policy owner: a partner-wide policy reaches
  * many orgs and each one is mapped (or not) on its own.
  *
- * Exhaustive over vendors. Vendors whose install path is not wired yet fail
- * closed (`vendor_unavailable`) rather than borrowing another vendor's checks.
+ * Exhaustive over vendors: Huntress and SentinelOne have their own checks;
+ * vendors whose install path is not wired yet (the DNS vendors) fail closed
+ * (`vendor_unavailable`) rather than borrowing another vendor's checks.
  */
 
 export type ReadinessReason =
@@ -60,11 +61,11 @@ export function evaluatePlatformReadiness(
 }
 
 /**
- * Org half of readiness for many orgs at once (at most three queries for
- * Huntress, whatever the org count). Every requested org gets an answer.
+ * Org half of readiness for many orgs at once (at most three queries per
+ * vendor, whatever the org count). Every requested org gets an answer.
  *
- * Runs in its own system context: the Huntress tables are partner-axis and an
- * org-scoped caller would read zero rows. The lookups are keyed by the org ids
+ * Runs in its own system context: the vendor integration/mapping tables are
+ * partner-axis and an org-scoped caller would read zero rows. The lookups are keyed by the org ids
  * the caller passes, which come from the devices being evaluated, so the
  * escape cannot name another tenant's data by itself.
  */
@@ -80,6 +81,7 @@ export async function loadOrgInstallerReadiness(
     case 'huntress':
       return loadHuntressReadiness(unique);
     case 'sentinelone':
+      return loadSentinelOneReadiness(unique);
     case 'controld':
     case 'nextdns':
       for (const orgId of unique) result.set(orgId, notReady('vendor_unavailable'));
@@ -159,6 +161,80 @@ async function loadHuntressReadiness(orgIds: string[]): Promise<Map<string, Read
       }
       if (integration.hasAccountKey !== true) {
         verdict = notReady('account_key_missing');
+        break;
+      }
+    }
+    result.set(orgId, verdict);
+  }
+  return result;
+}
+
+/**
+ * SentinelOne: the org must be mapped (an S1 site whose `org_id` is the org,
+ * under the org's OWN partner), through an active integration of that same
+ * partner, with the site's registration token present. S1 has no account-level
+ * key, so `account_key_missing` never applies.
+ *
+ * Several S1 sites may map to one Breeze org and dispatch
+ * (`resolveSentinelOne`) reads one of them without an order, so the org is
+ * ready only when EVERY candidate mapping would succeed. The token is checked
+ * for presence in SQL; the ciphertext never leaves the database and nothing
+ * is decrypted.
+ */
+async function loadSentinelOneReadiness(orgIds: string[]): Promise<Map<string, ReadinessResult>> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const orgs = await db
+        .select({ id: organizations.id, partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(inArray(organizations.id, orgIds));
+
+      const mappings = await db
+        .select({
+          orgId: s1OrgMappings.orgId,
+          partnerId: s1OrgMappings.partnerId,
+          integrationId: s1OrgMappings.integrationId,
+          hasToken: sql<boolean>`(${s1OrgMappings.registrationToken} IS NOT NULL AND btrim(${s1OrgMappings.registrationToken}) <> '')`,
+        })
+        .from(s1OrgMappings)
+        .where(inArray(s1OrgMappings.orgId, orgIds));
+
+      const integrationIds = Array.from(new Set(mappings.map((m) => m.integrationId)));
+      const integrations = integrationIds.length === 0
+        ? []
+        : await db
+          .select({ id: s1Integrations.id, partnerId: s1Integrations.partnerId, isActive: s1Integrations.isActive })
+          .from(s1Integrations)
+          .where(inArray(s1Integrations.id, integrationIds));
+
+      return { orgs, mappings, integrations };
+    })
+  );
+
+  const partnerByOrg = new Map(rows.orgs.map((org) => [org.id, org.partnerId] as const));
+  const integrationById = new Map(rows.integrations.map((integration) => [integration.id, integration] as const));
+
+  const result = new Map<string, ReadinessResult>();
+  for (const orgId of orgIds) {
+    const partnerId = partnerByOrg.get(orgId) ?? null;
+    const mappings = rows.mappings.filter((m) => m.orgId === orgId);
+    // Mapped means mapped under the org's OWN partner, and nothing else:
+    // dispatch reads the org's mappings without a partner filter, so a site
+    // still mapped under a previous partner could hand the install another
+    // partner's site token. Such an org is not ready until that is cleaned up.
+    if (!partnerId || mappings.length === 0 || mappings.some((m) => m.partnerId !== partnerId)) {
+      result.set(orgId, notReady('org_not_mapped'));
+      continue;
+    }
+    let verdict: ReadinessResult = READY;
+    for (const mapping of mappings) {
+      const integration = integrationById.get(mapping.integrationId);
+      if (!integration || !integration.isActive || integration.partnerId !== partnerId) {
+        verdict = notReady('integration_inactive');
+        break;
+      }
+      if (mapping.hasToken !== true) {
+        verdict = notReady('org_key_missing');
         break;
       }
     }

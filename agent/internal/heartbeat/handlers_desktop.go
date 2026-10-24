@@ -398,6 +398,9 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	if prompt != nil {
 		h.afterDesktopStart(sessionID, prompt, targetSession)
 	}
+	// The answer is about to leave; candidates gathered after it trickle to
+	// the API from here on (#9182).
+	h.beginDirectICETrickle(sessionID, fenceInput)
 	return directStartResult(sessionID, answer, prompt, consent, time.Since(start).Milliseconds())
 }
 

@@ -1,12 +1,12 @@
-import { quoteStatusTone } from '@/lib/quoteStatus';
 import { computeChargeNow } from '@/lib/invoiceDeposit';
 import { replaceLocation } from '@/lib/replaceLocation';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { QuoteDocumentView, quoteAgreementLinks, type DocumentHostComponents } from '@breeze/document-ui';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
-import { QuoteAgreements, quoteAgreementLinks } from './quoteAgreements';
+import { money } from '@/lib/format';
+import { quoteModelFor } from '@/lib/quoteDocument';
+import { portalQuoteHostComponents, quoteAssetSource } from './documentHostComponents';
 import { SignaturePanel } from './SignaturePanel';
 
 interface PublicQuoteViewProps {
@@ -17,20 +17,24 @@ interface PublicQuoteViewProps {
    *  by a newer revision and its link was revoked. Carries only the partner's
    *  name — the server withholds everything else, including the successor's id. */
   superseded?: { partnerName?: string | null } | null;
+  /** Test seam: parity tests inject deterministic stand-ins for the asset components. */
+  components?: DocumentHostComponents;
 }
 
-function shortDate(value: string | null | undefined): string {
-  if (!value) return '';
-  const d = new Date(value.length === 10 ? `${value}T00:00:00` : value);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleDateString();
-}
-
-export function PublicQuoteView({ token, initial, error, superseded }: PublicQuoteViewProps) {
+export function PublicQuoteView({ token, initial, error, superseded, components }: PublicQuoteViewProps) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState(initial?.quote.status ?? '');
   const [msg, setMsg] = useState<string | null>(null);
   const [msgError, setMsgError] = useState(false);
+  // The model follows the status this page moved the proposal into (accepted, declined),
+  // so the header pill changes without a refetch.
+  const model = useMemo(() => (initial ? quoteModelFor(initial, status) : null), [initial, status]);
+  const hostComponents = useMemo(
+    () => components ?? (initial
+      ? portalQuoteHostComponents(quoteAssetSource(initial, (imageId) => publicApiPath(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)))
+      : null),
+    [components, initial, token],
+  );
 
   // A replaced proposal is NOT a broken link, and telling the customer their
   // link is "invalid or expired" would send them back to the MSP for a fix that
@@ -49,7 +53,7 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
     );
   }
 
-  if (error || !initial) {
+  if (error || !initial || !model || !hostComponents) {
     return (
       <div data-testid="public-quote-error" role="alert" className="mx-auto max-w-lg p-8 text-center text-destructive">
         <p className="text-sm">{error ?? 'This proposal link is invalid or has expired.'}</p>
@@ -57,25 +61,11 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
     );
   }
 
-  const { quote, blocks, lines, branding, presentation } = initial;
+  const { quote, branding } = initial;
   const currency = quote.currencyCode;
   const open = status === 'sent' || status === 'viewed';
-  const lineHasCadence = (cadence: 'monthly' | 'annual') => lines.some(
-    (l) => l.customerVisible !== false && l.recurrence === cadence,
-  );
-  const hasRecurring = lineHasCadence('monthly') || lineHasCadence('annual');
-  // Per-line Tax column + a Subtotal/Tax breakdown appear only when this quote
-  // carries tax (otherwise the totals stay focused on due-on-acceptance).
-  const taxRate = quote.taxRate ? Number(quote.taxRate) : 0;
-  const showTax = Number(quote.taxTotal ?? 0) > 0;
-  const taxPct = taxRate > 0 ? Number((taxRate * 100).toFixed(3)) : 0;
-  const categoryBreakdown = quote.categoryBreakdown ?? [];
   const depositDue = quote.depositDueTotal ?? null;
   const dueOnAcceptance = quote.dueOnAcceptanceTotal ?? quote.oneTimeTotal ?? quote.total;
-  // Remaining balance in integer cents so the subtraction never drifts on floats.
-  const remainderCents = depositDue != null
-    ? Math.round(Number(dueOnAcceptance) * 100) - Math.round(Number(depositDue) * 100)
-    : 0;
 
   // #8231 Sign & pay. The invoice this accept creates starts with nothing
   // paid, so the shared deposit-first rule reduces to "deposit if one is set,
@@ -94,25 +84,6 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
       : `Sign & pay ${money(payCharge.amount, currency)}`)
     : undefined;
   const afterSignNote = signAndPay ? "You'll then go to secure payment." : undefined;
-
-  const seller = (quote.sellerSnapshot ?? null) as DocSeller | null;
-
-  const statusLabel =
-    status === 'accepted' || status === 'converted'
-      ? 'Accepted'
-      : status === 'declined'
-        ? 'Declined'
-        : status === 'expired'
-          ? 'Expired'
-          : status === 'superseded'
-            ? 'Replaced'
-            : undefined;
-
-  const cover = quote.coverPage?.enabled ? quote.coverPage : null;
-  const headerDates = [
-    ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),
-    ...(quote.expiryDate ? [{ label: 'Valid until', value: shortDate(quote.expiryDate) }] : []),
-  ];
 
   const accept = async (signerName: string) => {
     if (busy || !signerName.trim()) return;
@@ -181,166 +152,37 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
-      <DocumentPaper primaryColor={branding.primaryColor} testId="public-quote" docTheme={presentation?.theme}>
-        {cover && (
-          <DocumentCover
-            title={cover.title || quote.title || quote.quoteNumber || 'Proposal'}
-            imageUrl={cover.coverImageId ? publicApiPath(`/quotes/public/${encodeURIComponent(token)}/images/${cover.coverImageId}`) : null}
-            preparedForName={cover.preparedForName || quote.billToName}
-            preparedByName={branding.partnerName}
-            showPreparedBy={cover.showPreparedBy}
-          />
-        )}
-        <DocumentHeader
-          logoUrl={branding.logoUrl}
-          partnerName={branding.partnerName}
-          seller={seller}
-          eyebrow="Proposal"
-          title={quote.quoteNumber ?? 'Proposal'}
-          statusLabel={statusLabel}
-          statusTone={statusLabel ? quoteStatusTone(status) : undefined}
-          dates={headerDates}
-          preparedForName={cover ? undefined : quote.billToName ?? undefined}
-          titleAs={cover ? 'h2' : 'h1'}
-        />
-
-        {quote.introNotes && (
-          <p className="max-w-prose whitespace-pre-wrap text-pretty text-sm leading-relaxed text-foreground/90">
-            {quote.introNotes}
-          </p>
-        )}
-
-        <QuoteBlocks
-          blocks={blocks}
-          lines={lines}
-          currency={currency}
-          imageUrl={(imageId) =>
-            publicApiPath(`/quotes/public/${encodeURIComponent(token)}/images/${imageId}`)
-          }
-          buildUrl={publicApiPath}
-          taxRate={taxRate}
-          showTax={showTax}
-        />
-
-        <section className="flex justify-end">
-          <div className="w-full max-w-xs space-y-2.5">
-            {showTax && (
-              <>
-                <div className="flex justify-between text-sm">
-                  {/* Basis qualifier — see QuoteDetailView: with recurring lines
-                      a bare "Subtotal" never reconciles against the
-                      due-on-acceptance figures below. */}
-                  <span className="text-muted-foreground">{hasRecurring ? 'First period subtotal' : 'Subtotal'}</span>
-                  <span className="tabular-nums text-foreground">{money(quote.subtotal ?? 0, currency)}</span>
+      <QuoteDocumentView
+        model={model}
+        components={hostComponents}
+        slots={{
+          signature: open ? (
+            <div className="space-y-10">
+              <SignaturePanel
+                onAccept={(signerName) => void accept(signerName)}
+                onDecline={(reason) => void decline(reason)}
+                busy={busy}
+                testIdPrefix="public-quote"
+                agreements={quoteAgreementLinks(model)}
+                acceptLabel={acceptLabel}
+                afterSignNote={afterSignNote}
+              />
+              {/* Accept/decline feedback stays adjacent to the button, not below the agreement. */}
+              {msg && (
+                <div
+                  role={msgError ? 'alert' : 'status'}
+                  className={cn(
+                    'rounded-md p-3 text-sm',
+                    msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
+                  )}
+                >
+                  {msg}
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Tax{taxPct ? ` (${taxPct}%)` : ''}</span>
-                  <span className="tabular-nums text-foreground">{money(quote.taxTotal ?? 0, currency)}</span>
-                </div>
-              </>
-            )}
-            {hasRecurring && lineHasCadence('monthly') && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Monthly recurring</span>
-                <span className="tabular-nums text-foreground">{money(quote.monthlyRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/mo</span></span>
-              </div>
-            )}
-            {hasRecurring && lineHasCadence('annual') && (
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Annual recurring</span>
-                <span className="tabular-nums text-foreground">{money(quote.annualRecurringTotal ?? 0, currency)}<span className="text-xs text-muted-foreground">/yr</span></span>
-              </div>
-            )}
-            {categoryBreakdown.length > 1 && (
-              <div className="space-y-0.5 text-sm text-muted-foreground" data-testid="public-quote-category-breakdown">
-                {categoryBreakdown.map((b) => (
-                  <div key={b.category} className="flex justify-between">
-                    <span className="capitalize">{b.category}</span>
-                    <span className="tabular-nums">
-                      {[
-                        Number(b.oneTimeTotal) > 0 ? money(b.oneTimeTotal, currency) : null,
-                        Number(b.monthlyTotal) > 0 ? `${money(b.monthlyTotal, currency)}/mo` : null,
-                        Number(b.annualTotal) > 0 ? `${money(b.annualTotal, currency)}/yr` : null,
-                      ].filter(Boolean).join(' + ')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {depositDue != null ? (
-              <>
-                {/* Anchor row — due on acceptance = deposit due now + remaining
-                    balance, stated instead of implied (see QuoteDetailView). */}
-                <div className="doc-accent-border flex justify-between border-t pt-3 text-sm" data-testid="public-quote-due-on-acceptance">
-                  <span className="font-medium text-foreground">Due on acceptance</span>
-                  <span className="font-medium tabular-nums text-foreground">{money(dueOnAcceptance, currency)}</span>
-                </div>
-                <div className="flex items-baseline justify-between" data-testid="public-quote-deposit-due">
-                  <span className="text-sm font-semibold text-foreground">Deposit due now</span>
-                  <span className="doc-accent-text text-2xl font-semibold tabular-nums">
-                    {money(depositDue, currency)}
-                  </span>
-                </div>
-                <div className="flex justify-between text-sm" data-testid="public-quote-deposit-remainder">
-                  <span className="text-muted-foreground">Remaining balance (due per terms)</span>
-                  <span className="tabular-nums text-foreground">{money(remainderCents / 100, currency)}</span>
-                </div>
-              </>
-            ) : (
-              <div className="doc-accent-border flex items-baseline justify-between border-t pt-3">
-                <span className="text-sm font-semibold text-foreground">{hasRecurring ? 'Due on acceptance' : 'Total'}</span>
-                <span className="doc-accent-text text-2xl font-semibold tabular-nums">
-                  {money(dueOnAcceptance, currency)}
-                </span>
-              </div>
-            )}
-            {hasRecurring && (
-              <div className="space-y-1.5 rounded-lg bg-muted/40 p-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">First-period total</span>
-                  <span className="tabular-nums text-foreground">{money(quote.total, currency)}</span>
-                </div>
-                <p className="pt-1 text-xs leading-relaxed text-muted-foreground">
-                  Accepting this proposal bills only the one-time charges now. Recurring lines bill on their own schedule.
-                </p>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
-        {/* The sign panel sits directly after the price and short terms; the
-            (collapsed) agreements never come between the totals and the button. */}
-        {open && (
-          <SignaturePanel
-            onAccept={(signerName) => void accept(signerName)}
-            onDecline={(reason) => void decline(reason)}
-            busy={busy}
-            testIdPrefix="public-quote"
-            agreements={quoteAgreementLinks(blocks, quote.termsAndConditions)}
-            acceptLabel={acceptLabel}
-            afterSignNote={afterSignNote}
-          />
-        )}
-        {/* Accept/decline feedback stays adjacent to the button, not below the agreement. */}
-        {open && msg && (
-          <div
-            role={msgError ? 'alert' : 'status'}
-            className={cn(
-              'rounded-md p-3 text-sm',
-              msgError ? 'bg-destructive/10 text-destructive-on-tint' : 'bg-muted'
-            )}
-          >
-            {msg}
-          </div>
-        )}
-        <QuoteAgreements
-          blocks={blocks}
-          termsAndConditions={quote.termsAndConditions}
-          buildUrl={publicApiPath}
-          testIdPrefix="public-quote"
-        />
-      </DocumentPaper>
+              )}
+            </div>
+          ) : undefined,
+        }}
+      />
 
       {status === 'converted' && (
         <div data-testid="public-quote-accepted" role="status" className="space-y-3 rounded-md bg-success/10 p-4 text-sm text-success-on-tint">

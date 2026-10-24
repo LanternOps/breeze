@@ -254,41 +254,7 @@
       "twelveHour": "12-hour",
       "twentyFourHour": "24-hour",
       "language": "Language",
-      "languageDescription": "Default language for partner settings.",
-      "businessHours": {
-        "title": "Business Hours",
-        "description": "Set your standard operating hours for support and alerts.",
-        "presets": {
-          "always": {
-            "label": "24/7",
-            "description": "Always available"
-          },
-          "business": {
-            "label": "Business Hours",
-            "description": "Mon-Fri 9am-5pm"
-          },
-          "extended": {
-            "label": "Extended Hours",
-            "description": "Mon-Fri 7am-7pm, Sat 9am-1pm"
-          },
-          "custom": {
-            "label": "Custom",
-            "description": "Set your own schedule"
-          }
-        },
-        "customSchedule": "Custom Schedule",
-        "open": "Open",
-        "to": "to"
-      },
-      "days": {
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday"
-      }
+      "languageDescription": "Default language for partner settings."
     }
   },
   "partnerAiBudgets": {
@@ -700,7 +666,13 @@
         "quality": "Quality"
       },
       "failovers": "Failovers",
-      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable"
+      "failoversHelp": "Calls served by a backup model because the configured one failed or was unavailable",
+      "titleBy": {
+        "model": "AI usage by model",
+        "organization": "AI usage by organization",
+        "technician": "AI usage by technician",
+        "feature": "AI usage by feature"
+      }
     },
     "link": {
       "summary": "Model: {{model}} — set under AI Providers & Models → Defaults by feature",
@@ -777,13 +749,10 @@
     "maintenancePlaceholder": "e.g. Sun 02:00-06:00, 02:00-04:00, or 24/7",
     "maintenanceInvalid": "Use a UTC window like <first>Sun 02:00-04:00</first> or <second>02:00-04:00</second>, or <always>24/7</always> for always-on. Leave empty to let orgs configure it.",
     "maintenanceHelp": "Time window (UTC) for automatic updates and reboots. Use <always>24/7</always> for always-on, or leave empty so orgs configure it individually.",
-    "deviceGroup": "Default Device Group",
-    "alertThreshold": "Default Alert Threshold",
     "autoEnrollment": {
       "title": "Auto-Enrollment",
       "enable": "Enable auto-enrollment for new devices",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome notification"
+      "requireApproval": "Require admin approval"
     },
     "enrollment": {
       "title": "Device enrollment",
@@ -1030,8 +999,10 @@
   "partnerSettingsPage": {
     "groups": {
       "company": "Company",
+      "devices": "Devices & agents",
       "security": "Security & Access",
       "communications": "Communications",
+      "ai": "AI",
       "branding": "Branding"
     },
     "aiFeatures": {
@@ -1060,11 +1031,11 @@
       },
       "company": {
         "label": "Company",
-        "description": "Name, address, contacts"
+        "description": "Name, address, contacts, email signature"
       },
       "regional": {
         "label": "Regional",
-        "description": "Timezone, formats, hours"
+        "description": "Timezone, language, formats, hours"
       },
       "defaults": {
         "label": "Defaults",
@@ -1072,7 +1043,7 @@
       },
       "security": {
         "label": "Security",
-        "description": "IP allowlist and access"
+        "description": "Passwords, sessions, MFA and IP allowlist"
       },
       "remoteAccess": {
         "label": "Remote Access",
@@ -1080,11 +1051,11 @@
       },
       "eventLogs": {
         "label": "Event Logs",
-        "description": "Forwarding and retention"
+        "description": "Forward device event logs to Elasticsearch"
       },
       "notifications": {
         "label": "Notifications",
-        "description": "Email and webhook alerts"
+        "description": "Sender address, SMTP, Slack and Pushover defaults"
       },
       "ticketing": {
         "label": "Ticketing",
@@ -1109,7 +1080,7 @@
       },
       "aiFeatures": {
         "label": "AI Features",
-        "description": "Anomaly detection and suggested fixes defaults"
+        "description": "AI data policy, anomaly detection and suggested fixes"
       },
       "branding": {
         "label": "Branding",
@@ -1126,6 +1097,14 @@
       "aiApprovals": {
         "label": "AI Approval Timeout",
         "description": "How long AI chat waits for gated action approval"
+      },
+      "callerVerification": {
+        "label": "Caller verification",
+        "description": "Caller identity checks for support requests"
+      },
+      "knownGuests": {
+        "label": "Known guests",
+        "description": "Approved visitor and technician devices by MAC address"
       }
     },
     "saved": "Partner settings saved",
@@ -1152,6 +1131,9 @@
       "nativeDescription": "Tickets, timesheets, quotes, invoices and contracts run in Breeze. This is the default.",
       "offLabel": "Off — RMM only",
       "offDescription": "Hides the Service Desk and Billing sections and the customer record’s Tickets and Billing tabs. Existing tickets stay readable; no new ones can be created.",
+      "offConfirmTitle": "Turn off Service Management?",
+      "offConfirmMessage": "This hides Service Desk and Billing for all organizations and stops new tickets from being created. Existing tickets stay readable.",
+      "offConfirmAction": "Turn off",
       "externalNote": "This partner runs an external PSA. Changing that is not available here yet.",
       "topologyTitle": "Network Topology",
       "topologyBeta": "Beta",
@@ -1385,6 +1367,14 @@
     "never": "Never",
     "downloadInstaller": "Download pre-configured installer",
     "downloading": "Downloading...",
+    "installerDialogTitle": "Download installer for \"{{name}}\"",
+    "installerDialogDescription": "The installer is built for a set number of devices. Each device that runs it uses one.",
+    "installerDeviceCount": "Number of devices",
+    "installerDeviceCountRemaining": "This key has {{count}} enrollments left.",
+    "installerDeviceCountRemaining_one": "This key has {{count}} enrollment left.",
+    "installerDeviceCountRemaining_other": "This key has {{count}} enrollments left.",
+    "installerDeviceCountUnlimited": "This key has no usage limit.",
+    "installerDeviceCountRange": "Enter a whole number from 1 to {{max}}.",
     "rotate": "Rotate",
     "page": "Page {{current}} of {{total}}",
     "previous": "Previous",
@@ -1398,7 +1388,10 @@
     "retrySites": "Retry",
     "createASite": "Create a site",
     "maxUsage": "Max Usage (optional)",
-    "defaultDeviceLimit": "50 (default)",
+    "defaultDeviceLimit": "{{count}} (org default)",
+    "expiresAtHelp": "Leave blank for {{duration}} (org default).",
+    "usageFromDefault": "default",
+    "usageFromDefaultTitle": "Device limit came from the organization default.",
     "maxUsageHelp": "Maximum number of agents that can enroll with this key.",
     "expiresAt": "Expires At (optional)",
     "creating": "Creating...",
@@ -1789,27 +1782,13 @@
     "deviceGroup": {
       "title": "Default device group",
       "description": "Newly enrolled devices are added to this group automatically.",
-      "options": {
-        "AllManagedDevices": "All Managed Devices",
-        "CriticalInfrastructure": "Critical Infrastructure",
-        "RemoteStaff": "Remote Staff",
-        "Contractors": "Contractors"
-      }
-    },
-    "alertSeverity": {
-      "title": "Default alert severity",
-      "description": "Alerts below this severity are delivered to the summary feed only.",
-      "options": {
-        "critical": "Critical only",
-        "high": "High and critical",
-        "medium": "Medium and above"
-      }
+      "none": "None",
+      "unavailable": "Selected group (unavailable)"
     },
     "autoEnrollment": {
       "title": "Auto-enrollment",
       "enable": "Enable automatic enrollment",
-      "requireApproval": "Require admin approval",
-      "sendWelcome": "Send welcome message"
+      "requireApproval": "Require admin approval"
     },
     "agentUpdates": {
       "title": "Agent update policy",
@@ -1860,7 +1839,7 @@
     "disabledDescription": "Enable log forwarding above to configure connection settings.",
     "enable": {
       "title": "Enable log forwarding",
-      "description": "When enabled, event logs are forwarded to your log store on a recurring schedule."
+      "description": "When enabled, event logs are forwarded to your log store as each device reports them."
     },
     "connection": {
       "title": "Connection",
@@ -1949,6 +1928,32 @@
     }
   },
   "orgPortalSettingsEditor": {
+    "preview": {
+      "title": "Customer view",
+      "subtitle": "Preview: what {{who}} sees",
+      "whoOrganization": "your customer",
+      "pickerLabel": "View as",
+      "pickerAll": "Whole organization",
+      "loading": "Loading preview…",
+      "loadFailed": "The customer view failed to load.",
+      "on": "On",
+      "off": "Off",
+      "notAvailable": "A detailed preview of this section isn't available yet.",
+      "permissionWithheld": "Not shown: you need {{permissions}} to preview this.",
+      "tilesWithheld": "Some tiles are not shown: you need {{permissions}} to preview them.",
+      "noteNoUser": "Ticket-scoped data is hidden. Pick a portal user to see what that person sees.",
+      "readinessTitle": "Readiness checks",
+      "readinessNone": "No issues found.",
+      "fix": "Fix",
+      "readiness": {
+        "documents_empty": "Documents is on, but no document is marked Visible in portal, so your customer sees an empty library.",
+        "reports_empty": "Reports is on, but there are no report runs yet, so your customer sees an empty list.",
+        "service_one_time_visible": "Service is on and one-time items are still visible to your customer.",
+        "backups_no_data": "Backups is on, but there is no backup data to show yet.",
+        "dashboard_security_no_data": "Dashboard is on, but the security score has no data yet, so that tile is blank for your customer.",
+        "branding_unset": "Portal branding has never been set (logo, colors, welcome message or support contact)."
+      }
+    },
     "loading": "Loading portal settings…",
     "save": "Save portal settings",
     "toasts": {
@@ -2060,6 +2065,10 @@
         "enableVulnerabilityDetail": {
           "label": "Vulnerability detail",
           "description": "Show every portal login of this organization each device's CVE findings and their severity (CVE ID, description, severity, CVSS score, patch availability, status). This reveals which machines are vulnerable. Not turned on by Enable all visibility."
+        },
+        "enablePhysicalPlacement": {
+          "label": "Physical placement",
+          "description": "Show every portal login of this organization where each device is physically placed (rack and room). This reveals the physical layout of the environment. Not turned on by Enable all visibility."
         },
         "enableHourBlock": {
           "label": "Support hours",
@@ -2436,7 +2445,11 @@
     "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
     "editPartnerWideDefaults": "Edit partner-wide defaults",
     "thresholdsOff": "Off",
-    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again.",
+    "todaysCost": "Today's cost",
+    "monthlyCost": "Monthly cost",
+    "messagesToday": "Messages today",
+    "tokensThisMonth": "Tokens this month"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2949,6 +2962,7 @@
           "blocked_by_category": "Excluded by the ring's category rules",
           "blocked_by_app_rule": "Blocked by an app rule",
           "awaiting_manual_approval": "Awaiting manual approval",
+          "explicitly_declined": "Explicitly declined",
           "no_ring_resolved": "The device has no update ring",
           "ring_reference_invalid": "Policy's update ring is invalid",
           "device_not_in_org": "Device not in this organization"
@@ -4347,6 +4361,13 @@
     "commitmentTermRange": "Commitment term: enter a whole number from 1–120 months."
   },
   "catalogItemsTab": {
+    "viewActive": "Active",
+    "viewArchived": "Archived",
+    "typeLabel": {
+      "hardware": "Hardware",
+      "software": "Software",
+      "service": "Service"
+    },
     "itemArchived": "Item archived",
     "itemRestored": "Item restored",
     "theProductCatalogIsAvailableToPartnerAccountsOnly": "The product catalog is available to partner accounts only.",
@@ -4395,7 +4416,9 @@
     "nMoreCurrencies_other": "+{{count}} currencies",
     "incompletePriceBook": "Incomplete price book",
     "marginUnavailable": "Margin unavailable",
-    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable"
+    "marginUnavailableCostIn": "Cost in {{currency}} — margin unavailable",
+    "marginUnknownMissingCost_one": "Margin unknown — {{count}} component has no cost",
+    "marginUnknownMissingCost_other": "Margin unknown — {{count}} components have no cost"
   },
   "catalogSettingsPage": {
     "productCatalog": "Product Catalog",
@@ -4462,6 +4485,9 @@
     "notEnabledBody": "MCP OAuth is disabled on this server. Set MCP_OAUTH_ENABLED=true and restart the API to allow connected apps.",
     "revokeConfirm": "Revoke access for {{name}}? Their access token will stop working within 10 minutes.",
     "revokeFailed": "Revoke failed ({{status}})",
+    "revokeTitle": "Revoke connected app",
+    "revokeSuccess": "Revoked access for {{name}}",
+    "revokeFailedGeneric": "Revoke failed",
     "networkError": "Network error",
     "networkErrorDuringRevoke": "Network error during revoke",
     "revoking": "Revoking…",
@@ -4693,6 +4719,7 @@
     "actions": "Actions",
     "noRolesFoundTryAdjustingYourSearchOrFilters": "No roles found. Try adjusting your search or filters.",
     "cloneRole": "Clone Role: {{name}}",
+    "cloneDescription": "Copy of {{name}}",
     "clone": "Clone",
     "edit": "Edit",
     "delete": "Delete",
@@ -5419,6 +5446,8 @@
       "billingDescription": "Tax and billing address",
       "pax8": "Pax8",
       "pax8Description": "Subscriptions and ordering",
+      "cloudTenants": "Cloud tenants",
+      "cloudTenantsDescription": "Microsoft 365 and Google Workspace",
       "extensions": "Extensions",
       "extensionsDescription": "Third-party extension sections",
       "portalBranding": "Portal & Branding",
@@ -5734,6 +5763,20 @@
       "sourceOrg": "Organization override",
       "sourcePartner": "Partner default",
       "sourceDefault": "Built-in default"
+    },
+    "businessCalendar": {
+      "title": "Business hours",
+      "description": "The calendar this organization's SLA clocks are counted on. Leave on Inherit to follow the partner default.",
+      "label": "Business calendar",
+      "inherit": "Inherit",
+      "inheritedDefault": "Inherited: {{name}} (partner default)",
+      "inheritedNone": "Inherited: 24×7 (no partner default)",
+      "partnerWideOption": "{{name}} (all orgs)",
+      "archivedOverride": "Archived calendar (no longer applies)",
+      "loadFailed": "Business calendar failed to load.",
+      "errors": {
+        "save": "Couldn't save the business calendar. Retry."
+      }
     }
   },
   "organizationForm": {
@@ -5745,16 +5788,12 @@
       "nameRequired": "Organization name is required",
       "slugRequired": "Slug is required",
       "slugFormat": "Use lowercase letters, numbers, and hyphens only",
-      "maxDevicesRequired": "Enter a max device limit",
-      "maxDevicesInteger": "Max devices must be a whole number",
-      "maxDevicesMin": "Max devices must be at least 1",
       "contractEndAfterStart": "Contract end must be on or after start date"
     },
     "fields": {
       "name": "Organization name",
       "slug": "Slug",
       "type": "Organization type",
-      "maxDevices": "Max devices",
       "contractStart": "Contract start",
       "contractEnd": "Contract end"
     },
@@ -6858,6 +6897,163 @@
     "disabledToast": "Connection health digest turned off",
     "loadFailed": "Could not load email preferences.",
     "saveFailed": "Could not save email preferences.",
+    "retry": "Retry"
+  },
+  "characterKeyShortcuts": {
+    "title": "Character-key shortcuts",
+    "description": "Single-key shortcuts such as g then d, c then c, /, ? and the ticket queue keys. Turn off if they conflict with a screen reader or speech input. Ctrl/Cmd+K is not affected.",
+    "label": "Enable character-key shortcuts",
+    "enabledToast": "Character-key shortcuts turned on",
+    "disabledToast": "Character-key shortcuts turned off",
+    "saveFailed": "Could not save character-key shortcuts."
+  },
+  "businessHoursCard": {
+    "title": "Business hours",
+    "description": "Calendars that response and resolution SLA clocks are counted on. A ticket uses its organization's calendar, or your default calendar, or runs around the clock when neither is set.",
+    "newTicketsOnly": "Editing hours or the time zone applies to new tickets only. Use \"Apply to open tickets\" to update tickets that are already open.",
+    "create": "New calendar",
+    "loading": "Loading business hours…",
+    "loadError": "Business hours failed to load.",
+    "retry": "Retry",
+    "empty": "No business-hours calendars yet. Tickets run around the clock (24×7) until you create one and set it as the default.",
+    "allOrgs": "All orgs",
+    "default": "Default",
+    "archived": "Archived",
+    "edit": "Edit",
+    "setDefault": "Set as default",
+    "clearDefault": "Clear default",
+    "applyOpen": "Apply to open tickets",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "delete": "Delete",
+    "deleteTitle": "Delete {{name}}?",
+    "deleteMessage": "This permanently deletes the calendar and its holidays. A calendar that tickets or organizations still use cannot be deleted; archive it instead.",
+    "name": "Name",
+    "timezone": "Time zone",
+    "appliesTo": "Applies to",
+    "ownerPartner": "All organizations (partner-wide)",
+    "ownerOrg": "One organization",
+    "organization": "Organization",
+    "chooseOrg": "Choose an organization",
+    "weeklyHours": "Weekly hours",
+    "closed": "Closed",
+    "to": "to",
+    "addInterval": "Add hours",
+    "intervalStart": "{{day}} opens at",
+    "intervalEnd": "{{day}} closes at",
+    "removeInterval": "Remove {{day}} hours",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "holidays": "Holidays",
+    "holidayHint": "Holidays dated today or earlier won't change open tickets.",
+    "noHolidays": "No holidays.",
+    "holidayDate": "Date",
+    "holidayName": "Name",
+    "holidayAdd": "Add holiday",
+    "holidayRemove": "Remove holiday {{name}}",
+    "weekdays": {
+      "0": "Sunday",
+      "1": "Monday",
+      "2": "Tuesday",
+      "3": "Wednesday",
+      "4": "Thursday",
+      "5": "Friday",
+      "6": "Saturday"
+    },
+    "errors": {
+      "nameRequired": "Enter a name.",
+      "orgRequired": "Choose an organization.",
+      "invalidTime": "Enter times as HH:MM (for example 09:00); the end can be 24:00.",
+      "order": "Each interval must end after it starts.",
+      "overlap": "Intervals on the same day must not overlap.",
+      "empty": "Add at least one open interval.",
+      "timezone": "Choose a valid time zone.",
+      "save": "Couldn't save the calendar. Retry.",
+      "holidayInvalid": "Enter a valid date and a name for the holiday.",
+      "holidayAdd": "Couldn't add the holiday. Retry.",
+      "holidayRemove": "Couldn't remove the holiday. Retry.",
+      "inUse": "This calendar is in use by tickets or organizations and can't be deleted. Archive it instead.",
+      "isDefault": "This calendar is the default. Clear the default before deleting it.",
+      "default": "Couldn't change the default calendar. Retry.",
+      "archive": "Couldn't change the archive state. Retry.",
+      "delete": "Couldn't delete the calendar. Retry.",
+      "apply": "Couldn't apply the calendar to open tickets. Retry."
+    },
+    "toasts": {
+      "created": "Calendar created",
+      "updated": "Calendar updated",
+      "defaultSet": "Default calendar set",
+      "defaultCleared": "Default cleared; tickets without an override run 24×7",
+      "archived": "Calendar archived",
+      "unarchived": "Calendar restored",
+      "deleted": "Calendar deleted",
+      "holidayAdded": "Holiday added",
+      "holidayRemoved": "Holiday removed",
+      "recompute": "Open tickets' deadlines are being updated.",
+      "applied": "Applied to open tickets: {{count}} updated",
+      "appliedPartial": "{{skipped}} tickets were being edited and kept their old hours. Apply again to retry them."
+    },
+    "apply": {
+      "title": "Apply {{name}} to open tickets",
+      "explanation": "Tickets that are open and have never been paused will switch to the current hours and have their deadlines recalculated. Tickets with a pause history are left alone.",
+      "loading": "Loading preview…",
+      "loadFailed": "The preview failed to load.",
+      "revisionChanged": "The hours changed since this preview. Review the updated counts before applying.",
+      "eligible": "Tickets that will be updated: {{count}}",
+      "breached": "Of those, would become breached immediately: {{count}}",
+      "paused": "Skipped because they have paused: {{count}}",
+      "confirm": "Apply to open tickets"
+    }
+  },
+  "planAndFeatures": {
+    "heading": "Plan & features",
+    "description": "What your plan includes. Locked features stay visible so you can see what an upgrade adds.",
+    "currentPlan": "Current plan",
+    "plans": {
+      "free": "Free",
+      "starter": "Starter",
+      "community": "Community",
+      "pro": "Pro",
+      "enterprise": "Enterprise",
+      "unlimited": "Unlimited"
+    },
+    "columns": {
+      "feature": "Feature",
+      "state": "Status",
+      "source": "Source",
+      "expires": "Expires",
+      "limits": "Limits"
+    },
+    "state": {
+      "enabled": "Included",
+      "disabled": "Locked"
+    },
+    "source": {
+      "plan": "Plan default",
+      "billing": "Billing",
+      "license": "Licence",
+      "manual": "Manual"
+    },
+    "graceWarning": "Expired {{expiresAt}} — grace until {{graceUntil}}",
+    "noExpiry": "Never",
+    "noLimits": "—",
+    "reason": "Reason: {{reason}}",
+    "features": {
+      "onboarding_supervisor": {
+        "label": "Onboarding supervisor",
+        "why": "An AI supervisor that diagnoses and repairs zero-touch onboarding failures."
+      },
+      "verified_library": {
+        "label": "Verified software library",
+        "why": "Curated, verified packages you can deploy with confidence."
+      },
+      "wisp": {
+        "label": "Wisp",
+        "why": "Wisp triages your fleet continuously and nudges the right person; available on Pro and above."
+      }
+    },
+    "loadError": "Could not load your plan.",
     "retry": "Retry"
   }
 }

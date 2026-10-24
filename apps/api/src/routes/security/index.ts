@@ -9,6 +9,9 @@ import { postureRoutes } from './posture';
 import { complianceRoutes } from './compliance';
 import { recommendationsRoutes } from './recommendations';
 import { recoveryKeysRoutes } from './recoveryKeys';
+import { yaraRoutes } from './yara';
+import { yaraIocImportRoutes } from './yaraIocImport';
+import { yaraTestRoutes } from './yaraTest';
 
 export const securityRoutes = new Hono();
 
@@ -23,4 +26,7 @@ securityRoutes.route('/', postureRoutes);
 securityRoutes.route('/', complianceRoutes);
 securityRoutes.route('/', recoveryKeysRoutes);
 securityRoutes.route('/', recommendationsRoutes);
+securityRoutes.route('/', yaraRoutes);
+securityRoutes.route('/', yaraIocImportRoutes);
+securityRoutes.route('/', yaraTestRoutes);
 

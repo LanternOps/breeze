@@ -27,7 +27,7 @@
     "viewTask": "Görevi aç",
     "badgeTitle": "Bir yapay zekâ Operatör görevi oluşturdu. İş bitince işaretleyin, görev kendiliğinden devam eder."
   },
-  "editDoneWarning": "Tamamlanmış bir adımı düzenlemek, kimin ve ne zaman tamamladığını siler.",
+  "editDoneWarning": "Adım metnini değiştirmek, adımı kimin ve ne zaman tamamladığı bilgisini siler. Yalnızca notu düzenlemek işareti korur.",
   "resolveConfirm": {
     "title": "Eksik kontrol listesi",
     "body_one": "{{total}} adımdan {{count}} tanesi işaretlenmedi. Yine de çözülsün mü?",
@@ -74,7 +74,20 @@
       "loadFailed": "Kontrol listesi şablonları yüklenemedi.",
       "saveFailed": "Kontrol listesi şablonu kaydedilemedi.",
       "applyFailed": "Kontrol listesi şablonu uygulanamadı.",
-      "operatorStepWaiting": "Bir Operatör görevi bu biletin işaretlenmemiş adımlarından birini bekliyor, bu yüzden şablon bu adımların yerini alamaz. Bunun yerine “Bu adımları mevcut kontrol listesine ekle” seçeneğini seçin, iş bitince adımı işaretleyin ya da önce görevi durdurun."
+      "operatorStepWaiting": "Bir Operatör görevi bu biletin işaretlenmemiş adımlarından birini bekliyor, bu yüzden şablon bu adımların yerini alamaz. Bunun yerine “Bu adımları mevcut kontrol listesine ekle” seçeneğini seçin, iş bitince adımı işaretleyin ya da önce görevi durdurun.",
+      "saveAsFailed": "Kontrol listesi şablon olarak kaydedilemedi.",
+      "noSteps": "Bu biletin kaydedilecek yeniden kullanılabilir adımı yok.",
+      "duplicateFailed": "Kontrol listesi şablonu çoğaltılamadı."
+    },
+    "duplicate": "Çoğalt",
+    "duplicateSuccess": "“{{name}}” olarak çoğaltıldı.",
+    "saveAs": {
+      "cta": "Şablon olarak kaydet",
+      "name": "Şablon adı",
+      "allOrganizations": "Tüm kuruluşlar için kullanılabilir yap",
+      "submit": "Şablonu kaydet",
+      "success": "“{{name}}” şablonu olarak kaydedildi.",
+      "skipped": "Dışarıda bırakılanlar: {{operator}} Operator adımı ve {{duplicates}} tekrarlanan adım."
     }
   }
 }

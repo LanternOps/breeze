@@ -64,7 +64,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const res = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
-      expect(res).toEqual({ billed: 1, failed: 0 });
+      expect(res).toEqual({ billed: 1, failed: 0, deferred: 0 });
       expect(warn).toHaveBeenCalledTimes(2);
       expect(warn).toHaveBeenNthCalledWith(1, expect.stringContaining('price-book gap'), 'c1', 'cl-1', 'cat-1', 'EUR');
       expect(warn).toHaveBeenNthCalledWith(2, expect.stringContaining('price-book gap'), 'c1', 'cl-2', 'cat-2', 'EUR');
@@ -164,7 +164,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
       expect(generateDueInvoiceMock).toHaveBeenCalledTimes(2);
       expect(err).toHaveBeenCalledWith('[ContractWorker] generation failed', 'contractId=c1', 'site deleted');
       expect(captureExceptionMock).toHaveBeenCalledWith(siteDeleted);
-      expect(summary).toEqual({ billed: 1, failed: 1 });
+      expect(summary).toEqual({ billed: 1, failed: 1, deferred: 0 });
     } finally {
       err.mockRestore();
     }
@@ -187,7 +187,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const res = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
-      expect(res).toEqual({ billed: 1, failed: 0 });
+      expect(res).toEqual({ billed: 1, failed: 0, deferred: 0 });
       expect(warn).toHaveBeenCalledTimes(2);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('close backlog capped'), 'c1');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('foreign-currency'), 'c1', 'cl-hb', '2026-05-01', 1.5);
@@ -209,7 +209,7 @@ describe('runContractBillingSweep price-book gap logging (#3775)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const res = await runContractBillingSweep(new Date('2026-07-01T06:00:00Z'));
-      expect(res).toEqual({ billed: 1, failed: 0 });
+      expect(res).toEqual({ billed: 1, failed: 0, deferred: 0 });
       // Billed overage is on the invoice — that is not silence, so no warning.
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(
@@ -319,12 +319,74 @@ describe('billing-sweep job ordering (#8181)', () => {
     });
     const asOf = new Date('2026-08-02T06:00:00Z');
     const res = await runBillingSweepJob(asOf);
-    expect(res).toEqual({ billed: 0, failed: 0 });
+    expect(res).toEqual({ billed: 0, failed: 0, deferred: 0 });
     const renewal = (runContractRenewalSweep as Mock).mock.invocationCallOrder[0]!;
     const billing = generateDueInvoiceMock.mock.invocationCallOrder[0]!;
     const closeOut = (runHourBlockCloseOutSweep as Mock).mock.invocationCallOrder[0]!;
     expect(renewal).toBeLessThan(billing);
     expect(billing).toBeLessThan(closeOut);
     expect(runHourBlockCloseOutSweep).toHaveBeenCalledWith(asOf);
+    // #9243: renewal and billing must agree on "today".
+    expect(runContractRenewalSweep).toHaveBeenCalledWith(asOf);
+  });
+
+  it('a failing renewal sweep is reported and billing still runs (billing defers, never expires, an un-renewed auto-renew contract) (#9243)', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    (runContractRenewalSweep as Mock).mockRejectedValueOnce(new Error('renewal boom'));
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: true, invoiceId: 'inv1', autoIssue: false, actor: ACTOR, priceBookGaps: [], uncoveredDevices: null,
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runBillingSweepJob(new Date('2026-08-02T06:00:00Z'));
+      expect(res).toEqual({ billed: 1, failed: 0, deferred: 0 });
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'renewal boom' }));
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('renewal sweep failed'), 'renewal boom');
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+describe('already_billed on a due contract is never silent (#9509)', () => {
+  beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
+
+  it('logs an error with the contract id and reports it (the pointer sat on a claimed period)', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: false, autoIssue: false, skipped: 'already_billed', priceBookGaps: [], uncoveredDevices: null,
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2026-08-02T06:00:00Z'));
+      expect(res).toEqual({ billed: 0, failed: 0, deferred: 0 });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('already billed'), 'c1', 'org1');
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('c1') }));
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+describe('renewal_pending deferrals are counted and never silent (#9243)', () => {
+  beforeEach(() => { dueRows.length = 0; vi.clearAllMocks(); });
+
+  it('counts the deferral, logs an error with the contract id and reports it', async () => {
+    dueRows.push({ id: 'c1', orgId: 'org1' });
+    generateDueInvoiceMock.mockResolvedValue({
+      generated: false, autoIssue: false, skipped: 'renewal_pending', priceBookGaps: [], uncoveredDevices: null,
+      overages: [], hourBlockCloses: [], hourBlockCloseTruncated: false,
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await runContractBillingSweep(new Date('2027-01-01T06:00:00Z'));
+      expect(res).toEqual({ billed: 0, failed: 0, deferred: 1 });
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('renewal pending'), 'c1', 'org1');
+      expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('c1') }));
+    } finally {
+      error.mockRestore();
+    }
   });
 });

@@ -29,6 +29,7 @@ import type {
 } from '../types/businessReports';
 import { detailDisclosure } from './detailDisclosure';
 import { formatMinutes, formatMoney, formatPercent } from './moneyFormat';
+import { billedLaborMinutes, laborAmount, laborHours } from '../utils/laborMath';
 
 type RGB = [number, number, number];
 
@@ -124,6 +125,27 @@ function finalY(doc: jsPDF, fallback: number): number {
   return ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? fallback) + 6;
 }
 
+/** #9561 — the stated labour rule, printed beside the billable value. */
+const LABOR_RULE =
+  'Billable value is the sum of per-entry amounts: each entry\'s billed minutes are rounded to hours with two decimals, '
+  + 'multiplied by its hourly rate, and rounded once to the currency\'s minor unit (25 min at 135.00/h = 0.42 h = 56.70). '
+  + 'No billing increment is implied.';
+
+/**
+ * #9561 — one entry's rate cell. A priced billable entry (the rows billable
+ * value sums: billable coverage + rate + currency) shows its billed hours ×
+ * rate = amount, computed by the shared labour helper the API bills with, so
+ * the cell always equals that entry's share of the billable value. Any other
+ * rated entry shows the rate alone; an unrated one N/A.
+ */
+function rateCell(r: TechnicianTimeDetailRow): string {
+  if (!r.hourlyRate || !r.currencyCode) return NA;
+  const rate = formatMoney(r.hourlyRate, r.currencyCode);
+  if (r.coverage !== 'billable') return rate;
+  const minutes = billedLaborMinutes(r);
+  return `${laborHours(minutes)} h × ${rate} = ${formatMoney(laborAmount(minutes, r.hourlyRate, r.currencyCode), r.currencyCode)}`;
+}
+
 /** `rate` matched to the same currency as `value`, or `null` when there is
  *  none (a currency can have billable value with no averaged rate row). */
 function rateFor(rate: CurrencyAmountRow[], currencyCode: string): string | null {
@@ -216,6 +238,7 @@ export function renderTechnicianTimeReport(
       y + 1, 9, C.muted,
     );
   } else {
+    y = drawProse(doc, chrome, LABOR_RULE, y + 1, 8.6, C.muted);
     autoTable(doc, {
       startY: y + 1,
       margin: { left: PAGE.mx, right: PAGE.mx, top: PAGE.bandH + 8, bottom: 14 },
@@ -255,7 +278,7 @@ export function renderTechnicianTimeReport(
     autoTable(doc, {
       startY: y + 1,
       margin: { left: PAGE.mx, right: PAGE.mx, top: PAGE.bandH + 8, bottom: 14 },
-      head: [['Started', 'Technician', 'Organization', 'Work type', 'Duration', 'Billable', 'Coverage', 'Billing status', 'Approved', 'Rate']],
+      head: [['Started', 'Technician', 'Organization', 'Work type', 'Duration', 'Billable', 'Coverage', 'Billing status', 'Approved', 'Rate (billed h × rate = amount)']],
       body: summary.rows.slice(0, DETAIL_TABLE_MAX).map((r: TechnicianTimeDetailRow) => [
         dateTime(r.startedAt),
         r.userName ?? NA,
@@ -266,7 +289,7 @@ export function renderTechnicianTimeReport(
         r.coverage,
         r.billingStatus,
         r.isApproved ? 'Yes' : 'No',
-        r.hourlyRate && r.currencyCode ? formatMoney(r.hourlyRate, r.currencyCode) : NA,
+        rateCell(r),
       ]),
       styles: { font: 'helvetica', fontSize: 7, cellPadding: 1.6, textColor: C.ink, lineColor: C.rule, lineWidth: 0.1 },
       headStyles: { fillColor: C.panel, textColor: C.ink, fontStyle: 'bold' },

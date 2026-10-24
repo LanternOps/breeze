@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Blocks, Network } from 'lucide-react';
+import { Network } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '@/stores/auth';
 import { handleActionError, runAction } from '@/lib/runAction';
 import { useOrgStore, type ServiceManagementMode } from '@/stores/orgStore';
+import { ConfirmDialog } from '../shared/ConfirmDialog';
 import '@/lib/i18n';
 
 /**
@@ -63,6 +64,10 @@ type Props = {
  * soon as the PATCH lands, without a reload. A failed PATCH reverts the radio to
  * the last known-good mode and `runAction` toasts the reason — the UI never
  * shows a mode the server did not accept.
+ *
+ * Choosing Off goes through a confirm first (#9168): it hides Service Desk and
+ * Billing for every organization from a single click. Cancel leaves the saved
+ * mode selected and sends nothing. Switching back to native saves at once.
  */
 export default function PartnerModulesCard({ serviceManagementMode, topologyFeatureFlags }: Props) {
   const { t } = useTranslation('settings');
@@ -78,6 +83,10 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
   // previous session override the fresher answer this page just fetched.
   const [mode, setMode] = useState<ServiceManagementMode>(serviceManagementMode ?? 'native');
   const [saving, setSaving] = useState(false);
+  // Off is staged here until the confirm dialog says yes. The radio keeps
+  // showing `mode` (the saved value) while the dialog is open: it is a
+  // controlled input, so React puts the click back.
+  const [confirmingOff, setConfirmingOff] = useState(false);
 
   // Topology flags follow the same seed / optimistic-update / revert-on-failure
   // discipline as `mode`. `topologySaving` is separate from `saving` so a slow
@@ -122,7 +131,7 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
     } catch (err) {
       setMode(previous);
       // `handleActionError`, NOT a rethrow: this runs under a fire-and-forget
-      // `void select(...)` in onChange, so a rethrow becomes an unhandled
+      // `void select(...)` (from `choose` or the Off confirm), so a rethrow becomes an unhandled
       // rejection that no one catches — the radio would snap back with no toast
       // and no telemetry. The helper toasts the fallback for anything runAction
       // did not already surface, and stays quiet for a 401 (the auth redirect
@@ -131,6 +140,15 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
     } finally {
       setSaving(false);
     }
+  };
+
+  const choose = (next: OfferedMode) => {
+    if (next === mode || saving) return;
+    if (next === 'off') {
+      setConfirmingOff(true);
+      return;
+    }
+    void select(next);
   };
 
   /**
@@ -203,11 +221,7 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
 
   return (
     <section className="rounded-lg border bg-card p-6 shadow-xs" data-testid="partner-modules-card">
-      <div className="mb-2 flex items-center gap-2">
-        <Blocks className="h-5 w-5 text-muted-foreground" />
-        <h2 className="text-lg font-semibold">{t('partnerSettingsPage.modules.title')}</h2>
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">{t('partnerSettingsPage.modules.description')}</p>
+      <p className="mb-4 max-w-prose text-sm text-muted-foreground">{t('partnerSettingsPage.modules.description')}</p>
 
       <div role="radiogroup" aria-label={t('partnerSettingsPage.modules.title')} className="space-y-3">
         {OFFERED_MODES.map((option) => (
@@ -221,7 +235,7 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
               value={option}
               checked={mode === option}
               disabled={saving}
-              onChange={() => void select(option)}
+              onChange={() => choose(option)}
               className="mt-1 h-4 w-4 shrink-0"
               data-testid={`partner-modules-mode-${option}`}
             />
@@ -232,6 +246,21 @@ export default function PartnerModulesCard({ serviceManagementMode, topologyFeat
           </label>
         ))}
       </div>
+
+      <ConfirmDialog
+        open={confirmingOff}
+        onClose={() => setConfirmingOff(false)}
+        onConfirm={() => {
+          setConfirmingOff(false);
+          void select('off');
+        }}
+        title={t('partnerSettingsPage.modules.offConfirmTitle')}
+        message={t('partnerSettingsPage.modules.offConfirmMessage')}
+        confirmLabel={t('partnerSettingsPage.modules.offConfirmAction')}
+        variant="warning"
+        confirmTestId="partner-modules-off-confirm"
+        dialogTestId="partner-modules-off-confirm-dialog"
+      />
 
       {mode === 'external' && (
         <p className="mt-4 text-sm text-muted-foreground" data-testid="partner-modules-external-note">

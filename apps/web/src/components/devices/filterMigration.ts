@@ -56,6 +56,20 @@ export function legacyRulesToFilterConditions(rules: LegacyDeviceGroupRule[]): F
 
 type FieldLabels = ReadonlyMap<string, string>;
 
+/** Id -> name tables for the org/site/group fields (same shape the /devices chips use). */
+export interface DescribeLookups {
+  orgs?: readonly { id: string; name: string }[];
+  sites?: readonly { id: string; name: string }[];
+  groups?: readonly { id: string; name: string }[];
+}
+
+const LOOKUP_KEY_BY_FIELD: Record<string, keyof DescribeLookups> = {
+  orgId: 'orgs',
+  siteId: 'sites',
+  groupId: 'groups',
+};
+
+
 const FIELD_LABELS: FieldLabels = new Map(FILTER_FIELDS.map(field => [field.key, field.label]));
 
 export const NO_VALUE_OPERATORS: FilterOperator[] = ['isNull', 'isNotNull', 'isEmpty', 'isNotEmpty'];
@@ -64,21 +78,26 @@ function isConditionGroup(entry: FilterCondition | FilterConditionGroup): entry 
   return entry !== null && typeof entry === 'object' && Array.isArray((entry as FilterConditionGroup).conditions);
 }
 
-function formatFilterValue(value: unknown): string {
+function formatFilterValue(value: unknown, names?: ReadonlyMap<string, string>): string {
   if (value === null || value === undefined) return '';
-  if (Array.isArray(value)) return value.map(item => formatFilterValue(item)).filter(Boolean).join(', ');
+  if (Array.isArray(value)) return value.map(item => formatFilterValue(item, names)).filter(Boolean).join(', ');
   if (typeof value === 'object') {
     const record = value as Record<string, unknown>;
     if ('amount' in record && 'unit' in record) return `${record.amount} ${record.unit}`;
     if ('from' in record && 'to' in record) return `${formatFilterValue(record.from)} - ${formatFilterValue(record.to)}`;
     return '';
   }
-  return String(value);
+  const raw = String(value);
+  return names?.get(raw) ?? raw;
 }
 
-function describeEntry(entry: FilterCondition | FilterConditionGroup, labels: FieldLabels): string {
+function describeEntry(
+  entry: FilterCondition | FilterConditionGroup,
+  labels: FieldLabels,
+  lookups?: DescribeLookups
+): string {
   if (isConditionGroup(entry)) {
-    const inner = entry.conditions.map(child => describeEntry(child, labels)).filter(Boolean);
+    const inner = entry.conditions.map(child => describeEntry(child, labels, lookups)).filter(Boolean);
     if (inner.length === 0) return '';
     return `(${inner.join(entry.operator === 'OR' ? ' OR ' : ' AND ')})`;
   }
@@ -87,7 +106,9 @@ function describeEntry(entry: FilterCondition | FilterConditionGroup, labels: Fi
   const operatorLabel = OPERATOR_LABELS[entry.operator] ?? entry.operator;
   if (NO_VALUE_OPERATORS.includes(entry.operator)) return `${fieldLabel} ${operatorLabel}`;
 
-  const value = formatFilterValue(entry.value);
+  const table = lookups?.[LOOKUP_KEY_BY_FIELD[entry.field]];
+  const names = table ? new Map(table.map(o => [o.id, o.name])) : undefined;
+  const value = formatFilterValue(entry.value, names);
   return value ? `${fieldLabel} ${operatorLabel} ${value}` : '';
 }
 
@@ -108,11 +129,12 @@ function describeEntry(entry: FilterCondition | FilterConditionGroup, labels: Fi
  */
 export function describeFilterConditions(
   conditions: FilterConditionGroup | null | undefined,
-  fields?: readonly FilterFieldDefinition[]
+  fields?: readonly FilterFieldDefinition[],
+  lookups?: DescribeLookups
 ): string[] {
   if (!conditions || !Array.isArray(conditions.conditions)) return [];
   const labels: FieldLabels = fields ? new Map(fields.map(field => [field.key, field.label])) : FIELD_LABELS;
-  const parts = conditions.conditions.map(entry => describeEntry(entry, labels)).filter(Boolean);
+  const parts = conditions.conditions.map(entry => describeEntry(entry, labels, lookups)).filter(Boolean);
   // A top-level OR must not render as a list of chips — the card reads those
   // as ANDed. Collapse it into one chip that states the operator.
   if (conditions.operator === 'OR' && parts.length > 1) return [parts.join(' OR ')];

@@ -105,3 +105,33 @@ describe('ContractDetail — generate now surfaces price-book gaps', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 });
+
+// #9508: a 200 with `generated: false` + `skipped` is NOT an invoice. The toast
+// must name the reason, never claim "Invoice generated", and never navigate.
+describe('ContractDetail — generate now reports skipped outcomes (#9508)', () => {
+  const cases: Array<[string, RegExp]> = [
+    ['already_billed', /already (been )?billed/i],
+    ['not_due', /not due/i],
+    ['renewal_pending', /renewal/i],
+    ['expired', /expired/i],
+    ['some_future_reason', /no invoice was generated/i],
+    [undefined as unknown as string, /no invoice was generated/i], // generated:false, no reason
+  ];
+  it.each(cases)('skipped=%s → reason toast, no success toast, no navigation', async (skipped, pattern) => {
+    vi.mocked(contractsApi.generateContractInvoice).mockResolvedValue(resp({
+      data: { generated: false, autoIssue: false, skipped, priceBookGaps: [], uncoveredDevices: null, overages: [] },
+    }));
+    const onChanged = vi.fn();
+    render(<ContractDetail detail={detail} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('generate-now-btn'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    const toasts = showToast.mock.calls.map((c) => c[0] as { type: string; message: string });
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]!.type).toBe('warning');
+    expect(toasts[0]!.message).toMatch(pattern);
+    expect(toasts[0]!.message).not.toBe('Invoice generated');
+    expect(navigateTo).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalled();
+  });
+});

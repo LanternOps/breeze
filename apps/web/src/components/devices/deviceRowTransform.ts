@@ -96,7 +96,6 @@ export function toDeviceListRow(raw: ApiDeviceRow): DeviceListRow {
     // (warned once per value — see normalizeLinkGroupRole).
     linkGroupRole: normalizeLinkGroupRole(d.linkGroupRole),
     enrolledAt: d.enrolledAt as string | undefined,
-    lastLogAt: (d.lastLogAt ?? null) as string | null,
     desktopAccess: (d.desktopAccess as Device['desktopAccess']) ?? null,
     hardware: hardware ? {
       cpuModel: hardware.cpuModel as string | undefined,

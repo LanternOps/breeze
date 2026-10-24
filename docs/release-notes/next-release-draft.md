@@ -8,37 +8,20 @@ Add an entry the moment you introduce something an operator or self-hoster would
 notice — a new env var, a new log line, a new metric, a changed default, a
 behaviour change. A commit subject weeks later will not carry it.
 
-Last release: **v0.123.0** (2026-10-17).
+Last release: **v0.124.0** (2026-10-19).
 
 ---
 
 ## Release to-do (pre-cut gates — see `/release` Step 0.2)
 
-- Lab checks OWED before the tag (merged on Todd's instruction with checks outstanding): #8919 viewer on NVIDIA Linux, #8921 bcdboot failure path, #8935 caller-verify absolute deadline, #8912 Windows DHCP in-process read, #8878 WinRT toasts (Win11 real-helper check per PR body), #8755 macOS permission probe (checks per PR body).
-- YARA W02 (#9112) ships dark; Windows benchmark on the lab Windows Server VM is owed before the W03 sidecar decision, not a release blocker.
-- AI model registry W08b (#9130): take the DO backup / PITR point BEFORE deploy; after deploy run G3 (archive query in `deploy/upgrades.mdx` vs the G2 counts held by the features-work session, zero blocking rows on both regions 10-17).
+_(empty — add the next tag's one-off gates here)_
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
 
-- **AI model registry legacy drop (#9130)** — R2 of the two-step migration (W08a shipped in v0.123.0). Archives legacy AI model storage into `ai_model_registry_legacy_archive` and drops the old storage. Back up before upgrading. **Rollback caveat:** with the workspace extension enabled, the previous image's boot tripwire refuses to start while the archive table exists, so going back is a database restore, not an image rollback. A partner may now hold several Anthropic connections (cap removed).
-- **Connection-health notifications complete (#8844: W2 #8936, W3 #9011, W4 #9045, W5 #9047)** — customer-admin notices are OFF by default (partner default, org override) under the new mail purpose `customer.connection_health_digest`.
-
-- **Connection-health digest (#9011)** — on the first deploy that includes it, every admin/owner with an open connection incident receives a digest email at 08:00 partner-local time. Expected one-time burst, not a fault.
-- **AI device file read policy (#8866 W01 + #9010 W02)** — both waves ship together; W02 asserts the partner id in the resolver (W01 alone fails open).
-- **AI tool output retention (#9044)** — the first nightly run after deploy scrubs AI tool outputs older than 30 days for partners with no AI data policy row; affected chats lose resumable model context. Partners who want to keep history must set retention to blank ("keep forever") *before* upgrading.
-- **Connection-health W04 (#9045)** — new webhook and Google Workspace health sources seed silently, then begin real notices for stale syncs and dead webhooks. The Google probe makes one Directory API call per Google-connected org every 6 h, impersonating the org admin.
-
 ## Features / API
 
-- **Breeze AI: System Restore ledger read (#8584).** The read-only `list_device_restore_point_attempts` chat tool (devices:read) lists a device's System Protection checkpoint attempts, newest first, with trigger and status filters. No new env vars or migrations.
-
-### Caller verification is now enforced for Microsoft 365 identity actions
-
-Password resets and account disables require fresh, single-use verification for the pinned Entra account, using the link tier: SMS and email links, callback attestation, and administrative disable. Verification is checked at release and immediately before direct Graph, Graph executor or Delegant dispatch. Administrative disable uses an interactive MFA step-up bound to the target and reason. "This is not me" opens an incident and fences undispatched actions.
-
-Workstation verification is not part of this release: it ships dark behind `CALLER_VERIFICATION_WORKSTATION_ENABLED` (default `false`), and policies cannot require tier 3 until it is enabled. Establish Entra bindings and attest imported contact destinations. Existing unpinned intents must be recreated. Roll the OID-capable Graph actions executor before the API. `CALLER_VERIFICATION_ENABLED` now defaults to `true`; set and map it in the API service environment. Explicit false hides the workflow and refuses protected actions. A failed dispatch does not restore a consumed verification.
+- **PAM: agents report an elevation they cannot act on (#9517).** New agent route `POST /api/v1/agents/:id/pam/elevation-unable` (admission class `protected`). When the agent gives up on the PAM flow (requester session found but not active, helper did not start within the 30-second wait or lacks the PAM scope), it reports the request; uncertain cases (session unresolved, session check failed, session not in the snapshot before or during the helper wait, lease refused, a ready helper not found, no session broker or lifecycle manager yet) stay pending for the stale-request expiry; a still-pending request is closed as `expired` and the server then withdraws its mobile approvals (best-effort; a phone approval of a closed request is refused either way), and the PAM requests list shows that the device could not act under the Expired or All filter. New log lines: agent `pam: reported the elevation as unable to the server` / `pam: could not report the elevation as unable`; the API publishes `elevation.expired` with `cause: device_unable` (best-effort, like the stale-request expirer's: a failed publish is logged and the row stays the record). Older agents keep the previous behavior (the request stays pending until the stale-request expiry).
 
 ## Migrations
 
-- `2026-12-30-200000-ai-model-registry-legacy-drop.sql` (#9130) — archive + drop of legacy AI model storage; irreversible without PITR on hosted (see Self-Hosting note).
-- `2026-12-30-220000-action-intents-caller-target.sql` — adds `target_entra_tenant_id`, `target_entra_oid`, `target_connection_ref` (immutable after insert, all-or-none) and `dispatch_started_at` to `action_intents`. DDL only; no backfill.
+- `2027-01-02-180000-elevation-device-unable.sql`: three nullable columns on `elevation_requests` (`device_unable_at`, `device_unable_reason`, `device_unable_detail`) and the `device_unable` value on `elevation_audit_event_type`. The column adds are metadata-only, but the new CHECK `elevation_requests_device_unable_chk` is validated in the same statement, so Postgres scans `elevation_requests` once under the migration's lock (no rewrite). The table holds every elevation request (UAC prompts, technician JIT grants, governed AI tool actions), so the lock is held for one sequential scan of it. Scan time depends on the table's size on disk, its live row count (each row's CHECK is evaluated) and the storage's read speed. Measured on one idle host (PostgreSQL 16, local NVMe, a synthetic copy of the table at about 600 bytes a row): 1 million rows (600 MB) validated in 0.21 to 0.22 s over three warm runs; 10 million rows (6 GB) in 5.0 s with the OS and Postgres caches cleared and 2.1 s warm (one run each). Anything that reads or writes `elevation_requests` (new UAC requests, approvals, the requests list) waits that long. These are single-host measurements, not a guarantee: slower, shared or busy storage, lock waits and concurrent traffic can make it materially longer. Check `SELECT pg_size_pretty(pg_relation_size('elevation_requests'))` before upgrading and plan a quiet window when that size is large for your storage.

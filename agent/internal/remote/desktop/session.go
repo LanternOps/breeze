@@ -145,6 +145,10 @@ type Session struct {
 	// onClipboardSummary is SessionManager.OnClipboardSummary at creation.
 	onClipboardSummary func(sessionID string, summary ipc.ClipboardSummary)
 
+	// trickle carries local ICE candidates gathered after the answer to the
+	// viewer (#9182). nil for sessions not built by StartSession.
+	trickle *iceTrickle
+
 	// displayIndex is the monitor index this session was started on.
 	displayIndex int
 	// captureConfig stores the context needed to recreate capturers on monitor switches.
@@ -239,6 +243,13 @@ type SessionManager struct {
 	// Quick Support uses it to tell the end user "Technician connected."
 	// Invoked on its own goroutine, like OnSessionStopped.
 	OnSessionStarted func(sessionID string)
+
+	// OnLocalICECandidate receives each local ICE candidate gathered after a
+	// session's answer was taken, and the end-of-gathering marker, once the
+	// transport owner calls BeginICETrickle (#9182). startGeneration is the
+	// value given to BeginICETrickle. Called serially per session from pion's
+	// candidate callback, so it must not block for long.
+	OnLocalICECandidate func(sessionID, startGeneration string, c LocalICECandidate)
 
 	// lastDesktopState caches the most recently broadcast desktop state so
 	// late-connecting viewers can receive an initial state when their control
@@ -609,6 +620,9 @@ func (s *Session) doCleanup() {
 		// Before anything else is torn down: nothing this session pressed may
 		// stay pressed on the customer's machine.
 		s.closeInput()
+		if s.trickle != nil {
+			s.trickle.stop()
+		}
 		if s.audioCapturer != nil {
 			s.audioCapturer.Stop()
 		}

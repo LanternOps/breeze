@@ -8,7 +8,7 @@ tracking_issue: LanternOps/breeze#6165
 
 **Goal:** A technician opens a ticket that says "Dana's last day is Friday", picks **Offboard a person** from a Recipe Library that already knows whether this org can run it, confirms who Dana is and who inherits her mail, approves one plan, and the Operator carries the whole procedure across Microsoft 365 and Google Workspace — mailbox effects first, disable/suspend last, each effect probe→write→probe, each unavailable capability degraded into a ticket checklist item instead of a failure — then verifies the outcome and writes a bounded completion record onto the ticket. The recipe is `gateClass: 'deterministic'`: the model resolves identities, flags exceptions and writes prose, and never chooses, orders or parameterizes an effect. The feature flag `AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED` ships **off** and stays off until the lab run in R1c passes.
 
-**Architecture:** Three PR-sized parts inside this one plan (see *PR split*). `recipes/identityOffboarding.ts` is a pure `RecipeDefinition` (E1's contract) whose `buildPlan(input, facts)` emits an ordered `PlannedEffect[]` over the **granular** Google tools and the **eight M1** M365 actions — never `google_offboard_user`, and never `google_wipe_mobile_device` (which is a full factory reset; this wave adds the selective `google_account_wipe_mobile_device`). `services/aiOperator/identityDiscovery.ts` issues coordinator-driven deterministic reads against both providers and returns a typed, bounded `IdentityDiscoveryFacts`; `services/aiOperator/recipeReadiness.ts` turns connection rows, `permission_manifest_version`, `m365RoleReadiness`, Google connection health and the `helpdesk` agent's `toolAllowlist` into `ready | setup_required | unavailable` plus named missing capabilities, and turns each missing capability into a generated human-work item instead of a blocked recipe. `taskService.admitServiceRecoveryTask` becomes a thin wrapper over a generalized `admitTask`, which resolves-or-creates the `contacts` row, upserts `contact_external_links`, freezes the provider accounts onto the task (E2's `freezeTargetAccount`), and enforces one live task per `(contact, recipe)` under a per-contact transaction-scoped advisory lock. E1's `StepDefinition` gains one optional, additive field — `next` — so deterministic spine sequencing is recipe data rather than coordinator `if`s.
+**Architecture:** Three PR-sized parts inside this one plan (see *PR split*). `recipes/identityOffboarding.ts` is a pure `RecipeDefinition` (E1's contract) whose `buildPlan(input, facts)` emits an ordered `PlannedEffect[]` over the **granular** Google tools and the **eight M1** M365 actions — never `google_offboard_user`, and never `google_wipe_mobile_device` (which is a full factory reset; this wave adds the selective `google_account_wipe_mobile_device`). `services/aiOperator/identityDiscovery.ts` issues coordinator-driven deterministic reads against both providers and returns a typed, bounded `IdentityDiscoveryFacts`; `services/aiOperator/recipeReadiness.ts` turns connection rows, `permission_manifest_version`, `m365RoleReadiness`, Google connection health and the `helpdesk` agent's `toolAllowlist` into `ready | setup_required | unavailable` plus named missing capabilities, and turns each missing capability into a generated human-work item instead of a blocked recipe. `taskService.admitServiceRecoveryTask` becomes a thin wrapper over a generalized `admitTask`, which resolves-or-creates the `contacts` row, upserts `contact_external_links`, freezes the provider accounts onto the task (E2's `freezeTargetAccount`), and enforces one live task per `(contact, recipe)` under a per-contact transaction-scoped advisory lock. E1's `StepDefinition` gains one optional, additive field — `next` — so deterministic spine sequencing is recipe data rather than coordinator `if`s. **Amended 2026-10-18:** a fourth part, R1a-0, comes first. It generalizes the *as-built* E4 through recipe data, and it touches no recipe of its own. The parts it adds are: plan facts from a sealed planning snapshot; a post-approval not-before gate; declared unobservable effects; per-recipe checkpoint arms; and a target-aware requester gate. The identity plan then rides E4's single `effects` step, which proposes, waits for approval, re-seals and walks the effects in order. See the Amendment section.
 
 **Tech Stack:** TypeScript, Zod, Hono, Drizzle ORM, Vitest (unit + `vitest.integration.config.ts` against real Postgres), Astro + React + react-i18next (`apps/web`), Playwright (`e2e-tests`).
 
@@ -18,32 +18,317 @@ tracking_issue: LanternOps/breeze#6165
 
 ---
 
-## PR split — this plan is THREE PRs, not one
+## Amendment 2026-10-18 — as-built E4 reconciliation
 
-A single PR here would be ~60 files across api + shared + web + e2e + docs. The parts are cut where the seams are real (server contract → UI over that contract → gate over the shipped behaviour), each is independently green, and each opens its own PR and STOPS.
+> **Read this section before any task.** It supersedes every conflicting line below it. The first R1a execution attempt (branch `feature/6165-operator-recipe-library/wave-6171-a`) stopped at its premise check: the plan was written against the E4 that the W04 plan *promised*, and E4 shipped a different shape. This amendment re-bases R1 on the E4 that is actually on `main` (verified at `fc6900d8bd`). Where this plan and the code disagree, **the code wins**, and the plan text below has been rewritten to match.
+
+### A.1 What does not match, with evidence
+
+All paths are under `apps/api/src/services/aiOperator/` unless they say otherwise.
+
+**Blocking — R1a as planned cannot be built on these:**
+
+1. **There is no separate plan-approval step.** `advancePlanApprovalStep`, `advanceEffectStep` and a `kind === 'probe' && stepKey.startsWith('plan_')` arm do not exist. Approval lives *inside* the `effect`-kind step: `KIND_ADVANCERS.effect` → `advanceEffect` (`taskCoordinator.ts:678`, `:1574`) → `planEffectStep` (`effectDispatch.ts:420`). In one step, `planEffectStep` builds the plan, calls `proposePlanApproval` (`:448`), waits on the plan intent (`:459`), re-checks the seal on every wake (`:466-472`), then walks every effect in order (`:521-587`). A `probe`-kind `plan_approval` step would route to `advanceProbe` → `planProbeStep` (`effectDispatch.ts:596`). That function post-probes the plan and approves nothing.
+2. **The plan is built with empty facts.** `buildRecipePlan` calls `recipe.buildPlan(checkpoint.recipeInput, {})` (`effectDispatch.ts:405-413`), and the seal is recomputed from that output on every wake. `RecipeDefinition.buildPlan(input, facts)` (`recipes/types.ts`) already accepts facts, but nothing supplies them. The identity plan depends entirely on discovery facts, and it must leave out degraded tools.
+3. **The requester-access gate is keyed to a device.** Before every `effect`-kind step, `advanceTask` calls `requesterAccessLost(task, checkpoint.recipeInput.deviceId)` (`taskCoordinator.ts:798-799`, classified by `stepNeedsRequesterAccessRecheck` at `:693`). `requesterAccessLost(task, deviceId)` (`requesterAccessGate.ts:50`) checks org access, then the device's site. The identity input has no `deviceId`.
+4. **`taskCheckpointSchema.criterion` is required, and it is the `service_running` shape.** In `packages/shared/src/validators/aiOperator.ts`, `taskCriterionSchema` (`:152`) has `adapter: z.literal('service_running')` with a required `deviceId` and `serviceName`. `taskCheckpointSchema` (`:185-221`) requires `version: z.literal(1)`, `recipeInput: serviceRecoveryInputSchema` and `criterion`. You cannot build an identity checkpoint from it. The original Task 2 test cases (`parse({ recipeInput })` with no `version` and no `criterion`) fail as written.
+
+**Also blocking, found while writing this amendment:**
+
+5. **An approval is bound to the step that proposed it.** `checkPlanEffectMembership` refuses `operation_identity_mismatch` unless `input.taskStepKey === approval.stepKey` (`planApproval.ts:332`). The plan approvals table holds one approval per `(org, task, plan_revision)` (`ai_operator_plan_approvals_task_revision_uq`, `db/schema/aiOperatorPlanApprovals.ts:56`). Two consequences:
+   - A separate approval step cannot hand its approval to a later `effects` step.
+   - Two effect steps (`effects` and `device_actions`) cannot dispatch under one revision's approval.
+6. **The walk hands off on any post-probe `unknown`.** `verifyDispatchedEffect` returns `handoff` for every state other than `satisfied` or `unsatisfied` (`effectDispatch.ts:217-225`), and the walk then settles `unknown_effect` (`:581-582`). The `google_signout` probe is always `unknown` (`effectProbes/google.ts:208`). The recipe orders the sign-out before `google_suspend_user`, which is the effect that subsumes it (D-R1-11). Under the as-built walk, the suspend would therefore never run.
+7. **`manage_device_session` does not exist.** No tool by that name is registered anywhere in `apps/api/src`, and no Breeze lock or log-off tool exists. Even if one existed, the walk would hand it off: an unregistered probe returns `unknown` (`effectProbes/index.ts:84`), and `classifyEffectIdempotency` defaults an unlisted tool to `non_idempotent` (`effectDispatch.ts:78-80`). A `non_idempotent` effect hands off whenever its pre-probe is anything other than `unsatisfied` (`:138`).
+8. **`PlannedEffect.targetId` is an `ai_operator_task_targets.id`.** The schema comment on `ai_operator_plan_approval_effects.target_id` says so (`db/schema/aiOperatorPlanApprovals.ts:87`), and the approval card resolves labels by target row id (`effectDispatch.ts:371`). The original Task 3 put the `contactId` there, which would render every effect as "Task target".
+9. **Admission hard-codes the entry step.** `admitServiceRecoveryTask` writes `currentStepKey: 'investigate'` (`taskService.ts:312`), and `advanceTask` falls back to `'investigate'` (`taskCoordinator.ts:779`). Identity tasks start at `intake`.
+
+**Minor — plan-text fixes, made inline below:**
+
+- `splitSecretBearingEffects` and `PlanSplit` do not exist. `proposePlanApproval` refuses a secret-bearing tool inline with `reason: 'secret_bearing_effect'` (`planApproval.ts:424-430`).
+- `bumpPlanRevision` takes one args object, `{ orgId, taskId, fromRevision, leaseEpoch, detail }` (`planApproval.ts:784`), not `(dbh, args)`.
+- `listStaleManifestConnectionsForPartner` does not exist. The real function is `ConnectionService.listStaleManifestConnections()`, which takes no arguments (`m365ControlPlane/connectionService.ts:360`, `:551`).
+- The `customer-graph-actions` profile is at **version 3** (`packages/shared/src/m365/profiles.ts:201`). Readiness code and tests read `M365_PERMISSION_PROFILES['customer-graph-actions'].version`. They never use a literal version.
+- `admitServiceRecoveryTask` (`taskService.ts:130-~420`, about 290 lines) has more gates than the original Task 9 listed. It refuses `task_limit_exceeded` (`:244`), takes `lockOrgTaskAdmission` (`:253`), refuses `pending_cap_reached` (`:276`) and jitters the deadline (`:283-285`). `admitTask` keeps every one of them, in the same order.
+- `wipeMobileDevices` is at `aiToolsGoogle.ts:180-190`, not `:147-155`. The `admin_account_wipe` call inside the composite is at `:1184`.
+
+### A.2 What matches (do not re-audit)
+
+- **E1:** `STEP_KINDS`, `RecipeDefinition`, the registry, `validateRecipeNextStep`, `resolveAdmissionRecipe`.
+- **E2:** the event, target and step services and their tables.
+- **E3:** `humanWorkService`, `advanceHumanWork`, `advanceWait`, and the `resumeStepKey` semantics. The step that moves a task into a generic step states that step's successor.
+- **E4:** `proposePlanApproval`, `markPlanApproved`, `checkPlanEffectMembership` / `checkPlanEffectMembershipSystem`, `dispatchPlannedEffect`, `verifyDispatchedEffect`, `bumpPlanRevision`, and the probe registry. Exactly eight Google probes are registered (`effectProbes/google.ts:253-262`), and the M365 adapter covers all ten tools.
+- **M1:** the ten write ids, the read ids (there is no owners read), `m365RoleReadiness`, `executeM365ReadActionByOrg`, and the refusal codes.
+- **D-R1-1 holds.** `wipeMobileDevices(…, 'admin_account_wipe')` is reachable only inside `google_offboard_user` (`aiToolsGoogle.ts:1184`).
+- **D-R1-5, 6, 7, 8, 9, 11 and 12 stand as written.** D-R1-2 and D-R1-4 stand with the clarifications in A.4.
+- **Task 1** is built, but on an evidence branch only (`origin/feature/6165-operator-recipe-library/wave-6171-a`, commit `828d96e5d5`). It passed 88 recipe tests, and `service_recovery`'s `operationKey` output stayed byte-identical without `toolName`. It stands unchanged under every option. It now ships in PR R1a-0 (A.5).
+- **No production caller exists for `planEffectStep` or `planProbeStep` today.** `service_recovery` overrides its `execute` (effect), `observe` and `verify` (probe) steps in `RECIPE_ADVANCERS` (`taskCoordinator.ts:647-654`). The unit suites and the replay integration suite are the only callers. Changing how they build the plan therefore cannot change `service_recovery` at runtime. The requester-access gate is different: it *does* run on `service_recovery`'s `execute` today, so its device path must stay byte-identical.
+
+### A.3 Chosen design — Option A, refined ("one effect step per plan revision")
+
+Three options were weighed:
+
+- **A** — extend E4's effect step through recipe data.
+- **B** — R1 owns its own approval step and dispatch loop.
+- **C** — an E4 follow-up first adds `advancePlanApprovalStep` and a `plan_` arm.
+
+**Adopted as the default: A**, with three refinements that drift items 5–7 force. This is pending Todd (A.7 item 1), because the advisor quorum split on it.
+
+The independent advisor preferred a variant, **C\***:
+- keep a distinct `plan_approval` step that proposes *for* the effect step, named by recipe data (`approvalFor: 'effects'`) rather than by a key prefix;
+- keep `wait_cutoff` as an E3 `wait` step;
+- extract the propose / pending / re-seal half of `planEffectStep` into a shared function.
+
+Both A and C\* preserve the membership binding. A is the default for two reasons:
+- **It edits less of the shipped approval half.** C\* moves the pending-plan race handling (`effectDispatch.ts:474-507`) into a new function. A adds one gate after that code.
+- **W07's two-revision shape is A's shape.** That is two effect steps, each owning propose and walk, with no extra step per revision.
+
+C\*'s advantages are arbitrary steps between approval and dispatch, and a step list that matches the spec diagram row for row. Neither R1 nor W07 needs them. If Todd picks C\*, only Tasks 1e (the gate becomes an approval-phase extraction), 3 (the step graph) and 11 (the advancer table) change. Tasks 1a–1d, 1f and every A.4 decision hold under either option.
+
+**The identity spine becomes eight steps:**
+
+```
+intake (reason) → confirm_identity (human_work) → discover (probe, coordinator reads; freezes the planning snapshot)
+→ review (reason) → effects (effect: propose → four-eyes approval → not-before cutoff → ordered walk)
+→ manual_work (human_work) → verify_outcome (probe) → document
+```
+
+- **`plan_approval`, `wait_cutoff` and `device_actions` are not steps.**
+  - Approval and the cutoff wait are *phases of `effects`*, in the spec's order: approve, then wait, then dispatch.
+  - Device actions are human work (refinement 3 below).
+- **This differs from the spec §6.3 diagram** in how step rows are drawn, not in what happens or in what order. The task page shows `effects` as waiting for approval, then waiting for the maintenance window, then executing.
+
+**Why not C as briefed.** E4 binds an approval to the step that proposed it (A.1 item 5). A `plan_`-prefix approval step would therefore have to loosen that binding, and the binding is a load-bearing dispatch-identity check from E4's own quorum. C\* avoids this by proposing under the effect step's key. That is the honest version of C, and it is the alternative on the table.
+
+**Why not B.** It is a second copy of propose / seal / membership / dispatch, which the plan forbids. Two copies of a four-eyes seal drift.
+
+**Why A is the cheapest next recipe.** W07 onboarding needs two approvals at two revisions: create the accounts, then provision them. That is two effect steps, each proposing and walking its own approval, which is exactly `planEffectStep`'s shape. A later contact-targeted recipe declares a snapshot step and an unobservable map, and reuses the walk unchanged.
+
+**The refinements, each a small generic E4 capability driven by recipe data. All are absent for `service_recovery`:**
+
+1. **Facts from a frozen planning snapshot.** A recipe may declare `planningSnapshotStepKey` (here `'discover'`).
+   - The discover advancer writes one envelope `{ version: 1, capturedAt, facts }` into that step row's `checkpoint`.
+   - It stores `{ stepId, digest }` on the task checkpoint as `planningSnapshot`.
+   - `buildRecipePlan` loads and verifies the snapshot, then calls `buildPlan(input, snapshot.facts)`.
+   - The recipe's degraded-tool set is **inside** `facts`. The readiness computed at discover time is part of what is frozen, so a readiness change cannot alter a sealed plan.
+2. **A post-approval not-before gate.** A new optional checkpoint field `dispatchNotBefore` (ISO). Once the plan is approved and the seal re-checks, the walk will not *start* a new dispatch before that instant. It returns `wait` with reason `'maintenance_window'`. In-flight effects are still observed during the wait. `review` sets the field from `input.cutoffAt`.
+3. **Unobservable effects.** A recipe may declare `unobservableEffects: { tool → subsuming tool }`.
+   - When a declared effect's post-probe is `unknown`, the walk records it as `{ verified: false, unobservable: true, subsumedBy }` and continues. It does not hand off.
+   - An undeclared `unknown` still hands off with `unknown_effect`, exactly as today.
+   - A replay must not re-probe or re-record it: a later wake treats `unobservable: true` as walked.
+   - "Subsumed" means a subsuming effect with the **same non-null `accountExternalId`** that verified or no-op'd. A null id never matches, not even another null.
+   - The carve-out applies only to a tool whose probe is **structurally** unobservable, meaning it makes no provider call and always returns `unknown`. `registerEffectProbe` gains an optional `{ alwaysUnknown: true }` marker, and `isStructurallyUnobservable(toolName)` reads it. `google_signout` is the only tool registered that way (`effectProbes/google.ts:208`). The walk applies the carve-out only when both the recipe declares the tool **and** `isStructurallyUnobservable(toolName)` holds. A declared tool whose probe returned `unknown` because a provider call failed still hands off.
+   - The final verdict belongs to the recipe's `verify_outcome` step. With no resume step, the walk settles `partial`/`unresolved` unless every unobservable effect is subsumed.
+   - `planProbeStep` applies the same rule. A subsumed unobservable effect is not "unconfirmed".
+
+**Device effects become human work.** There is no Breeze lock or log-off tool, and adding a probed one is its own feature. Each device the technician selected becomes a `manual_work` item: "Sign Dana out of / lock <hostname> and collect it". This puts the device steps into §6.3's "flag for collection" human-work line, consistent with D-R1-8, and removes `manage_device_session` from the catalog. A probed device tool is a follow-up (A.8).
+
+### A.4 Settled decisions (each went to the advisor quorum; the outcome is recorded in the orchestrator's result file)
+
+**Seal semantics (decision 2).**
+
+*What is sealed:*
+- The six sealed fields are unchanged (`toDigestProjection`, `planApproval.ts:76`). Facts are never sealed directly.
+- The seal is a function of `(input, snapshot.facts)`, and both are frozen before `review`. The approver and the model review the same plan.
+
+*What a wake re-checks:*
+- On every wake, `buildRecipePlan` re-reads the snapshot row and re-verifies its digest. It then rebuilds the plan and re-seals it, exactly as today (`effectDispatch.ts:466-472`).
+- The snapshot is immutable once written, so the plan re-seals identically.
+
+*Snapshot integrity:*
+- The snapshot is the **full** facts, not only a digest, because arguments must be rebuilt from it. The digest is integrity metadata. It is kept apart from the effect seal and is never part of it.
+- `digest` is `computeArgumentDigest(canonicalizeArguments(facts))`. These are the same canonicalizer and hash that `argumentDigest` already uses (`services/actionIntents/canonicalize.ts`), so there is no second canonicalizer.
+- **Fail closed, never rebuild with `{}`.** Each of the following is a snapshot failure:
+  - the recipe declares a snapshot step but the checkpoint has no `planningSnapshot`;
+  - the checkpoint has a `planningSnapshot` but the recipe declares no snapshot step;
+  - the row is missing, belongs to another task or org, has a different `step_key`, or is not `succeeded`;
+  - the envelope does not parse;
+  - the digest does not match.
+- **Before any approval row exists at the task's revision**, a snapshot failure is `fail`/`unresolved`. Nothing was proposed or dispatched, so it is an integrity fault.
+- **Once an approval row exists**, it is `hand_off`. The outcome is `unknown_effect` if this step has any operation row still `pending`, else `unresolved`. The summary says nothing further was dispatched, because a person must look at a task that may have run part of its plan.
+- A transient DB error throws, and the wake retries (`applyEffectDirective`'s existing rule, `taskCoordinator.ts:1582-1600`).
+- `buildPlan` *throwing* follows the same split. With no approval row at the revision, it stays `fail`/`unresolved` as today (`:430`). With an approval row, it becomes `hand_off`: `unknown_effect` if any operation is pending, else `unresolved`. A recipe-code change between wakes must not hide partly dispatched work behind a `fail`.
+- **Staleness alone is not a failure.** The snapshot is expected to be days old after a cutoff wait, and the per-effect pre-probe and `verify_outcome` both re-read the world.
+
+*Empty-plan hardening (advisor finding):*
+- Today an empty plan finishes *before* the approval is read (`effectDispatch.ts:440`). Once facts are in play, an empty plan under an existing approval means the plan changed.
+- Task 1d therefore reads the approval first. An approval at this revision plus an empty plan is the seal-mismatch hand-off, not success.
+- No approval plus an empty plan keeps today's `finish`, which the existing "an empty plan moves to resumeStepKey" case pins.
+
+*Readiness drift after approval:*
+- The sealed plan is never altered.
+- **Live readiness is an independent veto.** R1's `effects` entry in `RECIPE_ADVANCERS` is `advanceIdentityEffects` (Task 11). On every wake, before or after approval, it recomputes readiness before delegating to the shared `advanceEffect`.
+  - **It considers only planned effects that have no operation row yet**, meaning effects that are still to be *started*. An effect with an operation row, whether pending, executing or settled, is never vetoed. Delegation continues, and E4 observes and verifies it.
+  - If a not-yet-started planned tool is now unready, the veto hands off and names the remaining effects. If some operation is still pending at that moment, it does not hand off on that wake: it delegates, so E4 observes the in-flight effect first. The not-before gate and the walk mint nothing new while an earlier effect is unsettled, so the veto fires on the next wake that would start a dispatch.
+  - Before a plan is sealed, a lost tool makes the veto hand off before any proposal. Nothing is ever asked of an approver that can only fail.
+- If a capability is *gained*, nothing changes. The degraded item stays human work, and the veto never adds a tool.
+- The release-time checks stay as the backstop: the allowlist ceiling, the approver re-proof (`effectDispatch.ts:160-168`), and M365 `consent_upgrade_required`. The safety ordering guarantees the completed prefix leaves the account more restricted, never mail-unrouted.
+
+*Plan revision:*
+- R1a does **not** call `bumpPlanRevision`. Nothing in R1 changes the snapshot after `review`.
+- World drift after discovery (for example, a group added on Wednesday) is caught by the per-effect pre-probe and by `verify_outcome`'s membership read. It surfaces as `partial` with the leftover named.
+- Spec §6.4 says "a provider dropping to human-work … bumps `revision`". R1 implements that as fail-closed at release plus hand-off. Re-plan-on-drift is a Todd decision (A.7) and a follow-up.
+
+**Requester access for contact-targeted tasks (decision 3).**
+
+*The new gate:*
+- New `requesterAccessLostForTargets(task)` in `requesterAccessGate.ts`. It reads the task's **live** `ai_operator_task_targets` rows, meaning `detached_at IS NULL`. E2's rows are the source of truth, not the checkpoint, because org-merge and ticket-move detaches write there.
+- Under the same `withSystemDbAccessContext`, it applies the same requester checks as today: the requester is active, then `canAccessOrg` with `bypassCache`.
+- **Partner binding:** for a partner-scope requester, the task org's `organizations.partner_id` must equal the requester's `users.partner_id`. The new gate states the tenant binding explicitly, because it runs in system scope; it does not leave the binding to `orgAccess` semantics.
+- Then, per target:
+  - `device`: the device is in this org, and `canAccessSite(device.siteId)`.
+  - `contact`: the contact is in this org, **and** the requester passes `canMutateOrgWideGovernance` (`services/siteCeilingAccess.ts:67`). Its `SiteCeilingAuth` argument (`siteCeilingAccess.ts:27`) is built from the live `getUserPermissions` result (`scope`, `allowedSiteIds`). `UserPermissions` carries no `allowedDeviceIds`, so derive the exact-device ceiling the way `buildTaskActorAuthContext` (`actionIntents/actorContext.ts:226`) does for a user. If it cannot be derived, treat the requester as restricted, so access is **lost**. A directory account has no per-site slice, which is why every mutating Google and M365 tool already fails closed for a site-restricted caller (`aiToolsGoogle.ts:282`; `aiToolsM365.ts`'s ceiling helper below `:399`). The contact's `site_id` grants nothing.
+  - `ticket`: the ticket is in this org.
+- Access is **lost** (fail closed) if there is no live target, or if a target's kind or pointer does not resolve. If there is no requester, access is OK, exactly as today.
+- **When it runs:** on every wake of an `effect`-kind step. The walk mints at most one new child per wake (`effectDispatch.ts:533-537`), so this is a recheck before each new effect, not only at step entry.
+
+*What it deliberately does not check:*
+- Provider grants. Child effects run as the plan's **approver**, re-proven per mint by `buildTaskActorAuthContext` + `createActionIntent` (`effectDispatch.ts:159-179`). The connection's grants are checked by the executor.
+
+*Tenancy:*
+- This runs in system scope, so RLS is bypassed. The explicit `org_id` predicate on every read *is* the isolation, and the unit test asserts each predicate. Do not claim RLS parity.
+- The existing device-keyed gate stays byte-identical. R1 does not change it.
+
+*Selection in `advanceTask`:*
+- `isServiceRecoveryCheckpoint(checkpoint) ? requesterAccessLost(task, checkpoint.recipeInput.deviceId) : requesterAccessLostForTargets(task)`.
+- The `service_recovery` call and its arguments are byte-identical to today's.
+- Before that, `advanceTask` checks that the checkpoint's arm agrees with the recipe: a `service_recovery` task must hold the SR arm, and any other recipe must not. On disagreement it settles `fail`/`unresolved` (Task 1b), so a task can never borrow the other arm's gate.
+
+**Checkpoint shape (decision 4).** Per-recipe arms, not an optional `criterion`.
+
+*The schemas:*
+- `packages/shared/src/validators/aiOperator.ts` gains `taskCheckpointBaseSchema`, which holds every field common to both arms. That is today's field list minus `recipeInput` and `criterion`, plus two new optional fields: `planningSnapshot` and `dispatchNotBefore`.
+- `serviceRecoveryCheckpointSchema` = base + `recipeInput: serviceRecoveryInputSchema` + `criterion: taskCriterionSchema`, `.strict()`. It is field-for-field today's `taskCheckpointSchema`.
+- `taskCheckpointSchema = z.union([serviceRecoveryCheckpointSchema, …])`. R1a-0 ships the service-recovery arm, and R1a appends `identityOffboardingCheckpointSchema` = base + `recipeInput: identityOffboardingInputSchema` + `manualWorkCursor`.
+
+*Why arms and not an optional `criterion`:*
+- A stored row's arm is fixed by its shape. A service-recovery row cannot lose its criterion, and an identity row cannot grow one.
+- The next recipe adds an arm instead of more optional fields.
+
+*Stored rows:*
+- They live in jsonb in an existing column, so this needs no DDL.
+- The two new base fields are `.optional()` without a default, so a re-serialized service-recovery checkpoint is byte-identical. The pin is test 1a-3.
+
+*Consumers that must narrow* (complete list, from `git grep -nE '\.criterion[^a-zA-Z]|recipeInput|parseTaskCheckpoint|TaskCheckpoint[^a-zA-Z]' -- apps packages`, tests excluded; `\b` is unreliable in `git grep -E`):
+- `taskCoordinator.ts`: `:559`, `:799`, `:867`, `:887`, `:934`, `:1018`, `:1073`, `:1141`, `:1153`.
+- `taskContext.ts:72-78`.
+- `taskReconciler.ts:365`.
+- `taskService.ts:161-188` (admission builds the SR arm explicitly); `taskService.ts:525-541` (`parseTaskCheckpointResult` / `parseTaskCheckpoint` now return the union, so their callers narrow); `taskCoordinator.ts:698` (the `advanceTask` parse that feeds every advancer and the gate).
+- `routes/aiOperatorTasks.ts:314` is dismissed. It is the admission *input* (`recipeInput: {…}` passed to `admitServiceRecoveryTask`), not a checkpoint read. Task 2/13 owns that route.
+- Type-only `TaskCheckpoint` annotations (`taskCoordinator.ts`, `effectDispatch.ts:405/423/599`, `taskContext.ts:56`) follow the union automatically, and `tsc` is the check for them.
+- `effectDispatch.ts:408`: reads `recipeInput` only, and works on the union.
+- `apps/web` reads no checkpoint (verified).
+- The four `service_recovery` advancers narrow once, at their `RECIPE_ADVANCERS` entries. On a guard miss they settle `fail`/`unresolved` with a named detail. That cannot happen for an admitted task, but it must not be a cast.
+
+**`StepDefinition.next` / `resumeStepKey` (D-R1-2 clarified).**
+- `next` is resolved when a task moves **into** a step S. The result is written as `checkpoint.resumeStepKey`, which is S's successor, and E3's and E4's generic advancers read it when S finishes.
+- So the R1 advancer that moves into a generic step must write that step's `resumeStepKey`:
+  - `intake` → `confirm_identity` writes `'discover'`;
+  - `review` → `effects` writes `'manual_work'` and `dispatchNotBefore`.
+- The steps the generic advancers move *into* (`discover`, `manual_work`) are R1 advancers, and they resolve their own successor.
+
+**Discovery state (D-R1-4 revised).**
+- The facts stay on the `discover` STEP row.
+- The task checkpoint carries `planningSnapshot: { stepId, digest }` (base, optional) in place of `discoveryStepId`. It carries `manualWorkCursor` (identity arm). **`effectCursor` is dropped.** The E4 walk derives progress from `ai_operator_operations` rows (`effectDispatch.ts:515-547`), dispatches one effect per wake, and stops at the first effect that is not done. That already gives "a stopped task has completed a prefix", with no second cursor to disagree with the rows.
+
+**Entry step.**
+- `RecipeDefinition.entryStepKey?: string` (Task 1c). When it is absent, the entry step is `'investigate'`, which is today's literal.
+- `admitTask` writes `currentStepKey: recipe.entryStepKey ?? 'investigate'`.
+- `recipes/index.test.ts` asserts that every declared key names a declared step.
+
+**`PlannedEffect.targetId`** is the contact's **target row id**. `buildPlan` reads it from `facts.targets.contactTargetId`, which `discover` freezes from the task's target rows. The contact id is never used there. Task 1c also corrects the contradictory comment on `PlannedEffect.targetId` in `recipes/types.ts`, which says "Device id / contact id", to say "an `ai_operator_task_targets.id`". For `service_recovery` the comment is the only change: its `buildPlan` output and seal are untouched, and Task 1a pins them.
+
+### A.5 PR split, file ownership and CI
+
+R1a-0 goes first and lands on `main` before R1a is cut, so it is **not** a stacked PR and runs CI normally. R1a is cut from `main` after R1a-0 merges. If the two must run concurrently, R1a stacks on R1a-0 and every stacked branch needs `gh workflow run CI --ref <branch>`. R1b and R1c stay stacked as originally written.
+
+| Part | Tasks | Owns (create/modify) | Ends at |
+|---|---|---|---|
+| **R1a-0** | 1, 1a–1g | `recipes/types.ts`, `recipes/types.test.ts`, `recipes/resolveNextStep.ts` (+test), `recipes/serviceRecovery.ts` (Task 1's three lines), `recipes/index.ts` (`recipeDataProblems`), `recipes/index.test.ts`; `e4Characterization.test.ts` (new); `planningSnapshot.ts` (+test, new); `effectProbes/index.ts` + `effectProbes/google.ts` (the `alwaysUnknown` marker only); `taskService.ts` (checkpoint narrowing at `:161-188` and `:525-541` only, with admission semantics unchanged — R1a Task 9 owns everything else in it); `effectDispatch.ts`, `effectDispatch.planEffectStep.test.ts`, `effectDispatch.test.ts`; `requesterAccessGate.ts` (+test); `taskCoordinator.ts` (gate selection, SR advancer narrowing, `export type StepAdvancer` and the `COORDINATOR_STEP_OPS` export only), `taskCoordinatorPlanApproval.test.ts`; `taskContext.ts`, `taskReconciler.ts`; `packages/shared/src/validators/aiOperator.ts` (checkpoint arms only) + its test; `__tests__/integration/aiOperatorRequesterAccessRecheck.integration.test.ts`, `__tests__/integration/aiOperatorEffectDispatchReplay.integration.test.ts` | PR "R1a-0 — E4 generalization for contact-targeted, facts-dependent recipes" |
+| **R1a** | 2–15 | everything else in *File Structure* for R1a. Shared-file overlap with R1a-0 is only `packages/shared/src/validators/aiOperator.ts` (R1a appends the identity arm and edits `createOperatorTaskSchema`) and `taskCoordinator.ts` (R1a adds one `RECIPE_ADVANCERS` entry and one import). Both are sequential, never concurrent edits. | PR "R1a — identity_offboarding recipe, discovery, readiness and admission" |
+| **R1b** | 16–22 | unchanged | unchanged |
+| **R1c** | 23–28 | unchanged | unchanged (flag stays OFF) |
+
+**Blast radius.** R1a-0 edits shipped seal, dispatch and coordinator-gate code. **Every R1a-0 task follows the full rule:**
+
+- Write the test red first.
+- Run the named `service_recovery` regression set unmodified.
+- Before the PR, do **one Opus review round** (`model: opus`, not Sonnet). Give it the tenancy questions in Task 1g.
+
+### A.6 `service_recovery` stays byte-for-byte: the regression set
+
+The following must pass **unmodified** at every R1a-0 and R1a commit that touches the files they cover. Report the counts from real output.
+
+- **Unit:** `recipes/serviceRecovery.test.ts`, `recipes/serviceRecovery.recipe.test.ts`, `effectDispatch.planEffectStep.test.ts`, `effectDispatch.test.ts`, `planApproval.test.ts` (incl. *"projects exactly the six sealed fields with the argument digest"* and the two membership-refusal cases), `taskCoordinatorPlanApproval.test.ts`, `taskService.recipeAdmission.test.ts`, `taskCoordinator.recipeResolution.test.ts`, `requesterAccessGate.test.ts`, `taskContext.test.ts`, `verification.test.ts`.
+- **Integration:** `__tests__/integration/aiOperatorServiceRecoveryE2E.integration.test.ts`, `aiOperatorCoordinator.integration.test.ts`, `aiOperatorRequesterAccessRecheck.integration.test.ts`, `aiOperatorEffectDispatchReplay.integration.test.ts`, `aiOperatorPlanApprovalMembership.integration.test.ts`, `aiOperatorAdmission.integration.test.ts`.
+- **Characterization:** Task 1a's characterization file is written **before** any seal or dispatcher edit. It is proven able to fail (A.5 rule), and it pins:
+  - today's `buildPlan(input, {})` call and seal for a recipe with no snapshot;
+  - the device-keyed gate call;
+  - the stored bytes of a service-recovery admission checkpoint.
+
+### A.7 Decisions for Todd (defaults are what the tasks implement)
+
+1. **A vs C\* (the quorum split, A.3).** Should approval and the cutoff be phases of one `effects` step (A), or a distinct `plan_approval` step that proposes for `effects` plus an E3 `wait_cutoff` step (C\*)?
+   - **A:** smallest edit to shipped seal code, and W07 is cheapest. The step rows differ from the spec §6.3 diagram, though the behaviour and order do not.
+   - **C\*:** the step rows match the spec diagram, and steps can be placed between approval and dispatch. It refactors more of the shipped approval half.
+   - **Recommend A.** It is the smaller blast radius on the four-eyes path. If Todd chooses A, amend the spec's diagram in R1a's docs commit.
+2. **Device lock / log-off is human work in R1**, because no Breeze tool exists for it. *Default: accept.* A probed device tool is filed as a follow-up.
+3. **Readiness lost after approval is vetoed and handed off**, instead of re-planning at a new revision, which is spec §6.4's "bumps revision". *Default: accept.* Re-plan-on-drift is a follow-up. It must re-fetch the task revision after `bumpPlanRevision`, because that function's CAS invalidates the coordinator's in-memory `task.revision`.
+
+### A.8 Supersedes
+
+- **D-R1-3 and D-R1-10:** rewritten in place.
+- **D-R1-2 and D-R1-4:** clarified in place (see A.4).
+- **Global Constraints:** the "Tenancy" and "Assume E1–E4 landed" bullets.
+- **Consumed surface:** the E4 and M1 blocks.
+- **PR split:** the table.
+- **File Structure:** the `taskCoordinator.ts` line, plus the R1a-0 files.
+- **Task 2:** Step 5 (a)/(b) and its four test cases.
+- **Task 3:** the step graph, the catalog and `targetId`.
+- **Task 9:** the gate list and the entry step.
+- **Task 11:** the whole advancer table and the coordinator-edit scope.
+- **Task 14:** the spine narrative and adversarial case 1.
+- **Task 25:** case 7's `bumpPlanRevision` call.
+- **Self-review:** "Identifier consistency".
+
+**Removed identifiers:** `plan_approval` (as a step), `wait_cutoff`, `device_actions`, `manage_device_session`, `effectCursor`, `discoveryStepId`, `advanceEffects`, `advancePlanApprovalStep`, `advanceEffectStep`, `splitSecretBearingEffects`, `PlanSplit`, `listStaleManifestConnectionsForPartner`.
+
+**Follow-ups (not in R1):**
+- a probed Breeze device lock / log-off tool;
+- re-plan-on-readiness-drift;
+- per-effect-step snapshots for W07's second revision (W07's amendment designs this; R1a-0 ships one snapshot step per recipe);
+- `m365.group.owners.list` (unchanged from D-R1-7).
+
+---
+
+## PR split — this plan is FOUR PRs, not one (amended 2026-10-18)
+
+A single PR here would be ~60 files across api + shared + web + e2e + docs. The parts are cut where the seams are real: E4 generalization, then the server contract, then the UI over that contract, then the gate over the shipped behaviour. Each part is independently green, opens its own PR, and STOPS. File ownership for R1a-0 and R1a is in Amendment A.5.
 
 | Part | Tasks | Content | Ends at |
 |---|---|---|---|
-| **R1a** | 1–15 | `StepDefinition.next`; the recipe; the selective Google mobile wipe tool; discovery; reason-step prompts + validation; readiness + degradation; `admitTask`; `GET /workflows`; `POST /task-drafts`; the coordinator advancers; the completion record; the flag; integration suites; contract suites | PR "R1a — identity_offboarding recipe, discovery, readiness and admission" |
+| **R1a-0** | 1, 1a–1g | Task 1 (`StepDefinition.next`, `availability`, `operationKey` `toolName`; cherry-picked from the evidence branch); characterization pins; per-recipe checkpoint arms; `planningSnapshotStepKey` / `unobservableEffects` / `entryStepKey`; facts-aware `buildRecipePlan`; the not-before gate and unobservable effects in the walk; `requesterAccessLostForTargets`. **High blast radius; Opus review.** | PR "R1a-0 — E4 generalization for contact-targeted, facts-dependent recipes" |
+| **R1a** | 2–15 | the recipe; the selective Google mobile wipe tool; discovery; reason-step prompts + validation; readiness + degradation; `admitTask`; `GET /workflows`; `POST /task-drafts`; the coordinator advancers; the completion record; the flag; integration suites; contract suites | PR "R1a — identity_offboarding recipe, discovery, readiness and admission" |
 | **R1b** | 16–22 | Library tab + `/operator` index page; start form from a ticket and from a contact; task page step list / plan / timeline; i18n ×8; MOUNT tasks with page-level tests; `data-testid`s + one e2e spec | PR "R1b — Operator Recipe Library web surface" |
 | **R1c** | 23–28 | Per-effect contract tests against recorded provider fixtures; the ordering gate test over dispatch prefixes; plan-membership tests; the eval harness + ≥ 20 intake/discovery cases; the lab-run checklist doc; the gate summary | PR "R1c — identity_offboarding deterministic release gate" (flag stays OFF) |
 
-R1b's branch is cut from R1a's; R1c's from R1b's. **Stacked PRs run NO CI** (`ci.yml` triggers on `pull_request: branches: [main]`), so `gh pr checks` reads green while nothing ran — dispatch each branch explicitly with `gh workflow run CI --ref <branch>` before asking for a merge, and re-target each PR to `main` once its parent lands.
+R1a-0 targets `main`, so it gets CI automatically. R1a is cut from `main` **after** R1a-0 merges. If the two must overlap, R1a stacks on R1a-0, and that case also needs the dispatch below. R1b's branch is cut from R1a's, and R1c's from R1b's. **Stacked PRs run NO CI** (`ci.yml` triggers on `pull_request: branches: [main]`), so `gh pr checks` reads green while nothing ran — dispatch each branch explicitly with `gh workflow run CI --ref <branch>` before asking for a merge, and re-target each PR to `main` once its parent lands.
 
 ---
 
 ## Global Constraints
 
 - **Rigor: high.** This wave destroys a person's access to their employer's systems. Red test first for every task: write the test, run it, *see it fail for the stated reason*, then implement, then run it green. A test that passes on its first run is a broken test — fix the test before writing code. One independent code-review round per part before its PR.
-- **Assume E1 (W01), E2 (W02), E3 (W03), E4 (W04) and M1 (W05) have all landed.** Consume their identifiers; never rename, redefine or locally re-implement one. If any is missing when a task runs, the wave it belongs to has not merged — **STOP and report**. The complete consumed surface is listed under *Consumed surface* below.
+- **Assume E1 (W01), E2 (W02), E3 (W03), E4 (W04) and M1 (W05) have all landed.** Consume their identifiers; never rename, redefine or locally re-implement one. If any is missing when a task runs, the wave it belongs to has not merged — **STOP and report**. The complete consumed surface is listed under *Consumed surface* below. **Amended 2026-10-18:** the E4 that shipped differs from the W04 plan. R1a-0 (Tasks 1, 1a–1g) generalizes it *in place* through recipe data. That work edits E4 and is the one sanctioned exception to "never redefine". R1a consumes R1a-0's surface and re-implements none of it.
+- **R1a-0 is high blast radius.** It edits the shipped plan seal, the effect walk, the checkpoint parser and the coordinator's requester gate. That means: red first, run the Amendment A.6 `service_recovery` regression set unmodified after every commit that touches a covered file, and run one **Opus** review round, tenancy-aware (Task 1g). `service_recovery`'s runtime path, stored checkpoint bytes and gate call stay byte-identical, and Task 1a pins all three.
 - **The recipe is PURE.** `apps/api/src/services/aiOperator/recipes/identityOffboarding.ts` may import only `zod`, `@breeze/shared`, `../operationKey`, and other files inside `recipes/`. E1's `recipes/purity.test.ts` scans the directory mechanically and will fail on anything else. No `../../db`, no `../../config/env`, no service module, no `node:fs`, no network. Discovery, readiness, admission and dispatch all live OUTSIDE `recipes/`.
 - **Step EXECUTION stays coordinator code** (spec §6.1). `recipes/identityOffboarding.ts` declares *what* the steps are, which the model may propose, and (new, this wave) which step deterministically follows which. `taskCoordinator.ts`'s `RECIPE_ADVANCERS['identity_offboarding']` declares *how* each one runs.
 - **`StepDefinition.next` is OPTIONAL and ADDITIVE.** E1's `StepDefinition` gains one field. `permittedNextSteps` keeps its exact meaning — the **model-proposal** set — and is untouched. `service_recovery` declares no `next` and its dispatch, its `serviceRecovery.test.ts` and `aiOperatorServiceRecoveryE2E.integration.test.ts` must stay bit-for-bit green; Task 1 Step 5 proves that by running them unmodified.
 - **The mandatory `confirm_identity` human-work step is NOT skippable by policy** (spec §11, risk row 1). There is no input, flag, agent-policy value, env var or admission argument that omits it. Task 3's `identityOffboarding.test.ts` and Task 14's integration suite each assert it, from opposite directions (the recipe's own step graph, and a real admitted task that cannot reach `discover` without it).
-- **`google_offboard_user` is never called by this recipe**, and neither is `google_wipe_mobile_device`. Task 3's test greps the recipe's compiled plan output for both names and fails on either. `google_wipe_mobile_device` is a **full factory reset** (`admin_remote_wipe`, `aiToolsGoogle.ts:1149` — *"This is NOT for offboarding"*); the selective corporate-account wipe (`admin_account_wipe`) exists today only inside the composite, and Task 4 lifts it into its own granular tool.
-- **Flag:** `AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED` (default **false**), read at call time by `aiOperatorIdentityOffboardingEnabled()` in `apps/api/src/config/env.ts`, checked in `admitTask` and in the library route's readiness computation. It nests under the existing `AI_OPERATOR_TASKS_ENABLED` kill switch exactly as `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` does (`env.ts:219-223`). **This PR does not enable it anywhere** — not in `.env.example`'s live assignments, not in either compose default. Env parity: `.env.example` ↔ `docker-compose.yml` and `deploy/.env.example` ↔ `deploy/docker-compose.prod.yml` are the two pairs `apps/api/src/config/envComposeParity.test.ts` guards; add the var to **both** pairs (Task 13).
-- **Tenancy.** This wave creates **no new table and no new column on any existing table** except two additive optional fields on `packages/shared`'s `taskCheckpointSchema` (jsonb inside an already-registered column — no DDL) — so `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_TENANT_EXPORT_POLICY`, `orgMergeRegistry.ts`, `TICKET_ORG_DENORMALIZED_TABLES`, `CUSTOM_ORG_REWRITE_TABLES` and the device-axis lists gain **no entry**. Task 15 re-derives that rather than assuming it. **There is no migration in this wave.** If a step appears to need one, STOP and report instead of writing it.
-- **Every DB read/write in this wave is inside an existing context helper.** Admission continues to run under `runOutsideDbContext(() => withSystemDbAccessContext(...))` exactly as `admitServiceRecoveryTask` does today (`taskService.ts:142-268`, with the comment at `:144-149` explaining why). Discovery runs under the coordinator's own system context. The two routes run on the request path under `withDbAccessContext`. The bare pool is never used.
+- **`google_offboard_user` is never called by this recipe**, and neither is `google_wipe_mobile_device`. Task 3's test greps the recipe's compiled plan output for both names and fails on either. `google_wipe_mobile_device` is a **full factory reset** (`admin_remote_wipe`, `aiToolsGoogle.ts:1249`; description at `aiAgentSdkTools.ts:669` — *"This is NOT for offboarding"*); the selective corporate-account wipe (`admin_account_wipe`) exists today only inside the composite, and Task 4 lifts it into its own granular tool.
+- **Flag:** `AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED` (default **false**), read at call time by `aiOperatorIdentityOffboardingEnabled()` in `apps/api/src/config/env.ts`, checked in `admitTask` and in the library route's readiness computation. It nests under the existing `AI_OPERATOR_TASKS_ENABLED` kill switch exactly as `AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED` does (`env.ts:302-307`). **This PR does not enable it anywhere** — not in `.env.example`'s live assignments, not in either compose default. Env parity: `.env.example` ↔ `docker-compose.yml` and `deploy/.env.example` ↔ `deploy/docker-compose.prod.yml` are the two pairs `apps/api/src/config/envComposeParity.test.ts` guards; add the var to **both** pairs (Task 13).
+- **Tenancy.** This wave creates **no new table and no new column on any existing table**. The only schema change is to `packages/shared`'s `taskCheckpointSchema`, which is jsonb inside an already-registered column, so there is no DDL. Its parts are: per-recipe arms; the optional base fields `planningSnapshot` and `dispatchNotBefore`, which have no default; and the identity arm's `manualWorkCursor`. See Amendment A.4. — so `CORE_ORG_CASCADE_DELETE_ORDER`, `CORE_TENANT_EXPORT_POLICY`, `orgMergeRegistry.ts`, `TICKET_ORG_DENORMALIZED_TABLES`, `CUSTOM_ORG_REWRITE_TABLES` and the device-axis lists gain **no entry**. Task 15 re-derives that rather than assuming it. **There is no migration in this wave.** If a step appears to need one, STOP and report instead of writing it.
+- **Every DB read/write in this wave is inside an existing context helper.** Admission continues to run under `runOutsideDbContext(() => withSystemDbAccessContext(...))` exactly as `admitServiceRecoveryTask` does today (`taskService.ts:188-~420`, with the comment at `:190-200` explaining why). Discovery runs under the coordinator's own system context. The two routes run on the request path under `withDbAccessContext`. The bare pool is never used.
 - **Mind the caught-23505/23503 trap.** A unique or FK violation raised inside a request transaction ABORTS it, so a caught error surfaces as a 500 (memory: `pg_unique_violation_inside_request_tx_surfaces_as_500`). Every refusal in this wave is a pre-check against rows with the constraint as backstop, never as control flow — including the one-live-task-per-`(contact, recipe)` rule, which is why it takes an advisory lock (Task 9, Decision 6) rather than racing an insert.
 - **Tests:** file beside source. One file: `cd apps/api && npx vitest run src/path/file.test.ts` — **never** `pnpm --filter … test -- --run <path>` (pnpm forwards the literal `--`, vitest swallows `--run` as a positional and runs the whole 1,470-file suite in watch mode), and never a trailing-slash directory filter (it silently skips dotted siblings). Web: `cd apps/web && npx vitest run src/path/file.test.tsx`. Shared: `cd packages/shared && npx vitest run src/path/file.test.ts`. Integration: `cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/<file>` with a live stack (`pnpm test-stack up` at the repo root writes `.env.test`; `pnpm test-stack down` when finished — nothing does this for you). **Integration tests MUST live under `apps/api/src/__tests__/integration/`** — a wrongly placed one runs ZERO tests and reads green. Typecheck: `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json`, plus `cd packages/shared && npx tsc --noEmit -p tsconfig.json` and `cd apps/web && npx tsc --noEmit -p tsconfig.json` after touching those. **A 0-test run is a stall, not a pass** — always read the reported file/test counts.
 - **Web:** every mutation goes through `runAction` (`apps/web/src/lib/runAction.ts`); selected tab / step / recipe state lives in `window.location.hash`, never a query param; every new i18n key needs a **real translation** in all eight locale directories under `apps/web/src/locales/` (`de-DE`, `en`, `es-419`, `fr-CA`, `fr-FR`, `it-IT`, `pt-BR`, `tr-TR`) — an English string copied into `tr-TR` fails `apps/web/src/lib/i18n/localeParity.test.ts`'s intent and is rejected in review. Every new surface gets an explicit **MOUNT** task with a page-level test: a previous wave shipped 13 green components that were never wired into a page.
@@ -69,9 +354,10 @@ In `taskCoordinator.ts`: `advanceHumanWork(args)`, `advanceWait(args)`, the `KIN
 In `packages/shared`: `taskCheckpointSchema` gained `waitUntil?: string` (ISO) and `resumeStepKey?: string`; `CHECKLIST_ITEM_SOURCES` gained `'operator_task'`; `AI_OPERATOR_TASK_EVENT_TYPES` gained `'human_work_unticked'`. `ai_operator_task_steps` gained `remind_after_at` / `reminded_at`.
 
 **E4 — plan approval and effect dispatch**
-`planApproval.ts`: `PlanDbHandle`, `PlanSplit`, `splitSecretBearingEffects(effects)`, `toDigestProjection`, `effectArgumentDigest(effect)`, `proposePlanApproval(ProposePlanApprovalInput)` → `ProposePlanApprovalResult`, `markPlanApproved(args)`, `bumpPlanRevision(dbh, args)`, `checkPlanEffectMembership(dbh, args)` → `PlanMembershipResult`, `advancePlanApprovalStep(task, leaseEpoch, checkpoint, stepKey)`.
+`planApproval.ts`: `PlanDbHandle`, `toDigestProjection` (the six sealed fields), `effectArgumentDigest(effect)`, `planEffectOperationKey(args)`, `proposePlanApproval(ProposePlanApprovalInput)` → `ProposePlanApprovalResult` (it refuses a secret-bearing tool inline with `reason: 'secret_bearing_effect'`; there is no `splitSecretBearingEffects` / `PlanSplit`), `markPlanApproved({ orgId, intentId })`, `bumpPlanRevision({ orgId, taskId, fromRevision, leaseEpoch, detail })`, `checkPlanEffectMembership(dbh, PlanMembershipInput)` / `checkPlanEffectMembershipSystem(input)` → `PlanMembershipResult` (it binds `taskStepKey` to the approval's `stepKey`), `readPlanApprovalAtRevision`, `closePendingPlan`. **There is no separate plan-approval step.** Approval happens inside the `effect` step (Amendment A.1).
 `effectProbes/index.ts`: `EffectProbeState` (`'satisfied'|'unsatisfied'|'unknown'`), `EffectProbeResult { state; observedAt: Date; detail }`, `EffectProbeContext { orgId; taskId; planRevision; effectRequestedAt; phase: 'pre'|'post' }`, `EffectProbe`, `registerEffectProbe(toolName, probe)`, `getEffectProbe`, `listProbedTools`, `probeEffect(effect, ctx)`. Eight Google probes registered in `effectProbes/google.ts`; the M365 adapter in `effectProbes/m365.ts` maps tool name → action id via `M365_HEADLESS_ACTIONS` and wraps `probeM365Effect`.
-`effectDispatch.ts`: `EffectDispatchOutcome`, `dispatchPlannedEffect(args)`, `EffectVerificationOutcome`, `verifyDispatchedEffect(args)`, `advanceEffectStep(task, leaseEpoch, checkpoint, stepKey)`.
+`effectDispatch.ts`: `EffectDispatchOutcome`, `dispatchPlannedEffect(args)`, `EffectVerificationOutcome`, `verifyDispatchedEffect(args)`, `classifyEffectIdempotency(toolName)`, `planEffectStep({ task, recipe, checkpoint, now })` (propose, approval, re-seal, ordered walk) and `planProbeStep(...)`. Both return an `EffectStepDirective`. In `taskCoordinator.ts`, `advanceEffect` and `advanceProbe` are `KIND_ADVANCERS.effect` / `.probe`.
+**R1a-0 adds (Tasks 1a–1f):** `planningSnapshot.ts` (`sealPlanningSnapshot`, `loadPlanningFacts`, `PLANNING_SNAPSHOT_VERSION`); `RecipeDefinition.planningSnapshotStepKey` / `unobservableEffects` / `entryStepKey`; `taskCheckpointBaseSchema`, `serviceRecoveryCheckpointSchema`, `planningSnapshotRefSchema`, `isServiceRecoveryCheckpoint`; checkpoint `planningSnapshot` / `dispatchNotBefore`; `requesterAccessLostForTargets(task)`.
 `packages/shared`: `AI_OPERATOR_PLAN_APPROVAL_STATES`, `AI_OPERATOR_EFFECT_IDEMPOTENCY_CLASSES`, `AiOperatorEffectIdempotencyClass`, `AiOperatorPlanApprovalDto`, `AiOperatorPlanEffectDto`; `computeEffectSetDigest`, `canonicalizeEffectSet`, `PlannedEffectForDigest`.
 Tables `ai_operator_plan_approvals`, `ai_operator_plan_approval_effects`. Tool `operator_plan`. Error codes `plan_approval_revoked`, `tool_not_in_agent_allowlist`.
 
@@ -81,8 +367,8 @@ Action ids ↔ agent tool names: `m365.user.revoke_sessions`↔`m365_revoke_sess
 `m365ControlPlane/effectProbes.ts`: `probeM365Effect(actionId, args, ctx)`.
 `m365ControlPlane/readActionService.ts`: `executeM365ReadActionByOrg(orgId, action, opts?)` → `M365ReadActionServiceResult`.
 `m365ControlPlane/writeActionService.ts`: `M365WriteActionRefusalCode` incl. `'consent_upgrade_required'`, `executeM365WriteActionForAuth`.
-`m365ControlPlane/connectionService.ts`: `m365RoleReadiness(connection, profile)` → `Record<string, boolean>`, `listStaleManifestConnectionsForPartner(profile)`.
-Profile `customer-graph-actions` is at **version 2** (`packages/shared/src/m365/profiles.ts`).
+`m365ControlPlane/connectionService.ts`: `m365RoleReadiness(connection, profile)` → `Record<string, boolean>`, `ConnectionService.listStaleManifestConnections()` (takes no arguments).
+Profile `customer-graph-actions` is at **version 3** (`packages/shared/src/m365/profiles.ts:201`). Read it as `M365_PERMISSION_PROFILES['customer-graph-actions'].version`. Never write a version literal in code or tests.
 
 ---
 
@@ -94,9 +380,9 @@ Each is a place where the wave brief, the spec, or the obvious design does not s
 
 The wave brief says to use `google_wipe_mobile_device` with "selective account wipe semantics". The shipped tool does the opposite. Verified first-hand:
 
-- `apps/api/src/services/aiAgentSdkTools.ts:1149` — the tool's own description: *"STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. **This is NOT for offboarding** — offboard uses a selective account wipe."*
+- `apps/api/src/services/aiAgentSdkTools.ts:669` — the tool's own description: *"STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. **This is NOT for offboarding** — offboard uses a selective account wipe."*
 - `apps/api/src/services/aiToolsGoogle.ts` — the handler calls `wipeMobileDevices(dir, resolved.deviceIds, 'admin_remote_wipe')`.
-- `aiToolsGoogle.ts:147-155` — `wipeMobileDevices(dir, deviceIds, action)` already takes `'admin_account_wipe' | 'admin_remote_wipe'` and documents the former as *"remove ONLY the managed corporate account + its data (mail/Drive) from the device. Safe for BYOD; the personal device is intact."* Today that branch is reachable **only** through `google_offboard_user`'s `accountWipeMobile` option — the composite this recipe is forbidden to call.
+- `aiToolsGoogle.ts:178-191` — `wipeMobileDevices(dir, deviceIds, action)` already takes `'admin_account_wipe' | 'admin_remote_wipe'` and documents the former as *"remove ONLY the managed corporate account + its data (mail/Drive) from the device. Safe for BYOD; the personal device is intact."* Today that branch is reachable **only** through `google_offboard_user`'s `accountWipeMobile` option — the composite this recipe is forbidden to call.
 
 So the selective effect exists, is already exercised, and has no granular tool. Task 4 adds `google_account_wipe_mobile_device` (`admin_account_wipe`) through the full Google-tool registry sweep and registers it with the same probe body E4 wrote for `google_wipe_mobile_device` (the observable end state is identical — the device list reports `status ∈ ('WIPING','WIPED')`). The recipe plans that tool and nothing else. Wiping a leaver's personal phone because a plan named the wrong tool is precisely the irreversible harm spec §11 exists to prevent, and no amount of approval-card wording makes a factory reset the right default.
 
@@ -104,20 +390,28 @@ So the selective effect exists, is already exercised, and has no granular tool. 
 
 The orchestrator's decision, implemented literally. `next?: StepKey | ((ctx) => StepKey)` where `ctx = { input: unknown; facts: Readonly<Record<string, unknown>>; readiness: Readonly<Record<string, boolean>> }`, pure, and resolved by the coordinator when a **non-`reason`** step settles. It is written into E3's checkpoint `resumeStepKey` by the transition, which is exactly the field E3's decision 11 created for this ("a `human_work`/`wait` step's successor is recipe-owned knowledge the generic advancer cannot derive: `permittedNextSteps` describes what the MODEL may propose, which is exactly the wrong question here"). `permittedNextSteps` keeps its meaning and its sparseness; `service_recovery` declares no `next` and is unaffected.
 
-Why a function and not just a key: three of this recipe's transitions genuinely branch on facts the recipe cannot know at authoring time — `wait_cutoff` is skipped when no `cutoffAt` was given, `device_actions` is skipped when the technician selected no devices, and `manual_work` is skipped when readiness degraded nothing and discovery flagged nothing. Expressing those as coordinator `if`s would put the recipe's shape in two files.
+**Amended 2026-10-18 (A.4).** `next` is resolved when the task moves **into** a step S, and the result is written as `resumeStepKey`, which is S's successor. E3's and E4's generic advancers read that value when S finishes. So the R1 advancer that enters a generic step writes it:
+- `intake` → `confirm_identity` writes `'discover'`;
+- `review` → `effects` writes `'manual_work'`, plus `dispatchNotBefore` from `input.cutoffAt`.
+
+Why a function and not just a key: the spine still has data-dependent transitions. After the amendment, `wait_cutoff` and `device_actions` are no longer steps (the cutoff is the walk's not-before gate, and device work is a manual item). Those transitions stay pure, so they are tested in the recipe, never as coordinator `if`s.
 
 ### D-R1-3 — `createOperatorTaskSchema` and `taskCheckpointSchema` are still service-recovery-shaped; R1 generalizes both, and E1's 400 is preserved
 
 Read at planning time, `packages/shared/src/validators/aiOperator.ts`:
 
-- `:234-264` — `createOperatorTaskSchema` has `deviceId: z.string().guid()` **required** and `inputs: z.object({ serviceName: z.string().min(1).max(255) }).strict()`. E1's decision 6 relaxed only `recipeKey` (to `z.string().min(1).max(128)`, so the route's 400 can name the supported keys).
-- `:185-205` — `taskCheckpointSchema.recipeInput` is literally `serviceRecoveryInputSchema`.
+- `:250-288` — `createOperatorTaskSchema` has `deviceId: z.string().guid()` **required** and `inputs: z.object({ serviceName: z.string().min(1).max(255) }).strict()`. E1's decision 6 relaxed only `recipeKey` (to `z.string().min(1).max(128)`, so the route's 400 can name the supported keys).
+- `:185-221` — `taskCheckpointSchema.recipeInput` is literally `serviceRecoveryInputSchema`.
 
 Neither admits a second recipe. The generalization deliberately does **not** convert the body into a `z.discriminatedUnion('recipeKey', …)`: that would make an unknown key a generic zod 400 and undo E1's decision 6, whose whole point is a refusal that lists `RECIPE_KEYS`. Instead (Task 8):
 
 - `deviceId` becomes `.optional()`; `inputs` becomes `z.record(z.string(), z.unknown())`; the outer object keeps `.strict()` (spec §12: "Requests cannot supply a principal, effective policy, approval result, or trusted continuation token" — `.strict()` is what turns each into a 400).
 - Strictness moves to the recipe: the route resolves the recipe with `resolveAdmissionRecipe` first (400 / 422 unchanged), then parses `{ ...body.inputs, ...(body.deviceId ? { deviceId: body.deviceId } : {}) }` with `recipe.inputSchema`, which is itself `.strict()`. `service_recovery`'s existing wire shape (`{ deviceId, inputs: { serviceName } }`, sent by `apps/web/src/components/aiOperator/DelegateToOperatorButton.tsx`) therefore composes to exactly the `{ deviceId, serviceName }` object `parseServiceRecoveryInput` already receives. **The shipped web client is not changed and its test is not touched.**
-- `taskCheckpointSchema.recipeInput` becomes `z.union([serviceRecoveryInputSchema, identityOffboardingInputSchema])`, service-recovery arm first. Both are `.strict()`, so neither can absorb the other's object. E3's `taskCheckpointSchema.parse({ recipeInput: { deviceId, serviceName } })` at its Task 1 stays green.
+- **Amended 2026-10-18 (A.4, decision 4).** `taskCheckpointSchema` becomes a union of per-recipe **checkpoint** arms. It does not union `recipeInput` alone, because `criterion` is required and `service_running`-shaped (A.1 item 4).
+  - R1a-0 Task 1b splits it into `taskCheckpointBaseSchema` and `serviceRecoveryCheckpointSchema` (field-for-field today's schema, `criterion` required).
+  - R1a Task 2 appends `identityOffboardingCheckpointSchema` (base + `recipeInput: identityOffboardingInputSchema` + `manualWorkCursor`, with no `criterion`). The service-recovery arm stays first.
+  - Every arm is `.strict()`, and `version: z.literal(1)` stays required in every arm.
+  - Stored service-recovery rows parse to the first arm unchanged, and their re-serialization is byte-identical (Task 1a pin `1a-3`).
 
 ### D-R1-4 — the checkpoint gains three bounded fields; discovery facts live on the `discover` STEP row, not on the task
 
@@ -130,6 +424,13 @@ manualWorkCursor:z.number().int().min(0).max(64).default(0),   // next manual it
 ```
 
 All three are `.default()`ed, so every shipped checkpoint row keeps parsing.
+
+**Amended 2026-10-18 (A.4).** The block above is superseded:
+- `discoveryStepId` → `planningSnapshot: { stepId, digest }`. It is optional, has no default, and lives on the base schema (R1a-0 Task 1b).
+- `effectCursor` → **dropped**. E4's walk derives progress from `ai_operator_operations` rows and stops at the first effect that is not done.
+- `manualWorkCursor` stays, on the identity arm only.
+
+The facts still live on the `discover` step row, as the envelope `{ version: 1, capturedAt, facts }` written by `sealPlanningSnapshot`. That envelope *also* freezes the degraded-tool set (`facts.degradedTools`) and the contact's target row id (`facts.targets.contactTargetId`). `buildPlan` is a pure function of `(input, facts)`, and E4 re-verifies the digest on every wake.
 
 ### D-R1-5 — manual items are all created UP FRONT; the step rows bind to them one at a time
 
@@ -167,13 +468,28 @@ Consequences, all deliberate:
 
 ### D-R1-9 — the reason steps' prompts are TypeScript rendering, not prompt files, because that is what the Operator has
 
-There is no `runService.ts` and there are no `.md` prompt files anywhere in `services/aiOperator/`. `SERVICE_RECOVERY_PROMPT_VERSION = 'service_recovery/v1'` (`recipes/serviceRecovery.ts:47`) is a constant whose docstring says to bump it whenever `taskContext.ts`'s **rendering** changes, and it is read once, at `taskCoordinator.ts:360`, as `promptVersion` on the admitted reasoning run. R1 follows that shape exactly: `IDENTITY_OFFBOARDING_PROMPT_VERSION = 'identity_offboarding/v1'` on the recipe, and the rendering in a new sibling `services/aiOperator/taskContextIdentity.ts` (outside `recipes/` — it reads discovery facts, so it is not pure).
+There is no `runService.ts` and there are no `.md` prompt files anywhere in `services/aiOperator/`. `SERVICE_RECOVERY_PROMPT_VERSION = 'service_recovery/v1'` (`recipes/serviceRecovery.ts:47`) is a constant whose docstring says to bump it whenever `taskContext.ts`'s **rendering** changes, and it is read once, at `taskCoordinator.ts:570`, as `promptVersion` on the admitted reasoning run. R1 follows that shape exactly: `IDENTITY_OFFBOARDING_PROMPT_VERSION = 'identity_offboarding/v1'` on the recipe, and the rendering in a new sibling `services/aiOperator/taskContextIdentity.ts` (outside `recipes/` — it reads discovery facts, so it is not pure).
 
 The model's output rides in the existing `submit_task_step` envelope (`services/aiAgents/tools/submitTaskStep.ts`, `SUBMIT_TASK_STEP_SHAPE`, shared `submitTaskStepSchema`, `validateSubmitTaskStep`; enabled per-run by `outcomeToolsForRun` when `run.taskId` is set). A reason step's structured output is therefore `nextStep.inputs`, validated by the **next** step's `inputSchema` through E1's `validateRecipeNextStep` — which is the seam that already exists and needs no new tool.
 
-### D-R1-10 — `plan_approval` is a `probe`-kind step named with the `plan_` prefix E4 routes on
+### D-R1-10 — there is no `plan_approval` step: approval, the cutoff and the walk are phases of the one `effects` step (amended 2026-10-18)
 
-E4 Task 12's coordinator arm is `if (kind === 'probe' && stepKey.startsWith('plan_')) return advancePlanApprovalStep(...)`, with a written instruction to check what E1 actually named the step before writing it. This recipe's step key is **`plan_approval`**, kind **`probe`** — it matches that arm as shipped, so E4's coordinator code needs no edit. `STEP_KINDS` is **not** widened (it is pinned by E1's `types.test.ts` and E2's `step_kind` CHECK).
+*Superseded text (kept for history):* "`plan_approval` is a `probe`-kind step named with the `plan_` prefix E4 routes on". No such arm shipped (Amendment A.1 item 1).
+
+**As amended:**
+- `effects` is the recipe's only `effect`-kind step, so it is the only step that proposes and dispatches.
+- It routes to E4's `planEffectStep` through R1's veto wrapper `advanceIdentityEffects` (Task 11). Inside it, each wake runs these phases in order:
+  1. propose the plan;
+  2. wait for the four-eyes approval;
+  3. re-seal;
+  4. not-before gate (`dispatchNotBefore` = `input.cutoffAt`);
+  5. walk the effects in order.
+- `review` (reason) feeds it. The model proposes `effects` with `identityReviewOutputSchema` inputs, so `effects` carries that `inputSchema`.
+- `STEP_KINDS` is **not** widened.
+
+**Why this shape.** E4 binds an approval to the step that proposed it (`planApproval.ts:332`), and there is one approval per revision. So exactly one step per revision can own both proposing and dispatching.
+
+**Open for Todd (A.7 item 1).** The advisor's alternative is C\*: a distinct approval step proposing *for* `effects`, plus an E3 `wait_cutoff`. If Todd picks it, this decision, Task 1e and Tasks 3 and 11 change. Nothing else does.
 
 ### D-R1-12 — `setup_required` means "something this tenant can fix"; a product gap is `always_manual` and does not block (orchestrator decision)
 
@@ -181,7 +497,7 @@ An earlier draft of this plan had a fully-consented org reading `setup_required`
 
 `CapabilityRequirement` therefore gains an optional `availability: 'tenant_fixable' | 'always_manual'` (Task 1 Step 3b), and `computeRecipeReadiness` partitions unsatisfied capabilities by it:
 
-- **`tenant_fixable`** → `RecipeReadiness.missing`, and its presence is what makes the state `setup_required`. There is an action: connect a provider, re-consent to profile v2, add the identity tools to the helpdesk agent.
+- **`tenant_fixable`** → `RecipeReadiness.missing`, and its presence is what makes the state `setup_required`. There is an action: connect a provider, re-consent to the current `customer-graph-actions` profile version (3 at the time of writing; always read from `M365_PERMISSION_PROFILES`), add the identity tools to the helpdesk agent.
 - **`always_manual`** → `RecipeReadiness.alwaysManualCapabilities` + `manualStepCount`, and it **never** changes the state.
 
 So a fully-consented org reads `ready` with `manualStepCount: 3`, and the card reads *"Ready · 3 steps will be done by hand"*. **Degradation is unchanged** — a tool behind either kind of unsatisfied capability is still in `degradedEffects` and still becomes a human-work item with generated instructions. The distinction is only about what the badge claims, which is why `degradedEffects` deliberately spans both partitions.
@@ -192,7 +508,7 @@ Absent means `tenant_fixable`, and that direction is the safe one: an unclassifi
 
 ### D-R1-11 — `google_signout` is declared `unobservable` with a named subsuming criterion
 
-Spec §6.6 and E4's D-E4-7 agree that `google_signout` can never be probed (the Directory API exposes no session-validity field; `lastLoginTime` is not one). The recipe declares it in `IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS` with the criterion `google_suspend_user` — a verified suspend makes live Google sessions moot, which is exactly the "names the outcome criterion that subsumes it" the spec asks for. Therefore: `google_signout`'s post-probe result stays `unknown`; the task can still reach `verified_resolved` **provided** the subsuming effect's post-probe is `satisfied`; and the completion record says "dispatched, not independently verifiable". If suspend is unsatisfied or absent from the plan (the `keepMailbox` + "suspend later" shape), the outcome is `partial` with `google_signout` listed. `m365.user.reset_password` is not in this recipe's catalog at all (it is R2's).
+Spec §6.6 and E4's D-E4-7 agree that `google_signout` can never be probed (the Directory API exposes no session-validity field; `lastLoginTime` is not one). The recipe declares it in `IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS` with the criterion `google_suspend_user` — a verified suspend makes live Google sessions moot, which is exactly the "names the outcome criterion that subsumes it" the spec asks for. Therefore: `google_signout`'s post-probe result stays `unknown`; the task can still reach `verified_resolved` **provided** the subsuming effect's post-probe is `satisfied`; and the completion record says "dispatched, not independently verifiable". If suspend is unsatisfied or absent from the plan (the `keepMailbox` + "suspend later" shape), the outcome is `partial` with `google_signout` listed. **Amended 2026-10-18.** The as-built walk would hand off at the sign-out before the suspend ever ran (A.1 item 6). The recipe therefore declares the map as `RecipeDefinition.unobservableEffects`, the data field R1a-0 Task 1e reads, and the walk continues past a declared `unknown`. The subsumer must act on the same `accountExternalId`. `m365.user.reset_password` is not in this recipe's catalog at all (it is R2's).
 
 ---
 
@@ -201,12 +517,20 @@ Spec §6.6 and E4's D-E4-7 agree that `google_signout` can never be probed (the 
 **packages/shared**
 - Create `src/types/aiOperatorRecipes.ts` — readiness DTOs and value lists.
 - Create `src/validators/aiOperatorIdentity.ts` — `identityOffboardingInputSchema` and the reason-step output schemas.
-- Modify `src/validators/aiOperator.ts` — `taskCheckpointSchema` (+3 fields, `recipeInput` union), `createOperatorTaskSchema` (deviceId optional, inputs generic), new `operatorTaskDraftSchema`.
+- Modify `src/validators/aiOperator.ts`:
+  - **R1a-0 Task 1b** — split the checkpoint into base + service-recovery arm, and add `planningSnapshot` / `dispatchNotBefore`.
+  - **R1a Task 2** — append the identity arm (`manualWorkCursor`); make `createOperatorTaskSchema`'s `deviceId` optional and its `inputs` generic; add the new `operatorTaskDraftSchema`.
 - Modify `src/index.ts` / the relevant barrel — export both new modules.
 
-**apps/api — recipe and pure code**
-- Modify `src/services/aiOperator/recipes/types.ts` — `StepDefinition.next`, `NextStepResolver`, `NextStepContext`.
-- Create `src/services/aiOperator/recipes/resolveNextStep.ts` (+ `.test.ts`) — the one pure resolver.
+**apps/api — R1a-0 (amended 2026-10-18; ownership table in Amendment A.5)**
+- Modify `src/services/aiOperator/recipes/types.ts` — Task 1's `StepDefinition.next` / `NextStepResolver` / `NextStepContext` / `availability` / `toolName`, plus Task 1c's `planningSnapshotStepKey`, `unobservableEffects`, `entryStepKey` and the `targetId` comment.
+- Create `src/services/aiOperator/e4Characterization.test.ts` (Task 1a) and `src/services/aiOperator/planningSnapshot.ts` (+ `.test.ts`) (Task 1d).
+- Modify `src/services/aiOperator/effectDispatch.ts` — facts-aware `buildRecipePlan`, the not-before gate, unobservable effects (Tasks 1d–1e).
+- Modify `src/services/aiOperator/requesterAccessGate.ts` — `requesterAccessLostForTargets` (Task 1f).
+- Modify `src/services/aiOperator/taskCoordinator.ts` — checkpoint-arm narrowing, the arm/recipe agreement check and the gate selection (Tasks 1b, 1f); `taskContext.ts` and `taskReconciler.ts` — narrowing (Task 1b).
+
+**apps/api — recipe and pure code (R1a)**
+- *(Task 1, shipped in R1a-0)* `src/services/aiOperator/recipes/resolveNextStep.ts` (+ `.test.ts`) — the one pure resolver.
 - Create `src/services/aiOperator/recipes/identityOffboarding.ts` (+ `.test.ts`, + `.ordering.test.ts`).
 - Modify `src/services/aiOperator/recipes/index.ts` — register `identityOffboardingRecipe` in `RECIPES`.
 
@@ -219,7 +543,7 @@ Spec §6.6 and E4's D-E4-7 agree that `google_signout` can never be probed (the 
 - Create `src/services/aiOperator/completionRecord.ts` (+ `.test.ts`).
 - Create `src/services/aiOperator/identityAdvancers.ts` (+ `.test.ts`) — the recipe's `RECIPE_ADVANCERS` entries.
 - Modify `src/services/aiOperator/taskService.ts` — `admitTask`, `admitServiceRecoveryTask` wrapper.
-- Modify `src/services/aiOperator/taskCoordinator.ts` — register `RECIPE_ADVANCERS['identity_offboarding']` (one added table entry, nothing else).
+- Modify `src/services/aiOperator/taskCoordinator.ts` — register `RECIPE_ADVANCERS['identity_offboarding']`, which is one added table entry plus its import. Everything else in the coordinator is R1a-0's.
 - Modify `src/services/aiToolsGoogle.ts`, `src/services/aiAgentSdkTools.ts`, `src/services/aiGuardrails.ts`, `src/services/googleToolsHeadless.ts`, `src/services/aiOperator/effectProbes/google.ts`, `apps/web/src/components/ai-risk/tierConfig.ts` — the `google_account_wipe_mobile_device` sweep.
 - Modify `src/config/env.ts` — `aiOperatorIdentityOffboardingEnabled()`.
 - Modify `src/config/validate.ts` — `ENV_SCHEMA_KEYS`.
@@ -247,6 +571,263 @@ Spec §6.6 and E4's D-E4-7 agree that `google_signout` can never be probed (the 
 
 **root**
 - Modify `.env.example`, `docker-compose.yml`, `deploy/.env.example`, `deploy/docker-compose.prod.yml`.
+
+---
+
+# PART R1a-0 — E4 generalization for contact-targeted, facts-dependent recipes (Amendment 2026-10-18)
+
+**Blast radius: HIGH.** These tasks edit the shipped plan-approval seal, the effect walk, the checkpoint parser and the coordinator's requester gate. That puts them in the multi-tenant and irreversible-effect class.
+
+Every task here is red-first. After every commit that touches a covered file, run the A.6 regression set unmodified and read the counts. Task 1g runs one **Opus** review round. No recipe uses any of this yet: the fixtures are test recipes, which is how E4 shipped `planEffectStep`. `AI_OPERATOR_RECIPE_IDENTITY_OFFBOARDING_ENABLED` is not introduced here.
+
+**Branch and base.** Branch `feature/<parent#>-operator-recipe-library/wave-<subissue#>-r1a0`, cut from fresh `origin/main`. Its first commit is Task 1: cherry-pick `828d96e5d5` from `origin/feature/6165-operator-recipe-library/wave-6171-a`, re-run its 88 recipe tests, and read the count. Do not merge or rebase the evidence branch. This PR targets `main`, so CI runs automatically.
+
+### Task 1: (unchanged — see below; ships in R1a-0)
+
+Task 1's body further down this document stands as written. Execute it here, as the cherry-pick above, and move straight on to Task 1a.
+
+---
+
+### Task 1a: Characterization pins — written and proven able to fail BEFORE any seal or dispatcher edit
+
+**Files:**
+- Create: `apps/api/src/services/aiOperator/e4Characterization.test.ts`
+
+**Interfaces:** Consumes the shipped `planEffectStep` and `planProbeStep` (`effectDispatch.ts`), `taskCheckpointSchema` and `TASK_CHECKPOINT_VERSION` (`@breeze/shared`), and `requesterAccessLost` (`requesterAccessGate.ts`). Produces nothing; this file is a pin.
+
+- [ ] **Step 1: Write the pins**, reusing the `vi.hoisted` harness from `effectDispatch.planEffectStep.test.ts`. Do not build a second harness.
+  1. `1a-1`: for a fixture recipe with no `planningSnapshotStepKey`, `planEffectStep` calls `buildPlan` exactly once, with `(checkpoint.recipeInput, {})`. Assert `toHaveBeenCalledWith(input, {})` and that the second argument is `toStrictEqual({})`. `planProbeStep` behaves the same way.
+  2. `1a-2`: the seal `planEffectStep` compares against is `computeEffectSetDigest({ taskId, planRevision: task.revision, effects: toDigestProjection(effects) })` for `serviceRecoveryRecipe.buildPlan(input, {})`. Pin it with a golden hex string computed once and written into the test.
+  3. `1a-3`: `taskCheckpointSchema.parse(<the exact object admitServiceRecoveryTask builds at taskService.ts:175-186>)` round-trips through `JSON.stringify`. Pin the result as a golden string, so a new defaulted field would change it.
+  4. `1a-4`: `advanceTask` on a `service_recovery` task whose current step is `execute` calls `requesterAccessLost` exactly once, with `(task, checkpoint.recipeInput.deviceId)`. Copy the mocking style of `taskCoordinator.recipeResolution.test.ts`.
+- [ ] **Step 2: Run them.** Run `cd apps/api && npx vitest run src/services/aiOperator/e4Characterization.test.ts`. Expected: 1 file, 4 tests, PASS. These pin shipped behaviour, so they pass first.
+- [ ] **Step 3: Prove each pin can fail.**
+  1. Temporarily change `effectDispatch.ts:408` to pass `{ probe: 1 }`. Expected: `1a-1` FAIL.
+  2. Add `x: z.string().default('')` to `taskCheckpointSchema`. Expected: `1a-3` FAIL.
+  3. Swap the gate's second argument for `'x'`. Expected: `1a-4` FAIL.
+  4. Revert all three with `git checkout -- <files>`, then run Step 2 again. Expected: PASS.
+  5. Record the three FAIL lines in the commit body.
+- [ ] **Step 4: Commit.** Message: `test(api): pin E4 plan building, seal, checkpoint bytes and requester gate before generalizing (R1a-0)`.
+
+---
+
+### Task 1b: Checkpoint arms — `taskCheckpointBaseSchema`, the service-recovery arm, and narrowing at every consumer
+
+**Files:**
+- Modify: `packages/shared/src/validators/aiOperator.ts`
+- Modify: `packages/shared/src/validators/aiOperator.test.ts`, or create it if it is absent.
+- Modify: `apps/api/src/services/aiOperator/taskCoordinator.ts`. Touch these sites only: `:559`, `:698`, `:799`, `:867`, `:887`, `:934`, `:1018`, `:1073`, `:1141` and `:1153`; the arm/recipe agreement check in `advanceTask`; `export` on `StepAdvancer`; and `COORDINATOR_STEP_OPS`.
+- Modify: `apps/api/src/services/aiOperator/taskContext.ts` (`:72-78`) and `apps/api/src/services/aiOperator/taskReconciler.ts` (`:365`).
+
+**Interfaces:**
+- Produces, in `@breeze/shared`:
+  ```ts
+  export const planningSnapshotRefSchema: z.ZodObject<{ stepId: z.ZodString /* uuid */; digest: z.ZodString /* /^[0-9a-f]{64}$/ */ }>; // .strict()
+  export const taskCheckpointBaseSchema;          // today's fields minus recipeInput + criterion, plus:
+  //   planningSnapshot: planningSnapshotRefSchema.optional()     — NO default
+  //   dispatchNotBefore: z.string().datetime().optional()        — NO default
+  export const serviceRecoveryCheckpointSchema;   // z.object({ version, recipeInput, criterion, ...base fields in TODAY'S order }).strict() — NOT base.extend(), which reorders keys
+  export const taskCheckpointSchema;              // z.union([serviceRecoveryCheckpointSchema]) — R1a Task 2 appends the identity arm
+  export type ServiceRecoveryCheckpoint = z.infer<typeof serviceRecoveryCheckpointSchema>;
+  export type TaskCheckpoint = z.infer<typeof taskCheckpointSchema>;
+  export function isServiceRecoveryCheckpoint(c: TaskCheckpoint): c is ServiceRecoveryCheckpoint; // 'criterion' in c
+  ```
+  **Key order is part of the byte-identical promise.** `base.extend({ recipeInput, criterion })` would serialize `version, findings, …, recipeInput, criterion`, but today's order is `version, recipeInput, criterion, findings, …` (`validators/aiOperator.ts:185-221`). That breaks pin `1a-3`. So build the SR arm with an explicit `z.object({ version: …, recipeInput: …, criterion: …, findings: …, … })`, listing the keys in today's order, with `taskCheckpointBaseSchema.shape` entries spread **after** `criterion`. `planningSnapshot` and `dispatchNotBefore` go last. They are optional with no default, so they never serialize for a service-recovery row. The identity arm (R1a Task 2) uses the same order: `version, recipeInput, …base`. `z.union([x])` with one arm is valid in zod 4.4.3.
+- Produces, in the coordinator: `function checkpointMatchesRecipe(recipeKey: string, c: TaskCheckpoint): boolean`. It is `isServiceRecoveryCheckpoint(c) === (recipeKey === SERVICE_RECOVERY_WORKFLOW_KEY)`.
+- Produces, in the coordinator: the lease-safe write and read helpers a recipe advancer outside this file needs. **Today they are file-private**: `settle` (`:388`), `yieldToWait` (`:338`), `admitReasoningRun` (`:465`), `settleStepAndMove` (`:1302`), `writeLeasedStep` (`:1237`) and `readLatestTaskRun` (`:1637`). They are reachable only through `__testOnly` (`:1784`).
+  ```ts
+  export type StepAdvancer = …;   // add `export` to the existing type (:629)
+  /** The ONLY coordinator surface a per-recipe advancer module may call. Frozen; each is the existing function, unchanged. */
+  export const COORDINATOR_STEP_OPS = Object.freeze({
+    settle, yieldToWait, admitReasoningRun, settleStepAndMove, writeLeasedStep, readLatestTaskRun,
+  });
+  ```
+  Any advancer module **must** import these lazily (`const { COORDINATOR_STEP_OPS } = await import('./taskCoordinator')`, inside the advancer body). The coordinator imports the advancer table at module load, so a static import back would be a load-time cycle in which `RECIPE_ADVANCERS` captures `undefined`. `effectDispatch.ts` already uses the same lazy-import pattern (`:159`, `:169`).
+
+- [ ] **Step 1: Write the failing tests.**
+  - Shared: (a) `1a-3`'s object parses and is `isServiceRecoveryCheckpoint`. (b) A checkpoint with no `criterion` is refused by the SR arm. (c) `planningSnapshot` with a 63-char digest is refused. (d) A parsed SR checkpoint has **no** `planningSnapshot` key and **no** `dispatchNotBefore` key: assert `Object.hasOwn(...) === false`.
+  - Coordinator: only the SR arm exists in R1a-0, so test the other direction. A task whose `workflowKey` is a **fixture** non-SR recipe but whose checkpoint is the SR arm settles `fail`/`unresolved` with the detail `checkpoint does not match workflow '<key>'`, and it does not dispatch. Register the fixture through the same `vi.mock('./recipes', …)` seam that `taskCoordinator.recipeResolution.test.ts` uses. R1a Task 2 adds the SR-recipe-with-identity-arm case once that arm exists.
+  - Coordinator: `COORDINATOR_STEP_OPS` is frozen. Its keys are exactly the six named, and each is `===` to the matching `__testOnly` member where one exists. That proves the export is the shipped function and not a wrapper.
+  - `parseTaskCheckpointResult`'s detail for an SR row with an empty `serviceName` still names the path `recipeInput.serviceName`. The union must not swallow the forensic detail.
+- [ ] **Step 2: Run red.** Run `cd packages/shared && npx vitest run src/validators/aiOperator.test.ts`. Expected: FAIL (`taskCheckpointBaseSchema` is not exported).
+- [ ] **Step 3: Implement.**
+  - Split the schema as above. The SR arm is field-for-field today's `taskCheckpointSchema` (`:185-221`).
+  - At each consumer site, narrow with `isServiceRecoveryCheckpoint`. Do not cast.
+  - In the coordinator, the four `service_recovery` `RECIPE_ADVANCERS` entries narrow once at the entry. On a miss, they settle `fail`/`unresolved`.
+  - `taskReconciler.ts:365` returns `null` when the checkpoint is not the SR arm.
+  - `taskContext.ts`'s SR rendering takes a `ServiceRecoveryCheckpoint`.
+- [ ] **Step 4: Run green, plus the regression set.**
+  1. Run `cd packages/shared && npx vitest run src/validators/ && npx tsc --noEmit -p tsconfig.json`.
+  2. Run `cd apps/api && npx vitest run src/services/aiOperator/e4Characterization.test.ts src/services/aiOperator/taskContext.test.ts src/services/aiOperator/taskCoordinator.recipeResolution.test.ts src/services/aiOperator/taskService.recipeAdmission.test.ts src/services/aiOperator/verification.test.ts src/services/aiOperator/recipes/`.
+  3. Run `cd apps/api && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p tsconfig.json; echo "tsc exit=$?"`. Never pipe this command into `tail`. Expected: `tsc exit=0`, and `1a-3` still PASS, which means byte-identical.
+- [ ] **Step 5: Commit.** Message: `refactor(shared,api): per-recipe checkpoint arms; service_recovery parses and serializes byte-identically (R1a-0)`.
+
+---
+
+### Task 1c: Recipe contract — `planningSnapshotStepKey`, `unobservableEffects`, `entryStepKey`; the `targetId` comment
+
+**Files:**
+- Modify: `apps/api/src/services/aiOperator/recipes/types.ts` and `recipes/types.test.ts`.
+- Modify: `apps/api/src/services/aiOperator/recipes/index.ts` and `recipes/index.test.ts`.
+
+**Interfaces:** Produces optional `RecipeDefinition` fields:
+```ts
+/** Step whose row's `checkpoint.planningSnapshot` envelope supplies `buildPlan`'s facts. Absent → facts are `{}` (today). */
+planningSnapshotStepKey?: string;
+/** Effect tool → the tool whose verified success subsumes it (spec §6.6). Absent → every `unknown` post-probe hands off (today). */
+unobservableEffects?: Readonly<Record<string, string>>;
+/** The step a newly admitted task starts at. Absent → 'investigate' (today's literal, taskService.ts:312). */
+entryStepKey?: string;
+```
+It also rewrites the `PlannedEffect.targetId` doc comment to `` `ai_operator_task_targets.id` of the target this effect acts on. Null only for an effect with no Breeze-side target. ``.
+
+- [ ] **Step 1: Write the failing tests** in `recipes/index.test.ts`, iterating `RECIPES`:
+  1. `planningSnapshotStepKey` and `entryStepKey` each name a declared step when present.
+  2. Every key of `unobservableEffects` satisfies `isStructurallyUnobservable` (Task 1e). Every value has a registered probe (`listProbedTools()`).
+  3. No tool is its own subsumer.
+  4. `service_recovery` declares none of the three.
+  **Mechanism (decided):** add one pure exported function in `recipes/index.ts`. It is a data check, not a module-load validator:
+```ts
+export function recipeDataProblems(recipe: AnyRecipeDefinition): string[];
+```
+It covers rules 1–3 for the snapshot step key and the entry step key. Rule 2 needs the probe registry, which `recipes/` must not import (purity), so it lives in `effectProbes/index.test.ts` and iterates `RECIPES` there.
+
+In `recipes/index.test.ts`, add three tests:
+- The per-recipe block (`:46-95`) asserts `recipeDataProblems(recipe)` is `[]` for every entry in `RECIPES`.
+- A **fixture recipe** (a test-local object, not registered) with a dangling `entryStepKey` and a self-subsuming `unobservableEffects` entry asserts exactly those two problems.
+- `service_recovery` declares none of the three fields (rule 4).
+- [ ] **Step 2: Run red.** Expected: FAIL, `recipeDataProblems is not a function`. Vitest does not typecheck, so the red comes from the missing export, not from TypeScript.
+- [ ] **Step 3: Implement** the three fields, the comment, `recipeDataProblems`, and (in `effectProbes/`) the `alwaysUnknown` registration marker plus `isStructurallyUnobservable`. Register `google_signout` with the marker.
+- [ ] **Step 4: Run green.** Run `cd apps/api && npx vitest run src/services/aiOperator/recipes/`. Expected: PASS. Also run `src/services/aiOperator/e4Characterization.test.ts`.
+- [ ] **Step 5: Commit.** Message: `feat(api): recipe data for planning snapshots, unobservable effects and the entry step (R1a-0)`.
+
+---
+
+### Task 1d: `planningSnapshot.ts` and a facts-aware `buildRecipePlan`, failing closed
+
+**Files:**
+- Create: `apps/api/src/services/aiOperator/planningSnapshot.ts` and `apps/api/src/services/aiOperator/planningSnapshot.test.ts`.
+- Modify: `apps/api/src/services/aiOperator/effectDispatch.ts` (`buildRecipePlan` and both callers, plus the empty-plan ordering).
+- Modify: `apps/api/src/services/aiOperator/effectDispatch.planEffectStep.test.ts`, appending only. Existing cases are not edited.
+
+**Interfaces:**
+- Produces:
+  ```ts
+  export const PLANNING_SNAPSHOT_VERSION = 1 as const;
+  export interface PlanningSnapshotEnvelope { version: 1; capturedAt: string; facts: DiscoveryFacts }
+  /** Pure. digest = computeArgumentDigest(canonicalizeArguments(facts)). */
+  export function sealPlanningSnapshot(facts: DiscoveryFacts, capturedAt: Date): { envelope: PlanningSnapshotEnvelope; digest: string };
+  export type PlanningSnapshotLoad =
+    | { ok: true; facts: DiscoveryFacts }
+    | { ok: false; reason: 'snapshot_required' | 'snapshot_unexpected' | 'snapshot_missing' | 'snapshot_wrong_step'
+        | 'snapshot_not_settled' | 'snapshot_malformed' | 'snapshot_digest_mismatch'; detail: string };
+  /** Reads ai_operator_task_steps by (org_id, task_id, id) under withSystemDbAccessContext. Throws only on I/O. */
+  export async function loadPlanningFacts(
+    task: Pick<AiOperatorTaskRow, 'id' | 'orgId'>, recipe: RecipeDefinition<never>, checkpoint: TaskCheckpoint,
+  ): Promise<PlanningSnapshotLoad>;
+  ```
+- **The writer is R1a's.** R1a's `advanceDiscover` calls `sealPlanningSnapshot`, writes `{ planningSnapshot: envelope }` into the discover step row's `checkpoint`, and sets `checkpoint.planningSnapshot = { stepId, digest }`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `planningSnapshot.test.ts` covers each `reason`, one case per reason, with a stubbed handle whose query is asserted to carry **both** `org_id` and `task_id` predicates. It also proves `sealPlanningSnapshot` is key-order-independent: `{a,b}` and `{b,a}` produce one digest.
+  - The `planEffectStep` appends:
+    1. A recipe with `planningSnapshotStepKey` gets `buildPlan(input, facts)` with the loaded facts.
+    2. `snapshot_digest_mismatch` with **no** approval row settles `fail`/`unresolved`, and `proposePlanApproval` is never called.
+    3. The same failure with an approval row present settles `hand_off`/`unresolved`, and nothing is probed or minted.
+    4. The same failure with an operation row still `pending` settles `hand_off`/`unknown_effect`.
+    5. An I/O throw from the loader propagates. It is not settled.
+    6. An approval at the revision plus an **empty** plan hands off as a seal mismatch.
+    6a. A `buildPlan` throw with no approval stays `fail`/`unresolved`, so the existing "fails the task when buildPlan throws" case passes unmodified. With an approval row, it hands off.
+    7. `planProbeStep` loads facts the same way.
+- [ ] **Step 2: Run red.** Run `cd apps/api && npx vitest run src/services/aiOperator/planningSnapshot.test.ts src/services/aiOperator/effectDispatch.planEffectStep.test.ts`. Expected: FAIL (module not found).
+- [ ] **Step 3: Implement.**
+  - `buildRecipePlan` becomes `async (recipe, checkpoint, task)`. It returns `{ ok: true; effects } | { ok: false; kind: 'build_threw' | 'snapshot'; detail }`.
+  - When the recipe declares no snapshot step and the checkpoint carries none, it calls `buildPlan(input, {})`, the byte-identical path. **It never substitutes `{}` on a failed load.**
+  - In `planEffectStep`, the approval read (`:442`) moves above the empty-plan `finish` (`:440`).
+  - A snapshot failure maps to `fail` or `hand_off` per A.4.
+- [ ] **Step 4: Run green, plus the regression set.** The `effectDispatch.*`, `planApproval.test.ts`, `taskCoordinatorPlanApproval.test.ts` and `e4Characterization.test.ts` files must be PASS **unmodified**. Run `tsc` with the 12 GB heap and read the exit code.
+- [ ] **Step 5: Commit.** Message: `feat(api): plan facts from a sealed planning snapshot; fail closed, never {} (R1a-0)`.
+
+---
+
+### Task 1e: The walk — post-approval not-before gate, and declared unobservable effects
+
+**Files:**
+- Modify: `apps/api/src/services/aiOperator/effectDispatch.ts` (`EffectStepDirective`, `readEffectProgress`, the walk, `planProbeStep`).
+- Modify: `apps/api/src/services/aiOperator/effectDispatch.planEffectStep.test.ts`, appending only.
+- Modify: `apps/api/src/services/aiOperator/taskCoordinator.ts`, in `applyEffectDirective`, only if the widened wait reason needs it.
+
+**Interfaces:**
+- `EffectStepDirective`'s `wait.reason` widens to `'approval' | 'execution' | 'maintenance_window'`. `'maintenance_window'` is already in `AI_OPERATOR_WAIT_REASONS`.
+- The operation `result.verified` stamp gains optional `unobservable?: true` and `subsumedBy?: string`.
+
+**Rules:**
+1. **Not-before.** Once the approval is `approved` and the seal re-checks, then *before minting a child for an effect that has no operation row*: if `checkpoint.dispatchNotBefore` is later than `now`, return `{ action: 'wait', reason: 'maintenance_window', dependency: null, wakeAfterMs: until − now, detail }`. Effects that already have an operation row are still observed and verified while the gate holds.
+2. **Unobservable.** When a post-probe is `unknown`, `recipe.unobservableEffects?.[effect.toolName]` is set **and** `isStructurallyUnobservable(effect.toolName)`, call `recordVerification` with `{ ok: false, unobservable: true, subsumedBy }` and `continue`. On a later wake, a progress row with `unobservable: true` is `continue`d without a probe.
+   - At `finish`: with a resume step, `move`, as today. Without one, settle `partial`/`unresolved` unless each unobservable effect has a subsumer with the same `accountExternalId` that verified or no-op'd.
+   - An undeclared `unknown` keeps today's `unknown_effect` hand-off.
+3. **`planProbeStep`** does not count a declared unobservable effect as unconfirmed when its same-account subsumer's post-probe is `satisfied`.
+
+- [ ] **Step 1: Write the failing tests.**
+  1. With `dispatchNotBefore` an hour ahead, the approval approved and no operations, the walk returns `maintenance_window` and never calls `createActionIntent`.
+  2. The same setup with ordinal 0 already `pending` on a live intent waits on **that** intent. The gate does not hide in-flight work.
+  3. With `dispatchNotBefore` in the past, the walk dispatches as today.
+  4. A recipe declaring `{ google_signout: 'google_suspend_user' }`: a signout post-probe `unknown` records `unobservable: true` and dispatches the suspend in the next wake.
+  5. A replay wake does not re-probe the signout. Assert that `probeEffect` is not called for it.
+  6. With no resume step, the suspend verified and the signout unobservable, the walk settles `complete`/`verified_resolved`. With the suspend's `accountExternalId` different, or with both ids null, it settles `partial`.
+  6a. A fixture recipe that declares `google_suspend_user` (probed for real, so not `alwaysUnknown`) as unobservable still hands off `unknown_effect` when its probe returns `unknown`.
+  7. With an undeclared `unknown`, the walk returns `unknown_effect`. The existing *"succeeded + post-probe unknown -> unknown_effect"* case still passes, unmodified.
+- [ ] **Step 2: Run red, then implement, then run green, plus the regression set and `tsc` (exit code read).**
+- [ ] **Step 3: Commit.** Message: `feat(api): post-approval not-before gate and declared unobservable effects in the E4 walk (R1a-0)`.
+
+---
+
+### Task 1f: `requesterAccessLostForTargets` and its selection in `advanceTask`
+
+**Files:**
+- Modify: `apps/api/src/services/aiOperator/requesterAccessGate.ts` and `requesterAccessGate.test.ts`.
+- Modify: `apps/api/src/services/aiOperator/taskCoordinator.ts`, the gate call at `:798-799` only.
+- Modify: `apps/api/src/__tests__/integration/aiOperatorRequesterAccessRecheck.integration.test.ts`, appending only.
+
+**Interfaces:**
+- Produces `export async function requesterAccessLostForTargets(task: { id: string; orgId: string; requesterUserId: string | null }): Promise<RequesterAccessCheck>;`.
+- `requesterAccessLost(task, deviceId)` is **unchanged**, byte for byte.
+
+**The checks, in order** (A.4 decision 3):
+1. No requester → `ACCESS_OK`.
+2. The user is active.
+3. `getUserPermissions(..., { bypassCache: true })` and `canAccessOrg`.
+4. Partner-scope binding: `organizations.partner_id === users.partner_id`.
+5. Live targets, meaning `ai_operator_task_targets` rows with `org_id`, `task_id` and `detached_at IS NULL`. None → lost.
+6. Per target kind: device → device in org + `canAccessSite`; contact → contact in org + `canMutateOrgWideGovernance`; ticket → ticket in org. An unresolvable pointer → lost.
+
+Every read carries an explicit `org_id` predicate. This code runs in system scope, so the predicates are the isolation.
+
+- [ ] **Step 1: Write the failing tests.**
+  - Unit, one per check above. Include: a partner requester with `orgAccess: 'all'` and a foreign-partner org is lost; a site-restricted requester on a contact target is lost; a task whose only target is detached is lost. Each query stub asserts its `org_id` predicate.
+  - Coordinator: a non-SR task with an `effect` step calls `requesterAccessLostForTargets`. An SR task still calls `requesterAccessLost(task, deviceId)`; `1a-4` is unmodified.
+  - Integration (real Postgres): a contact-target task whose requester is narrowed to a site hands off before the effect step. A detached contact target hands off.
+- [ ] **Step 2: Run red, then implement, then run green.**
+  1. Run `cd apps/api && npx vitest run src/services/aiOperator/requesterAccessGate.test.ts src/services/aiOperator/e4Characterization.test.ts`.
+  2. Bring up a per-worktree test stack (`pnpm test-stack up`) and run `npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiOperatorRequesterAccessRecheck.integration.test.ts`. A 0-test run is a stall.
+- [ ] **Step 3: Commit.** Message: `feat(api): target-aware requester access recheck for non-device recipes; device path unchanged (R1a-0)`.
+
+---
+
+### Task 1g: R1a-0 gates, one Opus review round, the PR — then STOP
+
+- [ ] **Step 1: Run the full A.6 regression set**, unit and integration, from real output. Then run `cd apps/api && npx vitest run src/services/aiOperator/` and read the file count against `main`. Run the 5 contract suites from Task 15 Step 1; their counts must be unchanged, because no table or column is added. Run `git diff --stat origin/main -- apps/api/migrations/` and expect empty output.
+- [ ] **Step 2: Typecheck all three packages** (shared, api with the 12 GB heap, web). Read every exit code.
+- [ ] **Step 3: Run one independent review round on Opus** (`model: opus`), tenancy-aware. Ask these questions explicitly:
+  1. Can any path build a plan with `{}` for a recipe that declares a snapshot step?
+  2. Can a snapshot row from another task or org be loaded?
+  3. Can the not-before gate hide an in-flight effect, or can it be bypassed by a replay?
+  4. Can an undeclared `unknown` ever continue the walk?
+  5. Does the targets gate accept any requester that the device gate or the provider tools' site ceiling would refuse?
+  6. Is `service_recovery`'s runtime path, its stored checkpoint bytes, or its gate call changed anywhere?
+
+  Act on confirmed, consequential findings. Hold to one round unless a fix touches the seal or the gate again.
+- [ ] **Step 4: Tear down the stack** and list anything left running. Then open the PR to `main`, titled **"R1a-0 — E4 generalization for contact-targeted, facts-dependent recipes"**, with the body `Part of #<parent>` / `Refs #<wave sub-issue>`. Do **not** use `Closes`, because R1a closes the wave. **STOP.**
 
 ---
 
@@ -727,13 +1308,13 @@ EOF
   export const identityOffboardingInputSchema: z.ZodType<IdentityOffboardingInput>;
   export type IdentityOffboardingInput = { … };            // see Step 3
   export const identityIntakeOutputSchema: z.ZodType<…>;    // confirm_identity's inputSchema
-  export const identityReviewOutputSchema: z.ZodType<…>;    // plan_approval's inputSchema
+  export const identityReviewOutputSchema: z.ZodType<…>;    // the `effects` step's inputSchema (amended: no plan_approval step)
   export const IDENTITY_REVIEW_FLAGS: readonly [...];
   export const IDENTITY_EXCEPTION_CLASSES = ['retry', 'human_work', 'handoff'] as const;
 
   // packages/shared/src/validators/aiOperator.ts — MODIFIED
   export const operatorTaskDraftSchema: z.ZodType<…>;
-  // taskCheckpointSchema: recipeInput union + discoveryStepId + effectCursor + manualWorkCursor
+  // taskCheckpointSchema: append identityOffboardingCheckpointSchema (base + identity recipeInput + manualWorkCursor) — amended 2026-10-18
   // createOperatorTaskSchema: deviceId optional, inputs generic record
   ```
 
@@ -753,7 +1334,7 @@ EOF
  *  2. Every per-effect toggle has a SAFE DEFAULT, and the safe default for a
  *     destructive effect is ON only where leaving it off is what harms (mail
  *     routing), OFF where doing it is what harms (mobile wipe).
- *  3. `confirm_identity` accepts only ids; `plan_approval` accepts only flags
+ *  3. `confirm_identity` accepts only ids; `effects` (review's output) accepts only flags
  *     from a CLOSED enum and exception classes from a three-value union. A
  *     model that returns free text at either step is refused, because a
  *     `deterministic` gate class means model output is "only ids, flags, and
@@ -1072,7 +1653,7 @@ export const IDENTITY_EXCEPTION_CLASSES = Object.freeze(['retry', 'human_work', 
 export type IdentityExceptionClass = (typeof IDENTITY_EXCEPTION_CLASSES)[number];
 
 /**
- * `review`'s output — what the model may propose into `plan_approval`.
+ * `review`'s output — what the model may propose into `effects` (amended 2026-10-18).
  *
  * Flags come from the closed enum above so the recipe can act on them
  * mechanically (each one maps to a generated human-work item or a plan
@@ -1102,43 +1683,30 @@ export type IdentityReviewOutput = z.infer<typeof identityReviewOutputSchema>;
 Run: `cd packages/shared && npx vitest run src/validators/aiOperatorIdentity.test.ts`
 Expected: PASS — 1 file, 19 tests.
 
-- [ ] **Step 5: Generalize `taskCheckpointSchema` and `createOperatorTaskSchema`**
+- [ ] **Step 5: Add the identity checkpoint arm and generalize `createOperatorTaskSchema`** *(amended 2026-10-18 — R1a-0 Task 1b already split the checkpoint into `taskCheckpointBaseSchema` + `serviceRecoveryCheckpointSchema`)*
 
-Three edits in `packages/shared/src/validators/aiOperator.ts`. Add `import { identityOffboardingInputSchema } from './aiOperatorIdentity';` at the top.
+Three edits in `packages/shared/src/validators/aiOperator.ts`. Add `import { identityOffboardingInputSchema } from './aiOperatorIdentity';` at the top. `aiOperatorIdentity.ts` must import nothing from `aiOperator.ts`, so that no cycle forms.
 
-**(a) `recipeInput` (`:187`)** — replace `recipeInput: serviceRecoveryInputSchema,` with:
-
-```ts
-  /**
-   * The frozen admission input, per recipe (R1).
-   *
-   * A UNION, not a discriminated union: neither arm carries a recipe key, and
-   * adding one would mean re-stamping every shipped checkpoint row. Both arms
-   * are `.strict()`, so neither can absorb the other's object and the union is
-   * unambiguous. `service_recovery` stays first so the common case parses on
-   * the first arm.
-   */
-  recipeInput: z.union([serviceRecoveryInputSchema, identityOffboardingInputSchema]),
-```
-
-**(b) the three new bounded fields** — insert immediately before the closing `}).strict();` at `:205`:
+**(a) the identity arm** — beside `serviceRecoveryCheckpointSchema`:
 
 ```ts
-  /**
-   * The `ai_operator_task_steps` row whose `checkpoint` holds this task's
-   * `IdentityDiscoveryFacts` (R1). The facts are kilobytes of groups, licences
-   * and devices; keeping them off the task checkpoint keeps every coordinator
-   * read cheap, and spec §5.5's export rule means the EVIDENCE artifact is the
-   * bounded-text completion record, not this working state.
-   */
-  discoveryStepId: z.string().uuid().nullable().default(null),
-  /** Next `PlannedEffect.ordinal` the `effects` step will dispatch (R1). */
-  effectCursor: z.number().int().min(0).max(64).default(0),
-  /** Next manual-work item index the `manual_work` step will bind a step to (R1). */
+/**
+ * The identity_offboarding checkpoint (R1). No `criterion`: this recipe is
+ * verified by its `verify_outcome` probe step, not by a typed criterion. The
+ * facts live on the discover STEP row, pinned by the base's `planningSnapshot`
+ * ref (R1a-0); only the bounded cursor lives here.
+ */
+export const identityOffboardingCheckpointSchema = taskCheckpointBaseSchema.extend({
+  recipeInput: identityOffboardingInputSchema,
+  /** Next manual-work item index the `manual_work` step will bind a step to (R1, D-R1-5). */
   manualWorkCursor: z.number().int().min(0).max(64).default(0),
+}).strict();
+export type IdentityOffboardingCheckpoint = z.infer<typeof identityOffboardingCheckpointSchema>;
 ```
 
-**(c) `createOperatorTaskSchema` (`:234-264`)** — two field replacements; everything else, including `.strict()` and the `sourceKind`/`sourceId` refinement, is unchanged:
+**(b) the union** — `taskCheckpointSchema = z.union([serviceRecoveryCheckpointSchema, identityOffboardingCheckpointSchema])`, service-recovery arm first. Add `isIdentityOffboardingCheckpoint(c): c is IdentityOffboardingCheckpoint` beside R1a-0's `isServiceRecoveryCheckpoint`. Both arms are `.strict()` and their `recipeInput` schemas are `.strict()`, so neither arm can absorb the other's row.
+
+**(c) `createOperatorTaskSchema` (`:250-288`)** — two field replacements; everything else, including `.strict()` and the `sourceKind`/`sourceId` refinement, is unchanged:
 
 ```ts
   /**
@@ -1182,21 +1750,43 @@ export type OperatorTaskDraftInput = z.infer<typeof operatorTaskDraftSchema>;
 Add to `packages/shared/src/validators/aiOperator.test.ts` (or create if absent) four cases:
 
 ```ts
-  it('taskCheckpointSchema still parses a service_recovery checkpoint unchanged', () => {
-    const c = taskCheckpointSchema.parse({
-      recipeInput: { deviceId: '00000000-0000-4000-8000-000000000001', serviceName: 'spooler' },
-    });
-    expect((c.recipeInput as { serviceName: string }).serviceName).toBe('spooler');
-    expect(c.discoveryStepId).toBeNull();
-    expect(c.effectCursor).toBe(0);
-    expect(c.manualWorkCursor).toBe(0);
+  // Amended 2026-10-18: the shipped schema requires `version: 1` and, for the
+  // service-recovery arm, `criterion`. The original two cases parsed
+  // `{ recipeInput }` alone and would have failed as written.
+  const SR_CRITERION = {
+    adapter: 'service_running', adapterVersion: 1,
+    deviceId: '00000000-0000-4000-8000-000000000001', serviceName: 'spooler', alertId: null,
+  };
+
+  it('taskCheckpointSchema still parses a service_recovery checkpoint to the SR arm, byte-identically', () => {
+    const raw = {
+      version: 1,
+      recipeInput: { deviceId: '00000000-0000-4000-8000-000000000001', serviceName: 'spooler', triggeringAlertId: null },
+      criterion: SR_CRITERION,
+    };
+    const c = taskCheckpointSchema.parse(raw);
+    expect(isServiceRecoveryCheckpoint(c)).toBe(true);
+    expect(Object.hasOwn(c, 'manualWorkCursor')).toBe(false);
+    expect(Object.hasOwn(c, 'planningSnapshot')).toBe(false);
   });
 
-  it('taskCheckpointSchema parses an identity_offboarding checkpoint', () => {
+  it('taskCheckpointSchema parses an identity_offboarding checkpoint to the identity arm', () => {
     const c = taskCheckpointSchema.parse({
+      version: 1,
       recipeInput: { contactId: '00000000-0000-4000-8000-000000000002' },
     });
-    expect((c.recipeInput as { contactId: string }).contactId).toBe('00000000-0000-4000-8000-000000000002');
+    expect(isIdentityOffboardingCheckpoint(c)).toBe(true);
+    expect((c as IdentityOffboardingCheckpoint).manualWorkCursor).toBe(0);
+    expect(Object.hasOwn(c, 'criterion')).toBe(false);
+  });
+
+  it('refuses an identity checkpoint that carries a criterion, and an SR one without', () => {
+    expect(() => taskCheckpointSchema.parse({
+      version: 1, recipeInput: { contactId: '00000000-0000-4000-8000-000000000002' }, criterion: SR_CRITERION,
+    })).toThrow();
+    expect(() => taskCheckpointSchema.parse({
+      version: 1, recipeInput: { deviceId: '00000000-0000-4000-8000-000000000001', serviceName: 'spooler', triggeringAlertId: null },
+    })).toThrow();
   });
 
   it('createOperatorTaskSchema still accepts the shipped service_recovery body', () => {
@@ -1250,7 +1840,7 @@ Run: `cd packages/shared && npx vitest run src/validators/aiOperatorIdentity.tes
 Expected: PASS, clean.
 
 Run: `cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json`
-Expected: clean. If `taskService.ts` or `taskCoordinator.ts` now fail on `checkpoint.recipeInput`, that is the union doing its job — narrow at the use site with the recipe key, never with a cast that erases it. Task 11 owns those sites; add a `// eslint-disable-next-line` NOWHERE — if it does not typecheck now, reorder the tasks rather than suppressing.
+Expected: clean. R1a-0 Task 1b already narrowed every service-recovery consumer with `isServiceRecoveryCheckpoint`. If a new failure appears, narrow at the use site with the arm guard, never with a cast. R1a-0's `e4Characterization.test.ts` must stay green; add a `// eslint-disable-next-line` NOWHERE — if it does not typecheck now, reorder the tasks rather than suppressing.
 
 Run: `cd apps/api && npx vitest run src/routes/aiOperatorTasks.test.ts src/services/aiOperator/`
 Expected: PASS, unchanged counts.
@@ -1260,7 +1850,7 @@ git add packages/shared/src apps/api/src
 git commit -m "$(cat <<'EOF'
 feat(shared): identity_offboarding wire contracts; generalize checkpoint and create-task schemas (R1)
 
-recipeInput becomes a two-arm union; deviceId becomes optional and inputs a
+taskCheckpointSchema gains the identity arm; deviceId becomes optional and inputs a
 record validated by the recipe, so E1's registry keeps ownership of the
 unknown-recipe 400. The shipped service_recovery body and checkpoint parse
 byte-identically.
@@ -1288,8 +1878,8 @@ EOF
   export const IDENTITY_OFFBOARDING_PROMPT_VERSION = 'identity_offboarding/v1' as const;
 
   export const IDENTITY_OFFBOARDING_STEP_KEYS: readonly [
-    'intake', 'confirm_identity', 'discover', 'review', 'plan_approval',
-    'wait_cutoff', 'effects', 'device_actions', 'manual_work', 'verify_outcome', 'document',
+    'intake', 'confirm_identity', 'discover', 'review', 'effects',
+    'manual_work', 'verify_outcome', 'document',
   ];
   export type IdentityOffboardingStepKey = (typeof IDENTITY_OFFBOARDING_STEP_KEYS)[number];
 
@@ -1374,6 +1964,8 @@ import { resolveDeterministicNextStep } from './resolveNextStep';
 
 const CONTACT = '00000000-0000-4000-8000-000000000001';
 const DEVICE = '00000000-0000-4000-8000-0000000000d1';
+/** The contact's ai_operator_task_targets.id — what PlannedEffect.targetId carries (E4). */
+const CONTACT_TARGET = '00000000-0000-4000-8000-0000000000e1';
 
 function input(over: Partial<IdentityOffboardingInput> = {}): IdentityOffboardingInput {
   return identityOffboardingRecipe.inputSchema.parse({ contactId: CONTACT, ...over });
@@ -1401,6 +1993,9 @@ const FULL_FACTS = Object.freeze({
   },
   breeze: { suggestedDevices: [] },
   flags: [],
+  // Frozen by `discover` into the planning snapshot (amended 2026-10-18).
+  targets: { contactTargetId: CONTACT_TARGET },
+  degradedTools: [],
 } as const);
 
 const ALL_READY: Record<string, boolean> = Object.fromEntries(
@@ -1429,10 +2024,10 @@ describe('recipe identity', () => {
 });
 
 describe('the step graph (spec §6.3)', () => {
-  it('declares exactly the eleven spine steps, in order', () => {
+  it('declares exactly the eight spine steps, in order (amended 2026-10-18)', () => {
     expect([...IDENTITY_OFFBOARDING_STEP_KEYS]).toEqual([
-      'intake', 'confirm_identity', 'discover', 'review', 'plan_approval',
-      'wait_cutoff', 'effects', 'device_actions', 'manual_work', 'verify_outcome', 'document',
+      'intake', 'confirm_identity', 'discover', 'review', 'effects',
+      'manual_work', 'verify_outcome', 'document',
     ]);
     expect(Object.keys(identityOffboardingRecipe.steps).sort())
       .toEqual([...IDENTITY_OFFBOARDING_STEP_KEYS].sort());
@@ -1447,19 +2042,26 @@ describe('the step graph (spec §6.3)', () => {
       confirm_identity: 'human_work',
       discover: 'probe',
       review: 'reason',
-      plan_approval: 'probe',
-      wait_cutoff: 'wait',
       effects: 'effect',
-      device_actions: 'effect',
       manual_work: 'human_work',
       verify_outcome: 'probe',
       document: 'document',
     });
   });
 
-  it('names the plan step with the `plan_` prefix E4s coordinator arm routes on', () => {
-    expect(identityOffboardingRecipe.steps.plan_approval!.kind).toBe('probe');
-    expect('plan_approval'.startsWith('plan_')).toBe(true);
+  it('has exactly ONE effect-kind step — E4 binds one approval per revision to the step that proposed it', () => {
+    const effectSteps = Object.entries(identityOffboardingRecipe.steps)
+      .filter(([, st]) => st.kind === 'effect').map(([k]) => k);
+    expect(effectSteps).toEqual(['effects']);
+    for (const gone of ['plan_approval', 'wait_cutoff', 'device_actions']) {
+      expect(identityOffboardingRecipe.steps[gone]).toBeUndefined();
+    }
+  });
+
+  it('declares the R1a-0 recipe data: snapshot step, entry step, unobservable map', () => {
+    expect(identityOffboardingRecipe.planningSnapshotStepKey).toBe('discover');
+    expect(identityOffboardingRecipe.entryStepKey).toBe('intake');
+    expect(identityOffboardingRecipe.unobservableEffects).toBe(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS);
   });
 
   it('makes `document` the only terminal step', () => {
@@ -1487,7 +2089,7 @@ describe('the step graph (spec §6.3)', () => {
   it('lets the model propose ONLY out of the two reason steps, and only forward', () => {
     expect(identityOffboardingRecipe.permittedNextSteps).toEqual({
       intake: ['confirm_identity'],
-      review: ['plan_approval'],
+      review: ['effects'],
     });
   });
 
@@ -1495,37 +2097,27 @@ describe('the step graph (spec §6.3)', () => {
     // A reason step's output is validated against the NEXT step's inputSchema
     // through E1's validateRecipeNextStep — so the schema lives on the target.
     expect(identityOffboardingRecipe.steps.confirm_identity!.inputSchema).toBeDefined();
-    expect(identityOffboardingRecipe.steps.plan_approval!.inputSchema).toBeDefined();
+    expect(identityOffboardingRecipe.steps.effects!.inputSchema).toBeDefined(); // review's output (amended)
     expect(identityOffboardingRecipe.steps.intake!.inputSchema).toBeUndefined();
-    expect(identityOffboardingRecipe.steps.effects!.inputSchema).toBeUndefined();
+    expect(identityOffboardingRecipe.steps.manual_work!.inputSchema).toBeUndefined();
   });
 
-  it('skips wait_cutoff when no cutoff was given, and takes it when one was', () => {
-    const ctxNo = { input: input(), facts: FULL_FACTS, readiness: ALL_READY };
-    const ctxYes = { input: input({ cutoffAt: '2026-10-23T17:00:00.000Z' }), facts: FULL_FACTS, readiness: ALL_READY };
-    expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'plan_approval', ctxNo))
-      .toEqual({ ok: true, key: 'effects' });
-    expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'plan_approval', ctxYes))
-      .toEqual({ ok: true, key: 'wait_cutoff' });
-  });
-
-  it('skips device_actions when the technician selected no devices', () => {
-    expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'effects', {
-      input: input(), facts: FULL_FACTS, readiness: ALL_READY,
-    })).toEqual({ ok: true, key: 'manual_work' });
-    expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'effects', {
-      input: input({ deviceIds: [DEVICE] }), facts: FULL_FACTS, readiness: ALL_READY,
-    })).toEqual({ ok: true, key: 'device_actions' });
-  });
-
-  it('never skips manual_work — the hardware step is ALWAYS human work (no device↔person link exists)', () => {
-    for (const ready of [ALL_READY, {}]) {
-      expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'device_actions', {
-        input: input({ deviceIds: [DEVICE] }), facts: FULL_FACTS, readiness: ready,
-      })).toEqual({ ok: true, key: 'manual_work' });
+  it('review → effects → manual_work, with or without a cutoff or devices (amended 2026-10-18)', () => {
+    // The cutoff is the walk's post-approval not-before gate (checkpoint
+    // dispatchNotBefore, written by advanceReview from input.cutoffAt), not a
+    // step; selected devices are manual items, not an effect step.
+    for (const over of [{}, { cutoffAt: '2026-10-23T17:00:00.000Z' }, { deviceIds: [DEVICE] }]) {
+      const ctx = { input: input(over as never), facts: FULL_FACTS, readiness: ALL_READY };
+      expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'review', ctx)).toEqual({ ok: true, key: 'effects' });
+      expect(resolveDeterministicNextStep(identityOffboardingRecipe as never, 'effects', ctx)).toEqual({ ok: true, key: 'manual_work' });
     }
-    expect(buildIdentityOffboardingManualWork(input(), FULL_FACTS, ALL_READY, []).map((i) => i.key))
-      .toContain('collect_hardware');
+  });
+
+  it('never skips manual_work — hardware and every selected device are ALWAYS human work', () => {
+    const items = buildIdentityOffboardingManualWork(input({ deviceIds: [DEVICE] }), FULL_FACTS, ALL_READY, []).map((i) => i.key);
+    expect(items).toContain('collect_hardware');
+    expect(items).toContain(`device_signout_${DEVICE}`);
+    expect(buildIdentityOffboardingPlan(input({ deviceIds: [DEVICE] }), FULL_FACTS).every((e) => e.provider !== 'breeze')).toBe(true);
   });
 
   it('ends manual_work → verify_outcome → document', () => {
@@ -1583,8 +2175,16 @@ describe('buildPlan — the closed effect catalog', () => {
     }
   });
 
-  it('pins the contact as targetId on every provider effect', () => {
-    for (const e of plan) expect(e.targetId).toBe(CONTACT);
+  it('pins the contact TARGET ROW id (not the contact id) as targetId on every provider effect', () => {
+    for (const e of plan) expect(e.targetId).toBe(CONTACT_TARGET);
+    for (const e of plan) expect(e.targetId).not.toBe(CONTACT);
+  });
+
+  it('omits every tool in facts.degradedTools and renumbers densely — the degraded set is part of the frozen snapshot', () => {
+    const p = buildIdentityOffboardingPlan(input(), { ...FULL_FACTS, degradedTools: ['m365_retire_intune_device', 'google_set_vacation'] });
+    expect(p.map((e) => e.toolName)).not.toContain('m365_retire_intune_device');
+    expect(p.map((e) => e.toolName)).not.toContain('google_set_vacation');
+    expect(p.map((e) => e.ordinal)).toEqual(p.map((_, i) => i));
   });
 
   it('is DETERMINISTIC — same input and facts produce an identical list', () => {
@@ -1829,8 +2429,8 @@ export const IDENTITY_OFFBOARDING_WORKFLOW_VERSION = 1 as const;
 export const IDENTITY_OFFBOARDING_PROMPT_VERSION = 'identity_offboarding/v1' as const;
 
 export const IDENTITY_OFFBOARDING_STEP_KEYS = Object.freeze([
-  'intake', 'confirm_identity', 'discover', 'review', 'plan_approval',
-  'wait_cutoff', 'effects', 'device_actions', 'manual_work', 'verify_outcome', 'document',
+  'intake', 'confirm_identity', 'discover', 'review', 'effects',
+  'manual_work', 'verify_outcome', 'document',
 ] as const);
 export type IdentityOffboardingStepKey = (typeof IDENTITY_OFFBOARDING_STEP_KEYS)[number];
 
@@ -1864,8 +2464,8 @@ export const IDENTITY_OFFBOARDING_EFFECT_TOOLS = Object.freeze([
   'm365_retire_intune_device',
   'm365_revoke_sessions',
   'm365_disable_user',
-  // Breeze device effects, only ever from input.deviceIds (D-R1-8).
-  'manage_device_session',
+  // No Breeze device effect (amended 2026-10-18): `manage_device_session` does
+  // not exist, and no lock/log-off tool does. Selected devices are manual items.
 ] as const);
 
 /**
@@ -1981,7 +2581,7 @@ export const CAPABILITY_FOR_TOOL: Readonly<Record<string, string>> = Object.free
 );
 ```
 
-…plus one hand-written entry for `manage_device_session` mapping to a `breeze.device.session` capability, which is always ready when the agent's allowlist contains the tool. Add that capability to the list (kind `agent_tool`, provider `null`, `toolNames: ['manage_device_session']`) so the test's "every tool has a capability" case passes.
+*(Amended 2026-10-18: the original `manage_device_session` / `breeze.device.session` entry is removed. That tool does not exist. Selected devices become manual items.)*
 
 `buildIdentityOffboardingPlan` — one `push` helper and two provider blocks, in `EFFECT_PROVIDER_ORDER`:
 
@@ -2003,7 +2603,7 @@ export function buildIdentityOffboardingPlan(
       ordinal: out.length,
       toolName,
       provider,
-      targetId: input.contactId,
+      targetId: contactTargetIdOf(facts), // ai_operator_task_targets.id (E4), never the contact id
       accountExternalId,
       canonicalArguments: Object.freeze({ ...args, reason }),
     });
@@ -2013,7 +2613,10 @@ export function buildIdentityOffboardingPlan(
     if (provider === 'google') pushGoogleBlock(push, input, facts, reason);
     else pushM365Block(push, input, facts);
   }
-  return out;
+  // The degraded set is frozen in the snapshot (amended 2026-10-18): filter, then
+  // renumber densely so the ordinals the approver sees are contiguous.
+  const degraded = new Set(degradedToolsOf(facts));
+  return out.filter((e) => !degraded.has(e.toolName)).map((e, i) => ({ ...e, ordinal: i }));
 }
 ```
 
@@ -2046,17 +2649,12 @@ export function buildIdentityOffboardingPlan(
 
 `userIdentifier` is `facts.m365.externalId` — the Entra object id, **never** the UPN (spec §5.2: "immutable, never the UPN"), so a rename mid-task cannot retarget an effect.
 
-Device effects are **not** in `buildPlan`'s provider loop: `device_actions` dispatches `manage_device_session` per `input.deviceIds` from its own advancer using the same `PlannedEffect` shape with `provider: 'breeze'` and `accountExternalId: null`. Append them after the M365 block so the ordinals are contiguous and the plan approval covers them too:
+**Device work is manual** *(amended 2026-10-18; this replaces the `manage_device_session` block)*. `buildIdentityOffboardingManualWork` adds one item per `input.deviceIds` entry:
+- key `device_signout_<deviceId>`, origin `always`;
+- label "Sign <label> out of <device> and collect it";
+- detail naming the device by its frozen target label.
 
-```ts
-  for (const deviceId of input.deviceIds) {
-    out.push({
-      ordinal: out.length, toolName: 'manage_device_session', provider: 'breeze',
-      targetId: deviceId, accountExternalId: null,
-      canonicalArguments: Object.freeze({ deviceId, action: 'logoff', reason }),
-    });
-  }
-```
+`contactTargetIdOf(facts)` and `degradedToolsOf(facts)` are private, pure readers of `facts.targets.contactTargetId` and `facts.degradedTools`. They **throw** when the field is missing, so `planEffectStep` settles `fail` instead of planning against a guessed target.
 
 `buildIdentityOffboardingManualWork` builds a `Map<string, IdentityManualWorkItem>` (so the dedupe and the stability the test asserts are structural) in this order: always-on items, capability degradations, Exchange-specific items, discovery-derived items, review flags. Every `detail` is a generated instruction naming what to do and where — for example:
 
@@ -2091,13 +2689,10 @@ export const identityOffboardingRecipe: RecipeDefinition<IdentityOffboardingInpu
     intake:           { kind: 'reason',     phase: 'investigate', next: 'confirm_identity' },
     confirm_identity: { kind: 'human_work', phase: 'investigate', inputSchema: identityIntakeOutputSchema, next: 'discover' },
     discover:         { kind: 'probe',      phase: 'plan',        next: 'review' },
-    review:           { kind: 'reason',     phase: 'plan',        next: 'plan_approval' },
-    plan_approval:    { kind: 'probe',      phase: 'plan',        inputSchema: identityReviewOutputSchema,
-                        next: (ctx) => (hasCutoff(ctx.input) ? 'wait_cutoff' : 'effects') },
-    wait_cutoff:      { kind: 'wait',       phase: 'execute',     next: 'effects' },
-    effects:          { kind: 'effect',     phase: 'execute',
-                        next: (ctx) => (hasDevices(ctx.input) ? 'device_actions' : 'manual_work') },
-    device_actions:   { kind: 'effect',     phase: 'execute',     next: 'manual_work' },
+    review:           { kind: 'reason',     phase: 'plan',        next: 'effects' },
+    // Amended 2026-10-18: propose → four-eyes approval → not-before cutoff →
+    // ordered walk, all inside E4's planEffectStep (D-R1-10).
+    effects:          { kind: 'effect',     phase: 'execute',     inputSchema: identityReviewOutputSchema, next: 'manual_work' },
     manual_work:      { kind: 'human_work', phase: 'execute',     next: 'verify_outcome' },
     verify_outcome:   { kind: 'probe',      phase: 'verify',      next: 'document' },
     document:         { kind: 'document',   phase: 'document',    terminal: true },
@@ -2112,11 +2707,15 @@ export const identityOffboardingRecipe: RecipeDefinition<IdentityOffboardingInpu
    */
   permittedNextSteps: Object.freeze({
     intake: ['confirm_identity'],
-    review: ['plan_approval'],
+    review: ['effects'],
   }),
 
   bounds: IDENTITY_OFFBOARDING_BOUNDS,
   buildPlan: buildIdentityOffboardingPlan,
+  // R1a-0 recipe data (amended 2026-10-18).
+  planningSnapshotStepKey: 'discover',
+  entryStepKey: 'intake',
+  unobservableEffects: IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS,
 
   /**
    * One operation per external effect (spec §6.3, §6.5, §6.6).
@@ -2409,7 +3008,7 @@ EOF
 - Modify: `apps/api/src/services/aiGuardrailsTierConfig.parity.test.ts` if it enumerates
 - Create: `apps/api/src/services/aiToolsGoogle.accountWipe.test.ts`
 
-**Why (D-R1-1):** `google_wipe_mobile_device` issues `admin_remote_wipe` — a full factory reset — and its own description says *"This is NOT for offboarding"*. The selective `admin_account_wipe` branch of `wipeMobileDevices` (`aiToolsGoogle.ts:147-172`) is reachable today only through `google_offboard_user`, the composite this recipe is forbidden to call. This task lifts it into its own tool so the recipe has a correct effect to plan.
+**Why (D-R1-1):** `google_wipe_mobile_device` issues `admin_remote_wipe` — a full factory reset — and its own description says *"This is NOT for offboarding"*. The selective `admin_account_wipe` branch of `wipeMobileDevices` (`aiToolsGoogle.ts:178-205`) is reachable today only through `google_offboard_user`, the composite this recipe is forbidden to call. This task lifts it into its own tool so the recipe has a correct effect to plan.
 
 **Interfaces:**
 - Consumes: `resolveWipeTarget`, `wipeMobileDevices`, `resolveContextByOrg`, `getDirectoryClient`, `normalizeGoogleError`, `errorString` — all already in `aiToolsGoogle.ts` / `googleClient.ts`.
@@ -2782,7 +3381,7 @@ EOF
 
 **`setup_required` means "something this tenant can fix".** An unsatisfied capability is partitioned by its `availability`:
 
-- **`tenant_fixable`** → `missing`, and it is what makes the state `setup_required`. There is an action: connect a provider, re-consent Microsoft 365 to profile v2, add the identity tools to the helpdesk agent.
+- **`tenant_fixable`** → `missing`, and it is what makes the state `setup_required`. There is an action: connect a provider, re-consent Microsoft 365 to the current profile version (`M365_PERMISSION_PROFILES['customer-graph-actions'].version`, 3 at the time of the amendment), or add the identity tools to the helpdesk agent.
 - **`always_manual`** → `alwaysManualCapabilities` and `manualStepCount`, and it **never** changes the state. Nothing anyone can do would satisfy it, so holding a fully-consented org at `setup_required` forever would train technicians to ignore the badge and would misstate whose problem it is. The recipe reads `ready`; the card reads *"Ready · 3 steps will be done by hand"*.
 
 Both partitions still drive degradation identically — a tool behind **either** kind of unsatisfied capability is in `degradedEffects` and becomes a human-work item. The distinction is only about what the badge claims.
@@ -2806,8 +3405,8 @@ Per-capability evaluation:
 1. Flag off → `unavailable`, `missing` empty, `alwaysManualCapabilities` empty, `manualStepCount === 0`.
 2. No connections at all → `unavailable`, both provider capabilities in `missing`, `degradesToHumanWork: false` on both.
 3. Google active, no M365 → `setup_required`; every **`tenant_fixable`** `m365.*` capability in `missing`; **`degradedEffects` contains every `m365_*` tool and no `google_*` tool** (spec §4.1's "degrades by provider, not as a whole").
-4. Both active, M365 on manifest v1 → `setup_required`; the v2-only capabilities in `missing`; `m365.graph.user_disable` (User.ReadWrite.All, held in v1) still **satisfied**; the missing ones carry `action.kind === 'reconsent_m365'`.
-5. **Both active, v2, full grants, helpdesk allowlist complete → `ready`.** The three Exchange capabilities are unsatisfied and appear in `alwaysManualCapabilities` with `manualStepCount === 3`, `missing` is **empty**, and `degradedEffects` contains no Graph tool. *(This is the honest steady state of the wave: a fully consented org reads "Ready · 3 steps will be done by hand", not "setup required" forever.)*
+4. Both active, M365 on a **stale** manifest (`permission_manifest_version` below `M365_PERMISSION_PROFILES['customer-graph-actions'].version`) → `setup_required`. Every capability whose roles that manifest lacks is in `missing` and carries `action.kind === 'reconsent_m365'`. A capability whose roles the stale manifest already grants (for example `m365.graph.user_disable`, User.ReadWrite.All) is still **satisfied**. *(Amended 2026-10-18: the profile is at version 3, not 2. Derive the stale and current versions from the profile constant, never from a literal.)*
+5. **Both active, at the current profile version, full grants, helpdesk allowlist complete → `ready`.** The three Exchange capabilities are unsatisfied and appear in `alwaysManualCapabilities` with `manualStepCount === 3`, `missing` is **empty**, and `degradedEffects` contains no Graph tool. *(This is the honest steady state of the wave: a fully consented org reads "Ready · 3 steps will be done by hand", not "setup required" forever.)*
    ```ts
    expect(r.readiness).toBe('ready');
    expect(r.missing).toEqual([]);
@@ -2911,6 +3510,7 @@ EOF
   export type AdmitTaskRefusal =
     | 'tasks_disabled' | 'recipe_disabled' | 'unknown_recipe' | 'recipe_version_mismatch'
     | 'agent_not_found' | 'device_not_in_org' | 'invalid_input'
+    | 'pending_cap_reached' | 'task_limit_exceeded'          // shipped (taskService.ts:58-75) — keep every existing member
     | 'contact_not_in_org' | 'no_provider_account' | 'duplicate_live_task';
   export interface AdmitTaskInput {
     orgId: string; agentId: string; objective: string;
@@ -2925,18 +3525,31 @@ EOF
   export async function admitServiceRecoveryTask(input: AdmitServiceRecoveryTaskInput): Promise<AdmitTaskResult>;
   ```
 
-**The admission sequence** — all inside the **existing** `runOutsideDbContext(() => withSystemDbAccessContext(async () => { … }))` block (`taskService.ts:142-268`), which is one Postgres transaction:
+**Amended 2026-10-18.** `admitServiceRecoveryTask` is about 290 lines (`taskService.ts:130-~420`) and has more gates than this list originally named. **`admitTask` keeps every shipped gate, in the shipped order.** In particular it keeps:
+- the `task_limit_exceeded` targets check (`:244`);
+- `lockOrgTaskAdmission(orgId)` (`:253`);
+- the `pending_cap_reached` check (`:276`);
+- the ±10% deadline jitter through `resolveTaskDeadlineMs` (`:283-285`);
+- the `clientIdempotencyKey` replay path.
+
+The steps below are *inserted* among them. They do not replace them.
+
+**The admission sequence** — all inside the **existing** `runOutsideDbContext(() => withSystemDbAccessContext(async () => { … }))` block, which is one Postgres transaction:
 
 1. Flags: `aiOperatorTasksEnabled()` → `tasks_disabled`; the recipe's own flag → `recipe_disabled`. (Map recipe key → flag accessor in a small frozen `RECIPE_FLAGS` record beside `admitTask`, so a third recipe adds one line.)
 2. `resolveAdmissionRecipe(workflowKey, workflowVersion)` → `unknown_recipe` / `recipe_version_mismatch`. E1's refusals, surfaced unchanged.
 3. `recipe.inputSchema.parse(recipeInput)` → `invalid_input` on throw.
-4. Agent lookup and org check — **unchanged from today**, including the `agent.orgId === null || agent.orgId === input.orgId` rule and the comment at `:144-149` explaining why it is the only thing between a task and an agent in another tenant.
+4. Agent lookup and org check — **unchanged from today**, including the `agent.orgId === null || agent.orgId === input.orgId` rule (`taskService.ts:201`) and the comment at `:190-200` explaining why it is the only thing between a task and an agent in another tenant.
 5. **If the recipe's `targetKinds` includes `'contact'`:**
-   a. `resolveOrCreateContactForTask` — by id when given (org-scoped read; `contact_not_in_org` if absent), else by `personHint` through `matchContactByEmail` (`services/contacts/crud.ts:439`) when the hint parses as an email, else **create** a contact via `createContact` (`crud.ts:467`) with just the hint as `name`. A hint that matches more than one contact is `ambiguous` — which is **not** a refusal at admission: the task is admitted with the contact unresolved and the `intake` reason step resolves it. Only an explicitly supplied `contactId` that is not in the org is a hard refusal.
+   a. `resolveOrCreateContactForTask` — by id when given (org-scoped read; `contact_not_in_org` if absent), else by `personHint` through `matchContactByEmail` (`services/contacts/crud.ts:480`) when the hint parses as an email, else **create** a contact via `createContact` (`crud.ts:508`) with just the hint as `name`. A hint that matches more than one contact is `ambiguous` — which is **not** a refusal at admission: the task is admitted with the contact unresolved and the `intake` reason step resolves it. Only an explicitly supplied `contactId` that is not in the org is a hard refusal.
    b. **`lockContactForRecipe(orgId, recipeKey, contactId)`** — `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))` with `$1 = 'ai_operator:' + recipeKey + ':' + contactId` (D-R1-6). First statement after the contact is known, before the liveness read.
    c. `findLiveTaskForContact` → `duplicate_live_task` with the existing task id in the detail.
    d. Provider accounts: read the contact's `contact_external_links` for `system ∈ ('m365','google')`; where a link is absent, resolve the account from the provider by email (M365: `executeM365ReadActionByOrg` `m365.user.get`; Google: `dir.users.get`) and **`upsertContactExternalLinks`** (E2) so the next task is cheaper. Zero accounts on both providers → `no_provider_account`.
-6. Insert the `ai_operator_tasks` row with `workflowKey`/`workflowVersion` **from the resolved recipe**, not from literals, and the `.onConflictDoNothing({ target: [orgId, clientIdempotencyKey], where: … })` replay path **exactly as today** — including the re-read and the throw on a conflict with no readable row.
+6. Insert the `ai_operator_tasks` row with `workflowKey`/`workflowVersion` **from the resolved recipe**, not from literals.
+   - `currentStepKey` is `recipe.entryStepKey ?? 'investigate'` (R1a-0 Task 1c), and `phase` is `recipe.steps[currentStepKey].phase`. Today `phase: 'investigate'` is hard-coded at `:308`, and that is unchanged for `service_recovery`. `identity_offboarding` declares `'intake'`, and `service_recovery` declares none, so its insert is byte-identical.
+   - The checkpoint is built per arm. `service_recovery` builds exactly today's object (`:175-186`). `identity_offboarding` builds `identityOffboardingCheckpointSchema.parse({ version: 1, recipeInput })`, which has no `criterion` and no `planningSnapshot`; `discover` writes the latter.
+   - Admission refuses an `input.cutoffAt` later than the task's **jittered** deadline (the `deadlineAt` it is about to write) as `invalid_input`, because a cutoff after the deadline could never dispatch.
+   - The task row also uses the `.onConflictDoNothing({ target: [orgId, clientIdempotencyKey], where: … })` replay path **exactly as today** — including the re-read and the throw on a conflict with no readable row.
 7. `createTaskTarget` (E2) for the contact (`targetKind: 'contact'`, `targetOrdinal: 0`, `targetLabel` = the frozen label), then one per selected device (`targetOrdinal: 1..n`). The ticket target is created lazily by E3's `ensureTaskTicket` at the first human-work step.
 8. `freezeTargetAccount` (E2) once per resolved provider account.
 9. `appendTaskEvent` (E2) `task_admitted` with the recipe key, version and target count.
@@ -2983,7 +3596,10 @@ export async function admitServiceRecoveryTask(
 10. `admitTask` for `identity_offboarding` with the flag off returns `recipe_disabled` **before** any DB call.
 11. `admitTask` takes the advisory lock **before** the liveness read — assert call order on the stub.
 12. A second admission while one is live returns `duplicate_live_task` naming the existing task id.
-13. `admitServiceRecoveryTask` produces a byte-identical insert to today's for the same input — snapshot the values object.
+13. `admitServiceRecoveryTask` produces a byte-identical insert to today's for the same input. Snapshot the values object, including `currentStepKey: 'investigate'` and the checkpoint bytes R1a-0 pinned as `1a-3`.
+13a. `admitTask` for `identity_offboarding` writes `currentStepKey: 'intake'`, and its checkpoint parses to the identity arm.
+13b. `admitTask` keeps `task_limit_exceeded`, `lockOrgTaskAdmission` and `pending_cap_reached` in the shipped order. Assert the call order on the stub, and assert that the advisory contact lock is taken **after** `lockOrgTaskAdmission`.
+13c. A `cutoffAt` beyond the recipe deadline is `invalid_input`, and no row is written.
 14. A contact with no account on either provider returns `no_provider_account` and **inserts no task row**.
 15. Targets and accounts are written in the same transaction as the task row — assert all three inserts happened on the same handle before the outer promise resolved.
 
@@ -3077,70 +3693,92 @@ Expected: PASS both; E3's file is **not** edited.
 
 ---
 
-### Task 11: The coordinator advancers — `RECIPE_ADVANCERS['identity_offboarding']`
+### Task 11: The coordinator advancers — `RECIPE_ADVANCERS['identity_offboarding']` *(rewritten 2026-10-18 against as-built E4 + R1a-0)*
 
 **Files:**
 - Create: `apps/api/src/services/aiOperator/identityAdvancers.ts`
 - Create: `apps/api/src/services/aiOperator/identityAdvancers.test.ts`
-- Modify: `apps/api/src/services/aiOperator/taskCoordinator.ts` — **one added table entry and one import. Nothing else.**
+- Modify: `apps/api/src/services/aiOperator/taskCoordinator.ts`. Add **one table entry and one import, nothing else.** R1a-0 already did the arm narrowing, the gate selection, `export type StepAdvancer` and `COORDINATOR_STEP_OPS` (Task 1b).
 
-E1 put step execution in `RECIPE_ADVANCERS[recipeKey][stepKey]`, consulted **before** E3's `KIND_ADVANCERS` fallback. This recipe registers four advancers and lets the generic ones handle the rest:
+E1 puts step execution in `RECIPE_ADVANCERS[recipeKey][stepKey]`, which is consulted **before** the `KIND_ADVANCERS` fallback (`taskCoordinator.ts:779-781`). E3 owns `human_work` and `wait`, and E4 owns `effect` and `probe`.
 
 | Step | Advancer | Why |
 |---|---|---|
-| `intake` | `advanceIntake` (R1) | recipe-specific prompt, candidate set, validation |
-| `discover` | `advanceDiscover` (R1) | recipe-specific reads, writes the facts onto the step row |
-| `review` | `advanceReview` (R1) | recipe-specific prompt over the plan, then proposes the approval |
-| `verify_outcome` | `advanceVerifyOutcome` (R1) | the final probe and the `verified_resolved` / `partial` decision |
-| `document` | `advanceDocument` (R1) | writes the completion record |
-| `confirm_identity`, `manual_work` | E3's `advanceHumanWork` via `KIND_ADVANCERS` — **except** `manual_work`, which R1 overrides to walk the cursor (D-R1-5) | |
-| `wait_cutoff` | E3's `advanceWait` | nothing recipe-specific |
-| `plan_approval` | E4's `advancePlanApprovalStep` | matched by the `plan_` prefix arm |
-| `effects`, `device_actions` | E4's `advanceEffectStep`, **overridden** by R1's `advanceEffects` to walk `checkpoint.effectCursor` one ordinal per wake | |
+| `intake` | `advanceIntake` (R1) | recipe-specific prompt, candidate set, validation; writes `resumeStepKey = 'discover'` when it moves into `confirm_identity` |
+| `confirm_identity` | E3's `advanceHumanWork` via `KIND_ADVANCERS` | generic; resumes at the `resumeStepKey` that `intake` wrote |
+| `discover` | `advanceDiscover` (R1) | coordinator-issued reads; computes readiness and the degraded set; `sealPlanningSnapshot` (R1a-0) and the step-row envelope; `checkpoint.planningSnapshot` |
+| `review` | `advanceReview` (R1) | a bounded reasoning run over the plan built from the **snapshot**; validates the flags; moves into `effects` with `resumeStepKey = 'manual_work'` and `dispatchNotBefore = input.cutoffAt` |
+| `effects` | `advanceIdentityEffects` (R1) → E4's `advanceEffect` | the live-readiness **veto** (A.4), then E4 owns propose, approval, re-seal, not-before and the ordered walk, unchanged |
+| `manual_work` | `advanceManualWork` (R1) | walks `manualWorkCursor` (D-R1-5) and resolves its own successor |
+| `verify_outcome` | `advanceVerifyOutcome` (R1) | the final probe, and the `verified_resolved` / `partial` decision |
+| `document` | `advanceDocument` (R1) | Task 12 |
 
-**Every advancer's transition writes `resumeStepKey`.** After a non-`reason` step settles, the advancer calls `resolveDeterministicNextStep(recipe, stepKey, { input: checkpoint.recipeInput, facts, readiness })` and passes the result into the existing `writeLeasedStep(…, checkpoint)` call with `checkpoint.resumeStepKey` set — which is precisely the field E3 created and the generic advancers read. A `{ ok: false }` resolution is `settle({ event: 'fail', outcome: 'unresolved', detail: resolution.detail })`; it is **never** guessed (E3's decision 11: "Absence is a recipe bug and is settled `fail`/`unresolved` with a named detail").
+There is no `plan_approval`, `wait_cutoff` or `device_actions` step (D-R1-10), and no `effectCursor` (D-R1-4).
+
+**The transition rule (D-R1-2, as amended).** When an R1 advancer moves the task into step S, it calls `resolveDeterministicNextStep(recipe, S, { input, facts, readiness })` and writes the result as `checkpoint.resumeStepKey`, which E3's and E4's generic advancers read when S finishes. A `{ ok: false }` result is `settle({ event: 'fail', outcome: 'unresolved', detail })`, and it is **never** guessed.
 
 **Interfaces:**
+- Consumes:
+  - from R1a-0 and E4: `sealPlanningSnapshot`, `loadPlanningFacts`, `COORDINATOR_STEP_OPS`, `advanceEffect` (`taskCoordinator.ts:1574`); from Task 2: `isIdentityOffboardingCheckpoint`.
+  - from R1a: `computeRecipeReadiness` (Task 8) and `discoverIdentityFacts` (Task 6).
 - Produces:
   ```ts
   export const IDENTITY_OFFBOARDING_ADVANCERS: Readonly<Record<string, StepAdvancer>>;
   export async function advanceIntake(a: StepAdvancerArgs): Promise<string>;
   export async function advanceDiscover(a: StepAdvancerArgs): Promise<string>;
   export async function advanceReview(a: StepAdvancerArgs): Promise<string>;
-  export async function advanceEffects(a: StepAdvancerArgs): Promise<string>;
+  export async function advanceIdentityEffects(a: StepAdvancerArgs): Promise<string>;
   export async function advanceManualWork(a: StepAdvancerArgs): Promise<string>;
   export async function advanceVerifyOutcome(a: StepAdvancerArgs): Promise<string>;
   export async function advanceDocument(a: StepAdvancerArgs): Promise<string>;
   ```
-  `StepAdvancerArgs` is E1's `StepAdvancer` parameter object (`{ task; leaseEpoch; checkpoint; recipe; now }`) re-exported from `taskCoordinator.ts`; **do not redeclare it** — import the type.
+  `StepAdvancerArgs` is `Parameters<StepAdvancer>[0]` (`{ task; leaseEpoch; checkpoint; recipe; now }`), using R1a-0's exported `StepAdvancer`. **Do not redeclare it.** Every settle, wait, move and reasoning-run admission goes through `COORDINATOR_STEP_OPS` (R1a-0 Task 1b), imported **lazily** inside each advancer body, together with `advanceEffect` (`:1574`). A static import of `./taskCoordinator` from `identityAdvancers.ts` is a load-time cycle. Never re-implement a leased write.
 
-**The five advancers, in one paragraph each:**
+**What each advancer does:**
 
-- **`advanceIntake`** — admits a bounded reasoning run through the same `admitReasoningRun` path `service_recovery` uses, with `recipe.promptVersion` and `renderIntakeContext`. On the run's terminal wake, `validateIntakeOutput(payload, orgContactIds)`; on `{ok:false}` the step settles `fail`/`unresolved` naming the reason (a hallucinated contact id is a hard stop, not a retry). On success, records the candidates as a task event and transitions to `confirm_identity` — whose human-work item's **label names the candidates** so the technician confirms a person, not a uuid.
-- **`advanceDiscover`** — `openStep(dbh, { stepKey: 'discover', stepKind: 'probe', … })`, calls `discoverIdentityFacts` with the frozen accounts from `ai_operator_task_target_accounts`, writes the facts into that step row's `checkpoint`, sets `checkpoint.discoveryStepId`, and transitions to `review`. A discovery that returns `present:false` on **both** providers hands off (`hand_off`, `unresolved`) with a summary naming the provider errors — there is nothing to plan.
-- **`advanceReview`** — a bounded reasoning run over `renderReviewContext(…, plannedEffects: buildPlan(input, facts) minus degraded tools, degradedCapabilities)`; `validateReviewOutput(payload, plannedToolNames)`; then computes the final plan, calls `splitSecretBearingEffects` (E4 — empty for this recipe, and the test asserts that, because a non-empty `individual` list here would mean a secret-bearing effect slipped into an identity plan) and `proposePlanApproval` (E4). `no_requester` → hand off (E4's rule: "a plan that destroys a person's access needs a named human on both ends").
-- **`advanceEffects`** — reads `checkpoint.effectCursor`, calls E4's `dispatchPlannedEffect` for that one ordinal, and on a settled outcome increments the cursor and re-enters; when the cursor passes the last ordinal it resolves `next` and transitions. **One effect per wake**, so the ordering contract is enforced by the runtime and not merely by the plan: a stopped task has completed a prefix, which is exactly what Task 4's property is about. `{ kind: 'refused' }` and `{ kind: 'handoff' }` settle; `{ kind: 'noop' }` and `{ kind: 'dispatching' }` advance or wait.
-- **`advanceVerifyOutcome`** — spec §6.6's last rule, stated in code: `verified_resolved` requires this step's own probe to pass **and** a `satisfied` post-probe for every **observable** effect; an `unknown` on an observable effect, or an unsubsumed unobservable one, is `partial` with the unverified effects listed. The subsumption check reads `IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS` and requires the named subsuming effect to be present **and** `satisfied`.
+- **`advanceIntake`**
+  - Admits a bounded reasoning run through the same `admitReasoningRun` path that `service_recovery` uses, with `recipe.promptVersion` and `renderIntakeContext`.
+  - On the run's terminal wake, it calls `validateIntakeOutput(payload, orgContactIds)`. On `{ok:false}` it settles `fail`/`unresolved` and names the reason.
+  - On success, it ensures the contact target row exists, records the candidates as a task event, and moves into `confirm_identity` with `resumeStepKey = 'discover'`. That step's checklist label **names the candidates**.
+- **`advanceDiscover`**
+  - Calls `discoverIdentityFacts` with the frozen accounts and `computeRecipeReadiness(org)`.
+  - Builds the facts as `{ ...identityFacts, targets: { contactTargetId }, degradedTools }`. `contactTargetId` comes from the task's live contact target row. `degradedTools` comes from readiness, and it is the snapshot's degraded set.
+  - Opens and settles the `discover` step row with `checkpoint: { planningSnapshot: envelope }` from `sealPlanningSnapshot(facts, now)`, writes `checkpoint.planningSnapshot = { stepId, digest }`, and moves to `review`. All three happen in **one** leased transaction, through `COORDINATOR_STEP_OPS` (the CAS and its `alsoInTransaction`), so the ref and the envelope can never disagree.
+  - If both providers return `present: false`, it hands off (`unresolved`), naming the provider errors.
+  - **It runs at most once per task.** There is no re-discovery after `review`, so nothing in R1 calls `bumpPlanRevision` (A.4).
+- **`advanceReview`**
+  - Loads the facts with `loadPlanningFacts`. A failed load settles `fail`, because nothing has been proposed yet.
+  - Runs a bounded reasoning run over `renderReviewContext(…, plannedEffects: recipe.buildPlan(input, facts), degradedCapabilities)`. The degraded tools are already absent, because `buildPlan` filters `facts.degradedTools`.
+  - Calls `validateReviewOutput(payload, plannedToolNames)`.
+  - Moves into `effects` with `resumeStepKey = 'manual_work'` and `dispatchNotBefore = input.cutoffAt ?? undefined`.
+  - **It does not propose the plan.** The `effects` step does that (E4).
+  - A secret-bearing tool cannot reach the plan: `proposePlanApproval` refuses it inline (`secret_bearing_effect`), and the catalog contains none. Test case 5 asserts the catalog half.
+- **`advanceIdentityEffects`**
+  - Recomputes readiness. If a planned effect with **no operation row** has a tool that is now unready, it settles `hand_off`/`unresolved` and names the remaining effects. If an earlier effect is still pending, it delegates first (A.4). Effects already started are never vetoed.
+  - Otherwise it returns `advanceEffect(a)` unchanged.
+  - Readiness I/O throws, and the wake retries. It never settles on a transient error.
+- **`advanceManualWork`** — follows D-R1-5. Manual items include one item per selected device (Task 3).
+- **`advanceVerifyOutcome`** — implements spec §6.6's last rule. `verified_resolved` requires two things: this step's own probe passes, and every **observable** effect has a `satisfied` post-probe. An unobservable effect counts only when its subsumer is present, acts on the same `accountExternalId`, and is `satisfied` (`recipe.unobservableEffects`). Anything else is `partial`, with the unverified effects listed. It re-reads memberships and licences, so world drift after discovery (a group added later) surfaces here as `partial`.
 - **`advanceDocument`** — Task 12.
 
 - [ ] **Step 1: Write the failing test**
 
-`identityAdvancers.test.ts` drives each advancer against stubbed E2/E3/E4 modules (`vi.doMock`), following whatever mocking style `taskCoordinator.recipeResolution.test.ts` (E1) established — **read that file first and reuse it; do not introduce a second coordinator test harness.** Cases:
+`identityAdvancers.test.ts` drives each advancer against stubbed E2, E3, E4 and R1a-0 modules (`vi.doMock`). Reuse the mocking style of `taskCoordinator.recipeResolution.test.ts`. **Read that file first, and do not introduce a second coordinator test harness.** Cases:
 
-1. Every step key of the recipe resolves to an advancer — either R1's table or E3's `KIND_ADVANCERS` — and **none falls through to "unknown step"**. Assert by iterating `IDENTITY_OFFBOARDING_STEP_KEYS`.
-2. `advanceIntake` settles `fail` on `unknown_contact` and does **not** open `confirm_identity`.
-3. `advanceDiscover` writes `discoveryStepId` and hands off when both providers are absent.
-4. `advanceReview` excludes every degraded tool from the proposed plan — feed a readiness map missing `m365.graph.intune_retire` and assert no `m365_retire_intune_device` reaches `proposePlanApproval`.
-5. `advanceReview` asserts `splitSecretBearingEffects(...).individual` is empty and settles `fail` if it is not.
-6. `advanceEffects` dispatches exactly ONE ordinal per call and increments the cursor.
-7. `advanceEffects` on `{ kind: 'refused' }` settles and **does not** increment the cursor — a refused effect must not be skipped over silently.
+1. Every step key resolves to an advancer, either from R1's table or from `KIND_ADVANCERS`. **None falls through to "unknown step".** Assert this by iterating `IDENTITY_OFFBOARDING_STEP_KEYS`. `confirm_identity` resolves to the generic entry.
+2. `advanceIntake` settles `fail` on `unknown_contact`, and it does **not** open `confirm_identity`.
+3. `advanceDiscover` writes the envelope to the step row and `planningSnapshot` to the task checkpoint, with `digest === sealPlanningSnapshot(facts, now).digest`. The digest depends only on `facts`, never on `capturedAt`. It includes `targets.contactTargetId` and `degradedTools` in the facts. It hands off when both providers are absent.
+4. `advanceReview`, given a snapshot whose `degradedTools` contains `m365_retire_intune_device`, renders a plan without that tool. It writes `resumeStepKey: 'manual_work'` and `dispatchNotBefore` equal to `cutoffAt`, and it calls **no** `proposePlanApproval`.
+5. No catalog tool is secret-bearing. Assert `IDENTITY_OFFBOARDING_EFFECT_TOOLS.every((t) => !isSecretBearingTool(t))`.
+6. `advanceIdentityEffects` with readiness intact calls `advanceEffect` exactly once with the same args.
+7. `advanceIdentityEffects`, with a planned tool that has no operation row and is now unready, hands off and never calls `advanceEffect`. When an earlier effect's operation is pending, it delegates to `advanceEffect` on that wake.
 8. `advanceVerifyOutcome` returns `partial` when an observable effect probed `unknown`.
-9. `advanceVerifyOutcome` returns `verified_resolved` when the only `unknown` is `google_signout` **and** `google_suspend_user` is `satisfied`.
-10. `advanceVerifyOutcome` returns `partial` when `google_signout` is `unknown` and the suspend is **absent from the plan**.
-11. Every advancer that transitions writes `resumeStepKey`, and a failed `next` resolution settles `fail` with the resolver's detail — asserted for all five.
-12. **No advancer throws**: each is driven with a rejecting dependency and asserted to settle.
+9. `advanceVerifyOutcome` returns `verified_resolved` when the only `unknown` is `google_signout` **and** `google_suspend_user` is `satisfied` on the same account.
+10. `advanceVerifyOutcome` returns `partial` when `google_signout` is `unknown` and the suspend is **absent from the plan**, or acts on a different account.
+11. Every R1 advancer that moves into a step writes that step's `resumeStepKey`. A failed `next` resolution settles `fail` with the resolver's detail. Assert this for each advancer that transitions.
+12. **No advancer throws on a refusal.** Drive each with a rejecting *refusal-shaped* dependency and assert that it settles. Drive each with a rejecting I/O dependency and assert that it rethrows, which is E4's retry rule (`applyEffectDirective`).
 
-`taskCoordinator.ts`'s own guard test (E4's `taskCoordinator.planApproval.test.ts`) still asserts the three invariants verbatim and that `revision` has exactly one writer — run it and keep it green.
+`taskCoordinatorPlanApproval.test.ts` must still pass **unmodified**. It pins `effect: (a) => advanceEffect(a)` and `probe: (a) => advanceProbe(a)` in `KIND_ADVANCERS`.
 
 - [ ] **Step 2: Wire it — the one coordinator edit**
 
@@ -3148,29 +3786,31 @@ E1 put step execution in `RECIPE_ADVANCERS[recipeKey][stepKey]`, consulted **bef
 import { IDENTITY_OFFBOARDING_ADVANCERS } from './identityAdvancers';
 …
 const RECIPE_ADVANCERS: Readonly<Record<string, Readonly<Record<string, StepAdvancer>>>> = {
-  [SERVICE_RECOVERY_WORKFLOW_KEY]: { /* unchanged */ },
+  [SERVICE_RECOVERY_WORKFLOW_KEY]: { /* unchanged (R1a-0 already narrowed these) */ },
   [IDENTITY_OFFBOARDING_WORKFLOW_KEY]: IDENTITY_OFFBOARDING_ADVANCERS,
 };
 ```
 
 Run: `git diff --stat -- apps/api/src/services/aiOperator/taskCoordinator.ts`
-Expected: roughly `1 file changed, 3 insertions(+)`. Materially larger means advancer logic moved into the coordinator — move it back.
+Expected: about `1 file changed, 3 insertions(+)`. Anything materially larger means advancer logic moved into the coordinator; move it back.
 
 - [ ] **Step 3: Run green and commit**
 
-Run: `cd apps/api && npx vitest run src/services/aiOperator/ && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json`
-Expected: every `aiOperator` unit file passes — check the count, E1–E4's files must all still be there — and `tsc` is clean.
+Run: `cd apps/api && npx vitest run src/services/aiOperator/ && NODE_OPTIONS=--max-old-space-size=12288 npx tsc --noEmit -p tsconfig.json; echo "tsc exit=$?"`
+Expected: every `aiOperator` unit file passes. Check the file count: the E1–E4 and R1a-0 files, including `e4Characterization.test.ts`, must all still be there. Expect `tsc exit=0`.
 
 ```
 git add apps/api/src/services/aiOperator/
 git commit -m "$(cat <<'EOF'
 feat(api): identity_offboarding coordinator advancers (R1)
 
-Five recipe-specific advancers plus overrides for effects and manual_work;
-E3's human_work/wait and E4's plan_approval/effect arms handle the rest. Every
-transition resolves StepDefinition.next and persists it as resumeStepKey; an
-unresolvable next settles fail/unresolved and is never guessed. One effect
-ordinal per wake, so a stopped task has completed a prefix.
+Six recipe-specific advancers. E3's human_work arm runs confirm_identity, and
+E4's effect arm runs the effects step behind a live-readiness veto. That step
+proposes the plan, waits for four-eyes approval, re-seals against the planning
+snapshot frozen at discover, honours the cutoff as a not-before gate and walks
+the effects in order. Each transition resolves StepDefinition.next for the step
+it enters and persists it as resumeStepKey. An unresolvable next settles
+fail/unresolved and is never guessed.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 EOF
@@ -3186,7 +3826,7 @@ EOF
 - Create: `apps/api/src/services/aiOperator/completionRecord.test.ts`
 
 **Interfaces:**
-- Consumes: `addTicketComment` (`../ticketService:1533`, with `isPublic: false` → `commentType: 'internal'`); `aiOperatorOperations`, `aiOperatorTaskSteps`, `aiOperatorTaskEvents`, `aiOperatorPlanApprovalEffects`, `ticketChecklistItems`; `OPERATOR_TASK_ACTOR` (E3).
+- Consumes: `addTicketComment` (`../ticketService:2355`, with `isPublic: false` → `commentType: 'internal'`); `aiOperatorOperations`, `aiOperatorTaskSteps`, `aiOperatorTaskEvents`, `aiOperatorPlanApprovalEffects`, `ticketChecklistItems`; `OPERATOR_TASK_ACTOR` (E3).
 - Produces:
   ```ts
   export const COMPLETION_RECORD_MAX_CHARS = 12_000;
@@ -3371,12 +4011,19 @@ intake → reasoning run admitted, prompt_version = 'identity_offboarding/v1'
 confirm_identity → a real ticket_checklist_items row with source='operator_task';
   the task is waiting(information) with wait_dependency_kind='user_answer'
   ↳ tick it as a USER (patchChecklistItem) → outbox row → wake
-discover → facts land on the discover step row's checkpoint; task.checkpoint
-  .discoveryStepId points at it
-review → plan proposed: ai_operator_plan_approvals pending + N
-  ai_operator_plan_approval_effects rows; exactly ONE operator_plan intent
-plan approve → markPlanApproved; task revision unchanged; approval 'approved'
-effects → ONE ordinal per wake, IN PLAN ORDER
+discover → the planning-snapshot envelope lands on the discover step row's
+  checkpoint; task.checkpoint.planningSnapshot = { stepId, digest } and the
+  digest re-verifies (amended 2026-10-18)
+review → reasoning run over the snapshot plan; task moves into `effects` with
+  resumeStepKey='manual_work' and dispatchNotBefore = cutoffAt
+effects (E4 planEffectStep) → plan proposed: ai_operator_plan_approvals pending
+  + N ai_operator_plan_approval_effects rows, step_key='effects'; exactly ONE
+  operator_plan intent; task waiting(approval)
+  ↳ approve → markPlanApproved; task revision unchanged; approval 'approved'
+  ↳ with cutoffAt in the future: waiting(maintenance_window), NO child intent
+    minted; advance the clock past it
+effects → ONE new dispatch per wake, IN PLAN ORDER; google_signout's unknown
+  post-probe is recorded unobservable and the walk continues to the suspend
   ↳ assert after every wake: the set of settled operations is a PREFIX of the
     plan, and `google_suspend_user` / `m365_disable_user` have not settled while
     any mail-routing effect of that provider is unsettled. This is Task 4's
@@ -3394,9 +4041,12 @@ document → one internal ticket comment; its text contains each effect with its
 
 Each is its own `it`, in the same file:
 
-1. **Approval superseded by a discovered group.** After the plan is approved, insert a new group membership into the faked discovery and force a re-discovery; assert `bumpPlanRevision` supersedes the approval, the `operator_plan` intent is cancelled, no effect is dispatched under the stale approval, and `checkPlanEffectMembership` refuses with `revision_moved`. Then assert a **new** approval is proposed for the new revision.
+1. **The world drifts after discovery; the snapshot does not** *(rewritten 2026-10-18 — R1 never re-discovers, so it never calls `bumpPlanRevision`; A.4)*. The case has three parts:
+   - (a) After approval, add a group membership in the faked provider. Assert that the seal still holds (no seal hand-off), that the extra group is **not** removed, and that `verify_outcome` settles `partial` naming it.
+   - (b) After approval, mutate the discover row's envelope as `breeze_app` (forge it). Assert that the next wake hands off with the digest-mismatch detail and dispatches nothing further.
+   - (c) After approval, revoke the auto-reply grant on the connection. Assert that `advanceIdentityEffects` hands off before that effect, and that every earlier effect is settled. Supersession by `bumpPlanRevision` is still pinned as an **E4 contract**, by R1c Task 25 case 7.
 2. **Stop mid-plan leaves a safe state.** Cancel the task after the mail effects and before the suspend; assert the account is **not** suspended, the mail effects **are** settled, the handoff summary lists the remaining ordinals, and nothing dispatches afterwards.
-3. **Provider not ready degrades to human-work.** Set the M365 connection to `permission_manifest_version = 1` with no `MailboxSettings.ReadWrite` grant; assert `m365_set_auto_reply` is **absent from the plan** and a checklist item with generated instructions exists in its place, while every Google effect still dispatches. Then assert the task can still reach `verified_resolved` for what it did do — **degradation is not failure** (spec §4.1).
+3. **Provider not ready degrades to human-work.** Set the M365 connection to a stale `permission_manifest_version` (below `M365_PERMISSION_PROFILES['customer-graph-actions'].version`) with no `MailboxSettings.ReadWrite` grant, *before* `discover` runs; assert `m365_set_auto_reply` is **absent from the plan** and a checklist item with generated instructions exists in its place, while every Google effect still dispatches. Then assert the task can still reach `verified_resolved` for what it did do — **degradation is not failure** (spec §4.1).
 4. **Org-merge detach.** Merge the task's org into another; assert the contact target is **detached** in the merge's resolve phase with `detached_reason = 'org_merged'`, the human-work link is nulled, the task hands off, and **nothing dispatches under the dead tenant**. (E2 and E3 own the fences; this asserts they cover a contact-targeted task.)
 5. **Ticket-move detach.** Move the task's ticket to another org; assert `ai_operator_task_steps.checklist_item_id` is nulled (never re-stamped — E3 decision 1), the task hands off with a readable reason, and the ticket move itself does **not** raise 23503.
 
@@ -3411,8 +4061,8 @@ Each is its own `it`, in the same file:
 
 - [ ] **Step 4: `aiOperatorRecipeReadiness.integration.test.ts`**
 
-1. `GET /workflows` against a real org with a real `m365_connections` row on v1 returns `setup_required`, with the v2 roles named in `missingCapabilities`.
-2. The same org after `permission_manifest_version = 2` and full `observed_grants` returns **`ready`**, with `missingCapabilities: []`, the three Exchange capabilities in `alwaysManualCapabilities`, and `manualStepCount: 3`. This is the assertion that proves the whole readiness rule end-to-end through the route's DTO, not just in the pure function.
+1. `GET /workflows` against a real org with a real `m365_connections` row on a stale manifest version (below `M365_PERMISSION_PROFILES['customer-graph-actions'].version`) returns `setup_required`, with the roles that version lacks named in `missingCapabilities`.
+2. The same org after `permission_manifest_version` = `M365_PERMISSION_PROFILES['customer-graph-actions'].version` and full `observed_grants` returns **`ready`**, with `missingCapabilities: []`, the three Exchange capabilities in `alwaysManualCapabilities`, and `manualStepCount: 3`. This is the assertion that proves the whole readiness rule end-to-end through the route's DTO, not just in the pure function.
 3. An org with neither connection returns `unavailable`.
 4. Readiness is **org-scoped**: a second org's connection does not make the first ready (the cross-tenant case, asserted as `breeze_app`).
 5. With the recipe flag off, `unavailable` with `missingCapabilities: []` **and** `alwaysManualCapabilities: []` — a disabled recipe reports no gaps of either kind.
@@ -3921,12 +4571,12 @@ Ordering, over real rows:
 1. For each `k` in `0..plan.length`, drive the task until exactly `k` effects have settled, then assert the invariant against `ai_operator_operations`: for each provider, if the lockout effect has settled, every mail-routing effect of that provider has settled. Driven as a loop over a freshly admitted task per `k` — slower, but the property is about independent stopping points, not about one run observed repeatedly.
 2. A task cancelled at each `k` records the remaining ordinals in its handoff summary, and **no operation settles after the cancel**.
 
-Membership (spec §9(c), against E4's `checkPlanEffectMembership` and `revalidateRelease`'s `plan_approval` arm):
+Membership (spec §9(c), against E4's `checkPlanEffectMembership` and `revalidateRelease`'s `decided_via = 'plan_approval'` branch, `actionIntents/revalidateRelease.ts:391`; this is the intent decision source, not a recipe step):
 3. An effect whose `(task_id, plan_revision, ordinal, argument_digest)` is in the approved set releases.
 4. An effect with a mutated argument is refused `argument_digest_mismatch` — mutate the intent's arguments row directly and assert the refusal happens **at release**, from rows.
 5. An effect with an ordinal outside the set is refused `effect_not_in_set`.
 6. An effect whose tool is not in the set is refused `tool_not_in_set`.
-7. After `bumpPlanRevision`, a child effect minted under the old revision is refused `revision_moved`, and the `operator_plan` intent for the old revision is cancelled.
+7. After `bumpPlanRevision({ orgId, taskId, fromRevision, leaseEpoch, detail })` (one args object, `planApproval.ts:784`; called directly, because R1's runtime never calls it), a child effect minted under the old revision is refused, and the `operator_plan` intent for the old revision is cancelled. The refusal is `plan_superseded` when the approval id is named, which is the mint path (`planApproval.ts:288`), and `plan_approval_missing` when it is not, because the lookup is then at the live revision (`:271-285`). Assert both.
 8. A plan whose effect ROWS are mutated under a live approval fails `digest_mismatch` at `computeEffectDigestForRelease` — **before** membership even runs (E4's D-E4-4's two independent seals).
 9. An effect naming a tool absent from the admitting agent's frozen `toolAllowlist` is refused `tool_not_in_agent_allowlist` at mint **and** at release (E4's ceiling, asserted for this recipe's tools specifically).
 10. The requester of the plan intent cannot approve it — the four-eyes rule, asserted end-to-end for `operator_plan`.
@@ -4143,6 +4793,25 @@ One instruction still tells the executor to read before writing, and it is not a
 
 ### Identifier consistency
 
-`StepDefinition.next` / `NextStepContext` / `NextStepResolver` / `resolveDeterministicNextStep` / `CAPABILITY_AVAILABILITIES` / `CapabilityAvailability` / `operationKey`'s `toolName` (Task 1) are used in Tasks 3, 8, 11, 17. `identityOffboardingInputSchema` / `identityIntakeOutputSchema` / `identityReviewOutputSchema` / `IDENTITY_REVIEW_FLAGS` / `IDENTITY_EXCEPTION_CLASSES` (Task 2) in Tasks 3, 7, 19, 26. `IDENTITY_OFFBOARDING_*` constants, `buildIdentityOffboardingPlan`, `buildIdentityOffboardingManualWork`, `identityOffboardingRecipe`, `CAPABILITY_FOR_TOOL`, `IdentityManualWorkItem` (Task 3) in Tasks 4, 8, 10, 11, 24, 25. `google_account_wipe_mobile_device` (Task 5) in Tasks 3, 24, 27. `IdentityDiscoveryFacts` / `discoverIdentityFacts` / `DISCOVERY_LIMITS` (Task 6) in Tasks 3, 7, 11. `renderIntakeContext` / `renderReviewContext` / `validateIntakeOutput` / `validateReviewOutput` (Task 7) in Tasks 11, 26. `computeRecipeReadiness` / `listWorkflowReadiness` / `degradedEffectTools` / `RecipeReadiness` (with `missing`, `alwaysManualCapabilities`, `manualStepCount`) (Task 8) in Tasks 11, 13, 16, 17, 22. `admitTask` / `AdmitTaskInput` / `AdmitTaskRefusal` / `resolveOrCreateContactForTask` / `lockContactForRecipe` (Task 9) in Tasks 13, 14. `ensureManualWorkItems` / `attachHumanWorkStep` / `nextOpenManualItem` (Task 10) in Task 11. `IDENTITY_OFFBOARDING_ADVANCERS` and the seven advancers (Task 11) in Tasks 14, 25. `buildCompletionRecord` / `postCompletionRecord` (Task 12) in Tasks 11, 14. `AiOperatorWorkflowDto` / `AiOperatorMissingCapabilityDto` / `AiOperatorCapabilityActionDto` (Task 2) in Tasks 13, 16, 17. `fetchOperatorWorkflows` / `createOperatorTaskDraft` / `startOperatorTask` / `addToolsToAgent` (Task 16) in Tasks 17, 19. The `data-testid` vocabulary in Tasks 17, 19, 21 is the same set Task 22's e2e spec queries.
+`StepDefinition.next` / `NextStepContext` / `NextStepResolver` / `resolveDeterministicNextStep` / `CAPABILITY_AVAILABILITIES` / `CapabilityAvailability` / `operationKey`'s `toolName` (Task 1) are used in Tasks 3, 8, 11, 17. `identityOffboardingInputSchema` / `identityIntakeOutputSchema` / `identityReviewOutputSchema` / `IDENTITY_REVIEW_FLAGS` / `IDENTITY_EXCEPTION_CLASSES` (Task 2) in Tasks 3, 7, 19, 26. `IDENTITY_OFFBOARDING_*` constants, `buildIdentityOffboardingPlan`, `buildIdentityOffboardingManualWork`, `identityOffboardingRecipe`, `CAPABILITY_FOR_TOOL`, `IdentityManualWorkItem` (Task 3) in Tasks 4, 8, 10, 11, 24, 25. `google_account_wipe_mobile_device` (Task 5) in Tasks 3, 24, 27. `IdentityDiscoveryFacts` / `discoverIdentityFacts` / `DISCOVERY_LIMITS` (Task 6) in Tasks 3, 7, 11. `renderIntakeContext` / `renderReviewContext` / `validateIntakeOutput` / `validateReviewOutput` (Task 7) in Tasks 11, 26. `computeRecipeReadiness` / `listWorkflowReadiness` / `degradedEffectTools` / `RecipeReadiness` (with `missing`, `alwaysManualCapabilities`, `manualStepCount`) (Task 8) in Tasks 11, 13, 16, 17, 22. `admitTask` / `AdmitTaskInput` / `AdmitTaskRefusal` / `resolveOrCreateContactForTask` / `lockContactForRecipe` (Task 9) in Tasks 13, 14. `ensureManualWorkItems` / `attachHumanWorkStep` / `nextOpenManualItem` (Task 10) in Task 11. `IDENTITY_OFFBOARDING_ADVANCERS` and the seven advancers, including `advanceIdentityEffects`; there is no `advanceEffects` (Task 11), in Tasks 14 and 25. `buildCompletionRecord` / `postCompletionRecord` (Task 12) in Tasks 11, 14. `AiOperatorWorkflowDto` / `AiOperatorMissingCapabilityDto` / `AiOperatorCapabilityActionDto` (Task 2) in Tasks 13, 16, 17. `fetchOperatorWorkflows` / `createOperatorTaskDraft` / `startOperatorTask` / `addToolsToAgent` (Task 16) in Tasks 17, 19. The `data-testid` vocabulary in Tasks 17, 19, 21 is the same set Task 22's e2e spec queries.
 
 Nothing produced by E1–E4 or M1 is redefined anywhere in this plan; every consumed name appears in *Consumed surface* with the wave that ships it.
+
+**Amended 2026-10-18.** R1a-0 produces these names, and the tasks that consume them are listed after each group:
+- `e4Characterization.test.ts` pins `1a-1` through `1a-4` (Task 1a). Every later R1a-0 and R1a task re-runs them.
+- `taskCheckpointBaseSchema` / `serviceRecoveryCheckpointSchema` / `ServiceRecoveryCheckpoint` / `planningSnapshotRefSchema` / `isServiceRecoveryCheckpoint` / `checkpointMatchesRecipe` / `StepAdvancer` (now exported) / `COORDINATOR_STEP_OPS` (Task 1b): consumed in Tasks 1f, 2, 9 and 11.
+- `RecipeDefinition.planningSnapshotStepKey` / `unobservableEffects` / `entryStepKey` (Task 1c): consumed in Tasks 1d, 1e, 3 and 9.
+- `PLANNING_SNAPSHOT_VERSION` / `PlanningSnapshotEnvelope` / `sealPlanningSnapshot` / `loadPlanningFacts` / `PlanningSnapshotLoad` (Task 1d): consumed in Task 11.
+- The checkpoint fields `planningSnapshot` and `dispatchNotBefore`, and the `'maintenance_window'` effect wait (Tasks 1b and 1e): consumed in Tasks 11 and 14.
+- `requesterAccessLostForTargets` (Task 1f): consumed in Task 14.
+
+R1a produces:
+- `identityOffboardingCheckpointSchema` / `IdentityOffboardingCheckpoint` / `isIdentityOffboardingCheckpoint` (Task 2): consumed in Tasks 9 and 11.
+- The facts keys `targets.contactTargetId` and `degradedTools` (Task 3's readers, Task 11's `advanceDiscover` writer).
+
+**Removed and must not appear in code:** `plan_approval` (as a step), `wait_cutoff`, `device_actions`, `manage_device_session`, `effectCursor`, `discoveryStepId`, `advanceEffects`, `advancePlanApprovalStep`, `advanceEffectStep`, `splitSecretBearingEffects`, `PlanSplit`, `listStaleManifestConnectionsForPartner`.
+
+E4 names are cited as shipped:
+- `bumpPlanRevision` takes one args object;
+- `ConnectionService.listStaleManifestConnections()` takes no arguments;
+- the profile version is read from `M365_PERMISSION_PROFILES`.

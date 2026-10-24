@@ -76,13 +76,31 @@ const occurrence: Occurrence = {
   updatedAt: '2026-09-01T00:00:00Z',
   late: false,
   evidence: [
-    { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', createdAt: '2026-09-02T00:00:00Z' },
+    { id: 'ev-1', kind: 'report_run', documentId: null, reportId: 'r-1', reportRunId: 'run-1', contractDocumentId: null, createdAt: '2026-09-02T00:00:00Z' },
   ],
   checklist: null,
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('OccurrenceDrawer awaiting-evidence hint (#9310)', () => {
+  const renderWith = async (status: Occurrence['status']) => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [{ ...occurrence, status, evidence: [] }] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByTestId('occurrence-row-oc-1');
+  };
+
+  it('tells the technician evidence is what is missing on an awaiting_evidence row', async () => {
+    await renderWith('awaiting_evidence');
+    expect(screen.getByTestId('occurrence-awaiting-evidence-hint-oc-1')).toBeTruthy();
+  });
+
+  it('shows no hint on an open row', async () => {
+    await renderWith('open');
+    expect(screen.queryByTestId('occurrence-awaiting-evidence-hint-oc-1')).toBeNull();
+  });
 });
 
 describe('OccurrenceDrawer evidence upload (#5573 W03)', () => {
@@ -102,7 +120,7 @@ describe('OccurrenceDrawer evidence upload (#5573 W03)', () => {
             ...occurrence,
             evidence: [
               ...occurrence.evidence,
-              { id: 'ev-2', kind: 'document', documentId: 'doc-1', reportId: null, reportRunId: null, createdAt: '2026-09-03T00:00:00Z' },
+              { id: 'ev-2', kind: 'document', documentId: 'doc-1', reportId: null, reportRunId: null, contractDocumentId: null, createdAt: '2026-09-03T00:00:00Z' },
             ],
           },
         });
@@ -451,5 +469,230 @@ describe('OccurrenceDrawer checklist progress (#5808 W03)', () => {
     render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
     fireEvent.click(await screen.findByTestId('occurrence-checklist-expand-oc-1'));
     expect(await screen.findByTestId('ticket-checklist-operator-badge-ci-op')).toBeInTheDocument();
+  });
+});
+
+describe('OccurrenceDrawer link signed agreement (#9312)', () => {
+  const AGREEMENTS_PATH = '/contracts/contract-documents?orgId=org-1&linked=all';
+  const agreements = [
+    {
+      id: 'cd-1', orgId: 'org-1', templateName: 'Master services agreement', templateVersionNumber: 3,
+      signerName: 'Jane Doe', signedAt: '2026-09-15T12:00:00Z', createdAt: '2026-09-15T12:00:00Z', mime: 'application/pdf',
+    },
+  ];
+
+  it('lists the org\'s signed agreements and links one by reference', async () => {
+    const awaiting = { ...occurrence, status: 'awaiting_evidence' as const, evidence: [] };
+    const linked = {
+      ...awaiting,
+      status: 'delivered' as const,
+      evidence: [{
+        id: 'ev-7', kind: 'contract_document' as const, documentId: null, reportId: null, reportRunId: null,
+        contractDocumentId: 'cd-1', createdAt: '2026-09-16T00:00:00Z',
+      }],
+    };
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && path === AGREEMENTS_PATH) return jsonResp(200, { data: agreements });
+      if (method === 'GET') return jsonResp(200, { data: [awaiting] });
+      if (path.endsWith('/evidence')) return jsonResp(200, { data: linked });
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    const select = await screen.findByTestId('occurrence-evidence-agreement-select-oc-1');
+    await waitFor(() => expect(screen.getByRole('option', { name: /Master services agreement/ })).toBeTruthy());
+    expect((screen.getByTestId('occurrence-evidence-agreement-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(select, { target: { value: 'cd-1' } });
+    fireEvent.click(screen.getByTestId('occurrence-evidence-agreement-save-oc-1'));
+
+    await waitFor(() =>
+      expect(fetcher).toHaveBeenCalledWith(
+        '/orgs/org-1/deliverables/occurrences/oc-1/evidence',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ kind: 'contract_document', contractDocumentId: 'cd-1' }) }),
+      ),
+    );
+    expect((await screen.findByTestId('evidence-chip-ev-7')).textContent).toContain('Signed agreement');
+    expect(screen.getByTestId('occurrence-status-oc-1').textContent).toBe('Delivered');
+    expect(screen.queryByTestId('occurrence-evidence-agreement-panel-oc-1')).toBeNull();
+  });
+
+  it('shows an alert with Retry when the agreements fail to load, and recovers on retry', async () => {
+    let calls = 0;
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) {
+        calls += 1;
+        return calls === 1 ? jsonResp(500, { error: 'boom' }) : jsonResp(200, { data: agreements });
+      }
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load signed agreements.');
+    fireEvent.click(screen.getByTestId('occurrence-evidence-agreement-retry-oc-1'));
+    expect(await screen.findByRole('option', { name: /Master services agreement/ })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('says the user lacks permission on a 403 — no Retry that can never succeed', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) return jsonResp(403, { error: 'Permission denied' });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect((await screen.findByRole('alert')).textContent).toContain('You do not have permission to view signed agreements.');
+    expect(screen.queryByTestId('occurrence-evidence-agreement-retry-oc-1')).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('shows the empty hint when the org has no signed agreements', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path === AGREEMENTS_PATH) return jsonResp(200, { data: [] });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect(await screen.findByText(/No signed agreements for this organization/)).toBeTruthy();
+  });
+
+  it('opening the agreement picker closes the document picker (one picker at a time)', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && (path === AGREEMENTS_PATH || path.startsWith('/orgs/org-1/documents'))) {
+        return jsonResp(200, { data: [] });
+      }
+      return jsonResp(200, { data: [occurrence] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    expect(await screen.findByTestId('occurrence-evidence-link-panel-oc-1')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('occurrence-evidence-link-agreement-oc-1'));
+    expect(await screen.findByTestId('occurrence-evidence-agreement-panel-oc-1')).toBeTruthy();
+    expect(screen.queryByTestId('occurrence-evidence-link-panel-oc-1')).toBeNull();
+  });
+});
+
+describe('OccurrenceDrawer link existing document + badges (#9311)', () => {
+  const docs = [
+    { id: 'doc-1', title: 'Q3 findings', originalFilename: 'q3.pdf', category: 'report' },
+    { id: 'doc-2', title: 'Pen test', originalFilename: 'pt.pdf', category: 'evidence' },
+  ];
+
+  it('links a library document as evidence and moves awaiting_evidence to delivered', async () => {
+    const awaiting = { ...occurrence, status: 'awaiting_evidence' as const, evidence: [] };
+    const linked = {
+      ...awaiting,
+      status: 'delivered' as const,
+      evidence: [{ id: 'ev-9', kind: 'document' as const, documentId: 'doc-2', reportId: null, reportRunId: null, contractDocumentId: null, createdAt: '2026-09-02T00:00:00Z' }],
+    };
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && path.startsWith('/orgs/org-1/documents')) return jsonResp(200, { data: docs });
+      if (method === 'GET') return jsonResp(200, { data: [awaiting] });
+      if (path.endsWith('/evidence')) return jsonResp(200, { data: linked });
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    const select = await screen.findByTestId('occurrence-evidence-doc-select-oc-1');
+    await waitFor(() => expect(screen.getByRole('option', { name: /Pen test/ })).toBeTruthy());
+    fireEvent.change(select, { target: { value: 'doc-2' } });
+    fireEvent.click(screen.getByTestId('occurrence-evidence-link-save-oc-1'));
+
+    await waitFor(() =>
+      expect(fetcher).toHaveBeenCalledWith(
+        '/orgs/org-1/deliverables/occurrences/oc-1/evidence',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ kind: 'document', documentId: 'doc-2' }) }),
+      ),
+    );
+    expect(await screen.findByTestId('evidence-chip-ev-9')).toBeTruthy();
+    expect(screen.getByTestId('occurrence-status-oc-1').textContent).toBe('Delivered');
+  });
+
+  it('keeps Link disabled until a document is chosen', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path.startsWith('/orgs/org-1/documents')) return jsonResp(200, { data: docs });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    await screen.findByTestId('occurrence-evidence-doc-select-oc-1');
+    expect((screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('shows an alert with Retry when the library fails to load, and recovers on retry', async () => {
+    let docCalls = 0;
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path.startsWith('/orgs/org-1/documents')) {
+        docCalls += 1;
+        return docCalls === 1 ? jsonResp(500, { error: 'boom' }) : jsonResp(200, { data: docs });
+      }
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load the document library.');
+    expect((screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('occurrence-evidence-library-retry-oc-1'));
+    expect(await screen.findByRole('option', { name: /Pen test/ })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    errSpy.mockRestore();
+  });
+
+  it('shows the empty-library hint and refetches each time the picker opens', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET' && path.startsWith('/orgs/org-1/documents')) return jsonResp(200, { data: [] });
+      return jsonResp(200, { data: [occurrence] });
+    });
+    const docGets = () => fetcher.mock.calls.filter(([p]) => String(p).startsWith('/orgs/org-1/documents')).length;
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    const toggle = await screen.findByTestId('occurrence-evidence-link-oc-1');
+    expect(docGets()).toBe(0);
+    fireEvent.click(toggle);
+    expect(await screen.findByText(/No documents in this organization/)).toBeTruthy();
+    expect((screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(docGets()).toBe(1);
+    fireEvent.click(toggle); // close
+    fireEvent.click(toggle); // reopen
+    await waitFor(() => expect(docGets()).toBe(2));
+  });
+
+  it('keeps the picker and selection open when linking fails', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'GET' && path.startsWith('/orgs/org-1/documents')) return jsonResp(200, { data: docs });
+      if (method === 'GET') return jsonResp(200, { data: [occurrence] });
+      return jsonResp(500, { error: 'boom' });
+    });
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('occurrence-evidence-link-oc-1'));
+    const select = (await screen.findByTestId('occurrence-evidence-doc-select-oc-1')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: /Pen test/ });
+    fireEvent.change(select, { target: { value: 'doc-2' } });
+    const save = screen.getByTestId('occurrence-evidence-link-save-oc-1') as HTMLButtonElement;
+    fireEvent.click(save);
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    await waitFor(() => expect(save.disabled).toBe(false));
+    expect(select.value).toBe('doc-2');
+    expect(screen.queryByTestId('evidence-chip-ev-9')).toBeNull();
+  });
+
+  it('shows no Late pill on a missed row; the status badge says Missed', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [{ ...occurrence, status: 'missed', late: true }] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    await screen.findByTestId('occurrence-status-oc-1');
+    expect(screen.queryByText('Late')).toBeNull();
+    expect(screen.getByTestId('occurrence-status-oc-1').textContent).toBe('Missed');
+  });
+
+  it('still shows Late on an open past-due row', async () => {
+    const fetcher = vi.fn(async () => jsonResp(200, { data: [{ ...occurrence, status: 'open', late: true }] }));
+    render(<OccurrenceDrawer fetcher={fetcher} orgId="org-1" deliverable={deliverable} onClose={vi.fn()} />);
+    await screen.findByTestId('occurrence-status-oc-1');
+    expect(screen.getByText('Late')).toBeTruthy();
   });
 });

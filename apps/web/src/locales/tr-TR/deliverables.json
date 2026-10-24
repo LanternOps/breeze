@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Hizmet çıktıları",
+    "pausedDraft": "Sözleşme etkinleştirilene kadar duraklatıldı. Taslak sözleşme bilet açmaz; etkinleştirildiğinde başlamamış çıktılar sözleşme başlangıcına (geçmişte kaldıysa bugüne) taşınır.",
     "empty": "Henüz çıktı yok. Bu müşteriye borçlu olunan düzenli raporları ve gözden geçirmeleri ekleyin."
   },
   "table": {
@@ -46,7 +47,8 @@
     "addEvidence": "Kanıt ekle",
     "removeEvidence": "Kanıtı kaldır",
     "save": "Kaydet",
-    "cancel": "İptal"
+    "cancel": "İptal",
+    "retry": "Yeniden dene"
   },
   "form": {
     "name": "Ad",
@@ -90,6 +92,7 @@
     "evidence": "Kanıtlar",
     "noEvidence": "Ekli kanıt yok",
     "late": "Gecikmiş",
+    "awaitingEvidenceHint": "Talep çözüldü — tamamlamak için kanıt ekleyin",
     "rescheduledFrom": "{{date}} tarihinden yeniden planlandı",
     "deliveryNote": "Teslim notu",
     "waivedReason": "Muafiyet nedeni",
@@ -100,11 +103,23 @@
     "upload": "Yükle",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Kontrol listesini göster",
-    "hideChecklist": "Kontrol listesini gizle"
+    "hideChecklist": "Kontrol listesini gizle",
+    "linkDocument": "Mevcut belgeyi bağla",
+    "linkDocumentSelect": "Kanıt olarak bağlanacak belgeyi seçin",
+    "linkDocumentLoading": "Belgeler yükleniyor…",
+    "linkDocumentPlaceholder": "Bir belge seçin…",
+    "linkDocumentEmpty": "Bu kuruluşun kitaplığında henüz belge yok.",
+    "linkAgreement": "İmzalı anlaşmayı bağla",
+    "linkAgreementSelect": "Kanıt olarak bağlanacak imzalı anlaşmayı seçin",
+    "linkAgreementLoading": "İmzalı anlaşmalar yükleniyor…",
+    "linkAgreementPlaceholder": "İmzalı anlaşma seçin…",
+    "linkAgreementEmpty": "Bu kuruluş için henüz imzalı anlaşma yok.",
+    "link": "Bağla"
   },
   "evidence": {
     "reportRun": "Rapor çalıştırması",
     "document": "Belge",
+    "signedAgreement": "İmzalı anlaşma",
     "reportRunId": "Rapor çalıştırma kimliği"
   },
   "upcoming": {
@@ -123,7 +138,11 @@
     "uploadFailed": "Kanıt dosyası yüklenemedi.",
     "tooLarge": "Bu dosya 10 MB'tan büyük.",
     "unsupportedType": "Yalnızca PDF, JPEG, PNG ve WebP dosyaları eklenebilir.",
-    "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin."
+    "storageUnavailable": "Belge depolama şu anda kullanılamıyor. Kısa süre sonra tekrar deneyin.",
+    "linkFailed": "Belge bağlanamadı.",
+    "libraryLoadFailed": "Belge kitaplığı yüklenemedi.",
+    "agreementsLoadFailed": "İmzalı anlaşmalar yüklenemedi.",
+    "agreementsForbidden": "İmzalı anlaşmaları görüntüleme izniniz yok."
   },
   "confirm": {
     "deactivate": "{{name}} devre dışı bırakılsın mı? Açık oluşumlar kapatılır ve yenileri planlanmaz.",
@@ -169,7 +188,8 @@
     "evidenceAdded": "Kanıt eklendi",
     "evidenceRemoved": "Kanıt kaldırıldı",
     "deactivated": "Çıktı devre dışı bırakıldı",
-    "evidenceUploaded": "Kanıt yüklendi"
+    "evidenceUploaded": "Kanıt yüklendi",
+    "evidenceLinked": "Belge kanıt olarak bağlandı"
   },
   "templates": {
     "pageTitle": "Çıktı şablonları",
@@ -232,5 +252,33 @@
       "itemDeleted": "Çıktı kaldırıldı",
       "applied": "Şablon seti uygulandı"
     }
+  },
+  "move": {
+    "action": "Sözleşmeye taşı…",
+    "toTitle": "Teslimatları bir sözleşmeye taşı",
+    "selected": "Seçilen: {{count}}",
+    "selectRow": "{{name}} öğesini seç",
+    "target": "Hedef sözleşme",
+    "confirm": "Taşı",
+    "moved": "Teslimatlar taşındı",
+    "hereAction": "Teslimatları buraya taşı…",
+    "hereTitle": "Teslimatları buraya taşı",
+    "hereHelp": "Bu kuruluşun diğer sözleşmelerinden, bu sözleşmeye taşınacak teslimatları seçin.",
+    "hereEmpty": "Bu kuruluşta başka teslimat yok.",
+    "collision": "Hiçbir şey taşınmadı. Bu adlar hedef sözleşmede zaten var: {{names}}"
+  },
+  "bulk": {
+    "select": "{{name}} seç",
+    "selectAll": "Tüm teslimatları seç",
+    "count_one": "{{count}} seçili",
+    "count_other": "{{count}} seçili",
+    "reschedule": "Seçilenleri yeniden planla",
+    "clear": "Temizle",
+    "newDate": "Yeni son tarih",
+    "done_one": "{{count}} oluşum yeniden planlandı",
+    "done_other": "{{count}} oluşum yeniden planlandı",
+    "partial": "{{moved}} yeniden planlandı, {{refused}} taşınamadı",
+    "none": "Seçilen teslimatların hiçbirinde yeniden planlanacak açık bir oluşum yok.",
+    "failed": "Seçilen oluşumlar yeniden planlanamadı."
   }
 }

@@ -1343,6 +1343,26 @@ info "Verifying agent binary checksum..."
 verify_sha256 "\$TMPFILE" "\$EXPECTED_SHA256"
 success "Verified agent binary checksum"
 
+# ----- Refuse an agent too old for this script's enrollment flow (#9566) -----
+# This script hands the enrollment token to \`breeze-agent enroll\` through
+# BREEZE_AGENT_ENROLLMENT_KEY with no positional argument. Agents before
+# MIN_AGENT_VERSION only knew \`enroll <enrollment-key>\`, so against one the user
+# would see a bare cobra "accepts 1 arg(s), received 0" after a good download.
+# 0.118.0 is the first tag containing env-var enrollment (aa95674df5, #7199).
+# Conservative: only fail when the version parses AND is clearly lower; a binary
+# that cannot be executed here (noexec tmp) or prints something unparseable
+# (dev build) is let through. Runs before the existing install is touched.
+MIN_AGENT_VERSION="0.118.0"
+chmod 755 "\$TMPFILE" 2>/dev/null || true
+DOWNLOADED_VERSION_RAW="$("\$TMPFILE" version 2>/dev/null | head -n 1)" || DOWNLOADED_VERSION_RAW=""
+DOWNLOADED_VERSION="$(printf '%s' "\$DOWNLOADED_VERSION_RAW" | sed -n 's/^[^0-9]*\\([0-9][0-9]*\\.[0-9][0-9]*\\.[0-9][0-9]*\\).*/\\1/p' | head -n 1)"
+if [[ -n "\$DOWNLOADED_VERSION" ]]; then
+  OLDEST_VERSION="$(printf '%s\\n%s\\n' "\$MIN_AGENT_VERSION" "\$DOWNLOADED_VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | head -n 1)"
+  if [[ "\$DOWNLOADED_VERSION" != "\$MIN_AGENT_VERSION" && "\$OLDEST_VERSION" == "\$DOWNLOADED_VERSION" ]]; then
+    fatal "The agent binary served by this server is v\$DOWNLOADED_VERSION, which is older than this server's install flow (needs v\$MIN_AGENT_VERSION or newer). Set BREEZE_VERSION on the server (or check the release channel) so it serves a current agent, then re-run this script."
+  fi
+fi
+
 # ----- Stop existing service before replacing binary (safe for upgrades) -----
 if command -v systemctl &>/dev/null && systemctl is-active --quiet breeze-agent 2>/dev/null; then
   info "Stopping existing Breeze Agent service..."
@@ -1425,6 +1445,17 @@ info "Creating config directory \$CONFIG_DIR..."
 mkdir -p "\$CONFIG_DIR"
 chmod 0700 "\$CONFIG_DIR"
 success "Config directory ready"
+
+# ----- Create data directory and breeze group (#9566) -----
+# Without these a first enroll logs WARNs about the DNS cache file
+# (/var/lib/breeze/dns-cache.json) and the missing breeze group (helper token
+# left root-only). Mirrors agent/scripts/install/install-linux.sh and
+# \`breeze-agent service install\` (0755 data dir, system group).
+mkdir -p /var/lib/breeze
+chmod 0755 /var/lib/breeze
+if command -v groupadd &>/dev/null && ! getent group breeze &>/dev/null; then
+  groupadd --system breeze 2>/dev/null || warn "Could not create the breeze group; the helper token file will stay root-only"
+fi
 
 # ----- Enroll agent -----
 info "Enrolling agent with Breeze server..."

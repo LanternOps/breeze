@@ -124,3 +124,16 @@ func TestClipboardSummaryNeedsDesktopScope(t *testing.T) {
 		t.Fatal("a helper without the desktop scope must not report desktop clipboard summaries")
 	}
 }
+
+// #9182: a helper-hosted session trickles its late ICE candidates to the
+// service. Only a desktop-scoped helper may.
+func TestLocalICECandidateNeedsDesktopScope(t *testing.T) {
+	t.Parallel()
+	env := &ipc.Envelope{Type: ipc.TypeDesktopLocalICECandidate}
+	if shouldForwardUnsolicitedHelperMessage(&Session{AllowedScopes: []string{"tray"}}, env) {
+		t.Fatal("a helper without the desktop scope must not trickle desktop ICE candidates")
+	}
+	if !shouldForwardUnsolicitedHelperMessage(&Session{AllowedScopes: []string{"desktop"}}, env) {
+		t.Fatal("a desktop-scoped helper's ICE candidates must be forwarded")
+	}
+}

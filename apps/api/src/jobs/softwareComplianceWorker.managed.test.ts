@@ -15,7 +15,11 @@ const {
   scheduleInstallMock,
   applicabilityMock,
   repairMock,
+  recordCoverageMock,
+  pruneAllMock,
 } = vi.hoisted(() => ({
+  pruneAllMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
+  recordCoverageMock: vi.fn(async (..._args: unknown[]) => ({ upserted: 0, pruned: 0 })),
   repairMock: vi.fn(async () => ({ links: 0, changed: 0, failed: 0 })),
   dbSelectMock: vi.fn(),
   dbUpdateSetMock: vi.fn((_values: Record<string, unknown>) => ({ where: async () => undefined })),
@@ -50,6 +54,10 @@ vi.mock('../services/softwarePolicyInstallRemediation', () => ({
 }));
 vi.mock('../services/securityAgents/managedRuleApplicability', () => ({
   loadManagedRuleApplicability: applicabilityMock,
+}));
+vi.mock('../services/securityAgents/coverageStatusStore', () => ({
+  recordManagedPolicyApplicability: recordCoverageMock,
+  pruneAllForPolicy: pruneAllMock,
 }));
 vi.mock('../services/securityAgents/managedPolicyGenerator', () => ({
   repairManagedSoftwarePolicies: repairMock,
@@ -99,8 +107,15 @@ function primeSelects(rows: unknown[][]) {
 }
 
 /** Not applicable for every (device, catalogId) listed; applicable otherwise. */
+const VENDOR_BY_CATALOG: Record<string, string> = { [HUNTRESS]: 'huntress', [OTHER]: 'sentinelone' };
+
 function applicability(notReady: Record<string, Record<string, string>>) {
   return {
+    vendors: () => [VENDOR_BY_CATALOG[HUNTRESS], VENDOR_BY_CATALOG[OTHER]],
+    evaluateDevice: (deviceId: string) => [HUNTRESS, OTHER].map((catalogId) => {
+      const reason = notReady[deviceId]?.[catalogId];
+      return { catalogId, vendor: VENDOR_BY_CATALOG[catalogId], result: reason ? { ok: false, reason } : { ok: true } };
+    }),
     filterViolations: (deviceId: string, violations: Array<{ type: string; rule?: { catalogId?: string } }>) => {
       const kept: typeof violations = [];
       const notApplicable: Array<{ catalogId: string; reason: string }> = [];
@@ -209,6 +224,56 @@ describe('processCheckPolicy — managed (security agents) policy applicability'
     );
   });
 
+  // #6960 W03: not-applicable reasons are durable, not log-only.
+  it('persists per-(device, vendor) applicability under the DEVICE org, pruning on a full pass', async () => {
+    applicabilityMock.mockResolvedValueOnce(applicability({ 'device-1': { [OTHER]: 'org_not_mapped' } }));
+    primePass(MANAGED_POLICY, ['device-1', 'device-2']);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(recordCoverageMock).toHaveBeenCalledTimes(1);
+    expect(recordCoverageMock).toHaveBeenCalledWith({
+      policyId: POLICY_ID,
+      entries: [
+        { deviceId: 'device-1', orgId: 'org-of-device-1', vendor: 'huntress', notApplicableReason: null },
+        { deviceId: 'device-1', orgId: 'org-of-device-1', vendor: 'sentinelone', notApplicableReason: 'org_not_mapped' },
+        { deviceId: 'device-2', orgId: 'org-of-device-2', vendor: 'huntress', notApplicableReason: null },
+        { deviceId: 'device-2', orgId: 'org-of-device-2', vendor: 'sentinelone', notApplicableReason: null },
+      ],
+      prune: { deviceIds: ['device-1', 'device-2'], vendors: ['huntress', 'sentinelone'] },
+    });
+  });
+
+  it('a device-filtered pass records its devices but never prunes the others', async () => {
+    applicabilityMock.mockResolvedValueOnce(applicability({}));
+    primePass(MANAGED_POLICY, ['device-1']);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID, deviceIds: ['device-1'] });
+
+    expect(recordCoverageMock.mock.calls[0]![0]).toMatchObject({ prune: null });
+  });
+
+  it('a full pass that reaches no device drops every coverage row the policy owned', async () => {
+    resolveDeviceIdsMock.mockResolvedValueOnce([]);
+    primeSelects([[MANAGED_POLICY]]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(pruneAllMock).toHaveBeenCalledWith(POLICY_ID);
+    expect(recordCoverageMock).not.toHaveBeenCalled();
+  });
+
+  it('a coverage-store failure is reported but never fails the compliance pass', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    applicabilityMock.mockResolvedValueOnce(applicability({}));
+    primePass(MANAGED_POLICY, ['device-1']);
+    recordCoverageMock.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID })).resolves.toMatchObject({ devicesEvaluated: 1 });
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
   it('an ordinary (customer-authored) policy never consults applicability', async () => {
     primePass({ ...MANAGED_POLICY, managedByLinkId: null }, ['device-1']);
     scheduleInstallMock.mockResolvedValueOnce(['device-1']);
@@ -217,6 +282,7 @@ describe('processCheckPolicy — managed (security agents) policy applicability'
 
     expect(applicabilityMock).not.toHaveBeenCalled();
     expect(scheduleInstallMock).toHaveBeenCalled();
+    expect(recordCoverageMock).not.toHaveBeenCalled();
   });
 });
 

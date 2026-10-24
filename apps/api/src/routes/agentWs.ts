@@ -117,6 +117,7 @@ import {
   commandAcceptsAgentResultCondition,
   BACKUP_QUEUE_ACK_RESULT_STATUS,
 } from '../services/commandResultAcceptance';
+import { commandIncarnationIsCurrentCondition } from '../services/commandIncarnation';
 import { markCommandResultProcessingFailed } from '../services/commandResultProcessingFailure';
 import { QUEUED_BACKUP_WORKLOAD_COMMAND_TYPES } from '../services/commandTypes';
 import { redactResultAgainstCommandSecrets } from '../services/commandSecretRedaction';
@@ -135,6 +136,11 @@ import {
   partnerIdForDevice,
 } from '../services/partnerTrust';
 import { checkAgentWsMessageBudget } from '../services/agentWsMessageBudget';
+import {
+  agentIceCandidateMessageSchema,
+  appendAgentIceCandidate,
+  type DesktopIceCandidateRelayFrame,
+} from '../services/remoteDesktopIceTrickle';
 import { beginAgentUpdateStatusWrite, finishAgentUpdateStatusWrite } from '../services/agentUpdateStatusCoalescer';
 import { sniffCommandId, sniffTerminalMessageType } from '../services/agentWsTerminalMessageSniff';
 import { registerConnectedAgentSource } from '../services/capacityMetrics';
@@ -148,6 +154,10 @@ export const AGENT_WS_CAPABILITIES = [
   // Literal (not the imported constant) so the tuple stays `as const`; the
   // agentWs test pins it to COMMAND_PROGRESS_CAPABILITY.
   'command_progress',
+  // #9182: agents trickle late desktop ICE candidates only when this is
+  // advertised. Literal for the same reason as above; the agentWs test pins it
+  // to DESKTOP_ICE_TRICKLE_CAPABILITY.
+  'desktop_ice_trickle',
 ] as const;
 
 declare module 'hono' {
@@ -2240,6 +2250,9 @@ async function applyLateCallerVerifyRejection(
           eq(devices.agentId, agentId),
           eq(deviceCommands.type, 'caller_verify'),
           eq(deviceCommands.targetRole, 'agent'),
+          // #8318 §5.2: never for a command of an earlier install incarnation
+          // (the REST twin refuses it before its late-receipt branch).
+          commandIncarnationIsCurrentCondition(),
         ))
         .limit(1),
     'callerVerification.wsLateRejection.owner'),
@@ -2363,9 +2376,17 @@ async function processCommandResult(
               eq(deviceCommands.deviceId, did),
               eq(deviceCommands.targetRole, 'agent'),
               or(
+                // Carries the #8318 incarnation check itself.
                 commandAcceptsAgentResultCondition(),
-                and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
-                and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                // #8318 §5.2: the cleanup-evidence branches never take an
+                // earlier install incarnation's row either.
+                and(
+                  commandIncarnationIsCurrentCondition(),
+                  or(
+                    and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                    and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                  ),
+                ),
               )
             )
           )
@@ -2396,8 +2417,13 @@ async function processCommandResult(
                 eq(deviceCommands.targetRole, 'agent'),
                 or(
                   commandAcceptsAgentResultCondition(),
-                  and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
-                  and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                  and(
+                    commandIncarnationIsCurrentCondition(),
+                    or(
+                      and(eq(deviceCommands.type, 'file_delete'), sql`${deviceCommands.payload} ? 'cleanupRunId'`),
+                      and(eq(deviceCommands.type, 'system_cleanup_run'), sql`${deviceCommands.payload} ? 'runId'`),
+                    ),
+                  ),
                 )
               )
             )
@@ -3450,6 +3476,53 @@ function buildAgentWsHandlers(agentId: string, preValidatedAgent: AgentDbContext
               sessionId: leaseSessionId,
               ...nonceEcho,
             }));
+          }
+          return;
+        }
+
+        // #9182: a late local ICE candidate (or the end-of-gathering marker)
+        // for a desktop session this agent hosts. Id-less, so handled before
+        // the id-less skip. Fire-and-forget: no ack, and a frame that matches
+        // no live session (superseded start, ended session, another device's
+        // session, over cap) is a quiet no-op — the session keeps the
+        // candidates in its answer, as before trickle existed.
+        if (message?.type === 'desktop_ice_candidate') {
+          const parsedIce = agentIceCandidateMessageSchema.safeParse(message);
+          if (!parsedIce.success) {
+            console.warn(
+              `[AgentWs] Dropping malformed desktop_ice_candidate from agent ${agentId}: ` +
+              `${parsedIce.error.issues[0]?.message ?? 'invalid shape'}`
+            );
+            return;
+          }
+          if (!ownsCurrentAgentSocket(agentId, ws, socketEpoch)) {
+            console.warn(`[AgentWs] Dropping desktop_ice_candidate from superseded socket for agent ${agentId}`);
+            return;
+          }
+          const ice = parsedIce.data;
+          try {
+            const recorded = await runWithAgentDbAccess('agentWs.desktop.iceCandidate', () =>
+              appendAgentIceCandidate({
+                // Bound to the device this socket authenticated as — never an
+                // agent-supplied id.
+                deviceId: authenticatedAgent.deviceId,
+                sessionId: ice.sessionId,
+                startGeneration: ice.startGeneration,
+                seq: ice.seq,
+                ...(ice.complete ? { complete: true as const } : { candidate: ice.candidate }),
+              })
+            );
+            if (!recorded) {
+              console.debug(
+                `[AgentWs] desktop ICE entry matched no live session (superseded start, ended, or over cap): ` +
+                `session=${ice.sessionId} generation=${ice.startGeneration} seq=${ice.seq} complete=${ice.complete === true}`
+              );
+            }
+          } catch (error) {
+            console.warn(
+              `[AgentWs] Failed to record desktop_ice_candidate for session ${ice.sessionId} from agent ${agentId}:`,
+              error,
+            );
           }
           return;
         }
@@ -5138,6 +5211,33 @@ export function sendCommandToAgent(agentId: string, command: AgentCommand): bool
     return true;
   } catch (error) {
     console.error(`Failed to send command to agent ${agentId.slice(0,12)}:`, error);
+    evictAgentSocket(agentId);
+    return false;
+  }
+}
+
+/**
+ * Relay a viewer's late ICE candidate to the agent hosting the desktop session
+ * (#9182). An id-less frame, not a command: it produces no result and no
+ * command journal entry, and agents that predate trickle skip it. Delivered
+ * under the same parked/trust gates as a start_desktop, since it only means
+ * anything to a session such a start created. Socket-local, like the
+ * start_desktop dispatch on the viewer offer route.
+ */
+export function sendDesktopIceCandidateToAgent(agentId: string, frame: DesktopIceCandidateRelayFrame): boolean {
+  assertSocketLocalDispatchAllowed('sendDesktopIceCandidateToAgent');
+  const conn = activeConnections.get(agentId);
+  if (!conn || conn.parked) {
+    return false;
+  }
+  if (partnerTrustMode() === 'enforce' && conn.trustState !== 'trusted') {
+    return false;
+  }
+  try {
+    conn.ws.send(JSON.stringify(frame));
+    return true;
+  } catch (error) {
+    console.error(`Failed to relay ICE candidate to agent ${agentId.slice(0, 12)}:`, error);
     evictAgentSocket(agentId);
     return false;
   }

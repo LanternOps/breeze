@@ -1,31 +1,19 @@
-/* Condensed document theme fonts (Task 12) — Barlow Condensed for headings,
-   DM Sans for body copy, scoped to [data-doc-theme='condensed'] documents
-   only (see the rule near the end of this file). Declared unconditionally: a
-   browser only fetches a face when a matched element actually uses it, so a
-   'classic' document downloads nothing. These @imports must stay above
-   `@import 'tailwindcss'` — Vite's postcss-import resolves @import at build
-   time and drops any @import that isn't first (same rule as apps/web). */
-/* Portal UI typefaces — "The Guest Ledger" world. Hanken Grotesk carries every
-   control, label and body string: a warm humanist grotesk, closer to a
-   front-desk register than to a dashboard. Literata (a screen-first serif
-   commissioned for long-form reading) carries page titles and the money
-   figures — the two places a service business speaks with its own voice.
-   These are the portal's faces, distinct from apps/web on purpose: the
-   technician's console and the client's ledger are different rooms. */
-@import '@fontsource/hanken-grotesk/400.css';
-@import '@fontsource/hanken-grotesk/500.css';
-@import '@fontsource/hanken-grotesk/600.css';
-@import '@fontsource/hanken-grotesk/700.css';
-@import '@fontsource/literata/500.css';
-@import '@fontsource/literata/600.css';
-@import '@fontsource/barlow-condensed/600.css';
-@import '@fontsource/dm-sans/400.css';
-@import '@fontsource/dm-sans/500.css';
-@import '@fontsource/dm-sans/700.css';
+/* @breeze/document-ui/document.css owns the Hanken Grotesk / Literata /
+   Barlow Condensed / DM Sans faces (the portal UI's own sans + display are the
+   same Hanken Grotesk / Literata pair) and the document paper rules. It must
+   stay above `@import 'tailwindcss'` — Vite's postcss-import resolves @import
+   at build time and drops any @import that isn't first (same rule as
+   apps/web). */
+@import '@breeze/document-ui/document.css';
 
 @import 'tailwindcss';
 
 @plugin '@tailwindcss/forms';
+
+/* Tailwind v4 does not scan workspace packages on its own: the document-ui
+   components' utilities (and the probe class the built-CSS test looks for)
+   would otherwise never be emitted. */
+@source '../../../../packages/document-ui/src/**/*.{ts,tsx}';
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -463,7 +451,9 @@
   }
 
   /*
-   * rich_text quote blocks (quoteBlocks.tsx) render sanitized author HTML via
+   * Sanitized author HTML on the trust pages (TrustFaq, TrustPageView) keeps these
+   * rules; inside a document (`[data-document-root]`) @breeze/document-ui's own
+   * document.css carries the same styling for rich_text quote blocks, which render via
    * dangerouslySetInnerHTML — the API guarantees only richTextSanitize.ts's fixed
    * subset (p/br/strong/em/u/h3/h4/ul/ol/li/a + table/thead/tbody/tfoot/tr/th/td)
    * ever reaches this class. Tailwind's
@@ -518,76 +508,4 @@
   .quote-rich-text th {
     @apply bg-muted font-semibold text-foreground;
   }
-}
-
-/* Condensed document theme (Task 12) — plain CSS vars/selectors, not @theme
-   tokens. Scoped to [data-doc-theme='condensed'], stamped by documentShell's
-   DocumentPaper on the rendered quote/invoice root, so it never touches the
-   rest of the portal. */
-[data-doc-theme='condensed'] {
-  font-family: 'DM Sans', var(--font-sans, system-ui), sans-serif;
-}
-[data-doc-theme='condensed'] :is(h1, h2, h3, h4, th) {
-  font-family: 'Barlow Condensed', 'DM Sans', sans-serif;
-  letter-spacing: 0.01em;
-}
-
-/* Partner brand accent for proposal/invoice documents. `--doc-accent` arrives
-   from the layout's nonced <style> element (see lib/docAccent.ts for why it
-   cannot be a style attribute); these classes are its only consumers, and the
-   `var()` fallback keeps documents sensible when a partner has set no colour. */
-.doc-accent-bg {
-  background-color: var(--doc-accent, hsl(var(--primary)));
-}
-.doc-accent-text {
-  color: var(--doc-accent, hsl(var(--primary)));
-}
-.doc-accent-border {
-  border-color: var(--doc-accent, hsl(var(--primary)));
-}
-
-/* The typed-name signature preview (a class, not an inline fontFamily — see
-   lib/docAccent.ts). No webfont is loaded for it, so on platforms without one
-   of these faces it degrades to the generic cursive keyword. */
-.signature-preview {
-  font-family: 'Snell Roundhand', 'Brush Script MT', 'Segoe Script', 'Apple Chancery', cursive;
-}
-
-/* Documents are paper. The chrome around them follows the OS colour scheme, but
-   a proposal or invoice carries partner brand colours chosen against white and
-   is what the customer prints or forwards to their accountant, so pin it. */
-[data-doc-theme] {
-  /* The ground stays true white — this is what the customer prints — but the
-     ink, rules and washes are authored warm neutrals from the portal's own
-     30-40° family. The block previously carried the scaffold's stock cool-slate
-     values verbatim, which put the one surface a customer forwards to their
-     accountant outside the No-Grey Rule the rest of the product lives by. */
-  --background: 0 0% 100%;
-  --foreground: 30 12% 13%;
-  --card: 0 0% 100%;
-  --card-foreground: 30 12% 13%;
-  --muted: 40 22% 96%;
-  --muted-foreground: 32 8% 36%;
-  --border: 38 14% 82%;
-  /* V-7: in dark mode the paper stays white, so everything it paints with stays light:
-     the accent rule, eyebrow, status chips and the Balance-due figure. The chrome
-     accent's light primary arrives as --paper-primary (set only by light blocks). */
-  --primary: var(--paper-primary);
-  --primary-foreground: 42 45% 97%;
-  --primary-on-tint: var(--paper-primary);
-  --ring: var(--paper-primary);
-  --secondary: 40 24% 90%;
-  --secondary-foreground: 30 12% 14%;
-  --accent: 40 26% 88%;
-  --accent-foreground: 30 12% 12%;
-  --input: 38 16% 74%;
-  --destructive: 8 62% 40%;
-  --success: 152 45% 26%;
-  --warning: 35 90% 44%;
-  --success-on-tint: 152 45% 25%;
-  --warning-on-tint: 33 85% 28%;
-  --destructive-on-tint: 8 62% 38%;
-  color-scheme: light;
-  background-color: hsl(var(--card));
-  color: hsl(var(--foreground));
 }

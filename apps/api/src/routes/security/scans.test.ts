@@ -50,9 +50,14 @@ vi.mock('../../services/featureConfigResolver', () => ({
   resolveSecurityScanSettingsForDevice: resolveSecurityScanSettingsForDeviceMock,
 }));
 
-const { getUserPermissionsMock } = vi.hoisted(() => ({
+const { getUserPermissionsMock, planYaraScanMock } = vi.hoisted(() => ({
   getUserPermissionsMock: vi.fn(),
+  planYaraScanMock: vi.fn(async (): Promise<import('../../services/yaraScanRefs').YaraScanPlan> => ({
+    ruleSets: [], engine: 'legacy', ruleSetErrors: null,
+  })),
 }));
+
+vi.mock('../../services/yaraScanRefs', () => ({ planYaraScan: planYaraScanMock }));
 
 vi.mock('../../services/permissions', async () => {
   const actual = await vi.importActual<any>('../../services/permissions');
@@ -356,6 +361,47 @@ describe('POST /scan/:deviceId — auto-quarantine needs an MFA session', () => 
     expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({
       autoQuarantineSuppressedReason: null,
     }));
+  });
+});
+
+// #6263 W03: a manual scan carries the same rule-set refs and records the same
+// explicit outcome as a scheduled one.
+describe('POST /scan/:deviceId — YARA rule sets', () => {
+  let insertedValues: ReturnType<typeof vi.fn>;
+  const REF = {
+    id: 'aaaaaaaa-0000-4000-8000-00000000000a', version: 2, sha256: 'e'.repeat(64),
+    url: '/api/v1/agents/agent-1/yara/rule-sets/aaaaaaaa-0000-4000-8000-00000000000a/2',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getUserPermissionsMock.mockResolvedValue({ permissions: [{ resource: 'devices', action: 'execute' }], allowedSiteIds: undefined });
+    mockDeviceSelect();
+    insertedValues = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.insert).mockReturnValue({ values: insertedValues } as any);
+    resolveSecurityScanSettingsForDeviceMock.mockResolvedValue({
+      ...SECURITY_SCAN_SETTINGS_DEFAULTS, autoQuarantine: false, ruleSetIds: [REF.id],
+    });
+  });
+
+  const scan = () => buildApp().request(`/security/scan/${DEVICE_ID}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scanType: 'quick' }),
+  });
+
+  it('sends the resolved refs and records engine + errors on the scan row', async () => {
+    planYaraScanMock.mockResolvedValueOnce({ ruleSets: [REF], engine: 'yara', ruleSetErrors: null });
+    expect((await scan()).status).toBe(202);
+    expect(planYaraScanMock).toHaveBeenCalledWith(expect.objectContaining({ deviceId: DEVICE_ID, ruleSetIds: [REF.id] }));
+    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).toMatchObject({ ruleSets: [REF] });
+    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({ engine: 'yara', ruleSetErrors: null }));
+  });
+
+  it('an old agent: no ruleSets in the payload, legacy + agent_too_old on the row', async () => {
+    const tooOld = [{ id: '*', code: 'agent_too_old', detail: 'x' }];
+    planYaraScanMock.mockResolvedValueOnce({ ruleSets: [], engine: 'legacy', ruleSetErrors: tooOld });
+    expect((await scan()).status).toBe(202);
+    expect(vi.mocked(queueCommand).mock.calls.at(-1)![2]).not.toHaveProperty('ruleSets');
+    expect(insertedValues).toHaveBeenCalledWith(expect.objectContaining({ engine: 'legacy', ruleSetErrors: tooOld }));
   });
 });
 

@@ -7,6 +7,7 @@ import { AI_AGENT_RUN_STATUSES, TOPOLOGY_INTERFACE_METRIC_SERIES } from '@breeze
  * via Zod schemas and calls the existing handler with org-scoped auth context.
  */
 
+import { GENERATE_REPORT_TYPES } from './aiReportTypes';
 import { z } from 'zod';
 import { fixProblemSchema } from './fixMemory/problemSignature';
 import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
@@ -29,6 +30,7 @@ import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from '
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
+import { planCardKey, publishPendingCard, resolvePendingCard } from './sessionPendingCards';
 import {
   aiActionPlans,
   peripheralDeviceClassEnum,
@@ -42,7 +44,7 @@ import { getToolTimeout, withToolTimeout } from './toolTimeouts';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, setDeviceContextShape, toolInputSchemas } from './aiToolSchemas';
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
-import { aiScriptAuthoringEnabled } from '../config/env';
+import { aiScriptAuthoringEnabled, flowsEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
@@ -58,7 +60,7 @@ import {
   googleRestoreUserHandler, googleSignOutHandler, googleSetForwardingHandler,
   googleDisableForwardingHandler,
   googleSetVacationHandler, googleUpdateUserHandler, googleShareCalendarHandler,
-  googleOffboardUserHandler, googleWipeMobileDeviceHandler,
+  googleOffboardUserHandler, googleWipeMobileDeviceHandler, googleAccountWipeMobileDeviceHandler,
   googleSecurityDriftHandler, googleEmailReportHandler,
   googleListUserGroupsHandler, googleAddToGroupHandler, googleRemoveFromGroupHandler,
   googleMoveOuHandler, googleRenameUserHandler,
@@ -310,6 +312,15 @@ export const TOOL_TIERS = {
   read_artifact: 1,
   // Trust Center W2 (Ruling 15): read-only page status; publish/edit stay human-attested.
   get_trust_page_status: 1,
+  // Tool Catalog W03 (#5218, Decision 6): draft_flow writes a row, so Tier 2
+  // (ai:write over MCP, Tier-2 audit row); the reads are Tier 1. Declared to
+  // chat only when FLOWS_ENABLED (flowToolDefinitions).
+  draft_flow: 2,
+  validate_flow: 1,
+  get_flow: 1,
+  list_flows: 1,
+  // #8973 W4: read-only business-hours calendars (writes human-only, spec §5.7).
+  list_business_calendars: 1,
   // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
   // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
   // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
@@ -504,6 +515,7 @@ export const TOOL_TIERS = {
   google_share_calendar: 3,
   google_offboard_user: 3,
   google_wipe_mobile_device: 3,
+  google_account_wipe_mobile_device: 3,
   google_security_drift: 1,
   google_email_report: 1,
   google_list_user_groups: 1,
@@ -667,6 +679,7 @@ export const SESSION_TOOL_DESCRIPTIONS = {
   google_share_calendar: "Share a Google Workspace user's calendar with another user. Inserts an ACL rule on the owner's calendar (default: their primary calendar). role is one of freeBusyReader, reader, writer, owner (default reader). Requires approval.",
   google_offboard_user: 'Offboard a Google Workspace user: optional out-of-office, forwarding (no copy kept), revoke OAuth tokens, remove all groups, selective mobile account wipe (corporate data only, never full device wipe), sign-out, suspend. Steps are independent and reported; best-effort. Requires approval.',
   google_wipe_mobile_device: 'STOLEN/LOST DEVICE ONLY: issue a FULL factory reset (admin_remote_wipe) to every mobile device enrolled to a user. This erases the ENTIRE device, not just corporate data. This is NOT for offboarding — offboard uses a selective account wipe. Requires approval.',
+  google_account_wipe_mobile_device: 'Offboarding: remove the work account and its data (mail, Drive) from every mobile device enrolled to a user. The device itself is NOT erased. Requires approval.',
   google_security_drift: 'Read-only Google Workspace security posture for the connected domain: counts and lists of users with no 2-step verification, super-admins, suspended accounts, never-logged-in accounts, and accounts stale beyond staleDays (default 90). No changes are made.',
   google_email_report: "Run the Google Workspace security-drift report and email it to the connection's own admin address (recipient is fixed to the admin, not arbitrary). Use when asked to email a Workspace report. staleDays optional (default 90).",
   propose_action_plan: 'Propose a multi-step action plan for user approval. Use this when the approval mode requires it and you need to execute multiple operations. The user will review all steps before any are executed.',
@@ -1225,6 +1238,35 @@ export function scriptProposalToolDefinitions(
   ];
 }
 
+/**
+ * Tool Catalog W03 (#5218) flow tools — EXPOSURE gate for FLOWS_ENABLED.
+ * Registration in aiTools and TOOL_TIERS stays unconditional (registry
+ * parity); with the flag off the model is never told these exist. Breeze's
+ * MCP server enumerates the registry directly, so it applies the same gate via
+ * `isToolEnvGatedOff` (aiToolEnvGates.ts), and every handler refuses with
+ * `flows_disabled` as the last line of defence.
+ */
+export function flowToolDefinitions(
+  getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) {
+  if (!flowsEnabled()) return [];
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+  return [
+    tool('draft_flow', registryDescription('draft_flow'), inputShape('draft_flow'), makeHandler('draft_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('validate_flow', registryDescription('validate_flow'), inputShape('validate_flow'), makeHandler('validate_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('get_flow', registryDescription('get_flow'), inputShape('get_flow'), makeHandler('get_flow', getAuth, onPreToolUse, onPostToolUse)),
+    tool('list_flows', registryDescription('list_flows'), inputShape('list_flows'), makeHandler('list_flows', getAuth, onPreToolUse, onPostToolUse)),
+  ];
+}
+
 export function m365ToolDefinitions(
   getAuth: () => AuthContext,
   getActiveSession: (() => ActiveSession | undefined) | undefined,
@@ -1527,6 +1569,12 @@ export function googleToolDefinitions(
       SESSION_TOOL_DESCRIPTIONS.google_wipe_mobile_device,
       { userEmail: z.string(), reason: z.string() },
       makeSessionAwareHandler('google_wipe_mobile_device', getAuth, getActiveSession, googleWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
+    ),
+    tool(
+      'google_account_wipe_mobile_device',
+      SESSION_TOOL_DESCRIPTIONS.google_account_wipe_mobile_device,
+      { userEmail: z.string(), reason: z.string() },
+      makeSessionAwareHandler('google_account_wipe_mobile_device', getAuth, getActiveSession, googleAccountWipeMobileDeviceHandler, onPreToolUse, onPostToolUse)
     ),
     tool(
       'google_security_drift',
@@ -1845,6 +1893,7 @@ export function buildBreezeSdkTools(
         action: z.enum([
           'list', 'add_item', 'update_item', 'delete_item', 'reorder',
           'apply_template', 'list_templates', 'get_template',
+          'save_as_template', 'duplicate_template',
         ]),
         ticketId: uuid.optional(),
         itemId: uuid.optional(),
@@ -1855,6 +1904,9 @@ export function buildBreezeSdkTools(
         mode: z.enum(['append', 'replace_unticked']).optional(),
         orgId: uuid.optional(),
         includeInactive: z.boolean().optional(),
+        name: z.string().min(1).max(200).optional(),
+        description: z.string().max(2000).nullable().optional(),
+        ownerScope: z.enum(['organization', 'partner']).optional(),
       },
       makeHandler('manage_ticket_checklist', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -2631,7 +2683,7 @@ export function buildBreezeSdkTools(
       {
         action: z.enum(['list', 'generate', 'data', 'create', 'update', 'delete', 'history']),
         reportId: uuid.optional(),
-        reportType: z.enum(['device_inventory', 'software_inventory', 'alert_summary', 'compliance', 'performance', 'executive_summary']).optional(),
+        reportType: z.enum(GENERATE_REPORT_TYPES).optional(),
         name: z.string().max(255).optional(),
         config: z.record(z.string(), z.unknown()).optional(),
         schedule: z.enum(['one_time', 'daily', 'weekly', 'monthly']).optional(),
@@ -3956,6 +4008,8 @@ export function buildBreezeSdkTools(
         contractId: uuid.optional(),
         includeInactive: z.boolean().optional(),
         occurrencesFor: uuid.optional(),
+        includeDetails: z.boolean().optional(),
+        ...pageZodShape(15, 100),
       },
       makeHandler('list_deliverables', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -3985,6 +4039,7 @@ export function buildBreezeSdkTools(
         reason: z.string().max(2000).optional(),
         dueAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         reportRunId: uuid.optional(),
+        documentId: uuid.optional(),
       },
       makeHandler('manage_deliverables', getAuth, onPreToolUse, onPostToolUse)
     ),
@@ -4188,15 +4243,22 @@ export function buildBreezeSdkTools(
         // Set active plan ID on session before emitting event
         session.activePlanId = planId;
 
-        // Emit plan_approval_required event
-        session.eventBus.publish({
+        // Emit plan_approval_required event. #9427: tracked as a pending card
+        // until the wait below ends — a rejection or timeout publishes nothing.
+        const planCard = planCardKey(planId);
+        publishPendingCard(session, planCard, {
           type: 'plan_approval_required',
           planId,
           steps: planSteps,
         });
 
         // Block until user approves or rejects (10-min timeout)
-        const approved = await waitForPlanApproval(planId, session);
+        let approved: boolean;
+        try {
+          approved = await waitForPlanApproval(planId, session);
+        } finally {
+          resolvePendingCard(session, planCard);
+        }
 
         if (!approved) {
           session.activePlanId = null;
@@ -4250,6 +4312,18 @@ export function buildBreezeSdkTools(
       makeHandler('get_trust_page_status', getAuth, onPreToolUse, onPostToolUse)
     ),
 
+    // #8973 W4 (spec §5.7): read-only business-hours calendars; writes stay human-only.
+    tool(
+      'list_business_calendars',
+      registryDescription('list_business_calendars'),
+      {
+        orgId: uuid.optional().describe("Only this organization's calendars plus its partner-wide ones (UUID)"),
+        includeArchived: z.boolean().optional().describe('Include archived calendars (default false)'),
+        limit: z.number().int().min(1).max(100).optional().describe('Max calendars (default 50, max 100)'),
+      },
+      makeHandler('list_business_calendars', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
     // Microsoft 365 helpdesk tools (session-aware; the customer tenant is bound
     // to the active AI session). Only advertised when the Delegant integration
     // is configured — see m365ToolDefinitions. Routed through
@@ -4261,6 +4335,8 @@ export function buildBreezeSdkTools(
     // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
     // factory for why registration stays unconditional but exposure does not).
     ...scriptProposalToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+    // Tool Catalog W03 (#5218) — behind FLOWS_ENABLED (see the factory).
+    ...flowToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

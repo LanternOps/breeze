@@ -111,6 +111,8 @@ export const GATED_COMMAND_TYPES = [
   'file_trash_restore',
   'file_write',
   'filesystem_analysis',
+  // #8729: operator-directed, disruptive (force-closes apps).
+  'force_reboot',
   'get_process',
   'get_service',
   'hardware_profile',

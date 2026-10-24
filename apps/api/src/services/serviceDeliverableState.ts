@@ -2,7 +2,9 @@ export type OccurrenceStatus = 'scheduled' | 'open' | 'awaiting_evidence' | 'del
 export type OccurrenceEvent =
   | { type: 'open' }
   | { type: 'deliver'; hasEvidence: boolean; artifactRequired: boolean }
-  | { type: 'evidence_added' }
+  // deliveryStarted: a resolved/closed ticket already began this delivery (set by the
+  // caller from the ticket's status). It lets evidence rescue a sweep-missed occurrence.
+  | { type: 'evidence_added'; deliveryStarted?: boolean }
   | { type: 'ticket_resolved'; hasEvidence: boolean; artifactRequired: boolean; completionMode: 'explicit' | 'on_ticket_resolve' }
   | { type: 'ticket_reopened'; deliveredVia: 'explicit' | 'ticket' | null }
   | { type: 'miss' }
@@ -30,7 +32,11 @@ export function transition(current: OccurrenceStatus, event: OccurrenceEvent): T
       if (event.artifactRequired && !event.hasEvidence) throw new InvalidTransitionError(current, event.type);
       return { next: 'delivered' };
     case 'evidence_added':
-      return current === 'awaiting_evidence' ? { next: 'delivered' } : noop('evidence recorded, status unchanged');
+      if (current === 'awaiting_evidence') return { next: 'delivered' };
+      // The sweep re-misses awaiting_evidence after grace; evidence attached afterwards
+      // must still finish a delivery the resolved ticket started (it stays late).
+      if (current === 'missed' && event.deliveryStarted) return { next: 'delivered' };
+      return noop('evidence recorded, status unchanged');
     case 'ticket_resolved':
       if (event.completionMode === 'explicit') return noop('explicit completion mode');
       if (current !== 'open' && current !== 'missed') return noop('not open');

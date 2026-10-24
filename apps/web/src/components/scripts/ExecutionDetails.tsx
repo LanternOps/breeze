@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { formatDateTime as formatUserDateTime } from '@/lib/dateTimeFormat';
 import type { ScriptExecution, ScriptCustomFieldWriteResult } from './ExecutionHistory';
 import { computeDurationSeconds, formatDuration } from './ExecutionHistory';
-import { executionDetailStatusConfig as statusConfig, resolveExecutionStatusLabel } from './executionStatus';
+import { executionDetailStatusConfig as statusConfig, resolveExecutionStatusDescription, resolveExecutionStatusLabel } from './executionStatus';
 import { RunContextChip } from '@/components/common/RunContext';
 import RestorePointInline from '../restorePoints/RestorePointInline';
 import { hasPermission } from '@/lib/permissions';
@@ -335,10 +335,10 @@ export default function ExecutionDetails({
                   'text-lg font-semibold',
                   statusConfig[execution.status].color
                 )}>
-                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(execution.status, execution.cancelState)}`)}
+                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusLabel(execution.status, execution.cancelState, execution.deviceStatus)}`)}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {t(/* i18n-dynamic */ `executionDetails.statusDescription.${execution.status}`)}
+                  {t(/* i18n-dynamic */ `executionDetails.${resolveExecutionStatusDescription(execution.status, execution.deviceStatus)}`)}
                 </p>
               </div>
             </div>

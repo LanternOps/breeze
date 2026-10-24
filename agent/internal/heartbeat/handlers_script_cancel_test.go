@@ -285,7 +285,7 @@ func TestHelperCancellationMarkerCrossesTheIPCHop(t *testing.T) {
 		ID:      "cmd-helper-script",
 		Type:    tools.CmdScript,
 		Payload: map[string]any{"content": "sleep 60", "language": "bash", "timeoutSeconds": 120},
-	}, 10)
+	}, 10, nil)
 
 	_ = session.Close()
 	_ = clientIPC.Close()

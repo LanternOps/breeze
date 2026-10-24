@@ -10,13 +10,14 @@ interface Props {
   title: string;
   canonicalUrl: string;           // absolute URL of the full trust page
   accent?: string | null;
+  lang?: string;                  // the page's frozen locale (embedCardView(card).lang); English by default
 }
-const { title, canonicalUrl, accent } = Astro.props;
+const { title, canonicalUrl, accent, lang = 'en' } = Astro.props;
 const accentCss = buildDocAccentCss(accent);
 const cspNonce = Astro.locals.cspNonce;
 ---
 <!DOCTYPE html>
-<html lang="en">
+<html lang={lang}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

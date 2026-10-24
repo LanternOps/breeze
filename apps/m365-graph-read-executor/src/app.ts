@@ -1,6 +1,4 @@
 import {
-  completeConsentRequestSchema,
-  completeConsentResultSchema,
   isM365SyncAction,
   m365SyncActionResponseSchema,
   readActionRequestSchema,
@@ -10,8 +8,6 @@ import {
   verifyConsentIdentityRequestSchema,
   verifyConsentIdentityResultSchema,
   syncActionRequestSchema,
-  type CompleteConsentRequest,
-  type CompleteConsentResult,
   type M365SyncActionResponse,
   type ReadActionRequest,
   type ReadActionResult,
@@ -31,9 +27,26 @@ const DEFAULT_SYNC_TIMEOUT_MS = 120_000;
 const SYNC_CAPACITY_RETRY_AFTER_SECONDS = 30;
 const INTERACTIVE_CAPACITY_RETRY_AFTER_SECONDS = 5;
 
+/** Build identity served by `GET /version`; never configuration or secrets. */
+export interface ExecutorBuildInfo {
+  version: string;
+  gitSha: string;
+}
+
+/** A bounded label from a build arg; anything else is reported as `unknown`. */
+function buildLabel(value: string | undefined): string {
+  const v = value?.trim() ?? '';
+  return /^[A-Za-z0-9._+-]{1,64}$/.test(v) ? v : 'unknown';
+}
+
+function buildInfoFromEnv(env: NodeJS.ProcessEnv = process.env): ExecutorBuildInfo {
+  return { version: buildLabel(env.APP_VERSION), gitSha: buildLabel(env.GIT_SHA) };
+}
+
 export interface ExecutorAppDependencies {
+  /** Served by `GET /version`. Defaults to the image's baked APP_VERSION / GIT_SHA. */
+  buildInfo?: ExecutorBuildInfo;
   authenticator: InternalRequestAuthenticator;
-  completeConsent(request: CompleteConsentRequest): Promise<CompleteConsentResult>;
   verifyIdentity(request: VerifyConsentIdentityRequest): Promise<VerifyConsentIdentityResult>;
   retest(request: RetestRequest): Promise<RetestResult>;
   readAction(request: ReadActionRequest): Promise<ReadActionResult>;
@@ -86,6 +99,59 @@ function jsonContentType(contentType: string | undefined): boolean {
   return contentType === 'application/json' || contentType === 'application/json; charset=utf-8';
 }
 
+const FAILURE_LOG_MESSAGE = '[m365-graph-read-executor] request failed';
+
+/** What a failed request may log: bounded labels only (#9322). */
+interface RequestFailureState {
+  /** Only from a token that verified — never from the unauthenticated body. */
+  correlationId?: string;
+  errorName?: string;
+}
+
+/** The `/v1/<operation>` segment, when it is a plausible operation name. */
+function pathOperation(path: string): string | null {
+  return /^\/v1\/([a-z][a-z-]{0,39})$/.exec(path)?.[1] ?? null;
+}
+
+/** An error's class name, never its message (which may carry provider text). */
+function boundedErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? name : 'Error';
+}
+
+/** Our own JSON envelopes always carry a fixed `error` code; read only that. */
+async function responseErrorCode(response: Response): Promise<string | null> {
+  try {
+    const body = await response.clone().json() as { error?: unknown };
+    return typeof body.error === 'string' && /^[a-z_]{1,64}$/.test(body.error) ? body.error : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One line per non-2xx response so an API-side `executor_unavailable` can be
+ * matched to its cause by correlation ID. Never logs the request body, the
+ * Authorization header, or an error message.
+ */
+function logRequestFailure(fields: {
+  operation: string | null;
+  status: number;
+  error: string | null;
+  correlationId?: string;
+  errorName?: string;
+}): void {
+  const line = {
+    operation: fields.operation,
+    ...(fields.correlationId === undefined ? {} : { correlationId: fields.correlationId }),
+    status: fields.status,
+    error: fields.error,
+    ...(fields.errorName === undefined ? {} : { errorName: fields.errorName }),
+  };
+  if (fields.status >= 500) console.error(FAILURE_LOG_MESSAGE, line);
+  else console.warn(FAILURE_LOG_MESSAGE, line);
+}
+
 export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
   const app = new Hono();
   const maxBodyBytes = dependencies.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
@@ -114,9 +180,25 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
     }
   }
 
+  /** Runs one operation and logs it if it ends non-2xx. */
+  async function logged(context: Context, operation: ExecutorOperation): Promise<Response> {
+    const state: RequestFailureState = {};
+    const response = await execute(context, operation, state);
+    if (!response.ok) {
+      const error = await responseErrorCode(response);
+      // A sync capacity refusal is expected backpressure the API handles as a
+      // typed back-off, not a failure; logging each one would bury real ones.
+      if (error !== 'sync_capacity') {
+        logRequestFailure({ operation, status: response.status, error, ...state });
+      }
+    }
+    return response;
+  }
+
   async function execute(
     context: Context,
     operation: ExecutorOperation,
+    state: RequestFailureState,
   ) {
     if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
       return context.json({ error: 'unavailable' }, 503);
@@ -140,6 +222,7 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
     } catch {
       return context.json({ error: 'unauthorized' }, 401);
     }
+    state.correlationId = authentication.correlationId;
     let parsed: unknown;
     try {
       parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(rawBody));
@@ -159,24 +242,8 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
         return result.success
           ? context.json(result.data)
           : context.json({ error: 'internal_error' }, 500);
-      } catch {
-        return context.json({ error: 'internal_error' }, 500);
-      }
-    }
-    if (operation === 'complete-consent') {
-      const request = completeConsentRequestSchema.safeParse(parsed);
-      if (!request.success) return context.json({ error: 'invalid_request' }, 400);
-      if (request.data.correlationId !== authentication.correlationId) {
-        return context.json({ error: 'unauthorized' }, 401);
-      }
-      try {
-        const result = completeConsentResultSchema.safeParse(
-          await dependencies.completeConsent(request.data),
-        );
-        return result.success
-          ? context.json(result.data)
-          : context.json({ error: 'internal_error' }, 500);
-      } catch {
+      } catch (error) {
+        state.errorName = boundedErrorName(error);
         return context.json({ error: 'internal_error' }, 500);
       }
     }
@@ -194,7 +261,8 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
       try {
         const result = readActionResultSchema.safeParse(await dependencies.readAction(request.data));
         return result.success ? context.json(result.data) : context.json({ error: 'internal_error' }, 500);
-      } catch {
+      } catch (error) {
+        state.errorName = boundedErrorName(error);
         return context.json({ error: 'internal_error' }, 500);
       } finally {
         lease.release();
@@ -220,7 +288,8 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
         if (outcome === 'timed-out') return context.json({ error: 'sync_timeout' }, 504);
         const result = m365SyncActionResponseSchema.safeParse(outcome);
         return result.success ? context.json(result.data) : context.json({ error: 'internal_error' }, 500);
-      } catch {
+      } catch (error) {
+        state.errorName = boundedErrorName(error);
         return context.json({ error: 'internal_error' }, 500);
       } finally {
         lease.release();
@@ -236,21 +305,35 @@ export function createExecutorApp(dependencies: ExecutorAppDependencies): Hono {
       return result.success
         ? context.json(result.data)
         : context.json({ error: 'internal_error' }, 500);
-    } catch {
+    } catch (error) {
+      state.errorName = boundedErrorName(error);
       return context.json({ error: 'internal_error' }, 500);
     }
   }
 
   app.get('/healthz', (context) => context.json({ status: 'ok' }));
+  // Unauthenticated, like /healthz.
+  app.get('/version', (context) => context.json(dependencies.buildInfo ?? buildInfoFromEnv()));
   app.get('/metrics', (context) => context.text(renderMetrics(), 200, {
     'content-type': 'text/plain; version=0.0.4; charset=utf-8',
   }));
-  app.post('/v1/complete-consent', (context) => execute(context, 'complete-consent'));
-  app.post('/v1/verify-identity', (context) => execute(context, 'verify-identity'));
-  app.post('/v1/retest', (context) => execute(context, 'retest'));
-  app.post('/v1/read-action', (context) => execute(context, 'read-action'));
-  app.post('/v1/sync-action', (context) => execute(context, 'sync-action'));
-  app.notFound((context) => context.json({ error: 'not_found' }, 404));
-  app.onError((_error, context) => context.json({ error: 'internal_error' }, 500));
+  app.post('/v1/verify-identity', (context) => logged(context, 'verify-identity'));
+  app.post('/v1/retest', (context) => logged(context, 'retest'));
+  app.post('/v1/read-action', (context) => logged(context, 'read-action'));
+  app.post('/v1/sync-action', (context) => logged(context, 'sync-action'));
+  // A 404 here is how an API newer than this executor shows up (version skew).
+  app.notFound((context) => {
+    logRequestFailure({ operation: pathOperation(context.req.path), status: 404, error: 'not_found' });
+    return context.json({ error: 'not_found' }, 404);
+  });
+  app.onError((error, context) => {
+    logRequestFailure({
+      operation: pathOperation(context.req.path),
+      status: 500,
+      error: 'internal_error',
+      errorName: boundedErrorName(error),
+    });
+    return context.json({ error: 'internal_error' }, 500);
+  });
   return app;
 }

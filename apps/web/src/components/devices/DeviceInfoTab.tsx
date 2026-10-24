@@ -29,7 +29,7 @@ import { fetchWithAuth } from "../../stores/auth";
 import { formatUptime } from "../../lib/utils";
 import { runAction, ActionError } from "../../lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
-import { isAgentUpdateStuck, isDeviceLogSilent } from "@breeze/shared";
+import { isAgentUpdateStuck } from "@breeze/shared";
 import {
   DEVICE_ROLES,
   getDeviceRoleLabel,
@@ -40,10 +40,12 @@ import {
 import DeviceFunctionField from "./DeviceFunctionField";
 import { asList } from '@/lib/asList';
 import { formatDeviceDetailOsVersion } from "./osDisplay";
+import { formatOsBuild } from "./formatOsLabel";
 import DeviceTimeSection from "./time/DeviceTimeSection";
 import { formatNumber } from "@/lib/i18n/format";
 import { Trans, useTranslation } from "react-i18next";
 import "../../lib/i18n";
+import { dropdownChoiceLabel } from "../../lib/customFieldChoice";
 
 type DeviceInfoTabProps = {
   deviceId: string;
@@ -106,7 +108,6 @@ type DeviceInfo = {
   logsNotArriving?: { since: string } | null;
   status?: string | null;
   lastSeenAt?: string | null;
-  lastLogAt?: string | null;
   enrolledAt?: string | null;
   lastUser?: string | null;
   uptimeSeconds?: number | null;
@@ -729,10 +730,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
     if (value === null || value === undefined || value === "") return "—";
     if (def.type === "boolean")
       return value ? t("deviceInfoTab.yes") : t("deviceInfoTab.no");
-    if (def.type === "dropdown" && def.options?.choices) {
-      const choice = def.options.choices.find((c) => c.value === value);
-      return choice?.label ?? String(value);
-    }
+    if (def.type === "dropdown") return dropdownChoiceLabel(def, value) ?? String(value);
     if (def.type === "date" && typeof value === "string")
       return formatDate(value);
     return String(value);
@@ -1076,7 +1074,7 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
         />
         <InfoRow
           label={t("deviceInfoTab.osBuild")}
-          value={info?.osBuild ?? "—"}
+          value={formatOsBuild(info?.osType, info?.osVersion, info?.osBuild) ?? "—"}
         />
         <InfoRow
           label={t("deviceInfoTab.architecture")}
@@ -1288,22 +1286,6 @@ export default function DeviceInfoTab({ deviceId }: DeviceInfoTabProps) {
               since: formatDate(info.updateAttemptStartedAt),
               attempts: info.updateAttemptCount ?? 1,
             })}
-          </div>
-        ) : null}
-        {info &&
-        isDeviceLogSilent({
-          status: info.status,
-          lastLogAt: info.lastLogAt,
-          enrolledAt: info.enrolledAt,
-        }) ? (
-          <div
-            data-testid="logs-silent"
-            role="status"
-            className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground"
-          >
-            {info.lastLogAt
-              ? t("deviceInfoTab.logsSilent", { since: formatDate(info.lastLogAt) })
-              : t("deviceInfoTab.logsSilentNeverShipped")}
           </div>
         ) : null}
         {info?.updateOfferWithheldReason ? (

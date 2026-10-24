@@ -21,6 +21,7 @@ export const RESTORE_POINT_STATUSES = [
   'existing_accepted',
   'skipped_disabled',
   'skipped_definition_only',
+  'skipped_no_mutation',
   'unsupported',
   'busy',
   'insufficient_privileges',

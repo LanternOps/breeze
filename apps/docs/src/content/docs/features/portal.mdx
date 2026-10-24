@@ -35,6 +35,7 @@ Each organization can enable or disable portal features independently through th
 | `enableAssetCheckout` | `false` | Allow portal users to check out and return shared devices (parked: API only, no portal UI yet) |
 | `enableSelfService` | `true` | Allow portal users to view organization devices |
 | `enablePasswordReset` | `true` | Allow portal users to reset their password via email |
+| `enableTrustPageEditing` | `false` | **Customer trust page editing** (v0.124.0+): let the customer's admin contacts with a portal login edit the trust page draft -- security contact, website, hidden controls and what the page shows -- and withdraw the published page. You still publish their changes. Changing it needs MFA, and **Enable all visibility** leaves it off. See [Customer trust page editing](/security/trust-center-portal-editing/) |
 
 ### Visibility settings
 
@@ -200,6 +201,8 @@ When **Dashboard** visibility is on, signing in lands the customer on a service-
 
 Leave it off and portal users land on their devices as before.
 
+While the organization's public trust page is live, the dashboard also carries a **Public trust page** link to it (v0.124.0+). Nothing is shown while the page is unpublished.
+
 ---
 
 ## Devices
@@ -361,7 +364,7 @@ Only issued invoices appear in the portal -- drafts are never shown. The **Pay n
 ## Asset Checkout
 
 <Aside type="caution">
-  Parked. The checkout/check-in API and the admin toggle exist, but the customer portal does not yet offer the Check Out / Check In actions described below, so the setting defaults to off, and upgrading parks it for organizations that had it on. Enabling it today only adds an "Equipment" page that mirrors Devices.
+  Parked. The checkout/check-in API and the admin toggle exist, but the customer portal does not yet offer the Check Out / Check In actions described below, so the setting defaults to off, and upgrading parks it for organizations that had it on. Enabling it today only adds a read-only "Equipment" page listing the devices currently checked out to the signed-in portal user; a browsable list of devices available to borrow will arrive with the Check Out action.
 </Aside>
 
 The asset checkout system lets portal users borrow shared devices from their organization's inventory and return them when finished.

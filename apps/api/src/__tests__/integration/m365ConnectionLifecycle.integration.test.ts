@@ -50,6 +50,7 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
     onboardingOrgIds: '*',
   })),
   isM365CustomerGraphReadOnboardingEnabledForOrg: () => true,
+  m365CustomerGraphReadOnboardingAvailability: () => 'enabled',
 }));
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -357,13 +358,17 @@ describe('customer Graph-read upgrade consent integration', () => {
 
     // Drizzle wraps the driver error as "Failed query: …" and hangs the real
     // PostgresError off `cause`, so assert on the constraint name there rather
-    // than on the outer message.
+    // than on the outer message. Every other column is a well-formed
+    // identity-first admin_consent row, so the purpose CHECK is the only one
+    // that can fire.
     const rejection = await withSystemDbAccessContext(() => db.execute(sql`
       INSERT INTO m365_consent_sessions
-        (state_hash, phase, purpose, connection_id, org_id, profile, consent_attempt_id, user_id, expires_at)
+        (state_hash, phase, purpose, connection_id, org_id, profile, consent_attempt_id, user_id, expires_at,
+         verified_tenant_id, verified_admin_object_id, identity_verified_at)
       VALUES (
         ${'f'.repeat(64)}, 'admin_consent', 'sideways', ${conn!.id}, ${fixture.orgId},
-        'customer-graph-read', ${conn!.consentAttemptId}, ${fixture.actorId}, now() + interval '10 minutes'
+        'customer-graph-read', ${conn!.consentAttemptId}, ${fixture.actorId}, now() + interval '10 minutes',
+        ${fixture.tenantId}, '55555555-5555-4555-8555-555555555555', now()
       )
     `)).then(() => null, (error: unknown) => error);
     expect(rejection).not.toBeNull();

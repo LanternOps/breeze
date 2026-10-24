@@ -67,13 +67,13 @@ export default function DeviceDrawer({
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div className="min-w-0">
             <h2 className="truncate text-lg font-semibold">
-              {i18n.t("policies:software.deviceDrawer.devicesWith")}
-              {softwareName}
+              {i18n.t("policies:software.deviceDrawer.devicesWith", {
+                name: softwareName,
+              })}
             </h2>
             {vendor && (
               <p className="text-sm text-muted-foreground">
-                {i18n.t("policies:software.deviceDrawer.by")}
-                {vendor}
+                {i18n.t("policies:software.deviceDrawer.by", { vendor })}
               </p>
             )}
           </div>
@@ -149,10 +149,9 @@ export default function DeviceDrawer({
         {total > limit && (
           <div className="flex items-center justify-between border-t px-6 py-3 text-sm">
             <span className="text-muted-foreground">
-              {total}
-              {i18n.t("policies:software.deviceDrawer.device")}
-              {total !== 1 ? i18n.t("policies:software.deviceDrawer.s") : ""}
-              {i18n.t("policies:software.deviceDrawer.total")}
+              {i18n.t("policies:software.deviceDrawer.deviceTotal", {
+                count: total,
+              })}
             </span>
             <div className="flex items-center gap-2">
               <button

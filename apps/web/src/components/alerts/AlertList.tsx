@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 import {
@@ -105,6 +105,10 @@ type AlertListProps = {
    */
   hideAiNoise?: boolean;
   onHideAiNoiseChange?: (value: boolean) => void;
+  /** Seed for the status filter (from the `#status=` hash). Single value. */
+  initialStatus?: AlertStatus;
+  /** Seed for the multi-value severity filter (from the `#severity=a,b` hash). */
+  initialSeverity?: AlertSeverity[];
 };
 
 export default function AlertList({
@@ -122,12 +126,26 @@ export default function AlertList({
   alertCorrelationDisabled = false,
   showOrgColumn = false,
   hideAiNoise = false,
-  onHideAiNoiseChange
+  onHideAiNoiseChange,
+  initialStatus,
+  initialSeverity
 }: AlertListProps) {
   const { t } = useTranslation('alerts');
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [severityFilter, setSeverityFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>(initialStatus ?? 'all');
+  const [severityFilter, setSeverityFilter] = useState<AlertSeverity[]>(initialSeverity ?? []);
+  // Re-seed when the hash changes after mount (client-side navigation).
+  const initialSeverityKey = (initialSeverity ?? []).join(',');
+  const firstSeed = useRef(true);
+  useEffect(() => {
+    if (firstSeed.current) {
+      firstSeed.current = false;
+      return;
+    }
+    setStatusFilter(initialStatus ?? 'all');
+    setSeverityFilter(initialSeverityKey ? (initialSeverityKey.split(',') as AlertSeverity[]) : []);
+    setCurrentPage(1);
+  }, [initialStatus, initialSeverityKey]);
   const [deviceFilter, setDeviceFilter] = useState<string>('all');
   const [dateRangeFilter, setDateRangeFilter] = useState<string>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -139,9 +157,10 @@ export default function AlertList({
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
 
-  const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all' || deviceFilter !== 'all' || dateRangeFilter !== 'all' || hideAiNoise;
+  const hasActiveFilters = statusFilter !== 'all' || severityFilter.length > 0 || deviceFilter !== 'all' || dateRangeFilter !== 'all' || hideAiNoise;
   const activeFilterCount =
-    [statusFilter, severityFilter, deviceFilter, dateRangeFilter].filter(f => f !== 'all').length +
+    [statusFilter, deviceFilter, dateRangeFilter].filter(f => f !== 'all').length +
+    (severityFilter.length > 0 ? 1 : 0) +
     (hideAiNoise ? 1 : 0);
 
   const filteredAlerts = useMemo(() => {
@@ -157,7 +176,7 @@ export default function AlertList({
       // "All Status" still hides dismissed alerts — they're permanently closed
       // and only show when the Dismissed filter is selected explicitly.
       const matchesStatus = statusFilter === 'all' ? alert.status !== 'dismissed' : alert.status === statusFilter;
-      const matchesSeverity = severityFilter === 'all' ? true : alert.severity === severityFilter;
+      const matchesSeverity = severityFilter.length === 0 ? true : severityFilter.includes(alert.severity);
       const matchesDevice = deviceFilter === 'all' ? true : alert.deviceId === deviceFilter;
 
       let matchesDateRange = true;
@@ -227,7 +246,7 @@ export default function AlertList({
   const clearFilters = () => {
     setQuery('');
     setStatusFilter('all');
-    setSeverityFilter('all');
+    setSeverityFilter([]);
     setDeviceFilter('all');
     setDateRangeFilter('all');
     onHideAiNoiseChange?.(false);
@@ -290,6 +309,32 @@ export default function AlertList({
         </span>
       </div>
 
+      {severityFilter.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b px-4 py-2" data-testid="alert-severity-chips">
+          {severityFilter.map(sev => (
+            <span
+              key={sev}
+              data-testid={`alert-severity-chip-${sev}`}
+              className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-xs font-medium"
+            >
+              {t(/* i18n-dynamic */ `alertList.${sev}`)}
+              <button
+                type="button"
+                data-testid={`alert-severity-chip-${sev}-remove`}
+                aria-label={`${t('alertList.clearAll')}: ${t(/* i18n-dynamic */ `alertList.${sev}`)}`}
+                onClick={() => {
+                  setSeverityFilter(prev => prev.filter(x => x !== sev));
+                  setCurrentPage(1);
+                }}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Collapsible filter panel */}
       {filtersExpanded && (
         <div className="flex flex-wrap items-center gap-2 border-b bg-muted/20 px-4 py-3">
@@ -311,13 +356,19 @@ export default function AlertList({
           </FilterSelect>
           <FilterSelect
             label={t('alertList.filterSeverityLabel')}
-            value={severityFilter}
+            value={severityFilter.length === 0 ? 'all' : severityFilter.length === 1 ? severityFilter[0] : 'multiple'}
             onChange={event => {
-              setSeverityFilter(event.target.value);
+              const v = event.target.value;
+              setSeverityFilter(v === 'all' ? [] : [v as AlertSeverity]);
               setCurrentPage(1);
             }}
             className="h-8 px-2 text-sm"
           >
+            {severityFilter.length > 1 && (
+              <option value="multiple" disabled>
+                {severityFilter.map(sev => t(/* i18n-dynamic */ `alertList.${sev}`)).join(', ')}
+              </option>
+            )}
             <option value="all">{t('alertList.allSeverity')}</option>
             <option value="critical">{t('alertList.critical')}</option>
             <option value="high">{t('alertList.high')}</option>

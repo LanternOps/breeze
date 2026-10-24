@@ -1,6 +1,7 @@
 {
   "section": {
     "title": "Entregables del servicio",
+    "pausedDraft": "En pausa hasta que se active el contrato. Un borrador no abre tickets; al activarlo, los entregables que no han comenzado pasan a la fecha de inicio del contrato (o a hoy, si ya pasó).",
     "empty": "Aún no hay entregables. Agregue los informes y revisiones periódicos que se le deben a este cliente."
   },
   "table": {
@@ -46,7 +47,8 @@
     "addEvidence": "Agregar evidencia",
     "removeEvidence": "Quitar evidencia",
     "save": "Guardar",
-    "cancel": "Cancelar"
+    "cancel": "Cancelar",
+    "retry": "Reintentar"
   },
   "form": {
     "name": "Nombre",
@@ -90,6 +92,7 @@
     "evidence": "Evidencia",
     "noEvidence": "Sin evidencia adjunta",
     "late": "Atrasada",
+    "awaitingEvidenceHint": "Ticket resuelto: adjunta evidencia para completar",
     "rescheduledFrom": "Reprogramada desde {{date}}",
     "deliveryNote": "Nota de entrega",
     "waivedReason": "Motivo de la exoneración",
@@ -100,11 +103,23 @@
     "upload": "Subir",
     "checklistProgress": "{{done}} / {{total}}",
     "showChecklist": "Mostrar lista de verificación",
-    "hideChecklist": "Ocultar lista de verificación"
+    "hideChecklist": "Ocultar lista de verificación",
+    "linkDocument": "Vincular documento existente",
+    "linkDocumentSelect": "Elige un documento para vincular como evidencia",
+    "linkDocumentLoading": "Cargando documentos…",
+    "linkDocumentPlaceholder": "Elige un documento…",
+    "linkDocumentEmpty": "Aún no hay documentos en la biblioteca de esta organización.",
+    "linkAgreement": "Vincular acuerdo firmado",
+    "linkAgreementSelect": "Elige un acuerdo firmado para vincularlo como evidencia",
+    "linkAgreementLoading": "Cargando acuerdos firmados…",
+    "linkAgreementPlaceholder": "Elige un acuerdo firmado…",
+    "linkAgreementEmpty": "Aún no hay acuerdos firmados para esta organización.",
+    "link": "Vincular"
   },
   "evidence": {
     "reportRun": "Ejecución de informe",
     "document": "Documento",
+    "signedAgreement": "Acuerdo firmado",
     "reportRunId": "ID de la ejecución de informe"
   },
   "upcoming": {
@@ -123,7 +138,11 @@
     "uploadFailed": "No se pudo subir el archivo de evidencia.",
     "tooLarge": "Ese archivo pesa más de 10 MB.",
     "unsupportedType": "Solo se pueden adjuntar archivos PDF, JPEG, PNG y WebP.",
-    "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos."
+    "storageUnavailable": "El almacenamiento de documentos no está disponible en este momento. Vuelva a intentarlo en unos minutos.",
+    "linkFailed": "No se pudo vincular el documento.",
+    "libraryLoadFailed": "No se pudo cargar la biblioteca de documentos.",
+    "agreementsLoadFailed": "No se pudieron cargar los acuerdos firmados.",
+    "agreementsForbidden": "No tienes permiso para ver los acuerdos firmados."
   },
   "confirm": {
     "deactivate": "¿Desactivar {{name}}? Las ocurrencias abiertas se cerrarán y no se programarán nuevas.",
@@ -169,7 +188,8 @@
     "evidenceAdded": "Evidencia agregada",
     "evidenceRemoved": "Evidencia quitada",
     "deactivated": "Entregable desactivado",
-    "evidenceUploaded": "Evidencia subida"
+    "evidenceUploaded": "Evidencia subida",
+    "evidenceLinked": "Documento vinculado como evidencia"
   },
   "templates": {
     "pageTitle": "Plantillas de entregables",
@@ -232,5 +252,33 @@
       "itemDeleted": "Entregable eliminado",
       "applied": "Conjunto de plantillas aplicado"
     }
+  },
+  "move": {
+    "action": "Mover a contrato…",
+    "toTitle": "Mover entregables a un contrato",
+    "selected": "Seleccionados: {{count}}",
+    "selectRow": "Seleccionar {{name}}",
+    "target": "Contrato de destino",
+    "confirm": "Mover",
+    "moved": "Entregables movidos",
+    "hereAction": "Mover entregables aquí desde…",
+    "hereTitle": "Mover entregables aquí",
+    "hereHelp": "Elija entregables de los otros contratos de esta organización para moverlos a este.",
+    "hereEmpty": "No hay otros entregables en esta organización.",
+    "collision": "No se movió nada. Estos nombres ya existen en el contrato de destino: {{names}}"
+  },
+  "bulk": {
+    "select": "Seleccionar {{name}}",
+    "selectAll": "Seleccionar todos los entregables",
+    "count_one": "{{count}} seleccionado",
+    "count_other": "{{count}} seleccionados",
+    "reschedule": "Reprogramar selección",
+    "clear": "Borrar",
+    "newDate": "Nueva fecha de vencimiento",
+    "done_one": "{{count}} ocurrencia reprogramada",
+    "done_other": "{{count}} ocurrencias reprogramadas",
+    "partial": "{{moved}} reprogramadas, {{refused}} no se pudieron mover",
+    "none": "Ninguno de los entregables seleccionados tiene una ocurrencia abierta para reprogramar.",
+    "failed": "No se pudieron reprogramar las ocurrencias seleccionadas."
   }
 }
