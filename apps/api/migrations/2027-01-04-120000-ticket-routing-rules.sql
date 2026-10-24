@@ -151,11 +151,11 @@ BEGIN
     CONTINUE WHEN ref_id IS NULL;
     SELECT c.partner_id INTO ref_partner_id FROM public.ticket_categories AS c WHERE c.id = ref_id;
     IF NOT FOUND THEN
-      RAISE EXCEPTION 'insert or update on table "ticket_routing_rules" references a ticket category that does not exist'
+      RAISE EXCEPTION 'insert or update on table "ticket_routing_rules" names a ticket category that does not exist'
         USING ERRCODE = '23503', CONSTRAINT = 'ticket_routing_rules_ref_partner_chk';
     END IF;
     IF ref_partner_id IS DISTINCT FROM rule_partner_id THEN
-      RAISE EXCEPTION 'ticket routing rule references a ticket category of another partner'
+      RAISE EXCEPTION 'ticket routing rule names a ticket category of another partner'
         USING ERRCODE = 'check_violation', CONSTRAINT = 'ticket_routing_rules_ref_partner_chk';
     END IF;
   END LOOP;
@@ -163,11 +163,11 @@ BEGIN
   IF NEW.set_status_id IS NOT NULL THEN
     SELECT s.partner_id INTO ref_partner_id FROM public.ticket_statuses AS s WHERE s.id = NEW.set_status_id;
     IF NOT FOUND THEN
-      RAISE EXCEPTION 'insert or update on table "ticket_routing_rules" references a ticket status that does not exist'
+      RAISE EXCEPTION 'insert or update on table "ticket_routing_rules" names a ticket status that does not exist'
         USING ERRCODE = '23503', CONSTRAINT = 'ticket_routing_rules_ref_partner_chk';
     END IF;
     IF ref_partner_id IS DISTINCT FROM rule_partner_id THEN
-      RAISE EXCEPTION 'ticket routing rule references a ticket status of another partner'
+      RAISE EXCEPTION 'ticket routing rule names a ticket status of another partner'
         USING ERRCODE = 'check_violation', CONSTRAINT = 'ticket_routing_rules_ref_partner_chk';
     END IF;
   END IF;
@@ -177,7 +177,7 @@ BEGIN
   IF NEW.set_assignee_user_id IS NOT NULL THEN
     SELECT u.partner_id INTO ref_partner_id FROM public.users AS u WHERE u.id = NEW.set_assignee_user_id;
     IF NOT FOUND THEN
-      RAISE EXCEPTION 'insert or update on table "ticket_routing_rules" references a user that does not exist'
+      RAISE EXCEPTION 'insert or update on table "ticket_routing_rules" names a user that does not exist'
         USING ERRCODE = '23503', CONSTRAINT = 'ticket_routing_rules_ref_partner_chk';
     END IF;
     IF ref_partner_id IS NOT NULL AND ref_partner_id IS DISTINCT FROM rule_partner_id THEN
