@@ -601,7 +601,8 @@ describe('StreamingSessionManager eviction (#4514)', () => {
       expect(finalizeMock).not.toHaveBeenCalled();
     });
 
-    it('a rejected finalize is captured and does not stop later orgs', async () => {
+    it('a rejected finalize is captured, logged with the session id, and does not stop later orgs', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       finalizeMock.mockRejectedValueOnce(new Error('summary boom'));
       mockState.nextRows = [{ id: 'row' }];
       seed(manager, 'v-a', 'org-a', { idleFor: 3 * HOUR, state: 'idle' });
@@ -613,6 +614,8 @@ describe('StreamingSessionManager eviction (#4514)', () => {
 
       expect(capturedExpires).toHaveLength(2);
       expect(captureExceptionMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'summary boom' }));
+      expect(errSpy.mock.calls.some((args) => String(args[0]).includes('finalize') && String(args[0]).includes('row'))).toBe(true);
+      errSpy.mockRestore();
     });
   });
 

@@ -66,6 +66,7 @@ import { CeilingViolationError, type GrantCeiling } from './grantAuthority';
 import type { WispThread } from './threads';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
+  THREAD_ATTACHMENT_MESSAGES,
   THREAD_ATTACHMENT_MAX_PER_THREAD,
   ThreadAttachmentError,
   addThreadAttachment,
@@ -188,6 +189,28 @@ describe('addThreadAttachment', () => {
     expect((err as ThreadAttachmentError).code).toBe('org_outside_ceiling');
     expect(h.calls).toEqual(['ceiling']);
     expect(h.createArtifact).not.toHaveBeenCalled();
+  });
+
+  it.each(['site', 'permission', 'tool'] as const)(
+    'maps a %s ceiling violation to outside_ceiling (not org_outside_ceiling) before any write',
+    async (code) => {
+      h.assertWithinCeiling.mockImplementation(() => { throw new CeilingViolationError(code, `internal ${code} detail`); });
+      const err = await addThreadAttachment({ thread, ceiling, orgId: O1, label: 'n.txt', text: 'hi', addedByUserId: U1 })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ThreadAttachmentError);
+      expect((err as ThreadAttachmentError).code).toBe('outside_ceiling');
+      expect(h.createArtifact).not.toHaveBeenCalled();
+    },
+  );
+
+  it('every ThreadAttachmentError code has fixed user-facing copy with no ids in it', () => {
+    for (const [code, copy] of Object.entries(THREAD_ATTACHMENT_MESSAGES)) {
+      expect(copy, code).toMatch(/^[A-Z]/);
+      expect(copy, code).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/);
+    }
+    expect(Object.keys(THREAD_ATTACHMENT_MESSAGES).sort()).toEqual(
+      ['empty', 'org_outside_ceiling', 'outside_ceiling', 'store_unavailable', 'too_large', 'too_many', 'unsupported_type'],
+    );
   });
 
   it("refuses a thread from another partner than the ceiling's (org_outside_ceiling) before any write", async () => {

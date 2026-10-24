@@ -39,9 +39,11 @@ export type WispSessionErrorCode =
   | 'entitlement_required'
   | 'grant_scope_mismatch'
   /** w00 A24: an explicit org (or bound device) other than the thread's focus org, or a focus this sign-in cannot reach. */
-  | 'focus_mismatch';
+  | 'focus_mismatch'
+  /** The grant's revision pin is broken (grantAuthority `kind: 'corrupt'`) — data damage, logged and captured. */
+  | 'grant_corrupt';
 
-export type WispSessionErrorStatus = 400 | 403 | 404 | 409;
+export type WispSessionErrorStatus = 400 | 403 | 404 | 409 | 500;
 
 /** User-visible messages (the route returns them verbatim). */
 const DEFAULT_MESSAGES: Record<WispSessionErrorCode, string> = {
@@ -53,6 +55,7 @@ const DEFAULT_MESSAGES: Record<WispSessionErrorCode, string> = {
   grant_scope_mismatch: 'This Wisp grant does not cover the organization this conversation would use.',
   focus_mismatch:
     'This Wisp conversation is focused on a different organization. Reload the page or change the focus, then try again.',
+  grant_corrupt: "This Wisp grant can't be used. Turn Wisp off and on again.",
 };
 
 export class WispSessionError extends Error {

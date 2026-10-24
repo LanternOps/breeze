@@ -647,17 +647,38 @@ describe('runPreFlightChecks', () => {
     await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
   });
 
-  it('a rejected thread-summary finalize does not change the expiry result', async () => {
+  it('a rejected thread-summary finalize does not change the expiry result, and is captured + logged', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockGetSession.mockResolvedValue(makeSession({ createdAt, lastActivityAt: new Date() }));
     vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
-    finalizeMock.mockRejectedValueOnce(new Error('summary boom'));
+    const boom = new Error('summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
 
     const result = await runPreFlightChecks('session-1', 'hello', auth);
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('24h');
     await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('a rejected finalize on the INACTIVITY (2h idle) branch is captured + logged and keeps the expiry result', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockGetSession.mockResolvedValue(makeSession({ lastActivityAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }));
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+    const boom = new Error('idle summary boom');
+    finalizeMock.mockRejectedValueOnce(boom);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining('inactivity') });
+    await vi.waitFor(() => expect(finalizeMock).toHaveBeenCalledWith('session-1'));
+    await vi.waitFor(() => expect(mockCaptureException).toHaveBeenCalledWith(boom));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('session-1'))).toBe(true);
+    errSpy.mockRestore();
   });
 
   // --- Idle timeout ---

@@ -177,9 +177,13 @@ async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
   try {
     const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
     for (const id of sessionIds) {
-      await finalizeWispSessionSummary(id).catch((err) => captureException(err));
+      await finalizeWispSessionSummary(id).catch((err) => {
+        console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for expired session ${id}:`, err);
+        captureException(err);
+      });
     }
   } catch (err) {
+    console.error(`[StreamingSessionManager] Wisp thread summary finalize failed for ${sessionIds.length} session(s) (${sessionIds.join(', ')}):`, err);
     captureException(err);
   }
 }

@@ -46,7 +46,7 @@ import { deliveryToolShape, diagnosticAccessShapes, executeCommandShape, recallS
 import { sendEndpointMessageShape } from './aiToolSchemasMessaging';
 import { aiScriptAuthoringEnabled, flowsEnabled, wispEnabled } from '../config/env';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
-import { captureMessage } from './sentry';
+import { captureException, captureMessage } from './sentry';
 import { postToolUseForCall, sdkToolUseIdFromExtra } from './aiToolUseCorrelation';
 import {
   m365LookupUserHandler, m365RecentSigninsHandler, m365ListGroupMembershipsHandler,
@@ -87,6 +87,66 @@ import {
 const SECRET_ACTION_REFUSED_TEXT =
   'This action was not performed: no durable approval record was available to store the '
   + 'resulting credential securely. Retry once the approval workflow is available.';
+
+/**
+ * What a `PreToolUseCallback` decides for one call. ONE named type: both
+ * registry handlers (`makeToolHandler` and `makeSessionAwareHandler`) consume
+ * it as-is, so a field added here (e.g. Wisp's `toolAuth`) cannot be dropped
+ * by a drifted inline copy.
+ */
+export type PreToolUseResult =
+  /**
+   * `toolAuth`: Wisp W04 — the auth THIS call executes under, cut to the
+   * session's delegation ceiling for this call's org and permissions
+   * (services/wisp/chatCeiling.ts). Per call, never written to the shared
+   * session: the SDK runs calls concurrently and two calls need different
+   * reach. Set for every allowed call of a Wisp session; absent otherwise,
+   * and the handler then reads `getAuth()` as before. A Wisp session's call
+   * that arrives WITHOUT it is denied (`wispMissingToolAuthDenial`).
+   */
+  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
+  /**
+   * Not run by THIS session. Two different things wear this shape:
+   *
+   *  - a real denial/failure (`handoff` absent) — published as `isError: true`
+   *    with `{ error }`, as it always was; and
+   *  - an approval HANDOFF (`handoff` set) — the human approved and the action
+   *    is executing under the durable release worker, so this session declines
+   *    to run it. Published as `isError: false` with `{ status, message }`.
+   *
+   * `error` carries the model-facing text in both cases; when `handoff` is set
+   * it is a status message, not a failure, and it never reaches an `error`
+   * field on the wire. See services/aiToolHandoff.ts (#5107).
+   */
+  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+
+/**
+ * A Wisp call reached a registry handler with no per-call `toolAuth`: denied,
+ * never ungated. The user sees the same copy as aiAgentSdk.ts's
+ * WISP_GATE_UNAVAILABLE_MESSAGE (kept separate: ~50 suites replace this module
+ * with a factory mock, so aiAgentSdk.ts cannot read its copy from here).
+ */
+export const WISP_UNGATED_CALL_MESSAGE =
+  "Wisp couldn't verify your grant for this action, so it wasn't run. Try again in a moment.";
+
+/**
+ * Wisp defence in depth (W04a T2), run by BOTH registry handlers after the
+ * gate: a call of a Wisp session must execute under the per-call `toolAuth`
+ * the gate cut to the ceiling. One that arrives without it (no gate, or a gate
+ * exit that forgot to narrow) is a wiring bug — deny it rather than fall back
+ * to the session's shared `getAuth()`. Returns the denial, or null to proceed.
+ */
+function wispMissingToolAuthDenial(
+  toolName: string,
+  session: ActiveSession | undefined,
+  callToolAuth: AuthContext | undefined,
+): { allowed: false; error: string } | null {
+  if (!session?.wispGrant || callToolAuth) return null;
+  const err = new Error(`Wisp session ${session.breezeSessionId} reached '${toolName}' without a per-call toolAuth; denying`);
+  console.error(`[AI-SDK] ${err.message}`);
+  captureException(err);
+  return { allowed: false, error: WISP_UNGATED_CALL_MESSAGE };
+}
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -136,31 +196,7 @@ export type PreToolUseCallback = (
    * Absent only when the SDK sent none.
    */
   toolUseId?: string,
-) => Promise<
-  /**
-   * `toolAuth`: Wisp W04 — the auth THIS call executes under, cut to the
-   * session's delegation ceiling for this call's org and permissions
-   * (services/wisp/chatCeiling.ts). Per call, never written to the shared
-   * session: the SDK runs calls concurrently and two calls need different
-   * reach. Set for every allowed call of a Wisp session; absent otherwise,
-   * and the handler then reads `getAuth()` as before.
-   */
-  | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
-  /**
-   * Not run by THIS session. Two different things wear this shape:
-   *
-   *  - a real denial/failure (`handoff` absent) — published as `isError: true`
-   *    with `{ error }`, as it always was; and
-   *  - an approval HANDOFF (`handoff` set) — the human approved and the action
-   *    is executing under the durable release worker, so this session declines
-   *    to run it. Published as `isError: false` with `{ status, message }`.
-   *
-   * `error` carries the model-facing text in both cases; when `handoff` is set
-   * it is a status message, not a failure, and it never reaches an `error`
-   * field on the wire. See services/aiToolHandoff.ts (#5107).
-   */
-  | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload }
->;
+) => Promise<PreToolUseResult>;
 
 /**
  * Callback invoked after each tool execution (success or failure).
@@ -798,9 +834,7 @@ function makeToolHandler(
 
     // Pre-execution check (guardrails, RBAC, rate limits, approval)
     if (onPreToolUse) {
-      let check:
-        | { allowed: true; intentId?: string; context?: ToolExecutionContext; toolAuth?: AuthContext }
-        | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+      let check: PreToolUseResult;
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
@@ -833,6 +867,12 @@ function makeToolHandler(
           isError: denial.isError,
         };
       }
+    }
+    const missingWispAuth = wispMissingToolAuthDenial(toolName, getActiveSession?.(), callToolAuth);
+    if (missingWispAuth) {
+      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
+      return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
     try {
       const auth = callToolAuth ?? getAuth();
@@ -1039,9 +1079,7 @@ function makeSessionAwareHandler(
     // Wisp W04: the per-call auth the gate cut to the delegation ceiling.
     let callToolAuth: AuthContext | undefined;
     if (onPreToolUse) {
-      let check:
-        | { allowed: true; intentId?: string; toolAuth?: AuthContext }
-        | { allowed: false; error: string; handoff?: ToolHandoffStatus; requiresCallerVerification?: CallerRefusalPayload };
+      let check: PreToolUseResult;
       try {
         check = await onPreToolUse(toolName, args, undefined, sdkToolUseIdFromExtra(extra));
       } catch (err) {
@@ -1061,6 +1099,12 @@ function makeSessionAwareHandler(
       }
       intentId = check.intentId;
       callToolAuth = check.toolAuth;
+    }
+    const missingWispAuth = wispMissingToolAuthDenial(toolName, session, callToolAuth);
+    if (missingWispAuth) {
+      const denial = preToolUseDenialResult(toolName, missingWispAuth);
+      await safePostToolUse(postToolUse, toolName, args, denial.text, denial.isError, 0);
+      return { content: [{ type: 'text' as const, text: denial.text }], isError: denial.isError };
     }
 
     // Fail closed on confidentiality BEFORE the provider-side action executes,

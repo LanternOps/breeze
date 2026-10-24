@@ -51,10 +51,12 @@ import type { AuthContext } from '../middleware/auth';
 import { bodyLimitOnError } from '../middleware/bodyLimitGate';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
+  THREAD_ATTACHMENT_MESSAGES,
   ThreadAttachmentError,
   addThreadAttachment,
   classifyAttachmentBytes,
@@ -90,7 +92,7 @@ const textAttachmentBody = z
 
 const NOT_FOUND = { error: 'Wisp thread not found', code: 'not_found' } as const;
 
-type ErrorStatus = 400 | 403 | 404 | 409 | 413 | 415 | 503;
+type ErrorStatus = 400 | 403 | 404 | 409 | 413 | 415 | 500 | 503;
 const fail = (c: Context, status: ErrorStatus, code: string, error: string, extra: Record<string, unknown> = {}) =>
   c.json({ error, code, ...extra }, status);
 
@@ -204,22 +206,41 @@ async function focusOrgNameOf(partnerId: string, orgId: string | null): Promise<
   return org ? org.name.slice(0, FOCUS_NAME_MAX_CHARS) : null;
 }
 
+type CeilingOutcome =
+  | { ok: true; ceiling: GrantCeiling }
+  | { ok: false; reason: 'inactive' | 'corrupt' };
+
 /**
- * The live ceiling of the thread's grant. Null (→ 409 grant_inactive) when
- * the grant has no pinned revision or `resolveGrantCeiling` reports it
- * inactive (paused / revoked / expired / Wisp switched off).
+ * The live ceiling of the thread's grant. `inactive` (→ 409 grant_inactive)
+ * when the grant has no pinned revision or `resolveGrantCeiling` reports it
+ * paused / revoked / expired / Wisp switched off; `corrupt` (→ 500
+ * grant_corrupt, already logged and captured) when the pin itself is broken.
  */
-async function ceilingOf(own: OwnThread): Promise<GrantCeiling | null> {
-  if (!own.grant.currentRevisionId) return null;
+async function ceilingOf(own: OwnThread): Promise<CeilingOutcome> {
+  if (!own.grant.currentRevisionId) return { ok: false, reason: 'inactive' };
   try {
-    return await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId);
+    return { ok: true, ceiling: await resolveGrantCeiling(own.grant.id, own.grant.currentRevisionId) };
   } catch (err) {
-    if (err instanceof GrantInactiveError) return null;
+    if (err instanceof GrantInactiveError) {
+      if (err.kind !== 'corrupt') return { ok: false, reason: 'inactive' };
+      reportCorruptGrant(err, 'ceiling read');
+      return { ok: false, reason: 'corrupt' };
+    }
     throw err;
   }
 }
 
+/** grantAuthority's contract: a `corrupt` pin is data damage — log and capture it, never a quiet refusal. */
+function reportCorruptGrant(err: GrantInactiveError, where: string): void {
+  console.error(`[WispThreads] grant ${err.grantId} has a corrupt ceiling pin (${where}): ${err.message}`);
+  captureException(err, undefined, { grantId: err.grantId });
+}
+
 const grantInactive = (c: Context) => fail(c, 409, 'grant_inactive', 'This Wisp delegation is not active');
+const grantCorrupt = (c: Context) =>
+  fail(c, 500, 'grant_corrupt', "This Wisp grant can't be used. Turn Wisp off and on again.");
+const ceilingRefusal = (c: Context, reason: 'inactive' | 'corrupt') =>
+  reason === 'corrupt' ? grantCorrupt(c) : grantInactive(c);
 
 // Keyset cursor over (attached_at DESC, session_id DESC): base64url("<iso>|<uuid>").
 function encodeCursor(attachedAt: Date, sessionId: string): string {
@@ -321,18 +342,22 @@ wispThreadRoutes.patch('/:id/focus', zValidator('json', focusBody), async (c) =>
   if (!own) return c.json(NOT_FOUND, 404);
   const { orgId } = c.req.valid('json');
 
-  const ceiling = await ceilingOf(own);
-  if (!ceiling) return grantInactive(c);
+  const resolved = await ceilingOf(own);
+  if (!resolved.ok) return ceilingRefusal(c, resolved.reason);
 
   let updated: WispThread;
   try {
-    updated = await setThreadFocus(own.thread.id, orgId, ceiling);
+    updated = await setThreadFocus(own.thread.id, orgId, resolved.ceiling);
   } catch (err) {
     if (err instanceof CeilingViolationError) {
       if (err.code === 'inactive') return grantInactive(c);
       return fail(c, 403, 'wisp_outside_ceiling', 'That organization is outside this Wisp delegation', { detail: 'org' });
     }
-    if (err instanceof GrantInactiveError) return grantInactive(c);
+    if (err instanceof GrantInactiveError) {
+      if (err.kind !== 'corrupt') return grantInactive(c);
+      reportCorruptGrant(err, 'focus change');
+      return grantCorrupt(c);
+    }
     if (err instanceof WispThreadError && err.code === 'thread_not_found') return c.json(NOT_FOUND, 404);
     throw err;
   }
@@ -367,6 +392,7 @@ const ATTACHMENT_STATUS: Record<ThreadAttachmentError['code'], ErrorStatus> = {
   empty: 400,
   too_many: 409,
   org_outside_ceiling: 403,
+  outside_ceiling: 403,
   store_unavailable: 503,
 };
 
@@ -417,10 +443,10 @@ async function parseUpload(c: Context): Promise<ParsedUpload> {
 
   const classified = classifyAttachmentBytes(bytes, filename);
   if (!classified.ok) {
-    const message = classified.code === 'too_large'
-      ? `Attachments are limited to ${THREAD_ATTACHMENT_MAX_BYTES} bytes`
-      : classified.code === 'empty' ? 'The attachment is empty' : 'Only text attachments are supported';
-    return { ok: false, response: fail(c, ATTACHMENT_STATUS[classified.code], classified.code, message) };
+    return {
+      ok: false,
+      response: fail(c, ATTACHMENT_STATUS[classified.code], classified.code, THREAD_ATTACHMENT_MESSAGES[classified.code]),
+    };
   }
   return { ok: true, text: classified.text, label, contentType: classified.contentType };
 }
@@ -444,8 +470,8 @@ wispThreadRoutes.post(
       return fail(c, 409, 'focus_required', 'Focus the thread on an organization before attaching files');
     }
 
-    const ceiling = await ceilingOf(own);
-    if (!ceiling) return grantInactive(c);
+    const resolved = await ceilingOf(own);
+    if (!resolved.ok) return ceilingRefusal(c, resolved.reason);
 
     const upload = await parseUpload(c);
     if (!upload.ok) return upload.response;
@@ -454,7 +480,7 @@ wispThreadRoutes.post(
     try {
       added = await addThreadAttachment({
         thread: own.thread,
-        ceiling,
+        ceiling: resolved.ceiling,
         orgId,
         label: upload.label,
         text: upload.text,
@@ -462,7 +488,20 @@ wispThreadRoutes.post(
         contentType: upload.contentType,
       });
     } catch (err) {
-      if (err instanceof ThreadAttachmentError) return fail(c, ATTACHMENT_STATUS[err.code], err.code, err.message);
+      if (err instanceof ThreadAttachmentError) {
+        // `err.message` is internal (ids, limits): it goes to the log, the client gets fixed copy.
+        if (err.code === 'store_unavailable') {
+          console.error(`[WispThreads] attachment store unavailable for thread ${own.thread.id}: ${err.message}`, err.cause ?? err);
+          captureException(err.cause ?? err);
+        } else {
+          console.warn(`[WispThreads] attachment refused for thread ${own.thread.id} (${err.code}): ${err.message}`);
+        }
+        return fail(c, ATTACHMENT_STATUS[err.code], err.code, THREAD_ATTACHMENT_MESSAGES[err.code]);
+      }
+      if (err instanceof GrantInactiveError && err.kind === 'corrupt') {
+        reportCorruptGrant(err, 'attachment');
+        return grantCorrupt(c);
+      }
       if (err instanceof GrantInactiveError || (err instanceof CeilingViolationError && err.code === 'inactive')) {
         return grantInactive(c);
       }

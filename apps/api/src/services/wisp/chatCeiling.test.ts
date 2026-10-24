@@ -5,7 +5,10 @@ const shared = vi.hoisted(() => ({
   seedContextForSession: vi.fn(),
   selectRows: [] as unknown[],
   selectError: null as Error | null,
+  captureException: vi.fn(),
 }));
+
+vi.mock('../sentry', () => ({ captureException: shared.captureException }));
 
 vi.mock('../../db', () => {
   const chain: Record<string, unknown> = {};
@@ -179,6 +182,23 @@ describe('enforceWispCeiling', () => {
     })).resolves.toMatchObject({ ok: false, refusal: { detail: 'permission' } });
   });
 
+  it('an ORG-token sign-in under a partner-wide [A,B] ceiling reaches only its own org, never partner breadth', async () => {
+    const orgToken = auth({
+      scope: 'organization', partnerId: null, orgId: ORG_A, accessibleOrgIds: [ORG_A], partnerOrgAccess: null,
+    });
+    const r = await enforce('get_device_details', { deviceId: 'd' }, orgToken);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.toolAuth.accessibleOrgIds).toEqual([ORG_A]);
+    expect(r.toolAuth.canAccessOrg(ORG_A)).toBe(true);
+    expect(r.toolAuth.canAccessOrg(ORG_B)).toBe(false);
+    expect(r.toolAuth.partnerOrgAccess).not.toBe('all');
+
+    await expect(enforce('get_device_details', { orgId: ORG_B }, orgToken)).resolves.toMatchObject({
+      ok: false, refusal: { code: 'wisp_outside_ceiling', detail: 'org' },
+    });
+  });
+
   it('on success returns the narrowed per-call auth, the ceiling and the permission keys', async () => {
     const r = await enforce('get_device_details', { deviceId: 'd' });
     expect(r).toMatchObject({ ok: true, permissionKeys: ['devices:read'] });
@@ -191,7 +211,7 @@ describe('enforceWispCeiling', () => {
 describe('narrowAuthToCeiling', () => {
   it('narrows toolAuth.accessibleOrgIds to the ceiling, rebuilds closures, and stamps wispGrant', () => {
     const c = ceiling({ orgIds: new Set([ORG_B]) });
-    const out = narrowAuthToCeiling(auth({ accessibleOrgIds: [ORG_A, ORG_B, ORG_C] }), c);
+    const out = narrowAuthToCeiling(auth({ accessibleOrgIds: [ORG_A, ORG_B, ORG_C] }), c, undefined, []);
     expect(out.accessibleOrgIds).toEqual([ORG_B]);
     expect(out.canAccessOrg(ORG_C)).toBe(false);
     expect(out.canAccessOrg(ORG_B)).toBe(true);
@@ -199,24 +219,24 @@ describe('narrowAuthToCeiling', () => {
   });
 
   it('stamps wispGrant.sessionId when a session id is passed (w00 A23)', () => {
-    expect(narrowAuthToCeiling(auth(), ceiling(), 's-1').wispGrant?.sessionId).toBe('s-1');
+    expect(narrowAuthToCeiling(auth(), ceiling(), 's-1', []).wispGrant?.sessionId).toBe('s-1');
   });
 
   it('a null accessibleOrgIds (unrestricted) becomes exactly the ceiling orgs', () => {
-    expect(narrowAuthToCeiling(auth({ accessibleOrgIds: null }), ceiling()).accessibleOrgIds).toEqual([ORG_A, ORG_B]);
+    expect(narrowAuthToCeiling(auth({ accessibleOrgIds: null }), ceiling(), undefined, []).accessibleOrgIds).toEqual([ORG_A, ORG_B]);
   });
 
   it('keeps partner breadth only for a partner-wide ceiling it reaches whole; otherwise downgrades to selected', () => {
-    expect(narrowAuthToCeiling(auth(), ceiling()).partnerOrgAccess).toBe('all');
-    expect(narrowAuthToCeiling(auth(), ceiling({ partnerWide: false, scopeOrgId: ORG_A, orgIds: new Set([ORG_A]) })).partnerOrgAccess).toBe('selected');
+    expect(narrowAuthToCeiling(auth(), ceiling(), undefined, []).partnerOrgAccess).toBe('all');
+    expect(narrowAuthToCeiling(auth(), ceiling({ partnerWide: false, scopeOrgId: ORG_A, orgIds: new Set([ORG_A]) }), undefined, []).partnerOrgAccess).toBe('selected');
     const termNarrowed = ceiling({ orgTerms: new Map([[ORG_B, { permissionKeys: new Set(), siteIds: null }]]) });
     expect(narrowAuthToCeiling(auth(), termNarrowed, undefined, ['devices:read']).partnerOrgAccess).toBe('selected');
   });
 
   it('drops a site-restricted org from reach and intersects the site allowlist', () => {
     const c = ceiling({ orgTerms: new Map([[ORG_B, { permissionKeys: new Set(['devices:read']), siteIds: new Set(['s-b']) }]]) });
-    expect(narrowAuthToCeiling(auth(), c).accessibleOrgIds).toEqual([ORG_A]);
-    const siteCeiling = narrowAuthToCeiling(auth({ allowedSiteIds: ['s-1', 's-2'] }), ceiling({ siteIds: new Set(['s-2', 's-3']) }));
+    expect(narrowAuthToCeiling(auth(), c, undefined, []).accessibleOrgIds).toEqual([ORG_A]);
+    const siteCeiling = narrowAuthToCeiling(auth({ allowedSiteIds: ['s-1', 's-2'] }), ceiling({ siteIds: new Set(['s-2', 's-3']) }), undefined, []);
     expect(siteCeiling.allowedSiteIds).toEqual(['s-2']);
     expect(siteCeiling.canAccessSite?.('s-1')).toBe(false);
   });
@@ -246,15 +266,31 @@ describe('helpers', () => {
 
   it('wispSeedForSession returns "" when the grant is inactive', async () => {
     shared.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g-1', 'paused'));
-    await expect(wispSeedForSession('s-1', grant)).resolves.toBe('');
+    await expect(wispSeedForSession(grant)).resolves.toBe('');
     expect(shared.seedContextForSession).not.toHaveBeenCalled();
+  });
+
+  it('wispSeedForSession on a CORRUPT pin still returns "" but logs and captures it (with the grant id)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const corrupt = new GrantInactiveError('g-1', 'active', 'malformed ceiling snapshot', 'corrupt');
+    shared.resolveGrantCeiling.mockRejectedValue(corrupt);
+    await expect(wispSeedForSession(grant)).resolves.toBe('');
+    expect(shared.captureException).toHaveBeenCalledWith(corrupt, undefined, expect.objectContaining({ grantId: 'g-1' }));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('g-1'))).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('wispSeedForSession does not capture an ordinary inactive grant', async () => {
+    shared.resolveGrantCeiling.mockRejectedValue(new GrantInactiveError('g-1', 'revoked'));
+    await expect(wispSeedForSession(grant)).resolves.toBe('');
+    expect(shared.captureException).not.toHaveBeenCalled();
   });
 
   it('wispSeedForSession returns "" when the focus fell outside the ceiling, and the seed otherwise', async () => {
     shared.seedContextForSession.mockRejectedValueOnce(new CeilingViolationError('org', 'focus outside'));
-    await expect(wispSeedForSession('s-1', grant)).resolves.toBe('');
+    await expect(wispSeedForSession(grant)).resolves.toBe('');
     shared.seedContextForSession.mockResolvedValueOnce('## Wisp thread\nsummary');
-    await expect(wispSeedForSession('s-1', grant)).resolves.toBe('## Wisp thread\nsummary');
+    await expect(wispSeedForSession(grant)).resolves.toBe('## Wisp thread\nsummary');
     expect(shared.seedContextForSession).toHaveBeenLastCalledWith('t-1', expect.objectContaining({ grantId: 'g-1' }));
   });
 });

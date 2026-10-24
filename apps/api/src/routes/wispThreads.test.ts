@@ -30,6 +30,7 @@ const h = vi.hoisted(() => {
     addThreadAttachment: vi.fn(),
     listThreadAttachments: vi.fn(),
     writeRouteAudit: vi.fn(),
+    captureException: vi.fn(),
     /** Results handed to successive `await db.select()…` chains, in order. */
     dbResults: [] as unknown[][],
     whereArgs: [] as unknown[],
@@ -99,10 +100,11 @@ vi.mock('../services/wisp/threadAttachments', async (importOriginal) => ({
   listThreadAttachments: h.listThreadAttachments,
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
+vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
 
 import { wispRoutes } from './wisp';
 import { CeilingViolationError, GrantInactiveError } from '../services/wisp/grantAuthority';
-import { ThreadAttachmentError, THREAD_ATTACHMENT_MAX_BYTES } from '../services/wisp/threadAttachments';
+import { ThreadAttachmentError, THREAD_ATTACHMENT_MAX_BYTES, THREAD_ATTACHMENT_MESSAGES } from '../services/wisp/threadAttachments';
 
 const PARTNER = '11111111-1111-4111-8111-111111111111';
 const ORG = '22222222-2222-4222-8222-222222222222';
@@ -386,6 +388,31 @@ describe('PATCH /wisp/thread/:id/focus', () => {
     expect(h.setThreadFocus).not.toHaveBeenCalled();
   });
 
+  it('a CORRUPT grant pin → 500 grant_corrupt with plain copy, logged and captured (never a quiet grant_inactive)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.dbResults.push([ownRow()]);
+    const corrupt = new GrantInactiveError(GRANT_ID, 'active', 'malformed ceiling snapshot', 'corrupt');
+    h.resolveGrantCeiling.mockRejectedValue(corrupt);
+    const res = await json(buildApp(), 'PATCH', `/wisp/thread/${THREAD_ID}/focus`, { orgId: ORG });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ code: 'grant_corrupt', error: "This Wisp grant can't be used. Turn Wisp off and on again." });
+    expect(h.captureException).toHaveBeenCalledWith(corrupt, undefined, expect.objectContaining({ grantId: GRANT_ID }));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes(GRANT_ID))).toBe(true);
+    expect(h.setThreadFocus).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('a CORRUPT pin thrown by setThreadFocus is the same 500 grant_corrupt', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.dbResults.push([ownRow()]);
+    h.setThreadFocus.mockRejectedValue(new GrantInactiveError(GRANT_ID, 'active', 'x', 'corrupt'));
+    const res = await json(buildApp(), 'PATCH', `/wisp/thread/${THREAD_ID}/focus`, { orgId: ORG });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: 'grant_corrupt' });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    errSpy.mockRestore();
+  });
+
   it('a grant with no current revision is 409 grant_inactive without resolving a ceiling', async () => {
     h.dbResults.push([ownRow({ grantRevisionId: null })]);
     const res = await json(buildApp(), 'PATCH', `/wisp/thread/${THREAD_ID}/focus`, { orgId: ORG });
@@ -488,14 +515,50 @@ describe('POST /wisp/thread/:id/attachments (6b)', () => {
     ['unsupported_type', 415],
     ['empty', 400],
     ['org_outside_ceiling', 403],
+    ['outside_ceiling', 403],
     ['store_unavailable', 503],
-  ] as const)('ThreadAttachmentError %s → %i', async (code, status) => {
+  ] as const)('ThreadAttachmentError %s → %i with the fixed user-facing copy, never the internal message', async (code, status) => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     h.dbResults.push([ownRow({ focusOrgId: ORG })]);
-    h.addThreadAttachment.mockRejectedValue(new ThreadAttachmentError(code, code));
+    const internal = `internal detail for ${code}: grant ${GRANT_ID} org ${ORG}`;
+    h.addThreadAttachment.mockRejectedValue(new ThreadAttachmentError(code, internal));
     const res = await json(buildApp(), 'POST', path, { text: 'hello', label: 'x' });
     expect(res.status).toBe(status);
-    expect(await res.json()).toMatchObject({ code });
+    const body = await res.json() as { code: string; error: string };
+    expect(body).toEqual({ code, error: THREAD_ATTACHMENT_MESSAGES[code] });
+    expect(body.error).not.toContain(GRANT_ID);
     expect(h.writeRouteAudit).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('store_unavailable is reported (cause captured + logged); a client-side refusal is not', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const cause = new Error('S3 PUT timed out');
+    h.dbResults.push([ownRow({ focusOrgId: ORG })]);
+    h.addThreadAttachment.mockRejectedValueOnce(new ThreadAttachmentError('store_unavailable', 'the attachment store is unavailable', { cause }));
+    expect((await json(buildApp(), 'POST', path, { text: 'hello', label: 'x' })).status).toBe(503);
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.captureException).toHaveBeenCalledWith(cause);
+    expect(errSpy).toHaveBeenCalled();
+
+    h.captureException.mockClear();
+    h.dbResults.push([ownRow({ focusOrgId: ORG })]);
+    h.addThreadAttachment.mockRejectedValueOnce(new ThreadAttachmentError('too_many', 'a thread holds at most 20 attachments'));
+    expect((await json(buildApp(), 'POST', path, { text: 'hello', label: 'x' })).status).toBe(409);
+    expect(h.captureException).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('a CORRUPT grant pin → 500 grant_corrupt (captured), nothing stored', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    h.dbResults.push([ownRow({ focusOrgId: ORG })]);
+    h.resolveGrantCeiling.mockRejectedValueOnce(new GrantInactiveError(GRANT_ID, 'active', 'revision of another grant', 'corrupt'));
+    const res = await json(buildApp(), 'POST', path, { text: 'hello', label: 'x' });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: 'grant_corrupt' });
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+    expect(h.addThreadAttachment).not.toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 
   it('GrantInactiveError (resolve) and an inactive CeilingViolationError (store) → 409 grant_inactive', async () => {

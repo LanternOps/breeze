@@ -138,6 +138,12 @@ vi.mock('../services/wisp/grantAuthority', () => {
   }
   class GrantInactiveError extends Error {
     readonly code = 'grant_inactive';
+    constructor(
+      public readonly grantId: string,
+      public readonly status: string,
+      detail?: string,
+      public readonly kind: string = 'paused',
+    ) { super(`Wisp grant ${grantId} is not active (${status})${detail ? `: ${detail}` : ''}`); }
   }
   return {
     CeilingViolationError,
@@ -157,6 +163,7 @@ import {
   resolveGrantCeiling,
 } from '../services/wisp/grantAuthority';
 import { readOrgPartnerId } from '../services/aiModels/candidateLoader';
+import { captureException } from '../services/sentry';
 
 const CEILING = { grantId: GRANT_ID, revisionId: 'r1', partnerId: 'p1', status: 'active' } as never;
 
@@ -307,6 +314,19 @@ describe('POST /ai/sessions — wispGrantId (Wisp W04 Task 3)', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: 'grant_inactive' });
     expect(h.inserted).toHaveLength(0);
+  });
+
+  it('a CORRUPT grant pin at the ceiling read is a 500 grant_corrupt, logged and captured (not a quiet 409)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const corrupt = new (GrantInactiveError as any)(GRANT_ID, 'active', 'malformed ceiling snapshot', 'corrupt');
+    vi.mocked(resolveGrantCeiling).mockRejectedValueOnce(corrupt);
+    const res = await post(app, { orgId: ORG_A, wispGrantId: GRANT_ID });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ code: 'grant_corrupt', error: "This Wisp grant can't be used. Turn Wisp off and on again." });
+    expect(captureException).toHaveBeenCalledWith(corrupt, undefined, expect.objectContaining({ grantId: GRANT_ID }));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes(GRANT_ID))).toBe(true);
+    expect(h.inserted).toHaveLength(0);
+    errSpy.mockRestore();
   });
 
   it('partner-wide grant with an org token anchors to the token org', async () => {

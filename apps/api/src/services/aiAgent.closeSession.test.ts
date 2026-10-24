@@ -47,9 +47,12 @@ describe('closeSession (W04 T5)', () => {
     expect(h.order).toEqual(['update:closed', 'scheduled']);
   });
 
-  it('a rejected finalize is captured and does not fail the close', async () => {
+  it('a rejected finalize is captured, logged with the session id, and does not fail the close', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     h.finalize.mockRejectedValueOnce(new Error('summary boom'));
     await expect(closeSession('s1', auth)).resolves.toEqual({ orgId: 'org-1' });
     await vi.waitFor(() => expect(h.capture).toHaveBeenCalledWith(expect.objectContaining({ message: 'summary boom' })));
+    expect(errSpy.mock.calls.some((args) => String(args[0]).includes('s1'))).toBe(true);
+    errSpy.mockRestore();
   });
 });

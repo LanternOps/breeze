@@ -355,7 +355,13 @@ async function anchorWispSession(
     ceiling = await resolveGrantCeiling(validated.grantId, validated.revisionId);
   } catch (err) {
     // The grantor's live standing can lapse between the row read and here.
-    if (err instanceof GrantInactiveError) throw new WispSessionError('grant_inactive', 409);
+    if (err instanceof GrantInactiveError) {
+      if (err.kind !== 'corrupt') throw new WispSessionError('grant_inactive', 409);
+      // A broken pin is data damage, not a lapsed grant (grantAuthority's contract: log + capture).
+      console.error(`[AI] Wisp grant ${err.grantId} has a corrupt ceiling pin at session create: ${err.message}`);
+      captureException(err, undefined, { grantId: err.grantId });
+      throw new WispSessionError('grant_corrupt', 500);
+    }
     throw err;
   }
 
@@ -524,7 +530,10 @@ export async function closeSession(sessionId: string, auth: AuthContext): Promis
   runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
     import('./wisp/threadSummary')
       .then((m) => m.finalizeWispSessionSummary(sessionId))
-      .catch((err) => captureException(err)),
+      .catch((err) => {
+        console.error(`[AI] Wisp thread summary finalize failed for closed session ${sessionId}:`, err);
+        captureException(err);
+      }),
   );
 
   return { orgId: session.orgId };

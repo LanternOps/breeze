@@ -295,6 +295,43 @@ describe('wisp_threads / wisp_thread_sessions RLS (shape 3)', () => {
     );
   });
 
+  it('ai_sessions_wisp_grant_tenant_guard from an ORG-scoped request context: it sees the partner-axis grant the context cannot (SECURITY DEFINER) and still refuses out-of-scope pins (23503)', async () => {
+    const f = await seed();
+    const tenantGuardRefusal = async (orgId: string, partnerId: string, sessionOrgId: string, grant: { grantId: string; revisionId: string }) => {
+      let raised: unknown;
+      try {
+        await withDbAccessContext(orgContext(orgId, partnerId), () => db.insert(aiSessions).values({
+          orgId: sessionOrgId, model: 'claude-sonnet-5-5', wispGrantId: grant.grantId, wispGrantRevisionId: grant.revisionId,
+        }));
+      } catch (err) { raised = err; }
+      expect(raised, 'expected the tenant guard to refuse the pin').toBeDefined();
+      expect(pgErrorCode(raised), String(raised)).toBe('23503');
+      // The guard's own refusal, not an FK on the pair.
+      expect(String((raised as { cause?: { message?: string } }).cause?.message ?? raised)).toContain('is not in the tenant scope of org');
+    };
+
+    // The precondition the SECURITY DEFINER exists for: an org-scoped context
+    // cannot read its partner's grant row at all.
+    await withDbAccessContext(orgContext(f.orgA1, f.partnerA), async () => {
+      expect(await db.select({ id: wispGrants.id }).from(wispGrants).where(eq(wispGrants.id, f.grantA.grantId))).toEqual([]);
+    });
+
+    // Partner A's partner-wide grant pinned on an org-A1 session, from org A1's own context: accepted.
+    const [pinned] = await withDbAccessContext(orgContext(f.orgA1, f.partnerA), () => db.insert(aiSessions).values({
+      orgId: f.orgA1, model: 'claude-sonnet-5-5', wispGrantId: f.grantA.grantId, wispGrantRevisionId: f.grantA.revisionId,
+    }).returning({ id: aiSessions.id, g: aiSessions.wispGrantId }));
+    expect(pinned).toMatchObject({ g: f.grantA.grantId });
+
+    // Partner B's grant, from the same org-A1 context: refused.
+    await tenantGuardRefusal(f.orgA1, f.partnerA, f.orgA1, f.grantB);
+
+    // An org-A1-scoped grant pinned from an org-A2 context (same partner): refused.
+    const grantor = await asSystem(async () => (await db.select({ u: wispGrants.grantorUserId }).from(wispGrants)
+      .where(eq(wispGrants.id, f.grantA.grantId)))[0]!.u);
+    const scopedA1 = await seedGrant(f.partnerA, grantor, [f.orgA1], f.orgA1);
+    await tenantGuardRefusal(f.orgA2, f.partnerA, f.orgA2, scopedA1);
+  });
+
   it('focus_org_id: an org from another partner is refused (23503); deleting the focus org sets focus_org_id NULL and keeps partner_id', async () => {
     const f = await seed();
     await expectSqlState(

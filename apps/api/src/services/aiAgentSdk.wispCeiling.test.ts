@@ -31,7 +31,9 @@ const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'sess
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPreToolUse, runPreFlightChecks, WISP_GATE_UNAVAILABLE_MESSAGE } from './aiAgentSdk';
 import { db } from '../db';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { checkGuardrails, checkPermissionRequirements, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { tenantToolPermissionRequirement } from './toolSources/guardrails';
+import { WispSessionUnavailableError } from './wisp/chatCeiling';
 import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
@@ -575,6 +577,54 @@ describe('createSessionPreToolUse — Wisp delegation ceiling (W04 Task 4)', () 
     expect(result).toEqual({ allowed: false, error: message });
   });
 
+  it('two CONCURRENT calls on one session each get their own toolAuth (call 1 held mid-gate while call 2 finishes)', async () => {
+    const session = wispSession();
+    const C1 = { ...CEILING, tag: 'c1' };
+    const C2 = { ...CEILING, tag: 'c2' };
+    wisp.enforceWispCeiling.mockImplementation(async (args: { input: { orgId?: string } }) => (
+      args.input.orgId === 'org-1'
+        ? { ok: true, toolAuth: {}, ceiling: C1, permissionKeys: ['devices:read'] }
+        : { ok: true, toolAuth: {}, ceiling: C2, permissionKeys: ['alerts:read'] }
+    ));
+    wisp.narrowAuthToCeiling.mockImplementation((_base: unknown, ceiling: { tag: string }, _sid: string, keys: string[]) => ({ ceilingTag: ceiling.tag, keys }));
+    // Call 1 passes the Wisp gate, then parks in RBAC until released.
+    let release!: () => void;
+    const held = new Promise<null>((resolve) => { release = () => resolve(null); });
+    vi.mocked(checkToolPermission).mockImplementationOnce(() => held).mockResolvedValue(null);
+
+    const pre = createSessionPreToolUse(session);
+    const first = pre('get_device_details', { orgId: 'org-1' });
+    await vi.waitFor(() => expect(checkToolPermission).toHaveBeenCalledTimes(1));
+    const second = await pre('get_device_details', { orgId: 'org-2' });
+    release();
+    const firstResult = await first;
+
+    expect(second).toEqual({ allowed: true, toolAuth: { ceilingTag: 'c2', keys: ['alerts:read'] } });
+    expect(firstResult).toEqual({ allowed: true, toolAuth: { ceilingTag: 'c1', keys: ['devices:read'] } });
+  });
+
+  it.each([
+    ['set', 'org-2', 'org-2'],
+    ['null', null, 'org-1'],
+  ] as const)('a BYO tenant tool is gated with input {}, its tier requirement, and the toolAuth org (toolAuth.orgId %s)', async (_label, toolAuthOrgId, expectedOrg) => {
+    const tenant = makeTenantToolDescriptor({ tier: 1, qualifiedName: 'hudu__get_asset' });
+    const toolAuth = makeAuth({ scope: 'partner', orgId: toolAuthOrgId as never, accessibleOrgIds: ['org-1', 'org-2'] });
+    const session = wispSession({ toolAuth, tenantTools: new Map([['hudu__get_asset', tenant]]) });
+    vi.mocked(checkPermissionRequirements).mockResolvedValue(null as never);
+
+    const result = await createSessionPreToolUse(session)('hudu__get_asset', { orgId: 'org-9', assetId: 'a-1' });
+
+    expect(result).toMatchObject({ allowed: true });
+    expect(wisp.enforceWispCeiling).toHaveBeenCalledTimes(1);
+    expect(wisp.enforceWispCeiling.mock.calls[0]![0]).toMatchObject({
+      toolName: 'hudu__get_asset',
+      input: {},
+      sessionOrgId: expectedOrg,
+      permissionRequirement: tenantToolPermissionRequirement(1),
+    });
+    expect((wisp.enforceWispCeiling.mock.calls[0]![0] as { input: object }).input).toEqual({});
+  });
+
   describe('tier-3 inline release', () => {
     beforeEach(() => {
       const selectChain: Record<string, unknown> = {
@@ -633,7 +683,26 @@ describe('runPreFlightChecks — Wisp thread re-seed (Review Focus 1)', () => {
 
     expect(result).toMatchObject({ ok: true, systemPrompt: 'rebuilt prompt\n## Wisp thread\nsummary' });
     expect(wisp.lookupWispGrant).toHaveBeenCalledWith('session-1');
-    expect(wisp.wispSeedForSession).toHaveBeenCalledWith('session-1', GRANT);
+    expect(wisp.wispSeedForSession).toHaveBeenCalledWith(GRANT);
+  });
+
+  it('a pinned session that cannot be resolved (WispSessionUnavailableError) refuses the turn with 409, no seed', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    const unavailable = new WispSessionUnavailableError('thread_unlinked', 'session-1');
+    wisp.lookupWispGrant.mockRejectedValueOnce(unavailable);
+
+    const result = await runPreFlightChecks('session-1', 'hello', auth, { type: 'device', id: 'd-1' } as any);
+
+    expect(result).toEqual({ ok: false, error: unavailable.message, status: 409 });
+    expect(wisp.wispSeedForSession).not.toHaveBeenCalled();
+  });
+
+  it('any OTHER lookup failure during the re-seed propagates (never a silently unseeded turn)', async () => {
+    mockGetSession.mockResolvedValue(makeSession({ wispGrantId: 'grant-1' }));
+    wisp.lookupWispGrant.mockRejectedValueOnce(new Error('connection refused'));
+
+    await expect(runPreFlightChecks('session-1', 'hello', auth, { type: 'device', id: 'd-1' } as any)).rejects.toThrow('connection refused');
+    expect(wisp.wispSeedForSession).not.toHaveBeenCalled();
   });
 
   it('keeps the stored (already seeded) prompt on a turn without pageContext, and never touches an ordinary session', async () => {

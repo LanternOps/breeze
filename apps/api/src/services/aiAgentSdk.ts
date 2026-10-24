@@ -48,6 +48,7 @@ import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './au
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
 import type { TenantToolDescriptor } from './toolSources/resolver';
 import type { GrantCeiling } from './wisp/grantAuthority';
+import type { WispCeilingRefusal } from './wisp/chatCeiling';
 import { compactToolResultForChat, redactSensitiveToolInput } from './aiToolOutput';
 import { toolInputSchemas, validateToolInput } from './aiToolSchemas';
 import { applyHelperDeviceScope } from './helperToolFilter';
@@ -461,7 +462,10 @@ function scheduleWispSummaryFinalize(sessionId: string): void {
   runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
     import('./wisp/threadSummary')
       .then((m) => m.finalizeWispSessionSummary(sessionId))
-      .catch((err) => captureException(err)),
+      .catch((err) => {
+        console.error(`[AI-SDK] Wisp thread summary finalize failed for expired session ${sessionId}:`, err);
+        captureException(err);
+      }),
   );
 }
 
@@ -618,7 +622,7 @@ export async function runPreFlightChecks(
     const { lookupWispGrant, wispSeedForSession, WispSessionUnavailableError } = await import('./wisp/chatCeiling');
     try {
       const grant = await lookupWispGrant(sessionId);
-      if (grant) systemPrompt = [systemPrompt, await wispSeedForSession(sessionId, grant)].filter(Boolean).join('\n');
+      if (grant) systemPrompt = [systemPrompt, await wispSeedForSession(grant)].filter(Boolean).join('\n');
     } catch (err) {
       if (err instanceof WispSessionUnavailableError) return { ok: false, error: err.message, status: 409 };
       throw err;
@@ -908,7 +912,7 @@ export const WISP_GATE_UNAVAILABLE_MESSAGE =
 function auditWispRefusal(
   session: ActiveSession,
   toolName: string,
-  refusal: { code: string; detail: string; message: string },
+  refusal: WispCeilingRefusal,
 ): void {
   if (!session.auditSnapshot || !session.wispGrant) return;
   writeAuditEvent(requestLikeFromSnapshot(session.auditSnapshot), {

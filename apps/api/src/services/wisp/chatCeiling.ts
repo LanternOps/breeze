@@ -38,6 +38,7 @@ import { aiSessions } from '../../db/schema/ai';
 import { wispThreadSessions } from '../../db/schema/wispThreads';
 import { buildOrgAccessClosures, siteAccessCheck, type AuthContext } from '../../middleware/auth';
 import { resolveToolPermissionRequirements } from '../aiGuardrails';
+import { captureException } from '../sentry';
 import {
   CeilingViolationError,
   GrantInactiveError,
@@ -52,14 +53,24 @@ import { seedContextForSession } from './threads';
 /** The grant a live chat session runs under (immutable for the session's life). */
 export type WispSessionGrant = { grantId: string; revisionId: string; threadId: string };
 
-export type WispCeilingRefusal = {
-  code: 'wisp_grant_inactive' | 'wisp_outside_ceiling';
-  detail: CeilingViolationCode;
-  message: string;
-};
+/**
+ * Why a Wisp call was refused. `code` and `detail` travel together: an
+ * inactive grant is always `inactive`, a ceiling term names which one, and a
+ * gate that could not run at all (DB down, corrupt pin, module failure) is
+ * `unavailable`. `enforceWispCeiling` itself only returns the first two
+ * (`WispCeilingCheckRefusal`); the gate-unavailable shape is produced by its
+ * callers when it throws (aiAgentSdk.ts, releaseCeiling.ts).
+ */
+export type WispCeilingRefusal =
+  | { code: 'wisp_grant_inactive'; detail: 'inactive'; message: string }
+  | { code: 'wisp_outside_ceiling'; detail: Exclude<CeilingViolationCode, 'inactive'>; message: string }
+  | { code: 'wisp_gate_unavailable'; detail: 'unavailable'; message: string };
+
+/** What `enforceWispCeiling` itself can refuse with (it throws rather than report `unavailable`). */
+export type WispCeilingCheckRefusal = Exclude<WispCeilingRefusal, { code: 'wisp_gate_unavailable' }>;
 
 /** User-visible copy: the refusal is streamed to the chat as the tool's result. */
-export const WISP_REFUSAL_MESSAGES: Record<WispCeilingRefusal['detail'], string> = {
+export const WISP_REFUSAL_MESSAGES: Record<CeilingViolationCode, string> = {
   org: "Wisp can't act on that organization under your current grant.",
   site: "Wisp can't act on that site under your current grant.",
   permission: "Your current Wisp grant doesn't allow this action.",
@@ -67,12 +78,11 @@ export const WISP_REFUSAL_MESSAGES: Record<WispCeilingRefusal['detail'], string>
   inactive: 'Your Wisp grant is no longer active (it was paused, revoked, or has expired). Turn Wisp back on, then refresh this conversation to continue.',
 };
 
-function refusal(detail: CeilingViolationCode, message?: string): WispCeilingRefusal {
-  return {
-    code: detail === 'inactive' ? 'wisp_grant_inactive' : 'wisp_outside_ceiling',
-    detail,
-    message: message ?? WISP_REFUSAL_MESSAGES[detail],
-  };
+function refusal(detail: CeilingViolationCode, message?: string): WispCeilingCheckRefusal {
+  const text = message ?? WISP_REFUSAL_MESSAGES[detail];
+  return detail === 'inactive'
+    ? { code: 'wisp_grant_inactive', detail, message: text }
+    : { code: 'wisp_outside_ceiling', detail, message: text };
 }
 
 /**
@@ -105,7 +115,9 @@ function withinCeiling(ceiling: GrantCeiling, orgId: string, permissionKeys: rea
 /**
  * `auth` cut to the ceiling. Reach = `auth.accessibleOrgIds` (null → every
  * ceiling org) ∩ the ceiling orgs where the org / site terms and every key in
- * `permissionKeys` pass for that org (default: none — org and site terms only).
+ * `permissionKeys` pass for that org. Required: a caller must say which
+ * permissions the call needs ([] = org and site terms only), so a forgotten
+ * argument cannot silently widen reach to orgs whose term lacks them.
  * Closures are rebuilt from the new list; the site allowlist is intersected
  * with `ceiling.siteIds` when the ceiling restricts sites (belt and braces —
  * such an org is already out of reach, see the file header). Stamps
@@ -115,8 +127,8 @@ function withinCeiling(ceiling: GrantCeiling, orgId: string, permissionKeys: rea
 export function narrowAuthToCeiling(
   auth: AuthContext,
   ceiling: GrantCeiling,
-  sessionId?: string,
-  permissionKeys: readonly string[] = [],
+  sessionId: string | undefined,
+  permissionKeys: readonly string[],
 ): AuthContext {
   const base = auth.accessibleOrgIds ?? [...ceiling.orgIds];
   const accessibleOrgIds = base.filter((orgId) => ceiling.orgIds.has(orgId) && withinCeiling(ceiling, orgId, permissionKeys));
@@ -160,7 +172,7 @@ export function unreachableWispAuth(auth: AuthContext): AuthContext {
 
 export type WispCeilingResult =
   | { ok: true; toolAuth: AuthContext; ceiling: GrantCeiling; permissionKeys: string[] }
-  | { ok: false; refusal: WispCeilingRefusal };
+  | { ok: false; refusal: WispCeilingCheckRefusal };
 
 /**
  * Every ceiling term for one chat tool call. A `GrantInactiveError` is the
@@ -224,12 +236,19 @@ export async function enforceWispCeiling(args: {
  * The thread seed for a turn whose system prompt is rebuilt (a turn carrying
  * `pageContext`). '' when the grant is no longer active or the thread's focus
  * fell outside the ceiling — the seed is context, never authority, so dropping
- * it is the safe side; the next tool call refuses on the same ceiling.
+ * it is the safe side; the next tool call refuses on the same ceiling. A
+ * CORRUPT pin also yields '' but is logged and captured (grantAuthority's
+ * contract) — the next tool call fails closed on it as gate-unavailable.
  */
-export async function wispSeedForSession(_sessionId: string, grant: WispSessionGrant): Promise<string> {
+export async function wispSeedForSession(grant: WispSessionGrant): Promise<string> {
   try {
     return await seedContextForSession(grant.threadId, await resolveGrantCeiling(grant.grantId, grant.revisionId));
   } catch (err) {
+    if (err instanceof GrantInactiveError && err.kind === 'corrupt') {
+      console.error(`[Wisp] grant ${err.grantId} has a corrupt ceiling pin (thread seed): ${err.message}`);
+      captureException(err, undefined, { grantId: err.grantId });
+      return '';
+    }
     if (err instanceof GrantInactiveError || err instanceof CeilingViolationError) return '';
     throw err;
   }

@@ -39,6 +39,7 @@ import {
   WispSessionUnavailableError,
   enforceWispCeiling,
   lookupWispGrant,
+  type WispCeilingRefusal,
   type WispSessionGrant,
 } from './chatCeiling';
 
@@ -56,7 +57,7 @@ function refuse(
   intent: ReleaseIntent,
   auth: AuthContext,
   errorCode: WispReleaseErrorCode,
-  refusal: { code: string; detail: string; message: string },
+  refusal: WispCeilingRefusal,
   grantId: string | null,
 ): WispReleaseCheck {
   const sessionId = intent.aiOriginSessionId;

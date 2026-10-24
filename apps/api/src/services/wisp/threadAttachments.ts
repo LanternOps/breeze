@@ -64,7 +64,7 @@ export type ThreadAttachment = {
   artifactId: string;
   label: string;
   addedByUserId: string | null;
-  contentType: string;
+  contentType: ThreadAttachmentContentType;
   bytes: number;
   expiresAt: Date;
   createdAt: Date;
@@ -76,7 +76,24 @@ export type ThreadAttachmentErrorCode =
   | 'unsupported_type'
   | 'empty'
   | 'org_outside_ceiling'
+  /** A site / permission / tool term of the ceiling refused it (not the org itself). */
+  | 'outside_ceiling'
   | 'store_unavailable';
+
+/**
+ * The copy a client sees for each code. A `ThreadAttachmentError`'s own
+ * `message` is INTERNAL (it can name grants, orgs and limits) and goes to the
+ * log only — the route answers with this map, never `err.message`.
+ */
+export const THREAD_ATTACHMENT_MESSAGES: Record<ThreadAttachmentErrorCode, string> = {
+  too_many: `This conversation already has ${THREAD_ATTACHMENT_MAX_PER_THREAD} attachments. Remove one before adding another.`,
+  too_large: 'Attachments are limited to 5 MB.',
+  unsupported_type: 'Only text attachments are supported.',
+  empty: 'The attachment is empty.',
+  org_outside_ceiling: "That organization is outside this Wisp delegation, so the file can't be attached there.",
+  outside_ceiling: "Your current Wisp grant doesn't allow attaching files here.",
+  store_unavailable: "The attachment store isn't available right now. Try again in a moment.",
+};
 
 export class ThreadAttachmentError extends Error {
   constructor(
@@ -236,7 +253,7 @@ export async function addThreadAttachment(input: {
   } catch (err) {
     // An inactive grant is not an org problem — let its own error through.
     if (err instanceof CeilingViolationError && err.code !== 'inactive') {
-      throw new ThreadAttachmentError('org_outside_ceiling', err.message, { cause: err });
+      throw new ThreadAttachmentError(err.code === 'org' ? 'org_outside_ceiling' : 'outside_ceiling', err.message, { cause: err });
     }
     throw err;
   }
@@ -326,7 +343,7 @@ export async function addThreadAttachment(input: {
       bodyCompleted = true;
       return {
         ...row,
-        contentType: artifact.contentType,
+        contentType,
         bytes: artifact.bytes,
         expiresAt: artifact.expiresAt,
       } satisfies ThreadAttachment;
@@ -359,5 +376,14 @@ export async function listThreadAttachments(threadId: string): Promise<ThreadAtt
       .where(and(eq(wispThreadAttachments.threadId, threadId), gt(aiRunArtifacts.expiresAt, sql`now()`)))
       .orderBy(desc(wispThreadAttachments.createdAt), desc(wispThreadAttachments.id)),
   );
-  return rows.map((r) => ({ ...r }));
+  return rows.map((r) => ({ ...r, contentType: asAttachmentContentType(r.contentType) }));
+}
+
+/**
+ * The stored artifact type, narrowed. Only `addThreadAttachment` writes these
+ * rows, always with a `ThreadAttachmentContentType`; anything else (a row
+ * edited by hand) is shown as plain text rather than trusted.
+ */
+function asAttachmentContentType(raw: string): ThreadAttachmentContentType {
+  return Object.hasOwn(CONTENT_TYPE_EXT, raw) ? (raw as ThreadAttachmentContentType) : 'text/plain';
 }
