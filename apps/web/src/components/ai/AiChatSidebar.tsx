@@ -23,6 +23,9 @@ import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
 import BuyCreditsLink from "./BuyCreditsLink";
+import WispToggle from "./WispToggle";
+import WispThreadHeader from "./WispThreadHeader";
+import WispThreadAttachments from "./WispThreadAttachments";
 import { useTranslation } from "react-i18next";
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -79,7 +82,12 @@ export default function AiChatSidebar() {
     boundM365ConnectionId,
     loadM365Connections,
     setSelectedM365Connection,
+    wisp,
   } = useAiStore();
+  const [wispAttachmentsOpen, setWispAttachmentsOpen] = useState(false);
+  const wispScopeOrgName = useOrgStore((s) =>
+    wisp?.scopeOrgId ? (s.organizations ?? []).find((o) => o.id === wisp.scopeOrgId)?.name ?? null : null,
+  );
   // #6396: every own-session route requires ai_sessions:use; a role without it
   // (Org Viewer, billing roles) gets no sidebar rather than a shell that 403s.
   // Hooks above/below still run unconditionally — only the render is gated.
@@ -198,11 +206,15 @@ export default function AiChatSidebar() {
             <span className="text-sm font-semibold text-foreground">
               {showHistory
                 ? t("aiChatSidebar.history")
-                : t("aiChatSidebar.title")}
+                : wisp
+                  ? t("wisp.title")
+                  : t("aiChatSidebar.title")}
             </span>
           </div>
 
           <div className="flex items-center gap-1">
+            {/* Wisp W04: renders nothing while the server has Wisp off or for an org-scoped token. */}
+            {!showHistory && !wisp && <WispToggle />}
             {!showHistory && (
               <button
                 onClick={toggleHistory}
@@ -355,6 +367,33 @@ export default function AiChatSidebar() {
                   {boundConnection.customerDisplayName}
                 </span>
               </div>
+            )}
+
+            {/* Wisp thread: scope, focus, grant controls; attachments behind a disclosure. */}
+            {wisp && (
+              <>
+                <WispThreadHeader
+                  wisp={wisp}
+                  orgName={wispScopeOrgName}
+                  wideningAvailable={wisp.wideningAvailable}
+                />
+                <div className="border-b px-4 py-1.5">
+                  <button
+                    type="button"
+                    data-testid="wisp-attachments-toggle"
+                    aria-expanded={wispAttachmentsOpen}
+                    onClick={() => setWispAttachmentsOpen((open) => !open)}
+                    className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                  >
+                    {t("wisp.attachments.title")}
+                  </button>
+                  {wispAttachmentsOpen && (
+                    <div className="pt-2">
+                      <WispThreadAttachments wisp={wisp} />
+                    </div>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Context badge */}

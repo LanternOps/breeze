@@ -79,6 +79,11 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/ai/AiContinuationPrompt.tsx', // W05 #7603: POST /ai/sessions/:id/continue via runAction
+  // Wisp W04b (#9916): grant create/refresh/revoke/settings and thread attachments go through runAction.
+  'src/components/ai/WispToggle.tsx',
+  'src/components/ai/WispGrantStepUpModal.tsx',
+  'src/components/ai/WispThreadHeader.tsx',
+  'src/components/ai/WispThreadAttachments.tsx',
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -962,7 +967,8 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
     // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
-    expect(absoluteFiles.length).toBe(253);
+    // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
+    expect(absoluteFiles.length).toBe(257);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

@@ -555,5 +555,84 @@
   },
   "buyCredits": {
     "link": "Buy credits"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Turn on Wisp",
+      "turningOn": "Turning on Wisp…"
+    },
+    "locked": {
+      "why": "Wisp is available on Pro and higher plans."
+    },
+    "modal": {
+      "title": "Turn on Wisp",
+      "refreshTitle": "Refresh Wisp grant",
+      "scopeLabel": "Wisp can work on",
+      "scopeOrg": "This organization",
+      "scopePartner": "All organizations",
+      "explain": "Wisp works within what you are allowed to do. Confirm it is you to continue.",
+      "code": "Authenticator code",
+      "passkey": "You will confirm with your passkey.",
+      "noFactor": "Wisp needs a passkey or an authenticator app. Set one up in your profile first.",
+      "noOrg": "Select an organization in the header first.",
+      "confirm": "Confirm",
+      "cancel": "Cancel",
+      "stepUpUnavailable": "Could not verify your factor. Try again."
+    },
+    "header": {
+      "scopeAll": "All organizations",
+      "status": {
+        "active": "Active",
+        "paused": "Paused",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      },
+      "refresh": "Refresh grant",
+      "revoke": "Turn off Wisp",
+      "revokeConfirm": "Turn off Wisp for this scope? Open threads stay readable.",
+      "widening": "You can do more than this grant allows — refresh it to let Wisp keep up."
+    },
+    "settings": {
+      "title": "Budget and check-in",
+      "budget": "Daily budget (¢)",
+      "tick": "Check-in every (minutes)",
+      "save": "Save"
+    },
+    "focus": {
+      "label": "Working on",
+      "none": "No customer focus",
+      "pick": "Focus on a customer…",
+      "clear": "Clear focus"
+    },
+    "attachments": {
+      "title": "Attached to this thread",
+      "drop": "Drop an email thread, .eml or CSV here, or paste text",
+      "paste": "Paste text",
+      "label": "Label",
+      "add": "Attach",
+      "empty": "Nothing attached yet",
+      "expires": "Expires {{date}}",
+      "limits": "Up to 20 files, 5 MB each, text only",
+      "focusRequired": "Pick a customer focus before attaching",
+      "loadFailed": "Could not load attachments"
+    },
+    "toast": {
+      "on": "Wisp is on",
+      "onFailed": "Could not turn on Wisp",
+      "off": "Wisp is off",
+      "offFailed": "Could not turn off Wisp",
+      "refreshed": "Grant refreshed",
+      "refreshFailed": "Could not refresh the grant",
+      "settingsSaved": "Wisp settings saved",
+      "settingsFailed": "Could not save Wisp settings",
+      "focusSet": "Wisp is now working on {{org}}",
+      "focusCleared": "Customer focus cleared",
+      "focusFailed": "Could not change focus",
+      "attached": "Attached to the thread",
+      "attachFailed": "Could not attach",
+      "attachTooLarge": "That file is over 5 MB",
+      "attachUnsupported": "Only text files can be attached"
+    }
   }
 }

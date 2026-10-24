@@ -21,7 +21,7 @@ const namespaceDuplicateBaselines = {
     // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 25,
-    'ai.json': 1,
+    'ai.json': 2, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
     // identical cognates in pt-BR.
     'aiOperator.json': 2,
@@ -205,7 +205,7 @@ const namespaceDuplicateBaselines = {
     // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 21,
-    'ai.json': 4,
+    'ai.json': 5, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "manual"/"ticket"/
     // "chat" are identical cognates in es-419.
     'aiOperator.json': 3,
@@ -382,7 +382,7 @@ const namespaceDuplicateBaselines = {
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
     // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
     'admin.json': 40,
-    'ai.json': 9,
+    'ai.json': 10, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-FR.
     'aiOperator.json': 3,
@@ -595,7 +595,7 @@ const namespaceDuplicateBaselines = {
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
     // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
     'admin.json': 40,
-    'ai.json': 9,
+    'ai.json': 10, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-CA.
     'aiOperator.json': 3,
@@ -800,7 +800,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +4 identical cognates (Status, Budget, Frontier, Standard).
     'admin.json': 35,
-    'ai.json': 5,
+    'ai.json': 6, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
     // "chat" and waitReason "information" are identical cognates in de-DE.
     'aiOperator.json': 4,
@@ -1158,7 +1158,7 @@ const namespaceDuplicateBaselines = {
     // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     'admin.json': 19,
-    'ai.json': 1,
+    'ai.json': 2, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     'aiOperator.json': 0,
     'alerts.json': 25,
     // +1: approvals charCount "{{count}}/{{max}}" is two interpolations and a
