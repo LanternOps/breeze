@@ -631,6 +631,44 @@ The client retries the same `tools/call` (same tool and arguments) with `request
 
 The `requestState` is bound to the credential, tool, arguments and a 10-minute lifetime; any mismatch returns `-32602` with `data.reason` (`invalid_request_state` or `request_state_expired`, the latter with `data.actionId` for the same credential). A retry never files a new request.
 
+### Tasks (2026-07-28 clients)
+
+A client on the stateless `2026-07-28` protocol can declare the MCP Tasks extension on a request: `_meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/tasks"] = {}`. When the server has Tasks on, `server/discover` lists the extension under `capabilities.extensions`, and a Tier 3 call from that request that files (or repeats) a request still waiting or running returns a **task handle** instead of `pending_approval`. The client's host then polls `tasks/get` until the task ends, and can stop it with `tasks/cancel`.
+
+```json
+{
+  "resultType": "task",
+  "taskId": "5b0c1c7e-…",
+  "status": "working",
+  "statusMessage": "Waiting for approval in the Breeze mobile or web app: https://app.example.com/approvals#intent-5b0c1c7e-…",
+  "createdAt": "2026-10-24T10:00:00.000Z",
+  "lastUpdatedAt": "2026-10-24T10:00:00.000Z",
+  "ttlMs": 90000000,
+  "pollIntervalMs": 30000
+}
+```
+
+Only Tier 3 calls that become approval requests become tasks. Tier 1 and 2 tools stay synchronous; a call refused outright, a repeat of a request that already finished, and principals listed in `MCP_UNATTENDED_TIER3_PRINCIPALS` never get a task. A client that also declares URL elicitation still gets the approval prompt first (above); a task follows when the request is still waiting after that exchange.
+
+The task id **is** the request id, so `get_action_status` and `cancel_action` keep working on it. It is a name, not a capability: every `tasks/*` call needs the same scopes as those tools (`ai:read`; `tasks/cancel` needs `ai:write` or `ai:execute`) and only the credential that filed the request can see it. An unknown id, another credential's id (even your own other API key) and a malformed id all answer `-32602 Task not found`. A `tasks/*` request that does not declare the extension answers `-32021` with `data.requiredCapabilities`. On Streamable HTTP, `Mcp-Name` must equal `params.taskId`.
+
+| Request | Task `status` | Notes |
+|---|---|---|
+| Waiting for approval | `working` | `statusMessage` carries the approval link; polled every 30 s or slower |
+| Approved or running | `working` | Polled every 5 s or slower |
+| Completed | `completed` | `result` is the tool result. For `execute_dr_plan`, `trigger_backup`, `manage_patches` and a timed-out `run_script`, the work may still be running on the device; `statusMessage` names the tool to check it with |
+| Failed, rejected or expired | `completed` | `result` is an error result (`isError: true`) with the status, `errorCode` and `outcomeUncertain` |
+| Cancelled | `cancelled` | |
+
+Breeze never reports Tasks `failed` or `input_required`. `tasks/cancel` is cooperative: it acknowledges with `{}`, and a request that is already running finishes and reports its real outcome. `tasks/update` acknowledges with `{}` (no input is ever requested). `lastUpdatedAt` is the time of the request's last status change, whoever made it (including a cancel in the Breeze app). Tasks are polled, never pushed: `pollIntervalMs` grows with the number of live requests on the credential so that polling uses at most half of `MCP_MESSAGE_RATE_LIMIT_PER_MINUTE`. `ttlMs` is the approval window plus `MCP_TASK_TTL_GRACE_MS`; `tasks/get` keeps answering after that for as long as the request exists. Earlier protocol versions do not get tasks.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_TASKS_ENABLED` | `false` | Turns Tasks on. Has effect only with `MCP_STATELESS_ENABLED=true`; creating a task also needs `MCP_TIER3_INTENTS_ENABLED=true` (existing tasks stay readable and cancellable without it). |
+| `MCP_TASK_PENDING_POLL_INTERVAL_MS` | `30000` | Base poll interval while waiting for approval (1000–600000). |
+| `MCP_TASK_POLL_INTERVAL_MS` | `5000` | Base poll interval while approved or running (1000–60000). |
+| `MCP_TASK_TTL_GRACE_MS` | `3600000` | Added to the approval window to form `ttlMs` (60000–86400000). |
+
 ### Limits and rollout
 
 Three limits apply, set in [Environment variables](#environment-variables): live requests per credential (20), new requests per credential per hour (60), and new requests per requesting user per hour across all their credentials (60).
