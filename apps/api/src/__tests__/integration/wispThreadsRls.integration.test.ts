@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import {
+  aiMessages,
   aiRunArtifacts,
   aiSessions,
   organizations,
@@ -491,5 +492,40 @@ describe('wisp_thread_attachments RLS (shape 1)', () => {
     } finally {
       setBlobStorageForTests(null);
     }
+  });
+});
+
+describe('finalizeWispSessionSummary (W04 T5, Review Focus 5)', () => {
+  it("each partner's thread holds only its own session's last assistant paragraph", async () => {
+    const { finalizeWispSessionSummary } = await import('../../services/wisp/threadSummary');
+    const f = await seed();
+    const threadA = await insertThread(f.grantA.grantId, f.partnerA);
+    const threadB = await insertThread(f.grantB.grantId, f.partnerB);
+    const sessionA = await insertSession(f.orgA1);
+    const sessionB = await insertSession(f.orgB1);
+    await asSystem(async () => {
+      await db.insert(wispThreadSessions).values([
+        { threadId: threadA.id, sessionId: sessionA, partnerId: f.partnerA, orgId: f.orgA1 },
+        { threadId: threadB.id, sessionId: sessionB, partnerId: f.partnerB, orgId: f.orgB1 },
+      ]);
+      await db.insert(aiMessages).values([
+        { sessionId: sessionA, role: 'assistant', content: 'A intro.\n\nA conclusion: partner A backups are green.' },
+        { sessionId: sessionB, role: 'assistant', content: 'B intro.\n\nB conclusion: partner B patching is late.' },
+      ]);
+    });
+
+    await expect(finalizeWispSessionSummary(sessionA)).resolves.toEqual({ updated: true });
+    await expect(finalizeWispSessionSummary(sessionB)).resolves.toEqual({ updated: true });
+
+    const summaries = await asSystem(() => db
+      .select({ id: wispThreads.id, summary: wispThreads.summary })
+      .from(wispThreads)
+      .where(inArray(wispThreads.id, [threadA.id, threadB.id])));
+    const byId = new Map(summaries.map((r) => [r.id, r.summary]));
+    expect(byId.get(threadA.id)).toBe('A conclusion: partner A backups are green.');
+    expect(byId.get(threadB.id)).toBe('B conclusion: partner B patching is late.');
+
+    // Idempotent: a second finalize writes nothing.
+    await expect(finalizeWispSessionSummary(sessionA)).resolves.toEqual({ updated: false });
   });
 });

@@ -167,6 +167,23 @@ const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
 
+/**
+ * Wisp W04 Task 5: recompute the thread summary of each session just retired.
+ * Lazy import keeps wisp code out of this hot module's eager graph (as for
+ * chatCeiling). Never rejects: failures go to Sentry only.
+ */
+async function finalizeWispSummaries(sessionIds: string[]): Promise<void> {
+  if (sessionIds.length === 0) return;
+  try {
+    const { finalizeWispSessionSummary } = await import('./wisp/threadSummary');
+    for (const id of sessionIds) {
+      await finalizeWispSessionSummary(id).catch((err) => captureException(err));
+    }
+  } catch (err) {
+    captureException(err);
+  }
+}
+
 // The SDK child env builders moved to aiModels/sdkChildEnv.ts (W06 Task 9);
 // re-exported so existing importers (scripts, tests) keep working.
 export { buildClaudeSdkChildEnv } from './aiModels/sdkChildEnv';
@@ -2428,7 +2445,7 @@ export class StreamingSessionManager {
           // rather than assumed. A partial count is normal (the
           // status='active' guard skips rows the user already closed); zero
           // across a whole batch is the RLS signature.
-          await runOutsideDbContextSafe(() =>
+          const expiredRows = await runOutsideDbContextSafe(() =>
             withDbAccessContext(
               { scope: 'organization', orgId, accessibleOrgIds: [orgId] },
               () => dbWriteExpectingRows(
@@ -2443,6 +2460,11 @@ export class StreamingSessionManager {
               ),
             ),
           );
+          // Wisp W04 T5: only after the org-scoped write has committed and its
+          // context has exited, and only for the rows the UPDATE returned (the
+          // status='active' guard skips sessions the user already closed).
+          // Best effort: a failure is captured, never thrown into the loop.
+          void finalizeWispSummaries(expiredRows.map((r) => r.id));
         } catch (err) {
           // Never abandon the remaining orgs: a failure here strands rows as
           // 'active', which is the very defect this helper exists to fix.

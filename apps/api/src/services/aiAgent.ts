@@ -6,7 +6,8 @@
  * via streamingSessionManager.ts and aiAgentSdkTools.ts.
  */
 
-import { db, withSystemDbAccessContext } from '../db';
+import { db, withSystemDbAccessContext, runAfterDbContextCommit } from '../db';
+import { captureException } from './sentry';
 import { aiSessions, aiMessages, aiToolExecutions, approvalRequests, delegantM365Connections, devices } from '../db/schema';
 import { eq, and, desc, inArray, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
@@ -517,6 +518,14 @@ export async function closeSession(sessionId: string, auth: AuthContext): Promis
     .update(aiSessions)
     .set({ status: 'closed', updatedAt: new Date() })
     .where(eq(aiSessions.id, sessionId));
+
+  // Wisp W04 T5: recompute the thread summary once the close has committed.
+  // Best effort — never fails or delays the close.
+  runAfterDbContextCommit('wisp.finalizeThreadSummary', () =>
+    import('./wisp/threadSummary')
+      .then((m) => m.finalizeWispSessionSummary(sessionId))
+      .catch((err) => captureException(err)),
+  );
 
   return { orgId: session.orgId };
 }
