@@ -634,6 +634,33 @@ function parseSkipped(raw: unknown): SweepSummary['skipped'] {
 
 const iso = (d: Date | string | null): string | null => (d === null ? null : new Date(d).toISOString());
 
+/** One org's slice of sweep scans under the caller's site allowlists (joined against `devices`). */
+function orgSiteCeiling(auth: AuthContext, orgId: string, perms: UserPermissions): SQL {
+  const parts: SQL[] = [eq(securityScans.orgId, orgId)];
+  for (const allow of [normalizeSiteAllowlist(perms.allowedSiteIds), normalizeSiteAllowlist(auth.allowedSiteIds)]) {
+    if (allow === undefined) continue;
+    parts.push(allow.length > 0 ? inArray(devices.siteId, allow) : sql`false`);
+  }
+  return and(...parts)!;
+}
+
+function devicePinCeiling(auth: AuthContext): SQL | undefined {
+  if (auth.allowedDeviceIds === undefined) return undefined;
+  return auth.allowedDeviceIds.length > 0 ? inArray(securityScans.deviceId, [...auth.allowedDeviceIds]) : sql`false`;
+}
+
+/**
+ * The per-caller visibility predicate over `security_scans` rows of one org
+ * (W05-1): the org, the caller's site allowlists (joined against `devices` on
+ * `security_scans.device_id`) and its device pins. The same ceiling sweep
+ * progress is aggregated under; exported for the AI `ioc_hunt sweep_status`
+ * rule-hit read (#6268) so it is not re-derived.
+ */
+export function sweepScanVisibility(auth: AuthContext, orgId: string, perms: UserPermissions): SQL {
+  const pins = devicePinCeiling(auth);
+  return pins ? and(orgSiteCeiling(auth, orgId, perms), pins)! : orgSiteCeiling(auth, orgId, perms);
+}
+
 /**
  * Summaries for the sweeps `match` selects, under the caller's RLS, filtered
  * to orgs where the caller holds devices:read, with progress aggregated over
@@ -680,18 +707,12 @@ async function loadSummaries(
   for (const { row, perms } of readable) {
     if (seenOrgs.has(row.orgId)) continue;
     seenOrgs.add(row.orgId);
-    const parts: SQL[] = [eq(securityScans.orgId, row.orgId)];
-    for (const allow of [normalizeSiteAllowlist(perms.allowedSiteIds), normalizeSiteAllowlist(auth.allowedSiteIds)]) {
-      if (allow === undefined) continue;
-      parts.push(allow.length > 0 ? inArray(devices.siteId, allow) : sql`false`);
-    }
     if (isRestrictedIn(auth, perms)) restrictedOrgs.add(row.orgId);
-    orgClauses.push(and(...parts)!);
+    orgClauses.push(orgSiteCeiling(auth, row.orgId, perms));
   }
   const ceiling: SQL[] = [or(...orgClauses)!];
-  if (auth.allowedDeviceIds !== undefined) {
-    ceiling.push(auth.allowedDeviceIds.length > 0 ? inArray(securityScans.deviceId, [...auth.allowedDeviceIds]) : sql`false`);
-  }
+  const pins = devicePinCeiling(auth);
+  if (pins) ceiling.push(pins);
 
   const sweepIds = readable.map(({ row }) => row.id);
   const progressRows = await db

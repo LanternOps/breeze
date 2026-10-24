@@ -18,7 +18,7 @@ import { LIVE_READ_INPUT_FLAGS } from './aiLiveDeviceReads';
  */
 describe('TIER_DECIDING_INPUT_KEYS', () => {
   it('covers every whole-tool input-aware tier-3 tool and the input-aware action tools', () => {
-    const required = [...TIER3_INPUT_AWARE_TOOLS, 'manage_tickets', 'manage_policy_feature_link', 'manage_organizations'];
+    const required = [...TIER3_INPUT_AWARE_TOOLS, 'manage_tickets', 'manage_policy_feature_link', 'manage_organizations', 'ioc_hunt'];
     for (const name of required) {
       expect(TIER_DECIDING_INPUT_KEYS[name], name).toBeDefined();
       expect(TIER_DECIDING_INPUT_KEYS[name]!.length, name).toBeGreaterThan(0);
@@ -31,6 +31,7 @@ describe('TIER_DECIDING_INPUT_KEYS', () => {
     expect(TIER_DECIDING_INPUT_KEYS.s1_isolate_device).toEqual(['isolate']);
     expect(TIER_DECIDING_INPUT_KEYS.run_script).toEqual(['proposalId']);
     expect(TIER_DECIDING_INPUT_KEYS.manage_organizations).toEqual(['status']);
+    expect(TIER_DECIDING_INPUT_KEYS.ioc_hunt).toEqual(['expectedDeviceCount']);
   });
 
   it('tierDecidingInputKeys leads with the action selector and includes every live-read flag', () => {

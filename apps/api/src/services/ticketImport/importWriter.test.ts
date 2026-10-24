@@ -5,6 +5,8 @@
  * and the up-front validation. The transactions themselves run against
  * Postgres in ticketImport.integration.test.ts.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../db', () => ({
@@ -22,6 +24,7 @@ import {
   IMPORT_COMMENT_CHUNK_BYTES,
   IMPORT_COMMENT_CHUNK_SIZE,
   importTicket,
+  MERGE_SURVIVOR_FIELDS,
   statusSteps,
 } from './importWriter';
 import { parseImportedTicket, type ImportedTicket } from './importedTicket';
@@ -57,6 +60,8 @@ function stored(overrides: Record<string, unknown> = {}) {
     id: 't-1', orgId: ORG, migrationWindowId: 'w-1', deletedAt: null, status: 'open' as const,
     subject: 'Printer jams', description: 'Every second page.', priority: 'normal' as const, categoryId: null,
     tags: [] as string[], ticketType: 'incident', assignedTo: null as string | null, fieldProvenance: {} as Record<string, string>,
+    requesterContactId: null as string | null, submitterEmail: 'maya@customer.example' as string | null,
+    mergedIntoTicketId: null as string | null, windowPrincipalId: PRINCIPAL as string | null, receivedMerge: false,
     ...overrides,
   };
 }
@@ -111,7 +116,7 @@ describe('statusSteps — the source status applies only while the import set it
   it('applies the source status when the ticket has no status_change row: a first import, or a pass stopped before its status', () => {
     expect(statusSteps('new', null, closedInSource, PRINCIPAL)).toEqual({
       steps: [{ status: 'resolved', at: at(100), resolutionNote: 'Fixed' }, { status: 'closed', at: at(200) }],
-      skipped: false,
+      skip: null,
     });
   });
 
@@ -120,23 +125,46 @@ describe('statusSteps — the source status applies only while the import set it
     // A reopen-then-resolve pair is applied whole.
     expect(statusSteps('closed', ourAssignment, ticket({ finalStatus: 'resolved', resolvedAt: at(250) }), PRINCIPAL)).toEqual({
       steps: [{ status: 'open', at: at(250) }, { status: 'resolved', at: at(250) }],
-      skipped: false,
+      skip: null,
     });
   });
 
   it.each([
     ['a technician', { kind: 'user', principalId: null }],
+    // The inbound pipeline reopens as a system actor whose feed row carries a
+    // user origin and no principal; the integration suite drives a real one.
     ["the inbound pipeline's requester reopen (system actor, user origin)", { kind: 'user', principalId: null }],
     ['an AI agent', { kind: 'ai_agent', principalId: 'agent-1' }],
     ['another integration', { kind: 'service_principal', principalId: 'other-principal' }],
-  ])('keeps the Breeze status, whole, when %s changed it last', (_label, last) => {
-    expect(statusSteps('resolved', last, closedInSource, PRINCIPAL)).toEqual({ steps: [], skipped: true });
-    expect(statusSteps('pending', last, ticket({ finalStatus: 'resolved', resolvedAt: at(50) }), PRINCIPAL)).toEqual({ steps: [], skipped: true });
+  ])('keeps the Breeze status, whole, when %s changed it last, and says who and from what', (_label, last) => {
+    expect(statusSteps('resolved', last, closedInSource, PRINCIPAL)).toEqual({
+      steps: [],
+      skip: { statusOwner: last, sourceStatus: 'closed', currentStatus: 'resolved' },
+    });
+    expect(statusSteps('pending', last, ticket({ finalStatus: 'resolved', resolvedAt: at(50) }), PRINCIPAL)).toEqual({
+      steps: [],
+      skip: { statusOwner: last, sourceStatus: 'resolved', currentStatus: 'pending' },
+    });
+  });
+
+  // #8884 review, finding 8: the kind is part of the match, not just the id.
+  it.each([
+    ['a user', 'user'],
+    ['an AI agent', 'ai_agent'],
+    ['a system note', 'system'],
+  ])("is not the import's row when %s carries the import principal's id", (_label, kind) => {
+    const impostor = { kind, principalId: PRINCIPAL };
+    expect(statusSteps('resolved', impostor, closedInSource, PRINCIPAL)).toEqual({
+      steps: [],
+      skip: { statusOwner: impostor, sourceStatus: 'closed', currentStatus: 'resolved' },
+    });
+    // The assignee rule uses the same match.
+    expect(headerChanges(stored({ assignedTo: AGENT }), ref, impostor, ticket({ assigneeUserId: OTHER_AGENT }), PRINCIPAL).assign).toBeNull();
   });
 
   it('reports nothing skipped when the status already matches the source', () => {
-    expect(statusSteps('closed', { kind: 'user', principalId: null }, closedInSource, PRINCIPAL)).toEqual({ steps: [], skipped: false });
-    expect(statusSteps('open', { kind: 'user', principalId: null }, ticket({ finalStatus: 'new' }), PRINCIPAL)).toEqual({ steps: [], skipped: false });
+    expect(statusSteps('closed', { kind: 'user', principalId: null }, closedInSource, PRINCIPAL)).toEqual({ steps: [], skip: null });
+    expect(statusSteps('open', { kind: 'user', principalId: null }, ticket({ finalStatus: 'new' }), PRINCIPAL)).toEqual({ steps: [], skip: null });
   });
 });
 
@@ -226,6 +254,14 @@ describe('headerChanges — a resume converges the header on the source, except 
     expect(headerChanges(stored({ assignedTo: AGENT }), ref, null, t, PRINCIPAL).assign).toBeNull();
   });
 
+  it('keeps the fields a native merge wrote on a ticket that received one; the rest still follow the source', () => {
+    const changed = ticket({ subject: 'New', tags: ['printer'] });
+    const survivor = stored({ tags: ['printer', 'vip'], receivedMerge: true });
+    expect(headerChanges(survivor, ref, ourAssignment, changed, PRINCIPAL).fieldNames).toEqual(['subject']);
+    // A ticket that never received a merge converges its tags as before.
+    expect(headerChanges({ ...survivor, receivedMerge: false }, ref, ourAssignment, changed, PRINCIPAL).fieldNames).toEqual(['subject', 'tags']);
+  });
+
   it('refreshes the external ref when the source number or url changed', () => {
     expect(headerChanges(stored(), ref, ourAssignment, ticket({ sourceNumber: '#41024' }), PRINCIPAL).refreshRef).toBe(true);
     expect(headerChanges(stored(), ref, ourAssignment, ticket({ sourceUrl: 'https://helpdesk.example.test/t/1' }), PRINCIPAL).refreshRef).toBe(true);
@@ -239,6 +275,10 @@ describe('parseImportedTicket — the whole ticket is checked before anything is
   it('accepts a well-formed ticket', () => {
     expect(parseImportedTicket(ticket({ comments: [{ sourceId: 'a1', createdAt: at(5), isPublic: true, author: { kind: 'staff', name: 'Tess' }, content: 'Hi' }] }), NOW))
       .toMatchObject({ sourceId: 'zammad-41023' });
+  });
+
+  it('accepts a display-only requester with no email (a source customer may have none)', () => {
+    expect(parseImportedTicket(ticket({ requester: { name: 'Maya' } }), NOW).requester).toEqual({ name: 'Maya' });
   });
 
   it.each([
@@ -256,7 +296,9 @@ describe('parseImportedTicket — the whole ticket is checked before anything is
     for (const bad of [
       { ...ticket(), extra: 1 },
       { ...ticket(), source: 'ai' },
-      { ...ticket(), requester: { name: 'x' } },
+      { ...ticket(), requester: { name: 'x', email: 'not-an-address' } },
+      { ...ticket(), requester: { email: 'maya@customer.example' } },
+      { ...ticket(), requester: { name: '  ' } },
       // The Partner API's rule for the same column: http(s) only.
       { ...ticket(), sourceUrl: 'javascript:alert(1)' },
     ]) {
@@ -270,5 +312,18 @@ describe('importTicket', () => {
     const { getCurrentDbAccessContext } = await import('../../db');
     vi.mocked(getCurrentDbAccessContext).mockReturnValueOnce({ scope: 'system' } as never);
     await expect(importTicket('w-1', ticket(), { partnerId: 'p-1' })).rejects.toThrow(/outside any DB context/);
+  });
+});
+
+describe('MERGE_SURVIVOR_FIELDS — what a native merge writes on its survivor (#8972)', () => {
+  it('matches the survivor update in ticketMerge/execute.ts: the import re-applies only tags of what it sets', () => {
+    const source = readFileSync(join(__dirname, '..', 'ticketMerge', 'execute.ts'), 'utf8');
+    const updates = [...source.matchAll(/\.update\(tickets\)\s*\.set\(\{([^}]*)\}\)\s*\.where\(and\(eq\(tickets\.id, dstId\)/g)];
+    // If this fails, the merge now writes the survivor differently: list every
+    // header field a resume re-applies (headerChanges) in MERGE_SURVIVOR_FIELDS.
+    expect(updates).toHaveLength(1);
+    const keys = updates[0]![1]!.split(',').map((part) => part.split(':')[0]!.trim()).filter(Boolean).sort();
+    expect(keys).toEqual(['deviceId', 'tags', 'updatedAt']);
+    expect(MERGE_SURVIVOR_FIELDS).toEqual(['tags']);
   });
 });
