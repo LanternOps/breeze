@@ -571,7 +571,7 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
               <div className="mt-1 space-y-2">
                 {groupByProvider(draft.plannedEffectTools).map(([provider, tools]) => (
                   <div key={provider} data-testid={`start-recipe-preview-provider-${provider}`}>
-                    <p className="text-xs font-medium uppercase text-muted-foreground">{providerLabel(t, provider)}</p>
+                    <p className="text-xs font-medium uppercase text-muted-foreground">{providerLabel(provider)}</p>
                     <ul className="list-disc pl-5">
                       {tools.map((tool) => <li key={tool}>{effectToolLabel(t, tool)}</li>)}
                     </ul>

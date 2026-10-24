@@ -226,6 +226,7 @@ export default function RecipeCard({ workflow, onStart, onChanged }: RecipeCardP
         </div>
         <span
           data-testid={`recipe-readiness-${key}`}
+          data-readiness={workflow.readiness}
           className={cn('inline-flex shrink-0 items-center rounded-md border px-2 py-0.5 text-xs font-medium', CHIP_CLASS[workflow.readiness])}
         >
           {readinessLabel(t, workflow.readiness)}

@@ -21,6 +21,8 @@ template variables (`{{name}}`), and code values remain unchanged.
 | agreement template (legal doc attached to a quote) | modelo de acordo | plantilla de acuerdo | modèle de convention | modèle d'entente | Vereinbarungsvorlage | modello di accordo |
 | signed agreement (frozen, customer-signed instance) | acordo assinado | acuerdo firmado | convention signée | entente signée | unterzeichnete Vereinbarung | accordo firmato |
 | smoke test | teste de verificação | prueba de verificación | test de vérification | test de vérification | Smoke-Test | smoke test |
+| recipe (an AI Operator workflow in the Recipe Library) | receita | receta | recette | recette | Rezept | ricetta |
+| checklist item (ticket checklist) | item do checklist | elemento de la lista de verificación | élément de la liste de contrôle | élément de la liste de vérification | Checklisten-Punkt | voce della checklist |
 
 ## Context rules
 
@@ -48,3 +50,6 @@ template variables (`{{name}}`), and code values remain unchanged.
 - A contract's `Internal notes` (the `notes` field) are staff-only and never printed on
   an invoice or shown to the customer (#9347). Translate "internal" as internal to the
   MSP, never as "private to the customer".
+- `Recipe` (an AI Operator workflow in the Recipe Library) and `checklist item` (an item on a
+  ticket checklist) are listed in the table above. tr-TR is not in the table: use `tarif` for
+  recipe and `kontrol listesi öğesi` for checklist item.

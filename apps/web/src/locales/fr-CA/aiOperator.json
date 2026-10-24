@@ -132,5 +132,293 @@
     "confirmLabel": "Déléguer",
     "queued": "Tâche déléguée à l'Opérateur.",
     "failed": "Échec de la délégation à l'Opérateur."
+  },
+  "nav": {
+    "operator": "Opérateur"
+  },
+  "effectTool": {
+    "googleSetVacation": "Définir la réponse automatique de Gmail",
+    "googleSetForwarding": "Transférer Gmail vers l'héritier",
+    "googleAddMailDelegate": "Donner à l'héritier l'accès à la boîte Gmail",
+    "googleRemoveFromGroup": "Retirer des groupes Google",
+    "googleRemoveLicense": "Retirer les licences Google Workspace",
+    "googleAccountWipeMobileDevice": "Retirer le compte professionnel des téléphones enregistrés",
+    "googleSignout": "Fermer les sessions Google",
+    "googleSuspendUser": "Suspendre le compte Google",
+    "m365SetAutoReply": "Définir la réponse automatique d'Outlook",
+    "m365RemoveFromGroup": "Retirer des groupes Microsoft 365",
+    "m365RemoveLicense": "Retirer les licences Microsoft 365",
+    "m365RetireIntuneDevice": "Retirer les téléphones gérés par Intune",
+    "m365RevokeSessions": "Révoquer les sessions de connexion Microsoft 365",
+    "m365DisableUser": "Bloquer la connexion à Microsoft 365"
+  },
+  "workspace": {
+    "tabs": {
+      "label": "Sections de l'Opérateur",
+      "tasks": "Tâches",
+      "library": "Bibliothèque"
+    },
+    "noOrg": "Sélectionnez une organisation pour voir les recettes qu'elle peut exécuter."
+  },
+  "taskList": {
+    "loading": "Chargement des tâches...",
+    "loadFailed": "Échec du chargement des tâches.",
+    "empty": "Aucune tâche de l'Opérateur pour l'instant.",
+    "emptyHint": "Les tâches que vous lancez depuis la Bibliothèque, un billet, un contact ou une alerte apparaissent ici.",
+    "loadMore": "Charger plus",
+    "loadMoreFailed": "Échec du chargement de tâches supplémentaires."
+  },
+  "recipeLibrary": {
+    "loading": "Chargement des recettes...",
+    "loadFailed": "Échec du chargement de la bibliothèque de recettes.",
+    "empty": "Aucune recette n'est encore disponible pour cette organisation.",
+    "readiness": {
+      "ready": "Prête",
+      "setupRequired": "Configuration requise",
+      "unavailable": "Non disponible"
+    },
+    "setupBlock": {
+      "title": "Configuration requise",
+      "description": "Tant que ces points ne sont pas réglés, les étapes concernées sont effectuées manuellement."
+    },
+    "manualSteps": {
+      "count_one": "1 étape sera effectuée manuellement",
+      "count_other": "{{count}} étapes seront effectuées manuellement",
+      "expand": "Voir quelles étapes",
+      "collapse": "Masquer ces étapes",
+      "explainer": "Breeze n'automatise pas encore ces étapes. La tâche les ajoutera au billet sous forme d'éléments de la liste de vérification."
+    },
+    "degraded": {
+      "title": "Ce qui sera fait manuellement",
+      "description": "Pour cette organisation, ces étapes deviennent des éléments de la liste de vérification du billet de la tâche au lieu de s'exécuter automatiquement."
+    },
+    "action": {
+      "reconsentM365": "Accordez les autorisations Microsoft 365 mises à jour dans les paramètres d'intégration de cette organisation.",
+      "connectGoogle": "Connectez Google Workspace à cette organisation depuis ses intégrations.",
+      "connectM365": "Connectez Microsoft 365 à cette organisation depuis ses intégrations.",
+      "open": "Ouvrir",
+      "allowTools_one": "Autoriser {{count}} outil pour {{agent}}",
+      "allowTools_other": "Autoriser {{count}} outils pour {{agent}}",
+      "allowToolsScope": "Cela modifie {{agent}} partout où il est utilisé, pas seulement pour cette recette.",
+      "allowToolsScopeAllOrgs": "Cela modifie {{agent}} partout où il est utilisé, dans toutes les organisations qu'il dessert, pas seulement pour cette recette.",
+      "allowToolsList": "Outils à autoriser :",
+      "agentFallback": "l'agent du support",
+      "allowToolsSuccess": "Outils autorisés pour {{agent}}.",
+      "allowToolsFailed": "Impossible d'autoriser les outils.",
+      "mfaRequired": "Modifier les outils d'un agent nécessite une session ouverte avec l'authentification multifacteur. Déconnectez-vous, reconnectez-vous avec la MFA, puis réessayez.",
+      "allowlistFull": "La liste d'outils de cet agent est pleine ({{limit}} outils). Retirez les outils dont il n'a plus besoin dans Paramètres → Agents IA, puis réessayez."
+    },
+    "start": {
+      "offboard": "Gérer le départ d'une personne",
+      "notEnabled": "Cette recette n'est pas activée pour ce déploiement.",
+      "fromDeviceOrAlert": "Lancez cette recette depuis un appareil ou une alerte."
+    },
+    "recipe": {
+      "identityOffboardingName": "Gérer le départ d'une personne",
+      "identityOffboardingSummary": "Confirmez qui part, redirigez son courrier et retirez ses accès dans Microsoft 365 et Google Workspace dans un ordre sûr, avec une seule approbation. Le travail manuel est suivi dans le billet.",
+      "serviceRecoveryName": "Rétablir un service arrêté",
+      "serviceRecoverySummary": "Analysez un service Windows arrêté, redémarrez-le avec approbation et vérifiez qu'il reste en marche."
+    }
+  },
+  "startRecipe": {
+    "title": "Gérer le départ d'une personne",
+    "close": "Fermer",
+    "person": {
+      "label": "Personne qui part",
+      "hintLabel": "Nom ou adresse courriel",
+      "hintPlaceholder": "p. ex. Dana Smith ou dana@example.com",
+      "contactChosen": "Contact : {{name}}",
+      "useHint": "Utiliser plutôt un nom ou une adresse courriel",
+      "readOnly": "Lancé depuis ce contact."
+    },
+    "inheritor": {
+      "label": "Qui hérite de son courrier",
+      "none": "Personne",
+      "contact": "Un contact",
+      "address": "Une adresse courriel",
+      "pickContact": "Choisir un contact",
+      "addressPlaceholder": "nom@example.com",
+      "contactsFailed": "Échec du chargement des contacts.",
+      "loadMore": "Charger plus de contacts"
+    },
+    "autoReply": {
+      "label": "Message de réponse automatique",
+      "defaultWithInheritor": "Merci de votre message. {{person}} ne fait plus partie de l'entreprise. Veuillez contacter {{inheritor}} pour obtenir de l'aide.",
+      "defaultNoInheritor": "Merci de votre message. {{person}} ne fait plus partie de l'entreprise et cette boîte n'est plus surveillée.",
+      "thePerson": "Cette personne"
+    },
+    "cutoff": {
+      "label": "Dernier jour (date limite)",
+      "now": "Vide signifie démarrer maintenant : les étapes approuvées s'exécutent dès que le plan est approuvé.",
+      "scheduled": "Les étapes approuvées attendent cette heure avant de s'exécuter."
+    },
+    "keepMailbox": {
+      "label": "Conserver la boîte aux lettres",
+      "help": "Breeze laissera la licence Microsoft 365 en place et ajoutera une étape manuelle pour convertir la boîte aux lettres en boîte partagée. Retirer d'abord la licence déclencherait le délai de suppression de 30 jours de la boîte aux lettres."
+    },
+    "effects": {
+      "label": "Actions à effectuer",
+      "autoReply": "Définir une réponse automatique",
+      "autoReplyHelp": "Répond aux nouveaux courriels avec le message ci-dessus.",
+      "forwarding": "Transférer le courrier",
+      "forwardingHelp": "Transfère les nouveaux courriels à l'héritier.",
+      "mailDelegate": "Donner à l'héritier l'accès à la boîte aux lettres",
+      "mailDelegateHelp": "Permet à l'héritier de lire toute la boîte aux lettres. Choisissez cette option en connaissance de cause.",
+      "removeGroups": "Retirer des groupes",
+      "removeGroupsHelp": "Retire la personne des groupes et des listes de distribution.",
+      "removeLicenses": "Retirer les licences",
+      "removeLicensesHelp": "Libère les licences payantes une fois le courrier pris en charge.",
+      "revokeSessions": "Déconnecter partout",
+      "revokeSessionsHelp": "Met fin aux sessions de connexion actives de la personne.",
+      "wipeMobile": "Retirer le compte professionnel des téléphones",
+      "wipeMobileHelp": "Retire le compte professionnel des téléphones enregistrés. L'appareil lui-même n'est pas effacé.",
+      "disableAccount": "Bloquer la connexion",
+      "disableAccountHelp": "Désactive le compte. Cette étape vient en dernier, une fois le courrier redirigé."
+    },
+    "devices": {
+      "label": "Appareils à récupérer ou à verrouiller",
+      "help": "Facultatif. Breeze n'agit pas sur les appareils dans cette recette : chaque appareil sélectionné devient un élément de la liste de vérification pour un technicien.",
+      "searchPlaceholder": "Rechercher des appareils par nom",
+      "selectedByYou": "Sélectionnés par vous",
+      "limit": "Vous pouvez sélectionner jusqu'à {{max}} appareils.",
+      "loading": "Chargement des appareils...",
+      "loadFailed": "Échec du chargement des appareils.",
+      "empty": "Aucun appareil ne correspond."
+    },
+    "preview": {
+      "button": "Aperçu",
+      "refresh": "Actualiser l'aperçu",
+      "stale": "Le formulaire a changé depuis l'aperçu. Actualisez l'aperçu avant de lancer.",
+      "failed": "Impossible de générer l'aperçu.",
+      "title": "Aperçu",
+      "personResolved": "Départ géré pour : {{name}}",
+      "personUnresolved": "Aucun contact unique ne correspond. Choisissez-en un ci-dessous ou modifiez le nom.",
+      "personNone": "Aucun contact ne correspond à ce nom ou à cette adresse courriel.",
+      "candidatesLabel": "Correspondances possibles (choisissez-en une) :",
+      "plannedTitle": "Étapes que Breeze exécutera",
+      "orderNote": "Regroupées par service, sans ordre. L'ordre exact est fixé une fois que le technicien a confirmé l'identité, puis présenté pour approbation avant toute exécution.",
+      "plannedEmpty": "Aucune étape ne s'exécutera automatiquement.",
+      "degradedTitle": "Étapes qui seront effectuées manuellement",
+      "manualTitle": "Éléments de la liste de vérification que la tâche ajoutera",
+      "ticketNote": "La tâche ouvre son propre billet pour ces éléments de la liste de vérification.",
+      "ticketSourceNote": "Lancé depuis un billet : la tâche ouvre son propre billet de liste de vérification et ne modifie pas celui-ci."
+    },
+    "submit": "Lancer le départ",
+    "started": "Départ lancé.",
+    "failed": "Impossible de lancer le départ.",
+    "duplicate": "Un départ est déjà en cours pour cette personne.",
+    "duplicateLink": "Ouvrir la tâche en cours"
+  },
+  "taskPanels": {
+    "tabsLabel": "Vues de la tâche",
+    "tabs": {
+      "steps": "Étapes",
+      "plan": "Plan d'exécution",
+      "events": "Chronologie"
+    },
+    "steps": {
+      "empty": "Aucune étape n'a encore démarré.",
+      "current": "Étape en cours",
+      "started": "Démarrée {{time}}",
+      "settled": "Terminée {{time}}",
+      "waitingApproval": "En attente de l'approbation du plan.",
+      "waitingMaintenanceWindow": "En attente de la fenêtre de maintenance avant l'exécution du prochain changement.",
+      "waitingExecution": "En cours : en attente de la fin du changement actuel.",
+      "waitingOther": "En attente : {{reason}}.",
+      "waitingHumanWork": "En attente qu'un technicien coche l'élément de la liste de vérification dans le billet.",
+      "openTicket": "Ouvrir le billet de la liste de vérification",
+      "stepKey": {
+        "intake": "Comprendre la demande",
+        "confirmIdentity": "Confirmer qui part",
+        "discover": "Rechercher ses comptes",
+        "review": "Examiner ce qui a été trouvé",
+        "effects": "Approuver et effectuer les changements",
+        "manualWork": "Travail de la liste de vérification",
+        "verifyOutcome": "Vérifier le résultat",
+        "document": "Rédiger le compte rendu"
+      },
+      "kind": {
+        "reason": "Raisonnement",
+        "effect": "Changements",
+        "probe": "Vérification",
+        "wait": "Attente",
+        "humanWork": "Travail humain",
+        "document": "Compte rendu"
+      },
+      "state": {
+        "pending": "Non démarrée",
+        "running": "En cours",
+        "waiting": "En attente",
+        "succeeded": "Terminée",
+        "failed": "Échec",
+        "skipped": "Ignorée"
+      }
+    },
+    "plan": {
+      "unavailable": "Ce serveur n'a pas envoyé le plan de cette tâche.",
+      "empty": "Aucun plan n'a encore été proposé.",
+      "revision": "Révision {{n}}",
+      "effectCount_one": "{{count}} changement",
+      "effectCount_other": "{{count}} changements",
+      "approvedAt": "Approuvé {{time}}",
+      "proposedAt": "Proposé {{time}}",
+      "supersededBy": "Remplacée par la révision {{n}}. Conservée ici comme trace de ce qui a été approuvé puis remplacé.",
+      "orderNote": "Les changements s'exécutent un par un dans l'ordre numéroté, tous services confondus.",
+      "target": "Pour : {{label}}",
+      "principal": "Compte : {{label}}",
+      "noop": "Déjà en place : rien n'a été envoyé.",
+      "state": {
+        "pending": "En attente d'approbation",
+        "approved": "Approuvé",
+        "rejected": "Rejeté",
+        "expired": "Expiré",
+        "superseded": "Remplacé"
+      },
+      "idempotency": {
+        "idempotent": "Peut être répété sans risque",
+        "idempotentByProbe": "Vérifié avant d'être répété",
+        "nonIdempotent": "Jamais répété automatiquement"
+      },
+      "operation": {
+        "none": "Non démarrée / inconnue",
+        "pending": "En cours",
+        "succeeded": "Réussie",
+        "failed": "Échec",
+        "unknown": "Résultat inconnu",
+        "superseded": "Remplacée"
+      }
+    },
+    "events": {
+      "empty": "Aucun événement enregistré pour l'instant.",
+      "showAll": "Afficher les {{count}} événements",
+      "showRecent": "Afficher seulement les {{count}} plus récents",
+      "hiddenOlder_one": "{{count}} événement plus ancien est masqué.",
+      "hiddenOlder_other": "{{count}} événements plus anciens sont masqués.",
+      "capped": "Affichage des {{count}} événements les plus récents. Les événements plus anciens ne sont pas affichés ici.",
+      "actor": {
+        "coordinator": "Coordinateur",
+        "reconciler": "Réconciliateur",
+        "user": "Personne",
+        "agent": "Agent IA",
+        "system": "Système"
+      },
+      "type": {
+        "taskAdmitted": "Tâche admise",
+        "leaseClaimed": "Travail pris en charge",
+        "stepOpened": "Étape démarrée",
+        "stepSettled": "Étape terminée",
+        "waitEntered": "En attente",
+        "waitResolved": "Attente terminée",
+        "targetAttached": "Cible associée",
+        "targetDetached": "Cible dissociée",
+        "targetAccountFrozen": "Compte enregistré",
+        "operationReserved": "Changement réservé",
+        "operationSettled": "Changement terminé",
+        "verificationRecorded": "Vérification enregistrée",
+        "planRevisionBumped": "Révision du plan modifiée",
+        "humanWorkUnticked": "Élément de la liste de vérification décoché",
+        "taskSettled": "Tâche terminée"
+      }
+    }
   }
 }

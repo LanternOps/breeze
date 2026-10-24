@@ -136,11 +136,6 @@
   "nav": {
     "operator": "Operator"
   },
-  "provider": {
-    "google": "Google Workspace",
-    "m365": "Microsoft 365",
-    "breeze": "Breeze"
-  },
   "effectTool": {
     "googleSetVacation": "Set the Gmail auto-reply",
     "googleSetForwarding": "Forward Gmail to the inheritor",

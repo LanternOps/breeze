@@ -88,7 +88,7 @@ function Revision({ rev }: { rev: AiOperatorPlanApprovalDto }) {
       <p className="text-xs text-muted-foreground">{t('taskPanels.plan.orderNote')}</p>
       {providers.map((p) => (
         <div key={p} data-testid={`task-plan-provider-${p}`}>
-          <h5 className="text-xs font-medium uppercase text-muted-foreground">{providerLabel(t, p)}</h5>
+          <h5 className="text-xs font-medium uppercase text-muted-foreground">{providerLabel(p)}</h5>
           <ul className="mt-1 space-y-2">
             {ordered.filter((e) => e.provider === p).map((e) => (
               <li key={e.ordinal} data-testid={`task-plan-effect-${e.ordinal}`} className="rounded-md border px-3 py-2 text-sm">

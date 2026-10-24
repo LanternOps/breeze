@@ -62,11 +62,15 @@ export function effectToolProvider(tool: string): EffectProviderKey {
   return 'other';
 }
 
-export function providerLabel(t: Translator, provider: EffectProviderKey | 'breeze'): string {
+/**
+ * Provider display name. Product names are never translated
+ * (`locales/TERMINOLOGY.md`), so these are constants, not catalog keys.
+ */
+export function providerLabel(provider: EffectProviderKey | 'breeze'): string {
   switch (provider) {
-    case 'google': return t('aiOperator:provider.google');
-    case 'm365': return t('aiOperator:provider.m365');
-    case 'breeze': return t('aiOperator:provider.breeze');
+    case 'google': return 'Google Workspace';
+    case 'm365': return 'Microsoft 365';
+    case 'breeze': return 'Breeze';
     default: return provider;
   }
 }

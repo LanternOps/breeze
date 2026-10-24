@@ -132,5 +132,293 @@
     "confirmLabel": "Delegar",
     "queued": "Tarefa delegada ao Operador.",
     "failed": "Falha ao delegar a tarefa ao Operador."
+  },
+  "nav": {
+    "operator": "Operador"
+  },
+  "effectTool": {
+    "googleSetVacation": "Definir a resposta automática do Gmail",
+    "googleSetForwarding": "Encaminhar o Gmail para o herdeiro",
+    "googleAddMailDelegate": "Dar ao herdeiro acesso à caixa de entrada do Gmail",
+    "googleRemoveFromGroup": "Remover dos grupos do Google",
+    "googleRemoveLicense": "Remover as licenças do Google Workspace",
+    "googleAccountWipeMobileDevice": "Remover a conta de trabalho dos celulares registrados",
+    "googleSignout": "Encerrar as sessões do Google",
+    "googleSuspendUser": "Suspender a conta do Google",
+    "m365SetAutoReply": "Definir a resposta automática do Outlook",
+    "m365RemoveFromGroup": "Remover dos grupos do Microsoft 365",
+    "m365RemoveLicense": "Remover as licenças do Microsoft 365",
+    "m365RetireIntuneDevice": "Desvincular os celulares gerenciados pelo Intune",
+    "m365RevokeSessions": "Revogar as sessões de login do Microsoft 365",
+    "m365DisableUser": "Bloquear o login no Microsoft 365"
+  },
+  "workspace": {
+    "tabs": {
+      "label": "Seções do Operador",
+      "tasks": "Tarefas",
+      "library": "Biblioteca"
+    },
+    "noOrg": "Selecione uma organização para ver quais receitas ela pode executar."
+  },
+  "taskList": {
+    "loading": "Carregando tarefas...",
+    "loadFailed": "Falha ao carregar as tarefas.",
+    "empty": "Ainda não há tarefas do Operador.",
+    "emptyHint": "As tarefas que você inicia pela Biblioteca, por um chamado, um contato ou um alerta aparecem aqui.",
+    "loadMore": "Carregar mais",
+    "loadMoreFailed": "Falha ao carregar mais tarefas."
+  },
+  "recipeLibrary": {
+    "loading": "Carregando receitas...",
+    "loadFailed": "Falha ao carregar a biblioteca de receitas.",
+    "empty": "Ainda não há receitas disponíveis para esta organização.",
+    "readiness": {
+      "ready": "Pronta",
+      "setupRequired": "Configuração necessária",
+      "unavailable": "Indisponível"
+    },
+    "setupBlock": {
+      "title": "Configuração necessária",
+      "description": "Enquanto isso não for resolvido, as etapas correspondentes são feitas manualmente."
+    },
+    "manualSteps": {
+      "count_one": "1 etapa será feita manualmente",
+      "count_other": "{{count}} etapas serão feitas manualmente",
+      "expand": "Ver quais etapas",
+      "collapse": "Ocultar estas etapas",
+      "explainer": "O Breeze ainda não automatiza estas etapas. A tarefa as adicionará ao chamado como itens do checklist."
+    },
+    "degraded": {
+      "title": "O que será feito manualmente",
+      "description": "Nesta organização, estas etapas viram itens do checklist no chamado da tarefa em vez de serem executadas automaticamente."
+    },
+    "action": {
+      "reconsentM365": "Conceda as permissões atualizadas do Microsoft 365 nas configurações de integração desta organização.",
+      "connectGoogle": "Conecte o Google Workspace a esta organização pelas integrações dela.",
+      "connectM365": "Conecte o Microsoft 365 a esta organização pelas integrações dela.",
+      "open": "Abrir",
+      "allowTools_one": "Permitir {{count}} ferramenta para {{agent}}",
+      "allowTools_other": "Permitir {{count}} ferramentas para {{agent}}",
+      "allowToolsScope": "Isso altera {{agent}} em todos os lugares onde ele é usado, não apenas nesta receita.",
+      "allowToolsScopeAllOrgs": "Isso altera {{agent}} em todos os lugares onde ele é usado, em todas as organizações que ele atende, não apenas nesta receita.",
+      "allowToolsList": "Ferramentas a permitir:",
+      "agentFallback": "o agente de suporte",
+      "allowToolsSuccess": "Ferramentas permitidas para {{agent}}.",
+      "allowToolsFailed": "Não foi possível permitir as ferramentas.",
+      "mfaRequired": "Alterar as ferramentas de um agente exige uma sessão iniciada com autenticação multifator. Saia, entre novamente com MFA e tente de novo.",
+      "allowlistFull": "A lista de ferramentas deste agente está cheia ({{limit}} ferramentas). Remova as que ele não precisa mais em Configurações → Agentes de IA e tente de novo."
+    },
+    "start": {
+      "offboard": "Desligar uma pessoa",
+      "notEnabled": "Esta receita não está habilitada nesta implantação.",
+      "fromDeviceOrAlert": "Inicie esta receita a partir de um dispositivo ou de um alerta."
+    },
+    "recipe": {
+      "identityOffboardingName": "Desligar uma pessoa",
+      "identityOffboardingSummary": "Confirme quem está saindo, direcione os e-mails e remova os acessos no Microsoft 365 e no Google Workspace em uma ordem segura, com uma única aprovação. O trabalho manual é acompanhado no chamado.",
+      "serviceRecoveryName": "Restaurar um serviço parado",
+      "serviceRecoverySummary": "Investigue um serviço do Windows parado, reinicie-o com aprovação e verifique se ele continua em execução."
+    }
+  },
+  "startRecipe": {
+    "title": "Desligar uma pessoa",
+    "close": "Fechar",
+    "person": {
+      "label": "Pessoa que está saindo",
+      "hintLabel": "Nome ou e-mail",
+      "hintPlaceholder": "ex.: Dana Silva ou dana@example.com",
+      "contactChosen": "Contato: {{name}}",
+      "useHint": "Usar um nome ou e-mail",
+      "readOnly": "Iniciado a partir deste contato."
+    },
+    "inheritor": {
+      "label": "Quem herda os e-mails",
+      "none": "Ninguém",
+      "contact": "Um contato",
+      "address": "Um endereço de e-mail",
+      "pickContact": "Escolha um contato",
+      "addressPlaceholder": "nome@example.com",
+      "contactsFailed": "Falha ao carregar os contatos.",
+      "loadMore": "Carregar mais contatos"
+    },
+    "autoReply": {
+      "label": "Mensagem de resposta automática",
+      "defaultWithInheritor": "Obrigado pelo seu e-mail. {{person}} não faz mais parte da empresa. Entre em contato com {{inheritor}} para obter ajuda.",
+      "defaultNoInheritor": "Obrigado pelo seu e-mail. {{person}} não faz mais parte da empresa, e esta caixa de entrada não é mais monitorada.",
+      "thePerson": "Esta pessoa"
+    },
+    "cutoff": {
+      "label": "Último dia (corte)",
+      "now": "Vazio significa iniciar agora: as etapas aprovadas são executadas assim que o plano é aprovado.",
+      "scheduled": "As etapas aprovadas aguardam este horário para serem executadas."
+    },
+    "keepMailbox": {
+      "label": "Manter a caixa de entrada",
+      "help": "O Breeze manterá a licença do Microsoft 365 e adicionará uma etapa manual para converter a caixa de entrada em compartilhada. Remover a licença primeiro iniciaria a contagem de 30 dias para a exclusão da caixa de entrada."
+    },
+    "effects": {
+      "label": "O que fazer",
+      "autoReply": "Definir uma resposta automática",
+      "autoReplyHelp": "Responde aos novos e-mails com a mensagem acima.",
+      "forwarding": "Encaminhar e-mails",
+      "forwardingHelp": "Encaminha os novos e-mails para o herdeiro.",
+      "mailDelegate": "Dar ao herdeiro acesso à caixa de entrada",
+      "mailDelegateHelp": "Permite que o herdeiro leia a caixa de entrada inteira. Escolha esta opção de forma deliberada.",
+      "removeGroups": "Remover dos grupos",
+      "removeGroupsHelp": "Remove a pessoa dos grupos e das listas de distribuição.",
+      "removeLicenses": "Remover licenças",
+      "removeLicensesHelp": "Libera as licenças pagas depois que os e-mails forem tratados.",
+      "revokeSessions": "Sair de todos os lugares",
+      "revokeSessionsHelp": "Encerra as sessões de login ativas da pessoa.",
+      "wipeMobile": "Remover a conta de trabalho dos celulares",
+      "wipeMobileHelp": "Remove a conta de trabalho dos celulares registrados. O dispositivo em si não é apagado.",
+      "disableAccount": "Bloquear o login",
+      "disableAccountHelp": "Desativa a conta. Esta etapa vem por último, depois que os e-mails forem direcionados."
+    },
+    "devices": {
+      "label": "Dispositivos a recolher ou bloquear",
+      "help": "Opcional. O Breeze não age sobre dispositivos nesta receita: cada dispositivo selecionado vira um item do checklist para um técnico.",
+      "searchPlaceholder": "Buscar dispositivos por nome",
+      "selectedByYou": "Selecionados por você",
+      "limit": "Você pode selecionar até {{max}} dispositivos.",
+      "loading": "Carregando dispositivos...",
+      "loadFailed": "Falha ao carregar os dispositivos.",
+      "empty": "Nenhum dispositivo corresponde."
+    },
+    "preview": {
+      "button": "Pré-visualizar",
+      "refresh": "Pré-visualizar novamente",
+      "stale": "O formulário mudou desde a pré-visualização. Pré-visualize novamente antes de iniciar.",
+      "failed": "Não foi possível gerar a pré-visualização.",
+      "title": "Pré-visualização",
+      "personResolved": "Será desligado: {{name}}",
+      "personUnresolved": "Nenhum contato único corresponde. Escolha um abaixo ou altere o nome.",
+      "personNone": "Nenhum contato corresponde a este nome ou e-mail.",
+      "candidatesLabel": "Possíveis correspondências (escolha uma):",
+      "plannedTitle": "Etapas que o Breeze executará",
+      "orderNote": "Agrupadas por serviço, não em ordem. A ordem exata é definida depois que um técnico confirma a identidade e é mostrada para aprovação antes de qualquer execução.",
+      "plannedEmpty": "Nenhuma etapa será executada automaticamente.",
+      "degradedTitle": "Etapas que serão feitas manualmente",
+      "manualTitle": "Itens do checklist que a tarefa adicionará",
+      "ticketNote": "A tarefa abre um chamado próprio para estes itens do checklist.",
+      "ticketSourceNote": "Iniciado a partir de um chamado: a tarefa abre seu próprio chamado de checklist e não altera este."
+    },
+    "submit": "Iniciar desligamento",
+    "started": "Desligamento iniciado.",
+    "failed": "Não foi possível iniciar o desligamento.",
+    "duplicate": "Já existe um desligamento em andamento para esta pessoa.",
+    "duplicateLink": "Abrir a tarefa em andamento"
+  },
+  "taskPanels": {
+    "tabsLabel": "Visualizações da tarefa",
+    "tabs": {
+      "steps": "Etapas",
+      "plan": "Plano",
+      "events": "Linha do tempo"
+    },
+    "steps": {
+      "empty": "Nenhuma etapa foi iniciada ainda.",
+      "current": "Etapa atual",
+      "started": "Iniciada {{time}}",
+      "settled": "Concluída {{time}}",
+      "waitingApproval": "Aguardando a aprovação do plano.",
+      "waitingMaintenanceWindow": "Aguardando a janela de manutenção antes da próxima alteração.",
+      "waitingExecution": "Em execução: aguardando a conclusão da alteração atual.",
+      "waitingOther": "Em espera: {{reason}}.",
+      "waitingHumanWork": "Aguardando um técnico marcar o item do checklist no chamado.",
+      "openTicket": "Abrir o chamado do checklist",
+      "stepKey": {
+        "intake": "Entender a solicitação",
+        "confirmIdentity": "Confirmar quem está saindo",
+        "discover": "Localizar as contas",
+        "review": "Revisar o que foi encontrado",
+        "effects": "Aprovar e fazer as alterações",
+        "manualWork": "Trabalho do checklist",
+        "verifyOutcome": "Verificar o resultado",
+        "document": "Escrever o registro"
+      },
+      "kind": {
+        "reason": "Raciocínio",
+        "effect": "Alterações",
+        "probe": "Verificação",
+        "wait": "Espera",
+        "humanWork": "Trabalho humano",
+        "document": "Registro"
+      },
+      "state": {
+        "pending": "Não iniciada",
+        "running": "Em execução",
+        "waiting": "Em espera",
+        "succeeded": "Concluída",
+        "failed": "Falhou",
+        "skipped": "Ignorada"
+      }
+    },
+    "plan": {
+      "unavailable": "Este servidor não enviou o plano desta tarefa.",
+      "empty": "Nenhum plano foi proposto ainda.",
+      "revision": "Revisão {{n}}",
+      "effectCount_one": "{{count}} alteração",
+      "effectCount_other": "{{count}} alterações",
+      "approvedAt": "Aprovado {{time}}",
+      "proposedAt": "Proposto {{time}}",
+      "supersededBy": "Substituída pela revisão {{n}}. Mantida aqui como registro do que foi aprovado e depois substituído.",
+      "orderNote": "As alterações são executadas uma de cada vez, na ordem numerada, entre os serviços.",
+      "target": "Para: {{label}}",
+      "principal": "Conta: {{label}}",
+      "noop": "Já estava aplicado: nada foi enviado.",
+      "state": {
+        "pending": "Aguardando aprovação",
+        "approved": "Aprovado",
+        "rejected": "Rejeitado",
+        "expired": "Expirado",
+        "superseded": "Substituído"
+      },
+      "idempotency": {
+        "idempotent": "Seguro repetir",
+        "idempotentByProbe": "Verificado antes de repetir",
+        "nonIdempotent": "Nunca repetido automaticamente"
+      },
+      "operation": {
+        "none": "Não iniciada / desconhecida",
+        "pending": "Em andamento",
+        "succeeded": "Concluída com sucesso",
+        "failed": "Falhou",
+        "unknown": "Resultado desconhecido",
+        "superseded": "Substituída"
+      }
+    },
+    "events": {
+      "empty": "Nenhum evento registrado ainda.",
+      "showAll": "Mostrar todos os {{count}} eventos",
+      "showRecent": "Mostrar apenas os {{count}} mais recentes",
+      "hiddenOlder_one": "{{count}} evento mais antigo está oculto.",
+      "hiddenOlder_other": "{{count}} eventos mais antigos estão ocultos.",
+      "capped": "Mostrando os {{count}} eventos mais recentes. Os eventos mais antigos não são exibidos aqui.",
+      "actor": {
+        "coordinator": "Coordenador",
+        "reconciler": "Reconciliador",
+        "user": "Pessoa",
+        "agent": "Agente de IA",
+        "system": "Sistema"
+      },
+      "type": {
+        "taskAdmitted": "Tarefa admitida",
+        "leaseClaimed": "Trabalho assumido",
+        "stepOpened": "Etapa iniciada",
+        "stepSettled": "Etapa concluída",
+        "waitEntered": "Em espera",
+        "waitResolved": "Espera encerrada",
+        "targetAttached": "Alvo associado",
+        "targetDetached": "Alvo desassociado",
+        "targetAccountFrozen": "Conta registrada",
+        "operationReserved": "Alteração reservada",
+        "operationSettled": "Alteração concluída",
+        "verificationRecorded": "Verificação registrada",
+        "planRevisionBumped": "Revisão do plano alterada",
+        "humanWorkUnticked": "Item do checklist desmarcado",
+        "taskSettled": "Tarefa concluída"
+      }
+    }
   }
 }
