@@ -11,6 +11,7 @@ import type { AiOperatorTaskListItemDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { taskStateLabel } from './operatorTaskLabels';
+import { WorkflowsLoadError, readServerError } from '@/lib/api/aiOperatorWorkflows';
 
 const PAGE_SIZE = 25;
 
@@ -20,7 +21,9 @@ async function fetchPage(cursor: string | null): Promise<Page> {
   const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
   if (cursor) params.set('cursor', cursor);
   const res = await fetchWithAuth(`/ai/operator/tasks?${params.toString()}`);
-  if (!res.ok) throw new Error(`task list failed (${res.status})`);
+  if (!res.ok) {
+    throw new WorkflowsLoadError(res.status, res.status >= 400 && res.status < 500 ? await readServerError(res) : null);
+  }
   const body = (await res.json().catch(() => null)) as { data?: unknown; nextCursor?: unknown } | null;
   // A wrong-shaped body is a broken response, not "no tasks".
   if (!body || !Array.isArray(body.data)) throw new Error('task list malformed');
@@ -32,6 +35,8 @@ export default function OperatorTaskList() {
   const [tasks, setTasks] = useState<AiOperatorTaskListItemDto[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
+  /** A 4xx refusal's own text, shown without a Retry that cannot change it. */
+  const [refusal, setRefusal] = useState<string | null>(null);
   const [moreStatus, setMoreStatus] = useState<'idle' | 'loading' | 'error'>('idle');
   const seq = useRef(0);
 
@@ -47,6 +52,7 @@ export default function OperatorTaskList() {
     } catch (err) {
       if (mine !== seq.current) return;
       console.error('[operator-task-list] load failed', err);
+      setRefusal(err instanceof WorkflowsLoadError && !err.retryable ? err.serverMessage ?? t('taskList.loadFailed') : null);
       setStatus('error');
     }
   }, []);
@@ -79,15 +85,17 @@ export default function OperatorTaskList() {
   if (status === 'error') {
     return (
       <div data-testid="operator-task-list-error" className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{t('taskList.loadFailed')}</p>
-        <button
-          type="button"
-          data-testid="operator-task-list-retry"
-          onClick={() => void loadFirst()}
-          className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          {t('common:actions.retry')}
-        </button>
+        <p className="text-sm text-destructive">{refusal ?? t('taskList.loadFailed')}</p>
+        {refusal === null && (
+          <button
+            type="button"
+            data-testid="operator-task-list-retry"
+            onClick={() => void loadFirst()}
+            className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            {t('common:actions.retry')}
+          </button>
+        )}
       </div>
     );
   }

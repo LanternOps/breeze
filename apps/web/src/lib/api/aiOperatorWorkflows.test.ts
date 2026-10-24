@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AiOperatorWorkflowDto } from '@breeze/shared';
+import { createOperatorTaskSchema, identityOffboardingInputSchema, type AiOperatorWorkflowDto } from '@breeze/shared';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../../components/shared/Toast', () => ({ showToast: vi.fn() }));
@@ -8,6 +8,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '../runAction';
 import {
   AGENT_TOOL_ALLOWLIST_MAX,
+  WorkflowsLoadError,
   addToolsToAgent,
   createOperatorTaskDraft,
   fetchOperatorWorkflows,
@@ -206,5 +207,41 @@ describe('addToolsToAgent', () => {
     expect(err).toBeInstanceOf(ActionError);
     expect((err as ActionError).status).toBe(403);
     expect((err as ActionError).code).toBe('MFA_REQUIRED');
+  });
+
+  it.each([
+    ['a missing allowlist', { id: AGENT, name: 'Helpdesk' }],
+    ['a null allowlist', { id: AGENT, name: 'Helpdesk', toolAllowlist: null }],
+    ['a non-string entry', { id: AGENT, name: 'Helpdesk', toolAllowlist: ['run_script', 42] }],
+  ])('refuses on %s instead of PATCHing a list built from nothing', async (_label, data) => {
+    fetchMock.mockResolvedValueOnce(json({ data }));
+    const res = await addToolsToAgent(AGENT, ['google_suspend_user']);
+    expect(res.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('admission body vs the server schema', () => {
+  it('parses under the shared createOperatorTaskSchema the route validates with', async () => {
+    fetchMock.mockResolvedValueOnce(json({ taskId: 't', replayed: false }, 202));
+    const inputs = identityOffboardingInputSchema.parse({ contactId: '33333333-3333-4333-8333-333333333333' });
+    await startOperatorTask({ workflow: workflow(), orgId: ORG, inputs, clientIdempotencyKey: newClientIdempotencyKey() });
+    const body = bodyOf(0);
+    expect(createOperatorTaskSchema.safeParse(body).success).toBe(true);
+    expect(identityOffboardingInputSchema.safeParse(body.inputs).success).toBe(true);
+  });
+});
+
+describe('load errors', () => {
+  it('carries a 4xx refusal\'s own text and marks it not retryable; a 5xx stays retryable', async () => {
+    fetchMock.mockResolvedValueOnce(json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403));
+    const refused = await fetchOperatorWorkflows(ORG).catch((e: unknown) => e) as WorkflowsLoadError;
+    expect(refused).toBeInstanceOf(WorkflowsLoadError);
+    expect(refused.serverMessage).toBe('Permission denied');
+    expect(refused.retryable).toBe(false);
+    fetchMock.mockResolvedValueOnce(json({ error: 'boom' }, 503));
+    const broken = await fetchOperatorWorkflows(ORG).catch((e: unknown) => e) as WorkflowsLoadError;
+    expect(broken.serverMessage).toBeNull();
+    expect(broken.retryable).toBe(true);
   });
 });

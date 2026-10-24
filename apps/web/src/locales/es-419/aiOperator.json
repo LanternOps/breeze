@@ -206,7 +206,8 @@
       "allowToolsSuccess": "Herramientas permitidas para {{agent}}.",
       "allowToolsFailed": "No se pudieron permitir las herramientas.",
       "mfaRequired": "Cambiar las herramientas de un agente requiere una sesión iniciada con autenticación multifactor. Cierre sesión, vuelva a iniciarla con MFA e inténtelo de nuevo.",
-      "allowlistFull": "La lista de herramientas de este agente está llena ({{limit}} herramientas). Quite las que ya no necesite en Configuración → Agentes de IA e inténtelo de nuevo."
+      "allowlistFull": "La lista de herramientas de este agente está llena ({{limit}} herramientas). Quite las que ya no necesite en Configuración → Agentes de IA e inténtelo de nuevo.",
+      "allowToolsScopeUnknown": "Breeze no pudo leer el alcance de este agente, así que suponga que el cambio se aplica en todas las organizaciones que atiende."
     },
     "start": {
       "offboard": "Dar de baja a una persona",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Confirme quién se va, encamine su correo y quite sus accesos en Microsoft 365 y Google Workspace en un orden seguro y con una sola aprobación. El trabajo manual se registra en el ticket.",
       "serviceRecoveryName": "Restaurar un servicio detenido",
       "serviceRecoverySummary": "Investigue un servicio de Windows detenido, reinícielo con aprobación y verifique que siga en ejecución."
-    }
+    },
+    "refreshFailed": "No se pudo actualizar la biblioteca de recetas; lo que se muestra puede estar desactualizado."
   },
   "startRecipe": {
     "title": "Dar de baja a una persona",
@@ -283,7 +285,9 @@
       "limit": "Puede seleccionar hasta {{max}} dispositivos.",
       "loading": "Cargando dispositivos...",
       "loadFailed": "No se pudieron cargar los dispositivos.",
-      "empty": "Ningún dispositivo coincide."
+      "empty": "Ningún dispositivo coincide.",
+      "selectedTitle": "Seleccionados: {{count}} de {{max}}",
+      "remove": "Quitar"
     },
     "preview": {
       "button": "Vista previa",
@@ -307,7 +311,8 @@
     "started": "Baja iniciada.",
     "failed": "No se pudo iniciar la baja.",
     "duplicate": "Ya hay una baja en curso para esta persona.",
-    "duplicateLink": "Abrir la tarea en curso"
+    "duplicateLink": "Abrir la tarea en curso",
+    "replayed": "Esta baja ya se había iniciado; se abrirá."
   },
   "taskPanels": {
     "tabsLabel": "Vistas de la tarea",

@@ -82,4 +82,52 @@ describe('RecipeLibrary', () => {
     expect(await screen.findByTestId('recipe-card-identity_offboarding')).toBeInTheDocument();
     expect(screen.queryByTestId('start-panel')).not.toBeInTheDocument();
   });
+
+  it('shows a 4xx refusal\'s own reason and no Retry that could never succeed', async () => {
+    fetchMock.mockImplementation(async () => json({ error: 'Organization not found' }, 404));
+    render(<RecipeLibrary orgId={ORG} />);
+    expect(await screen.findByTestId('recipe-library-error')).toHaveTextContent('Organization not found');
+    expect(screen.queryByTestId('recipe-library-retry')).toBeNull();
+  });
+
+  it('a refresh (after "allow tools") keeps an open start form mounted, with what was typed', async () => {
+    const AGENT = '22222222-2222-4222-8222-222222222222';
+    window.location.hash = 'recipe=identity_offboarding';
+    const wf = workflow({
+      readiness: 'setup_required',
+      agentId: AGENT,
+      missingCapabilities: [{
+        key: 'agent.tools', kind: 'agent_tool', provider: 'google', detail: 'Tools missing.', degradesToHumanWork: true,
+        availability: 'tenant_fixable', action: { kind: 'add_agent_tools', href: null, toolNames: ['google_suspend_user'], agentId: AGENT },
+      }],
+    });
+    // The refresh is held open, so the test observes the in-flight window a
+    // real network leaves (an instant mock lets React batch it away).
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let workflowReads = 0;
+    fetchMock.mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u.startsWith('/ai/operator/workflows')) {
+        workflowReads += 1;
+        if (workflowReads > 1) await held;
+        return json({ data: [wf] });
+      }
+      if (u === `/ai/agents/${AGENT}` && init?.method === 'PATCH') return json({ data: { id: AGENT } });
+      if (u === `/ai/agents/${AGENT}`) return json({ data: { id: AGENT, name: 'Helpdesk', allOrgs: false, toolAllowlist: [] } });
+      return json({ error: 'unexpected' }, 404);
+    });
+    render(<RecipeLibrary orgId={ORG} renderStart={() => <input data-testid="typed" defaultValue="" />} />);
+    const typed = await screen.findByTestId('typed') as HTMLInputElement;
+    fireEvent.change(typed, { target: { value: 'half-filled form' } });
+    const allow = await screen.findByTestId('recipe-missing-action-agent.tools');
+    await waitFor(() => expect(allow).toHaveTextContent('Helpdesk'));
+    fireEvent.click(allow);
+    await waitFor(() => expect(workflowReads).toBe(2));
+    // While the refresh is in flight: no skeleton, the form and its input survive.
+    expect(screen.queryByTestId('recipe-library-loading')).toBeNull();
+    expect((screen.getByTestId('typed') as HTMLInputElement).value).toBe('half-filled form');
+    await act(async () => { release(); });
+    expect((screen.getByTestId('typed') as HTMLInputElement).value).toBe('half-filled form');
+  });
 });

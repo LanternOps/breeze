@@ -30,10 +30,26 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 export const AGENT_TOOL_ALLOWLIST_MAX = 300;
 
 export class WorkflowsLoadError extends Error {
-  constructor(readonly status: number) {
+  /**
+   * @param status HTTP status (0 = no response).
+   * @param serverMessage The server's own `error` text for a 4xx refusal, shown
+   *   to the reader instead of a generic "failed to load".
+   */
+  constructor(readonly status: number, readonly serverMessage: string | null = null) {
     super(`Recipe Library failed to load (${status})`);
     this.name = 'WorkflowsLoadError';
   }
+
+  /** A refusal (4xx) will not change on retry; a 5xx or a broken body might. */
+  get retryable(): boolean {
+    return this.status === 0 || this.status >= 500 || this.status < 400;
+  }
+}
+
+/** The `error` text of a JSON error body, or null. */
+export async function readServerError(res: Response): Promise<string | null> {
+  const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+  return body && typeof body.error === 'string' && body.error.trim() ? body.error : null;
 }
 
 /**
@@ -43,7 +59,9 @@ export class WorkflowsLoadError extends Error {
  */
 export async function fetchOperatorWorkflows(orgId: string): Promise<AiOperatorWorkflowDto[]> {
   const res = await fetchWithAuth(`/ai/operator/workflows?orgId=${encodeURIComponent(orgId)}`, { orgIdOverride: orgId });
-  if (!res.ok) throw new WorkflowsLoadError(res.status);
+  if (!res.ok) {
+    throw new WorkflowsLoadError(res.status, res.status >= 400 && res.status < 500 ? await readServerError(res) : null);
+  }
   const body = (await res.json().catch(() => null)) as { data?: unknown } | null;
   // A wrong-shaped body is a broken response, not "no recipes".
   if (!body || !Array.isArray(body.data)) throw new WorkflowsLoadError(res.status);
@@ -188,8 +206,10 @@ export async function fetchAgentSummary(agentId: string): Promise<{ id: string; 
 export type WorkflowsState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'error' }
-  | { status: 'ready'; workflows: AiOperatorWorkflowDto[] };
+  /** `message` is the server's own refusal text for a 4xx; `retryable` is false for those. */
+  | { status: 'error'; message: string | null; retryable: boolean }
+  /** A refresh keeps the rows on screen; `refreshFailed` says the latest refresh did not land. */
+  | { status: 'ready'; workflows: AiOperatorWorkflowDto[]; refreshFailed?: boolean };
 
 /**
  * Concurrent readers of one org's Library share a single request (a contacts
@@ -211,20 +231,37 @@ function loadShared(orgId: string): Promise<AiOperatorWorkflowDto[]> {
 export function useOperatorWorkflows(orgId: string | null, enabled = true): WorkflowsState & { reload: () => void } {
   const [state, setState] = useState<WorkflowsState>({ status: 'idle' });
   const seq = useRef(0);
+  /** The org the `ready` rows on screen belong to. */
+  const readyFor = useRef<string | null>(null);
 
   const load = useCallback(() => {
     if (!orgId || !enabled) {
+      readyFor.current = null;
       setState({ status: 'idle' });
       return;
     }
     const mine = ++seq.current;
-    setState({ status: 'loading' });
+    // A REFRESH of the same org keeps the current rows mounted: replacing them
+    // with a loading state would unmount whatever the caller rendered from them
+    // (an open start form, its inputs and its preview). A different org never
+    // inherits the previous org's rows.
+    const refresh = readyFor.current === orgId;
+    if (!refresh) readyFor.current = null;
+    setState((prev) => (refresh && prev.status === 'ready' ? { ...prev, refreshFailed: false } : { status: 'loading' }));
     loadShared(orgId).then(
-      (workflows) => { if (mine === seq.current) setState({ status: 'ready', workflows }); },
+      (workflows) => {
+        if (mine !== seq.current) return;
+        readyFor.current = orgId;
+        setState({ status: 'ready', workflows });
+      },
       (err: unknown) => {
         if (mine !== seq.current) return;
         console.warn('[aiOperatorWorkflows] library load failed', err);
-        setState({ status: 'error' });
+        const message = err instanceof WorkflowsLoadError ? err.serverMessage : null;
+        const retryable = err instanceof WorkflowsLoadError ? err.retryable : true;
+        setState((prev) => (refresh && prev.status === 'ready'
+          ? { ...prev, refreshFailed: true }
+          : { status: 'error', message, retryable }));
       },
     );
   }, [orgId, enabled]);

@@ -206,7 +206,8 @@
       "allowToolsSuccess": "Outils autorisés pour {{agent}}.",
       "allowToolsFailed": "Impossible d'autoriser les outils.",
       "mfaRequired": "Modifier les outils d'un agent nécessite une session ouverte avec l'authentification multifacteur. Déconnectez-vous, reconnectez-vous avec la MFA, puis réessayez.",
-      "allowlistFull": "La liste d'outils de cet agent est pleine ({{limit}} outils). Retirez les outils dont il n'a plus besoin dans Paramètres → Agents IA, puis réessayez."
+      "allowlistFull": "La liste d'outils de cet agent est pleine ({{limit}} outils). Retirez les outils dont il n'a plus besoin dans Paramètres → Agents IA, puis réessayez.",
+      "allowToolsScopeUnknown": "Breeze n'a pas pu lire le périmètre de cet agent : considérez que la modification s'applique dans toutes les organisations qu'il dessert."
     },
     "start": {
       "offboard": "Gérer le départ d'une personne",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Confirmez qui part, redirigez son courrier et retirez ses accès dans Microsoft 365 et Google Workspace dans un ordre sûr, avec une seule approbation. Le travail manuel est suivi dans le ticket.",
       "serviceRecoveryName": "Rétablir un service arrêté",
       "serviceRecoverySummary": "Analysez un service Windows arrêté, redémarrez-le avec approbation et vérifiez qu'il reste en marche."
-    }
+    },
+    "refreshFailed": "La bibliothèque de recettes n'a pas pu être actualisée ; l'affichage peut être obsolète."
   },
   "startRecipe": {
     "title": "Gérer le départ d'une personne",
@@ -283,7 +285,9 @@
       "limit": "Vous pouvez sélectionner jusqu'à {{max}} appareils.",
       "loading": "Chargement des appareils...",
       "loadFailed": "Échec du chargement des appareils.",
-      "empty": "Aucun appareil ne correspond."
+      "empty": "Aucun appareil ne correspond.",
+      "selectedTitle": "Sélectionnés : {{count}} sur {{max}}",
+      "remove": "Retirer"
     },
     "preview": {
       "button": "Aperçu",
@@ -307,7 +311,8 @@
     "started": "Départ lancé.",
     "failed": "Impossible de lancer le départ.",
     "duplicate": "Un départ est déjà en cours pour cette personne.",
-    "duplicateLink": "Ouvrir la tâche en cours"
+    "duplicateLink": "Ouvrir la tâche en cours",
+    "replayed": "Ce départ avait déjà été lancé ; ouverture en cours."
   },
   "taskPanels": {
     "tabsLabel": "Vues de la tâche",

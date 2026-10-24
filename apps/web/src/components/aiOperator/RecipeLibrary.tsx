@@ -46,15 +46,18 @@ export default function RecipeLibrary({ orgId, renderStart }: RecipeLibraryProps
   if (library.status === 'error') {
     return (
       <div data-testid="recipe-library-error" className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center">
-        <p className="text-sm text-destructive">{t('recipeLibrary.loadFailed')}</p>
-        <button
-          type="button"
-          data-testid="recipe-library-retry"
-          onClick={library.reload}
-          className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-        >
-          {t('common:actions.retry')}
-        </button>
+        {/* A refusal (4xx) shows the server's own reason and no Retry: retrying cannot change it. */}
+        <p className="text-sm text-destructive">{library.message ?? t('recipeLibrary.loadFailed')}</p>
+        {library.retryable && (
+          <button
+            type="button"
+            data-testid="recipe-library-retry"
+            onClick={library.reload}
+            className="mt-3 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            {t('common:actions.retry')}
+          </button>
+        )}
       </div>
     );
   }
@@ -68,6 +71,12 @@ export default function RecipeLibrary({ orgId, renderStart }: RecipeLibraryProps
 
   return (
     <div data-testid="recipe-library" className="space-y-4">
+      {library.refreshFailed && (
+        <p role="alert" data-testid="recipe-library-refresh-failed" className="text-sm text-destructive">
+          {t('recipeLibrary.refreshFailed')}{' '}
+          <button type="button" className="underline" onClick={library.reload}>{t('common:actions.retry')}</button>
+        </p>
+      )}
       {active && renderStart && (
         <div data-testid={`recipe-start-panel-${active.recipeKey}`}>{renderStart(active, () => select(null))}</div>
       )}

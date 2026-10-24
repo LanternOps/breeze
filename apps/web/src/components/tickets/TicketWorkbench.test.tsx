@@ -3263,7 +3263,14 @@ describe('TicketWorkbench — Offboard a person launcher', () => {
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-links-card-stub');
     await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
-    await new Promise((r) => setTimeout(r, 0));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
     expect(screen.queryByTestId('offboard-launcher-ticket')).not.toBeInTheDocument();
   });
 });

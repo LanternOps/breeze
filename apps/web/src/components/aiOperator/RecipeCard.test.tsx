@@ -215,4 +215,12 @@ describe('RecipeCard add_agent_tools', () => {
     await waitFor(() => expect(screen.getByTestId('recipe-missing-error-agent.tools.google')).toHaveTextContent('multi-factor authentication'));
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
+
+  it('when the agent cannot be read, words the change at its widest reach rather than understating it', async () => {
+    fetchMock.mockImplementation(async () => json({ error: 'Agent not found' }, 404));
+    render(<RecipeCard workflow={workflow({ readiness: 'setup_required', missingCapabilities: [toolsCap] })} onStart={vi.fn()} />);
+    const scope = screen.getByTestId('recipe-missing-scope-agent.tools.google');
+    await waitFor(() => expect(scope).toHaveTextContent('could not read this agent'));
+    expect(scope).toHaveTextContent('in every organization it serves');
+  });
 });

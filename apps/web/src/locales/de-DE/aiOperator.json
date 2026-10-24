@@ -206,7 +206,8 @@
       "allowToolsSuccess": "Tools für {{agent}} zugelassen.",
       "allowToolsFailed": "Die Tools konnten nicht zugelassen werden.",
       "mfaRequired": "Zum Ändern der Tools eines Agents ist eine Sitzung mit Multi-Faktor-Authentifizierung nötig. Melden Sie sich ab, melden Sie sich erneut mit MFA an und versuchen Sie es noch einmal.",
-      "allowlistFull": "Die Tool-Liste dieses Agents ist voll ({{limit}} Tools). Entfernen Sie nicht mehr benötigte Tools unter Einstellungen → KI-Agenten und versuchen Sie es noch einmal."
+      "allowlistFull": "Die Tool-Liste dieses Agents ist voll ({{limit}} Tools). Entfernen Sie nicht mehr benötigte Tools unter Einstellungen → KI-Agenten und versuchen Sie es noch einmal.",
+      "allowToolsScopeUnknown": "Breeze konnte den Geltungsbereich dieses Agents nicht lesen. Gehen Sie davon aus, dass die Änderung in jeder Organisation gilt, die er betreut."
     },
     "start": {
       "offboard": "Offboarding für eine Person",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Bestätigen Sie, wer ausscheidet, leiten Sie die E-Mails um und entfernen Sie den Zugriff in Microsoft 365 und Google Workspace in sicherer Reihenfolge mit einer einzigen Genehmigung. Manuelle Arbeit wird im Ticket nachverfolgt.",
       "serviceRecoveryName": "Einen gestoppten Dienst wiederherstellen",
       "serviceRecoverySummary": "Untersuchen Sie einen gestoppten Windows-Dienst, starten Sie ihn mit Genehmigung neu und prüfen Sie, dass er weiterläuft."
-    }
+    },
+    "refreshFailed": "Die Rezeptbibliothek konnte nicht aktualisiert werden; die Anzeige ist möglicherweise veraltet."
   },
   "startRecipe": {
     "title": "Offboarding für eine Person",
@@ -283,7 +285,9 @@
       "limit": "Sie können bis zu {{max}} Geräte auswählen.",
       "loading": "Geräte werden geladen...",
       "loadFailed": "Geräte konnten nicht geladen werden.",
-      "empty": "Keine passenden Geräte."
+      "empty": "Keine passenden Geräte.",
+      "selectedTitle": "Ausgewählt: {{count}} von {{max}}",
+      "remove": "Entfernen"
     },
     "preview": {
       "button": "Vorschau",
@@ -307,7 +311,8 @@
     "started": "Offboarding gestartet.",
     "failed": "Das Offboarding konnte nicht gestartet werden.",
     "duplicate": "Für diese Person läuft bereits ein Offboarding.",
-    "duplicateLink": "Laufende Aufgabe öffnen"
+    "duplicateLink": "Laufende Aufgabe öffnen",
+    "replayed": "Dieses Offboarding wurde bereits gestartet; es wird geöffnet."
   },
   "taskPanels": {
     "tabsLabel": "Aufgabenansichten",

@@ -206,7 +206,8 @@
       "allowToolsSuccess": "{{agent}} için araçlara izin verildi.",
       "allowToolsFailed": "Araçlara izin verilemedi.",
       "mfaRequired": "Bir aracının araçlarını değiştirmek için çok faktörlü kimlik doğrulamayla açılmış bir oturum gerekir. Oturumu kapatın, MFA ile yeniden oturum açın ve tekrar deneyin.",
-      "allowlistFull": "Bu aracının araç listesi dolu ({{limit}} araç). Artık gerekmeyen araçları Ayarlar → Yapay Zeka Aracıları bölümünden kaldırıp tekrar deneyin."
+      "allowlistFull": "Bu aracının araç listesi dolu ({{limit}} araç). Artık gerekmeyen araçları Ayarlar → Yapay Zeka Aracıları bölümünden kaldırıp tekrar deneyin.",
+      "allowToolsScopeUnknown": "Breeze bu aracının kapsamını okuyamadı; değişikliğin hizmet verdiği her kuruluşta geçerli olduğunu varsayın."
     },
     "start": {
       "offboard": "Bir kişinin ayrılış işlemlerini yap",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Kimin ayrıldığını doğrulayın, e-postalarını yönlendirin ve Microsoft 365 ile Google Workspace'teki erişimini güvenli bir sırayla, tek bir onayla kaldırın. Elle yapılan işler talepte izlenir.",
       "serviceRecoveryName": "Durmuş bir hizmeti geri getir",
       "serviceRecoverySummary": "Durmuş bir Windows hizmetini inceleyin, onayla yeniden başlatın ve çalışmaya devam ettiğini doğrulayın."
-    }
+    },
+    "refreshFailed": "Tarif kitaplığı yenilenemedi; gösterilen bilgiler güncel olmayabilir."
   },
   "startRecipe": {
     "title": "Bir kişinin ayrılış işlemlerini yap",
@@ -283,7 +285,9 @@
       "limit": "En fazla {{max}} cihaz seçebilirsiniz.",
       "loading": "Cihazlar yükleniyor...",
       "loadFailed": "Cihazlar yüklenemedi.",
-      "empty": "Eşleşen cihaz yok."
+      "empty": "Eşleşen cihaz yok.",
+      "selectedTitle": "Seçilen: {{count}} / {{max}}",
+      "remove": "Kaldır"
     },
     "preview": {
       "button": "Önizleme",
@@ -307,7 +311,8 @@
     "started": "Ayrılış işlemleri başlatıldı.",
     "failed": "Ayrılış işlemleri başlatılamadı.",
     "duplicate": "Bu kişi için zaten devam eden bir ayrılış işlemi var.",
-    "duplicateLink": "Çalışan görevi aç"
+    "duplicateLink": "Çalışan görevi aç",
+    "replayed": "Bu ayrılış işlemleri zaten başlatılmıştı; açılıyor."
   },
   "taskPanels": {
     "tabsLabel": "Görev görünümleri",

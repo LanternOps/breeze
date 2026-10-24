@@ -270,3 +270,97 @@ describe('StartRecipeForm — preview and submit', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 });
+
+describe('StartRecipeForm — review-round regressions', () => {
+  it('mints a NEW idempotency key when the body changes after an unacknowledged submit', async () => {
+    startResponse = () => json({ error: 'gateway timeout' }, 504);
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'contact', contactId: CONTACT, label: 'Dana Smith' }} />);
+    await preview();
+    fireEvent.click(screen.getByTestId('start-recipe-submit'));
+    await waitFor(() => expect(bodies('/ai/operator/tasks')).toHaveLength(1));
+    // The technician changes the plan (turns the phone wipe on) and starts again.
+    fireEvent.click(screen.getByTestId('start-recipe-effect-wipeMobile'));
+    await preview();
+    startResponse = () => json({ taskId: 'task-new', replayed: false }, 202);
+    fireEvent.click(screen.getByTestId('start-recipe-submit'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/operator/tasks/task-new'));
+    const [first, second] = bodies('/ai/operator/tasks');
+    expect(second!.inputs.effects.wipeMobile).toBe(true);
+    expect(second!.clientIdempotencyKey).not.toBe(first!.clientIdempotencyKey);
+  });
+
+  it('says so when the server answers with a replay of an earlier submit', async () => {
+    startResponse = () => json({ taskId: 'task-old', replayed: true }, 202);
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'contact', contactId: CONTACT, label: 'Dana Smith' }} />);
+    await preview();
+    fireEvent.click(screen.getByTestId('start-recipe-submit'));
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/operator/tasks/task-old'));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringContaining('already been started') }));
+  });
+
+  it('does not auto-select a SINGLE candidate either', async () => {
+    draftResponse = () => json({ data: draft({ person: { resolved: null, candidates: [{ id: CAND_A, name: 'Dana Smith', email: 'dana.s@example.com' }] } }) });
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'library' }} />);
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'Dana' } });
+    await preview();
+    expect((screen.getByTestId(`start-recipe-candidate-${CAND_A}`) as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('start-recipe-submit')).toBeDisabled();
+  });
+
+  it('a change of PERSON after the preview makes it stale and disables submit', async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'library' }} />);
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'dana@example.com' } });
+    await preview();
+    expect(screen.getByTestId('start-recipe-submit')).toBeEnabled();
+    fireEvent.change(screen.getByTestId('start-recipe-person-hint'), { target: { value: 'lee@example.com' } });
+    expect(screen.getByTestId('start-recipe-submit')).toBeDisabled();
+    expect(screen.getByTestId('start-recipe-preview-stale')).toBeInTheDocument();
+  });
+
+  it('a refused preview refresh leaves no preview counted as current', async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'contact', contactId: CONTACT, label: 'Dana Smith' }} />);
+    await preview();
+    expect(screen.getByTestId('start-recipe-submit')).toBeEnabled();
+    draftResponse = () => json({ error: 'The workflow version moved.', code: 'OPERATOR_RECIPE_VERSION_MISMATCH' }, 422);
+    fireEvent.click(screen.getByTestId('start-recipe-preview-button'));
+    expect(await screen.findByTestId('start-recipe-error')).toHaveTextContent('The workflow version moved.');
+    expect(screen.getByTestId('start-recipe-submit')).toBeDisabled();
+  });
+
+  it('keeps chosen devices visible, counted and removable after the search changes', async () => {
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'library' }} />);
+    fireEvent.click(await screen.findByTestId(`start-recipe-device-${DEV(0)}`));
+    extra = (url) => (url.startsWith('/devices') && url.includes('search=') ? json({ data: [] }) : undefined);
+    fireEvent.change(screen.getByTestId('start-recipe-device-search'), { target: { value: 'nothing' } });
+    await waitFor(() => expect(screen.queryByTestId(`start-recipe-device-${DEV(0)}`)).toBeNull());
+    const selected = screen.getByTestId('start-recipe-devices-selected');
+    expect(selected).toHaveTextContent('WKS-0');
+    expect(selected).toHaveTextContent('1 of 10');
+    fireEvent.click(screen.getByTestId(`start-recipe-device-remove-${DEV(0)}`));
+    expect(screen.queryByTestId('start-recipe-devices-selected')).toBeNull();
+  });
+
+  it('a failed second page of inheritor contacts keeps the choice visible and offers a retry', async () => {
+    let page2Fails = true;
+    extra = (url) => {
+      if (!url.startsWith(`/orgs/organizations/${ORG}/contacts`)) return undefined;
+      if (url.includes('page=2')) {
+        return page2Fails
+          ? json({ error: 'boom' }, 500)
+          : json({ data: [{ id: CAND_B, name: 'Second Page', email: null, phone: null, siteId: null }], pagination: { total: 2 } });
+      }
+      return json({ data: [{ id: HEIR, name: 'Lee Inheritor', email: 'lee@example.com', phone: null, siteId: null }], pagination: { total: 2 } });
+    };
+    render(<StartRecipeForm workflow={WORKFLOW} orgId={ORG} launch={{ kind: 'contact', contactId: CONTACT, label: 'Dana Smith' }} />);
+    fireEvent.click(screen.getByTestId('start-recipe-inheritor-mode-contact'));
+    const select = await screen.findByTestId('start-recipe-inheritor-contact');
+    await waitFor(() => expect(within(select).getByText(/Lee Inheritor/)).toBeInTheDocument());
+    fireEvent.change(select, { target: { value: HEIR } });
+    fireEvent.click(screen.getByText('Load more contacts'));
+    expect(await screen.findByTestId('start-recipe-inheritor-error')).toBeInTheDocument();
+    expect((screen.getByTestId('start-recipe-inheritor-contact') as HTMLSelectElement).value).toBe(HEIR);
+    page2Fails = false;
+    fireEvent.click(screen.getByTestId('start-recipe-inheritor-retry'));
+    await waitFor(() => expect(within(screen.getByTestId('start-recipe-inheritor-contact')).getByText(/Second Page/)).toBeInTheDocument());
+  });
+});

@@ -206,7 +206,8 @@
       "allowToolsSuccess": "Strumenti consentiti a {{agent}}.",
       "allowToolsFailed": "Impossibile consentire gli strumenti.",
       "mfaRequired": "Modificare gli strumenti di un agente richiede una sessione con autenticazione a più fattori. Esci, accedi di nuovo con MFA e riprova.",
-      "allowlistFull": "L'elenco degli strumenti di questo agente è pieno ({{limit}} strumenti). Rimuovi quelli che non gli servono più in Impostazioni → Agenti AI e riprova."
+      "allowlistFull": "L'elenco degli strumenti di questo agente è pieno ({{limit}} strumenti). Rimuovi quelli che non gli servono più in Impostazioni → Agenti AI e riprova.",
+      "allowToolsScopeUnknown": "Breeze non è riuscito a leggere l'ambito di questo agente: considera che la modifica si applichi in tutte le organizzazioni che serve."
     },
     "start": {
       "offboard": "Gestire l'uscita di una persona",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Conferma chi sta lasciando l'azienda, instrada la sua posta e rimuovi i suoi accessi in Microsoft 365 e Google Workspace in un ordine sicuro, con una sola approvazione. Il lavoro manuale viene tracciato nel ticket.",
       "serviceRecoveryName": "Ripristinare un servizio fermo",
       "serviceRecoverySummary": "Analizza un servizio Windows fermo, riavvialo con approvazione e verifica che resti in esecuzione."
-    }
+    },
+    "refreshFailed": "Non è stato possibile aggiornare la libreria delle ricette; quanto mostrato potrebbe non essere aggiornato."
   },
   "startRecipe": {
     "title": "Gestire l'uscita di una persona",
@@ -283,7 +285,9 @@
       "limit": "Puoi selezionare fino a {{max}} dispositivi.",
       "loading": "Caricamento dei dispositivi...",
       "loadFailed": "Impossibile caricare i dispositivi.",
-      "empty": "Nessun dispositivo corrisponde."
+      "empty": "Nessun dispositivo corrisponde.",
+      "selectedTitle": "Selezionati: {{count}} su {{max}}",
+      "remove": "Rimuovi"
     },
     "preview": {
       "button": "Anteprima",
@@ -307,7 +311,8 @@
     "started": "Uscita avviata.",
     "failed": "Impossibile avviare l'uscita.",
     "duplicate": "È già in corso un'uscita per questa persona.",
-    "duplicateLink": "Apri l'attività in corso"
+    "duplicateLink": "Apri l'attività in corso",
+    "replayed": "Questa uscita era già stata avviata; viene aperta."
   },
   "taskPanels": {
     "tabsLabel": "Viste dell'attività",

@@ -206,7 +206,8 @@
       "allowToolsSuccess": "Ferramentas permitidas para {{agent}}.",
       "allowToolsFailed": "Não foi possível permitir as ferramentas.",
       "mfaRequired": "Alterar as ferramentas de um agente exige uma sessão iniciada com autenticação multifator. Saia, entre novamente com MFA e tente de novo.",
-      "allowlistFull": "A lista de ferramentas deste agente está cheia ({{limit}} ferramentas). Remova as que ele não precisa mais em Configurações → Agentes de IA e tente de novo."
+      "allowlistFull": "A lista de ferramentas deste agente está cheia ({{limit}} ferramentas). Remova as que ele não precisa mais em Configurações → Agentes de IA e tente de novo.",
+      "allowToolsScopeUnknown": "O Breeze não conseguiu ler o escopo deste agente, então considere que a alteração vale em todas as organizações que ele atende."
     },
     "start": {
       "offboard": "Desligar uma pessoa",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Confirme quem está saindo, direcione os e-mails e remova os acessos no Microsoft 365 e no Google Workspace em uma ordem segura, com uma única aprovação. O trabalho manual é acompanhado no chamado.",
       "serviceRecoveryName": "Restaurar um serviço parado",
       "serviceRecoverySummary": "Investigue um serviço do Windows parado, reinicie-o com aprovação e verifique se ele continua em execução."
-    }
+    },
+    "refreshFailed": "Não foi possível atualizar a biblioteca de receitas; o que aparece pode estar desatualizado."
   },
   "startRecipe": {
     "title": "Desligar uma pessoa",
@@ -283,7 +285,9 @@
       "limit": "Você pode selecionar até {{max}} dispositivos.",
       "loading": "Carregando dispositivos...",
       "loadFailed": "Falha ao carregar os dispositivos.",
-      "empty": "Nenhum dispositivo corresponde."
+      "empty": "Nenhum dispositivo corresponde.",
+      "selectedTitle": "Selecionados: {{count}} de {{max}}",
+      "remove": "Remover"
     },
     "preview": {
       "button": "Pré-visualizar",
@@ -307,7 +311,8 @@
     "started": "Desligamento iniciado.",
     "failed": "Não foi possível iniciar o desligamento.",
     "duplicate": "Já existe um desligamento em andamento para esta pessoa.",
-    "duplicateLink": "Abrir a tarefa em andamento"
+    "duplicateLink": "Abrir a tarefa em andamento",
+    "replayed": "Este desligamento já tinha sido iniciado; abrindo-o."
   },
   "taskPanels": {
     "tabsLabel": "Visualizações da tarefa",

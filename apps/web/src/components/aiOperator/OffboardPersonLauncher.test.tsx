@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn(), registerOrgIdProvider: vi.fn() }));
@@ -60,19 +60,33 @@ describe('OffboardPersonLauncher', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  /** Lets the Library read resolve and commit. Its sufficiency is proven by the positive control below. */
+  async function settle() {
+    await waitFor(() => expect(workflowFetches()).toBe(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  it('positive control: the same settle step is enough for a ready recipe to show its launcher', async () => {
+    routes({ flag: true, workflows: [workflow('ready')] });
+    render(<OffboardPersonLauncher orgId={ORG} source="contact" contactId={CONTACT} label="Dana" />);
+    await settle();
+    expect(screen.getByTestId('offboard-launcher-contact')).toBeInTheDocument();
+  });
+
   it('is hidden when the recipe is unavailable (what the identity flag being off produces)', async () => {
     routes({ flag: true, workflows: [workflow('unavailable')] });
     const { container } = render(<OffboardPersonLauncher orgId={ORG} source="contact" contactId={CONTACT} label="Dana" />);
-    await waitFor(() => expect(workflowFetches()).toBe(1));
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
     expect(container).toBeEmptyDOMElement();
   });
 
   it('is hidden when the Library has no offboarding recipe at all', async () => {
     routes({ flag: true, workflows: [] });
     const { container } = render(<OffboardPersonLauncher orgId={ORG} source="contact" contactId={CONTACT} label="Dana" />);
-    await waitFor(() => expect(workflowFetches()).toBe(1));
-    await new Promise((r) => setTimeout(r, 0));
+    await settle();
     expect(container).toBeEmptyDOMElement();
   });
 

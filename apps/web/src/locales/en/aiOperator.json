@@ -206,7 +206,8 @@
       "allowToolsSuccess": "Tools allowed for {{agent}}.",
       "allowToolsFailed": "The tools could not be allowed.",
       "mfaRequired": "Changing an agent's tools needs a session signed in with multi-factor authentication. Sign out, sign in again with MFA, then retry.",
-      "allowlistFull": "This agent's tool list is full ({{limit}} tools). Remove tools it no longer needs in Settings → AI Agents, then retry."
+      "allowlistFull": "This agent's tool list is full ({{limit}} tools). Remove tools it no longer needs in Settings → AI Agents, then retry.",
+      "allowToolsScopeUnknown": "Breeze could not read this agent's scope, so assume the change applies in every organization it serves."
     },
     "start": {
       "offboard": "Offboard a person",
@@ -218,7 +219,8 @@
       "identityOffboardingSummary": "Confirm who is leaving, route their mail, and remove their access across Microsoft 365 and Google Workspace in a safe order with one approval. Hand work is tracked on the ticket.",
       "serviceRecoveryName": "Restore a stopped service",
       "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up."
-    }
+    },
+    "refreshFailed": "The recipe library could not be refreshed; what is shown may be out of date."
   },
   "startRecipe": {
     "title": "Offboard a person",
@@ -283,7 +285,9 @@
       "limit": "You can select up to {{max}} devices.",
       "loading": "Loading devices...",
       "loadFailed": "Devices failed to load.",
-      "empty": "No devices match."
+      "empty": "No devices match.",
+      "selectedTitle": "Selected: {{count}} of {{max}}",
+      "remove": "Remove"
     },
     "preview": {
       "button": "Preview",
@@ -307,7 +311,8 @@
     "started": "Offboarding started.",
     "failed": "The offboarding could not be started.",
     "duplicate": "An offboarding is already running for this person.",
-    "duplicateLink": "Open the running task"
+    "duplicateLink": "Open the running task",
+    "replayed": "This offboarding had already been started; opening it."
   },
   "taskPanels": {
     "tabsLabel": "Task views",

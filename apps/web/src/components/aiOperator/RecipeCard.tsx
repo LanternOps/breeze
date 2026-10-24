@@ -77,14 +77,25 @@ function startLabel(t: T, w: AiOperatorWorkflowDto): string | null {
   return w.recipeKey === 'identity_offboarding' ? t('recipeLibrary.start.offboard') : null;
 }
 
-function useAgentName(agentId: string | null): { name: string | null; allOrgs: boolean } {
-  const [state, setState] = useState<{ name: string | null; allOrgs: boolean }>({ name: null, allOrgs: false });
+/**
+ * The agent's name and how far a change to it reaches. Until the read lands —
+ * and if it fails — the reach is `unknown`, which the card words as the WIDEST
+ * case: understating that an allowlist change applies in every organization
+ * the agent serves is the failure that matters here.
+ */
+function useAgentName(agentId: string | null): { name: string | null; reach: 'org' | 'allOrgs' | 'unknown'; failed: boolean } {
+  const [state, setState] = useState<{ name: string | null; reach: 'org' | 'allOrgs' | 'unknown'; failed: boolean }>(
+    { name: null, reach: 'unknown', failed: false },
+  );
   useEffect(() => {
     if (!agentId) return undefined;
     let live = true;
     fetchAgentSummary(agentId).then(
-      (a) => { if (live) setState({ name: a.name, allOrgs: a.allOrgs }); },
-      (err: unknown) => { console.warn('[RecipeCard] agent name read failed', err); },
+      (a) => { if (live) setState({ name: a.name, reach: a.allOrgs ? 'allOrgs' : 'org', failed: false }); },
+      (err: unknown) => {
+        console.warn('[RecipeCard] agent read failed', err);
+        if (live) setState({ name: null, reach: 'unknown', failed: true });
+      },
     );
     return () => { live = false; };
   }, [agentId]);
@@ -140,10 +151,11 @@ function AddAgentToolsAction({ capability, fallbackAgentId, onChanged }: {
 
   return (
     <div className="mt-2 space-y-1">
-      <p className="text-xs text-muted-foreground">
-        {agent.allOrgs
-          ? t('recipeLibrary.action.allowToolsScopeAllOrgs', { agent: agentLabel })
-          : t('recipeLibrary.action.allowToolsScope', { agent: agentLabel })}
+      <p data-testid={`recipe-missing-scope-${capability.key}`} className="text-xs text-muted-foreground">
+        {agent.reach === 'org'
+          ? t('recipeLibrary.action.allowToolsScope', { agent: agentLabel })
+          : t('recipeLibrary.action.allowToolsScopeAllOrgs', { agent: agentLabel })}
+        {agent.failed && <> {t('recipeLibrary.action.allowToolsScopeUnknown')}</>}
       </p>
       <p className="text-xs text-muted-foreground">
         {t('recipeLibrary.action.allowToolsList')}{' '}

@@ -322,7 +322,7 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
               type="button"
               role="tab"
               aria-selected={panel === p}
-              aria-controls={`task-panel-${p}`}
+              aria-controls={panel === p ? `task-panel-${p}` : undefined}
               data-testid={`task-panel-tab-${p}`}
               onClick={() => selectPanel(p)}
               className={cn(

@@ -656,7 +656,16 @@ describe('ContactsCard — Offboard a person launcher', () => {
   ])('is absent when %s', async (_label, opts) => {
     mockWithOperator(opts);
     await renderCard();
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait for the reads the launcher makes (the Library only when the flag is on), then let them commit.
+    await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([u]) => String(u) === '/config')).toBe(true));
+    if (opts.flag) {
+      await waitFor(() => expect(fetchWithAuthMock.mock.calls.some(([u]) => String(u).startsWith('/ai/operator/workflows'))).toBe(true));
+    }
+    const { act } = await import('@testing-library/react');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
     expect(screen.queryByTestId('offboard-launcher-contact-c-ada')).not.toBeInTheDocument();
   });
 });

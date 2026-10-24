@@ -100,8 +100,9 @@ function cutoffIso(local: string): string | null {
 
 interface DeviceOption { id: string; label: string }
 
-function useOrgDevices(orgId: string, search: string): { status: 'loading' | 'error' | 'ready'; devices: DeviceOption[] } {
+function useOrgDevices(orgId: string, search: string): { status: 'loading' | 'error' | 'ready'; devices: DeviceOption[]; retry: () => void } {
   const [state, setState] = useState<{ status: 'loading' | 'error' | 'ready'; devices: DeviceOption[] }>({ status: 'loading', devices: [] });
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
     setState((s) => ({ ...s, status: 'loading' }));
@@ -123,8 +124,8 @@ function useOrgDevices(orgId: string, search: string): { status: 'loading' | 'er
         });
     }, search ? 250 : 0);
     return () => { live = false; clearTimeout(timer); };
-  }, [orgId, search]);
-  return state;
+  }, [orgId, search, attempt]);
+  return { ...state, retry: () => setAttempt((n) => n + 1) };
 }
 
 function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; value: string; onChange: (id: string, label: string) => void }) {
@@ -133,6 +134,7 @@ function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; val
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
     setFailed(false);
@@ -142,11 +144,16 @@ function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; val
         setContacts((prev) => (page === 1 ? res.data : [...prev, ...res.data.filter((c) => !prev.some((p) => p.id === c.id))]));
         setTotal(res.total);
       })
-      .catch(() => { if (!controller.signal.aborted) setFailed(true); });
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        console.warn('[StartRecipeForm] inheritor contacts failed', err);
+        setFailed(true);
+      });
     return () => controller.abort();
-  }, [orgId, page]);
-  if (failed) return <p role="alert" className="text-xs text-destructive">{t('startRecipe.inheritor.contactsFailed')}</p>;
+  }, [orgId, page, attempt]);
   const labelOf = (c: ContactOption) => c.name ?? c.email ?? c.id;
+  // A failed page keeps the options already loaded (and so the visible choice):
+  // the select never disappears while it still holds a value that will be sent.
   return (
     <div className="space-y-1">
       <select
@@ -163,10 +170,18 @@ function InheritorContactSelect({ orgId, value, onChange }: { orgId: string; val
           <option key={c.id} value={c.id}>{labelOf(c)}{c.name && c.email ? ` · ${c.email}` : ''}</option>
         ))}
       </select>
-      {contacts.length < total && (
+      {contacts.length < total && !failed && (
         <button type="button" className="text-xs underline" onClick={() => setPage((p) => p + 1)}>
           {t('startRecipe.inheritor.loadMore')}
         </button>
+      )}
+      {failed && (
+        <p role="alert" data-testid="start-recipe-inheritor-error" className="text-xs text-destructive">
+          {t('startRecipe.inheritor.contactsFailed')}{' '}
+          <button type="button" data-testid="start-recipe-inheritor-retry" className="underline" onClick={() => setAttempt((n) => n + 1)}>
+            {t('common:actions.retry')}
+          </button>
+        </p>
       )}
     </div>
   );
@@ -194,6 +209,8 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
   const [effects, setEffects] = useState<Effects>(defaults);
   const [deviceSearch, setDeviceSearch] = useState('');
   const [deviceIds, setDeviceIds] = useState<string[]>([]);
+  // Labels of chosen devices, kept so a choice stays visible after the search changes.
+  const [deviceLabels, setDeviceLabels] = useState<Record<string, string>>({});
   const devices = useOrgDevices(orgId, deviceSearch);
 
   const [draft, setDraft] = useState<AiOperatorIdentityTaskDraftDto | null>(null);
@@ -201,8 +218,11 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
   const [busy, setBusy] = useState<'preview' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [duplicateTaskId, setDuplicateTaskId] = useState<string | null>(null);
-  // One key per form session; a retry of the same submission reuses it.
-  const idempotencyKey = useRef<string>(newClientIdempotencyKey());
+  // One key per SUBMISSION: a retry of the same body reuses it (so a lost 202
+  // replays the same task), and any change to the body mints a new one — the
+  // server replays on the key alone, so a reused key would start what was
+  // submitted before, not what the preview now shows.
+  const idempotency = useRef<{ key: string; body: string | null }>({ key: newClientIdempotencyKey(), body: null });
 
   const personLabel = person.mode === 'contact' ? person.label : person.text.trim();
   const inheritorName = inheritor.mode === 'address' ? inheritor.address.trim()
@@ -256,6 +276,8 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
       setDraft(result);
       setDraftFor(sentKey);
     } catch (err) {
+      // A refused refresh must not leave the previous preview standing as current.
+      setDraftFor(null);
       reportFailure(err, t('startRecipe.preview.failed'));
     } finally {
       setBusy(null);
@@ -271,12 +293,19 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
     // one contact is sent as that contact.
     const resolved = person.mode === 'hint' ? draft.person.resolved : null;
     const body = resolved ? { ...inputs, contactId: resolved.id, personHint: null } : inputs;
+    const bodyKey = JSON.stringify(body);
+    if (idempotency.current.body !== null && idempotency.current.body !== bodyKey) {
+      idempotency.current = { key: newClientIdempotencyKey(), body: null };
+    }
+    idempotency.current.body = bodyKey;
+    const clientIdempotencyKey = idempotency.current.key;
     try {
       const { taskId } = await runAction({
-        request: () => startOperatorTask({ workflow, orgId, inputs: body, clientIdempotencyKey: idempotencyKey.current }),
+        request: () => startOperatorTask({ workflow, orgId, inputs: body, clientIdempotencyKey }),
         parseSuccess: parseStartedOperatorTask,
         errorFallback: t('startRecipe.failed'),
-        successMessage: t('startRecipe.started'),
+        // A replay is the task an earlier, unacknowledged submit of this same body started.
+        successMessage: (r) => (r.replayed ? t('startRecipe.replayed') : t('startRecipe.started')),
         friendly: (code, message, payload) => {
           if (code !== 'OPERATOR_DUPLICATE_LIVE_TASK') return undefined;
           const id = (payload as { taskId?: unknown } | undefined)?.taskId;
@@ -299,7 +328,8 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
     setPerson({ mode: 'contact', contactId: c.id, label: c.name ?? c.email ?? c.id });
   };
 
-  const toggleDevice = (id: string) => {
+  const toggleDevice = (id: string, label: string) => {
+    setDeviceLabels((prev) => ({ ...prev, [id]: label }));
     setDeviceIds((prev) => (prev.includes(id) ? prev.filter((d) => d !== id) : prev.length >= MAX_DEVICES ? prev : [...prev, id]));
   };
 
@@ -468,8 +498,36 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
           onChange={(e) => setDeviceSearch(e.target.value)}
         />
         <p className="text-xs text-muted-foreground">{t('startRecipe.devices.limit', { max: MAX_DEVICES })}</p>
+        {deviceIds.length > 0 && (
+          <div data-testid="start-recipe-devices-selected" className="space-y-1 rounded-md border p-2">
+            <p className="text-xs font-medium">{t('startRecipe.devices.selectedTitle', { count: deviceIds.length, max: MAX_DEVICES })}</p>
+            <ul className="space-y-1">
+              {deviceIds.map((id) => (
+                <li key={id} data-testid={`start-recipe-device-selected-${id}`} className="flex items-center gap-2 text-sm">
+                  <span>{deviceLabels[id] ?? id}</span>
+                  <span className="text-xs text-muted-foreground">{t('startRecipe.devices.selectedByYou')}</span>
+                  <button
+                    type="button"
+                    data-testid={`start-recipe-device-remove-${id}`}
+                    className="ml-auto text-xs underline"
+                    onClick={() => toggleDevice(id, deviceLabels[id] ?? id)}
+                  >
+                    {t('startRecipe.devices.remove')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {devices.status === 'loading' && <p className="text-xs text-muted-foreground">{t('startRecipe.devices.loading')}</p>}
-        {devices.status === 'error' && <p role="alert" className="text-xs text-destructive">{t('startRecipe.devices.loadFailed')}</p>}
+        {devices.status === 'error' && (
+          <p role="alert" className="text-xs text-destructive">
+            {t('startRecipe.devices.loadFailed')}{' '}
+            <button type="button" data-testid="start-recipe-devices-retry" className="underline" onClick={devices.retry}>
+              {t('common:actions.retry')}
+            </button>
+          </p>
+        )}
         {devices.status === 'ready' && devices.devices.length === 0 && (
           <p className="text-xs text-muted-foreground">{t('startRecipe.devices.empty')}</p>
         )}
@@ -485,7 +543,7 @@ export default function StartRecipeForm({ workflow, orgId, launch, onClose }: St
                       data-testid={`start-recipe-device-${d.id}`}
                       checked={chosen}
                       disabled={!chosen && deviceIds.length >= MAX_DEVICES}
-                      onChange={() => toggleDevice(d.id)}
+                      onChange={() => toggleDevice(d.id, d.label)}
                     />
                     <span>{d.label}</span>
                     {chosen && <span className="text-xs text-muted-foreground">{t('startRecipe.devices.selectedByYou')}</span>}
