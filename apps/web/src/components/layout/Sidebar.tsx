@@ -75,6 +75,7 @@ import { RECENT_ENTRY_ICONS } from './recentEntryIcons';
 import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts';
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { getPartnersMe } from '../../lib/api/partnersMe';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
 import { useToolSourcesGate, useFlowsGate, usePreAssignmentGate } from '../../stores/featuresStore';
 import { useAutopayEnabled } from '../../lib/autopayVisibility';
@@ -744,7 +745,8 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     if (jwtScope !== 'partner') return;
 
     let cancelled = false;
-    fetchWithAuth('/orgs/partners/me')
+    // Shared with the other islands reading partners/me at load (#9172).
+    getPartnersMe()
       .then((r) => {
         if (!r.ok) {
           if (r.status !== 403 && r.status !== 404) {
@@ -752,12 +754,12 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
           }
           return null;
         }
-        return r.json() as Promise<{
+        return r.data as {
           name?: string;
           aiForOfficeEnabled?: boolean;
           serviceManagementMode?: ServiceManagementMode;
           settings?: { branding?: { logoUrl?: string } };
-        }>;
+        };
       })
       .then((data) => {
         if (cancelled || !data) return;

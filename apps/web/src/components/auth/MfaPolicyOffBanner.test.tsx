@@ -34,6 +34,8 @@ vi.mock('@/lib/authScope', () => ({
   useJwtClaims: () => state.claims,
 }));
 
+import { invalidatePartnersMe } from '@/lib/api/partnersMe';
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const DISMISS_KEY = 'breeze.mfaPolicyOffBannerDismissedOn';
 const TEST_ID = 'mfa-policy-off-banner';
@@ -55,6 +57,9 @@ function todayKey(): string {
 }
 
 beforeEach(() => {
+  // partners/me reads are shared while in flight (#9172); a test that leaves one
+  // pending must not hand it to the next test.
+  invalidatePartnersMe();
   state.user = { id: 'user-1', canManagePartnerWide: true };
   state.claims = { status: 'resolved', claims: { scope: 'partner', orgId: null, partnerId: 'p1' } };
   fetchWithAuthMock.mockReset();

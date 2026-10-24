@@ -23,6 +23,7 @@ import { i18n } from '@/lib/i18n';
 import { navigateTo } from '@/lib/navigation';
 import { normalizeLocale } from '@/lib/appearance';
 import { fetchSendingDomains } from '@/lib/api/sendingDomains';
+import { getPartnersMe, invalidatePartnersMe } from '@/lib/api/partnersMe';
 import { PARTNER_SETTINGS_SAVED_EVENT } from '../../auth/MfaPolicyOffBanner';
 import { currentIpCovered } from '../PartnerSecurityTab';
 import { parseThresholds } from '../AiBudgetThresholdsInput';
@@ -281,18 +282,21 @@ export function usePartnersMeUnit() {
   const load = useCallback(async () => {
     const gen = ++generation.current;
     const isCurrent = () => generation.current === gen;
+    // The first load shares the layout islands' concurrent read; a reload (partner
+    // switch, retry) must never reuse a read that started before it.
+    if (gen > 1) invalidatePartnersMe();
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/orgs/partners/me');
+      const read = await getPartnersMe();
       if (!isCurrent()) return;
-      if (!response.ok) {
-        if (response.status === 401) { toLogin(); return; }
-        if (response.status === 403) { setError(i18n.t('settings:partnerSettingsPage.permissionDenied')); return; }
+      if (!read.ok) {
+        if (read.status === 401) { toLogin(); return; }
+        if (read.status === 403) { setError(i18n.t('settings:partnerSettingsPage.permissionDenied')); return; }
         throw new Error(i18n.t('settings:partnerSettingsPage.fetchFailed'));
       }
-      const data: Partner = await response.json();
-      if (!isCurrent()) return;
+      if (!read.data) throw new Error(i18n.t('settings:partnerSettingsPage.fetchFailed'));
+      const data = read.data as Partner;
       const next = stateFromPartner(data);
       setPartner(data);
       setState(next);
@@ -370,7 +374,8 @@ export function usePartnersMeUnit() {
       if (generation.current !== gen) return { status: 'cancelled' };
       setPartner(updated);
       // Lets layout islands that read partner settings (MfaPolicyOffBanner)
-      // re-check without a page navigation.
+      // re-check without a page navigation, against a fresh read.
+      invalidatePartnersMe();
       window.dispatchEvent(new Event(PARTNER_SETTINGS_SAVED_EVENT));
       // Re-baseline to what was sent: an edit made during the request stays dirty.
       setBaseline(sent);
