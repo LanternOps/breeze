@@ -639,6 +639,7 @@ async function resolveMemoryBlockMaterial(blockIdArg: unknown, database: Databas
     ownerOrgId: block.ownerOrgId,
     blockType: block.blockType,
     subjectKey: block.subjectKey,
+    confidence: block.confidence,
     status: block.status,
     supersededById: block.supersededById,
     updatedAt: block.updatedAt.toISOString(),

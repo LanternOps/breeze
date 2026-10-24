@@ -890,6 +890,7 @@ describe.each(['confirm_memory', 'retract_memory'])('%s effect digest', (tool) =
     blockType: 'preference',
     subjectKey: 'ticket.notify',
     content: { channel: 'sms', quiet: { from: 22, to: 7 } },
+    confidence: 'medium',
     status: 'unconfirmed',
     supersededById: null,
     updatedAt: new Date('2026-10-23T00:00:00Z'),
@@ -912,6 +913,7 @@ describe.each(['confirm_memory', 'retract_memory'])('%s effect digest', (tool) =
     ['updatedAt', { updatedAt: new Date('2026-10-23T00:00:01Z') }],
     ['owner', { ownerKind: 'org', ownerUserId: null, ownerOrgId: 'o1' }],
     ['subjectKey', { subjectKey: 'ticket.other' }],
+    ['confidence', { confidence: 'high' }],
   ])('changes when %s changes', async (_label, overrides) => {
     expect(await digestOf(row(overrides))).not.toBe(await digestOf(row()));
   });

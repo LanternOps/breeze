@@ -88,6 +88,7 @@ export async function readMemoryBlockForEffectDigest(database: Database, id: str
       blockType: aiMemoryBlocks.blockType,
       subjectKey: aiMemoryBlocks.subjectKey,
       content: aiMemoryBlocks.content,
+      confidence: aiMemoryBlocks.confidence,
       status: aiMemoryBlocks.status,
       supersededById: aiMemoryBlocks.supersededById,
       updatedAt: aiMemoryBlocks.updatedAt,
