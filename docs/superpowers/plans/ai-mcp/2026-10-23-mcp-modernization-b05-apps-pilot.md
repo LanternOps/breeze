@@ -121,7 +121,7 @@ Numbering continues B-W04's D-B25…D-B37.
          count(DISTINCT actor_id) FILTER (WHERE action = 'mcp.tools.call'     AND details->>'mcpApp' = 'fleet-health/v1' AND details->>'uiExtension' = 'true') AS ui_tool_callers,
          count(*)                 FILTER (WHERE action = 'mcp.tools.call'     AND details->>'mcpApp' = 'fleet-health/v1' AND details->>'uiExtension' = 'true') AS ui_tool_calls
   FROM audit_logs
-  WHERE resource_type = 'mcp_request' AND created_at > now() - interval '30 days';
+  WHERE resource_type = 'mcp_request' AND "timestamp" > now() - interval '30 days';
   ```
   **Go** for a second app when, summed over both regions, `ui_tool_callers ≥ 5` **and** `ui_tool_calls ≥ 50` (the denominator is `ui_capable_principals`, reported alongside). Otherwise **stop**: leave the pilot on and build nothing more (Gate B 5).
 - **D-B45 — Kill switch.** `MCP_APPS_ENABLED` (`mcpAppsEnabled()` in `services/mcpAppsConfig.ts`, the `mcpIntentConfig.ts` reader pattern, read per call), default **off**. Boot validation in `config/validate.ts` like the B-W04 flags. Works in both eras; independent of `MCP_STATELESS_ENABLED` and `MCP_TIER3_INTENTS_ENABLED`.

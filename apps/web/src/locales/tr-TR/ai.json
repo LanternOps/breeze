@@ -555,5 +555,128 @@
   },
   "buyCredits": {
     "link": "Kredi satın al"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Wisp'i aç",
+      "turningOn": "Wisp açılıyor…"
+    },
+    "locked": {
+      "why": "Wisp, Pro ve üzeri planlarda kullanılabilir."
+    },
+    "modal": {
+      "title": "Wisp'i aç",
+      "refreshTitle": "Wisp yetkisini yenile",
+      "scopeLabel": "Wisp şunun üzerinde çalışabilir",
+      "scopeOrg": "Bu kuruluş",
+      "scopePartner": "Tüm kuruluşlar",
+      "explain": "Wisp, sizin yapmaya yetkili olduğunuz işlemler kapsamında çalışır. Devam etmek için kimliğinizi doğrulayın.",
+      "code": "Kimlik doğrulayıcı kodu",
+      "passkey": "Geçiş anahtarınızla onaylayacaksınız.",
+      "noFactor": "Wisp için bir geçiş anahtarı veya kimlik doğrulayıcı uygulaması gerekir. Önce profilinizde birini kurun.",
+      "noOrg": "Önce üst bölümden bir kuruluş seçin.",
+      "confirm": "Onayla",
+      "cancel": "İptal",
+      "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
+      "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
+      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin."
+    },
+    "header": {
+      "scopeAll": "Tüm kuruluşlar",
+      "status": {
+        "active": "Etkin",
+        "paused": "Duraklatıldı",
+        "revoked": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "refresh": "Yetkiyi yenile",
+      "revoke": "Wisp'i kapat",
+      "revokeConfirm": "Wisp bu kapsam için kapatılsın mı? Açık konular okunabilir kalır.",
+      "widening": "Bu yetkinin izin verdiğinden fazlasını yapabilirsiniz; Wisp'in uyum sağlaması için yetkiyi yenileyin."
+    },
+    "settings": {
+      "title": "Bütçe ve kontrol aralığı",
+      "budget": "Günlük bütçe (¢)",
+      "tick": "Kontrol aralığı (dakika)",
+      "save": "Kaydet"
+    },
+    "focus": {
+      "label": "Çalışılan müşteri",
+      "none": "Müşteri odağı yok",
+      "pick": "Bir müşteriye odaklan…",
+      "clear": "Odağı temizle"
+    },
+    "attachments": {
+      "title": "Bu konuya eklendi",
+      "drop": "Buraya bir e-posta konuşması, .eml veya CSV bırakın ya da metin yapıştırın",
+      "paste": "Metin yapıştır",
+      "label": "Etiket",
+      "add": "Ekle",
+      "empty": "Henüz bir şey eklenmedi",
+      "expires": "Bitiş: {{date}}",
+      "limits": "En fazla 20 dosya, her biri 5 MB, yalnızca metin",
+      "focusRequired": "Eklemeden önce bir müşteri odağı seçin",
+      "loadFailed": "Ekler yüklenemedi"
+    },
+    "toast": {
+      "on": "Wisp açık",
+      "onFailed": "Wisp açılamadı",
+      "off": "Wisp kapalı",
+      "offFailed": "Wisp kapatılamadı",
+      "refreshed": "Yetki yenilendi",
+      "refreshFailed": "Yetki yenilenemedi",
+      "settingsSaved": "Wisp ayarları kaydedildi",
+      "settingsFailed": "Wisp ayarları kaydedilemedi",
+      "focusSet": "Wisp artık {{org}} üzerinde çalışıyor",
+      "focusCleared": "Müşteri odağı temizlendi",
+      "focusFailed": "Odak değiştirilemedi",
+      "attached": "Konuya eklendi",
+      "attachFailed": "Eklenemedi",
+      "attachTooLarge": "Bu dosya 5 MB sınırını aşıyor",
+      "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
+      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın."
+    }
+  },
+  "wispConcerns": {
+    "title": "Endişeler",
+    "empty": "Şu anda Wisp'in radarında bir şey yok.",
+    "snooze": "Ertele",
+    "snoozeOneHour": "1 saat",
+    "snoozeTomorrow": "Yarın 9:00'a kadar",
+    "snoozeWeek": "7 gün",
+    "dismiss": "Yok say",
+    "resolve": "Çöz",
+    "resolveOutcomePlaceholder": "Ne oldu?",
+    "resolveSubmit": "Çözüldü olarak işaretle",
+    "snoozed": "Ertelendi",
+    "dismissed": "Yok sayıldı",
+    "resolved": "Çözüldü",
+    "quietUntil": "{{when}} tarihine kadar sessiz",
+    "digestOnly": "yalnızca özet",
+    "showAll": "Tümünü göster",
+    "showLive": "Açık olanları göster",
+    "loadFailed": "Endişeler yüklenemedi",
+    "actionFailed": "Bu işe yaramadı. Tekrar deneyin.",
+    "severity": {
+      "high": "Yüksek",
+      "medium": "Orta",
+      "low": "Düşük",
+      "info": "Bilgi"
+    },
+    "subject": {
+      "ticket": "Talep",
+      "device": "Cihaz",
+      "alert": "Uyarı",
+      "org": "Müşteri",
+      "integration": "Entegrasyon",
+      "run": "Çalıştırma",
+      "task": "Görev",
+      "incident": "Olay",
+      "quote": "Teklif",
+      "invoice": "Fatura",
+      "contract": "Sözleşme",
+      "site": "Konum"
+    }
   }
 }

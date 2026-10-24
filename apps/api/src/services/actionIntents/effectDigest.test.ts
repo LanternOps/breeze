@@ -875,3 +875,53 @@ describe('operator_plan (Recipe Library E4)', () => {
       .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
   });
 });
+
+// Wisp W03: confirm_memory / retract_memory are four_eyes surfaces (registry tier 3, the
+// operator_plan precedent). The approver signs off on a block REFERENCE; the pin makes a
+// block edited, superseded or retracted between approval and release fail closed.
+describe.each(['confirm_memory', 'retract_memory'])('%s effect digest', (tool) => {
+  const BLOCK = '55555555-5555-4555-8555-555555555555';
+  const row = (overrides: Record<string, unknown> = {}) => ({
+    id: BLOCK,
+    tenantPartnerId: 'p1',
+    ownerKind: 'user',
+    ownerUserId: 'u1',
+    ownerOrgId: null,
+    blockType: 'preference',
+    subjectKey: 'ticket.notify',
+    content: { channel: 'sms', quiet: { from: 22, to: 7 } },
+    confidence: 'medium',
+    status: 'unconfirmed',
+    supersededById: null,
+    updatedAt: new Date('2026-10-23T00:00:00Z'),
+    ...overrides,
+  });
+  const digestOf = async (r: Record<string, unknown> | null) =>
+    digestFor(tool, { blockId: BLOCK }, makeFakeDb([r ? [r] : []]).database);
+
+  it('is stable for the same row, including content key order', async () => {
+    const a = await digestOf(row());
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(await digestOf(row())).toBe(a);
+    expect(await digestOf(row({ content: { quiet: { to: 7, from: 22 }, channel: 'sms' } }))).toBe(a);
+  });
+
+  it.each([
+    ['content', { content: { channel: 'email', quiet: { from: 22, to: 7 } } }],
+    ['status', { status: 'retracted' }],
+    ['supersededById', { supersededById: '66666666-6666-4666-8666-666666666666' }],
+    ['updatedAt', { updatedAt: new Date('2026-10-23T00:00:01Z') }],
+    ['owner', { ownerKind: 'org', ownerUserId: null, ownerOrgId: 'o1' }],
+    ['subjectKey', { subjectKey: 'ticket.other' }],
+    ['confidence', { confidence: 'high' }],
+  ])('changes when %s changes', async (_label, overrides) => {
+    expect(await digestOf(row(overrides))).not.toBe(await digestOf(row()));
+  });
+
+  it('target_absent when the block is gone (or hidden by RLS); missing_arg without blockId', async () => {
+    expect(await computeEffectDigestOutcome(tool, { blockId: BLOCK }, makeFakeDb([[]]).database))
+      .toEqual({ kind: 'unresolved', reason: 'target_absent' });
+    expect(await computeEffectDigestOutcome(tool, {}, makeFakeDb([]).database))
+      .toEqual({ kind: 'unresolved', reason: 'missing_arg' });
+  });
+});

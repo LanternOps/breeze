@@ -95,7 +95,8 @@ describe("IntegrationsPage QuickBooks accounting:read gate", () => {
     // The sub-tab entry itself is gone; Stripe payments stays available.
     const buttons = screen.getAllByRole("button").map((b) => b.textContent ?? "");
     expect(buttons.some((label) => /quickbooks/i.test(label))).toBe(false);
-    expect(buttons.some((label) => /payment/i.test(label))).toBe(true);
+    const links = screen.getAllByRole("link").map((l) => l.textContent ?? "");
+    expect(links.some((label) => /payment/i.test(label))).toBe(true);
   });
 
   it("renders the QuickBooks panel and sub-tab once accounting:read is granted", async () => {

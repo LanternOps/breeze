@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { portalTicketOwnership } from './ticketOwnership';
+import { portalDashboardTicketScope } from './ticketReadAccess';
 import { dashboardForOrg } from '../../services/portal/dashboard';
 import {
   applyPortalCacheHeaders,
@@ -33,7 +33,9 @@ portalDashboardRoutes.get('/dashboard', async (c) => {
   const payload = await dashboardForOrg(auth.user.orgId, {
     timezone: auth.timezone,
     now: new Date(),
-  }, portalTicketOwnership(auth.user));
+    // #8972 D1(b): the same set the ticket list shows — own tickets and the
+    // survivors of merged ones, never a tombstone.
+  }, portalDashboardTicketScope(auth.user));
 
   applyPortalCacheHeaders(c, {
     scope: 'private',

@@ -1130,9 +1130,17 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * that gathers server-side datasets, computes inside a per-run sandbox via
  * the `workspace_*` tools, and ends with `submit_analysis`. Admission is
  * counted against `analysisMaxConcurrentRuns`/`analysisMaxRunsPerHour`.
+ *
+ * Wisp W05 added `assessment`: a grant-bearing, device-less run of the org's
+ * `triage`-kind agent that looks at what changed for one org under a Wisp
+ * grant and reports through outcome tools (concerns, nudges, proposals). It
+ * executes nothing (`maxActionsPerRun` pinned to 0). Admission requires a
+ * grant and is counted against the constants in
+ * `apps/api/src/services/aiAgents/assessmentProfile.ts`, not policy limits.
  */
 export const AI_AGENT_RUN_PROFILES = [
   'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis', 'remediation_research',
+  'assessment',
 ] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 

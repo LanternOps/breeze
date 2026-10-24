@@ -79,6 +79,14 @@ const TARGET_GLOBS = [
   'src/components/monitoring/conversion/ConversionPendingBanner.tsx',
   'src/components/admin/MonitorConversionAdmin.tsx',
   'src/components/ai/AiContinuationPrompt.tsx', // W05 #7603: POST /ai/sessions/:id/continue via runAction
+  // Wisp W04b (#9916): grant create/refresh/revoke/settings and thread attachments go through runAction.
+  'src/components/ai/WispToggle.tsx',
+  'src/components/ai/WispGrantStepUpModal.tsx',
+  'src/components/ai/WispThreadHeader.tsx',
+  'src/components/ai/WispThreadAttachments.tsx',
+  // Wisp W05a (#9911): concerns list snooze/dismiss/resolve go through runAction.
+  'src/components/ai/WispConcernsPanel.tsx',
+  'src/lib/wispConcernsApi.ts',
   'src/components/admin/AiModels.tsx', // W01 #7599: /admin/ai-models (PATCH + refresh via runAction)
   'src/components/configurationPolicies/featureTabs/useFeatureLink.ts',
   // Old storage key check / operator confirmation: both mutations surface
@@ -969,12 +977,14 @@ describe('no silent mutations in targeted set', () => {
     // Trust Center W03a (#8771) adds TrustEmbedSection: 246 → 247.
     // Business hours (#8973) adds BusinessHoursCard/Form/Holidays/ApplyDialog: 247 → 251.
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
-    // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 253 → 254.
-    // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 254 → 256.
-    // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 256 → 257.
-    // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 257 → 259.
-    // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 259 → 260.
-    expect(absoluteFiles.length).toBe(260);
+    // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
+    // Wisp W05a (#9911) adds WispConcernsPanel/wispConcernsApi (+2 = 259).
+    // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 259 → 260.
+    // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 260 → 262.
+    // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 262 → 263.
+    // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 263 → 265.
+    // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 265 → 266.
+    expect(absoluteFiles.length).toBe(266);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

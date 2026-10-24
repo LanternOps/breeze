@@ -416,6 +416,115 @@ describe('MCP conformance for protocol 2026-07-28 (stateless)', () => {
   });
 });
 
+// B-W05 (#6159): MCP Apps, per negotiated version, flag on. Real
+// checkPermissionRequirement (this suite does not mock aiGuardrails).
+const APP_URI = 'ui://breeze/fleet-health/v1';
+const UI_CAPS = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
+const APP_TOOLS: ReturnType<typeof import('../services/aiTools').getToolDefinitions> = [
+  ...TOOLS,
+  { name: 'get_fleet_health', description: 'd', input_schema: { type: 'object', properties: {} } },
+];
+const FLEET_TEXT = JSON.stringify({ devices: [{ hostname: 'ws-01.example.test', reliabilityScore: 40 }], showing: 1, limit: 25, offset: 0, total: 1, hasMore: false, nextCursor: null, summary: { criticalDevices: 1 } });
+
+describe.each([...LEGACY_MCP_PROTOCOL_VERSIONS])('MCP Apps conformance for protocol %s (B-W05)', (version) => {
+  beforeEach(() => {
+    vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
+    vi.stubEnv('MCP_APPS_ENABLED', 'true');
+    mocks.getToolDefinitions.mockReturnValue(APP_TOOLS);
+    mocks.getToolTier.mockImplementation((n: string) => (n === 'manage_services' ? 2 : 1));
+    mocks.executeTool.mockResolvedValue(FLEET_TEXT);
+  });
+
+  async function session(capabilities: Record<string, unknown>) {
+    const app = appWithMcpRoutes();
+    const init = await app.request('/mcp/sse', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': 'k' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: version, capabilities, clientInfo: { name: 't', version: '0' } } }) });
+    expect(init.status).toBe(200);
+    const sid = init.headers.get('Mcp-Session-Id')!;
+    const rpc = async (method: string, params?: unknown) => {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-API-Key': 'k', 'Mcp-Session-Id': sid };
+      if (version !== '2024-11-05') headers['MCP-Protocol-Version'] = version;
+      const res = await app.request('/mcp/sse', { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method, params }) });
+      return { status: res.status, body: await res.json() };
+    };
+    return { init: await init.json(), rpc };
+  }
+
+  it('initialize advertises the extension to every client', async () => {
+    for (const caps of [UI_CAPS, {}]) {
+      const { init } = await session(caps);
+      expect(init.result.capabilities.extensions).toEqual({ 'io.modelcontextprotocol/ui': {} });
+    }
+  });
+
+  it('a declaring client\'s get_fleet_health entry carries _meta.ui; a non-declaring list equals the flag-off list', async () => {
+    const declaring = (await (await session(UI_CAPS)).rpc('tools/list')).body.result.tools;
+    expect(declaring.find((t: { name: string }) => t.name === 'get_fleet_health')._meta).toEqual({
+      'app.breeze/domain': 'devices', ui: { resourceUri: APP_URI, visibility: ['model'] },
+    });
+    for (const t of declaring) if (t.name !== 'get_fleet_health') expect(t._meta.ui).toBeUndefined();
+    const plain = (await (await session({})).rpc('tools/list')).body.result.tools;
+    vi.stubEnv('MCP_APPS_ENABLED', '');
+    const off = (await (await session(UI_CAPS)).rpc('tools/list')).body.result.tools;
+    expect(plain).toEqual(off);
+  });
+
+  it('tools/call get_fleet_health returns identical content and structuredContent for declaring and non-declaring clients (text parity)', async () => {
+    const declared = (await (await session(UI_CAPS)).rpc('tools/call', { name: 'get_fleet_health', arguments: {} })).body;
+    const plain = (await (await session({})).rpc('tools/call', { name: 'get_fleet_health', arguments: {} })).body;
+    expect(declared.result.content).toEqual(plain.result.content);
+    expect(declared.result.structuredContent).toEqual(plain.result.structuredContent);
+    expect(JSON.stringify(declared.result)).toBe(JSON.stringify(plain.result));
+    expect(declared.result.content).toEqual([{ type: 'text', text: FLEET_TEXT }]);
+    expect(declared.result).not.toHaveProperty('_meta');
+  });
+
+  it('resources/read of the app URI returns the HTML for the declaring client only', async () => {
+    const declared = (await (await session(UI_CAPS)).rpc('resources/read', { uri: APP_URI })).body;
+    expect(declared.result.contents[0]).toMatchObject({ uri: APP_URI, mimeType: 'text/html;profile=mcp-app' });
+    expect(declared.result.contents[0].text.startsWith('<!doctype html>')).toBe(true);
+    const plain = (await (await session({})).rpc('resources/read', { uri: APP_URI })).body;
+    expect(plain.error).toEqual({ code: -32602, message: `Unknown resource URI: ${APP_URI}` });
+  });
+});
+
+describe('MCP Apps conformance for protocol 2026-07-28 (B-W05)', () => {
+  beforeEach(() => {
+    vi.stubEnv('MCP_STATELESS_ENABLED', 'true');
+    vi.stubEnv('MCP_TOOLS_LIST_PAGE_SIZE', '0');
+    vi.stubEnv('MCP_APPS_ENABLED', 'true');
+    mocks.getToolDefinitions.mockReturnValue(APP_TOOLS);
+    mocks.getToolTier.mockImplementation((n: string) => (n === 'manage_services' ? 2 : 1));
+    mocks.executeTool.mockResolvedValue(FLEET_TEXT);
+  });
+
+  async function rpc(method: string, params: Record<string, unknown>, caps: Record<string, unknown>) {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json', 'X-API-Key': 'k',
+      'MCP-Protocol-Version': '2026-07-28', 'Mcp-Method': method,
+    };
+    if (method === 'tools/call') headers['Mcp-Name'] = String(params.name);
+    if (method === 'resources/read') headers['Mcp-Name'] = String(params.uri);
+    const res = await appWithMcpRoutes().request('/mcp/sse', {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: { ...params, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': caps } } }),
+    });
+    return (await res.json()) as any;
+  }
+
+  it('server/discover advertises the extension; a declaring request sees _meta.ui, one without does not; text parity', async () => {
+    expect((await rpc('server/discover', {}, {})).result.capabilities.extensions).toEqual({ 'io.modelcontextprotocol/ui': {} });
+    const declaring = (await rpc('tools/list', {}, UI_CAPS)).result.tools;
+    const plain = (await rpc('tools/list', {}, {})).result.tools;
+    expect(declaring.find((t: { name: string }) => t.name === 'get_fleet_health')._meta.ui).toEqual({ resourceUri: APP_URI, visibility: ['model'] });
+    expect(plain.find((t: { name: string }) => t.name === 'get_fleet_health')._meta.ui).toBeUndefined();
+    const a = await rpc('tools/call', { name: 'get_fleet_health', arguments: {} }, UI_CAPS);
+    const b = await rpc('tools/call', { name: 'get_fleet_health', arguments: {} }, {});
+    expect(a.result).toEqual(b.result);
+    expect((await rpc('resources/read', { uri: APP_URI }, UI_CAPS)).result.contents[0].mimeType).toBe('text/html;profile=mcp-app');
+    expect((await rpc('resources/read', { uri: APP_URI }, {})).error.code).toBe(-32602);
+  });
+});
+
 describe('MCP conformance — negotiation edge cases', () => {
   it('an unsupported requested version gets the latest supported one', async () => {
     const app = appWithMcpRoutes();

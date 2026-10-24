@@ -41,6 +41,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/discoveryAgentSelection.ts': { guards: 2, reason: 'discovery agent selection: site candidates and the pinned-agent lookup (#7969)' },
   'jobs/snmpWorker.ts': { guards: 1, reason: 'SNMP poll executor selection' },
   'jobs/aiAgentSweepScheduler.ts': { guards: 1, reason: 'scheduled AI agent sweeps over partner orgs' },
+  'services/wisp/wake.ts': { guards: 1, reason: 'Wisp wake coordinator (#9917): live partner orgs a grant\'s floor tick / onboarding / event fan-out may assess (Quick Support and holding org out)' },
   'services/aiAgents/patchPlan.ts': { guards: 1, reason: 'AI patch-plan evidence devices' },
   'services/aiAgents/sweepFindings.ts': { guards: 1, reason: 'AI sweep finding devices' },
   'jobs/fleetFindings.ts': { guards: 1, reason: 'fleet findings org scan' },

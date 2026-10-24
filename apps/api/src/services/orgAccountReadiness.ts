@@ -342,6 +342,7 @@ function queryTicketCounts(ids: string[]) {
       and(
         inArray(tickets.orgId, ids),
         isNull(tickets.deletedAt),
+        isNull(tickets.mergedIntoTicketId), // #8972: merged tombstones never count
         sql`${tickets.status} in (${sqlStatusList(TICKET_OPEN_STATUSES)})`,
       ),
     )

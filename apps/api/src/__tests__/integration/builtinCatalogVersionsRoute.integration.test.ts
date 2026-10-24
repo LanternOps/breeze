@@ -29,6 +29,8 @@ type ActiveAuth = {
   orgId: string | null;
   partnerId: string | null;
   accessibleOrgIds: string[];
+  /** #6958: lets a case reach the built-in guard past the partner-wide write gate. */
+  partnerOrgAccess?: 'all' | 'selected' | 'none';
 };
 let activeAuth: ActiveAuth | null = null;
 
@@ -44,6 +46,7 @@ vi.mock('../../middleware/auth', async (importOriginal) => {
         partnerId: activeAuth.partnerId,
         orgId: activeAuth.orgId,
         accessibleOrgIds: activeAuth.accessibleOrgIds,
+        ...(activeAuth.partnerOrgAccess ? { partnerOrgAccess: activeAuth.partnerOrgAccess } : {}),
         // Mirrors buildOrgAccessClosures in middleware/auth.ts: canAccessOrg is a
         // required member of AuthContext that both real constructors always set,
         // so a stub that omits it makes the route throw instead of authorizing.
@@ -348,5 +351,138 @@ describe('built-in package versions via route (#1957)', () => {
       },
     );
     expect(ownRes.status).toBe(200);
+  });
+});
+
+// #6958 PR C: software_catalog.builtin_package_key marks a Breeze-defined
+// package. The DB, not only the routes, holds it to partner-owned rows, one
+// per (partner, key), and an org-scoped session can never place one.
+describe('software_catalog.builtin_package_key (#6958)', () => {
+  const seedKeyed = (partnerId: string, key: string) =>
+    getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: null, partnerId, builtinPackageKey: key, name: `Built-in ${key}`, isManaged: true })
+      .returning();
+
+  it('CHECK rejects a key on an org-owned row, and a malformed key on a partner row', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+
+    await expect(
+      getTestDb().insert(softwareCatalog).values({ orgId: org.id, builtinPackageKey: 'controld_windows', name: 'x' }),
+    ).rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'software_catalog_builtin_package_key_chk' } });
+
+    await expect(seedKeyed(partner.id, 'Bad-Key')).rejects.toMatchObject({
+      cause: { code: '23514', constraint_name: 'software_catalog_builtin_package_key_chk' },
+    });
+  });
+
+  it('the partial unique index allows one row per (partner, key), and the same key under another partner', async () => {
+    const partner = await createPartner();
+    const other = await createPartner();
+    await seedKeyed(partner.id, 'controld_windows');
+
+    await expect(seedKeyed(partner.id, 'controld_windows')).rejects.toMatchObject({
+      cause: { code: '23505', constraint_name: 'software_catalog_partner_builtin_key_uidx' },
+    });
+    await expect(seedKeyed(other.id, 'controld_windows')).resolves.toHaveLength(1);
+    // Rows without a key are unconstrained by the index.
+    await getTestDb().insert(softwareCatalog).values({ orgId: null, partnerId: partner.id, name: 'Shared A' });
+    await getTestDb().insert(softwareCatalog).values({ orgId: null, partnerId: partner.id, name: 'Shared B' });
+  });
+
+  it('an org-scope session cannot set the key: CHECK on its own row, RLS on the partner row', async () => {
+    const { db, withDbAccessContext } = await import('../../db');
+    const { eq } = await import('drizzle-orm');
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const { catalog: own } = await seedOrgOwned(org.id);
+    const [builtin] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: null, partnerId: partner.id, name: 'Shared', isManaged: true })
+      .returning();
+
+    const orgContext = {
+      scope: 'organization' as const,
+      orgId: org.id,
+      accessibleOrgIds: [org.id],
+      accessiblePartnerIds: null,
+      currentPartnerId: partner.id,
+      userId: null,
+    };
+
+    await expect(
+      withDbAccessContext(orgContext, () =>
+        db.update(softwareCatalog).set({ builtinPackageKey: 'controld_windows' }).where(eq(softwareCatalog.id, own.id)),
+      ),
+    ).rejects.toMatchObject({ cause: { code: '23514' } });
+
+    const touched = await withDbAccessContext(orgContext, () =>
+      db.update(softwareCatalog)
+        .set({ builtinPackageKey: 'controld_windows' })
+        .where(eq(softwareCatalog.id, builtin!.id))
+        .returning({ id: softwareCatalog.id }),
+    );
+    expect(touched).toEqual([]);
+
+    const [after] = await getTestDb().select().from(softwareCatalog).where(eq(softwareCatalog.id, builtin!.id));
+    expect(after!.builtinPackageKey).toBeNull();
+  });
+
+  it('GET /catalog returns builtinPackageKey and the latest version\'s installScriptsEnabled (real SQL)', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [keyed] = await seedKeyed(partner.id, 'controld_windows');
+    await getTestDb().insert(softwareVersions).values([
+      { catalogId: keyed!.id, version: '1.0.0', fileType: 'zip', isLatest: false, installScriptsEnabled: false },
+      { catalogId: keyed!.id, version: '1.5.8', fileType: 'zip', isLatest: true, installScriptsEnabled: true, postInstallScript: 'x' },
+    ]);
+    const { catalog: plain } = await seedOrgOwned(org.id); // latest version, scripts not enabled
+    const [empty] = await getTestDb()
+      .insert(softwareCatalog)
+      .values({ orgId: org.id, name: 'No versions yet' })
+      .returning();
+
+    activeAuth = { scope: 'partner', orgId: null, partnerId: partner.id, accessibleOrgIds: [org.id] };
+    const app = await buildApp();
+    const res = await app.request(`/software/catalog?orgId=${org.id}&limit=100`, { headers: { Authorization: 'Bearer token' } });
+    expect(res.status).toBe(200);
+    const rows = (await res.json()).data as Array<Record<string, unknown>>;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    expect(byId.get(keyed!.id)).toMatchObject({ builtinPackageKey: 'controld_windows', installScriptsEnabled: true });
+    expect(byId.get(plain.id)).toMatchObject({ builtinPackageKey: null, installScriptsEnabled: false });
+    expect(byId.get(empty!.id)).toMatchObject({ builtinPackageKey: null, installScriptsEnabled: null });
+  });
+
+  it('a route write can never set it: POST /catalog drops the key, version create on a keyed row is 403', async () => {
+    const { eq } = await import('drizzle-orm');
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const [keyed] = await seedKeyed(partner.id, 'nextdns_windows');
+
+    activeAuth = { scope: 'organization', orgId: org.id, partnerId: null, accessibleOrgIds: [org.id] };
+    const app = await buildApp();
+
+    const created = await app.request(`/software/catalog?orgId=${org.id}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Fake built-in', builtinPackageKey: 'controld_windows' }),
+    });
+    expect(created.status).toBe(201);
+    const createdId = (await created.json()).data.id as string;
+    const [row] = await getTestDb().select().from(softwareCatalog).where(eq(softwareCatalog.id, createdId));
+    expect(row!.builtinPackageKey).toBeNull();
+
+    activeAuth = { scope: 'partner', orgId: null, partnerId: partner.id, accessibleOrgIds: [org.id], partnerOrgAccess: 'all' };
+    const versionRes = await app.request(`/software/catalog/${keyed!.id}/versions`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: '9.9.9', downloadUrl: 'https://dl.example/nextdns.zip', supportedOs: ['windows'] }),
+    });
+    expect(versionRes.status).toBe(403);
+    expect((await versionRes.json()).error).toMatch(/Built-in packages are managed by Breeze/);
+    const versions = await getTestDb().select().from(softwareVersions).where(eq(softwareVersions.catalogId, keyed!.id));
+    expect(versions).toEqual([]);
   });
 });

@@ -11,6 +11,7 @@ const ctx = (over: Partial<NavGateContext> = {}): NavGateContext => ({
   permissions: undefined,
   getScope: () => 'partner',
   toolSourcesEnabled: true,
+  wispEnabled: true,
   aiForOfficeEnabled: false,
   serviceManagementMode: 'native',
   ...over,

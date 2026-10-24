@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { usePermissions } from '../../lib/permissions';
 import AccessDenied from '../shared/AccessDenied';
-import { Plus, Send } from 'lucide-react';
+import { Plus, Send, Webhook as WebhookIcon } from 'lucide-react';
 import WebhookList, { type Webhook, isWebhookActive } from './WebhookList';
 import WebhookForm, { type WebhookFormValues, webhookEventOptions } from './WebhookForm';
 import WebhookDeliveryHistory, { normalizeDelivery, type WebhookDelivery } from './WebhookDeliveryHistory';
@@ -10,6 +10,8 @@ import { useOrgStore } from '../../stores/orgStore';
 import { ActionError, handleActionError, runAction } from '@/lib/runAction';
 import { formSecretValue, isMaskedSecret, MASKED_SECRET } from '@/lib/redactedSecret';
 import { Trans, useTranslation } from 'react-i18next';
+import { Dialog } from '../shared/Dialog';
+import { IntegrationPanelHeader } from '../integrations/IntegrationPanelHeader';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
@@ -17,6 +19,15 @@ import '../../lib/i18n';
 import { useStableT } from '@/lib/i18n/useStableT';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'delete';
+
+const FORM_TITLE_ID = 'webhook-form-dialog-title';
+const DELETE_TITLE_ID = 'webhook-delete-dialog-title';
+
+export interface WebhooksPageProps {
+  /** Rendered as a panel inside the Integrations page, which owns the page h1:
+   *  the title drops to an h2 panel header. Standalone routes keep the h1. */
+  embedded?: boolean;
+}
 
 const defaultEventType = webhookEventOptions[0]?.value ?? 'device.online';
 
@@ -30,17 +41,17 @@ const webhookFormAuthType = (webhook: Webhook): 'hmac' | 'bearer' =>
 // Reading webhooks requires webhooks:read (GET /webhooks and the delivery
 // history). Without it the page shows the permission-denied state and makes no
 // request. UX only — every route re-checks server-side.
-export default function WebhooksPage() {
+export default function WebhooksPage({ embedded = false }: WebhooksPageProps = {}) {
   const { permissions, can } = usePermissions();
   if (!can('webhooks', 'read')) {
     // Grants still loading: render nothing rather than flash the denied state.
     if (!permissions) return null;
     return <AccessDenied testId="webhooks-access-denied" />;
   }
-  return <WebhooksPageContent />;
+  return <WebhooksPageContent embedded={embedded} />;
 }
 
-function WebhooksPageContent() {
+function WebhooksPageContent({ embedded }: { embedded: boolean }) {
   const { t } = useTranslation('common');
   const { can } = usePermissions();
   // UX gate: every webhook write (create, edit, delete, pause/resume, test,
@@ -416,24 +427,36 @@ function WebhooksPageContent() {
     ? activeWebhook.events
     : webhookEventOptions.map(option => option.value);
 
+  const newWebhookButton = canManage ? (
+    <button
+      type="button"
+      onClick={handleCreate}
+      className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+    >
+      <Plus className="h-4 w-4" />
+      {t('longTail.webhooks.WebhooksPage.actions.newWebhook')}
+    </button>
+  ) : null;
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">{t('longTail.webhooks.WebhooksPage.title')}</h1>
-          <p className="text-muted-foreground">{t('longTail.webhooks.WebhooksPage.subtitle')}</p>
+      {embedded ? (
+        <IntegrationPanelHeader
+          icon={<WebhookIcon className="h-4 w-4" />}
+          title={t('longTail.webhooks.WebhooksPage.title')}
+          description={t('longTail.webhooks.WebhooksPage.subtitle')}
+          actions={newWebhookButton}
+          headingTestId="webhooks-panel-heading"
+        />
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">{t('longTail.webhooks.WebhooksPage.title')}</h1>
+            <p className="text-muted-foreground">{t('longTail.webhooks.WebhooksPage.subtitle')}</p>
+          </div>
+          {newWebhookButton}
         </div>
-        {canManage && (
-        <button
-          type="button"
-          onClick={handleCreate}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-        >
-          <Plus className="h-4 w-4" />
-          {t('longTail.webhooks.WebhooksPage.actions.newWebhook')}
-        </button>
-        )}
-      </div>
+      )}
 
       {error && modalMode === 'closed' && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -443,6 +466,7 @@ function WebhooksPageContent() {
 
       <WebhookList
         webhooks={webhooks}
+        showTitle={!embedded}
         onEdit={canManage ? handleEdit : undefined}
         onDelete={canManage ? handleDelete : undefined}
         onTest={canManage ? handleTest : undefined}
@@ -552,64 +576,79 @@ function WebhooksPageContent() {
       )}
 
       {(modalMode === 'create' || modalMode === 'edit') && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/80 px-4 py-8">
-          <div className="w-full max-w-3xl">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-xl font-bold">
-                {modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.modal.createTitle') : t('longTail.webhooks.WebhooksPage.modal.editTitle')}
-              </h2>
-            </div>
-            {error && (
-              <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
-              </div>
-            )}
-            <WebhookForm
-              onSubmit={handleSubmit}
-              onCancel={handleCloseModal}
-              defaultValues={
-                modalMode === 'edit' && selectedWebhook
-                  ? transformWebhookToForm(selectedWebhook)
-                  : undefined
-              }
-              submitLabel={modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.actions.createWebhook') : t('longTail.webhooks.WebhooksPage.actions.saveChanges')}
-              loading={submitting}
-            />
+        // WebhookForm draws its own card, so the dialog panel stays transparent
+        // rather than nesting a card in a card.
+        <Dialog
+          open
+          onClose={handleCloseModal}
+          title={modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.modal.createTitle') : t('longTail.webhooks.WebhooksPage.modal.editTitle')}
+          labelledBy={FORM_TITLE_ID}
+          maxWidth="3xl"
+          alignTop
+          className="!border-0 !bg-transparent !shadow-none"
+        >
+          <div className="mb-4 flex items-center justify-between">
+            <h2 id={FORM_TITLE_ID} className="text-xl font-bold">
+              {modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.modal.createTitle') : t('longTail.webhooks.WebhooksPage.modal.editTitle')}
+            </h2>
           </div>
-        </div>
+          {error && (
+            <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+          <WebhookForm
+            onSubmit={handleSubmit}
+            onCancel={handleCloseModal}
+            defaultValues={
+              modalMode === 'edit' && selectedWebhook
+                ? transformWebhookToForm(selectedWebhook)
+                : undefined
+            }
+            submitLabel={modalMode === 'create' ? t('longTail.webhooks.WebhooksPage.actions.createWebhook') : t('longTail.webhooks.WebhooksPage.actions.saveChanges')}
+            loading={submitting}
+          />
+        </Dialog>
       )}
 
       {modalMode === 'delete' && selectedWebhook && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-md rounded-lg border bg-card p-6 shadow-xs">
-            <h2 className="text-lg font-semibold">{t('longTail.webhooks.WebhooksPage.delete.title')}</h2>
-            <p className="mt-2 text-sm text-muted-foreground">
-              <Trans
-                i18nKey="longTail.webhooks.WebhooksPage.delete.confirm"
-                ns="common"
-                values={{ name: selectedWebhook.name }}
-                components={{ strong: <span className="font-medium" /> }}
-              />
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={handleCloseModal}
-                className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
-              >
-                {t('common:actions.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmDelete}
-                disabled={submitting}
-                className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? t('longTail.webhooks.WebhooksPage.actions.deleting') : t('common:actions.delete')}
-              </button>
-            </div>
+        // Dialog rather than ConfirmDialog: the confirm copy bolds the webhook
+        // name through <Trans>, and ConfirmDialog's message is plain text.
+        <Dialog
+          open
+          onClose={handleCloseModal}
+          title={t('longTail.webhooks.WebhooksPage.delete.title')}
+          labelledBy={DELETE_TITLE_ID}
+          maxWidth="md"
+          className="p-6"
+        >
+          <h2 id={DELETE_TITLE_ID} className="text-lg font-semibold">{t('longTail.webhooks.WebhooksPage.delete.title')}</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            <Trans
+              i18nKey="longTail.webhooks.WebhooksPage.delete.confirm"
+              ns="common"
+              values={{ name: selectedWebhook.name }}
+              components={{ strong: <span className="font-medium" /> }}
+            />
+          </p>
+          <div className="mt-6 flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={handleCloseModal}
+              className="h-10 rounded-md border px-4 text-sm font-medium text-muted-foreground transition hover:text-foreground"
+            >
+              {t('common:actions.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmDelete}
+              disabled={submitting}
+              className="inline-flex h-10 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? t('longTail.webhooks.WebhooksPage.actions.deleting') : t('common:actions.delete')}
+            </button>
           </div>
-        </div>
+        </Dialog>
       )}
     </div>
   );

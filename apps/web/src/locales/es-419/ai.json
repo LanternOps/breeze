@@ -555,5 +555,128 @@
   },
   "buyCredits": {
     "link": "Comprar créditos"
+  },
+  "wisp": {
+    "title": "Wisp",
+    "toggle": {
+      "turnOn": "Activar Wisp",
+      "turningOn": "Activando Wisp…"
+    },
+    "locked": {
+      "why": "Wisp está disponible en el plan Pro y superiores."
+    },
+    "modal": {
+      "title": "Activar Wisp",
+      "refreshTitle": "Renovar permiso de Wisp",
+      "scopeLabel": "Wisp puede trabajar en",
+      "scopeOrg": "Esta organización",
+      "scopePartner": "Todas las organizaciones",
+      "explain": "Wisp trabaja dentro de lo que tú tienes permitido hacer. Confirma que eres tú para continuar.",
+      "code": "Código del autenticador",
+      "passkey": "Confirmarás con tu passkey.",
+      "noFactor": "Wisp necesita una passkey o una app de autenticación. Configura una primero en tu perfil.",
+      "noOrg": "Primero selecciona una organización en el encabezado.",
+      "confirm": "Confirmar",
+      "cancel": "Cancelar",
+      "stepUpUnavailable": "No se pudo verificar tu factor. Inténtalo de nuevo.",
+      "reverify": "Tu acceso cambió mientras confirmabas. Ingresa un código nuevo para continuar.",
+      "invalidCode": "No se aceptó ese código. Inténtalo de nuevo."
+    },
+    "header": {
+      "scopeAll": "Todas las organizaciones",
+      "status": {
+        "active": "Activo",
+        "paused": "En pausa",
+        "revoked": "Revocado",
+        "expired": "Vencido"
+      },
+      "refresh": "Renovar permiso",
+      "revoke": "Desactivar Wisp",
+      "revokeConfirm": "¿Desactivar Wisp para este alcance? Los hilos abiertos seguirán siendo legibles.",
+      "widening": "Puedes hacer más de lo que permite este permiso; renuévalo para que Wisp se mantenga al día."
+    },
+    "settings": {
+      "title": "Presupuesto y revisión periódica",
+      "budget": "Presupuesto diario (¢)",
+      "tick": "Revisión cada (minutos)",
+      "save": "Guardar"
+    },
+    "focus": {
+      "label": "Trabajando en",
+      "none": "Sin enfoque en un cliente",
+      "pick": "Enfocarse en un cliente…",
+      "clear": "Quitar enfoque"
+    },
+    "attachments": {
+      "title": "Adjunto a este hilo",
+      "drop": "Suelta aquí un hilo de correo, .eml o CSV, o pega texto",
+      "paste": "Pegar texto",
+      "label": "Etiqueta",
+      "add": "Adjuntar",
+      "empty": "Aún no hay nada adjunto",
+      "expires": "Vence el {{date}}",
+      "limits": "Hasta 20 archivos, 5 MB cada uno, solo texto",
+      "focusRequired": "Elige un cliente en el que enfocarte antes de adjuntar",
+      "loadFailed": "No se pudieron cargar los adjuntos"
+    },
+    "toast": {
+      "on": "Wisp está activado",
+      "onFailed": "No se pudo activar Wisp",
+      "off": "Wisp está desactivado",
+      "offFailed": "No se pudo desactivar Wisp",
+      "refreshed": "Permiso renovado",
+      "refreshFailed": "No se pudo renovar el permiso",
+      "settingsSaved": "Configuración de Wisp guardada",
+      "settingsFailed": "No se pudo guardar la configuración de Wisp",
+      "focusSet": "Wisp ahora trabaja en {{org}}",
+      "focusCleared": "Enfoque en el cliente quitado",
+      "focusFailed": "No se pudo cambiar el enfoque",
+      "attached": "Adjuntado al hilo",
+      "attachFailed": "No se pudo adjuntar",
+      "attachTooLarge": "Ese archivo supera los 5 MB",
+      "attachUnsupported": "Solo se pueden adjuntar archivos de texto",
+      "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a activar Wisp para abrirlo de nuevo."
+    }
+  },
+  "wispConcerns": {
+    "title": "Asuntos",
+    "empty": "No hay nada en el radar de Wisp por ahora.",
+    "snooze": "Posponer",
+    "snoozeOneHour": "1 hora",
+    "snoozeTomorrow": "Hasta mañana a las 9:00",
+    "snoozeWeek": "7 días",
+    "dismiss": "Descartar",
+    "resolve": "Resolver",
+    "resolveOutcomePlaceholder": "¿Qué pasó?",
+    "resolveSubmit": "Marcar como resuelto",
+    "snoozed": "Pospuesto",
+    "dismissed": "Descartado",
+    "resolved": "Resuelto",
+    "quietUntil": "en silencio hasta {{when}}",
+    "digestOnly": "solo en el resumen",
+    "showAll": "Mostrar todo",
+    "showLive": "Mostrar abiertos",
+    "loadFailed": "No se pudieron cargar los asuntos",
+    "actionFailed": "Eso no funcionó. Inténtalo de nuevo.",
+    "severity": {
+      "high": "Alta",
+      "medium": "Media",
+      "low": "Baja",
+      "info": "Informativa"
+    },
+    "subject": {
+      "ticket": "Solicitud",
+      "device": "Dispositivo",
+      "alert": "Alerta",
+      "org": "Cliente",
+      "integration": "Integración",
+      "run": "Ejecución",
+      "task": "Tarea",
+      "incident": "Incidente",
+      "quote": "Cotización",
+      "invoice": "Factura",
+      "contract": "Contrato",
+      "site": "Sitio"
+    }
   }
 }

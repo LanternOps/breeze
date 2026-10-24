@@ -25,6 +25,7 @@ import { listChecklist, type ChecklistSummary } from './ticketChecklistService';
 import { assertChecklistTemplateNotInUse } from './checklistTemplateReference';
 import { assertTicketUntickedChecklistItemsDeletable } from './aiOperator/humanWorkService';
 import { lockTicketForWrite } from './ticketRowLock';
+import { assertTicketNotMerged } from './ticketMerge/errors';
 
 /**
  * Ticket checklist templates (spec #5783 §4.2, §4.3, §6.2). Dual ownership per
@@ -743,7 +744,7 @@ export async function applyChecklistTemplateToTicket(
     // deadlocked against a ticket-first writer of one of those items. The
     // caller authorized `ticket`; one this context cannot lock is written
     // exactly as before.
-    await lockTicketForWrite(tx, ticket.id);
+    assertTicketNotMerged(await lockTicketForWrite(tx, ticket.id));
     if (input.mode === 'replace_unticked') {
       // An unticked item a running Operator step waits on is guarded exactly
       // as a single delete is (assertChecklistItemDeletable): the FK is ON

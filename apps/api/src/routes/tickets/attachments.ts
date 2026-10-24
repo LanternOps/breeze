@@ -22,6 +22,7 @@ import {
 } from '../../services/ticketAttachmentStorage';
 import { getScopedTicketOr404 } from './tickets';
 import { lockTicketForWrite } from '../../services/ticketRowLock';
+import { isMergedTombstone, TicketMergedError } from '../../services/ticketMerge/errors';
 import { captureException } from '../../services/sentry';
 import { contentDispositionFor, sanitizeAttachmentFilename } from '../../services/attachmentFilename';
 
@@ -66,6 +67,8 @@ async function lockTicketForAttach(
   const locked = await lockTicketForWrite(db, ticket.id);
   if (!locked || locked.orgId !== ticket.orgId) return fail(c, 404, 'TICKET_NOT_FOUND', 'Ticket not found');
   if (locked.deletedAt) return fail(c, 409, 'TICKET_DELETED', 'Cannot attach files to a deleted ticket');
+  // #8972 W1: a merged tombstone is read-only (409 TICKET_MERGED).
+  if (isMergedTombstone(locked)) return c.json(new TicketMergedError(locked.id, locked.mergedIntoTicketId!).toBody(), 409);
   return null;
 }
 
@@ -503,6 +506,12 @@ ticketAttachmentRoutes.delete(
     const isOwn = att.uploadedByUserId === auth.user.id;
     if (!isOwn && !canManage) {
       return fail(c, 403, 'ATTACHMENT_NOT_DELETABLE', "Deleting another user's attachment requires ticket management permission");
+    }
+    // #8972 W1: a merged tombstone is read-only. Refused BEFORE the object
+    // delete: once the bytes are gone the row must go too, so the locked step
+    // below cannot refuse (a merge moves attachments by row, keeping the id).
+    if (ticket.mergedIntoTicketId) {
+      return c.json(new TicketMergedError(ticket.id, ticket.mergedIntoTicketId).toBody(), 409);
     }
 
     // Object BEFORE row: reversed, a failed object delete would leave bytes in
