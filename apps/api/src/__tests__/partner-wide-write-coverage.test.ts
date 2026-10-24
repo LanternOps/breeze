@@ -63,6 +63,7 @@ const API_SRC = resolve(__dirname, '..');
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // --- business calendars (#8973 W4) ------------------------------------------
+  'services/ticketRouting/repository.ts': 'data access only; every caller-facing write (routes/tickets/routingRules.ts and the manage_ticket_routing_rules AI tool) goes through services/ticketRouting/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   'services/businessCalendars/repository.ts': 'data access only; every caller-facing write goes through services/businessCalendars/service.ts, which gates partner-wide rows on canManagePartnerWidePolicies (selected-access denial pinned in service.test.ts)',
   // --- network_monitors became dual-axis in #5291 W04 ------------------------
   // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a

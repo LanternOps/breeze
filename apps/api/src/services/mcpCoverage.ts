@@ -732,6 +732,9 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'tickets/mailboxConnect.ts': { exempt: 'vendor_console_admin' },
   'tickets/moveOrg.ts': { tools: ['manage_tickets'] },
   'tickets/parts.ts': { tools: ['list_time_entries'] },
+  // #8883 W5 (spec §5.7): reads and the dry run are tier 1; create/update/
+  // reorder/delete are the tier-3 manage tool, partner-wide gate in the service.
+  'tickets/routingRules.ts': { tools: ['list_ticket_routing_rules', 'test_ticket_routing_rule', 'manage_ticket_routing_rules'] },
   'tickets/ticketResponseTemplates.ts': { gap: '#6776' },
   'tickets/tickets.ts': { tools: ['manage_tickets'] },
   'timeEntries/index.ts': { exempt: 'internal_plumbing', note: 'Authorization/helper or router composition module; the textual scanner matches context access, not a standalone endpoint.' },

@@ -1414,6 +1414,7 @@ export * from './aiModelRegistryApi';
 export * from './autopay';
 export * from './flows';
 export * from './businessCalendars';
+export * from './ticketRouting';
 export * from './trustCenter';
 export * from './trustCenterDeclarations';
 export * from './trustCenterAccess';
