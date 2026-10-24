@@ -357,9 +357,29 @@ If `deviceIds` is omitted, remediation targets all devices with active violation
 
 ---
 
+## Managed security agent policies
+
+Turning **Deploy Huntress** or **Deploy SentinelOne** on in a configuration policy's **Security Agents** tab (v0.124.0) makes Breeze generate a software policy for that deployment. The generated policy appears on **Software → Policies** with a **Managed by configuration policy** badge and is **read-only** there: it is regenerated from the configuration policy, so change the vendor selection in **Config Policies**, not here. It installs the vendor's agent on every in-scope Windows device whose organization is mapped in that vendor's integration, using that organization's own keys. See [Security Agents](/features/configuration-policies/#security-agents).
+
+The same page's compliance view carries a **Security agent coverage** strip with one count per state, and a **Device / Vendor / Reason** table behind it (click a state to filter; the selection is kept in the page address). Each device reads as one of:
+
+| State | Meaning |
+|---|---|
+| **Covered** | The policy requires the agent, it is installed, and the vendor reports the device under the right organization. |
+| **Gap** | The policy requires the agent but it is not installed and the vendor does not report it. Raises a medium alert. |
+| **Vendor only** | The vendor reports an agent that matches no Breeze device in this organization. The row has no device; enrol the machine in Breeze or check that the vendor's hostname matches the one the Breeze agent reports. |
+| **Vendor offline** | The agent is installed and the vendor knows the device, but reports the agent as offline. |
+| **Mismatched org** | The vendor reports the device under a different organization's account. Raises an alert; nothing is reinstalled automatically — reassign the agent in the vendor console. |
+| **Not applicable** | The device is out of scope: its organization is not mapped in the vendor's integration, or its platform is not supported (macOS Huntress needs MDM approval; Linux is not supported). |
+| **Pending** | The install is queued or Breeze is waiting for the vendor's next report. |
+
+The **Reason** column names the specific cause, for example *Install pending*, *Awaiting vendor report*, *Organization key missing* or *Organization not mapped to the vendor*. Endpoints the SentinelOne console stops returning are marked absent at the next sync and drop out of **Covered**.
+
+---
+
 ## System Restore checkpoints
 
-Software installs on Windows can be set up to request a System Restore checkpoint first. This is **off by default** and is controlled by the **System Protection** policy setting, not by a software policy. The outcome appears as a badge on the deployment; until a device runs a future agent release that supports it, the badge reads **Awaiting the device**. See [System Protection](/features/configuration-policies/#system-protection). System Restore is not a backup.
+Software installs on Windows can be set up to request a System Restore checkpoint first. This is **off by default** and is controlled by the **System Protection** policy setting, not by a software policy. From **agent 0.124.0** the device takes one restore point just before the install's first change and reports the outcome as a badge on the deployment; an install that changes nothing (for example a package already present) spends none. A device on an older agent keeps reading **Awaiting the device**. A restore point that cannot be created is reported, and the install still runs. See [System Protection](/features/configuration-policies/#system-protection). System Restore is not a backup.
 
 ---
 

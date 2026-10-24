@@ -62,6 +62,14 @@ Two other places show the same list, scoped:
 - A **contract's** page has a **Signed agreements** section listing what was signed for that contract, and its header names the agreement the contract sits under.
 - An **organization's record** has an **Agreements** section under Contracts & Billing, listing everything that customer has signed.
 
+### Record signed agreement
+
+Not every agreement arrives through a quote. When a customer signed your MSA elsewhere -- in DocuSign, on paper, or by replying to an email -- file it with **Record signed agreement** on **Agreements → Signed agreements** (v0.124.0+). The dialog asks for the organization, the agreement template, an optional contract to file it against, **How it was agreed** (verbally or by phone, by email, a signed document, a purchase order, or other), a **Reference** a reviewer could follow -- a PO number, an email and date, or a ticket -- **Who agreed** and their email, the **Date signed**, and an optional **Signed copy** (PDF, PNG or JPEG, up to 10 MB). With a signed copy attached, that file is what gets filed; without one, Breeze files the template version and asks you to fill in any manual **Agreement details** it needs. The recorded agreement carries that evidence -- method, reference, signer and date -- and the list shows it as "recorded by MSP" with the method, as opposed to "via quote". Recording cannot be undone: a recorded agreement cannot be deleted afterwards.
+
+<Aside type="caution" title="Known gap: templates that use quote variables">
+  Without an attached file, a template whose body uses the quote variables stops at "Provide a value for: quote.number", because there is no quote to fill them from. Attach the signed copy instead (#9296).
+</Aside>
+
 ## Permissions
 
 | Action | Permission |

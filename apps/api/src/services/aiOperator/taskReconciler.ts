@@ -53,6 +53,7 @@ import {
   type ReconcilerScanSet,
 } from '../aiOperatorCoordinatorMetrics';
 import { parseTaskCheckpoint } from './taskService';
+import { isServiceRecoveryCheckpoint } from '@breeze/shared';
 import { sendHumanWorkReminders } from './humanWorkService';
 
 /**
@@ -362,7 +363,11 @@ async function readTaskDeviceId(orgId: string, taskId: string): Promise<string |
       // so the frozen checkpoint is the fallback — the evidence read still
       // authorizes against the org, and a device that left the org fails there
       // rather than here.
-      return row.deviceId ?? parseTaskCheckpoint(row.checkpoint)?.recipeInput.deviceId ?? null;
+      if (row.deviceId) return row.deviceId;
+      // Only the service-recovery arm names a device; any other arm has no
+      // device fallback (R1a-0).
+      const checkpoint = parseTaskCheckpoint(row.checkpoint);
+      return checkpoint && isServiceRecoveryCheckpoint(checkpoint) ? checkpoint.recipeInput.deviceId : null;
     }));
 }
 

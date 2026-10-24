@@ -254,6 +254,12 @@ PAM's UAC-intercept flow interacts with whatever else is installed on the endpoi
   There is a documented, production-breaking interaction between the **N-able N-Central agent** and `consent.exe` on idle or locked machines: UAC prompts accept credentials and then hang for **4-5 minutes** because of a deadlock in N-able's signature-verification hooks (Microsoft Q&A 5733506). This is an N-able issue addressed by their `Framework.dll` hotfixes, but any UAC-touching code -- including Breeze PAM -- shares the same surface. If your customers run N-Central concurrently, test PAM against it before turning capture on org-wide, and keep the [per-scope disable](#per-organization-and-per-device-overrides) switch in mind as an immediate mitigation.
 </Aside>
 
+### Moving a device or merging its organisation
+
+From v0.124.0, moving a device to another organisation, or merging its organisation into another, **expires every live elevation request** on the affected devices that has not yet been actuated -- a pending UAC or Tech JIT request that nobody has approved yet, or that has not reached the endpoint. Each one is marked expired and gets an audit entry on the **Audit** tab, so the ledger shows why the request never completed. Evidence of elevations that already happened stays with the organisation it belonged to.
+
+A nightly job deletes PAM evidence older than **400 days**, but only from the retired shell an organisation leaves behind after a merge -- never from a live organisation. Self-hosters can change the window or turn the job off; see [Environment Variables](/deploy/environment/).
+
 ### Platform support
 
 The UAC-intercept flow, the just-in-time admin window, and the dormant-admin credential lifecycle are **Windows-only**. Tech JIT admin and AI tool-action governance are platform-independent at the approval layer, but the on-device elevation primitives apply to Windows endpoints.

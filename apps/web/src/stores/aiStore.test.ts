@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./auth', () => ({
   fetchWithAuth: vi.fn()
 }));
+// createSession reads the header's selected org (#9529); none selected here.
+vi.mock('./orgStore', () => ({ useOrgStore: { getState: () => ({ currentOrgId: null }) } }));
 
 import { fetchWithAuth } from './auth';
 import { useAiStore } from './aiStore';
