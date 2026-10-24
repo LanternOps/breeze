@@ -3528,6 +3528,22 @@ describe('MCP_STATELESS_ENABLED boolean guard', () => {
   });
 });
 
+describe('MCP Apps env guard (B-W05 #6159)', () => {
+  it('declares MCP_APPS_ENABLED in the schema', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('MCP_APPS_ENABLED');
+  });
+  it('refuses boot on a boolean typo', () => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/MCP_APPS_ENABLED/);
+    });
+  });
+  it.each(['true', 'false', '1', '0', 'on', 'off'])('accepts MCP_APPS_ENABLED=%s', (value) => {
+    withEnv({ ...validEnv, MCP_APPS_ENABLED: value }, () => {
+      expect(validateConfig().MCP_APPS_ENABLED).toBe(value);
+    });
+  });
+});
+
 describe('MCP Tier-3 intent env guards (B-W04 #6158)', () => {
   const intKnobs = [
     'MCP_INTENT_MAX_LIVE_PER_PRINCIPAL',
