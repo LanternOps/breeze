@@ -36,9 +36,17 @@ export type FlowCatalogEntry =
  *    grant (`AuthContext.wispGrant`), so in a flow they would always answer
  *    `wisp_grant_required`. A flows-only exclusion: the never-agent deny set
  *    in aiGuardrails.ts is deliberately untouched. `confirm_memory` /
- *    `retract_memory` are human-only, so already unreachable.
+ *    `retract_memory` are human-only, so already unreachable;
+ *  - Wisp W05a's concern chat tools (`list_concerns`, `raise_concern`,
+ *    `snooze_concern`, `resolve_concern`, `create_watch`) — the same rule:
+ *    each refuses without `auth.wispGrant`. Named here before W05a lands so
+ *    the exclusion holds whichever PR merges first.
  */
-export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>([...FLOW_TOOL_NAMES, 'remember', 'recall']);
+export const FLOW_EXCLUDED_CORE_TOOLS: ReadonlySet<string> = new Set<string>([
+  ...FLOW_TOOL_NAMES,
+  'remember', 'recall',
+  'list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern', 'create_watch',
+]);
 
 /**
  * Core input fields that name an owned asset other than a device, keyed by

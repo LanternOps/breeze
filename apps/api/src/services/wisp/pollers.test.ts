@@ -336,7 +336,7 @@ describe('pollTicketClusters', () => {
   const tag = (q: unknown) => dialect.sqlToQuery(q as Parameters<PgDialect['sqlToQuery']>[0]);
   const queryWith = (marker: string) => h.executes.map((e) => tag(e.query)).find((r) => r.sql.includes(marker));
 
-  const ceiling = (orgIds: string[]) => ({ grantId: GRANT, partnerId: PARTNER, orgIds: new Set(orgIds) });
+  const ceiling = (orgIds: string[], o: Record<string, unknown> = {}) => ({ grantId: GRANT, partnerId: PARTNER, orgIds: new Set(orgIds), siteIds: null, orgTerms: new Map(), ...o });
 
   beforeEach(() => {
     watches = [{ id: WATCH, org_id: null, grant_id: GRANT, partner_id: PARTNER, current_revision_id: REV, params: {} }];
@@ -490,6 +490,22 @@ describe('pollTicketClusters', () => {
     expect(q.sql).toMatch(/t\.merged_into_ticket_id IS NULL/);
     expect(q.sql).toMatch(/t\.migration_window_id IS NULL/);
     expect(q.sql).toMatch(/row_number\(\) OVER \(PARTITION BY t\.org_id/);
+  });
+
+  it('never scans an org the grant reaches only through a site restriction', async () => {
+    h.resolveGrantCeiling.mockImplementation(async () => ceiling([OA, OB], {
+      orgTerms: new Map([[OB, { permissionKeys: new Set(['*:*']), siteIds: new Set(['site-1']) }]]),
+    }));
+    watches = [{ ...watches[0]!, org_id: null }];
+    await pollTicketClusters(NOW);
+    const q = queryWith('wisp:cluster-tickets')!;
+    expect(q.params).toContain(OA);
+    expect(q.params).not.toContain(OB);
+
+    h.executes = [];
+    h.resolveGrantCeiling.mockImplementation(async () => ceiling([OA, OB], { siteIds: new Set(['site-1']) }));
+    await expect(pollTicketClusters(NOW)).resolves.toEqual({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 });
+    expect(queryWith('wisp:cluster-tickets')).toBeUndefined();
   });
 
   it('honours opts.limit as the per-org ticket bound', async () => {

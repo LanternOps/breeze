@@ -64,6 +64,15 @@ describe('loadFlowCatalog', () => {
     expect(cat.has('recall')).toBe(false);
   });
 
+  it('excludes the Wisp W05a concern chat tools for the same reason (grant-required, never in a flow)', () => {
+    // Registered by W05a (#9911); listed here so the exclusion is in place
+    // whichever of the two PRs lands first.
+    for (const name of ['list_concerns', 'raise_concern', 'snooze_concern', 'resolve_concern', 'create_watch']) {
+      expect(FLOW_EXCLUDED_CORE_TOOLS.has(name), name).toBe(true);
+      expect(listFlowEligibleCoreTools(), name).not.toContain(name);
+    }
+  });
+
   it('includes a reachable core tool with its deviceArgs', async () => {
     const cat = await loadFlowCatalog(OWNER);
     const entry = cat.get('get_device_details');

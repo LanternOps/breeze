@@ -34,6 +34,7 @@ import { publishEvent } from '../eventBus';
 import { captureException } from '../sentry';
 import { updateConcern, upsertConcern } from './concerns';
 import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
+import { assessableOrgIds } from './assessableOrgs';
 
 export const TICKET_STALE_DEFAULT_HOURS = 72;
 /** Equals the wake tick interval; the window must be at least one tick wide. */
@@ -385,7 +386,9 @@ async function resolveClusterTargets(watches: ClusterWatchRow[]): Promise<Cluste
     let orgs = ceilings.get(w.grant_id);
     if (orgs === undefined) {
       try {
-        orgs = (await resolveGrantCeiling(w.grant_id, w.current_revision_id)).orgIds;
+        // Only orgs the grant reaches whole: a cluster summary quotes ticket
+        // subjects across the org, so a site-restricted reach is never scanned.
+        orgs = assessableOrgIds(await resolveGrantCeiling(w.grant_id, w.current_revision_id));
       } catch (err) {
         if (!(err instanceof GrantInactiveError)) {
           captureException(err, undefined, { component: 'wisp.pollers', op: 'ticket_cluster_ceiling' });

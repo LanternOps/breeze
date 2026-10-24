@@ -114,8 +114,8 @@ function orgConcern(n: number, orgId: string, ticketNos: number[], over: Partial
   };
 }
 
-function ceiling(grantId: string, partnerId: string, orgIds: string[], partnerWide = true) {
-  return { grantId, partnerId, grantorUserId: `user-${grantId}`, scopeOrgId: null, partnerWide, orgIds: new Set(orgIds) };
+function ceiling(grantId: string, partnerId: string, orgIds: string[], partnerWide = true, o: Record<string, unknown> = {}) {
+  return { grantId, partnerId, grantorUserId: `user-${grantId}`, scopeOrgId: null, partnerWide, orgIds: new Set(orgIds), siteIds: null, orgTerms: new Map(), ...o };
 }
 
 beforeEach(() => {
@@ -314,6 +314,31 @@ describe('correlateIncidents', () => {
     orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
     await correlateIncidents(NOW);
     expect(h.upsertConcern).not.toHaveBeenCalled();
+  });
+
+  it('never correlates an org a partner-wide grantor reaches only through sites, and a site-restricted ceiling opens nothing', async () => {
+    ceilings.set(G1, ceiling(G1, P, [OA, OB, OC], true, {
+      orgTerms: new Map([[OB, { permissionKeys: new Set(['*:*']), siteIds: new Set(['site-1']) }]]),
+    }));
+    orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
+    await correlateIncidents(NOW);
+    expect(h.upsertConcern).not.toHaveBeenCalled();
+
+    ceilings.set(G1, ceiling(G1, P, [OA, OB, OC], true, { siteIds: new Set(['site-1']) }));
+    orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OC, [4, 5, 6])];
+    await correlateIncidents(NOW);
+    expect(h.upsertConcern).not.toHaveBeenCalled();
+  });
+
+  it('a site-restricted partner-wide grant neither blocks nor joins another grantor\'s partner-level incident', async () => {
+    grants.push({ id: G2, partner_id: P, current_revision_id: uid(32) });
+    ceilings.set(G2, ceiling(G2, P, [OA, OB, OC], true, { siteIds: new Set(['site-1']) }));
+    orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
+    await correlateIncidents(NOW);
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    const grantIds = h.deliverInApp.mock.calls.map((c) => ((c as unknown[])[0] as { grantId?: string }).grantId);
+    expect(grantIds).toContain(G1);
+    expect(grantIds).not.toContain(G2);
   });
 
   it('keeps partners apart', async () => {

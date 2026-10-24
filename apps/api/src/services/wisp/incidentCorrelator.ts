@@ -41,6 +41,7 @@ import { captureException } from '../sentry';
 import { recipientState, recordNudge, resolveConcern, updateConcern, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
 import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
+import { assessableOrgIds } from './assessableOrgs';
 import {
   appendCapped,
   clusterSignature,
@@ -107,9 +108,12 @@ function tsIso(v: unknown): string | null {
 }
 
 function intersectOrgIds(ceilings: GrantCeiling[]): Set<string> {
-  const [first, ...rest] = ceilings;
-  if (!first) return new Set();
-  return new Set([...first.orgIds].filter((id) => rest.every((c) => c.orgIds.has(id))));
+  if (ceilings.length === 0) return new Set();
+  // Site-aware (assessableOrgs.ts): an org a grantor reaches only through
+  // sites is never named in a partner-level incident they are nudged about,
+  // and a site-restricted ceiling contributes nothing.
+  const sets = ceilings.map(assessableOrgIds);
+  return new Set([...sets[0]!].filter((id) => sets.slice(1).every((s) => s.has(id))));
 }
 
 function incidentSummary(orgCount: number, tokens: string[]): string {
@@ -413,7 +417,10 @@ export async function correlateIncidents(now: Date): Promise<Result> {
       continue;
     }
     // Partner-level subjects need the live partner-wide reach (w00 A30).
-    if (ceiling.scopeOrgId !== null || !ceiling.partnerWide || ceiling.partnerId !== g.partner_id) continue;
+    // A ceiling-wide site restriction cannot see partner-level concerns at all
+    // (W05a's listConcernsForCeiling), so that grantor is neither a reader nor
+    // a nudge target, and does not narrow the other grantors' intersection.
+    if (ceiling.scopeOrgId !== null || !ceiling.partnerWide || ceiling.partnerId !== g.partner_id || ceiling.siteIds !== null) continue;
     const list = byPartner.get(g.partner_id) ?? [];
     list.push(ceiling);
     byPartner.set(g.partner_id, list);
