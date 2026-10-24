@@ -18,6 +18,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { softwareComplianceStatus, softwarePolicies } from '../../db/schema';
 import { createDevice, createOrganization, createPartner, createSite } from './db-utils';
+import { upsertSoftwareComplianceStatuses } from '../../services/softwarePolicyService';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -181,6 +182,23 @@ describe('software_compliance_status RLS (#6958 PR E)', () => {
 
   it('system context sees every row', async () => {
     expect(await visibleRowIds(SYSTEM_CTX)).toEqual([w.rowA1, w.rowA2, w.rowB].sort());
+  });
+
+  it('the compliance upsert: an omitted serviceWatches leaves the column alone, null clears it', async () => {
+    const read = async () => (await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ serviceWatches: softwareComplianceStatus.serviceWatches }).from(softwareComplianceStatus)
+        .where(eq(softwareComplianceStatus.id, w.rowA1))))[0]?.serviceWatches;
+    const base = { deviceId: w.devA1, policyId: w.policyA1, status: 'compliant' as const, violations: [] };
+    await withDbAccessContext(SYSTEM_CTX, () => upsertSoftwareComplianceStatuses([{ ...base, serviceWatches: [{ name: 'ctrld' }] }]));
+    expect(await read()).toEqual([{ name: 'ctrld' }]);
+    // Same call, two shapes: the omitted input must not travel with the null one.
+    await withDbAccessContext(SYSTEM_CTX, () => upsertSoftwareComplianceStatuses([
+      { ...base },
+      { deviceId: w.devA2, policyId: w.policyA2, status: 'compliant', violations: [], serviceWatches: null },
+    ]));
+    expect(await read()).toEqual([{ name: 'ctrld' }]);
+    await withDbAccessContext(SYSTEM_CTX, () => upsertSoftwareComplianceStatuses([{ ...base, serviceWatches: null }]));
+    expect(await read()).toBeNull();
   });
 
   it('service_watches round-trips through the Drizzle column', async () => {

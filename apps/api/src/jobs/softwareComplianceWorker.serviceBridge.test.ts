@@ -38,6 +38,7 @@ vi.mock('bullmq', () => ({
   Job: class {},
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../db', () => ({
   db: {
     select: dbSelectMock,
@@ -69,6 +70,7 @@ vi.mock('../services/softwarePolicyService', async (importOriginal) => {
 });
 
 import { processCheckPolicy } from './softwareComplianceWorker';
+import { captureException } from '../services/sentry';
 import type { SoftwarePolicyViolation } from '../db/schema';
 
 const POLICY_ID = 'policy-1';
@@ -314,6 +316,67 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
     const row = upserted();
     expect(row.installRemediationAttempts).toBeUndefined();
     expect(row.installRemediationStatus).toBeUndefined();
+  });
+
+  it('an INVENTORY-MATCHED rule that is only service_unverified does not hold: the counter resets and the status settles', async () => {
+    primePass({
+      existing: [{ deviceId: 'device-1', status: 'violation', violations: [], installRemediationStatus: 'failed', installRemediationAttempts: 2 }],
+      inventory: [{ name: 'Control D', version: '1.5.8', vendor: null, catalogId: null }],
+    });
+    primeObservations([]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const row = upserted();
+    expect((row.violations as SoftwarePolicyViolation[]).map((v) => v.type)).toEqual(['service_unverified']);
+    expect(row).toMatchObject({ installRemediationAttempts: 0, installRemediationStatus: 'completed' });
+  });
+
+  it('a held install axis does not rewrite a previous `completed` to `none`', async () => {
+    primePass({
+      existing: [{ deviceId: 'device-1', status: 'compliant', violations: [], installRemediationStatus: 'completed', installRemediationAttempts: 0 }],
+    });
+    primeObservations([]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted().installRemediationStatus).toBeUndefined();
+  });
+
+  it.each([
+    ['the versions read', 'versions'],
+    ['the observation read', 'observations'],
+  ] as const)('a failure in %s does not fail the pass: inventory is evaluated, watches untouched, installs held', async (_label, which) => {
+    const failing = () => {
+      // Lazy: a rejected promise is created only when the code awaits it.
+      const fail = () => Promise.reject(new Error('bridge read failed'));
+      const rejected = () => ({
+        then: (onOk: (v: unknown) => unknown, onErr: (e: unknown) => unknown) => fail().then(onOk, onErr),
+        limit: fail,
+        orderBy: fail,
+      });
+      const joined: Record<string, unknown> = { where: rejected };
+      joined.innerJoin = () => joined;
+      return { from: () => joined };
+    };
+    if (which === 'versions') {
+      primeSelects([[POLICY], [WIN_NEW], [{ deviceId: 'device-1', status: 'violation', violations: [], installRemediationAttempts: 1 }]]);
+      dbSelectMock.mockReturnValueOnce(failing());
+      resolveDeviceIdsMock.mockResolvedValueOnce(['device-1']);
+      inventoryMock.mockResolvedValueOnce(new Map([['device-1', []]]));
+    } else {
+      primePass({ existing: [{ deviceId: 'device-1', status: 'violation', violations: [], installRemediationAttempts: 1 }] });
+      dbSelectDistinctOnMock.mockReturnValueOnce(failing());
+    }
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const row = upserted();
+    expect(row.serviceWatches).toBeUndefined();
+    expect((row.violations as SoftwarePolicyViolation[]).map((v) => v.type)).toEqual(['missing']);
+    expect(row.installRemediationAttempts).toBeUndefined();
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
   });
 
   it('resets the counter once the client is observed running', async () => {

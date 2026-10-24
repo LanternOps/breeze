@@ -55,6 +55,7 @@ import {
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
+import { detectionRulesSchema } from '@breeze/shared';
 import { agentSupportsServiceRunningRule } from '../services/softwareInstallAgentSupport';
 import {
   applyServiceRules,
@@ -651,6 +652,27 @@ function serviceNamesByCatalogFor(
 }
 
 /**
+ * serviceNamesForOs reads stored detection rules that no longer parse as
+ * "no service clauses". Writes are validated, so this means stored-data drift
+ * (a hand edit, or a schema tightened later) — make it visible, once per
+ * catalog item per pass, instead of letting the bridge silently go dark.
+ */
+function warnUnparseableDetectionRules(policyId: string, versions: ServiceBridgeVersion[]): void {
+  const warned = new Set<string>();
+  for (const version of versions) {
+    if (warned.has(version.catalogId)) continue;
+    const rules = version.detectionRules;
+    if (rules === null || rules === undefined || (Array.isArray(rules) && rules.length === 0)) continue;
+    if (detectionRulesSchema.safeParse(rules).success) continue;
+    warned.add(version.catalogId);
+    console.warn('[SoftwareComplianceWorker] latest catalog version has unparseable detection rules; its service_running clauses are ignored (#6958)', {
+      policyId,
+      catalogId: version.catalogId,
+    });
+  }
+}
+
+/**
  * The watch list stored for one (policy, device): every derived name, deduped
  * case-insensitively, sorted case-insensitively, then capped. Null when the
  * policy derives nothing for this device, which clears a stale list.
@@ -668,6 +690,12 @@ function derivedServiceWatches(
     }
   }
   if (byKey.size === 0) return null;
+  if (byKey.size > MAX_DERIVED_SERVICE_WATCHES) {
+    console.warn('[SoftwareComplianceWorker] derived service watches truncated; the dropped services stay service_unverified (#6958)', {
+      derived: byKey.size,
+      cap: MAX_DERIVED_SERVICE_WATCHES,
+    });
+  }
   return Array.from(byKey.entries())
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, MAX_DERIVED_SERVICE_WATCHES)
@@ -884,34 +912,56 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   // for (or qualify) inventory evidence in applyServiceRules. Two reads per
   // pass at most (versions, then observations), and none for a policy that
   // cannot derive a name.
-  const bridgeVersions = await loadServiceBridgeVersions(
-    policy.mode,
-    normalizedRules.software ?? [],
-    Array.from(new Set(deviceIds.map((id) => orgByDevice.get(id)!))),
-  );
+  //
+  // A failed bridge read must not fail the pass: inventory compliance and the
+  // uninstall verb predate the bridge and still run. The pass then says
+  // nothing about service_watches (undefined: the stored list and its
+  // last_checked-driven delivery survive), applies no service rules, and
+  // HOLDS the install verb — without the bridge a zip-installed client reads
+  // `missing`, and reinstalling a running client on a read error is worse
+  // than waiting one cycle.
+  let bridgeVersions: ServiceBridgeVersion[] | null = null;
   const namesByOrgOsMemo = new Map<string, Map<string, string[]>>();
   const serviceWatchesByDevice = new Map<string, Array<{ name: string }> | null>();
-  const derivedLowerNames = new Set<string>();
-  const devicesWithWatches: string[] = [];
-  for (const deviceId of deviceIds) {
-    const watches = bridgeVersions
-      ? derivedServiceWatches(
-        normalizedRules.software ?? [],
-        serviceNamesByCatalogFor(bridgeVersions, orgByDevice.get(deviceId)!, osTypeByDevice.get(deviceId) ?? '', namesByOrgOsMemo),
-      )
-      : null;
-    serviceWatchesByDevice.set(deviceId, watches);
-    if (watches) {
-      devicesWithWatches.push(deviceId);
-      for (const watch of watches) derivedLowerNames.add(watch.name.toLowerCase());
+  let observationsByDevice = new Map<string, Map<string, ServiceObservation>>();
+  let bridgeUnavailable = false;
+  try {
+    bridgeVersions = await loadServiceBridgeVersions(
+      policy.mode,
+      normalizedRules.software ?? [],
+      Array.from(new Set(deviceIds.map((id) => orgByDevice.get(id)!))),
+    );
+    if (bridgeVersions) warnUnparseableDetectionRules(policy.id, bridgeVersions);
+    const derivedLowerNames = new Set<string>();
+    const devicesWithWatches: string[] = [];
+    for (const deviceId of deviceIds) {
+      const watches = bridgeVersions
+        ? derivedServiceWatches(
+          normalizedRules.software ?? [],
+          serviceNamesByCatalogFor(bridgeVersions, orgByDevice.get(deviceId)!, osTypeByDevice.get(deviceId) ?? '', namesByOrgOsMemo),
+        )
+        : null;
+      serviceWatchesByDevice.set(deviceId, watches);
+      if (watches) {
+        devicesWithWatches.push(deviceId);
+        for (const watch of watches) derivedLowerNames.add(watch.name.toLowerCase());
+      }
     }
+    observationsByDevice = await loadServiceObservations(
+      devicesWithWatches,
+      Array.from(derivedLowerNames),
+      agentVersionByDevice,
+      now,
+    );
+  } catch (error) {
+    bridgeUnavailable = true;
+    serviceWatchesByDevice.clear();
+    console.error('[SoftwareComplianceWorker] service_running bridge inputs failed; evaluating inventory only and holding installs this pass (#6958)', {
+      policyId: policy.id,
+      error,
+    });
+    captureException(error);
   }
-  const observationsByDevice = await loadServiceObservations(
-    devicesWithWatches,
-    Array.from(derivedLowerNames),
-    agentVersionByDevice,
-    now,
-  );
   // ---- end bridge inputs ----------------------------------------------------
 
   let violations = 0;
@@ -989,7 +1039,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       // the install axis is HELD (neither settled nor reset) until the
       // service is observed. An inventory-matched rule's unverified does not
       // hold: inventory already proves the install.
-      const installAxisHeld = violationsWithStableTimestamps.some((v) =>
+      const installAxisHeld = bridgeUnavailable || violationsWithStableTimestamps.some((v) =>
         v.type === 'service_unverified' && !evaluated.matchedRuleNames.has(v.rule?.name ?? ''));
 
       let installRemediationStatus: SoftwarePolicyInstallRemediationStatus | undefined;
@@ -1011,13 +1061,13 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         if ((existing?.installRemediationAttempts ?? 0) > 0) {
           installRemediationAttempts = 0;
         }
-      } else if (hasMissingViolation && existing?.installRemediationStatus === 'completed') {
+      } else if (hasMissingViolation && !bridgeUnavailable && existing?.installRemediationStatus === 'completed') {
         // It came back. Clear the stale success so the next decision is not read
         // against a status describing a previous cycle.
         installRemediationStatus = 'none';
       }
 
-      if (hasMissingViolation && installArming.armed) {
+      if (hasMissingViolation && installArming.armed && !bridgeUnavailable) {
         // #5505 W03 reconcile sweep, part 2 of 2. This device still wants
         // software AND the policy is armed, so a live-but-orphaned status here
         // is exactly the stuck state: shouldQueueAutoRemediation would read it
@@ -1098,7 +1148,8 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         remediationStatus,
         installRemediationStatus,
         installRemediationAttempts,
-        serviceWatches,
+        // undefined when the bridge failed: leave the stored list alone.
+        serviceWatches: bridgeUnavailable ? undefined : serviceWatches,
       });
       recordSoftwarePolicyEvaluation(policy.mode, status, Date.now() - startedAt, 'evaluated');
 
