@@ -2541,6 +2541,12 @@ async function fileMcpActionIntent(
     try {
       const task = await loadOwnedMcpTask(args.auth, outcome.status.actionId);
       if (task) return jsonRpcResult(id, buildCreateTaskResult(task));
+      // The intent was just filed or replayed by this credential, so a null
+      // reload means a read-your-writes or ownership-predicate defect.
+      captureMessage('MCP task reload found no owned intent right after filing; answered pending_approval', {
+        eventCode: 'mcp_task_reload_missing',
+        level: 'warning',
+      });
     } catch (err) {
       console.error('[MCP] Failed to build the task for a filed intent; answering pending_approval:', err);
       captureException(err);
@@ -2552,11 +2558,21 @@ async function fileMcpActionIntent(
 /** B-W06 (#6160, D-B52): the knobs for one projection, budgeted on the caller's live count. */
 async function mcpTaskKnobsFor(auth: AuthContext): Promise<Parameters<typeof toMcpTask>[2]> {
   const { countLiveMcpIntentsForOrigin } = await liveMcpIntentCreation();
+  // The live count only tunes pollIntervalMs. A failed count must not fail a
+  // read the ownership load already answered (get_action_status has no such
+  // dependency): degrade to the base intervals, and report it.
+  let liveCount = 0;
+  try {
+    liveCount = await countLiveMcpIntentsForOrigin(auth);
+  } catch (err) {
+    console.error('[MCP] Failed to count live intents for the task poll budget; using base intervals:', err);
+    captureException(err);
+  }
   return {
     pendingPollMs: mcpTaskPendingPollIntervalMs(),
     runningPollMs: mcpTaskPollIntervalMs(),
     ttlGraceMs: mcpTaskTtlGraceMs(),
-    liveCount: await countLiveMcpIntentsForOrigin(auth),
+    liveCount,
     perMinuteLimit: mcpMessageRateLimitPerMinute(),
   };
 }

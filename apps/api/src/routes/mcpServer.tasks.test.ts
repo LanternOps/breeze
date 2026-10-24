@@ -676,12 +676,14 @@ describe('B-W06 tools/call returns a task to a declaring modern client', () => {
     expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
   });
 
-  it('reload returns null → B-W04 pending_approval result, never an error', async () => {
+  it('reload returns null → B-W04 pending_approval result, never an error, and reported (read-your-writes / ownership drift)', async () => {
     intentMocks.loadOwnedMcpIntent.mockResolvedValue(null);
     const { body } = await modernCall('execute_command', ARGS, { caps: TASK_CAPS });
     expect(body.error).toBeUndefined();
     expect(body.result.resultType).toBe('complete');
     expect(body.result.structuredContent.status).toBe('pending_approval');
+    expect(mocks.captureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ eventCode: 'mcp_task_reload_missing' }));
+    expect(JSON.stringify(mocks.captureMessage.mock.calls)).not.toContain(ID);
   });
 
   it('reload throws → B-W04 pending_approval result, reported', async () => {
@@ -805,12 +807,13 @@ describe('B-W06 tasks/* gate order (D-B51)', () => {
     },
   );
 
+  // Ownership itself (credential, source mcp_api, RLS org) lives in
+  // loadOwnedMcpIntent and is proven against real Postgres in
+  // mcpIntentRoundTrip.integration.test.ts (second key, chat-source intent,
+  // another org's intent). Here a foreign row is what that loader returns for
+  // it — null — so this pins that the route renders every null identically.
   it.each([
-    ['an unknown UUID', '99999999-9999-4999-8999-999999999999', true],
-    ['another key\'s intent', ID, true],
-    ['the same user\'s OAuth-grant intent', ID, true],
-    ['a chat-source intent', ID, true],
-    ['another org\'s intent', ID, true],
+    ['an unknown UUID (or any id the ownership loader rejects)', '99999999-9999-4999-8999-999999999999', true],
     ['a 65-character string', 'a'.repeat(65), false],
     ['a number', 12345, false],
     ['absent', undefined, false],
@@ -829,6 +832,33 @@ describe('B-W06 tasks/* gate order (D-B51)', () => {
       expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
       expect(intentMocks.cancelOwnedMcpIntent).not.toHaveBeenCalled();
     }
+  });
+
+  it.each([['a 65-character string', 'a'.repeat(65)], ['a number', 7], ['absent', undefined]] as const)(
+    'undeclared with %s → -32021 (the declaration check runs before the id shape check)',
+    async (_label, taskId) => {
+      const { body } = await modernTasks('tasks/get', taskId === undefined ? {} : { taskId }, { caps: {} });
+      expect(body.error.code).toBe(-32021);
+      expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a key without ai:read is refused by the preflight before any Tasks gate', async () => {
+    testState.scopes = ['ai:execute'];
+    const { body } = await modernTasks('tasks/get', { taskId: ID }, { caps: {} });
+    expect(body.error).toBeDefined();
+    expect(body.error.code).not.toBe(-32021);
+    expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+  });
+
+  it('an ai:read-only tasks/cancel gets the scope error for any id, with no lookup (no existence signal)', async () => {
+    testState.scopes = ['ai:read'];
+    const own = await modernTasks('tasks/cancel', { taskId: ID });
+    const unknown = await modernTasks('tasks/cancel', { taskId: '99999999-9999-4999-8999-999999999999' });
+    expect(own.body.error).toEqual(CANCEL_SCOPE_ERROR);
+    expect(unknown.body.error).toEqual(own.body.error);
+    expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+    expect(intentMocks.cancelOwnedMcpIntent).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -933,10 +963,22 @@ describe('B-W06 tasks/* infrastructure failures', () => {
     expect(mocks.captureException).toHaveBeenCalled();
   });
 
-  it('a live-count failure in tasks/get is the same -32000 body', async () => {
+  it('a live-count failure only degrades the poll budget: tasks/get still answers, base interval, reported', async () => {
     intentMocks.countLiveMcpIntentsForOrigin.mockRejectedValue(new Error('db down'));
     const { body } = await modernTasks('tasks/get', { taskId: ID });
-    expect(body.error).toEqual({ code: -32000, message: 'Unable to read the action status' });
+    expect(body.error).toBeUndefined();
+    expect(body.result).toMatchObject({ taskId: ID, status: 'working', pollIntervalMs: 30_000 });
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('a live-count failure in the continuation still answers with the task (never -32000 for a filed intent)', async () => {
+    const state = await firstUrlCall();
+    setRows(intentRow('pending_approval'));
+    intentMocks.countLiveMcpIntentsForOrigin.mockRejectedValue(new Error('db down'));
+    const { body } = await retry(state, { action: 'cancel' });
+    expect(body.error).toBeUndefined();
+    expect(body.result).toMatchObject({ resultType: 'task', taskId: ID, pollIntervalMs: 30_000 });
+    expect(mocks.captureException).toHaveBeenCalled();
   });
 
   it('a DB failure in tasks/cancel → the cancel_action -32000 body, never {}', async () => {

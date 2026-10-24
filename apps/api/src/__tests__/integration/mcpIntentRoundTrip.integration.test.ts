@@ -687,9 +687,63 @@ describe('Tier-3 over MCP as a Task (B-W06, real Postgres)', () => {
     expect(cross.body.result).toBeUndefined();
     expect(cross.body.error).toEqual(unknown.body.error);
     expect(crossCancel.body.error).toEqual(unknown.body.error);
+    const crossUpdate = await modernRpc(rawKeyB, 'tasks/update', { taskId, inputResponses: {} });
+    expect(crossUpdate.body.result).toBeUndefined();
+    expect(crossUpdate.body.error).toEqual(unknown.body.error);
     expect((await readIntent(taskId)).status).toBe('pending_approval');
 
     // The owner still reads it.
     expect((await modernRpc(f.rawKey, 'tasks/get', { taskId })).body.result.status).toBe('working');
+  }, 60_000);
+});
+
+describe('Tasks ownership against real rows (B-W06 review follow-up)', () => {
+  beforeEach(() => {
+    process.env.MCP_STATELESS_ENABLED = 'true';
+    process.env.MCP_TASKS_ENABLED = 'true';
+  });
+  afterEach(() => {
+    delete process.env.MCP_STATELESS_ENABLED;
+    delete process.env.MCP_TASKS_ENABLED;
+  });
+
+  const NOT_FOUND = { code: -32602, message: 'Task not found', data: { reason: 'not_found' } };
+
+  it("another org's task and the same human's chat-source intent are not found on tasks/get, tasks/update and tasks/cancel", async () => {
+    const f = await seed();
+    const other = await seed();
+    const { taskId: otherOrgTask } = await fileTask(other, { snapshotId: randomUUID(), deviceId: other.deviceId });
+
+    const [chat] = await sys(() => db.insert(actionIntents).values({
+      orgId: f.orgId,
+      partnerId: f.partnerId,
+      requestedByUserId: f.requester.id,
+      requestingApiKeyId: null,
+      requestingAgentRunId: null,
+      source: 'chat',
+      originPrincipalKind: 'user_session',
+      originPrincipalId: f.requester.id,
+      actionName: TOOL,
+      actionVersion: 1,
+      arguments: { snapshotId: randomUUID(), deviceId: f.deviceId },
+      argumentDigest: 'c'.repeat(64),
+      targetSummary: 'Restore a snapshot',
+      impactSummary: 'Overwrites files on the device',
+      reason: 'chat-source ownership probe',
+      riskTier: 3,
+      idempotencyKey: `chat-${randomUUID()}`,
+      correlationId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    }).returning({ id: actionIntents.id }));
+
+    for (const taskId of [otherOrgTask, chat!.id]) {
+      for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel'] as const) {
+        const res = await modernRpc(f.rawKey, method, { taskId });
+        expect(res.body.result).toBeUndefined();
+        expect(res.body.error).toEqual(NOT_FOUND);
+      }
+    }
+    expect((await readIntent(otherOrgTask)).status).toBe('pending_approval');
+    expect((await readIntent(chat!.id)).status).toBe('pending_approval');
   }, 60_000);
 });
