@@ -1139,6 +1139,15 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // grant with ON DELETE RESTRICT FKs, so they must (and do) precede it; the
   // revisions go with the grant via ON DELETE CASCADE.
   'wisp_grants',
+  // Wisp W04 (#9910). wisp_thread_attachments is shape 1 (its artifact's org);
+  // wisp_thread_sessions is partner-axis but carries the attached session's
+  // org_id. Both reference ai_run_artifacts / ai_sessions / organizations with
+  // ON DELETE CASCADE and wisp_threads (a partner table, not in this list);
+  // topologicalCascadeOrder() puts them before their parents.
+  // wisp_threads.focus_org_id needs no step: its FK is ON DELETE SET NULL
+  // (focus_org_id).
+  'wisp_thread_attachments',
+  'wisp_thread_sessions',
   // #6263 W03a. yara_rules.rule_set_id -> yara_rule_sets ON DELETE CASCADE,
   // so deleting the parent first is FK-safe; built-in rows (org_id NULL) are
   // never matched by an org erasure.

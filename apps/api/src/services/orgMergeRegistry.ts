@@ -593,6 +593,20 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // are in one window, the loser's row collides with the survivor's and is
   // dropped; the survivor stays in the window either way.
   migration_window_orgs: { kind: 'repoint-dedupe', key: ['window_id'] },
+  // Wisp W04 (#9910): wisp_thread_sessions links a session to its thread; the
+  // row's org_id is the session's org (composite (session_id, org_id) FK to
+  // ai_sessions, which is itself repointed), so it follows the session. The
+  // key is the PK (thread_id, session_id); session_id is globally unique, so a
+  // collision cannot happen and the dedupe half always drops nothing.
+  wisp_thread_sessions: { kind: 'repoint-dedupe', key: ['thread_id', 'session_id'] },
+  // wisp_thread_attachments' org_id is its artifact's org (composite
+  // (artifact_id, org_id) FK to ai_run_artifacts). Attachment artifacts are
+  // session-anchored or unanchored (run_id NULL), which moveAiRunArtifacts
+  // re-points, so the pair stays consistent under SET CONSTRAINTS ALL
+  // DEFERRED; (thread_id, artifact_id) is unique and unaffected by org_id.
+  // wisp_threads (focus_org_id) has no org_id column and is not a merge
+  // participant: a loser focus is cleared by its FK when the shell is erased.
+  wisp_thread_attachments: { kind: 'repoint' },
   // #6592: Gmail mailbox connections carry org_id; repoint them to the survivor
   // instead of letting the FK cascade delete them with the loser org. Plain
   // repoint (no dedupe): the only unique is (partner_id, mailbox_address), which

@@ -229,6 +229,11 @@ const ORG_AXIS_POLICY_EXCLUDED_TABLES: ReadonlySet<string> = new Set<string>([
   // composite (org_id, partner_id) FK, not the tenancy axis. Functional forge
   // proof: wispGrantsRls.integration.test.ts.
   'wisp_grants',
+  // Wisp W04 (#9910): partner-axis (shape 3, in PARTNER_TENANT_TABLES). org_id
+  // is the attached session's org, bound to the partner by the composite
+  // (org_id, partner_id) FK — not the tenancy axis. Forge proof:
+  // wispThreadsRls.integration.test.ts.
+  'wisp_thread_sessions',
 ]);
 
 // Tables whose own `id` column is the tenant identifier (no `org_id`).
@@ -519,6 +524,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
   // trigger). Forge proof: wispGrantsRls.integration.test.ts.
   ['wisp_grants', 'partner_id'],
   ['wisp_grant_revisions', 'partner_id'],
+  // Wisp W04 (#9910): one durable thread per grant + its session links. Shape
+  // 3, one FOR ALL policy each (system OR breeze_has_partner_access(partner_id)).
+  // wisp_thread_sessions also carries a non-tenancy org_id and is in
+  // ORG_AXIS_POLICY_EXCLUDED_TABLES (dual-list trap). The sibling
+  // wisp_thread_attachments is shape 1 (auto-discovered, not listed here).
+  // Forge proof: wispThreadsRls.integration.test.ts.
+  ['wisp_threads', 'partner_id'],
+  ['wisp_thread_sessions', 'partner_id'],
 ]);
 
 // Tables whose policies reference both helpers (org OR partner). `users`
