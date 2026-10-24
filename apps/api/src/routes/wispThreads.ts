@@ -58,9 +58,9 @@ import { bodyLimitOnError } from '../middleware/bodyLimitGate';
 import { userRateLimit } from '../middleware/userRateLimit';
 import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
-import { currentActivity, InvalidActivityCursorError, listActivity } from '../services/wisp/activity';
+import { currentActivity, InvalidActivityCursorError, listActivity, type CurrentActivity } from '../services/wisp/activity';
 import { spendSummary } from '../services/wisp/budget';
-import { CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
+import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from '../services/wisp/grantAuthority';
 import { getActiveGrantForUser, wideningAvailable, type WispGrantStatus } from '../services/wisp/grants';
 import {
   THREAD_ATTACHMENT_MAX_BYTES,
@@ -342,6 +342,18 @@ wispThreadRoutes.get('/:id', async (c) => {
   return c.json({ data: await threadPayload(partnerIdOf(authOf(c)), own.thread, { ...own.grant }) });
 });
 
+/** The live line names an org: show it only while that org is still inside the grant's live ceiling. */
+function withinCeiling(ceiling: GrantCeiling, current: CurrentActivity): CurrentActivity {
+  if (!current) return null;
+  try {
+    assertWithinCeiling(ceiling, { orgId: current.orgId });
+    return current;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return null;
+    throw err;
+  }
+}
+
 // W06 (w00 A31): the derived, ceiling-filtered activity timeline and the live
 // "Wisp is checking …" line. The grant's LIVE ceiling filters every item.
 wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchema), async (c) => {
@@ -355,7 +367,7 @@ wispThreadRoutes.get('/:id/activity', zValidator('query', wispActivityQuerySchem
       listActivity(outcome.ceiling, { cursor, limit, threadId: own.thread.id }),
       currentActivity(own.grant.id),
     ]);
-    return c.json({ data: { items: page.items, nextCursor: page.nextCursor, current } });
+    return c.json({ data: { items: page.items, nextCursor: page.nextCursor, current: withinCeiling(outcome.ceiling, current) } });
   } catch (err) {
     if (err instanceof InvalidActivityCursorError) return fail(c, 400, 'invalid_cursor', 'Invalid cursor');
     throw err;

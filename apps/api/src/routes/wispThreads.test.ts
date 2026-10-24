@@ -148,7 +148,10 @@ const ownRow = (o: Record<string, unknown> = {}) => ({
   grantOrgId: null, grantStatus: 'active', grantRevisionId: REV,
   grantExpiresAt: new Date('2027-04-01T00:00:00Z'), grantBudgetCentsPerDay: 200, grantFloorTickMinutes: 30, ...o,
 });
-const ceiling = { grantId: GRANT_ID, revisionId: REV, partnerId: PARTNER, orgIds: new Set([ORG]) };
+const ceiling = {
+  grantId: GRANT_ID, revisionId: REV, partnerId: PARTNER, orgIds: new Set([ORG]), status: 'active', scopeOrgId: null,
+  partnerWide: false, siteIds: null, orgTerms: new Map(), deniedTools: new Set(), toolAllowlist: null,
+};
 const attachment = (o: Record<string, unknown> = {}) => ({
   id: ATT_ID, threadId: THREAD_ID, orgId: ORG, artifactId: ARTIFACT, label: 'notes.txt', addedByUserId: USER,
   contentType: 'text/plain', bytes: 11, expiresAt: new Date('2026-11-01T00:00:00Z'), createdAt: new Date('2026-10-02T00:00:00Z'), ...o,
@@ -694,6 +697,15 @@ describe('GET /wisp/thread/:id/activity (W06 Task 14, w00 A31)', () => {
     expect(h.resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REV);
     expect(h.listActivity).toHaveBeenCalledWith(ceiling, { cursor: 'abc', limit: 10, threadId: THREAD_ID });
     expect(h.currentActivity).toHaveBeenCalledWith(GRANT_ID);
+  });
+
+  it('the live line is dropped when its org has left the grant ceiling', async () => {
+    h.dbResults.push([ownRow()]);
+    h.listActivity.mockResolvedValue({ items: [], nextCursor: null });
+    h.currentActivity.mockResolvedValue({ orgId: ORG2, orgName: 'Not yours', startedAt: '2026-10-24T08:05:00.000Z' });
+    const res = await buildApp().request(`/wisp/thread/${THREAD_ID}/activity`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).data.current).toBeNull();
   });
 
   it('is 404 for another user\'s thread (no ceiling resolved, nothing listed)', async () => {
