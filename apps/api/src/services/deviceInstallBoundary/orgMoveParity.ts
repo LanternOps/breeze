@@ -85,6 +85,9 @@ export const ORG_MOVE_PARITY: Readonly<Record<string, OrgMoveParityEntry>> = {
   'table:ticket_comments': { moveOnly: TENANT_POINTER },
   'table:device_function_assessments': { moveOnly: TENANT_POINTER },
   'table:device_vulnerabilities': { moveOnly: TENANT_POINTER },
+  'table:security_scans': {
+    moveOnly: 'the sweep_id pointer to a source-org IOC sweep (#6263 W05), and its never-dispatched queued scans; the boundary fails queued/running scans in its work_in_flight handler for its own reason',
+  },
 
   // The ticket chain (services/ticketOrgMoveLockOrder.ts).
   'table:tickets': { moveOnly: TICKET_CHAIN },
