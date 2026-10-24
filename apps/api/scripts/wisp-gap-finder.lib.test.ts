@@ -173,6 +173,19 @@ describe('renderGapReport', () => {
   });
 });
 
+describe('renderGapReport — markdown escaping (CodeQL js/incomplete-sanitization)', () => {
+  it('escapes backslashes before pipes, so an input backslash cannot un-escape a table delimiter', () => {
+    const s = snapshot();
+    s.orgs[0]!.name = String.raw`Acme\|Dental`;
+    const md = renderGapReport(s, [finding({ title: String.raw`Path C:\Temp\ | broken` })]);
+    // Backslash doubled first, then the pipe escaped.
+    expect(md).toContain(String.raw`Acme\\\|Dental`);
+    expect(md).toContain(String.raw`C:\\Temp\\ \| broken`);
+    // Unescaped form: the input backslash would pair with the escaper's, leaving a bare pipe.
+    expect(md).not.toMatch(/Acme\\\\\|Dental/);
+  });
+});
+
 describe('resolveReportPath', () => {
   const now = new Date('2026-10-24T23:30:00.000Z');
 

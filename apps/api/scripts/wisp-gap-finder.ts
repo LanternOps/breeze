@@ -41,7 +41,7 @@
  * gateway connections need an audited egress grant, which records rows — this
  * CLI writes nothing to the DB, so it refuses those.
  */
-import { lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, mkdirSync, openSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -399,13 +399,27 @@ function writeReport(reportPath: string, markdown: string): void {
   if (realInternal !== path.join(realpathSync(REPO_ROOT), 'internal') || !realDir.startsWith(`${realInternal}${path.sep}`)) {
     throw new ExitError(1, 'report directory resolves outside internal/');
   }
+  // ONE open, no check-then-act: O_NOFOLLOW makes the open itself refuse a
+  // symlinked report path (ELOOP), so nothing can be swapped in between a
+  // check and the write. Truncates an earlier same-day report for this partner.
+  let fd: number;
   try {
-    if (lstatSync(reportPath).isSymbolicLink()) throw new ExitError(1, 'report path is a symlink; refusing to write');
+    fd = openSync(
+      reportPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
   } catch (err) {
-    if (err instanceof ExitError) throw err;
-    // ENOENT: nothing there yet.
+    if ((err as NodeJS.ErrnoException).code === 'ELOOP') {
+      throw new ExitError(1, 'report path is a symlink; refusing to write');
+    }
+    throw err;
   }
-  writeFileSync(reportPath, markdown, { encoding: 'utf8', mode: 0o600 });
+  try {
+    writeFileSync(fd, markdown, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // ------------------------------------------------------------------- main

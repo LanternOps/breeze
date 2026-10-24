@@ -222,9 +222,17 @@ export function scrubHostLike(value: string): string {
   return out;
 }
 
-/** One-line markdown-safe text: scrubbed, newlines collapsed, table pipes escaped. */
+/**
+ * One-line markdown-safe text: scrubbed, newlines collapsed, then escaped —
+ * backslashes FIRST (so an input `\` cannot pair with the escaper's own and
+ * leave a bare table delimiter), then table pipes.
+ */
 function md(value: string): string {
-  return scrubHostLike(value).replace(/\s*\r?\n\s*/g, ' ').replace(/\|/g, '\\|').trim();
+  return scrubHostLike(value)
+    .replace(/\s*\r?\n\s*/g, ' ')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .trim();
 }
 
 const KIND_HEADING: Record<GapKind, string> = {
