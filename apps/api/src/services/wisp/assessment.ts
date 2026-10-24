@@ -12,7 +12,8 @@
  *   loadAssessmentContext  the run's bounded context: thread seed, the org's
  *                          live concerns with this grant's recipient state, a
  *                          five-table digest since the watermark (each read
- *                          pinned to the run's org, ≤ 25 rows, sanitised), the
+ *                          pinned to the run's org, gated on the grantor's
+ *                          permission for it, ≤ 25 rows, sanitised), the
  *                          reason's watch, the org's readiness inventory, and
  *                          the grantor's nudge feedback. null = the grant is no
  *                          longer usable (the run finishes without a model call).
@@ -26,7 +27,7 @@
  * it announces and enqueues after its own transaction commits (#1105; the same
  * seam as metricAnomalySubscriber.ts).
  */
-import { and, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Concern, ConcernSeverity, ConcernSubject, ConcernSubjectKind } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { actionIntents } from '../../db/schema/actionIntents';
@@ -41,10 +42,17 @@ import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../aiAgents/assessmentProfile';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import { sanitizeSweepText } from '../aiAgents/runnerPrompt';
 import { hasEntitlement } from '../entitlements';
+import { captureException } from '../sentry';
 import { chargeableUnderGrant, notifyBudgetExhaustedOnce, utcDayWindow } from './budget';
 import { listConcernsForCeiling, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
-import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
+import {
+  CeilingViolationError,
+  GrantInactiveError,
+  assertWithinCeiling,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from './grantAuthority';
 import { recallForGrant } from './memoryBroker';
 import { assessableOrgIds } from './assessableOrgs';
 import { readinessInventory } from './readiness';
@@ -63,7 +71,7 @@ export { assessableOrgIds } from './assessableOrgs';
 
 /** Rows per digest table (w00: bounded, newest first). */
 const DIGEST_ROW_LIMIT = 25;
-/** Digest window when the (grant, org) pair has never completed an assessment. */
+/** Digest window when the (grant, org) pair has no watermark yet (see lastAssessmentWatermark). */
 const DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 /** w00 A34: the grantor's last 20 nudge-feedback preference blocks. */
 const NUDGE_FEEDBACK_LIMIT = 20;
@@ -216,16 +224,36 @@ export async function enqueueAssessment(
   return result.created ? { runId: result.run.id } : { skipped: result.skipped };
 }
 
-/** MAX(finished_at) of completed assessment runs for (grant, org); null when there is none. */
+/** Run statuses that finished an assessment cleanly enough to advance the watermark. */
+const WATERMARK_RUN_STATUSES = ['completed', 'awaiting_approval'] as const;
+/** The finalizer's error code for dropped work (aiAgents/assessmentFinalizer.ts). */
+const PARTIALLY_APPLIED_ERROR_CODE = 'assessment_partially_applied';
+
+/**
+ * Where the next assessment's digest window starts for (grant, org): the
+ * START (`started_at`, else `queued_at`) of the latest assessment run that
+ * finished cleanly; null when there is none (the caller falls back to 24 h).
+ * Deliberate departure from the plan's MAX(finished_at) of completed runs:
+ *   - `awaiting_approval` counts: a run whose propose_action left a pending
+ *     intent did its job; excluding it would re-read the same window and
+ *     could propose the same action again.
+ *   - the START, not the finish: an event that lands while run A is running
+ *     (after A loaded its digest, before A finished) is in neither A's window
+ *     nor — with MAX(finished_at) — the next run's. The overlap this leaves is
+ *     harmless: concerns upsert idempotently.
+ *   - a run whose finalizer returned `assessment_partially_applied` (stored in
+ *     `error_code`) does not advance it, so the dropped work is re-assessed.
+ */
 export async function lastAssessmentWatermark(grantId: string, orgId: string): Promise<Date | null> {
   const [row] = await sys(() => db
-    .select({ at: sql<Date | string | null>`max(${aiAgentRuns.finishedAt})` })
+    .select({ at: sql<Date | string | null>`max(coalesce(${aiAgentRuns.startedAt}, ${aiAgentRuns.queuedAt}))` })
     .from(aiAgentRuns)
     .where(and(
       eq(aiAgentRuns.grantId, grantId),
       eq(aiAgentRuns.orgId, orgId),
       eq(aiAgentRuns.profile, 'assessment'),
-      eq(aiAgentRuns.status, 'completed'),
+      inArray(aiAgentRuns.status, [...WATERMARK_RUN_STATUSES]),
+      or(isNull(aiAgentRuns.errorCode), ne(aiAgentRuns.errorCode, PARTIALLY_APPLIED_ERROR_CODE)),
     )), 'wisp.assessment.watermark');
   return toDate(row?.at);
 }
@@ -330,39 +358,70 @@ export function parseWispTriggerRef(triggerRef: Record<string, unknown> | null |
   return { grantId: w.grantId, grantRevisionId: w.grantRevisionId, reason, watermark };
 }
 
-/** Five bounded reads, each pinned to `orgId` (the ceiling admitted the org; the pin is the second lock). */
-async function loadDigest(orgId: string, currentRunId: string, since: Date): Promise<AssessmentDigest> {
+/**
+ * The human permission each digest section needs — what a person holding the
+ * grantor's delegated authority would need to read the same rows:
+ *   alerts     alerts:read (PERMISSIONS.ALERTS_READ)
+ *   tickets    tickets:read (PERMISSIONS.TICKETS_READ)
+ *   incidents  organizations:read (routes/connectionHealth.ts GET /incidents),
+ *              plus each incident's own `view_permission`, the route's
+ *              per-row rule (see loadDigestIncidents)
+ *   runs       ai_agents:read (routes/aiAgents.ts GET /runs; the
+ *              `list_ai_agent_runs` tool)
+ *   intents    ai_agents:read — no list route reads intents; a run's intents
+ *              are read on its detail (routes/aiAgents.ts GET /runs/:runId),
+ *              so they follow the runs section. approvals:decide is a DECIDE
+ *              right, not a read one.
+ */
+const DIGEST_SECTION_PERMISSION = {
+  alerts: 'alerts:read',
+  tickets: 'tickets:read',
+  incidents: 'organizations:read',
+  runs: 'ai_agents:read',
+  intents: 'ai_agents:read',
+} as const;
+
+/** The grantor may read `permission` in `orgId` under this ceiling (org term included). */
+function ceilingAllows(ceiling: GrantCeiling, orgId: string, permission: string): boolean {
+  try {
+    assertWithinCeiling(ceiling, { orgId, permission });
+    return true;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return false;
+    throw err;
+  }
+}
+
+/**
+ * Five bounded reads, each pinned to `orgId` (the ceiling admitted the org;
+ * the pin is the second lock) and each gated on the grantor's permission for
+ * it (DIGEST_SECTION_PERMISSION): a section the grantor may not read renders
+ * empty and issues no query.
+ */
+async function loadDigest(ceiling: GrantCeiling, orgId: string, currentRunId: string, since: Date): Promise<AssessmentDigest> {
+  const may = (section: keyof typeof DIGEST_SECTION_PERMISSION) =>
+    ceilingAllows(ceiling, orgId, DIGEST_SECTION_PERMISSION[section]);
   return sys(async () => {
-    const alertRows = await db
+    const alertRows = !may('alerts') ? [] : await db
       .select({ id: alerts.id, title: alerts.title, severity: alerts.severity, status: alerts.status, at: alerts.triggeredAt })
       .from(alerts)
       .where(and(eq(alerts.orgId, orgId), gte(alerts.triggeredAt, since)))
       .orderBy(desc(alerts.triggeredAt))
       .limit(DIGEST_ROW_LIMIT);
-    const ticketRows = await db
+    const ticketRows = !may('tickets') ? [] : await db
       .select({ id: tickets.id, number: tickets.ticketNumber, title: tickets.subject, status: tickets.status, updatedAt: tickets.updatedAt })
       .from(tickets)
       .where(and(eq(tickets.orgId, orgId), gte(tickets.updatedAt, since)))
       .orderBy(desc(tickets.updatedAt))
       .limit(DIGEST_ROW_LIMIT);
-    const incidentRows = await db
-      .select({
-        id: connectionHealthIncidents.id,
-        sourceKind: connectionHealthIncidents.sourceKind,
-        condition: connectionHealthIncidents.condition,
-        openedAt: connectionHealthIncidents.openedAt,
-      })
-      .from(connectionHealthIncidents)
-      .where(and(eq(connectionHealthIncidents.orgId, orgId), gte(connectionHealthIncidents.openedAt, since)))
-      .orderBy(desc(connectionHealthIncidents.openedAt))
-      .limit(DIGEST_ROW_LIMIT);
-    const runRows = await db
+    const incidentRows = !may('incidents') ? [] : await loadDigestIncidents(ceiling, orgId, since);
+    const runRows = !may('runs') ? [] : await db
       .select({ id: aiAgentRuns.id, profile: aiAgentRuns.profile, status: aiAgentRuns.status, summary: aiAgentRuns.summary })
       .from(aiAgentRuns)
       .where(and(eq(aiAgentRuns.orgId, orgId), ne(aiAgentRuns.id, currentRunId), gte(aiAgentRuns.queuedAt, since)))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(DIGEST_ROW_LIMIT);
-    const intentRows = await db
+    const intentRows = !may('intents') ? [] : await db
       .select({ id: actionIntents.id, toolName: actionIntents.actionName, status: actionIntents.status })
       .from(actionIntents)
       .where(and(eq(actionIntents.orgId, orgId), gte(actionIntents.createdAt, since)))
@@ -405,6 +464,33 @@ async function loadDigest(orgId: string, currentRunId: string, since: Date): Pro
   }, 'wisp.assessment.digest');
 }
 
+/**
+ * The org's incidents since `since` the grantor may view: the same two-step
+ * read as GET /connection-health/incidents — the distinct view permissions
+ * present, kept to those inside the ceiling, then the rows carrying one of
+ * them. Runs inside loadDigest's system context.
+ */
+async function loadDigestIncidents(ceiling: GrantCeiling, orgId: string, since: Date) {
+  const window = and(eq(connectionHealthIncidents.orgId, orgId), gte(connectionHealthIncidents.openedAt, since));
+  const present = await db
+    .selectDistinct({ viewPermission: connectionHealthIncidents.viewPermission })
+    .from(connectionHealthIncidents)
+    .where(window);
+  const allowed = present.map((p) => p.viewPermission).filter((text) => ceilingAllows(ceiling, orgId, text));
+  if (allowed.length === 0) return [];
+  return db
+    .select({
+      id: connectionHealthIncidents.id,
+      sourceKind: connectionHealthIncidents.sourceKind,
+      condition: connectionHealthIncidents.condition,
+      openedAt: connectionHealthIncidents.openedAt,
+    })
+    .from(connectionHealthIncidents)
+    .where(and(window, inArray(connectionHealthIncidents.viewPermission, allowed)))
+    .orderBy(desc(connectionHealthIncidents.openedAt))
+    .limit(DIGEST_ROW_LIMIT);
+}
+
 /** One compact line per feedback block; untrusted text, the prompt wraps it. */
 function renderNudgeFeedbackLine(b: { subjectKey: string; content: Record<string, unknown> }): string {
   const c = b.content ?? {};
@@ -423,6 +509,7 @@ async function loadReadiness(ceiling: GrantCeiling, orgId: string, runId: string
     console.warn('[wisp.assessment] readiness inventory failed; context carries readiness: null', {
       runId, orgId, error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.readiness', runId, orgId });
     return null;
   }
 }
@@ -440,6 +527,7 @@ async function loadNudgeFeedback(ceiling: GrantCeiling, runId: string): Promise<
     console.warn('[wisp.assessment] nudge feedback recall failed; context carries none', {
       runId, error: err instanceof Error ? err.message : String(err),
     });
+    captureException(err, undefined, { component: 'wisp', op: 'wisp.assessment.nudgeFeedback', runId });
     return [];
   }
 }
@@ -478,7 +566,7 @@ export async function loadAssessmentContext(run: {
   const openConcerns = await listConcernsForCeiling(ceiling, { status: ['open', 'snoozed'], orgId: run.orgId });
 
   const since = ref.watermark ? new Date(ref.watermark) : new Date(Date.now() - DEFAULT_LOOKBACK_MS);
-  const digest = await loadDigest(run.orgId, run.id, since);
+  const digest = await loadDigest(ceiling, run.orgId, run.id, since);
 
   const reason = ref.reason;
   const watchId = reason.kind === 'watch' ? reason.watchId : null;

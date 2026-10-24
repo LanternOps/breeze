@@ -1446,10 +1446,20 @@ export async function createAndEnqueueAgentRun(
   // narrower than "not forced shadow": the lift is keyed on the ticket
   // condition specifically, so it can never reach the anomaly force below —
   // an unproven detector has no lift at all, full stop.
+  //
+  // Wisp W05b (#9917) — assessment runs are ALSO always forced shadow, with
+  // no lift. An assessment reads tenant-authored text (tickets, alerts, the
+  // thread) and w00 allows it Tier 1 plus auto-approved Tier 2 only: an
+  // `act` start would make intentService's `resolvePolicyDecisionState`
+  // treat a supervised Tier-3 `propose_action` intent as policy-decidable,
+  // i.e. executable with no human. Shadow keeps every assessment proposal
+  // pending a human decision; like the anomaly force it changes only
+  // `modeAtStart`, never admission precedence.
   const ticketAutonomy = (triggerKind === 'ticket' || input.ticketId)
     && effective.mode === 'act' && effective.triggers.ticketAutonomousWrites === true;
   const modeAtStart = ((triggerKind === 'ticket' || input.ticketId) && !ticketAutonomy)
-    || triggerKind === 'anomaly' || input.anomalyIncidentId ? 'shadow' : effective.mode;
+    || triggerKind === 'anomaly' || input.anomalyIncidentId
+    || (input.profile ?? 'full') === 'assessment' ? 'shadow' : effective.mode;
 
   // 2b. Circuit breaker (wave 6 PR 2, #3828). Placed as early as possible
   // after the kill switch — this is the first point `resolved.agentId` is

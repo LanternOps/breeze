@@ -32,7 +32,7 @@ const h = vi.hoisted(() => {
     results,
     queries,
     ctx,
-    db: { select: vi.fn(() => chain()), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    db: { select: vi.fn(() => chain()), selectDistinct: vi.fn(() => chain()), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
     GrantInactiveError,
     wispEnabled: vi.fn(() => true),
     hasEntitlement: vi.fn(),
@@ -50,6 +50,7 @@ const h = vi.hoisted(() => {
     readinessInventory: vi.fn(),
     recallForGrant: vi.fn(),
     pauseGrant: vi.fn(),
+    captureException: vi.fn(),
   };
 });
 
@@ -75,7 +76,13 @@ vi.mock('../../db', () => ({
 }));
 vi.mock('../../config/env', () => ({ wispEnabled: h.wispEnabled }));
 vi.mock('../entitlements', () => ({ hasEntitlement: h.hasEntitlement }));
-vi.mock('./grantAuthority', () => ({ resolveGrantCeiling: h.resolveGrantCeiling, GrantInactiveError: h.GrantInactiveError }));
+// The real assertWithinCeiling gates the digest sections on the grantor's permissions.
+vi.mock('./grantAuthority', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./grantAuthority')>()),
+  resolveGrantCeiling: h.resolveGrantCeiling,
+  GrantInactiveError: h.GrantInactiveError,
+}));
+vi.mock('../sentry', () => ({ captureException: h.captureException }));
 vi.mock('../aiAgents/runService', () => ({ createAndEnqueueAgentRun: h.createAndEnqueueAgentRun }));
 vi.mock('../aiAgents/assessmentProfile', () => ({ ASSESSMENT_BUDGET_CENTS_PER_RUN: 25 }));
 vi.mock('./budget', async () => ({
@@ -307,7 +314,7 @@ describe('enqueueAssessment', () => {
 });
 
 describe('lastAssessmentWatermark', () => {
-  it('is MAX(finished_at) of completed assessment runs for (grant, org)', async () => {
+  it('is read for (grant, org, profile assessment)', async () => {
     const at = new Date('2026-10-23T22:00:00.000Z');
     h.results.push([{ at }]);
     await expect(lastAssessmentWatermark(GRANT, ORG)).resolves.toEqual(at);
@@ -317,8 +324,39 @@ describe('lastAssessmentWatermark', () => {
     expect(text).toContain('"grant_id" = $');
     expect(text).toContain('"org_id" = $');
     expect(text).toContain('"profile" = $');
-    expect(text).toContain('"status" = $');
-    expect(params).toEqual(expect.arrayContaining([GRANT, ORG, 'assessment', 'completed']));
+    expect(params).toEqual(expect.arrayContaining([GRANT, ORG, 'assessment']));
+  });
+
+  // A run that left a pending intent finishes `awaiting_approval`; excluding
+  // it would re-read the same window and could re-propose the same action.
+  it('counts runs that ended completed OR awaiting_approval', async () => {
+    h.results.push([{ at: null }]);
+    await lastAssessmentWatermark(GRANT, ORG);
+    const { sql: text, params } = compile(h.queries[0]!.where[0]);
+    expect(text).toMatch(/"status" in \(\$\d+, \$\d+\)/);
+    expect(params).toEqual(expect.arrayContaining(['completed', 'awaiting_approval']));
+  });
+
+  // An event landing while run A ran (after A loaded its digest, before it
+  // finished) must still be in B's window: the watermark is when A STARTED.
+  it('is the latest qualifying run START (started_at, else queued_at), never finished_at', async () => {
+    h.results.push([{ at: null }]);
+    await lastAssessmentWatermark(GRANT, ORG);
+    const selection = (h.db.select.mock.calls[0] as unknown[])[0] as { at: SQL };
+    const { sql: text } = compile(selection.at);
+    expect(text).toMatch(/max\(coalesce\("ai_agent_runs"\."started_at", "ai_agent_runs"\."queued_at"\)\)/);
+    expect(text).not.toContain('finished_at');
+  });
+
+  // The finalizer's `assessment_partially_applied` (stored in error_code)
+  // means work was dropped: that run must not advance the watermark, so the
+  // next run re-assesses its window. A NULL error_code still counts.
+  it('excludes a run whose finalizer reported assessment_partially_applied, null-safely', async () => {
+    h.results.push([{ at: null }]);
+    await lastAssessmentWatermark(GRANT, ORG);
+    const { sql: text, params } = compile(h.queries[0]!.where[0]);
+    expect(text).toMatch(/"error_code" is null or "ai_agent_runs"\."error_code" <> \$\d+/);
+    expect(params).toContain('assessment_partially_applied');
   });
 
   it('is null when there is no completed assessment', async () => {
@@ -412,10 +450,14 @@ describe('loadAssessmentContext', () => {
   const queueDigest = () => {
     h.results.push([{ id: 'a1', title: 'CPU\nhigh', severity: 'high', status: 'active', at: new Date('2026-10-24T07:00:00Z') }]);
     h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+    h.results.push([{ viewPermission: 'organizations:read' }]); // incidents: distinct view permissions present
     h.results.push([{ id: 'i1', sourceKind: 'psa', condition: 'auth_failed', openedAt: new Date('2026-10-24T08:00:00Z') }]);
     h.results.push([{ id: 'r1', profile: 'full', status: 'completed', summary: 'did a thing' }]);
     h.results.push([{ id: 'x1', toolName: 'restart_service', status: 'pending_approval' }]);
   };
+  const ALL_DIGEST_KEYS = ['alerts:read', 'tickets:read', 'organizations:read', 'ai_agents:read'];
+  const keys = (omit: string[] = []) => new Set(ALL_DIGEST_KEYS.filter((k) => !omit.includes(k)));
+  const tablesQueried = () => new Set(h.queries.map((q) => q.table));
   beforeEach(() => {
     h.seedContextForSession.mockResolvedValue('## Wisp thread\nsummary');
     h.listConcernsForCeiling.mockResolvedValue([{ id: 'c1' }]);
@@ -522,15 +564,127 @@ describe('loadAssessmentContext', () => {
     expect(ctx!.watch).toEqual(watch);
   });
 
-  it('yields readiness: null when the readiness inventory fails', async () => {
+  it('yields readiness: null when the readiness inventory fails, and reports it to Sentry', async () => {
     queueDigest();
-    h.readinessInventory.mockRejectedValue(new Error('boom'));
+    const err = new Error('boom');
+    h.readinessInventory.mockRejectedValue(err);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ctx = await loadAssessmentContext(run());
     expect(ctx).not.toBeNull();
     expect(ctx!.readiness).toBeNull();
     expect(h.readinessInventory).toHaveBeenCalledWith(expect.objectContaining({ grantId: GRANT }), { orgIds: [ORG] });
+    expect(h.captureException).toHaveBeenCalledWith(err, undefined, expect.objectContaining({
+      component: 'wisp', op: 'wisp.assessment.readiness',
+    }));
     warn.mockRestore();
+  });
+
+  it('carries no nudge feedback when the recall fails, and reports it to Sentry', async () => {
+    queueDigest();
+    const err = new Error('recall down');
+    h.recallForGrant.mockRejectedValue(err);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ctx = await loadAssessmentContext(run());
+    expect(ctx!.nudgeFeedback).toEqual([]);
+    expect(h.captureException).toHaveBeenCalledWith(err, undefined, expect.objectContaining({
+      component: 'wisp', op: 'wisp.assessment.nudgeFeedback',
+    }));
+    warn.mockRestore();
+  });
+
+  // Each digest section is what a human with the grantor's (delegated)
+  // permissions could read: alerts:read, tickets:read, organizations:read
+  // (+ each incident's own view permission, routes/connectionHealth.ts), and
+  // ai_agents:read for runs and intents (routes/aiAgents.ts run detail).
+  describe('digest sections gated on the grantor permissions', () => {
+    it('a ceiling without tickets:read issues no tickets query and renders an empty tickets list', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: keys(['tickets:read']) }));
+      h.results.push([{ id: 'a1', title: 'CPU', severity: 'high', status: 'active', at: new Date('2026-10-24T07:00:00Z') }]);
+      h.results.push([{ viewPermission: 'organizations:read' }]);
+      h.results.push([{ id: 'i1', sourceKind: 'psa', condition: 'auth_failed', openedAt: new Date('2026-10-24T08:00:00Z') }]);
+      h.results.push([{ id: 'r1', profile: 'full', status: 'completed', summary: null }]);
+      h.results.push([{ id: 'x1', toolName: 'restart_service', status: 'pending_approval' }]);
+      const ctx = await loadAssessmentContext(run());
+      expect(tablesQueried().has(tickets)).toBe(false);
+      expect(ctx!.digest.tickets).toEqual([]);
+      expect(ctx!.digest.alerts.map((r) => r.id)).toEqual(['a1']);
+      expect(ctx!.digest.incidents.map((r) => r.id)).toEqual(['i1']);
+      expect(ctx!.digest.runs.map((r) => r.id)).toEqual(['r1']);
+      expect(ctx!.digest.intents.map((r) => r.id)).toEqual(['x1']);
+    });
+
+    it('with only tickets:read, the tickets query runs and nothing else is read', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: new Set(['tickets:read']) }));
+      h.results.push([{ id: 't1', number: null, title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+      const ctx = await loadAssessmentContext(run());
+      const digestTables = [alerts, tickets, connectionHealthIncidents, aiAgentRuns, actionIntents];
+      expect(digestTables.filter((t) => tablesQueried().has(t))).toEqual([tickets]);
+      expect(ctx!.digest).toEqual({
+        alerts: [], incidents: [], runs: [], intents: [],
+        tickets: [{ id: 't1', number: null, title: 'Printer', status: 'open', updatedAt: '2026-10-24T07:30:00.000Z' }],
+      });
+    });
+
+    it("the org's own membership term narrows it too: no alerts:read in the org term → no alerts query", async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({
+        permissionKeys: new Set(['*:*']),
+        orgTerms: new Map([[ORG, { permissionKeys: keys(['alerts:read']), siteIds: null }]]),
+      }));
+      h.results.push([{ id: 't1', number: 'T-1', title: 'Printer', status: 'open', updatedAt: new Date('2026-10-24T07:30:00Z') }]);
+      h.results.push([]); // no incidents present
+      h.results.push([]);
+      h.results.push([]);
+      const ctx = await loadAssessmentContext(run());
+      expect(tablesQueried().has(alerts)).toBe(false);
+      expect(ctx!.digest.alerts).toEqual([]);
+      expect(ctx!.digest.tickets.map((r) => r.id)).toEqual(['t1']);
+    });
+
+    it('without ai_agents:read neither runs nor intents are read', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: keys(['ai_agents:read']) }));
+      h.results.push([], [], []);
+      const ctx = await loadAssessmentContext(run());
+      expect(tablesQueried().has(aiAgentRuns)).toBe(false);
+      expect(tablesQueried().has(actionIntents)).toBe(false);
+      expect(ctx!.digest.runs).toEqual([]);
+      expect(ctx!.digest.intents).toEqual([]);
+    });
+
+    it('without organizations:read no incident is read at all', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: keys(['organizations:read']) }));
+      h.results.push([], [], [], []);
+      const ctx = await loadAssessmentContext(run());
+      expect(tablesQueried().has(connectionHealthIncidents)).toBe(false);
+      expect(h.db.selectDistinct).not.toHaveBeenCalled();
+      expect(ctx!.digest.incidents).toEqual([]);
+    });
+
+    it("incidents are narrowed to the view permissions the grantor holds (the route's per-row rule)", async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: keys() }));
+      h.results.push([], []);
+      h.results.push([{ viewPermission: 'organizations:read' }, { viewPermission: 'billing:read' }, { viewPermission: 'malformed' }]);
+      h.results.push([{ id: 'i1', sourceKind: 'psa', condition: 'auth_failed', openedAt: new Date('2026-10-24T08:00:00Z') }]);
+      h.results.push([], []);
+      const ctx = await loadAssessmentContext(run());
+      const incidentQueries = h.queries.filter((q) => q.table === connectionHealthIncidents);
+      expect(incidentQueries).toHaveLength(2);
+      const { sql: text, params } = compile(incidentQueries[1]!.where[0]);
+      expect(text).toMatch(/"view_permission" in \(\$\d+\)/);
+      expect(params).toContain('organizations:read');
+      expect(params).not.toContain('billing:read');
+      expect(params).not.toContain('malformed');
+      expect(ctx!.digest.incidents.map((r) => r.id)).toEqual(['i1']);
+    });
+
+    it('when the grantor may view none of the incidents present, the incident rows are never read', async () => {
+      h.resolveGrantCeiling.mockResolvedValue(ceiling({ permissionKeys: keys() }));
+      h.results.push([], []);
+      h.results.push([{ viewPermission: 'billing:read' }]);
+      h.results.push([], []);
+      const ctx = await loadAssessmentContext(run());
+      expect(h.queries.filter((q) => q.table === connectionHealthIncidents)).toHaveLength(1);
+      expect(ctx!.digest.incidents).toEqual([]);
+    });
   });
 
   it('recalls at most 20 nudge_feedback preference blocks of the grantor and renders one line each', async () => {

@@ -24,7 +24,9 @@
  *   every org it names. A partner with only org-scoped grants gets nothing.
  * - Each partner-wide grantor gets one in-app notice per concern
  *   (`deliverInApp`, dedupe `wisp-incident-<concern>-<grant>`); W06 swaps the
- *   delivery for notifyUser.
+ *   delivery for notifyUser. Every tick re-checks each live partner-level
+ *   incident's recipients, so a failed delivery is retried on the next tick.
+ *   Cost: one recipient read per (live incident, grantor) per tick.
  * - Auto-close (every partner, grant or not): a partner-level incident whose
  *   children are all resolved/dismissed, or any poller-made incident whose
  *   last ticket is older than 24 h → resolveConcern(id, {}, 'auto_closed').
@@ -40,7 +42,7 @@ import { wispEnabled } from '../../config/env';
 import { captureException } from '../sentry';
 import { recipientState, recordNudge, resolveConcern, updateConcern, upsertConcern } from './concerns';
 import { deliverInApp } from './deliver';
-import { GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
+import { assertWithinCeiling, CeilingViolationError, GrantInactiveError, resolveGrantCeiling, type GrantCeiling } from './grantAuthority';
 import { assessableOrgIds } from './assessableOrgs';
 import {
   appendCapped,
@@ -112,8 +114,20 @@ function intersectOrgIds(ceilings: GrantCeiling[]): Set<string> {
   // Site-aware (assessableOrgs.ts): an org a grantor reaches only through
   // sites is never named in a partner-level incident they are nudged about,
   // and a site-restricted ceiling contributes nothing.
-  const sets = ceilings.map(assessableOrgIds);
+  // The summary also quotes cluster tokens (words from ticket subjects), so
+  // the grantor must hold tickets:read in the org as well.
+  const sets = ceilings.map((c) => new Set([...assessableOrgIds(c)].filter((id) => canReadTickets(c, id))));
   return new Set([...sets[0]!].filter((id) => sets.slice(1).every((s) => s.has(id))));
+}
+
+function canReadTickets(ceiling: GrantCeiling, orgId: string): boolean {
+  try {
+    assertWithinCeiling(ceiling, { orgId, permission: 'tickets:read' });
+    return true;
+  } catch (err) {
+    if (err instanceof CeilingViolationError) return false;
+    throw err;
+  }
 }
 
 function incidentSummary(orgCount: number, tokens: string[]): string {
@@ -208,10 +222,19 @@ async function mergePartnerIncident(live: PartnerIncident, g: Group, healthIds: 
   return { id: live.id, summary, orgCount: orgs.ids.length };
 }
 
+/**
+ * One in-app notice per (concern, partner-wide grantor). "Needs a nudge" is
+ * read from the grantor's recipient row (never nudged, not dismissed, not
+ * snoozed), not from "evidence changed this tick": a delivery that failed is
+ * retried on the next tick even when no new ticket arrived. The dedupeKey
+ * makes a second delivery impossible (a lost recordNudge after a successful
+ * delivery only costs a no-op insert per tick).
+ */
 async function nudgeGrantors(touched: Touched, ceilings: GrantCeiling[], now: Date, threads: Map<string, string>): Promise<void> {
   for (const c of [...ceilings].sort((a, b) => (a.grantId < b.grantId ? -1 : 1))) {
     try {
       const rs = await recipientState(touched.id, c.grantId);
+      if (rs.nudgeCount > 0) continue;
       if (rs.dismissedAt || (rs.snoozedUntil && rs.snoozedUntil.getTime() > now.getTime())) continue;
       let threadId = threads.get(c.grantId);
       if (!threadId) {
@@ -291,9 +314,10 @@ async function correlatePartner(
   }, 'wisp-correlate-incidents');
 
   const children = orgRows.map((r) => toChild(r, allowed, windowStart)).filter((c): c is ChildConcern => c !== null);
-  if (children.length === 0) return;
   const partnerIncidents = partnerRows.map(toPartnerIncident);
   const healthIds = healthRows.map((r) => r.id);
+  /** Summaries written this tick, so the nudge quotes the merged text. */
+  const touchedById = new Map<string, Touched>();
 
   for (const members of singleLinkClusters(children)) {
     const g = toGroup(members);
@@ -346,10 +370,25 @@ async function correlatePartner(
           if (touched) out.updated += 1;
         }
       }
-      if (touched) await nudgeGrantors(touched, ceilings, now, threads);
+      if (touched) touchedById.set(touched.id, touched);
     } catch (err) {
       captureException(err, undefined, { component: 'wisp.incidentCorrelator', op: 'correlate' });
     }
+  }
+
+  // Nudge pass over EVERY live partner-level incident of the partner, not only
+  // the ones touched above, so a nudge that failed on an earlier tick is
+  // retried (nudgeGrantors skips grantors already nudged). Only an incident
+  // whose named orgs all sit inside every grantor's assessable reach is in
+  // scope: a ceiling that shrank since the incident opened must not be nudged
+  // about orgs it can no longer see.
+  for (const inc of partnerIncidents) {
+    if (!inc.live) continue;
+    const orgIds = stringArray(inc.evidence.orgIds);
+    if (orgIds.length === 0 || !orgIds.every((id) => allowed.has(id))) continue;
+    const touched = touchedById.get(inc.id)
+      ?? { id: inc.id, summary: incidentSummary(orgIds.length, stringArray(inc.evidence.tokens)), orgCount: orgIds.length };
+    await nudgeGrantors(touched, ceilings, now, threads);
   }
 }
 

@@ -209,6 +209,28 @@ describe('admission rule 2a — assessment pairing', () => {
   });
 });
 
+describe('assessment runs are always admitted shadow', () => {
+  // An assessment's input is tenant-authored text and w00 allows it Tier 1 +
+  // auto-approved Tier 2 only: an act-mode start would let intentService's
+  // policy decision auto-execute a supervised Tier-3 proposal with no human.
+  it("an act-mode agent's assessment run is inserted with modeAtStart 'shadow'", async () => {
+    const snap = snapshot([]);
+    snap.effective.mode = 'act';
+    resolveEffectiveAgentSystem.mockResolvedValue(snap);
+    await expect(createAndEnqueueAgentRun(input())).resolves.toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'assessment', modeAtStart: 'shadow' });
+  });
+
+  it('the downgrade is assessment-only: an act-mode plain triage run still starts act', async () => {
+    const snap = snapshot([]);
+    snap.effective.mode = 'act';
+    resolveEffectiveAgentSystem.mockResolvedValue(snap);
+    await expect(createAndEnqueueAgentRun(input({ profile: 'triage', grant: undefined, dedupeKey: 'manual:t2' })))
+      .resolves.toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'triage', modeAtStart: 'act' });
+  });
+});
+
 describe("profileCaps('assessment') — pinned per-(agent, org) caps", () => {
   it('max_concurrent_assessment_runs at ASSESSMENT_MAX_CONCURRENT_RUNS (1)', async () => {
     expect(ASSESSMENT_MAX_CONCURRENT_RUNS).toBe(1);

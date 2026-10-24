@@ -3525,6 +3525,8 @@ export async function transitionIntent(
   // never awaited: a bus outage must not fail or delay the CAS the caller won.
   if (DECISION_STATUSES.has(to)) {
     const { row, grantId } = decided;
+    // publishEvent is `async`, so in production it only ever rejects; the
+    // outer catch covers a non-async stand-in (test doubles) that throws.
     try {
       void publishEvent('ai.intent.decided', row.orgId, {
         intentId: row.id,
@@ -3533,14 +3535,18 @@ export async function transitionIntent(
         decision: to,
         requestingAgentRunId: row.requestingAgentRunId ?? null,
         grantId,
-      }, 'action-intents').catch((err: unknown) => {
-        console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
-      });
+      }, 'action-intents').catch(reportIntentDecidedPublishFailure);
     } catch (err) {
-      console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
+      reportIntentDecidedPublishFailure(err);
     }
   }
   return true;
+}
+
+/** A lost `ai.intent.decided` is a lost Wisp wake: report it, never fail the caller. */
+function reportIntentDecidedPublishFailure(err: unknown): void {
+  console.error('[actionIntents] ai.intent.decided publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'actionIntents', op: 'publish_intent_decided' });
 }
 
 /** Statuses that are decisions (not execution progress) — they emit `ai.intent.decided`. */

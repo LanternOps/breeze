@@ -21,6 +21,14 @@ const h = vi.hoisted(() => ({
   updateConcern: vi.fn(),
   resolveGrantCeiling: vi.fn(),
   writesInsideSystem: [] as boolean[],
+  /** A tiny in-memory Redis for the ticket.stale publish markers; null = Redis unavailable. */
+  redisKeys: new Set<string>(),
+  redisAvailable: true,
+  redisSet: vi.fn(),
+  redisDel: vi.fn(),
+}));
+vi.mock('../redis', () => ({
+  getRedis: () => (h.redisAvailable ? { set: h.redisSet, del: h.redisDel } : null),
 }));
 
 vi.mock('../../db', () => ({
@@ -54,12 +62,12 @@ vi.mock('./concerns', () => ({
     return h.updateConcern(...a);
   }),
 }));
-vi.mock('./grantAuthority', () => {
-  class GrantInactiveError extends Error {
-    constructor(public readonly grantId: string) { super(`grant ${grantId} inactive`); }
-  }
-  return { GrantInactiveError, resolveGrantCeiling: (...a: unknown[]) => h.resolveGrantCeiling(...a) };
-});
+// The real assertWithinCeiling / CeilingViolationError (the cluster scan's
+// tickets:read gate); only the ceiling lookup is faked.
+vi.mock('./grantAuthority', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./grantAuthority')>()),
+  resolveGrantCeiling: (...a: unknown[]) => h.resolveGrantCeiling(...a),
+}));
 
 import { createHash } from 'node:crypto';
 import { GrantInactiveError } from './grantAuthority';
@@ -103,9 +111,29 @@ beforeEach(() => {
 });
 
 describe('constants', () => {
-  it('defaults to 72h stale and a 5 minute scan window', () => {
+  it('defaults to 72h stale and a 10 minute scan window (twice the 5 minute tick)', () => {
     expect(TICKET_STALE_DEFAULT_HOURS).toBe(72);
-    expect(TICKET_STALE_SCAN_WINDOW_MINUTES).toBe(5);
+    expect(TICKET_STALE_SCAN_WINDOW_MINUTES).toBe(10);
+  });
+});
+
+describe('ticketStaleWindow — consecutive ticks', () => {
+  // The repeatable fires every 5 minutes, but each tick's `now` is read after
+  // the earlier sections ran, so consecutive `now`s drift apart by more than 5.
+  it('leaves no gap between two ticks up to 5 minutes late, and overlaps them', () => {
+    const tick = 5 * MIN;
+    for (const lateBy of [0, 30_000, 2 * MIN, 5 * MIN]) {
+      const first = ticketStaleWindow(NOW, 72, TICKET_STALE_SCAN_WINDOW_MINUTES);
+      const second = ticketStaleWindow(new Date(NOW.getTime() + tick + lateBy), 72, TICKET_STALE_SCAN_WINDOW_MINUTES);
+      // (lower, upper] windows: no gap iff the next lower edge is at or before the previous upper edge.
+      expect(second.lower.getTime(), `late by ${lateBy} ms`).toBeLessThanOrEqual(first.upper.getTime());
+    }
+  });
+
+  it('the old 5 minute window gapped as soon as a tick ran late', () => {
+    const first = ticketStaleWindow(NOW, 72, 5);
+    const second = ticketStaleWindow(new Date(NOW.getTime() + 5 * MIN + 30_000), 72, 5);
+    expect(second.lower.getTime()).toBeGreaterThan(first.upper.getTime());
   });
 });
 
@@ -140,6 +168,17 @@ describe('ticketStaleEventId', () => {
 });
 
 describe('pollStaleTickets', () => {
+  beforeEach(() => {
+    h.redisKeys.clear();
+    h.redisAvailable = true;
+    h.redisSet.mockImplementation(async (key: string, _v: string, _ex: string, _ttl: number, _nx: string) => {
+      if (h.redisKeys.has(key)) return null;
+      h.redisKeys.add(key);
+      return 'OK';
+    });
+    h.redisDel.mockImplementation(async (key: string) => { h.redisKeys.delete(key); return 1; });
+  });
+
   it('returns zeros without touching the DB when Wisp is off', async () => {
     h.enabled = false;
     await expect(pollStaleTickets(NOW)).resolves.toEqual({ scanned: 0, published: 0 });
@@ -160,7 +199,7 @@ describe('pollStaleTickets', () => {
     expect(text).toMatch(/g\.partner_id = o\.partner_id/);
     expect(text).toMatch(/g\.org_id IS NULL OR g\.org_id = t\.org_id/);
     expect(text).toMatch(/LIMIT/i);
-    const { lower, upper } = ticketStaleWindow(NOW, 72, 5);
+    const { lower, upper } = ticketStaleWindow(NOW, 72, 10);
     expect(params).toContain(lower.toISOString());
     expect(params).toContain(upper.toISOString());
     expect(params).toContain(500);
@@ -187,6 +226,30 @@ describe('pollStaleTickets', () => {
       { eventId: ticketStaleEventId(T1, 72), occurredAt: new Date(updatedAt.getTime() + 72 * HOUR).toISOString() },
     );
     expect(h.publishedInsideSystem).toEqual([false]);
+  });
+
+  // The overlapping window would publish a crossing on two consecutive ticks;
+  // the marker makes it effectively once, so a stale ticket requests at most
+  // one funded assessment.
+  it('publishes a crossing once across two overlapping ticks (Redis NX marker on the eventId)', async () => {
+    h.rows = [{ id: T1, org_id: ORG, updated_at: new Date(NOW.getTime() - 72 * HOUR) }];
+    await expect(pollStaleTickets(NOW)).resolves.toEqual({ scanned: 1, published: 1 });
+    await expect(pollStaleTickets(new Date(NOW.getTime() + 5 * 60_000))).resolves.toEqual({ scanned: 1, published: 0 });
+    expect(h.publishEvent).toHaveBeenCalledTimes(1);
+    expect(h.redisSet).toHaveBeenCalledWith(`wisp:ticket-stale:${ticketStaleEventId(T1, 72)}`, '1', 'EX', expect.any(Number), 'NX');
+  });
+
+  it('releases the marker when the publish fails, so the next tick retries', async () => {
+    h.rows = [{ id: T1, org_id: ORG, updated_at: new Date(NOW.getTime() - 72 * HOUR) }];
+    h.publishEvent.mockImplementationOnce(async () => { throw new Error('stream down'); });
+    await expect(pollStaleTickets(NOW)).resolves.toEqual({ scanned: 1, published: 0 });
+    await expect(pollStaleTickets(new Date(NOW.getTime() + 5 * 60_000))).resolves.toEqual({ scanned: 1, published: 1 });
+  });
+
+  it('without Redis it still publishes (at least once), never silently drops', async () => {
+    h.redisAvailable = false;
+    h.rows = [{ id: T1, org_id: ORG, updated_at: new Date(NOW.getTime() - 72 * HOUR) }];
+    await expect(pollStaleTickets(NOW)).resolves.toEqual({ scanned: 1, published: 1 });
   });
 
   it('treats timestamp-without-time-zone text from the driver as UTC', async () => {
@@ -336,7 +399,11 @@ describe('pollTicketClusters', () => {
   const tag = (q: unknown) => dialect.sqlToQuery(q as Parameters<PgDialect['sqlToQuery']>[0]);
   const queryWith = (marker: string) => h.executes.map((e) => tag(e.query)).find((r) => r.sql.includes(marker));
 
-  const ceiling = (orgIds: string[], o: Record<string, unknown> = {}) => ({ grantId: GRANT, partnerId: PARTNER, orgIds: new Set(orgIds), siteIds: null, orgTerms: new Map(), ...o });
+  const ceiling = (orgIds: string[], o: Record<string, unknown> = {}) => ({
+    grantId: GRANT, revisionId: REV, partnerId: PARTNER, grantorUserId: 'user-1', scopeOrgId: null, partnerWide: true,
+    orgIds: new Set(orgIds), siteIds: null, permissionKeys: new Set(['*:*']), toolAllowlist: null, deniedTools: new Set(),
+    orgTerms: new Map(), status: 'active', ...o,
+  });
 
   beforeEach(() => {
     watches = [{ id: WATCH, org_id: null, grant_id: GRANT, partner_id: PARTNER, current_revision_id: REV, params: {} }];
@@ -504,6 +571,31 @@ describe('pollTicketClusters', () => {
 
     h.executes = [];
     h.resolveGrantCeiling.mockImplementation(async () => ceiling([OA, OB], { siteIds: new Set(['site-1']) }));
+    await expect(pollTicketClusters(NOW)).resolves.toEqual({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 });
+    expect(queryWith('wisp:cluster-tickets')).toBeUndefined();
+  });
+
+  it('scans only orgs where the grant holds tickets:read (the summary quotes ticket subjects)', async () => {
+    // Ceiling-wide: no tickets:read at all → nothing is scanned, nothing is captured.
+    h.resolveGrantCeiling.mockImplementation(async () => ceiling([OA, OB], { permissionKeys: new Set(['devices:read', 'alerts:*']) }));
+    await expect(pollTicketClusters(NOW)).resolves.toEqual({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 });
+    expect(queryWith('wisp:cluster-tickets')).toBeUndefined();
+    expect(h.captureException).not.toHaveBeenCalled();
+
+    // Per org: OB's membership term lacks tickets:read → only OA is scanned.
+    h.executes = [];
+    h.resolveGrantCeiling.mockImplementation(async () => ceiling([OA, OB], {
+      permissionKeys: new Set(['tickets:read', 'devices:read']),
+      orgTerms: new Map([[OB, { permissionKeys: new Set(['devices:read']), siteIds: null }]]),
+    }));
+    await pollTicketClusters(NOW);
+    const q = queryWith('wisp:cluster-tickets')!;
+    expect(q.params).toContain(OA);
+    expect(q.params).not.toContain(OB);
+
+    // An org-scoped watch on an org without tickets:read scans nothing.
+    h.executes = [];
+    watches = [{ ...watches[0]!, org_id: OB }];
     await expect(pollTicketClusters(NOW)).resolves.toEqual({ scanned: 0, clustersOpened: 0, clustersUpdated: 0 });
     expect(queryWith('wisp:cluster-tickets')).toBeUndefined();
   });

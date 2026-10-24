@@ -63,6 +63,7 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { actionIntents } from '../../db/schema/actionIntents';
 import { createAndEnqueueAgentRun } from '../aiAgents/runService';
 import { publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
 import {
   isIdentityOffboardingCheckpoint,
   isServiceRecoveryCheckpoint,
@@ -466,6 +467,8 @@ async function settle(args: {
   // stopping-path terminals (cancelled / expired) settle elsewhere and are not
   // a "finished" signal. Fire-and-forget, after the commit, outside any DB
   // context (#1105): a bus outage must not fail a settled task.
+  // publishEvent is `async`, so in production it only ever rejects; the outer
+  // catch covers a non-async stand-in (test doubles) that throws.
   if (committed) {
     try {
       void publishEvent('ai.operator.task.finished', args.task.orgId, {
@@ -474,14 +477,18 @@ async function settle(args: {
         state: terminalState,
         outcome: args.outcome,
         grantId: args.task.grantId ?? null,
-      }, 'ai-operator').catch((err: unknown) => {
-        console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
-      });
+      }, 'ai-operator').catch(reportTaskFinishedPublishFailure);
     } catch (err) {
-      console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+      reportTaskFinishedPublishFailure(err);
     }
   }
   return committed;
+}
+
+/** A lost `ai.operator.task.finished` is a lost Wisp wake: report it, never fail the settle. */
+function reportTaskFinishedPublishFailure(err: unknown): void {
+  console.error('[aiOperator] ai.operator.task.finished publish failed', err instanceof Error ? err.message : err);
+  captureException(err, undefined, { component: 'aiOperator', op: 'publish_task_finished' });
 }
 
 /**

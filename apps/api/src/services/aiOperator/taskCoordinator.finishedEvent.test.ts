@@ -27,6 +27,11 @@ vi.mock('../../db', () => {
   };
 });
 vi.mock('../eventBus', () => ({ publishEvent: bus.publishEvent }));
+const sentry = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../sentry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  captureException: sentry.captureException,
+}));
 vi.mock('./stepService', () => ({
   openStep: vi.fn(async () => ({ id: 'step-1' })),
   markStepWaiting: vi.fn(async () => 1),
@@ -97,10 +102,14 @@ describe('settle publishes ai.operator.task.finished', () => {
     expect(bus.publishEvent).not.toHaveBeenCalled();
   });
 
-  it('does not reject settle when publishEvent rejects', async () => {
-    bus.publishEvent.mockImplementation(async () => { throw new Error('redis down'); });
+  it('does not reject settle when publishEvent rejects, and reports the failure', async () => {
+    const down = new Error('redis down');
+    bus.publishEvent.mockImplementation(async () => { throw down; });
     await expect(
       __testOnly.settle({ task, leaseEpoch: 4, event: 'fail', outcome: 'unresolved', detail: 'x' }),
     ).resolves.toBe(true);
+    await vi.waitFor(() => expect(sentry.captureException).toHaveBeenCalledWith(
+      down, undefined, { component: 'aiOperator', op: 'publish_task_finished' },
+    ));
   });
 });

@@ -60,7 +60,7 @@ async function seedLiveGrant(opts: {
   partnerId: string; grantorUserId: string; scopeOrgId: string | null; orgIds: string[]; partnerWide: boolean;
 }): Promise<{ grantId: string; revisionId: string }> {
   const snapshot: WispCeilingSnapshot = {
-    version: 1, permissionKeys: ['ai_sessions:use'], orgIds: opts.orgIds, siteIds: null,
+    version: 1, permissionKeys: ['ai_sessions:use', 'tickets:read'], orgIds: opts.orgIds, siteIds: null,
     toolAllowlist: null, deniedTools: [], partnerWide: opts.partnerWide,
   };
   return asSystem(async () => {
@@ -80,7 +80,7 @@ async function seedLiveGrant(opts: {
 async function seedGrantor(partnerId: string, label: string): Promise<string> {
   const user = await createUser({ partnerId, email: `wisp-incident-${label}-${randomUUID()}@wisp.test` });
   const role = await createRole({ scope: 'partner', partnerId });
-  await grantRolePermissions(role!.id, [{ resource: 'ai_sessions', action: 'use' }]);
+  await grantRolePermissions(role!.id, [{ resource: 'ai_sessions', action: 'use' }, { resource: 'tickets', action: 'read' }]);
   await assignUserToPartner(user.id, partnerId, role!.id, 'all');
   return user.id;
 }

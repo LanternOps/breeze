@@ -76,8 +76,9 @@ const THREAD_ID = '00000000-0000-4000-8000-0000000000a8';
 const C1 = '00000000-0000-4000-8000-0000000000c1';
 const C2 = '00000000-0000-4000-8000-0000000000c2';
 const TICKET_ID = '00000000-0000-4000-8000-0000000000d1';
+const OTHER_PARTNER = '00000000-0000-4000-8000-0000000000b3';
 
-function ceiling(): GrantCeiling {
+function ceiling(o: Partial<GrantCeiling> = {}): GrantCeiling {
   return {
     grantId: GRANT_ID, revisionId: REVISION_ID, partnerId: PARTNER_ID,
     // Deliberately NOT the context's grantor: the nudge recipient is
@@ -85,7 +86,7 @@ function ceiling(): GrantCeiling {
     grantorUserId: '00000000-0000-4000-8000-0000000000ff',
     scopeOrgId: null, partnerWide: true, orgIds: new Set([ORG_ID, OTHER_ORG]), siteIds: null,
     permissionKeys: new Set(['*:*']), toolAllowlist: null, deniedTools: new Set(['manage_ai_agents']),
-    orgTerms: new Map(), status: 'active',
+    orgTerms: new Map(), status: 'active', ...o,
   };
 }
 
@@ -340,6 +341,31 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(result.outcome.assessmentSkipped).toEqual(['propose_outside_ceiling']);
     });
 
+    it('Tier 4+ (blocked) → propose_tool_blocked, no intent', async () => {
+      const result = makeResult(calls({ proposedActions: [{ toolName: 'wipe_everything', input: {}, reason: 'r' }] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_tool_blocked']);
+    });
+
+    it('a tool outside a non-null ceiling toolAllowlist → propose_outside_ceiling', async () => {
+      resolveGrantCeiling.mockResolvedValue(ceiling({ toolAllowlist: new Set(['manage_dns_policy']) }));
+      const result = makeResult(calls({ proposedActions: [{ toolName: 'run_script', input: {}, reason: 'r' }] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_outside_ceiling']);
+    });
+
+    it('an intent that comes back neither pending nor approved → propose_intent_not_pending, concern not stamped', async () => {
+      createActionIntent.mockResolvedValue({ id: 'intent-2', status: 'denied' });
+      const result = makeResult(calls({ proposedActions: [{ toolName: 'run_script', input: {}, reason: 'r', concernId: C1 }] }));
+      expect(await finalizeAssessment(makeCtx(), result)).toBeNull();
+      expect(createActionIntent).toHaveBeenCalledTimes(1);
+      expect(result.intentIds).toEqual([]);
+      expect(concerns.updateConcern).not.toHaveBeenCalledWith(C1, expect.objectContaining({ evidence: expect.anything() }));
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_intent_not_pending']);
+    });
+
     it('caps intents at AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun', async () => {
       const n = AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun + 1;
       const result = makeResult(calls({
@@ -368,15 +394,133 @@ describe('finalizeAssessment (Wisp W05b)', () => {
     expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
   });
 
-  it('a grant that went inactive during the run applies no model call (grant_inactive) but still does the bookkeeping', async () => {
-    resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT_ID, 'paused'));
-    const result = makeResult(calls({ concernsRaised: [RAISE], nudges: [{ concernId: C1, nextStep: 'x' }] }));
-    const ctx = makeCtx(assessmentCtx({ openConcerns: [concern({ id: C2 })] }));
-    expect(await finalizeAssessment(ctx, result)).toBeNull();
-    expect(concerns.upsertConcern).not.toHaveBeenCalled();
-    expect(deliverInApp).not.toHaveBeenCalled();
-    expect(result.outcome.assessmentSkipped).toEqual(['grant_inactive', 'grant_inactive']);
-    expect(concerns.updateConcern).toHaveBeenCalledWith(C2, { lastAssessedRunId: RUN_ID });
+  describe('the grant must still be usable for ANY write (model calls, readiness, touch)', () => {
+    const readiness = {
+      orgId: ORG_ID, orgName: 'Acme',
+      checks: [{ watchKind: 'backup_health' as const, serviceable: false, reason: 'no backup integration configured' }],
+      missingIntegrations: ['backup'],
+    };
+    const bookkeepingCtx = () => makeCtx(assessmentCtx({
+      reason: { kind: 'onboarding' }, readiness, openConcerns: [concern({ id: C2 })],
+    }));
+
+    it('a grant that went inactive during the run applies no model call (grant_inactive), no readiness and no touch', async () => {
+      resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT_ID, 'paused'));
+      const result = makeResult(calls({ concernsRaised: [RAISE], nudges: [{ concernId: C1, nextStep: 'x' }] }));
+      expect(await finalizeAssessment(bookkeepingCtx(), result)).toBeNull();
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['grant_inactive', 'grant_inactive']);
+      // The rollup resolves its own ceiling and fails closed.
+      expect(rollupPartnerPicture).toHaveBeenCalledWith(GRANT_ID);
+    });
+
+    it('resolves the ceiling even when the model called nothing: an inactive grant gets no readiness concern and no touch', async () => {
+      resolveGrantCeiling.mockRejectedValue(new GrantInactiveError(GRANT_ID, 'revoked'));
+      const result = makeResult();
+      expect(await finalizeAssessment(bookkeepingCtx(), result)).toBeNull();
+      expect(resolveGrantCeiling).toHaveBeenCalledWith(GRANT_ID, REVISION_ID);
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['left the ceiling', ceiling({ orgIds: new Set([OTHER_ORG]) })],
+      ['is reached only through a site restriction', ceiling({ siteIds: new Set(['site-1']) })],
+    ])('an org that %s gets no model call (grant_org_out_of_ceiling), no readiness and no touch', async (_l, c) => {
+      resolveGrantCeiling.mockResolvedValue(c);
+      const result = makeResult(calls({ concernsRaised: [RAISE] }));
+      expect(await finalizeAssessment(bookkeepingCtx(), result)).toBeNull();
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['grant_org_out_of_ceiling']);
+    });
+
+    it('a ceiling read that fails for another reason is ceiling_read_failed (not grant_inactive) and partially applied', async () => {
+      resolveGrantCeiling.mockRejectedValue(new Error('db down'));
+      const result = makeResult(calls({ concernsRaised: [RAISE], nudges: [{ concernId: C1, nextStep: 'x' }] }));
+      expect(await finalizeAssessment(bookkeepingCtx(), result)).toBe('assessment_partially_applied');
+      expect(concerns.upsertConcern).not.toHaveBeenCalled();
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['ceiling_read_failed', 'ceiling_read_failed']);
+    });
+
+    it('a failed ceiling read with no model calls is still recorded once and partially applied', async () => {
+      resolveGrantCeiling.mockRejectedValue(new Error('db down'));
+      const result = makeResult();
+      expect(await finalizeAssessment(bookkeepingCtx(), result)).toBe('assessment_partially_applied');
+      expect(result.outcome.assessmentSkipped).toEqual(['ceiling_read_failed']);
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('partner pin: a concern with the run org but ANOTHER partner is refused', () => {
+    beforeEach(() => {
+      concerns.getConcernForCeiling.mockResolvedValue(concern({ partnerId: OTHER_PARTNER }));
+    });
+
+    it('update_concern', async () => {
+      const result = makeResult(calls({ concernsUpdated: [{ concernId: C1, severity: 'high' }] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(concerns.updateConcern).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['concern_not_in_org']);
+    });
+
+    it('nudge', async () => {
+      const result = makeResult(calls({ nudges: [{ concernId: C1, nextStep: 'Call them' }] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(deliverInApp).not.toHaveBeenCalled();
+      expect(concerns.recordNudge).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['concern_not_in_org']);
+    });
+
+    it('propose_action', async () => {
+      const result = makeResult(calls({ proposedActions: [{ toolName: 'run_script', input: {}, reason: 'r', concernId: C1 }] }));
+      await finalizeAssessment(makeCtx(), result);
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['concern_not_in_org']);
+    });
+  });
+
+  describe('per-item isolation inside a step', () => {
+    it('two raises where the first upsert rejects: both attempted, partially applied', async () => {
+      concerns.upsertConcern.mockRejectedValueOnce(new Error('db blip'));
+      const result = makeResult(calls({ concernsRaised: [RAISE, { ...RAISE, summary: 'second' }] }));
+      expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
+      expect(concerns.upsertConcern).toHaveBeenCalledTimes(2);
+      expect(concerns.upsertConcern.mock.calls[1]![0]).toMatchObject({ summary: 'second' });
+    });
+
+    it('two nudges where the first delivery throws: the second is still delivered and counted', async () => {
+      deliverInApp.mockRejectedValueOnce(new Error('notify down'));
+      concerns.getConcernForCeiling.mockImplementation(async (_c: unknown, id: string) => concern({ id }));
+      const result = makeResult(calls({ nudges: [{ concernId: C1, nextStep: 'first' }, { concernId: C2, nextStep: 'second' }] }));
+      expect(await finalizeAssessment(makeCtx(), result)).toBe('assessment_partially_applied');
+      expect(deliverInApp).toHaveBeenCalledTimes(2);
+      expect(deliverInApp.mock.calls[1]![0]).toMatchObject({ concernId: C2, body: 'second' });
+      expect(concerns.recordNudge).toHaveBeenCalledTimes(1);
+      expect(concerns.recordNudge).toHaveBeenCalledWith(C2, GRANT_ID, expect.any(Date));
+    });
+  });
+
+  it('update_concern with status resolved but no outcome (schema-refused upstream): applies the patch, never resolves, records no skip', async () => {
+    const result = makeResult(calls({ concernsUpdated: [{ concernId: C1, severity: 'low', status: 'resolved' }] }));
+    expect(await finalizeAssessment(makeCtx(), result)).toBeNull();
+    expect(concerns.updateConcern).toHaveBeenCalledWith(C1, { severity: 'low', lastAssessedRunId: RUN_ID });
+    expect(concerns.resolveConcern).not.toHaveBeenCalled();
+    expect(result.outcome.assessmentSkipped).toBeUndefined();
+  });
+
+  it('the touch skips a concern an update already stamped, and a concern of another org', async () => {
+    const ctx = makeCtx(assessmentCtx({
+      openConcerns: [concern({ id: C1 }), concern({ id: C2 }), concern({ id: '00000000-0000-4000-8000-0000000000c3', orgId: OTHER_ORG })],
+    }));
+    await finalizeAssessment(ctx, makeResult(calls({ concernsUpdated: [{ concernId: C1, severity: 'high' }] })));
+    expect(concerns.updateConcern.mock.calls.map((c) => c[0])).toEqual([C1, C2]);
+    expect(concerns.updateConcern).toHaveBeenNthCalledWith(1, C1, { severity: 'high', lastAssessedRunId: RUN_ID });
+    expect(concerns.updateConcern).toHaveBeenNthCalledWith(2, C2, { lastAssessedRunId: RUN_ID });
   });
 
   it('touches last_assessed_run_id on every open concern and calls the rollup best-effort', async () => {

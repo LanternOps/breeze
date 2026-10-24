@@ -53,11 +53,17 @@ vi.mock('./concerns', () => ({
   recipientState: (...a: unknown[]) => (h.recipientState as (...x: unknown[]) => unknown)(...a),
   recordNudge: (...a: unknown[]) => (h.recordNudge as (...x: unknown[]) => unknown)(...a),
 }));
-vi.mock('./grantAuthority', () => {
+vi.mock('./grantAuthority', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./grantAuthority')>();
   class GrantInactiveError extends Error {
     constructor(public readonly grantId: string) { super(`grant ${grantId} inactive`); }
   }
-  return { GrantInactiveError, resolveGrantCeiling: (...a: unknown[]) => h.resolveGrantCeiling(...a) };
+  return {
+    GrantInactiveError,
+    CeilingViolationError: actual.CeilingViolationError,
+    assertWithinCeiling: actual.assertWithinCeiling,
+    resolveGrantCeiling: (...a: unknown[]) => h.resolveGrantCeiling(...a),
+  };
 });
 vi.mock('./deliver', () => ({ deliverInApp: (...a: unknown[]) => track(h.deliverInApp as (...x: unknown[]) => unknown)(...a) }));
 vi.mock('./threads', () => ({ getOrCreateThread: (g: string) => h.getOrCreateThread(g) }));
@@ -115,7 +121,10 @@ function orgConcern(n: number, orgId: string, ticketNos: number[], over: Partial
 }
 
 function ceiling(grantId: string, partnerId: string, orgIds: string[], partnerWide = true, o: Record<string, unknown> = {}) {
-  return { grantId, partnerId, grantorUserId: `user-${grantId}`, scopeOrgId: null, partnerWide, orgIds: new Set(orgIds), siteIds: null, orgTerms: new Map(), ...o };
+  return {
+    grantId, partnerId, grantorUserId: `user-${grantId}`, scopeOrgId: null, partnerWide, orgIds: new Set(orgIds),
+    siteIds: null, orgTerms: new Map(), permissionKeys: new Set(['*:*']), toolAllowlist: null, deniedTools: new Set(), status: 'active', ...o,
+  };
 }
 
 beforeEach(() => {
@@ -259,7 +268,7 @@ describe('correlateIncidents', () => {
     expect(h.recordNudge).not.toHaveBeenCalled();
   });
 
-  it('a rescan with nothing new writes and delivers nothing', async () => {
+  it('a rescan with nothing new writes and delivers nothing once every grantor was nudged', async () => {
     orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
     partnerLive = [{
       id: uid(600), partner_id: P, status: 'open', signature: clusterSignature(P, TOKENS), child_concern_ids: [uid(101), uid(102)],
@@ -268,9 +277,69 @@ describe('correlateIncidents', () => {
         ticketCount: 6, healthIncidentIds: [], tokens: TOKENS, lastTicketAt: ago(5 * MIN),
       },
     }];
+    h.recipientState.mockImplementation(async () => ({ nudgeCount: 1, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null }));
     await expect(correlateIncidents(NOW)).resolves.toEqual({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 });
     expect(h.updateConcern).not.toHaveBeenCalled();
     expect(h.deliverInApp).not.toHaveBeenCalled();
+    expect(h.recipientState).toHaveBeenCalledWith(uid(600), G1);
+  });
+
+  it('retries a failed nudge on the next tick even though nothing new arrived', async () => {
+    orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
+    let nudged = 0;
+    h.recordNudge.mockImplementation(async () => { nudged += 1; return { nudgeCount: nudged, nextEligibleNudgeAt: new Date() }; });
+    h.recipientState.mockImplementation(async () => ({ nudgeCount: nudged, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null }));
+    h.deliverInApp.mockImplementationOnce(async () => { throw new Error('insert failed'); });
+
+    // Tick 1: the incident opens, its one nudge fails.
+    await expect(correlateIncidents(NOW)).resolves.toMatchObject({ partnerIncidentsOpened: 1 });
+    expect(h.deliverInApp).toHaveBeenCalledTimes(1);
+    expect(h.recordNudge).not.toHaveBeenCalled();
+    expect(h.captureException).toHaveBeenCalledTimes(1);
+
+    // Tick 2: the concern is stored with the same evidence; no new tickets.
+    const input = h.upsertConcern.mock.calls[0]![0] as Record<string, any>;
+    partnerLive = [{
+      id: uid(500), partner_id: P, status: 'open', signature: input.signature,
+      child_concern_ids: input.childConcernIds, evidence: input.evidence,
+    }];
+    await expect(correlateIncidents(NOW)).resolves.toEqual({ partnerIncidentsOpened: 0, updated: 0, autoClosed: 0 });
+    expect(h.upsertConcern).toHaveBeenCalledTimes(1);
+    expect(h.updateConcern).not.toHaveBeenCalled();
+    expect(h.deliverInApp).toHaveBeenCalledTimes(2);
+    expect(h.deliverInApp).toHaveBeenLastCalledWith(expect.objectContaining({
+      grantId: G1,
+      concernId: uid(500),
+      dedupeKey: `wisp-incident-${uid(500)}-${G1}`,
+      body: 'Possible incident across 2 customers: asking keeps outlook password',
+    }));
+    expect(h.recordNudge).toHaveBeenCalledTimes(1);
+    expect(h.recordNudge).toHaveBeenCalledWith(uid(500), G1, NOW);
+
+    // Tick 3: the nudge is recorded — nothing more is delivered.
+    await correlateIncidents(NOW);
+    expect(h.deliverInApp).toHaveBeenCalledTimes(2);
+  });
+
+  it('nudges a live partner-level incident whose children went quiet, but never one naming an org outside the ceilings', async () => {
+    // No fresh child concerns this tick; two live incidents from earlier.
+    partnerLive = [
+      {
+        id: uid(610), partner_id: P, status: 'open', signature: 'sig-a', child_concern_ids: [uid(101)],
+        evidence: { orgIds: [OA, OB], childConcernIds: [uid(101)], tokens: TOKENS },
+      },
+      {
+        id: uid(611), partner_id: P, status: 'open', signature: 'sig-b', child_concern_ids: [uid(102)],
+        evidence: { orgIds: [OA, uid(99)], childConcernIds: [uid(102)], tokens: TOKENS },
+      },
+      {
+        id: uid(612), partner_id: P, status: 'dismissed', signature: 'sig-c', child_concern_ids: [uid(103)],
+        evidence: { orgIds: [OA, OB], childConcernIds: [uid(103)], tokens: TOKENS },
+      },
+    ];
+    await correlateIncidents(NOW);
+    expect(h.deliverInApp).toHaveBeenCalledTimes(1);
+    expect(h.deliverInApp).toHaveBeenCalledWith(expect.objectContaining({ concernId: uid(610), grantId: G1 }));
   });
 
   it('does not re-open a partner-level incident a person closed recently for the same children', async () => {
@@ -339,6 +408,17 @@ describe('correlateIncidents', () => {
     const grantIds = h.deliverInApp.mock.calls.map((c) => ((c as unknown[])[0] as { grantId?: string }).grantId);
     expect(grantIds).toContain(G1);
     expect(grantIds).not.toContain(G2);
+  });
+
+  // The incident summary quotes cluster tokens (words from ticket subjects):
+  // an org a grantor may not read tickets in is never correlated.
+  it('never correlates an org where a partner-wide grantor lacks tickets:read', async () => {
+    ceilings.set(G1, ceiling(G1, P, [OA, OB, OC], true, {
+      orgTerms: new Map([[OB, { permissionKeys: new Set(['devices:read']), siteIds: null }]]),
+    }));
+    orgConcerns = [orgConcern(1, OA, [1, 2, 3]), orgConcern(2, OB, [4, 5, 6])];
+    await correlateIncidents(NOW);
+    expect(h.upsertConcern).not.toHaveBeenCalled();
   });
 
   it('keeps partners apart', async () => {

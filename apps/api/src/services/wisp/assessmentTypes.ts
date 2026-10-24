@@ -17,8 +17,9 @@ export type AssessmentReason =
 /**
  * `ai_agent_runs.trigger_ref.wisp` of an assessment run, written by
  * `enqueueAssessment` and read back by `loadAssessmentContext`.
- * `watermark` = ISO time of the last completed assessment for (grant, org),
- * null when there is none.
+ * `watermark` = ISO start time of the last fully applied assessment
+ * (completed or awaiting_approval) for (grant, org) — see
+ * `lastAssessmentWatermark` — null when there is none.
  */
 export type WispAssessmentTriggerRef = {
   grantId: string;

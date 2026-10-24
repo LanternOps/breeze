@@ -39,6 +39,7 @@ import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { wispEnabled } from '../config/env';
 import { getBullMQConnection } from '../services/redis';
 import { hasEntitlement } from '../services/entitlements';
+import { captureException } from '../services/sentry';
 import { ASSESSMENT_BUDGET_CENTS_PER_RUN } from '../services/aiAgents/assessmentProfile';
 import { enqueueAssessment } from '../services/wisp/assessment';
 import { assessableOrgIds } from '../services/wisp/assessableOrgs';
@@ -97,6 +98,11 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Every swallowed tick failure is reported, not only logged: a lost tick must be visible. */
+function report(err: unknown, tags: Record<string, string>): void {
+  captureException(err, undefined, { component: 'wisp.wakeScheduler', ...tags });
+}
+
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
@@ -123,6 +129,7 @@ export async function reconcileEntitlements(now: Date): Promise<{ paused: number
       entitled.set(partnerId, await hasEntitlement(partnerId, 'wisp'));
     } catch (err) {
       console.error('[wisp-wake] reconcileEntitlements: entitlement lookup failed; partner left untouched', { partnerId, error: errMessage(err) });
+      report(err, { op: 'reconcile_entitlement_lookup' });
     }
   }
 
@@ -143,6 +150,7 @@ export async function reconcileEntitlements(now: Date): Promise<{ paused: number
       }
     } catch (err) {
       console.error('[wisp-wake] reconcileEntitlements: grant update failed', { grantId: g.id, error: errMessage(err) });
+      report(err, { op: 'reconcile_grant_update' });
     }
   }
   return { paused, resumed };
@@ -179,6 +187,10 @@ async function runFloorTicks(now: Date): Promise<number> {
            AND last_floor_tick_at IS NOT DISTINCT FROM ${g.last_floor_tick_text}::timestamptz
         RETURNING id`), 'wisp-wake-floor-claim');
       if (claimed.length === 0) continue; // another replica won this grant's tick
+      // The claim advanced the cursor BEFORE the request below. Kept that way
+      // on purpose: rolling it back after a failure could let two replicas
+      // both fire this grant. Accepted loss: a failure after the claim skips
+      // this grant's floor tick for one floor interval (it is reported below).
       // Spec §9: an exhausted UTC-day budget suspends the floor tick (the model
       // is off until the window rolls; event-driven bookkeeping continues in
       // enqueueAssessment). The grantor is told once per window; the grant is
@@ -195,6 +207,7 @@ async function runFloorTicks(now: Date): Promise<number> {
       ticked += 1;
     } catch (err) {
       console.error('[wisp-wake] floorTicks: grant failed', { grantId: g.id, error: errMessage(err) });
+      report(err, { op: 'floor_tick_grant' });
     }
   }
   return ticked;
@@ -202,6 +215,10 @@ async function runFloorTicks(now: Date): Promise<number> {
 
 /** Due watches → `watch` requests. Returns the watches that got a request. */
 async function runDueWatches(now: Date): Promise<number> {
+  // claimDueWatches advances next_due_at in the claim itself, before any
+  // request below — same trade as the floor-tick CAS: no rollback (it could
+  // double-fire across replicas), so a failure after the claim loses that
+  // watch's run for one cadence interval, and is reported.
   const watches = await claimDueWatches(now, WATCH_CLAIM_LIMIT);
   if (watches.length === 0) return 0;
 
@@ -253,6 +270,7 @@ async function runDueWatches(now: Date): Promise<number> {
       fired += 1;
     } catch (err) {
       console.error('[wisp-wake] dueWatches: watch failed', { watchId: w.id, grantId: w.grantId, error: errMessage(err) });
+      report(err, { op: 'due_watch' });
     }
   }
   return fired;
@@ -267,6 +285,7 @@ async function section(name: string, fn: () => Promise<void>): Promise<void> {
     await fn();
   } catch (err) {
     console.error(`[wisp-wake] tick section ${name} failed`, errMessage(err));
+    report(err, { op: 'tick_section', section: name });
   }
 }
 

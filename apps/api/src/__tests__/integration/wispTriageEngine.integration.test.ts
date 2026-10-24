@@ -129,14 +129,18 @@ interface Tenant {
   adminId: string;
 }
 
-/** Partner with orgs A and B; a live grantor (ai_sessions:use, org_access all) and a partner admin. */
+/**
+ * Partner with orgs A and B; a live grantor (ai_sessions:use + tickets:read,
+ * org_access all) and a partner admin. tickets:read lets the digest's tickets
+ * section load (each digest section is gated on the grantor's permission).
+ */
 async function seedTenant(): Promise<Tenant> {
   const partner = await createPartner();
   const orgA = await createOrganization({ partnerId: partner.id });
   const orgB = await createOrganization({ partnerId: partner.id });
   const grantor = await createUser({ partnerId: partner.id, email: `wisp-triage-grantor-${randomUUID()}@wisp.test` });
   const role = await createRole({ scope: 'partner', partnerId: partner.id });
-  await grantRolePermissions(role.id, [{ resource: 'ai_sessions', action: 'use' }]);
+  await grantRolePermissions(role.id, [{ resource: 'ai_sessions', action: 'use' }, { resource: 'tickets', action: 'read' }]);
   await assignUserToPartner(grantor.id, partner.id, role.id, 'all');
   const admin = await createUser({ partnerId: partner.id, email: `wisp-triage-admin-${randomUUID()}@wisp.test` });
   const adminRole = await createRole({ scope: 'partner', partnerId: partner.id });
@@ -148,7 +152,7 @@ async function seedTenant(): Promise<Tenant> {
 async function seedGrant(t: Tenant, opts: { scopeOrgId?: string | null; orgIds: string[]; budgetCentsPerDay?: number }) {
   const scopeOrgId = opts.scopeOrgId ?? null;
   const snapshot: WispCeilingSnapshot = {
-    version: 1, permissionKeys: ['ai_sessions:use'], orgIds: opts.orgIds, siteIds: null,
+    version: 1, permissionKeys: ['ai_sessions:use', 'tickets:read'], orgIds: opts.orgIds, siteIds: null,
     toolAllowlist: null, deniedTools: [], partnerWide: scopeOrgId === null,
   };
   return asSystem(async () => {

@@ -42,6 +42,8 @@ export const WISP_WAKE_TICK_INTERVAL_MS = 5 * 60 * 1000;
 export const ONBOARDING_ORG_LIMIT = 10;
 
 export const ASSESS_JOB = 'assess';
+const ASSESS_JOB_ATTEMPTS = 3;
+const ASSESS_JOB_BACKOFF_MS = 30_000;
 
 export type WispAssessJobData = { grantId: string; orgId: string; reason: AssessmentReason } & DeterministicDigestHint;
 
@@ -131,6 +133,11 @@ export async function requestAssessment(input: WispAssessJobData): Promise<'queu
   await queue.add(ASSESS_JOB, data, {
     jobId,
     delay: WISP_WAKE_DEBOUNCE_MS,
+    // A transient failure (Redis / DB blip in enqueueAssessment) retries the
+    // SAME job: BullMQ moves it back to 'delayed' under its own jobId for the
+    // backoff, so the window above keeps coalescing onto it meanwhile.
+    attempts: ASSESS_JOB_ATTEMPTS,
+    backoff: { type: 'exponential', delay: ASSESS_JOB_BACKOFF_MS },
     removeOnComplete: true,
     removeOnFail: { count: 100 },
   });
@@ -184,14 +191,19 @@ export async function loadLivePartnerOrgs(partnerId: string): Promise<{ id: stri
      ORDER BY name, id`), 'wisp-wake-live-orgs');
 }
 
-/** MAX(finished_at) of the grant's completed assessment runs, per org. */
+/**
+ * MAX(finished_at) of the grant's finished assessment runs, per org. A run
+ * that ended `awaiting_approval` (it minted an intent) assessed the org as
+ * much as a `completed` one; counting only `completed` would leave that org
+ * "never assessed" and starve every other org of the round-robin.
+ */
 export async function loadLastAssessedByOrg(grantId: string): Promise<Map<string, Date>> {
   const result = await sys(() => rows<{ org_id: string; last_assessed_at: unknown }>(sql`
     SELECT org_id, max(finished_at) AS last_assessed_at
       FROM ai_agent_runs
      WHERE grant_id = ${grantId}
        AND profile = 'assessment'
-       AND status = 'completed'
+       AND status IN ('completed', 'awaiting_approval')
      GROUP BY org_id`), 'wisp-wake-last-assessed');
   const out = new Map<string, Date>();
   for (const r of result) {
@@ -216,9 +228,9 @@ export async function ceilingForGrant(grant: WakeGrantPin): Promise<GrantCeiling
 
 /**
  * ONE org for this grant's next floor tick (or partner-wide watch):
- * assessableOrgIds(ceiling) ∩ the partner's live orgs, round-robin by the grant's last
- * completed assessment per org. null when the grant is unusable or no live
- * org is left in its ceiling.
+ * assessableOrgIds(ceiling) ∩ the partner's live orgs, round-robin by the
+ * grant's last finished (completed / awaiting_approval) assessment per org.
+ * null when the grant is unusable or no live org is left in its ceiling.
  */
 export async function roundRobinOrgForGrant(grant: WakeGrantPin): Promise<string | null> {
   const ceiling = await ceilingForGrant(grant);

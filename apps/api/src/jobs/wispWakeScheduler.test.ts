@@ -33,6 +33,7 @@ const h = vi.hoisted(() => ({
   attachWorkerObservability: vi.fn(),
   chargeableUnderGrant: vi.fn(async (..._a: unknown[]): Promise<{ ok: true } | { ok: false; reason: 'budget_exhausted' }> => ({ ok: true })),
   notifyBudgetExhaustedOnce: vi.fn(async (..._a: unknown[]) => true),
+  captureException: vi.fn(),
 }));
 
 vi.mock('../db', async () => {
@@ -87,6 +88,7 @@ vi.mock('../services/wisp/wake', async (importOriginal) => {
   };
 });
 vi.mock('../services/wisp/grants', () => ({ pauseGrant: h.pauseGrant, resumeGrant: h.resumeGrant }));
+vi.mock('../services/sentry', () => ({ captureException: h.captureException }));
 vi.mock('../services/entitlements', () => ({ hasEntitlement: h.hasEntitlement }));
 vi.mock('../services/wisp/watches', () => ({
   claimDueWatches: (...a: unknown[]) => { h.order.push('claimDueWatches'); return h.claimDueWatches(...a); },
@@ -469,6 +471,55 @@ describe('processWakeTick', () => {
     for (const name of ['reconcileEntitlements', 'stopWatchesForInactiveGrants', 'floorTicks', 'dueWatches', 'pollStaleTickets', 'pollTicketClusters']) {
       expect(sections.some((s) => s.includes(name)), `console.error names ${name}`).toBe(true);
     }
+    err.mockRestore();
+  });
+
+  it('a throwing section is reported to Sentry, tagged with its section name', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const boom = new Error('cluster boom');
+    h.pollTicketClusters.mockRejectedValue(boom);
+    await processWakeTick(NOW);
+    expect(h.captureException).toHaveBeenCalledWith(boom, undefined, { component: 'wisp.wakeScheduler', op: 'tick_section', section: 'pollTicketClusters' });
+    err.mockRestore();
+  });
+
+  it('a failing floor-tick grant and a failing watch are reported (their cursor already advanced: one interval lost)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    useFixtures({
+      due: [{ id: G1, partner_id: P1, current_revision_id: REV, last_floor_tick_text: null }],
+      watchGrants: [{ id: G2, partner_id: P1, current_revision_id: REV }],
+      orgs: [{ id: O1, name: 'A' }],
+    });
+    h.resolveGrantCeiling.mockResolvedValue(ceilingFor([O1]));
+    h.claimDueWatches.mockImplementation(async () => [{ id: W1, grantId: G2, orgId: O1 }]);
+    const floorErr = new Error('redis down (floor)');
+    const watchErr = new Error('redis down (watch)');
+    h.requestAssessment.mockRejectedValueOnce(floorErr).mockRejectedValueOnce(watchErr);
+    const result = await processWakeTick(NOW);
+    expect(result).toMatchObject({ grantsTicked: 0, watchesFired: 0 });
+    expect(h.captureException).toHaveBeenCalledWith(floorErr, undefined, { component: 'wisp.wakeScheduler', op: 'floor_tick_grant' });
+    expect(h.captureException).toHaveBeenCalledWith(watchErr, undefined, { component: 'wisp.wakeScheduler', op: 'due_watch' });
+    err.mockRestore();
+  });
+
+  it('a failed entitlement lookup and a failed grant pause are reported', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    useFixtures({
+      reconcile: [
+        { id: G1, partner_id: P1, status: 'active', paused_reason: null },
+        { id: G2, partner_id: P2, status: 'active', paused_reason: null },
+      ],
+    });
+    const lookupErr = new Error('entitlements down');
+    const pauseErr = new Error('pause failed');
+    h.hasEntitlement.mockImplementation(async (partnerId: unknown) => {
+      if (partnerId === P1) throw lookupErr;
+      return false;
+    });
+    h.pauseGrant.mockRejectedValueOnce(pauseErr);
+    await processWakeTick(NOW);
+    expect(h.captureException).toHaveBeenCalledWith(lookupErr, undefined, { component: 'wisp.wakeScheduler', op: 'reconcile_entitlement_lookup' });
+    expect(h.captureException).toHaveBeenCalledWith(pauseErr, undefined, { component: 'wisp.wakeScheduler', op: 'reconcile_grant_update' });
     err.mockRestore();
   });
 

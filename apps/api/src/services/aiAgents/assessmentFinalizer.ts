@@ -22,9 +22,14 @@
  * Authority: every concern id in the outcome is MODEL-SUPPLIED. Steps 2–4
  * re-read the concern under the grant's live ceiling (`getConcernForCeiling`,
  * existence-neutral) and refuse anything not in `run.orgId` under the run's
- * partner (`concern_not_in_org`). A grant that went inactive while the run was
- * in flight applies no model call at all (`grant_inactive`); the
- * deterministic bookkeeping still runs. Nothing here publishes an event.
+ * partner (`concern_not_in_org`). The live ceiling is resolved first, always:
+ * a grant that went inactive while the run was in flight (`grant_inactive`),
+ * a run org that left the ceiling or is now site-restricted
+ * (`grant_org_out_of_ceiling`), or a ceiling that could not be read
+ * (`ceiling_read_failed`, which also returns `assessment_partially_applied`)
+ * writes nothing — no model call, no readiness concern, no touch. Only the
+ * rollup still runs; it resolves its own ceiling and fails closed. Nothing
+ * here publishes an event.
  */
 import { and, eq } from 'drizzle-orm';
 import {
@@ -42,6 +47,7 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { createActionIntent } from '../actionIntents/intentService';
 import { checkGuardrails } from '../aiGuardrails';
 import { captureException } from '../sentry';
+import { assessableOrgIds } from '../wisp/assessableOrgs';
 import { rollupPartnerPicture } from '../wisp/assessment';
 import {
   getConcernForCeiling,
@@ -286,7 +292,11 @@ async function applyProposals(ap: Applier, proposals: ProposeActionInput[]): Pro
       if (intent.status === 'pending_approval') {
         ap.result.intentIds.push(intent.id);
       } else if (intent.status === 'approved') {
-        // Policy-decided at creation (agent Tier 2): counted, but nobody waits on it.
+        // Policy-decided at creation: counted, but nobody waits on it.
+        // Unreachable for assessments today — runService admits every
+        // assessment run with `modeAtStart: 'shadow'`, so intentService never
+        // treats its intents as policy-decidable. Kept so a future change to
+        // that downgrade cannot leave an approved intent uncounted.
         ap.result.intentIds.push(intent.id);
         ap.result.decidedIntentIds = [...(ap.result.decidedIntentIds ?? []), intent.id];
       } else {
@@ -361,20 +371,38 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
   const modelCalls = calls.concernsRaised.length + calls.concernsUpdated.length
     + calls.nudges.length + calls.proposedActions.length;
   const touched = new Set<string>();
-  if (modelCalls > 0) {
-    let ceiling: GrantCeiling | null = null;
-    try {
-      ceiling = await resolveGrantCeiling(grantId, run.grantRevisionId);
-    } catch (error) {
-      if (!(error instanceof GrantInactiveError)) {
-        failed = true;
-        console.error('[aiAgentRunLoop] assessment ceiling read failed', { runId: run.id, grantId, error });
-        captureException(error, undefined, { service: 'aiAgents', operation: 'finalizeAssessment.ceiling', runId: run.id });
-      }
-    }
-    if (!ceiling) {
-      for (let i = 0; i < modelCalls; i += 1) skipped.push('grant_inactive');
+
+  // The grant's live ceiling gates EVERY write below — model calls, the
+  // readiness concern and the touch — so it is resolved even when the model
+  // called nothing. `blocked` names why nothing may be written: the grant went
+  // inactive (or paused) mid-run, the run's org left the ceiling (or is now
+  // reached only through a site restriction — the assessableOrgIds rule
+  // admission applied), or the ceiling could not be read at all.
+  let ceiling: GrantCeiling | null = null;
+  let blocked: 'grant_inactive' | 'grant_org_out_of_ceiling' | 'ceiling_read_failed' | null = null;
+  try {
+    ceiling = await resolveGrantCeiling(grantId, run.grantRevisionId);
+    if (!assessableOrgIds(ceiling).has(run.orgId)) blocked = 'grant_org_out_of_ceiling';
+  } catch (error) {
+    if (error instanceof GrantInactiveError) {
+      blocked = 'grant_inactive';
     } else {
+      // Not the grant's state: we do not know whether the run may write, so
+      // nothing is written and the run reports dropped work.
+      blocked = 'ceiling_read_failed';
+      failed = true;
+      console.error('[aiAgentRunLoop] assessment ceiling read failed', { runId: run.id, grantId, error });
+      captureException(error, undefined, { service: 'aiAgents', operation: 'finalizeAssessment.ceiling', runId: run.id });
+    }
+  }
+
+  if (blocked !== null || !ceiling) {
+    // One entry per model call; a failed read is recorded even with none, so
+    // the skipped bookkeeping is visible on the run.
+    const n = blocked === 'ceiling_read_failed' ? Math.max(modelCalls, 1) : modelCalls;
+    for (let i = 0; i < n; i += 1) skipped.push(blocked ?? 'grant_inactive');
+  } else {
+    if (modelCalls > 0) {
       const ap: Applier = { ctx, a, grantId, result, ceiling, skipped, item, touched, now: new Date() };
       await applyRaises(ap, calls.concernsRaised);
       await applyUpdates(ap, calls.concernsUpdated);
@@ -386,13 +414,13 @@ export async function finalizeAssessment(ctx: RunContext, result: LoopResult): P
       await applyNudges(ap, calls.nudges);
       // (5) request_specialist: left in `outcome.assessment.specialistRequests` for W07.
     }
-  }
 
-  await item('readiness', () => applyReadiness(ctx, a, grantId));
+    await item('readiness', () => applyReadiness(ctx, a, grantId));
 
-  for (const c of a.openConcerns) {
-    if (c.orgId !== run.orgId || touched.has(c.id)) continue;
-    await item('touch', () => updateConcern(c.id, { lastAssessedRunId: run.id }));
+    for (const c of a.openConcerns) {
+      if (c.orgId !== run.orgId || touched.has(c.id)) continue;
+      await item('touch', () => updateConcern(c.id, { lastAssessedRunId: run.id }));
+    }
   }
 
   try {

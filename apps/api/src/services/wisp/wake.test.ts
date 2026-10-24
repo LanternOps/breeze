@@ -221,6 +221,9 @@ describe('requestAssessment', () => {
     expect(job![0]).toBe(`wisp-assess-${G1}-${O1}`);
     expect(job![1].state).toBe('delayed');
     expect(job![1].opts).toMatchObject({ jobId: `wisp-assess-${G1}-${O1}`, delay: 60_000 });
+    // A transient enqueue failure retries on the same job (same jobId, so the
+    // window keeps coalescing while the retry waits in 'delayed').
+    expect(job![1].opts).toMatchObject({ attempts: 3, backoff: { type: 'exponential', delay: 30_000 } });
     // The first request's reason is the one stored.
     expect(job![1].data).toMatchObject({ grantId: G1, orgId: O1, reason: { kind: 'event', eventId: 'e0' } });
   });
@@ -397,7 +400,11 @@ describe('handleWispWakeEvent', () => {
     expect(adds[0]!.data).toMatchObject({ grantId: G1, orgId: O2, reason: { kind: 'tick' } });
     const last = h.executes.find((e) => /max\(finished_at\)/.test(e.text))!;
     expect(last.text).toMatch(/profile = 'assessment'/);
-    expect(last.text).toMatch(/status = 'completed'/);
+    // An assessment that ended awaiting_approval (it minted an intent) still
+    // assessed the org: counting only 'completed' would leave that org
+    // "never assessed" and the floor tick would pick it forever.
+    expect(last.text).toMatch(/status IN \('completed', 'awaiting_approval'\)/);
+    expect(last.text).not.toMatch(/status = 'completed'/);
     expect(last.params).toContain(G1);
   });
 });

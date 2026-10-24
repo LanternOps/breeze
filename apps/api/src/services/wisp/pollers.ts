@@ -1,17 +1,31 @@
 /**
  * Wisp W05 pollers — time-derived events the bus has no natural publisher for.
  *
- * `pollStaleTickets` publishes `ticket.stale` once per ticket per threshold.
- * It is stateless: each call scans a sliding window one scan-interval wide that
- * ends exactly `staleHours` ago, so a ticket falls into exactly one window per
- * threshold crossing when ticks run every `TICKET_STALE_SCAN_WINDOW_MINUTES`.
- * The deterministic eventId (see `ticketStaleEventId`) makes an overlapping or
- * repeated scan collapse to one logical event downstream.
+ * `pollStaleTickets` publishes `ticket.stale` for tickets that crossed the
+ * `staleHours` threshold. It is stateless: each call scans a sliding window
+ * that ends exactly `staleHours` ago and is `TICKET_STALE_SCAN_WINDOW_MINUTES`
+ * (10) wide — TWICE the 5 minute tick, because each tick's `now` drifts
+ * (queue latency, the sections that run before it), and a window exactly one
+ * tick wide leaves a gap whenever a tick runs late. So a crossing is normally
+ * published by two consecutive ticks: at least once, not exactly once.
  *
- * LIMITS, by design: a scheduler outage longer than the window misses the
- * crossings that fell inside the gap. The Wisp floor tick (30 minute sweep of
- * every active grant) covers that case, so no watermark table is kept here.
- * A ticket updated again before it goes stale simply never enters a window.
+ * The duplicate carries the same deterministic eventId (`ticketStaleEventId`).
+ * publishEvent itself does NOT dedupe on it (the stream entry, pub/sub and
+ * local handlers run per publish); the consumers do: the durable route-event
+ * job is keyed `event-route-<eventId>` (while the previous one is retained),
+ * webhook delivery skips a (webhook, eventId) pair it already recorded, the
+ * automation worker admits one run per (automation, eventId), and
+ * upsertConcern is idempotent. The Wisp wake debounce (60 s per grant/org)
+ * would NOT cover it (the duplicate arrives one tick later and would request a
+ * second funded assessment), so the poller claims each eventId with a Redis
+ * `SET NX` marker before publishing (released if the publish fails): with
+ * Redis up a crossing is published once; with Redis down, at least once.
+ *
+ * LIMITS, by design: a scheduler outage that puts two consecutive ticks more
+ * than the window (10 minutes) apart misses the crossings that fell inside
+ * the gap. The Wisp floor tick (30 minute sweep of every active grant) covers
+ * that case, so no watermark table is kept here. A ticket updated again before it
+ * goes stale simply never enters a window.
  *
  * Only orgs covered by an active `wisp_grants` row are scanned (the grant
  * predicate is in the SQL, not a TS filter), so a partner without Wisp never
@@ -31,14 +45,24 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import { wispEnabled } from '../../config/env';
 import { publishEvent } from '../eventBus';
+import { getRedis } from '../redis';
 import { captureException } from '../sentry';
 import { updateConcern, upsertConcern } from './concerns';
-import { GrantInactiveError, resolveGrantCeiling } from './grantAuthority';
+import {
+  assertWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type GrantCeiling,
+} from './grantAuthority';
 import { assessableOrgIds } from './assessableOrgs';
 
 export const TICKET_STALE_DEFAULT_HOURS = 72;
-/** Equals the wake tick interval; the window must be at least one tick wide. */
-export const TICKET_STALE_SCAN_WINDOW_MINUTES = 5;
+/** Twice the 5 minute wake tick: consecutive windows overlap, so a late tick leaves no gap (see the header). */
+export const TICKET_STALE_SCAN_WINDOW_MINUTES = 10;
+/** Redis marker per published crossing (eventId); outlives the overlap many times over. */
+const TICKET_STALE_MARKER_PREFIX = 'wisp:ticket-stale:';
+const TICKET_STALE_MARKER_TTL_SECONDS = 6 * 60 * 60;
 const TICKET_STALE_SCAN_LIMIT = 500;
 
 const HOUR_MS = 3_600_000;
@@ -114,6 +138,22 @@ export async function pollStaleTickets(
   let published = 0;
   for (const row of rows) {
     const updatedAt = toUtcDate(row.updated_at);
+    const eventId = ticketStaleEventId(row.id, staleHours);
+    // Effectively-once across the overlapping windows: the first tick to see a
+    // crossing claims its eventId; the next tick skips it. Without Redis the
+    // poller still publishes (at least once) rather than dropping crossings.
+    const markerKey = `${TICKET_STALE_MARKER_PREFIX}${eventId}`;
+    let claimed = false;
+    const redis = getRedis();
+    if (redis) {
+      try {
+        if ((await redis.set(markerKey, '1', 'EX', TICKET_STALE_MARKER_TTL_SECONDS, 'NX')) !== 'OK') continue;
+        claimed = true;
+      } catch (err) {
+        captureException(err instanceof Error ? err : new Error(String(err)));
+        console.warn('[wisp] ticket.stale marker claim failed; publishing without it', err instanceof Error ? err.message : err);
+      }
+    }
     try {
       await publishEvent(
         'ticket.stale',
@@ -121,7 +161,7 @@ export async function pollStaleTickets(
         { ticketId: row.id, orgId: row.org_id, staleHours, updatedAt: updatedAt.toISOString() },
         'wisp-pollers',
         {
-          eventId: ticketStaleEventId(row.id, staleHours),
+          eventId,
           occurredAt: new Date(updatedAt.getTime() + staleHours * HOUR_MS).toISOString(),
         },
       );
@@ -129,6 +169,8 @@ export async function pollStaleTickets(
     } catch (err) {
       captureException(err instanceof Error ? err : new Error(String(err)));
       console.error('[wisp] ticket.stale publish failed', err instanceof Error ? err.message : err);
+      // Let the next (overlapping) tick retry this crossing.
+      if (claimed) await redis?.del(markerKey).catch(() => undefined);
     }
   }
   return { scanned: rows.length, published };
@@ -373,11 +415,31 @@ function inSystemRead<T>(fn: () => Promise<T>, label: string): Promise<T> {
 }
 
 /**
+ * The ceiling orgs a cluster scan may read: reached whole (a cluster summary
+ * quotes ticket subjects across the org, so a site-restricted reach is never
+ * scanned) AND with `tickets:read` held there — the grantor's per-org term
+ * included (org-axis precedence, grantAuthority.ts).
+ */
+function ticketReadableOrgIds(ceiling: GrantCeiling): Set<string> {
+  const out = new Set<string>();
+  for (const orgId of assessableOrgIds(ceiling)) {
+    try {
+      assertWithinCeiling(ceiling, { orgId, permission: 'tickets:read' });
+      out.add(orgId);
+    } catch (err) {
+      if (!(err instanceof CeilingViolationError)) throw err;
+    }
+  }
+  return out;
+}
+
+/**
  * Orgs to scan, from the active watches and each grant's LIVE ceiling: an
  * org-scoped watch counts only while its org is still inside the ceiling; a
- * partner-wide watch expands to every ceiling org. Several watches on one org
- * merge to the widest window and the smallest minTickets; the first watch (by
- * id) names the raising grant. An inactive grant is skipped silently.
+ * partner-wide watch expands to every ceiling org. Either way only orgs where
+ * the grant holds `tickets:read` (ticketReadableOrgIds). Several watches on
+ * one org merge to the widest window and the smallest minTickets; the first
+ * watch (by id) names the raising grant. An inactive grant is skipped silently.
  */
 async function resolveClusterTargets(watches: ClusterWatchRow[]): Promise<ClusterTarget[]> {
   const ceilings = new Map<string, ReadonlySet<string> | null>();
@@ -386,9 +448,7 @@ async function resolveClusterTargets(watches: ClusterWatchRow[]): Promise<Cluste
     let orgs = ceilings.get(w.grant_id);
     if (orgs === undefined) {
       try {
-        // Only orgs the grant reaches whole: a cluster summary quotes ticket
-        // subjects across the org, so a site-restricted reach is never scanned.
-        orgs = assessableOrgIds(await resolveGrantCeiling(w.grant_id, w.current_revision_id));
+        orgs = ticketReadableOrgIds(await resolveGrantCeiling(w.grant_id, w.current_revision_id));
       } catch (err) {
         if (!(err instanceof GrantInactiveError)) {
           captureException(err, undefined, { component: 'wisp.pollers', op: 'ticket_cluster_ceiling' });

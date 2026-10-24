@@ -350,6 +350,11 @@ vi.mock('../callerVerification/policy', () => ({ getEffectivePolicy: callerState
 
 const eventBusMock = vi.hoisted(() => ({ publishEvent: vi.fn(async (..._a: unknown[]) => 'evt-1') }));
 vi.mock('../eventBus', () => ({ publishEvent: eventBusMock.publishEvent }));
+const sentryMock = vi.hoisted(() => ({ captureException: vi.fn() }));
+vi.mock('../sentry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  captureException: sentryMock.captureException,
+}));
 
 import { transitionIntent } from './intentService';
 
@@ -425,9 +430,14 @@ describe('transitionIntent publishes ai.intent.decided', () => {
   it('does not reject transitionIntent when publishEvent rejects', async () => {
     dbState.updateActionIntentsResults.push([INTENT]);
     dbState.selectAgentRunsResults.push([{ grantId: 'grant-1' }]);
-    eventBusMock.publishEvent.mockImplementation(async () => { throw new Error('redis down'); });
+    const down = new Error('redis down');
+    eventBusMock.publishEvent.mockImplementation(async () => { throw down; });
     await expect(transitionIntent('intent-1', 'pending_approval', 'approved')).resolves.toBe(true);
     expect(eventBusMock.publishEvent).toHaveBeenCalledTimes(1);
+    // The lost wake is reported, not only logged.
+    await vi.waitFor(() => expect(sentryMock.captureException).toHaveBeenCalledWith(
+      down, undefined, { component: 'actionIntents', op: 'publish_intent_decided' },
+    ));
   });
 
   it('does not reject transitionIntent when publishEvent throws synchronously', async () => {
