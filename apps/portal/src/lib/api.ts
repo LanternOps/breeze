@@ -438,12 +438,12 @@ export interface PortalTicketForm {
 // payload. On the form path the subject/description are composed server-side, so
 // no `subject` key is sent (an optional free-text `description` may still ride along).
 export type CreateTicketInput =
-  | { subject: string; description: string; priority: TicketPriority }
+  | { subject: string; description: string; priority?: TicketPriority }
   | {
       formId: string;
       formResponses: Record<string, unknown>;
       description?: string;
-      priority: TicketPriority;
+      priority?: TicketPriority;
     };
 
 export interface Asset {
