@@ -16,7 +16,7 @@ never this index.
 | W02 (#6265) | [YARA-X engine in the agent: on-device compile (`breeze-yarac`), source-bundle contract §C1–C5, fetch client + compiled cache, worker-pool walk, `provider = 'breeze'`, lab benchmark](2026-10-13-yara-ioc-scanning-w02-agent-engine.md) | W01 (merged) |
 | W03 (#6266) | [Rule sets, pre-check, CRUD, agent fetch route, payload `ruleSets` (Part A) + built-in YARA Forge pack pipeline (Part B)](2026-10-13-yara-ioc-scanning-w03-rule-sets.md) | W02 (bundle format) |
 | W04 (#6267) | [Detection rules UI, IOC paste importer, sandboxed test upload, Security tab rule-set picker, ThreatDetail rule panel (PR A API + shared + `breeze-yarac match`, PR B web)](2026-10-18-yara-ioc-scanning-w04-rules-ui.md) | W03 (merged) |
-| W05 (#6268) | Fleet sweep, AI tool and audit (`sweep` route + batch tracking, AI `security_scan` actions + parity files, audit events, docs + release-notes copy per spec §11) — plan not written | W03 |
+| W05 (#6268) | [Fleet sweep (`security_scan_sweeps` + DB-backed pump, fetch authorization, rule version on threats), AI `ioc_hunt` tool (sweep via Tier-3 intents, import IOCs), audit events, docs + release-notes copy (PR A API, PR B AI, PR C web + docs)](2026-10-25-yara-ioc-scanning-w05-sweep-ai-audit.md) | W04 (merged) |
 
 W01 shipped (PR #6573); W02 builds on its scanner code. W03 depends on W02's source-bundle format
 (W02 plan §C1–C5); W04 and W05 depend on W03.
@@ -46,6 +46,10 @@ allowlists and every cascade/export registration in the same PR.
 'breeze'`), so the first migration is W02's. W03 Part A carries one migration (both tables, RLS, the
 owner-inheritance triggers, and `security_scans.engine` / `rule_set_errors`). Names are chosen at
 implementation time to sort after the newest committed migration.
+
+**Amended 2026-10-24:** W04 shipped no migration. W05 PR A carries one (`security_scan_sweeps` with its RLS, plus
+`security_scans.sweep_id` / `dispatched_rule_sets`), slot `2027-01-04-140000-security-scan-sweeps.sql`
+(re-checked against the newest committed migration at implementation time).
 
 ## Open Decisions for W02/W03 (2026-10-13)
 
