@@ -231,13 +231,13 @@ done
 # comment gives Dependabot no tag to resolve against, so it tracks the default
 # branch and each weekly group PR carries the next branch head forward. Four of
 # the six call sites are release.yml jobs that build signed customer binaries,
-# so the restored cache feeds compiled output. Pin every site to the 2.9.2
+# so the restored cache feeds compiled output. Pin every site to the 2.9.3
 # release commit and require the precise `# vX.Y.Z` comment, so a re-drift fails
 # here rather than inside a signed release build.
-RUST_CACHE_PIN='Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2'
+RUST_CACHE_PIN='Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3'
 for workflow in .github/workflows/ci.yml .github/workflows/release.yml; do
   require_grep "uses: ${RUST_CACHE_PIN//./\\.}\$" "$workflow" \
-    "$workflow must pin Swatinem/rust-cache to the v2.9.2 release commit"
+    "$workflow must pin Swatinem/rust-cache to the v2.9.3 release commit"
 done
 # require_grep only proves one good line exists; this proves no site deviates.
 # Capture the scan's own status rather than letting a trailing `|| true` absorb

@@ -127,6 +127,13 @@ const TARGET_GLOBS = [
   // gone when it is still being stamped.
   'src/components/settings/WorkTypesCard.tsx',
   'src/components/settings/PartnerSettingsPage.tsx',
+  'src/components/settings/partnerSettings/usePartnersMeUnit.ts',
+  'src/components/settings/partnerSettings/units/callerVerificationUnit.ts',
+  'src/components/settings/partnerSettings/units/loginBrandingUnit.ts',
+  'src/components/settings/partnerSettings/units/trustCenterUnit.ts',
+  'src/components/settings/partnerSettings/units/aiFeatureDefaultsUnit.ts',
+  'src/components/settings/partnerSettings/units/aiDataPolicyUnit.ts',
+  'src/components/settings/KnownGuestsSettings.tsx',
   'src/components/settings/aiModels/PartnerAiModelsTab.tsx',
   'src/components/settings/aiModels/ConnectionDrawer.tsx',
   'src/components/settings/aiModels/ResidencySwitch.tsx',
@@ -976,8 +983,13 @@ describe('no silent mutations in targeted set', () => {
     // Sweep 2026-10-23 adds PeripheralPolicyForm + OrganizationScopePanel: 251 → 253.
     // Wisp W04b (#9916) adds WispToggle/WispGrantStepUpModal/WispThreadHeader/WispThreadAttachments (+4 = 257).
     // Wisp W05a (#9911) adds WispConcernsPanel/wispConcernsApi (+2 = 259).
-    // Wisp W06b (#9918) adds WispThreadPage/WispGrantPauseControl (+2 = 261).
-    expect(absoluteFiles.length).toBe(261);
+    // Partner settings W2 (#9788) Task 18 adds partnerSettings/usePartnersMeUnit.ts: 259 → 260.
+    // Partner settings W2 (#9788) Task 20 adds partnerSettings/units/{callerVerificationUnit,loginBrandingUnit}.ts: 260 → 262.
+    // Partner settings W2 (#9788) Task 21 adds partnerSettings/units/trustCenterUnit.ts: 262 → 263.
+    // Partner settings W2 (#9788) Task 22 adds partnerSettings/units/{aiFeatureDefaultsUnit,aiDataPolicyUnit}.ts: 263 → 265.
+    // Partner settings W2 (#9788) Task 24 adds settings/KnownGuestsSettings.tsx: 265 → 266.
+    // Wisp W06b (#9918) adds WispThreadPage/WispGrantPauseControl: 266 → 268.
+    expect(absoluteFiles.length).toBe(268);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
