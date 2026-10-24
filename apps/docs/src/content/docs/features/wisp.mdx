@@ -1,0 +1,100 @@
+---
+title: Wisp
+description: A continuous triage companion that watches what you may see, nudges you about it, and asks before it acts.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Hosted Breeze only">
+  Wisp is available on hosted Breeze. On a self-hosted deployment the capability is **absent, not locked**: there are no Wisp routes, no Wisp settings and no upsell prompts, and nothing to enable. This page describes the hosted behavior.
+</Aside>
+
+## What Wisp is
+
+Wisp is a triage companion that works on behalf of one person. Once that person turns it on, Wisp keeps an eye on the estate they are allowed to see, notices things that need a human (a cluster of alerts, a stalled ticket, a failing patch ring), and tells them about it. It remembers preferences and decisions so it nags less over time, and it can hand focused jobs to specialists.
+
+Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier and no bypass.
+
+Wisp threads open at `/ai/wisp/thread/<id>`. The docked AI chat sidebar has a Wisp toggle for starting or continuing a conversation with it.
+
+## Turning it on
+
+Wisp is a paid-plan feature. It is enabled by default for **Pro, Enterprise and Unlimited** partners. On other plans the Wisp controls appear locked with an upgrade prompt; they are not hidden. Breeze operators control a deployment-level switch; if Wisp is off for the deployment, no partner can use it.
+
+Creating a grant requires **step-up MFA**: you are asked to confirm your second factor, even if you signed in recently.
+
+## Grants
+
+A grant is the standing permission you give Wisp.
+
+- **Self-only.** You can grant Wisp to work for you, not for someone else. A grant is never shared.
+- **Scope.** Either partner-wide or one organization. You can hold one live grant per scope.
+- **Reach is a snapshot.** The grant records what you can reach at the time. If your access later shrinks, Wisp's does too; if it grows, you refresh the grant to widen it.
+- **90-day expiry.** A grant lasts 90 days. Refreshing re-snapshots your current reach and renews the 90 days.
+- **Revoke.** You, or a partner admin, can revoke a grant at any time.
+
+A grant can be **paused** rather than ended. You can pause and resume it yourself, and Wisp stays quiet while you are paused. Breeze also pauses a grant by itself, and shows the reason:
+
+| Reason | What it means |
+|---|---|
+| Access changed | Your permissions changed, so Wisp stopped. Review and refresh the grant. |
+| Account suspended | Your account is suspended. |
+| Sign-in check expired | Your MFA confirmation lapsed. Confirm it and resume. |
+| Plan no longer includes Wisp | The partner lost the entitlement. Grants pause rather than disappear. |
+
+## What Wisp does alone vs asks first
+
+| Wisp acts alone | Wisp asks first | Wisp never |
+|---|---|---|
+| Reads anything you may see. Drafts ticket replies. Nudges you. Opens a ticket from an alert that an existing rule already turns into a ticket. Re-runs a check. Schedules a sweep. Stages work in a sandbox. | Sends anything to a client contact. Closes or reassigns tickets. Applies or edits a configuration policy. Runs a script on a device. Changes alert thresholds. Anything billing. Anything that grants access. | Acts outside the authority of the person it works for. Lets a sub-agent exceed that authority. |
+
+"Asks first" means an approval card in the Approvals inbox, on web and mobile. Approving is a decision by a person; Wisp cannot approve for itself.
+
+## Nudges, quiet hours and the morning brief
+
+Wisp tells you about a concern once, with one subject, one suggested next step and a link to the thread. If you ignore it, Wisp backs off rather than repeating itself, and after two unanswered nudges a concern moves to your in-app digest.
+
+You control delivery in your nudge preferences:
+
+- **Channels.** In-app and push, each on or off.
+- **Quiet hours.** Wisp respects your quiet hours. You can let urgent items through (`urgent only`) or never.
+- **Proactivity dial.** `quiet`, `normal` (the default) or `chatty`.
+- **Digest cadence.** How often batched items arrive (default every four hours).
+- **Morning brief.** A short summary at a time you choose (default 08:00) in your timezone.
+
+Every nudge accepts feedback, and Wisp uses it to tune what it raises. The thread page also shows an activity feed of what Wisp did and a spend meter.
+
+## Memory
+
+Wisp keeps short notes: your preferences, standing instructions, facts, and decisions ("leave that firewall alone until the renewal"). Notes belong to you, to an organization or to the partner.
+
+Wisp writes notes; **people confirm, correct or retract them**. Open **Settings → Wisp memory** (`/settings/wisp-memory`) to review what Wisp has recorded and retract anything wrong. Each note is attributed to Wisp acting for you.
+
+## Budgets
+
+Everything Wisp does under a grant (assessments, specialist runs, tasks) is metered against that grant's daily budget, in cents of AI spend.
+
+| Plan | Default daily budget per grant |
+|---|---|
+| Pro | 200 ¢ |
+| Enterprise | 500 ¢ |
+| Unlimited | 1000 ¢ |
+
+A partner admin can raise a grant's budget up to **5x the plan default**, never beyond the plan ceiling. The budget window is the UTC day. When a budget is exhausted, Wisp makes **no further model calls** under that grant until the window resets: assessments and specialist requests are skipped, while events are still recorded as concern updates by plain code and appear in your digest. The grant itself stays on (it is not paused), and the thread's spend meter shows the budget as used up.
+
+## Specialists
+
+When a concern needs focused work, Wisp can ask a **specialist** to do it. A request names a kind and a reason. Specialists are limited to one level deep: a specialist cannot request another specialist.
+
+| Kind | What it does | Starts |
+|---|---|---|
+| `sweep` | Collects evidence across the estate | On its own |
+| `analysis` | Runs sandboxed analysis over staged data (see [AI Analysis Runs](/features/ai-analysis-runs/)) | On its own |
+| `operator_recipe` | Runs an AI Operator recipe | After you approve |
+| `patch_plan` | Drafts a patch plan | After you approve |
+| `remediation_research` | Researches a fix for a problem | After you approve |
+| `bulk_ticket_reply` | Sends one message to a list of tickets (for example, everyone hit by the same outage). The approval card shows the exact tickets and the exact message; no ticket is added after approval, and the batch stops at the first failure and reports | After you approve |
+
+The kinds marked "after you approve" appear as an approval card; nothing starts until a person says yes. When you approve one, it runs with **your** authority at that moment, and every normal gate still applies. Anything the specialist then wants to change creates its own approval, as usual. Specialist requests count against the same daily budget.
+
+Work started this way is labeled **Wisp for** followed by the person's name on the agent run and the Operator task detail pages, so the audit trail shows who it was done for. Platform admins also have an `/admin/wisp` page with fleet-level health and counts.

@@ -179,6 +179,7 @@
     "securityScans": "Varreduras de IOC",
     "devicesTime": "Sincronização de horário",
     "adminAiModels": "Modelos de IA",
+    "adminWisp": "Wisp",
     "billingAutopay": "Pagamentos automáticos",
     "endpointMessages": "Mensagens para dispositivos",
     "securityDetectionRules": "Regras de detecção",

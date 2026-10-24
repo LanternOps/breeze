@@ -3049,6 +3049,8 @@
           "cost": "Maliyet",
           "duration": "Süre",
           "trigger": "Tetikleyici",
+          "requestedBy": "Talep eden",
+          "wispFor": "{{name}} için Wisp",
           "queuedAt": "Sıraya alındı",
           "startedAt": "Başladı",
           "finishedAt": "Tamamlandı",

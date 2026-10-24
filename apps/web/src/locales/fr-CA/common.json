@@ -90,6 +90,7 @@
     "variables": "Variables",
     "llmProviderCatalog": "Catalogue des fournisseurs LLM",
     "aiKillSwitch": "Coupe-circuit IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestion de la flotte",
     "sectionBilling": "Facturation",

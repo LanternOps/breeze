@@ -15,6 +15,8 @@
   "operatorTaskDetail": {
     "loading": "Caricamento attività...",
     "agent": "Gestita da {{name}}",
+    "requestedBy": "Richiesto da",
+    "wispFor": "Wisp per {{name}}",
     "target": {
       "label": "Destinazione",
       "none": "Nessun dispositivo di destinazione"

@@ -561,6 +561,62 @@
         "mfaRequired": "Le basculement du coupe-circuit IA nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Vue d'ensemble par partenaire des autorisations Wisp et de l'activité du jour. Lecture seule.",
+      "refresh": "Actualiser",
+      "retry": "Réessayer",
+      "loading": "Chargement...",
+      "empty": "Aucun partenaire n'a encore d'autorisation Wisp",
+      "disabled": "Wisp n'est pas activé sur ce déploiement (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Impossible de charger la vue d'ensemble de Wisp",
+        "generic": "Une erreur s'est produite"
+      },
+      "platformAdmin": {
+        "title": "Réservé aux administrateurs de la plateforme",
+        "description": "La vue d'ensemble de Wisp est réservée aux administrateurs de la plateforme."
+      },
+      "table": {
+        "partner": "Partenaire",
+        "plan": "Offre",
+        "activeGrants": "Autorisations actives",
+        "pausedGrants": "Autorisations en pause",
+        "assessmentsToday": "Évaluations aujourd'hui",
+        "specialistRequestsToday": "Demandes de spécialistes aujourd'hui",
+        "openConcerns": "Préoccupations ouvertes",
+        "budgetExhaustedToday": "Autorisations sans budget aujourd'hui"
+      },
+      "grants": {
+        "loading": "Chargement des autorisations...",
+        "error": "Impossible de charger les autorisations",
+        "empty": "Ce partenaire n'a aucune autorisation",
+        "grantor": "Autorisant",
+        "scope": "Portée",
+        "status": "Statut",
+        "pausedReason": "Motif de la pause",
+        "expires": "Expire",
+        "budget": "Budget (cents/jour)",
+        "tickMinutes": "Intervalle (min)",
+        "assessmentsToday": "Évaluations aujourd'hui",
+        "partnerWide": "Tout le partenaire"
+      },
+      "status": {
+        "active": "Active",
+        "paused": "En pause",
+        "revoked": "Révoquée",
+        "expired": "Expirée"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Budget épuisé",
+        "grantor_suspended": "Autorisant suspendu",
+        "grantor_access_lost": "L'autorisant a perdu l'accès",
+        "factor_expired": "Facteur expiré",
+        "entitlement_lost": "Droit perdu",
+        "user_paused": "Mise en pause par l'utilisateur",
+        "partner_disabled": "Partenaire désactivé"
+      }
+    },
     "systemPage": {
       "title": "Système",
       "description": "État de l'ensemble du déploiement pour les administrateurs de plateforme. Cette page est en lecture seule.",

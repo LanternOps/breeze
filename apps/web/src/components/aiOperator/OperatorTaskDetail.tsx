@@ -28,6 +28,7 @@ import type {
 } from '@breeze/shared';
 import { taskStateLabel } from './operatorTaskLabels';
 import { usePageItemName } from '../layout/usePageItemName';
+import { readWispProvenance, wispGrantorLabel } from '../wisp/wispProvenance';
 
 interface OperatorTaskDetailProps {
   taskId: string;
@@ -226,6 +227,9 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
   const targetText = task.target.deviceId
     ? (task.target.label ?? task.target.deviceId)
     : t('operatorTaskDetail.target.none');
+  // Wisp W07 (#9920, spec §13) — a task admitted under a Wisp grant names the
+  // person whose authority it runs under. Null for every other task.
+  const wispProvenance = readWispProvenance(task);
 
   return (
     <div className="space-y-6">
@@ -245,6 +249,14 @@ export default function OperatorTaskDetail({ taskId }: OperatorTaskDetailProps) 
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.origin.label')}</dt>
           <dd>{originKindLabel(t, task.originKind)}</dd>
         </div>
+        {wispProvenance && (
+          <div>
+            <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.requestedBy')}</dt>
+            <dd data-testid="operator-task-wisp">
+              {t('operatorTaskDetail.wispFor', { name: wispGrantorLabel(wispProvenance) })}
+            </dd>
+          </div>
+        )}
         <div>
           <dt className="text-xs uppercase text-muted-foreground">{t('operatorTaskDetail.state.label')}</dt>
           <dd>

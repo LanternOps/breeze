@@ -474,6 +474,7 @@ export const navSections: NavSection[] = [
       // adds the console path once one exists. The SQL fallback documented in
       // docs/deploy/ai-kill-switch.md still works and remains the runbook.
       { name: 'AI Kill Switch', labelKey: 'nav.aiKillSwitch', href: '/admin/ai-kill-switch', icon: Power, platformAdminOnly: true },
+      { name: 'Wisp', labelKey: 'nav.wisp', href: '/admin/wisp', icon: Sparkles, platformAdminOnly: true },
       // System page (spec 2026-09-23-system-connections-page-design.md, D7):
       // deployment-wide Connections status plus the #6605 Deprecations report
       // as tabs. Replaces the standalone Deprecations entry; its old settings

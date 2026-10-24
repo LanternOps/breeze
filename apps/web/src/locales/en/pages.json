@@ -179,6 +179,7 @@
     "securityScans": "IOC Scans",
     "devicesTime": "Time synchronization",
     "adminAiModels": "AI Models",
+    "adminWisp": "Wisp",
     "billingAutopay": "Automatic payments",
     "endpointMessages": "Endpoint Messages",
     "securityDetectionRules": "Detection Rules",

@@ -90,6 +90,7 @@
     "variables": "Variabili",
     "llmProviderCatalog": "Catalogo dei fornitori LLM",
     "aiKillSwitch": "Interruttore di emergenza IA",
+    "wisp": "Wisp",
     "sectionAi": "IA",
     "sectionFleetManagement": "Gestione flotta",
     "sectionBilling": "Fatturazione",

@@ -20,7 +20,7 @@ const namespaceDuplicateBaselines = {
     // +6: llmProviderCatalog admin UI (#3922 W1) — "Slug", "Status" are
     // identical cognates in pt-BR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 25,
+    'admin.json': 27, // +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 2, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +2 W07 (#5212, AI Operator task detail): originKind "manual"/"chat" are
     // identical cognates in pt-BR.
@@ -125,7 +125,7 @@ const namespaceDuplicateBaselines = {
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
-    'pages.json': 12, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), one settings-card title (Sites), and titles.settingsSites "Sites" (#9794).
+    'pages.json': 13, // +1 titles.adminWisp "Wisp" (product name); Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), one settings-card title (Sites), and titles.settingsSites "Sites" (#9794).
     'patches.json': 29,
     'peripherals.json': 4,
     'policies.json': 357,
@@ -207,7 +207,7 @@ const namespaceDuplicateBaselines = {
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in es-419; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 21,
+    'admin.json': 23, // +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 5, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "manual"/"ticket"/
     // "chat" are identical cognates in es-419.
@@ -313,7 +313,7 @@ const namespaceDuplicateBaselines = {
     'organizations.json': 4, // W01 #5075: cognate — "Tickets"
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
-    'pages.json': 12, // Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2), Tickets, and Ticket (singular).
+    'pages.json': 13, // +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2), Tickets, and Ticket (singular).
     'patches.json': 18,
     'peripherals.json': 4,
     'policies.json': 241,
@@ -384,7 +384,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
     // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
-    'admin.json': 40,
+    'admin.json': 42, // +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 10, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-FR.
@@ -501,7 +501,7 @@ const namespaceDuplicateBaselines = {
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
-    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
+    'pages.json': 13, // +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -599,7 +599,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +3 identical cognates (Actions, Budget, Standard).
     // #7609 admin.aiModels.variants.*: +3 identical cognates (Conversations, Candidate, Active).
-    'admin.json': 40,
+    'admin.json': 42, // +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 10, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +3 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" and
     // waitReason "information" are identical cognates in fr-CA.
@@ -707,7 +707,7 @@ const namespaceDuplicateBaselines = {
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
-    'pages.json': 12, // Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
+    'pages.json': 13, // +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, Extension, Incidents, Webhooks (x2), OneDrive, EDR, Variables, Ticket(s) (x2), Scripts, and one settings-card title (Sites).
     'patches.json': 23,
     'peripherals.json': 9,
     'policies.json': 204,
@@ -806,7 +806,7 @@ const namespaceDuplicateBaselines = {
     // are identical cognates in de-DE; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +4 identical cognates (Status, Budget, Frontier, Standard).
-    'admin.json': 35,
+    'admin.json': 38, // +3 Wisp admin page: product name "Wisp" + cognates (Partner, Status)
     'ai.json': 6, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     // +4 W07 (#5212, AI Operator task detail): originKind "ticket"/"sweep"/
     // "chat" and waitReason "information" are identical cognates in de-DE.
@@ -928,7 +928,7 @@ const namespaceDuplicateBaselines = {
     'organizations.json': 6, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
-    'pages.json': 15, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On); +1 system page W02: titles.adminSystem "System".
+    'pages.json': 16, // +1 titles.adminWisp "Wisp" (product name); Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On); +1 system page W02: titles.adminSystem "System".
     'patches.json': 32,
     'peripherals.json': 4,
     'policies.json': 205,
@@ -1006,7 +1006,7 @@ const namespaceDuplicateBaselines = {
     // values and the example base URL are literal placeholders, not wording.
     // W01 #7599 admin.aiModels.*: +5 identical cognates (Budget, Standard, Input, Output,
     // "Input / output per MTok"; "No" duplicates an existing counted string).
-    'admin.json': 43,
+    'admin.json': 45, // +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 12,
     // +2 W07 (#5212, AI Operator task detail): originKind "ticket"/"chat" are
     // identical cognates in it-IT.
@@ -1098,7 +1098,7 @@ const namespaceDuplicateBaselines = {
     'organizations.json': 6, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
-    'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
+    'pages.json': 11, // +1 titles.adminWisp "Wisp" (product name); Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 22,
     'peripherals.json': 4,
     'policies.json': 363,
@@ -1164,7 +1164,7 @@ const namespaceDuplicateBaselines = {
     // +5: llmProviderCatalog admin UI (#3922 W1) — "Slug" is kept as the
     // standard CMS loanword in tr-TR; the "openrouter"/"OpenRouter" example
     // values and the example base URL are literal placeholders, not wording.
-    'admin.json': 19,
+    'admin.json': 21, // +2 Wisp admin page: product name "Wisp" + cognate
     'ai.json': 2, // +1 W04b #9916: wisp.title "Wisp" is a protected proper noun
     'aiOperator.json': 0,
     'alerts.json': 25,
@@ -1240,7 +1240,7 @@ const namespaceDuplicateBaselines = {
     'organizations.json': 5, // W01 #5075: cognate — "{{count}} site"; +1 W02 account board: orgBoard.meta.sites_one "{{count}} site" is the same cognate in tr-TR
     // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
     // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
-    'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
+    'pages.json': 4, // +1 titles.adminWisp "Wisp" (product name); Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 13,
     'peripherals.json': 4,
     // +8: package-manager software library — OS names ("Windows", "macOS",

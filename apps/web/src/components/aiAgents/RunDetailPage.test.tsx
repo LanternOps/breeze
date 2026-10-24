@@ -2727,3 +2727,41 @@ describe('RunDetailPage — sweep act outcomes (#4442 W05)', () => {
     expect(screen.queryByTestId('ai-agent-run-sweep-proposal-outcome-0')).not.toBeInTheDocument();
   });
 });
+
+// Wisp W07 (#9920) — "Wisp for <user>" provenance. `wisp` is the additive
+// run-detail field (null for every run not admitted under a Wisp grant).
+describe('RunDetailPage Wisp provenance', () => {
+  const WISP = {
+    grantId: '7d0c1e2f-0000-4000-8000-000000000001',
+    grantorUserId: '3f2a1b9c-0000-4000-8000-000000000002',
+    grantorName: 'Todd',
+    depth: 0 as const,
+    requestedByRunId: null,
+  };
+
+  it('renders "Wisp for Todd" in the meta grid when run.wisp is set', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, wisp: WISP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-wisp')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-wisp')).toHaveTextContent('Wisp for Todd');
+    expect(within(screen.getByTestId('run-detail-meta')).getByTestId('run-detail-wisp')).toBeInTheDocument();
+  });
+
+  it('falls back to the grantor id prefix when the name is not visible', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, wisp: { ...WISP, grantorName: null } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-wisp')).toBeInTheDocument());
+    expect(screen.getByTestId('run-detail-wisp')).toHaveTextContent('Wisp for 3f2a1b9c');
+  });
+
+  it('renders nothing wisp-related when run.wisp is null', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, wisp: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-meta')).toBeInTheDocument());
+    expect(screen.queryByTestId('run-detail-wisp')).toBeNull();
+    expect(screen.queryByText(/Wisp for/)).toBeNull();
+  });
+});
