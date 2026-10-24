@@ -1960,7 +1960,8 @@
       "setVariablesPerOrganization": "Kuruluş başına Ayarlar → Değişkenler bölümünden ayarlanır",
       "copyUninstallCommand": "Kaldırma komutunu kopyala",
       "uninstallCommandCopied": "Kaldırma komutu kopyalandı",
-      "breezeDoesNotUninstall": "Breeze bu istemcileri kaldırmaz. Birini kaldırmak için komutu cihazda çalıştırın."
+      "breezeDoesNotUninstall": "Breeze bu istemcileri kaldırmaz. Birini kaldırmak için komutu cihazda çalıştırın.",
+      "copyFailed": "Kopyalama başarısız oldu. Komutu seçip elle kopyalayın."
     }
   }
 }

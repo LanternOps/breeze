@@ -1960,7 +1960,8 @@
       "setVariablesPerOrganization": "Set per organization in Settings → Variables",
       "copyUninstallCommand": "Copy uninstall command",
       "uninstallCommandCopied": "Uninstall command copied",
-      "breezeDoesNotUninstall": "Breeze does not uninstall these clients. Run the command on the device to remove one."
+      "breezeDoesNotUninstall": "Breeze does not uninstall these clients. Run the command on the device to remove one.",
+      "copyFailed": "Copy failed. Select the command and copy it manually."
     }
   }
 }

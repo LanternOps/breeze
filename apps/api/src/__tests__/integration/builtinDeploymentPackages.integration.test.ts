@@ -210,6 +210,26 @@ describe('refreshPinnedBuiltinPackages (db, #6958)', () => {
     expect(versions.map((v) => v.version).sort()).toEqual(['1.5.8', '1.6.0']);
   });
 
+  it('re-provisioning after a newer refresh never creates an older latest; un-archive keeps scripts enabled', async () => {
+    const partner = await createPartner();
+    const { catalogId } = await ensurePinnedBuiltinPackage({ key: 'controld_windows', partnerId: partner.id });
+    const newer = withPin(BUILTIN_TENANT_VAR_PACKAGES.controld_windows, '1.6.0', 'e'.repeat(64));
+    await refreshPinnedBuiltinPackages({ ...BUILTIN_TENANT_VAR_PACKAGES, controld_windows: newer });
+    await withSystemDbAccessContext(() =>
+      db.update(softwareCatalog).set({ deletedAt: new Date() }).where(eq(softwareCatalog.id, catalogId)),
+    );
+
+    // An older replica (code pin 1.5.8) handles the POST.
+    const again = await ensurePinnedBuiltinPackage({ key: 'controld_windows', partnerId: partner.id });
+    expect(again.catalogId).toBe(catalogId);
+    const { rows, versions } = await readKeyed(partner.id, 'controld_windows');
+    expect(rows[0]!.deletedAt).toBeNull();
+    expect(versions).toHaveLength(2);
+    const latest = versions.find((v) => v.isLatest)!;
+    expect(latest).toMatchObject({ id: again.versionId, version: '1.6.0', installScriptsEnabled: true });
+    expect(latest.postInstallScript).toBe(BUILTIN_TENANT_VAR_PACKAGES.controld_windows.postInstallScript);
+  });
+
   it('never downgrades: an older pin (an older replica booting) leaves the row alone', async () => {
     const partner = await createPartner();
     const before = await ensurePinnedBuiltinPackage({ key: 'controld_windows', partnerId: partner.id });

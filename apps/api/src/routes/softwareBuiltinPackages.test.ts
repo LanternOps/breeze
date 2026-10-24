@@ -241,6 +241,30 @@ describe('POST /software/builtin-packages/:key', () => {
     expect(ensurePinnedBuiltinPackage).not.toHaveBeenCalled();
   });
 
+  it('403 for org scope even with every grant and a forged partnerOrgAccess (requireScope is the gate)', async () => {
+    asOrg();
+    state.auth = { ...state.auth!, partnerOrgAccess: 'all' };
+    const res = await post('controld_windows');
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('Insufficient scope');
+    expect(ensurePinnedBuiltinPackage).not.toHaveBeenCalled();
+  });
+
+  it('401 without auth', async () => {
+    expect((await post('controld_windows')).status).toBe(401);
+  });
+
+  it('system scope audits the provision against the named partner', async () => {
+    asSystem();
+    state.selectQueue.push([{ id: PARTNER_ID }]);
+    expect((await post('nextdns_windows', `?partnerId=${PARTNER_ID}`)).status).toBe(201);
+    expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: null,
+      partnerId: PARTNER_ID,
+      action: 'software.builtin_package.provision',
+    }));
+  });
+
   it('403 for a partner user with orgAccess=selected (partner-wide write gate)', async () => {
     asPartner({ partnerOrgAccess: 'selected' });
     const res = await post('controld_windows');

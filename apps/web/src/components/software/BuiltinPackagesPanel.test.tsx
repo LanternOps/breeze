@@ -139,6 +139,40 @@ describe('BuiltinPackagesPanel (#6958)', () => {
     await waitFor(() => expect(onPackagesLoaded).toHaveBeenCalledWith([CONTROLD, NEXTDNS]));
   });
 
+  it('treats a payload whose rows all fail the shape check as a load failure (never silently hides)', async () => {
+    fetchMock.mockResolvedValue(res(200, { data: [{ unexpected: true }] }));
+    render(<BuiltinPackagesPanel />);
+    expect(await screen.findByTestId('builtin-packages-error')).toBeInTheDocument();
+  });
+
+  it('disables the button while the POST is in flight (no double submit)', async () => {
+    let release: (r: Response) => void = () => {};
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) =>
+      init?.method === 'POST'
+        ? new Promise<Response>((r) => { release = r; })
+        : Promise.resolve(res(200, { data: [CONTROLD] })),
+    );
+    render(<BuiltinPackagesPanel />);
+    const button = await screen.findByTestId('builtin-package-add-controld_windows');
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    fireEvent.click(button);
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(1);
+    release(res(201, { catalogId: 'cat-new', versionId: 'ver-new' }));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+
+  it('a clipboard failure is reported, not swallowed', async () => {
+    serve([CONTROLD]);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    });
+    render(<BuiltinPackagesPanel />);
+    fireEvent.click(await screen.findByTestId('builtin-package-copy-controld_windows'));
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+  });
+
   it('shows an inline error when the list cannot load', async () => {
     fetchMock.mockResolvedValue(res(500, { error: 'boom' }));
     render(<BuiltinPackagesPanel />);

@@ -54,11 +54,17 @@ export default function BuiltinPackagesPanel({ onProvisioned, onOpenCatalogItem,
       const response = await fetchWithAuth("/software/builtin-packages");
       if (!response.ok) throw new Error(String(response.status));
       const payload = (await response.json()) as { data?: unknown };
-      const next = Array.isArray(payload?.data) ? payload.data.filter(isRow) : [];
+      const raw: unknown[] = Array.isArray(payload?.data) ? payload.data : [];
+      const next = raw.filter(isRow);
+      // A shape drift must surface, never quietly hide the panel.
+      if (next.length !== raw.length) {
+        throw new Error(`unexpected row shape (${raw.length - next.length} of ${raw.length} rows)`);
+      }
       setRows(next);
       setLoadFailed(false);
       onPackagesLoaded?.(next);
-    } catch {
+    } catch (err) {
+      console.error("[BuiltinPackagesPanel] loading built-in packages failed:", err);
       setLoadFailed(true);
     } finally {
       setLoading(false);
@@ -98,7 +104,9 @@ export default function BuiltinPackagesPanel({ onProvisioned, onOpenCatalogItem,
       await navigator.clipboard.writeText(command);
       showToast({ type: "success", message: i18n.t("policies:software.builtinPackagesPanel.uninstallCommandCopied") });
     } catch {
-      // Clipboard can be unavailable (insecure context); the command stays selectable.
+      // Clipboard can be unavailable (insecure context, denied permission);
+      // the command stays selectable for a manual copy.
+      showToast({ type: "error", message: i18n.t("policies:software.builtinPackagesPanel.copyFailed") });
     }
   };
 

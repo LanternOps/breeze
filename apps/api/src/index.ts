@@ -2068,7 +2068,11 @@ async function bootstrap(): Promise<void> {
       console.error(`[startup] pinned built-in package refresh attempt ${attempt + 1} failed:`, error ?? `${result?.failed} row(s) failed`),
   })
     .then((result) => {
-      console.log(`[startup] pinned built-in package refresh: refreshed ${result.refreshed}, failed ${result.failed}`);
+      // Counts are from the last attempt. Rows still failing after the retries
+      // are already in Sentry per key; surface the exhaustion as an error too.
+      const line = `[startup] pinned built-in package refresh: refreshed ${result.refreshed}, failed ${result.failed}`;
+      if (result.failed > 0) console.error(`${line} (retries exhausted)`);
+      else console.log(line);
     })
     .catch((err) => {
       console.error('[startup] pinned built-in package refresh failed:', err);

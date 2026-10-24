@@ -159,7 +159,9 @@ export async function ensureBuiltinPackage(params: {
 // Pins (URL, sha256, version) change only here, and only with a code deploy;
 // every bump re-verifies sha256 against the vendor's `checksums.txt`. The
 // boot task `refreshPinnedBuiltinPackages` moves provisioned rows forward to
-// the pin and never backwards.
+// the pin and never backwards. It compares `version` only: ANY change to a
+// def's URL, checksum, scripts or detection rules must come with a higher
+// `version`, or rows already provisioned keep the old content.
 //
 // The scripts are byte copies of agent/internal/remote/tools/testdata/
 // builtin_scripts/* (the agent's executor tests run against those files);

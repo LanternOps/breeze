@@ -1960,7 +1960,8 @@
       "setVariablesPerOrganization": "À définir par organisation dans Paramètres → Variables",
       "copyUninstallCommand": "Copier la commande de désinstallation",
       "uninstallCommandCopied": "Commande de désinstallation copiée",
-      "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un."
+      "breezeDoesNotUninstall": "Breeze ne désinstalle pas ces clients. Exécutez la commande sur l’appareil pour en supprimer un.",
+      "copyFailed": "Échec de la copie. Sélectionnez la commande et copiez-la manuellement."
     }
   }
 }
