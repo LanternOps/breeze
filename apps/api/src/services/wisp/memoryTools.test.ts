@@ -38,7 +38,7 @@ import { MemoryServiceError } from './memoryService';
 import { registerWispMemoryTools } from './memoryTools';
 import { TOOL_TIERS, wispMemoryToolDefinitions } from '../aiAgentSdkTools';
 import { isToolEnvGatedOff, WISP_MEMORY_TOOL_NAMES } from '../aiToolEnvGates';
-import { HUMAN_ONLY_TOOLS } from '../aiToolExposure';
+import { AGENT_HUMAN_ONLY_TOOLS, HUMAN_ONLY_TOOLS } from '../aiToolExposure';
 import { aiTools } from '../aiToolNames';
 
 const GRANT = '00000000-0000-4000-8000-000000000a01';
@@ -263,6 +263,9 @@ describe('wisp memory tools', () => {
     for (const name of ['confirm_memory', 'retract_memory']) {
       expect(HUMAN_ONLY_TOOLS.has(name)).toBe(true);
       expect(HUMAN_ONLY_TOOLS.get(name)!.trim().length).toBeGreaterThanOrEqual(20);
+      // Agents never confirm/retract: denied to the ai_agent principal above any allowlist, and
+      // assertWithinCeiling (W02) refuses AGENT_HUMAN_ONLY_TOOLS for every grant.
+      expect(AGENT_HUMAN_ONLY_TOOLS.has(name)).toBe(true);
       expect(name in tiers).toBe(false);
       // Registry tier 3 (operator_plan precedent): wholly gated over external MCP, so never advertised there.
       expect(aiTools.get(name)!.tier).toBe(3);
