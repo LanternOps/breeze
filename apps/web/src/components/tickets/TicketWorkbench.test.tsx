@@ -3404,7 +3404,7 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
 
     // Hidden outright on a tombstone.
     const mustBeAbsent = [
-      'ticket-workbench-type', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice', 'ticket-workbench-move-org',
+      'ticket-workbench-subject-edit', 'ticket-workbench-subject-edit-btn', 'ticket-workbench-type', 'ticket-workbench-unassign', 'ticket-workbench-create-invoice', 'ticket-workbench-move-org',
       'ticket-delete-button', 'ticket-merge-open', 'ticket-workbench-description-edit-btn', 'ticket-workbench-requester-edit',
       'ticket-workbench-tag-input', 'ticket-workbench-device-edit', 'ticket-workbench-device-unlink',
       'ticket-triage-suggestion', 'ticket-triage-apply', 'ticket-triage-reject', 'ticket-ai-draft-reply',
@@ -3414,7 +3414,7 @@ describe('TicketWorkbench — merged tombstone (#8972)', () => {
     for (const id of mustBeAbsent) expect(screen.queryByTestId(id), id).toBeNull();
     // Still shown for reading, but inert.
     const mustBeDisabled = [
-      'ticket-workbench-subject-edit', 'ticket-workbench-status', 'ticket-workbench-priority', 'ticket-workbench-category',
+      'ticket-workbench-status', 'ticket-workbench-priority', 'ticket-workbench-category',
       'ticket-workbench-assignee', 'ticket-workbench-due',
     ];
     for (const id of mustBeDisabled) expect(screen.getByTestId(id), id).toBeDisabled();
