@@ -19,9 +19,12 @@ import ts from 'typescript';
 import {
   TICKET_CHILD_TABLES,
   TICKET_CHILD_WRITERS,
+  TICKET_GUARDING_LOCK_WRAPPERS,
   TICKET_LOCK_HELD_FUNCTIONS,
   TICKET_LOCK_PRIMITIVES,
   TICKET_LOCK_WRAPPERS,
+  TICKET_ROW_GUARDED_WRITERS,
+  TICKET_TOMBSTONE_GUARDS,
   type TicketChildTable,
 } from './ticketChildWriters';
 
@@ -203,6 +206,32 @@ function callIndex(body: string, names: readonly string[], before = Infinity): n
 
 const bareName = (key: string) => key.split('::')[1]!;
 
+/** Every call offset of any of `names` in `body`, ascending. */
+function callIndexes(body: string, names: readonly string[]): number[] {
+  const out: number[] = [];
+  for (const name of names) {
+    const re = new RegExp(`(?<![\\w.$])${name}\\s*\\(|\\.${name}\\s*\\(`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body))) out.push(m.index);
+  }
+  return out.sort((a, b) => a - b);
+}
+
+/**
+ * #8972 W1: is the tombstone guard checked in `body` before offset `before`?
+ * Either a guarding lock wrapper is called first, or a guard
+ * (`assertTicketNotMerged` / `isMergedTombstone`) runs on a lock taken first:
+ * after a lock call, or wrapping one (`assertTicketNotMerged(await lockTicketForWrite(…))`).
+ */
+function guardedBefore(body: string, before: number, lockNames: readonly string[]): boolean {
+  const guardingWrappers = Object.keys(TICKET_GUARDING_LOCK_WRAPPERS).map(bareName);
+  if (callIndexes(body, guardingWrappers).some((i) => i < before)) return true;
+  const locks = callIndexes(body, lockNames);
+  const wraps = new RegExp(`^\\.?(?:${TICKET_TOMBSTONE_GUARDS.join('|')})\\s*\\(\\s*(?:await\\s+)?\\(?\\s*(?:await\\s+)?(?:${lockNames.join('|')})\\s*\\(`);
+  return callIndexes(body, TICKET_TOMBSTONE_GUARDS).some((g) => g < before
+    && (locks.some((l) => l <= g) || wraps.test(body.slice(g))));
+}
+
 describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
   let files: ScannedFile[] = [];
   let writes: WriteHit[] = [];
@@ -358,7 +387,101 @@ describe('ticket-child writer registry (#8972 W0, spec §3.5)', () => {
     expect(problems.sort()).toEqual([]);
   }, 60_000);
 
-  it('W0 ships every writer with tombstoneGuard: false (W1 Task 1.2 flips them)', () => {
-    expect(Object.entries(TICKET_CHILD_WRITERS).filter(([, e]) => e.tombstoneGuard).map(([k]) => k)).toEqual([]);
+  // ── #8972 W1 Task 1.2: tombstones are read-only (spec §3.2, Gate B10) ──
+
+  it('every ticket-first / pre-ticket-child writer guards tombstones or states why not', () => {
+    const bad: string[] = [];
+    for (const [key, e] of Object.entries(TICKET_CHILD_WRITERS)) {
+      const lockFirst = e.lock === 'ticket-first' || e.lock === 'pre-ticket-child';
+      const exempt = !!(e.tombstoneExempt && e.tombstoneExempt.trim().length > 20);
+      if (lockFirst && e.tombstoneGuard === exempt) bad.push(`${key}: tombstoneGuard XOR tombstoneExempt`);
+      if (!lockFirst && (e.tombstoneGuard || e.tombstoneExempt)) bad.push(`${key}: ${e.lock} writers are handled by the movers (T1.9), not the guard`);
+      if (e.guardHeldByCaller && !e.tombstoneGuard) bad.push(`${key}: guardHeldByCaller without tombstoneGuard`);
+    }
+    expect(bad.sort()).toEqual([]);
+  });
+
+  it('every guarding lock wrapper is a lock wrapper and checks the guard after its lock', () => {
+    const problems: string[] = [];
+    for (const key of Object.keys(TICKET_GUARDING_LOCK_WRAPPERS)) {
+      if (!(key in TICKET_LOCK_WRAPPERS)) { problems.push(`${key}: not in TICKET_LOCK_WRAPPERS`); continue; }
+      const infos = rawByRel.has(relOfKey(key)) ? scanned(relOfKey(key)).functions.get(key) : undefined;
+      if (!infos) { problems.push(`${key}: wrapper not found`); continue; }
+      // Its own name is not a lock call inside its own body.
+      const locks = lockNames().filter((n) => n !== bareName(key));
+      for (const info of infos) {
+        // A wrapper that delegates to ANOTHER guarding wrapper is guarded too.
+        const others = Object.keys(TICKET_GUARDING_LOCK_WRAPPERS).filter((k) => k !== key).map(bareName);
+        if (callIndexes(info.text, others).length > 0) continue;
+        if (!guardedBefore(info.text, Infinity, locks)) problems.push(`${key}: no guard after its lock`);
+      }
+    }
+    expect(problems.sort()).toEqual([]);
+  });
+
+  it('guarded writers check assertTicketNotMerged after lockTicketForWrite, before the child write', () => {
+    const violators = new Set<string>();
+    for (const w of writes) {
+      const entry = TICKET_CHILD_WRITERS[w.key];
+      if (!entry || !entry.tombstoneGuard || entry.lockHeldByCaller || entry.guardHeldByCaller) continue;
+      if (!guardedBefore(w.fn.text, w.offset, lockNames())) violators.add(`${w.key} (line ${w.line})`);
+    }
+    expect([...violators].sort()).toEqual([]);
+  });
+
+  it('caller-guarded writers are only called after their caller checked the guard', () => {
+    const problems: string[] = [];
+    const targets = Object.entries(TICKET_CHILD_WRITERS)
+      .filter(([, e]) => e.tombstoneGuard && (e.lockHeldByCaller || e.guardHeldByCaller)).map(([k]) => k);
+    // A call from inside another caller-guarded writer or a lock-held function
+    // is checked at THAT function's call sites in turn.
+    const transparent = new Set([...targets, ...Object.keys(TICKET_LOCK_HELD_FUNCTIONS)]);
+    const exempt = new Set(Object.entries(TICKET_CHILD_WRITERS).filter(([, e]) => e.tombstoneExempt).map(([k]) => k));
+    const queue = [...targets];
+    const visited = new Set<string>();
+    while (queue.length > 0) {
+      const key = queue.shift()!;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const name = bareName(key);
+      const homeRel = relOfKey(key);
+      const moduleBase = path.basename(homeRel, '.ts');
+      const importRe = new RegExp(`import\\s*(?:type\\s*)?\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*['"][^'"]*\\b${moduleBase}(?:\\.js)?['"]`);
+      const callRe = new RegExp(`(?<![\\w.$])${name}\\s*\\(`, 'g');
+      for (const [rel, raw] of rawByRel) {
+        if (!raw.includes(name)) continue;
+        if (rel !== homeRel && !importRe.test(raw)) continue;
+        const file = scanned(rel);
+        callRe.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = callRe.exec(file.text))) {
+          const fn = enclosingFunction(file, m.index);
+          if (fn?.key === key) continue;
+          const before = file.text.slice(Math.max(0, m.index - 20), m.index);
+          if (/(function\s*\*?\s*|async\s+)$/.test(before) && fn && fn.key.endsWith(`::${name}`)) continue;
+          if (!fn) { problems.push(`${key}: called outside a named function in ${file.rel}`); continue; }
+          // A caller that is itself exempt (the billing stampers) answers for
+          // its own path; its exemption reason is checked above.
+          if (exempt.has(fn.key)) continue;
+          if (transparent.has(fn.key)) { queue.push(fn.key); continue; }
+          if (!guardedBefore(fn.text, m.index - fn.start, lockNames())) {
+            problems.push(`${key}: ${fn.key} calls it without checking the tombstone guard first`);
+          }
+        }
+      }
+    }
+    expect([...new Set(problems)].sort()).toEqual([]);
+  }, 60_000);
+
+  it('ticket-row writers outside the child registry check the guard under their lock', () => {
+    const problems: string[] = [];
+    for (const key of Object.keys(TICKET_ROW_GUARDED_WRITERS)) {
+      const infos = rawByRel.has(relOfKey(key)) ? scanned(relOfKey(key)).functions.get(key) : undefined;
+      if (!infos) { problems.push(`${key}: function not found`); continue; }
+      for (const info of infos) {
+        if (!guardedBefore(info.text, Infinity, lockNames())) problems.push(`${key}: no tombstone guard after its ticket lock`);
+      }
+    }
+    expect(problems.sort()).toEqual([]);
   });
 });

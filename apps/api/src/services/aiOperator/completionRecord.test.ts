@@ -6,7 +6,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const lockMock = vi.hoisted(() => ({ row: { id: 'ticket-1', orgId: 'o' } as { id: string; orgId: string } | null }));
+const lockMock = vi.hoisted(() => ({
+  row: { id: 'ticket-1', orgId: 'o', mergedIntoTicketId: null } as { id: string; orgId: string; mergedIntoTicketId: string | null } | null,
+}));
 vi.mock('../ticketRowLock', () => ({ lockTicketForWrite: async () => lockMock.row }));
 vi.mock('../../db', () => ({
   db: {},
@@ -14,6 +16,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: (fn: () => unknown) => fn(),
 }));
 
+import { TicketMergedError } from '../ticketMerge/errors';
 import {
   COMPLETION_RECORD_MAX_CHARS,
   CompletionRecordNoTicketError,
@@ -147,21 +150,36 @@ describe('renderCompletionRecord', () => {
 
 describe('postCompletionRecord', () => {
   let inserts: Array<Record<string, unknown>>;
+  let stamps: number;
   let stampReturns: unknown[];
   const dbh = () => ({
-    update: () => ({ set: () => ({ where: () => ({ returning: async () => stampReturns }) }) }),
+    update: () => { stamps += 1; return { set: () => ({ where: () => ({ returning: async () => stampReturns }) }) }; },
     insert: () => ({ values: (v: Record<string, unknown>) => { inserts.push(v); return { returning: async () => [{ id: 'comment-1' }] }; } }),
   });
 
-  beforeEach(() => { inserts = []; stampReturns = [{ id: 'doc-step' }]; lockMock.row = { id: 'ticket-1', orgId: 'o' }; });
+  beforeEach(() => { inserts = []; stamps = 0; stampReturns = [{ id: 'doc-step' }]; lockMock.row = { id: 'ticket-1', orgId: 'o', mergedIntoTicketId: null }; });
 
   it('REFUSES a ticket that is not in the task\'s org — no comment, no stamp', async () => {
-    lockMock.row = { id: 'ticket-1', orgId: 'other-org' };
+    lockMock.row = { id: 'ticket-1', orgId: 'other-org', mergedIntoTicketId: null };
     await expect(postCompletionRecord(dbh() as never, { orgId: 'o', taskId: 't', ticketId: 'ticket-1', stepId: 'doc-step', text: 'r' }))
       .rejects.toBeInstanceOf(CompletionRecordNoTicketError);
     lockMock.row = null;
     await expect(postCompletionRecord(dbh() as never, { orgId: 'o', taskId: 't', ticketId: 'ticket-1', stepId: 'doc-step', text: 'r' }))
       .rejects.toBeInstanceOf(CompletionRecordNoTicketError);
+    expect(inserts).toHaveLength(0);
+  });
+
+  it('REFUSES a merged tombstone under the lock (#8972 W1) — no stamp, no comment; the retry re-reads the survivor', async () => {
+    // A merge that commits between the record build (which read the task's
+    // ticket target) and this lock leaves the read pointing at the tombstone;
+    // the merge re-pointed the target, so the coordinator's retry lands on the
+    // survivor. The stamp must not be set, or the retry would post nothing.
+    lockMock.row = { id: 'ticket-1', orgId: 'o', mergedIntoTicketId: 'survivor-1' };
+    const err = await postCompletionRecord(dbh() as never, { orgId: 'o', taskId: 't', ticketId: 'ticket-1', stepId: 'doc-step', text: 'r' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TicketMergedError);
+    expect((err as TicketMergedError).mergedIntoTicketId).toBe('survivor-1');
+    expect(stamps).toBe(0);
     expect(inserts).toHaveLength(0);
   });
 

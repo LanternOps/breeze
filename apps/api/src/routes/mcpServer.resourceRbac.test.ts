@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 // MCP-OAUTH-03: resources/read must map the requested URI to a product
 // permission (checkPermissionRequirement — extracted from checkToolPermission
@@ -12,6 +12,8 @@ const testState = vi.hoisted(() => ({
   scopes: ['ai:read'] as string[],
   permissions: [] as Array<{ resource: string; action: string }>,
   dbRows: [] as any[],
+  // B-W05: empty by default, so the registry stays inert for the RBAC cases.
+  tools: [] as Array<{ name: string; description: string; input_schema: Record<string, unknown> }>,
 }));
 
 const mocks = vi.hoisted(() => ({
@@ -94,9 +96,10 @@ vi.mock('../middleware/apiKeyAuth', () => ({
 // Resource RBAC does not use the eager 47-tool registry. Keep it inert while
 // leaving the real aiGuardrails module (and checkPermissionRequirement) loaded.
 vi.mock('../services/aiTools', () => ({
-  getToolDefinitions: () => [],
+  getToolDefinitions: () => testState.tools,
   executeTool: vi.fn(),
-  getToolTier: () => undefined,
+  getToolTier: (name: string) => (testState.tools.some((tool) => tool.name === name) ? 1 : undefined),
+  getToolDomain: () => 'devices',
 }));
 
 vi.mock('../services/redis', () => ({ getRedis: () => null }));
@@ -191,6 +194,7 @@ beforeEach(() => {
   testState.scopes = ['ai:read'];
   testState.permissions = [];
   testState.dbRows = [];
+  testState.tools = [];
   mocks.dbSelect.mockReset().mockImplementation((_cols?: any) => ({
     from: (_table: any) => ({
       where: (_cond: any) => ({
@@ -297,5 +301,65 @@ describe('resources/read breeze://automations uses the tool-result field rules',
       enabled: true,
       trigger: { type: 'webhook', secret: '[REDACTED]', headers: { 'X-Signature': '[REDACTED]' }, eventType: 'device.offline' },
     });
+  }, 15_000);
+});
+
+// B-W05 (#6159, D-B43): the MCP App view under the REAL checkPermissionRequirement.
+describe('resources/read of the MCP App view under real RBAC (B-W05)', () => {
+  const APP_URI = 'ui://breeze/fleet-health/v1';
+  const UI_CAPS = { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } };
+
+  async function readModern(uri: string) {
+    const params = {
+      uri,
+      _meta: {
+        'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+        'io.modelcontextprotocol/clientCapabilities': UI_CAPS,
+        'io.modelcontextprotocol/clientInfo': { name: 'apps-host', version: '1' },
+      },
+    };
+    return mcpServerRoutes.request('/sse', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-API-Key': 'brz_test',
+        'MCP-Protocol-Version': '2026-07-28',
+        'Mcp-Method': 'resources/read',
+        'Mcp-Name': uri,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/read', params }),
+    });
+  }
+
+  beforeEach(() => {
+    process.env.MCP_APPS_ENABLED = 'true';
+    process.env.MCP_STATELESS_ENABLED = 'true';
+    testState.tools = [{ name: 'get_fleet_health', description: 'Fleet health', input_schema: { type: 'object', properties: {} } }];
+  });
+  afterEach(() => {
+    delete process.env.MCP_APPS_ENABLED;
+    delete process.env.MCP_STATELESS_ENABLED;
+  });
+
+  it('a role without devices.read gets the unknown-URI body, not the RBAC body, and no db query', async () => {
+    mockPermissions([{ resource: 'alerts', action: 'read' }]);
+    const body = await (await readModern(APP_URI)).json();
+    expect(body.error).toEqual({ code: -32602, message: `Unknown resource URI: ${APP_URI}` });
+    expect(mocks.dbSelect).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('a role holding devices.read gets the view, with no db query', async () => {
+    mockPermissions([{ resource: 'devices', action: 'read' }]);
+    const body = await (await readModern(APP_URI)).json();
+    expect(body.error).toBeUndefined();
+    expect(body.result.contents[0].mimeType).toBe('text/html;profile=mcp-app');
+    expect(body.result.contents[0].text.startsWith('<!doctype html>')).toBe(true);
+    expect(mocks.dbSelect).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it('the deprecated HTTP+SSE /message never serves it, even to a role holding devices.read', async () => {
+    mockPermissions([{ resource: 'devices', action: 'read' }]);
+    const body = await (await readResource(APP_URI)).json();
+    expect(body.error).toEqual({ code: -32602, message: `Unknown resource URI: ${APP_URI}` });
   }, 15_000);
 });

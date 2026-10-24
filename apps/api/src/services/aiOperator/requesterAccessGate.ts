@@ -38,6 +38,13 @@ import { contacts } from '../../db/schema/contacts';
 import { tickets } from '../../db/schema/portal';
 import { canAccessOrg, canAccessSite, getUserPermissions, type UserPermissions } from '../permissions';
 import { canMutateOrgWideGovernance, type SiteCeilingAuth } from '../siteCeilingAccess';
+import {
+  assertWithinCeiling,
+  CeilingViolationError,
+  GrantInactiveError,
+  resolveGrantCeiling,
+  type CeilingCheck,
+} from '../wisp/grantAuthority';
 import { normalizeSiteAllowlist } from '../siteAllowlist';
 
 export interface RequesterAccessCheck {
@@ -48,15 +55,66 @@ export interface RequesterAccessCheck {
 
 const ACCESS_OK: RequesterAccessCheck = { lost: false, detail: null };
 
+/** The grant pin a Wisp-launched task carries (both or none). */
+type TaskGrantPin = { grantId?: string | null; grantRevisionId?: string | null };
+
+/**
+ * Wisp W02 (Wisp design §4.3): a task launched under a delegation grant is
+ * also bounded by the pinned revision's LIVE ceiling — "permissions, not only
+ * access". Null when there is no grant or the check passes; a lost check
+ * otherwise. Runs inside the caller's system context (resolveGrantCeiling
+ * reuses it).
+ */
+async function grantCeilingLost(
+  task: TaskGrantPin & { orgId: string; requesterUserId: string | null },
+  check: Omit<CeilingCheck, 'orgId'>,
+): Promise<RequesterAccessCheck | null> {
+  if (!task.grantId) return null;
+  if (!task.grantRevisionId) return { lost: true, detail: 'the delegation grant pin is incomplete' };
+  let ceiling;
+  try {
+    ceiling = await resolveGrantCeiling(task.grantId, task.grantRevisionId);
+  } catch (error) {
+    if (error instanceof GrantInactiveError) return { lost: true, detail: 'the delegation grant is no longer active' };
+    throw error;
+  }
+  // A grant is one person's borrowed authority: the task's requester (whose
+  // live access is re-checked above) must BE that person.
+  if (ceiling.grantorUserId !== task.requesterUserId) {
+    return { lost: true, detail: 'the task requester is not the delegation grant\'s grantor' };
+  }
+  try {
+    assertWithinCeiling(ceiling, { orgId: task.orgId, ...check });
+  } catch (error) {
+    if (error instanceof CeilingViolationError) {
+      return { lost: true, detail: `the next effect is outside the delegation ceiling (${error.code})` };
+    }
+    throw error;
+  }
+  return null;
+}
+
 /**
  * `task` is intentionally a minimal pick, not the full row type, so a caller
  * with only the id/requester/org columns in hand (e.g. a reconciler scan that
  * re-reads a narrower projection) can still call this without a wider query.
+ *
+ * `effect` (Wisp W02) names the next effect's permission (and tool, when
+ * known); it is checked against a grant-bearing task's ceiling. It defaults to
+ * `devices:execute`: this gate sits immediately before a DEVICE COMMAND
+ * dispatch (header above), so that is the effect it guards unless told
+ * otherwise. Ignored for a task without a grant.
  */
 export async function requesterAccessLost(
-  task: { orgId: string; requesterUserId: string | null },
+  task: { orgId: string; requesterUserId: string | null } & TaskGrantPin,
   deviceId: string,
+  effect: { permission: string; toolName?: string } = { permission: 'devices:execute' },
 ): Promise<RequesterAccessCheck> {
+  // A delegation grant is always one person's authority: a grant-bearing task
+  // without its requester cannot be re-checked, so it is lost, not open.
+  if (task.grantId && !task.requesterUserId) {
+    return { lost: true, detail: 'the delegated task has no requester to re-check' };
+  }
   // No human requester recorded — an automatic/non-delegated task origin has
   // no requester ceiling to re-check.
   if (!task.requesterUserId) return ACCESS_OK;
@@ -95,6 +153,13 @@ export async function requesterAccessLost(
       if (!canAccessSite(perms, device.siteId)) {
         return { lost: true, detail: "the requester no longer has access to the target device's site" };
       }
+
+      const ceilingLost = await grantCeilingLost(task, {
+        siteId: device.siteId ?? null,
+        permission: effect.permission,
+        ...(effect.toolName ? { toolName: effect.toolName } : {}),
+      });
+      if (ceilingLost) return ceilingLost;
 
       return ACCESS_OK;
     }),
@@ -159,8 +224,11 @@ function requesterCeiling(perms: UserPermissions): SiteCeilingAuth {
  * `org_id` predicate, and those predicates are the isolation.
  */
 export async function requesterAccessLostForTargets(
-  task: { id: string; orgId: string; requesterUserId: string | null },
+  task: { id: string; orgId: string; requesterUserId: string | null } & TaskGrantPin,
 ): Promise<RequesterAccessCheck> {
+  if (task.grantId && !task.requesterUserId) {
+    return { lost: true, detail: 'the delegated task has no requester to re-check' };
+  }
   if (!task.requesterUserId) return ACCESS_OK;
 
   return runOutsideDbContext(() =>
@@ -220,6 +288,9 @@ export async function requesterAccessLostForTargets(
         return { lost: true, detail: 'the task has no live target' };
       }
 
+      // Wisp W02: the site each target sits on (null = org-level), re-checked
+      // against a grant-bearing task's ceiling once every target resolved.
+      const targetSites = new Set<string | null>();
       for (const target of targets) {
         if (target.targetKind === 'device' && target.deviceId) {
           const [device] = await db
@@ -233,6 +304,7 @@ export async function requesterAccessLostForTargets(
           if (!canAccessSite(perms, device.siteId)) {
             return { lost: true, detail: "the requester no longer has access to a target device's site" };
           }
+          targetSites.add(device.siteId ?? null);
           continue;
         }
         if (target.targetKind === 'contact' && target.contactId) {
@@ -250,6 +322,7 @@ export async function requesterAccessLostForTargets(
               detail: 'the requester is site-restricted, and a contact\'s directory accounts are organization-wide',
             };
           }
+          targetSites.add(null);
           continue;
         }
         if (target.targetKind === 'ticket' && target.ticketId) {
@@ -277,10 +350,22 @@ export async function requesterAccessLostForTargets(
             if (!canAccessSite(perms, device.siteId)) {
               return { lost: true, detail: "the requester no longer has access to a target ticket's device site" };
             }
+            targetSites.add(device.siteId ?? null);
+          } else {
+            targetSites.add(null);
           }
           continue;
         }
         return { lost: true, detail: `task target ${target.id} (${target.targetKind}) does not resolve` };
+      }
+
+      // Org + site terms per target. No permission term here: these recipes'
+      // child effects are minted under the plan approver and re-proven per
+      // mint; W07's coordinator passes the effect permission when it adds
+      // grant-bearing recipes of this shape.
+      for (const siteId of targetSites) {
+        const ceilingLost = await grantCeilingLost(task, { siteId });
+        if (ceilingLost) return ceilingLost;
       }
 
       return ACCESS_OK;

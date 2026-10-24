@@ -1,4 +1,4 @@
-import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
+import { db, getCurrentDbAccessContext, runAfterDbContextExit, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
@@ -386,6 +386,51 @@ export function canAccessSite(
   return allowed.includes(siteId);
 }
 
+/**
+ * Called after a user's permission authority may have changed (Wisp W02: the
+ * grant lifecycle re-evaluates that user's delegation grants). Registered at
+ * boot; see onPermissionAuthorityChanged.
+ */
+export type PermissionChangeListener = (userId: string) => Promise<void>;
+
+const permissionChangeListeners = new Set<PermissionChangeListener>();
+
+/**
+ * Subscribe to per-user authority changes. Every status change, role
+ * assignment, org-access change and role-permission edit already passes
+ * through `clearPermissionCache(userId)`, so that is the one choke point.
+ * Returns the unsubscribe handle.
+ */
+export function onPermissionAuthorityChanged(listener: PermissionChangeListener): () => void {
+  permissionChangeListeners.add(listener);
+  return () => {
+    permissionChangeListeners.delete(listener);
+  };
+}
+
+async function runPermissionChangeListeners(userId: string): Promise<void> {
+  await Promise.all([...permissionChangeListeners].map(async (listener) => {
+    try {
+      await listener(userId);
+    } catch (err) {
+      // A listener must never break the caller's permission change.
+      console.error(`[permissions] permission-change listener failed for user ${userId}:`, err);
+    }
+  }));
+}
+
+function notifyPermissionAuthorityChanged(userId: string): Promise<void> | void {
+  if (permissionChangeListeners.size === 0) return;
+  // Inside a request/worker transaction the change is not committed yet, so a
+  // listener reading in its own (system) context would see the OLD state.
+  // Defer until the outermost transaction settles; outside any context run now.
+  if (getCurrentDbAccessContext()) {
+    runAfterDbContextExit('permission-authority-changed', () => runPermissionChangeListeners(userId));
+    return;
+  }
+  return runPermissionChangeListeners(userId);
+}
+
 export async function clearPermissionCache(userId?: string): Promise<void> {
   if (userId) {
     // Clear all entries for this user
@@ -399,6 +444,7 @@ export async function clearPermissionCache(userId?: string): Promise<void> {
   }
 
   await bumpSharedPermissionCacheVersion(userId);
+  if (userId) await notifyPermissionAuthorityChanged(userId);
 }
 
 // Built-in system permissions. The registry itself lives in @breeze/shared (as

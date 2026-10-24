@@ -78,6 +78,9 @@ import {
   MAX_UPLOAD_SIZE,
   getFileExtension,
   authorizeCatalogItemRead,
+  hasInstallScript,
+  installSpecError,
+  normalizeSupportedOs,
   resolveScopedOrgId,
   setLatestSoftwareVersion,
   insertLatestSoftwareVersion,
@@ -89,6 +92,29 @@ export const softwareRoutes = new Hono();
 const requireSoftwareRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
 const requireSoftwareWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 const requireSoftwareExecute = requirePermission(PERMISSIONS.DEVICES_EXECUTE.resource, PERMISSIONS.DEVICES_EXECUTE.action);
+
+/**
+ * #6958: a pre/post-install script runs as SYSTEM/root on every target, so a
+ * version write that carries one needs devices.execute on top of the route's
+ * devices.write + MFA. Runs the same permission gate as the deploy routes,
+ * only when a script is present. Returns the denial response, or null.
+ */
+async function denyUnlessDevicesExecute(c: Context): Promise<Response | null> {
+  let allowed = false;
+  const res = await requireSoftwareExecute(c, async () => { allowed = true; });
+  if (allowed) return null;
+  return res ?? c.json({ error: 'Install scripts require the devices.execute permission' }, 403);
+}
+
+/**
+ * #6958 D1: a Breeze-defined built-in package (builtin_package_key set) is
+ * provisioned in system context and, like an integration row, is immutable
+ * outside system scope: no catalog edit or delete, no new version.
+ */
+function isImmutableBuiltin(row: { builtinPackageKey?: string | null }, auth: { scope: string }): boolean {
+  return row.builtinPackageKey != null && auth.scope !== 'system';
+}
+const BUILTIN_PACKAGE_IMMUTABLE = 'Built-in packages are managed by Breeze and cannot be changed';
 
 /**
  * Organization download policy is an org-wide security control. Organization
@@ -827,6 +853,7 @@ softwareRoutes.get(
         orgId: softwareCatalog.orgId,
         partnerId: softwareCatalog.partnerId,
         integrationProvider: softwareCatalog.integrationProvider,
+        builtinPackageKey: softwareCatalog.builtinPackageKey,
         name: softwareCatalog.name,
         vendor: softwareCatalog.vendor,
         description: softwareCatalog.description,
@@ -835,6 +862,10 @@ softwareRoutes.get(
         websiteUrl: softwareCatalog.websiteUrl,
         isManaged: softwareCatalog.isManaged,
         createdAt: softwareCatalog.createdAt,
+        // #6958: whether the latest version's stored scripts are dispatched
+        // (null when the item has no latest version). Table-qualified outer
+        // id, for the reason in the NOTE below.
+        installScriptsEnabled: sql<boolean | null>`(SELECT software_versions.install_scripts_enabled FROM software_versions WHERE software_versions.catalog_id = ${softwareCatalog}.id AND software_versions.is_latest LIMIT 1)`,
         // NOTE: the outer catalog id MUST be written as `${softwareCatalog}.id`
         // (table-qualified), never `${softwareCatalog.id}`. Drizzle renders a
         // bare column reference UNqualified ("id"), which inside these
@@ -1016,6 +1047,9 @@ softwareRoutes.patch(
     if (existing.integrationProvider !== null && auth.scope !== 'system') {
       return c.json({ error: 'Built-in integration packages cannot be modified' }, 403);
     }
+    if (isImmutableBuiltin(existing, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
     const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
 
@@ -1054,6 +1088,9 @@ softwareRoutes.delete(
     // Built-ins are provisioned in system context and stay immutable here.
     if (existing.integrationProvider !== null && auth.scope !== 'system') {
       return c.json({ error: 'Built-in integration packages cannot be deleted' }, 403);
+    }
+    if (isImmutableBuiltin(existing, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
     }
     const denied = authorizeCatalogItemWrite(auth, existing, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
@@ -1148,6 +1185,20 @@ softwareRoutes.post(
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
+    if (isImmutableBuiltin(catalogItem, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
+
+    // #6958: de-duplicate supportedOs BEFORE the single-OS rule runs.
+    const normalizedOs = normalizeSupportedOs(payload.supportedOs);
+    if (!normalizedOs.ok) return c.json({ error: normalizedOs.error }, 400);
+    const supportedOs = normalizedOs.value ?? null;
+    // A non-blank script runs as SYSTEM/root on every target: devices.execute.
+    const scriptsEnabled = hasInstallScript(payload);
+    if (scriptsEnabled) {
+      const executeDenied = await denyUnlessDevicesExecute(c);
+      if (executeDenied) return executeDenied;
+    }
 
     // A URL-created version never recorded a fileType, so the dispatcher fell
     // back to 'exe' and the agent exec'd the downloaded file directly — which
@@ -1156,6 +1207,16 @@ softwareRoutes.post(
     // fileType, otherwise infer from the URL; null keeps prior behavior.
     const fileType = payload.fileType ?? deriveSoftwareFileTypeFromUrl(payload.downloadUrl);
     const silentDefaults = defaultSilentArgsForFileType(fileType);
+    const silentInstallArgs = payload.silentInstallArgs || silentDefaults?.install || null;
+
+    const specError = installSpecError({
+      fileType,
+      supportedOs,
+      silentInstallArgs,
+      preInstallScript: payload.preInstallScript,
+      postInstallScript: payload.postInstallScript,
+    });
+    if (specError) return c.json(specError, 400);
 
     // Storing NULL means committing to a row we will later GUESS about at
     // dispatch. The web forms warn about it, but an API/MCP/script client gets
@@ -1177,12 +1238,13 @@ softwareRoutes.post(
       fileType,
       checksum: payload.checksum ?? null,
       fileSize: payload.fileSize ?? null,
-      supportedOs: payload.supportedOs ?? null,
+      supportedOs,
       architecture: payload.architecture ?? null,
-      silentInstallArgs: payload.silentInstallArgs || silentDefaults?.install || null,
+      silentInstallArgs,
       silentUninstallArgs: payload.silentUninstallArgs || silentDefaults?.uninstall || null,
       preInstallScript: payload.preInstallScript ?? null,
       postInstallScript: payload.postInstallScript ?? null,
+      installScriptsEnabled: scriptsEnabled,
       detectionRules: payload.detectionRules ?? null,
       successExitCodes: payload.successExitCodes ?? [],
     });
@@ -1224,6 +1286,9 @@ softwareRoutes.post(
     const [catalogItem] = await db.select().from(softwareCatalog)
       .where(and(eq(softwareCatalog.id, catalogId), eq(softwareCatalog.orgId, orgId), activeCatalog));
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
+    if (isImmutableBuiltin(catalogItem, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
 
     // Stream the multipart body straight to a temp file via busboy, hashing as
     // it arrives, instead of buffering the whole parsed File into the Node heap
@@ -1323,10 +1388,10 @@ softwareRoutes.post(
         successExitCodes = parsedCodes.data;
       }
 
-      let supportedOs: string[] | null = null;
+      let rawSupportedOs: unknown = null;
       if (typeof fields.supportedOs === 'string') {
         try {
-          supportedOs = JSON.parse(fields.supportedOs);
+          rawSupportedOs = JSON.parse(fields.supportedOs);
         } catch {
           // Malformed supportedOs silently dropped the OS-targeting field on the
           // created version. Don't fail the upload (matches prior behavior), but
@@ -1337,6 +1402,11 @@ softwareRoutes.post(
         }
       }
 
+      // #6958: de-duplicate supportedOs BEFORE the single-OS rule runs.
+      const normalizedOs = normalizeSupportedOs(rawSupportedOs);
+      if (!normalizedOs.ok) return c.json({ error: normalizedOs.error }, 400);
+      const supportedOs = normalizedOs.value ?? null;
+
       // Auto-detect MSI silent args
       const silentDefaults = defaultSilentArgsForFileType(fileType);
       if (silentDefaults && !silentInstallArgs) {
@@ -1345,6 +1415,22 @@ softwareRoutes.post(
       if (silentDefaults && !silentUninstallArgs) {
         silentUninstallArgs = silentDefaults.uninstall;
       }
+
+      // #6958: a script runs as SYSTEM/root (devices.execute), and the install
+      // spec is checked before any bytes reach object storage.
+      const scriptsEnabled = hasInstallScript({ preInstallScript, postInstallScript });
+      if (scriptsEnabled) {
+        const executeDenied = await denyUnlessDevicesExecute(c);
+        if (executeDenied) return executeDenied;
+      }
+      const specError = installSpecError({
+        fileType,
+        supportedOs,
+        silentInstallArgs,
+        preInstallScript,
+        postInstallScript,
+      });
+      if (specError) return c.json(specError, 400);
 
       const checksum = file.checksum;
       const fileSize = file.fileSize;
@@ -1407,6 +1493,7 @@ softwareRoutes.post(
           silentUninstallArgs,
           preInstallScript,
           postInstallScript,
+          installScriptsEnabled: scriptsEnabled,
           detectionRules,
           successExitCodes,
         });
@@ -1456,6 +1543,11 @@ softwareRoutes.patch(
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
+    // #6958: a built-in package's versions are Breeze-pinned (URL, checksum,
+    // scripts); neither editing nor re-promoting one is the caller's call.
+    if (isImmutableBuiltin(catalogItem, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
 
     const [existingVersion] = await db.select().from(softwareVersions)
       .where(and(
@@ -1464,12 +1556,57 @@ softwareRoutes.patch(
       ));
     if (!existingVersion) return c.json({ error: 'Version not found' }, 404);
 
+    // #6958: scripts stay immutable here (the schema has no script keys). A
+    // script-enabled version is bound to its one OS, which picks the script's
+    // interpreter, so its supportedOs may be re-sent but not changed.
+    let supportedOs: string[] | null | undefined = payload.supportedOs;
+    if (supportedOs !== undefined) {
+      const normalizedOs = normalizeSupportedOs(supportedOs);
+      if (!normalizedOs.ok) return c.json({ error: normalizedOs.error }, 400);
+      supportedOs = normalizedOs.value ?? null;
+      if (existingVersion.installScriptsEnabled && hasInstallScript(existingVersion)) {
+        if (!Array.isArray(supportedOs) || supportedOs.length !== 1) {
+          return c.json({ error: 'Invalid install spec: scripts_require_single_os', issues: ['scripts_require_single_os'] }, 400);
+        }
+        const current = Array.isArray(existingVersion.supportedOs) ? existingVersion.supportedOs : [];
+        if (current.length !== 1 || String(current[0]).toLowerCase() !== supportedOs[0]!.toLowerCase()) {
+          return c.json({
+            error: 'Install scripts are bound to this version\'s OS; create a new version to target another OS',
+            issues: ['scripts_os_immutable'],
+          }, 400);
+        }
+      }
+    }
+    // A script-enabled version's download and args are what its SYSTEM/root
+    // script operates on, so editing one needs devices.execute too.
+    if (existingVersion.installScriptsEnabled && hasInstallScript(existingVersion)) {
+      const executeDenied = await denyUnlessDevicesExecute(c);
+      if (executeDenied) return executeDenied;
+    }
+    // NEW silent-install args on a type whose installer ignores them are
+    // rejected rather than silently dropped (same rule as create). Re-sending
+    // the value a legacy version already stores is not a new write.
+    if (
+      typeof payload.silentInstallArgs === 'string' &&
+      payload.silentInstallArgs.trim() !== '' &&
+      payload.silentInstallArgs !== existingVersion.silentInstallArgs
+    ) {
+      const specError = installSpecError({
+        fileType: existingVersion.fileType,
+        supportedOs: null,
+        silentInstallArgs: payload.silentInstallArgs,
+        preInstallScript: null,
+        postInstallScript: null,
+      });
+      if (specError) return c.json(specError, 400);
+    }
+
     const updates: Record<string, unknown> = {};
     if (payload.version !== undefined) updates.version = payload.version;
     if (payload.releaseDate !== undefined) updates.releaseDate = new Date(payload.releaseDate);
     if (payload.releaseNotes !== undefined) updates.releaseNotes = payload.releaseNotes;
     if (payload.downloadUrl !== undefined) updates.downloadUrl = payload.downloadUrl;
-    if (payload.supportedOs !== undefined) updates.supportedOs = payload.supportedOs;
+    if (supportedOs !== undefined) updates.supportedOs = supportedOs;
     if (payload.architecture !== undefined) updates.architecture = payload.architecture;
     if (payload.silentInstallArgs !== undefined) updates.silentInstallArgs = payload.silentInstallArgs;
     if (payload.silentUninstallArgs !== undefined) updates.silentUninstallArgs = payload.silentUninstallArgs;
@@ -1519,6 +1656,11 @@ softwareRoutes.post(
     if (!catalogItem) return c.json({ error: 'Catalog item not found' }, 404);
     const denied = authorizeCatalogItemWrite(auth, catalogItem, c.req.query('orgId'));
     if (denied) return c.json({ error: denied.error }, denied.status);
+    // #6958: a built-in package's versions are Breeze-pinned (URL, checksum,
+    // scripts); neither editing nor re-promoting one is the caller's call.
+    if (isImmutableBuiltin(catalogItem, auth)) {
+      return c.json({ error: BUILTIN_PACKAGE_IMMUTABLE }, 403);
+    }
 
     const [existingVersion] = await db.select().from(softwareVersions)
       .where(and(

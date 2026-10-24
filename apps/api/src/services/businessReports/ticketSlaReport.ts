@@ -42,6 +42,7 @@ const NOTES = [
   'Attainment compares each completion with the deadline stored on the ticket. The response deadline is frozen at the first response, so later pauses do not move it. Tickets answered before #8973 keep a deadline that includes all of their pauses.',
   'Tickets with no SLA target are excluded from the attainment denominators and counted separately.',
   'Planned work (work_kind other than support) carries a due date, not an SLA, and is excluded.',
+  'Tickets merged into another ticket are excluded; their close stamps are merge stamps, not resolutions. A merged ticket that had breached no longer counts as missed.',
   'The technician axis uses the ticket\'s CURRENT assignee; reassignment history is not tracked.',
   'Ticket detail lists breached tickets first (newest first), then the rest, so the detail cap never drops a breach in favour of a newer on-time ticket.',
 ];
@@ -116,6 +117,8 @@ function outcomesCte(scopePredicate: SQL, period: ResolvedReportPeriod): SQL {
         t.sla_breached_at, t.sla_breach_reason
       FROM tickets t
       WHERE t.deleted_at IS NULL
+        -- #8972 spec §3.6: a merged tombstone's close stamps are merge stamps.
+        AND t.merged_into_ticket_id IS NULL
         -- #5573 §4.8: the sweep excludes planned work, so the recompute must too.
         AND t.work_kind = 'support'
         AND t.created_at >= ${sqlTimestamp(period.start)} AND t.created_at < ${sqlTimestamp(period.end)}
