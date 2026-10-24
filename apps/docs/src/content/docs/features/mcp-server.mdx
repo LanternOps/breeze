@@ -533,7 +533,7 @@ Legacy clients send this in `initialize`. Clients on protocol `2026-07-28` send 
 
 **What the view does not do.** The view makes no network requests and loads nothing from any server. It contains no data until the tool runs: it renders only the tool result the host hands it, and shows device names and other values as plain text. If the result is a summary or an error rather than the usual device list, the view shows the tool's text instead.
 
-The view is English only. For a pilot evaluation, each request from an Apps-capable client is marked in the audit log (`details.uiExtension`), and each view fetch or `get_fleet_health` call is marked with `details.mcpApp = "fleet-health/v1"`.
+The view is English only. For the pilot evaluation, the audit log marks requests from Apps-capable clients with `details.uiExtension`. For a protocol `2026-07-28` client, every request is marked. For a legacy client, `initialize`, `tools/list`, `resources/read` and `tools/call` are marked. While the flag is on, each successful view fetch and each `get_fleet_health` call is also marked with `details.mcpApp = "fleet-health/v1"`, whether or not the client declared the extension.
 
 ---
 

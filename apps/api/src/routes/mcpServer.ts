@@ -730,8 +730,10 @@ type McpDispatchContext = {
   /** B-W04 (#6158, D-B32): the modern request's declared client capabilities; null/absent in the legacy era. */
   clientCapabilities?: Record<string, unknown> | null;
   /**
-   * B-W05 (#6159, D-B40): the HTTP transport. Both legacy transports dispatch
-   * with era `legacy`; only `streamable` may advertise or resolve MCP Apps.
+   * B-W05 (#6159, D-B40): the HTTP transport. `http_sse` (the deprecated
+   * HTTP+SSE `/message` endpoint, always era `legacy`) never advertises or
+   * resolves MCP Apps; `streamable` (era `legacy` or `modern`) may. Modern is
+   * always `streamable`.
    */
   transport: 'http_sse' | 'streamable';
   /**
@@ -741,16 +743,27 @@ type McpDispatchContext = {
    */
   resolveClientExtensions: () => Promise<McpClientExtensions>;
   /** B-W05 (#6159, D-B44): per-request audit additions, read by dispatchAndAudit after dispatch. */
-  auditExtras: { mcpApp?: string };
+  auditExtras: McpAuditExtras;
 };
+
+/** B-W05 (#6159, D-B44): bounded, server-chosen audit additions (never caller text). */
+type McpAuditExtras = { mcpApp?: string };
 
 /** Legacy-era methods that may read the negotiated-extension side key (D-B42). */
 const MCP_SIDE_KEY_METHODS: ReadonlySet<string> = new Set(['tools/list', 'resources/read', 'tools/call']);
 
-/** B-W05 (#6159): memoise a resolver and degrade any failure to "nothing declared". */
+/**
+ * B-W05 (#6159): memoise a resolver and degrade any failure to "nothing
+ * declared". Today's resolvers cannot reject, so a rejection here is a code
+ * defect — reported, not swallowed silently.
+ */
 function memoizeClientExtensions(resolve: () => Promise<McpClientExtensions>): () => Promise<McpClientExtensions> {
   let pending: Promise<McpClientExtensions> | undefined;
-  return () => (pending ??= resolve().catch(() => NO_MCP_CLIENT_EXTENSIONS));
+  return () => (pending ??= resolve().catch((err: unknown) => {
+    console.error('[MCP] Client-extension resolution failed; treating as undeclared:', err);
+    captureException(err);
+    return NO_MCP_CLIENT_EXTENSIONS;
+  }));
 }
 
 async function dispatchAndAudit(
@@ -1217,9 +1230,10 @@ mcpServerRoutes.post(
       era: 'legacy',
       correlation,
       transport: 'streamable',
-      // B-W05 (#6159, D-B42): reached only after the ownership check above
-      // passed. The side key is read lazily, at most once, only with the flag
-      // on and only for the three methods that use it.
+      // B-W05 (#6159, D-B42): built only after the ownership check above
+      // passed. Resolved once per request (memoised; dispatchAndAudit always
+      // resolves it for the audit row). The Redis side key is read only with
+      // the flag on and only for tools/list, resources/read and tools/call.
       resolveClientExtensions: memoizeClientExtensions(async () => {
         if (!mcpAppsEnabled()) return NO_MCP_CLIENT_EXTENSIONS;
         if (isInitialize) return initializeExtensions;
@@ -1778,12 +1792,13 @@ async function isMcpAppAvailableForCaller(
     permissionGranted = !(await checkPermissionRequirement(auth, app.permission));
   } catch (err) {
     console.error('[MCP] Permission check failed for MCP App:', app.key, err);
+    captureException(err);
   }
   return isMcpAppAvailable({ flagOn, declared, listedForCaller: listed, permissionGranted });
 }
 
 /** B-W05 (#6159, D-B44): a tools/call of an app's tool is counted for the go/no-go. */
-function noteMcpAppToolCall(params: Record<string, unknown> | undefined, auditExtras: { mcpApp?: string }): void {
+function noteMcpAppToolCall(params: Record<string, unknown> | undefined, auditExtras: McpAuditExtras): void {
   if (!mcpAppsEnabled() || typeof params?.name !== 'string') return;
   const app = findMcpAppByTool(resolveDeprecatedToolAlias(params.name));
   if (app) auditExtras.mcpApp = app.key;
@@ -3348,7 +3363,7 @@ async function handleResourcesRead(
     clientExtensions: McpClientExtensions;
     scopes: string[];
     apiKey: McpApiKeyContext | undefined;
-    auditExtras: { mcpApp?: string };
+    auditExtras: McpAuditExtras;
   },
 ): Promise<JsonRpcResponse> {
   const uri = params.uri as string;

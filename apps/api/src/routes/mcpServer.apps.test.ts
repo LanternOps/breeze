@@ -879,6 +879,47 @@ describe('flag on: resources/read of the app URI (D-B43)', () => {
     expect(requestAuditRows().at(-1)!.details).not.toHaveProperty('mcpApp');
   });
 
+  it('audit: a denied tools/call of get_fleet_health still carries mcpApp, with result failure (the go/no-go reads result)', async () => {
+    currentKey = { mcpDomains: ['tickets'] };
+    const { sessionId } = await legacyInit(UI_CAPS);
+    const body = await (await legacy('tools/call', sessionId, { name: 'get_fleet_health', arguments: {} })).json();
+    expect(body.error).toMatchObject({ code: -32003 });
+    expect(requestAuditRows().at(-1)).toMatchObject({ result: 'failure', details: { mcpApp: 'fleet-health/v1', uiExtension: true } });
+    expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  it('degraded side key (expired or Redis error): no _meta.ui and the unknown-URI body, never a 5xx', async () => {
+    const { sessionId } = await legacyInit(UI_CAPS);
+    __sessionStore.delete(`mcp:session-ext:${sessionId}`);
+    let tools = (await (await legacy('tools/list', sessionId)).json()).result.tools as any[];
+    expect(tools.find((t) => t.name === 'get_fleet_health')._meta).toEqual({ 'app.breeze/domain': 'devices' });
+    expect(await (await legacy('resources/read', sessionId, { uri: APP_URI })).json()).toEqual(unknownUri(2, APP_URI));
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const second = await legacyInit(UI_CAPS);
+    redisState.get.mockImplementation(async (k: string) => {
+      if (k.startsWith('mcp:session-ext:')) throw new Error('redis down');
+      return __sessionStore.get(k) ?? null;
+    });
+    const listRes = await legacy('tools/list', second.sessionId);
+    expect(listRes.status).toBe(200);
+    tools = (await listRes.json()).result.tools;
+    expect(tools.find((t) => t.name === 'get_fleet_health')._meta).toEqual({ 'app.breeze/domain': 'devices' });
+    const readRes = await legacy('resources/read', second.sessionId, { uri: APP_URI });
+    expect(readRes.status).toBe(200);
+    expect(await readRes.json()).toEqual(unknownUri(2, APP_URI));
+    warn.mockRestore();
+  });
+
+  it('the side key is written once on initialize and never refreshed by later requests', async () => {
+    const { sessionId } = await legacyInit(UI_CAPS);
+    expect(sideKeyWrites()).toHaveLength(1);
+    await legacy('tools/list', sessionId);
+    await legacy('resources/read', sessionId, { uri: APP_URI });
+    await legacy('tools/call', sessionId, { name: 'get_fleet_health', arguments: {} });
+    expect(sideKeyWrites()).toHaveLength(1);
+  });
+
   it('flag off: tools/call of get_fleet_health carries no mcpApp', async () => {
     delete process.env.MCP_APPS_ENABLED;
     const { sessionId } = await legacyInit(UI_CAPS);

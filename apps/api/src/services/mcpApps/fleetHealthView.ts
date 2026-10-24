@@ -3,7 +3,8 @@
  * `ui://breeze/fleet-health/v1` (mimeType `text/html;profile=mcp-app`).
  *
  * One static, self-contained HTML5 document: inline style, one inline script,
- * no reference to any origin, no network. It renders the `structuredContent`
+ * no URL and no network access (messages go to window.parent via postMessage;
+ * the sender is checked on receipt). It renders the `structuredContent`
  * that `get_fleet_health` already returns and falls back to the tool's text.
  *
  * Rules (enforced by registry.contract.test.ts and fleetHealthView.test.ts):
@@ -313,7 +314,14 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 0; font: 12px/1.4 u
         }
       }
     } catch (err) {
-      renderFallback(event.result);
+      try {
+        renderFallback(event.result);
+      } catch (fallbackErr) {
+        clear();
+        var last = el('pre', '', 'Unable to display this result.');
+        last.setAttribute('data-testid', 'fh-fallback');
+        root.appendChild(last);
+      }
     }
     reportSize();
   }

@@ -198,6 +198,17 @@ describe('fleet-health view (D-B39)', () => {
     expect(v.qa('[data-testid="fh-row"]')).toHaveLength(0);
   });
 
+  it('never fails blank even when reading the result itself throws', () => {
+    const v = load();
+    v.handshake();
+    const exploding = {};
+    Object.defineProperty(exploding, 'structuredContent', { enumerable: true, get() { throw new Error('boom'); } });
+    Object.defineProperty(exploding, 'content', { enumerable: true, get() { throw new Error('boom'); } });
+    v.toolResult(exploding);
+    expect(v.q('[data-testid="fh-fallback"]')!.textContent).toBe('Unable to display this result.');
+    expect(v.posted.at(-1)!.method).toBe('ui/notifications/size-changed');
+  });
+
   it('never fails blank: no text and no structured content still renders a message', () => {
     const v = load();
     v.handshake();

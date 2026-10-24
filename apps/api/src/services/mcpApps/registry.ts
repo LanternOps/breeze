@@ -8,6 +8,7 @@
  * scan of the HTML and a size cap. A second app is one row plus its own view.
  */
 import { MCP_APP_MIME_TYPE } from '../mcpClientExtensions';
+import type { McpToolUiMeta } from '../mcpToolPresentation';
 import { FLEET_HEALTH_VIEW_HTML } from './fleetHealthView';
 
 export type McpAppDefinition = {
@@ -71,7 +72,7 @@ export function isMcpAppAvailable(input: {
  * The tool's `_meta.ui`. `visibility: ['model']`: the view is display-only and
  * a host must refuse any app-initiated call to the tool (Gate B 2).
  */
-export function mcpAppToolMeta(app: McpAppDefinition): { ui: { resourceUri: string; visibility: ['model'] } } {
+export function mcpAppToolMeta(app: McpAppDefinition): { ui: McpToolUiMeta } {
   return { ui: { resourceUri: app.resourceUri, visibility: ['model'] } };
 }
 

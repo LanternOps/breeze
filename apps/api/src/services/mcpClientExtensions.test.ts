@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Redis } from 'ioredis';
+
+const sentry = vi.hoisted(() => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
+vi.mock('./sentry', () => sentry);
+
 import {
+  MCP_CLIENT_EXTENSION_KEYS,
   MCP_APP_MIME_TYPE,
   MCP_SESSION_EXT_REDIS_PREFIX,
   MCP_UI_EXTENSION_ID,
@@ -80,13 +85,29 @@ describe('legacy session side key (B-W05 D-B42)', () => {
     expect(setex).not.toHaveBeenCalled();
   });
 
-  it('a write with no Redis, or a Redis error, never throws', async () => {
+  it('a write with no Redis, or a Redis error, never throws; a failed write is reported to Sentry without the session id', async () => {
+    sentry.captureMessage.mockClear();
     await expect(writeLegacySessionExtensions(null, 'mcp-abc', { ui: true }, 660)).resolves.toBeUndefined();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { redis } = fakeRedis({ setex: async () => { throw new Error('down'); } });
     await expect(writeLegacySessionExtensions(redis, 'mcp-abc', { ui: true }, 660)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
+    expect(sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(sentry.captureMessage.mock.calls[0]![1]).toMatchObject({ eventCode: 'mcp_session_ext_write_failed' });
+    expect(JSON.stringify(sentry.captureMessage.mock.calls)).not.toContain('mcp-abc');
     warn.mockRestore();
+  });
+
+  it('a corrupt stored value warns (server-written, so it means corruption) and degrades', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await readLegacySessionExtensions(fakeRedis({ get: async () => '{not json' }).redis, 'sid')).toEqual({ ui: false });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('the stored shape is derived from MCP_CLIENT_EXTENSION_KEYS (B-W06 adds one key there)', () => {
+    expect(MCP_CLIENT_EXTENSION_KEYS).toEqual(['ui']);
+    expect(Object.keys(NO_MCP_CLIENT_EXTENSIONS)).toEqual([...MCP_CLIENT_EXTENSION_KEYS]);
   });
 
   it('side-key miss or Redis error degrades to text-only', async () => {
