@@ -30,6 +30,7 @@ export const FANOUT_MODULES: Record<string, { guards: number; reason: string }> 
   'jobs/backupWorker.ts': { guards: 3, reason: 'scheduled backup org enumeration and dispatch' },
   'jobs/cisJobs.ts': { guards: 1, reason: 'scheduled CIS scan targets' },
   'jobs/securityScanJobs.ts': { guards: 1, reason: 'scheduled security scans' },
+  'services/securityScanSweepTargets.ts': { guards: 1, reason: 'IOC sweep target selection' },
   'jobs/sensitiveDataJobs.ts': { guards: 2, reason: 'scheduled sensitive-data scans' },
   'jobs/auditBaselineJobs.ts': { guards: 4, reason: 'audit policy collection' },
   'services/auditBaselineService.ts': { guards: 1, reason: 'default audit baseline seeding over orgs' },
