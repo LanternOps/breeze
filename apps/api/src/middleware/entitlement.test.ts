@@ -78,4 +78,40 @@ describe('requireEntitlement', () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: 'bug' });
   });
+
+  describe('partnerIdOf option (W04: entitlement of an org-scope caller\'s owning partner)', () => {
+    function buildWith(auth: Record<string, unknown>, partnerIdOf: (c: unknown) => Promise<string | null>) {
+      const app = new Hono();
+      app.use('*', async (c, next) => {
+        c.set('auth' as never, auth as never);
+        await next();
+      });
+      app.use('*', requireEntitlement('wisp', { partnerIdOf }));
+      app.get('/x', (c) => c.json({ ok: true }));
+      return app;
+    }
+
+    it('checks the partner the resolver returns', async () => {
+      h.hasEntitlement.mockResolvedValue(true);
+      const res = await buildWith({ partnerId: null, scope: 'organization' }, async () => PARTNER).request('/x');
+      expect(res.status).toBe(200);
+      expect(h.hasEntitlement).toHaveBeenCalledWith(PARTNER, 'wisp');
+    });
+
+    it('fails closed (403) without consulting the entitlement resolver when it returns null', async () => {
+      const res = await buildWith({ partnerId: null, scope: 'organization' }, async () => null).request('/x');
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ code: 'entitlement_required', error: 'Wisp', featureKey: 'wisp' });
+      expect(h.hasEntitlement).not.toHaveBeenCalled();
+    });
+
+    it('401 without an auth context, before the resolver runs', async () => {
+      const partnerIdOf = vi.fn(async () => PARTNER);
+      const app = new Hono();
+      app.use('*', requireEntitlement('wisp', { partnerIdOf }));
+      app.get('/x', (c) => c.json({ ok: true }));
+      expect((await app.request('/x')).status).toBe(401);
+      expect(partnerIdOf).not.toHaveBeenCalled();
+    });
+  });
 });

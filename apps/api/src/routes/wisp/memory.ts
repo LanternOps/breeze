@@ -11,17 +11,28 @@
  *   POST /:id/retract                     → { block }
  *
  * Gates, in order: authMiddleware → 404 while !wispEnabled() (read per
- * request) → ai_sessions:use. Everything else — the human-only rule, the
- * partner-wide capability, the cross-partner refusal — lives in
- * services/wisp/memoryService.ts, under the caller's RLS context.
- * TODO(W04): add requireEntitlement('wisp') here (w00 cross-wave reconciliation 1).
+ * request; the flag wins over the entitlement) → ai_sessions:use →
+ * requireEntitlement('wisp') (W04; spec §10, every /api/v1/wisp/* route —
+ * pinned by routes/wisp.entitlement.contract.test.ts). Everything else — the
+ * human-only rule, the partner-wide capability, the cross-partner refusal —
+ * lives in services/wisp/memoryService.ts, under the caller's RLS context.
+ *
+ * The entitlement belongs to a PARTNER, but an organization-scope session
+ * carries `partnerId: null` by design, so for those callers the gate checks
+ * the partner that owns the caller's own org (`auth.orgId`, read under the
+ * caller's RLS — an org session can always see its own org row). An org row
+ * that is not visible fails closed.
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import type { MemoryBlockDto } from '@breeze/shared';
+import { eq } from 'drizzle-orm';
 import { wispEnabled } from '../../config/env';
+import { db } from '../../db';
+import { organizations } from '../../db/schema';
 import { zValidator } from '../../lib/validation';
 import { authMiddleware, requirePermission, type AuthContext } from '../../middleware/auth';
+import { requireEntitlement } from '../../middleware/entitlement';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import type { MemoryBlock } from '../../services/wisp/memoryBroker';
@@ -91,8 +102,22 @@ wispMemoryRoutes.use('*', async (c, next) => {
   await next();
 });
 wispMemoryRoutes.use('*', requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action));
+wispMemoryRoutes.use('*', requireEntitlement('wisp', { partnerIdOf: entitlementPartnerOf }));
 
 const authOf = (c: Context): AuthContext => c.get('auth') as AuthContext;
+
+/** The partner whose `wisp` entitlement governs this caller (see the file header). */
+async function entitlementPartnerOf(c: Context): Promise<string | null> {
+  const auth = authOf(c);
+  if (auth.partnerId) return auth.partnerId;
+  if (auth.scope !== 'organization' || !auth.orgId) return null;
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, auth.orgId))
+    .limit(1);
+  return org?.partnerId ?? null;
+}
 
 wispMemoryRoutes.get('/', zValidator('query', listQuery), async (c) => {
   const auth = authOf(c);

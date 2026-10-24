@@ -26,6 +26,10 @@ const h = vi.hoisted(() => {
       retractBlock: vi.fn(),
     },
     writeRouteAudit: vi.fn(),
+    hasEntitlement: vi.fn(async () => true),
+    /** organizations.partner_id rows handed to the org-scope entitlement lookup. */
+    orgRows: [{ partnerId: '44444444-4444-4444-8444-444444444444' }] as Array<{ partnerId: string }>,
+    orgWhere: [] as unknown[],
   };
 });
 
@@ -46,6 +50,21 @@ vi.mock('../../config/env', async (importOriginal) => ({
 }));
 vi.mock('../../services/wisp/memoryService', () => ({ ...h.svc, MemoryServiceError: h.MemoryServiceError }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: h.writeRouteAudit }));
+vi.mock('../../services/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  hasEntitlement: h.hasEntitlement,
+}));
+vi.mock('../../db', () => ({
+  db: {
+    select: vi.fn(() => {
+      const p: Record<string, unknown> = {};
+      p.from = vi.fn(() => p);
+      p.where = vi.fn((cond: unknown) => { h.orgWhere.push(cond); return p; });
+      p.limit = vi.fn(async () => h.orgRows);
+      return p;
+    }),
+  },
+}));
 
 import { wispMemoryRoutes } from './memory';
 
@@ -90,7 +109,64 @@ describe('wisp memory routes', () => {
     h.auth = partnerAuth;
     h.wispEnabled.mockReturnValue(true);
     h.hasPerm.mockReturnValue(true);
+    h.hasEntitlement.mockResolvedValue(true);
+    h.orgRows = [{ partnerId: PARTNER_ID }];
+    h.orgWhere.length = 0;
     for (const fn of Object.values(h.svc)) fn.mockReset();
+  });
+
+  describe('entitlement gate (W04: requireEntitlement(\'wisp\'))', () => {
+    const reqs: Array<[string, RequestInit?]> = [
+      ['/wisp/memory?scope=mine'],
+      [`/wisp/memory/users/${USER_ID}`],
+      [`/wisp/memory/${BLOCK_ID}/confirm`, { method: 'POST' }],
+      [`/wisp/memory/${BLOCK_ID}/retract`, { method: 'POST' }],
+    ];
+
+    it('every route is 403 entitlement_required when the partner lacks wisp, without a service call', async () => {
+      h.hasEntitlement.mockResolvedValue(false);
+      for (const [path, init] of reqs) {
+        const res = await app.request(path, init);
+        expect(res.status, path).toBe(403);
+        expect(await res.json()).toEqual({ code: 'entitlement_required', error: 'Wisp', featureKey: 'wisp' });
+      }
+      expect(h.hasEntitlement).toHaveBeenCalledWith(PARTNER_ID, 'wisp');
+      for (const fn of Object.values(h.svc)) expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('flag off wins: not entitled AND flag off is 404, never 403, and the resolver is not consulted', async () => {
+      h.wispEnabled.mockReturnValue(false);
+      h.hasEntitlement.mockResolvedValue(false);
+      for (const [path, init] of reqs) {
+        const res = await app.request(path, init);
+        expect(res.status, path).toBe(404);
+      }
+      expect(h.hasEntitlement).not.toHaveBeenCalled();
+    });
+
+    it('an organization-scope caller (partnerId null) is checked against its org\'s owning partner', async () => {
+      h.auth = orgAuth;
+      h.svc.listBlocksForUser.mockResolvedValue([]);
+      const ok = await app.request('/wisp/memory?scope=mine');
+      expect(ok.status).toBe(200);
+      expect(h.hasEntitlement).toHaveBeenCalledWith(PARTNER_ID, 'wisp');
+      expect(h.orgWhere).toHaveLength(1);
+
+      h.hasEntitlement.mockResolvedValue(false);
+      const denied = await app.request('/wisp/memory?scope=mine');
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toMatchObject({ code: 'entitlement_required' });
+    });
+
+    it('an organization-scope caller whose org row is not visible fails closed (403, resolver not consulted)', async () => {
+      h.auth = orgAuth;
+      h.orgRows = [];
+      const res = await app.request('/wisp/memory?scope=mine');
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'entitlement_required' });
+      expect(h.hasEntitlement).not.toHaveBeenCalled();
+      expect(h.svc.listBlocksForUser).not.toHaveBeenCalled();
+    });
   });
 
   it('every route is 404 { error: not_found } while wispEnabled() is false', async () => {

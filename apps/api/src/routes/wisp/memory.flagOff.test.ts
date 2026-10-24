@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const h = vi.hoisted(() => ({
+  hasEntitlement: vi.fn(async () => true),
   svc: {
     listBlocksForUser: vi.fn(),
     listBlocksForOrg: vi.fn(),
@@ -34,6 +35,10 @@ vi.mock('../../middleware/auth', () => ({
 }));
 vi.mock('../../services/wisp/memoryService', () => ({ ...h.svc, MemoryServiceError: class extends Error {} }));
 vi.mock('../../services/auditEvents', () => ({ writeRouteAudit: vi.fn() }));
+vi.mock('../../services/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  hasEntitlement: h.hasEntitlement,
+}));
 
 import { wispEnabled } from '../../config/env';
 import { wispMemoryRoutes } from './memory';
@@ -44,6 +49,8 @@ const USER = '44444444-4444-4444-8444-444444444444';
 
 describe('wisp memory routes with BREEZE_WISP_ENABLED unset (real wispEnabled)', () => {
   beforeEach(() => {
+    h.hasEntitlement.mockReset();
+    h.hasEntitlement.mockResolvedValue(true);
     vi.stubEnv('IS_HOSTED', 'true');
     vi.stubEnv('BREEZE_AI_AGENTS_ENABLED', 'true');
     vi.stubEnv('BREEZE_WISP_ENABLED', '');
@@ -77,6 +84,13 @@ describe('wisp memory routes with BREEZE_WISP_ENABLED unset (real wispEnabled)',
       for (const fn of Object.values(h.svc)) expect(fn).not.toHaveBeenCalled();
     },
   );
+
+  it('flag off wins over a missing entitlement: 404, never 403, and the resolver is not consulted', async () => {
+    h.hasEntitlement.mockResolvedValue(false);
+    const res = await app.request('/wisp/memory?scope=mine');
+    expect(res.status).toBe(404);
+    expect(h.hasEntitlement).not.toHaveBeenCalled();
+  });
 
   it('control: the same request reaches the service once the flag is on', async () => {
     vi.stubEnv('BREEZE_WISP_ENABLED', 'true');

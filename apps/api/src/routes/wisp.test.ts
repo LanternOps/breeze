@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   hasPerm: vi.fn<(resource: string, action: string) => boolean>(() => true),
   mfaOk: vi.fn(() => true),
   publishEvent: vi.fn(async () => 'evt-1'),
+  hasEntitlement: vi.fn(async () => true),
   svc: {
     createGrant: vi.fn(),
     refreshGrant: vi.fn(),
@@ -37,6 +38,10 @@ vi.mock('../middleware/auth', async (importOriginal) => {
 vi.mock('../config/env', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   wispEnabled: () => h.wispEnabled(),
+}));
+vi.mock('../services/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  hasEntitlement: h.hasEntitlement,
 }));
 vi.mock('../db', () => ({
   runAfterDbContextCommit: (_label: string, work: () => unknown) => { void work(); },
@@ -99,6 +104,7 @@ beforeEach(() => {
   h.wispEnabled.mockReturnValue(true);
   h.hasPerm.mockReturnValue(true);
   h.mfaOk.mockReturnValue(true);
+  h.hasEntitlement.mockResolvedValue(true);
 });
 
 describe('wisp routes — flag gate', () => {
@@ -117,6 +123,55 @@ describe('wisp routes — flag gate', () => {
     ]);
     expect(responses.map((r) => r.status)).toEqual([404, 404, 404, 404, 404, 404, 404, 404]);
     for (const fn of Object.values(h.svc)) expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe('wisp routes — entitlement gate (W04: requireEntitlement(\'wisp\'))', () => {
+  const requests = (app: Hono) => [
+    app.request('/wisp/grants'),
+    app.request('/wisp/grants/preview'),
+    post(app, '/wisp/grants', { orgId: null, stepUpGrantId: STEP_UP }),
+    post(app, `/wisp/grants/${GRANT_ID}/refresh`, { stepUpGrantId: STEP_UP }),
+    post(app, `/wisp/grants/${GRANT_ID}/revoke`),
+    post(app, `/wisp/grants/${GRANT_ID}/pause`),
+    post(app, `/wisp/grants/${GRANT_ID}/resume`),
+    patch(app, `/wisp/grants/${GRANT_ID}/settings`, { floorTickMinutes: 60 }),
+  ];
+
+  it('every grant route is 403 entitlement_required when the partner lacks wisp, before any service call', async () => {
+    h.hasEntitlement.mockResolvedValue(false);
+    const responses = await Promise.all(requests(buildApp()));
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ code: 'entitlement_required', error: 'Wisp', featureKey: 'wisp' });
+    }
+    expect(h.hasEntitlement).toHaveBeenCalledWith(PARTNER, 'wisp');
+    for (const fn of Object.values(h.svc)) expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('flag off wins: not entitled AND flag off is 404, never 403, and the resolver is not consulted', async () => {
+    h.wispEnabled.mockReturnValue(false);
+    h.hasEntitlement.mockResolvedValue(false);
+    const responses = await Promise.all(requests(buildApp()));
+    expect(responses.map((r) => r.status)).toEqual(responses.map(() => 404));
+    expect(h.hasEntitlement).not.toHaveBeenCalled();
+  });
+
+  it('resolver failure is 503 entitlement_check_failed + Retry-After', async () => {
+    const { EntitlementResolutionError } = await import('../services/entitlements');
+    h.hasEntitlement.mockRejectedValue(new EntitlementResolutionError(PARTNER, new Error('down')));
+    const res = await buildApp().request('/wisp/grants');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Retry-After')).toBe('30');
+    expect(await res.json()).toMatchObject({ code: 'entitlement_check_failed' });
+  });
+
+  it('an organization-scoped token is refused by requireScope, not by the entitlement gate', async () => {
+    h.hasEntitlement.mockResolvedValue(false);
+    const res = await buildApp({ scope: 'organization', orgId: ORG, partnerId: null }).request('/wisp/grants');
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain('entitlement_required');
+    expect(h.hasEntitlement).not.toHaveBeenCalled();
   });
 });
 

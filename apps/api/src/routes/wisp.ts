@@ -11,11 +11,14 @@
  *   POST  /grants/:id/resume          → WispGrantDto | 409 NOT_USER_PAUSED
  *   PATCH /grants/:id/settings        { budgetCentsPerDay?, floorTickMinutes? } → WispGrantDto (w00 A6)
  *
- * Gates, in order: authMiddleware → 404 while !wispEnabled() (read per
- * request) → partner scope → ai_sessions:use; mutations add requireMfa(). The
+ *   /thread/*                       → W04 thread routes (routes/wispThreads.ts)
+ *
+ * Gates, in order, on EVERY route including /thread/*: authMiddleware → 404
+ * while !wispEnabled() (read per request; the flag wins over the entitlement)
+ * → partner scope → ai_sessions:use → requireEntitlement('wisp') (W04; w00
+ * cross-wave reconciliation 1, spec §10 — pinned for every enumerated route by
+ * routes/wisp.entitlement.contract.test.ts); mutations add requireMfa(). The
  * service layer re-checks the principal, the grantor and the step-up proof.
- * TODO(W04): add requireEntitlement('wisp') here — W04 is the first consumer
- * (w00 cross-wave reconciliation 1).
  */
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
@@ -24,6 +27,7 @@ import { wispEnabled } from '../config/env';
 import { runAfterDbContextCommit } from '../db';
 import { zValidator } from '../lib/validation';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { requireEntitlement } from '../middleware/entitlement';
 import { EVENT_TYPES, publishEvent } from '../services/eventBus';
 import { PERMISSIONS } from '../services/permissions';
 import {
@@ -39,6 +43,7 @@ import {
   WispGrantError,
   type WispGrant,
 } from '../services/wisp/grants';
+import { wispThreadRoutes } from './wispThreads';
 
 /** Field-by-field wire shape: never `{...row}`, never the ceiling snapshot or factor proof. */
 export type WispGrantDto = {
@@ -157,6 +162,9 @@ wispRoutes.use('*', async (c, next) => {
 });
 wispRoutes.use('*', requireScope('partner'));
 wispRoutes.use('*', requirePermission(PERMISSIONS.AI_SESSIONS_USE.resource, PERMISSIONS.AI_SESSIONS_USE.action));
+// After scope + permission so an org token or a caller without ai_sessions:use
+// never costs an entitlement resolution; before every route below.
+wispRoutes.use('*', requireEntitlement('wisp'));
 
 const authOf = (c: Context): AuthContext => c.get('auth') as AuthContext;
 
@@ -247,3 +255,6 @@ wispRoutes.patch('/grants/:id/settings', requireMfa(), zValidator('json', settin
     return errorResponse(c, err);
   }
 });
+
+// W04: inherits every gate above (registered after the use('*') chain).
+wispRoutes.route('/thread', wispThreadRoutes);
