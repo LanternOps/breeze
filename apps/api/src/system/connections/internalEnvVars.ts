@@ -271,6 +271,8 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   INTENT_OUTBOX_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
   INTENT_OUTBOX_RETENTION_DAYS: 'data retention window',
   INTENT_OUTBOX_RETENTION_MAX_BATCHES: 'retention sweep batch knob',
+  // IOC_*
+  IOC_HUNT_FOUR_EYES_DEVICE_THRESHOLD: 'approval threshold knob (#6263 W05)',
   // IP_*
   IP_ALLOWLIST_ENFORCEMENT_MODE: 'enforcement mode',
   IP_HISTORY_RETENTION_BATCH_SIZE: 'retention sweep batch knob',
@@ -491,6 +493,14 @@ export const INTERNAL_ENV_VARS: Readonly<Record<string, string>> = {
   SECURITY_SCAN_WORKER_CONCURRENCY: 'worker throughput knob',
   SECURITY_SCORE_CHANGE_EVENT_LIMIT: 'worker throughput knob',
   SECURITY_SCORE_CHANGE_PUBLISH_CONCURRENCY: 'worker throughput knob',
+  SECURITY_SWEEP_MAX_ACTIVE_PER_ORG: 'IOC sweep cap (#6263 W05)',
+  SECURITY_SWEEP_MAX_DEVICES: 'IOC sweep cap (#6263 W05)',
+  SECURITY_SWEEP_MFA_DEVICE_THRESHOLD: 'IOC sweep MFA threshold (#6263 W05)',
+  SECURITY_SWEEP_PARTNER_RUNNING_CAP: 'worker throughput knob',
+  SECURITY_SWEEP_PUMP_BATCH: 'worker throughput knob',
+  SECURITY_SWEEP_PUMP_INTERVAL_MS: 'timing knob',
+  SECURITY_SWEEP_RUNNING_GRACE_MINUTES: 'timing knob',
+  SECURITY_SWEEP_TTL_HOURS_DEFAULT: 'timing knob',
   // SENSITIVE_*
   SENSITIVE_DATA_DEVICE_CONCURRENCY_CAP: 'worker throughput knob',
   SENSITIVE_DATA_ORG_CONCURRENCY_CAP: 'worker throughput knob',

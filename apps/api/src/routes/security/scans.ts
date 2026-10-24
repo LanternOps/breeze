@@ -13,7 +13,7 @@ import type { Context } from 'hono';
 import { deviceIdParamSchema, scanRequestSchema, listScansQuerySchema } from './schemas';
 import { getPagination, paginate, parseDateRange, matchDateRange } from './helpers';
 import { resolveSecurityScanSettingsForDevice } from '../../services/featureConfigResolver';
-import { buildSecurityScanPayload } from '../../jobs/securityScanJobs';
+import { buildSecurityScanPayload } from '../../services/securityScanPayload';
 import { planYaraScan } from '../../services/yaraScanRefs';
 
 /**

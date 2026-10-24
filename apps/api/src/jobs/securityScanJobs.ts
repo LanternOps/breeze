@@ -1,10 +1,8 @@
-import { Job, Queue, Worker, type JobsOptions } from 'bullmq';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { DelayedError, Job, Queue, Worker, type JobsOptions } from 'bullmq';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import * as dbModule from '../db';
 import { devices, securityScans } from '../db/schema';
-import { deviceCommands } from '../db/schema';
-import { CommandTypes, queueCommandForExecution } from '../services/commandQueue';
 import { isCronDue } from '../services/cronDue';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -17,13 +15,14 @@ import {
   resolvePartnerTimezoneForOrg,
   type SecurityScanSchedulable,
 } from '../services/featureConfigResolver';
-import { securityScanCron, type SecurityScanSettings, type YaraRuleSetRef } from '@breeze/shared';
-import { planYaraScan } from '../services/yaraScanRefs';
+import { securityScanCron, type SecurityScanSettings } from '@breeze/shared';
 import { notParkedDeviceCondition } from '../services/unassignedPool/selectorPredicate';
-import {
-  resolveSecurityScanQuarantineAuthority,
-  type QuarantineSuppressedReason,
-} from '../services/securityScanQuarantineAuthority';
+import { parsePositiveIntEnv, sweepPumpIntervalMs } from '../services/securityScanSweepConfig';
+import { claimAndDispatchScan, type ClaimOutcome, type DispatchScanJobData } from './securityScanClaim';
+import { pumpSweeps, type SweepDispatchJob } from './securityScanSweepPump';
+
+// #6263 W05: the payload builder moved next to the claim, its only queued caller.
+export { buildSecurityScanPayload } from '../services/securityScanPayload';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -34,23 +33,14 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 const SECURITY_SCAN_QUEUE = 'security-scan';
 const POLICY_SCAN_INTERVAL_MS = 60 * 1000;
 
-function parsePositiveIntEnv(name: string, defaultValue: number): number {
-  const raw = process.env[name];
-  if (!raw) return defaultValue;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return defaultValue;
-  return parsed;
-}
-
+// The org (40) and device (1) running caps are read by the claim
+// (jobs/securityScanClaim.ts), under the partner lock.
 const SECURITY_SCAN_WORKER_CONCURRENCY = parsePositiveIntEnv('SECURITY_SCAN_WORKER_CONCURRENCY', 6);
-const SECURITY_SCAN_ORG_CONCURRENCY_CAP = parsePositiveIntEnv('SECURITY_SCAN_ORG_CONCURRENCY_CAP', 40);
-const SECURITY_SCAN_DEVICE_CONCURRENCY_CAP = parsePositiveIntEnv('SECURITY_SCAN_DEVICE_CONCURRENCY_CAP', 1);
 const SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT =
   parsePositiveIntEnv('SECURITY_SCAN_ORG_QUEUE_BACKPRESSURE_LIMIT', 500);
 const SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS =
   parsePositiveIntEnv('SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS', 20);
 
-type DispatchScanJobData = Extract<SecurityScanQueueJobData, { type: 'dispatch-scan' }>;
 type SchedulePoliciesJobData = Extract<SecurityScanQueueJobData, { type: 'schedule-policies' }>;
 
 let securityScanQueue: Queue<SecurityScanQueueJobData> | null = null;
@@ -108,182 +98,59 @@ export async function enqueueSweepPump(): Promise<void> {
   );
 }
 
-async function getOrgRunningScans(orgId: string): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(securityScans)
-    .where(and(eq(securityScans.orgId, orgId), eq(securityScans.status, 'running')));
-  return Number(row?.count ?? 0);
+/** #6263 W05 — the pump's admissions, each on the stable per-scan job id. */
+export async function enqueueSweepDispatches(jobs: readonly SweepDispatchJob[]): Promise<void> {
+  for (const job of jobs) await addUniqueDispatchJob(job);
 }
 
+/**
+ * Backpressure counts scans that are actually waiting on the queue. A queued
+ * SWEEP scan is not in flight — it waits in the database for the pump — so
+ * 10,000 offline sweep targets cannot starve the scheduler (#6263 W05-2).
+ */
 async function getOrgQueuedScans(orgId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)` })
     .from(securityScans)
-    .where(and(eq(securityScans.orgId, orgId), eq(securityScans.status, 'queued')));
+    .where(and(eq(securityScans.orgId, orgId), eq(securityScans.status, 'queued'), isNull(securityScans.sweepId)));
   return Number(row?.count ?? 0);
-}
-
-async function getDeviceRunningScans(deviceId: string): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(securityScans)
-    .where(and(eq(securityScans.deviceId, deviceId), eq(securityScans.status, 'running')));
-  return Number(row?.count ?? 0);
-}
-
-async function getDevicePendingCommands(deviceId: string): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(deviceCommands)
-    .where(and(
-      eq(deviceCommands.deviceId, deviceId),
-      eq(deviceCommands.type, CommandTypes.SECURITY_SCAN),
-      sql`${deviceCommands.status} in ('pending', 'sent')`,
-    ));
-  return Number(row?.count ?? 0);
-}
-
-async function requeueThrottledScan(data: DispatchScanJobData, reason: string): Promise<void> {
-  await addUniqueDispatchJob(data, { delay: SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS * 1000 });
-  console.warn(`[SecurityScanJobs] scan ${data.scanId} throttled: ${reason}`);
-}
-
-export async function processDispatchScan(data: DispatchScanJobData): Promise<{
-  dispatched: boolean;
-  commandId: string | null;
-}> {
-  const [scan] = await db
-    .select({
-      id: securityScans.id,
-      orgId: securityScans.orgId,
-      deviceId: securityScans.deviceId,
-      scanType: securityScans.scanType,
-      status: securityScans.status,
-      deviceOrgId: devices.orgId,
-      deviceAgentVersion: devices.agentVersion,
-    })
-    .from(securityScans)
-    .innerJoin(devices, eq(devices.id, securityScans.deviceId))
-    .where(eq(securityScans.id, data.scanId))
-    .limit(1);
-  if (!scan || scan.status !== 'queued') return { dispatched: false, commandId: null };
-
-  // The device may have moved org between creation and dispatch. A scan row
-  // pointing at a stranger's org is a tenancy defect, not a retryable one.
-  if (scan.deviceOrgId !== scan.orgId) {
-    console.warn(
-      `[SecurityScanJobs] scan ${scan.id} aborted: device ${scan.deviceId} org ${scan.deviceOrgId} ` +
-        `does not match scan org ${scan.orgId}`
-    );
-    await db.update(securityScans)
-      .set({ status: 'failed', completedAt: new Date() })
-      .where(eq(securityScans.id, scan.id));
-    return { dispatched: false, commandId: null };
-  }
-
-  if (await getOrgRunningScans(scan.orgId) >= SECURITY_SCAN_ORG_CONCURRENCY_CAP) {
-    await requeueThrottledScan(data, `org cap ${SECURITY_SCAN_ORG_CONCURRENCY_CAP}`);
-    return { dispatched: false, commandId: null };
-  }
-  if (await getDeviceRunningScans(scan.deviceId) >= SECURITY_SCAN_DEVICE_CONCURRENCY_CAP) {
-    await requeueThrottledScan(data, `device cap ${SECURITY_SCAN_DEVICE_CONCURRENCY_CAP}`);
-    return { dispatched: false, commandId: null };
-  }
-  if (await getDevicePendingCommands(scan.deviceId) >= SECURITY_SCAN_DEVICE_CONCURRENCY_CAP) {
-    await requeueThrottledScan(data, 'device queue busy');
-    return { dispatched: false, commandId: null };
-  }
-
-  const resolved = await resolveSecurityScanPolicyForDevice(scan.deviceId);
-  let settings = resolved?.settings ?? null;
-  // Auto-quarantine is a device-execution effect: it rides on the stored
-  // authority of whoever enabled it on the policy (devices:execute + MFA),
-  // re-resolved live. Without it the scan still runs, detect-only, and the row
-  // records why. Scans with auto-quarantine off never consult the authority.
-  let autoQuarantineSuppressedReason: QuarantineSuppressedReason | null = null;
-  if (resolved && settings?.autoQuarantine) {
-    const decision = await resolveSecurityScanQuarantineAuthority(resolved.featureLinkId, scan.deviceId);
-    if (!decision.allowed) {
-      settings = { ...settings, autoQuarantine: false };
-      autoQuarantineSuppressedReason = decision.reason;
-      console.warn(
-        `[SecurityScanJobs] scan ${scan.id}: auto-quarantine suppressed (${decision.reason}); dispatching detect-only`,
-      );
-    }
-  }
-  // #6263 W03: the policy's rule sets -> W02 `ruleSets` refs, behind the
-  // minimum agent version. The outcome (yara | legacy + why) is recorded on
-  // the row so degraded coverage is never presented as a YARA scan.
-  const yara = await planYaraScan({
-    deviceId: scan.deviceId,
-    agentVersion: scan.deviceAgentVersion,
-    ruleSetIds: settings?.ruleSetIds ?? [],
-  });
-  const payload = buildSecurityScanPayload(scan.id, scan.scanType, settings, undefined, yara.ruleSets);
-
-  // Claim before dispatching: two workers must never both queue a command.
-  const claimed = await db.update(securityScans)
-    .set({
-      status: 'running',
-      startedAt: new Date(),
-      autoQuarantineSuppressedReason,
-      engine: yara.engine,
-      ruleSetErrors: yara.ruleSetErrors,
-    })
-    .where(and(eq(securityScans.id, scan.id), eq(securityScans.status, 'queued')))
-    .returning({ id: securityScans.id });
-  if (claimed.length !== 1) return { dispatched: false, commandId: null };
-
-  const queued = await queueCommandForExecution(
-    scan.deviceId,
-    CommandTypes.SECURITY_SCAN,
-    payload,
-    { expectedOrgId: scan.orgId },
-  );
-  if ('error' in queued || !queued.command) {
-    console.warn(
-      `[SecurityScanJobs] scan ${scan.id} dispatch failed for device ${scan.deviceId}: ` +
-        `${'error' in queued ? queued.error : 'no command returned'}`
-    );
-    await db.update(securityScans)
-      .set({ status: 'failed', completedAt: new Date() })
-      .where(eq(securityScans.id, scan.id));
-    return { dispatched: false, commandId: null };
-  }
-  return { dispatched: true, commandId: queued.command.id };
 }
 
 /**
- * The ONLY place a security_scan command payload is built. `settings === null`
- * means no policy governs the device: the agent's built-in defaults apply and
- * nothing is auto-quarantined. `ruleSets` (W02 §C1) is emitted only when
- * non-empty, so a legacy scan's payload is byte-identical to W01's.
+ * Dispatch one queued scan through the locked claim (jobs/securityScanClaim.ts).
+ *
+ * A throttled scan (org / partner / device cap) is re-delayed IN PLACE: the
+ * running job moves itself to the delayed set under its own lock token and
+ * throws BullMQ's DelayedError (the scriptReviewWorker.ts mechanism). Before
+ * #6263 W05 it called addUniqueDispatchJob from inside the running job, which
+ * found that same active job by its stable id, treated it as reusable and
+ * scheduled nothing — a throttled scheduled or manual scan stayed `queued`
+ * forever. A throttled SWEEP scan is left `queued` instead: the pump re-admits
+ * it when the device or org has room, without a delayed-job loop per device.
  */
-export function buildSecurityScanPayload(
-  scanRecordId: string,
-  scanType: string,
-  settings: SecurityScanSettings | null,
-  paths?: string[],
-  ruleSets?: readonly YaraRuleSetRef[],
-): Record<string, unknown> {
-  return {
-    scanRecordId,
-    scanType,
-    ...(paths && paths.length > 0 ? { paths } : {}),
-    triggerDefender: true,
-    ...(settings
-      ? {
-          exclusions: settings.exclusions,
-          maxFileSizeMb: settings.maxFileSizeMb,
-          timeoutMinutes: settings.scanTimeoutMinutes,
-          autoQuarantine: settings.autoQuarantine,
-        }
-      : {}),
-    ...(ruleSets && ruleSets.length > 0
-      ? { ruleSets: ruleSets.map((r) => ({ id: r.id, version: r.version, sha256: r.sha256, url: r.url })) }
-      : {}),
-  };
+export async function processDispatchScan(
+  data: DispatchScanJobData,
+  job?: Pick<Job, 'moveToDelayed'>,
+  token?: string,
+): Promise<ClaimOutcome> {
+  const result = await claimAndDispatchScan(data);
+  if (result.outcome !== 'throttled' || data.origin === 'sweep') return result;
+
+  const delayMs = SECURITY_SCAN_THROTTLE_REQUEUE_SECONDS * 1000;
+  console.warn(`[SecurityScanJobs] scan ${data.scanId} throttled: ${result.throttleReason}; retrying in ${delayMs} ms`);
+  if (job && token) {
+    await job.moveToDelayed(Date.now() + delayMs, token);
+    throw new DelayedError();
+  }
+  // No lock token to re-delay with: queue a fresh delayed job under its own id
+  // rather than drop the retry. The claim is a CAS, so a duplicate is a no-op.
+  await getSecurityScanQueue().add('dispatch-scan', data, {
+    delay: delayMs,
+    jobId: `${dispatchJobId(data.scanId)}-retry-${Date.now()}`,
+    removeOnComplete: { count: 200 },
+    removeOnFail: { count: 500 },
+  });
+  return result;
 }
 
 /** Truncate to the minute — the occurrence identity for idempotency. */
@@ -355,7 +222,10 @@ export async function schedulePolicyScans(
     .from(securityScans)
     .where(and(
       inArray(securityScans.deviceId, deviceRows.map((d) => d.id)),
-      sql`(${securityScans.status} IN ('queued','running') OR ${securityScans.startedAt} >= ${occurrence})`,
+      // A queued SWEEP scan is not in flight and was inserted with
+      // started_at = now(): the exclusion wraps the WHOLE predicate, or it
+      // would also block this cron minute (#6263 W05-2).
+      sql`NOT (${securityScans.sweepId} IS NOT NULL AND ${securityScans.status} = 'queued') AND (${securityScans.status} IN ('queued','running') OR ${securityScans.startedAt} >= ${occurrence})`,
     ));
   const busyIds = new Set(busy.map((b) => b.deviceId));
 
@@ -431,19 +301,22 @@ async function processSchedulePolicies(data: SchedulePoliciesJobData): Promise<{
 export function createSecurityScanWorker(): Worker<SecurityScanQueueJobData> {
   return new Worker<SecurityScanQueueJobData>(
     SECURITY_SCAN_QUEUE,
-    async (job: Job<SecurityScanQueueJobData>) => runWithSystemDbAccess(async () => {
+    async (job: Job<SecurityScanQueueJobData>, token?: string) => {
       const data = parseQueueJobData(SECURITY_SCAN_QUEUE, job, securityScanQueueJobDataSchema);
+      // The claim and the pump open their own system transactions: delivery
+      // and job enqueues must follow a commit, never sit inside one.
       if (data.type === 'dispatch-scan') {
         assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'dispatch-scan');
-        return processDispatchScan(data);
+        return processDispatchScan(data, job, token);
       }
       if (data.type === 'pump-sweeps') {
         assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'pump-sweeps');
-        return { skipped: true };
+        const tick = new Date(data.tickAt);
+        return pumpSweeps(Number.isFinite(tick.getTime()) ? tick : new Date(), { enqueue: enqueueSweepDispatches });
       }
       assertQueueJobName(SECURITY_SCAN_QUEUE, job, 'schedule-policies');
-      return processSchedulePolicies(data);
-    }),
+      return runWithSystemDbAccess(() => processSchedulePolicies(data));
+    },
     {
       connection: getBullMQConnection(),
       concurrency: SECURITY_SCAN_WORKER_CONCURRENCY,
@@ -456,12 +329,18 @@ export function createSecurityScanWorker(): Worker<SecurityScanQueueJobData> {
 async function schedulePolicyTick(): Promise<void> {
   const queue = getSecurityScanQueue();
   for (const job of await queue.getRepeatableJobs()) {
-    if (job.name === 'schedule-policies') await queue.removeRepeatableByKey(job.key);
+    if (job.name === 'schedule-policies' || job.name === 'pump-sweeps') await queue.removeRepeatableByKey(job.key);
   }
   await queue.add(
     'schedule-policies',
     { type: 'schedule-policies', scanAt: new Date().toISOString() },
     { repeat: { every: POLICY_SCAN_INTERVAL_MS }, removeOnComplete: { count: 20 }, removeOnFail: { count: 100 } },
+  );
+  // #6263 W05 — the sweep pump's repeatable tick (stale ones removed above).
+  await queue.add(
+    'pump-sweeps',
+    { type: 'pump-sweeps', tickAt: new Date().toISOString() },
+    { repeat: { every: sweepPumpIntervalMs() }, removeOnComplete: { count: 20 }, removeOnFail: { count: 100 } },
   );
 }
 

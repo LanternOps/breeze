@@ -31,7 +31,6 @@ import type {
 } from '@breeze/shared';
 import { db } from '../db';
 import {
-  deviceCommands,
   devices,
   organizations,
   securityScans,
@@ -43,7 +42,6 @@ import { isInteractiveUserSession, withAuthDbAccessContext, type AuthContext } f
 import { enqueueSweepPump } from '../jobs/securityScanJobs';
 import { canonicalizeArguments, computeArgumentDigest } from './actionIntents/canonicalize';
 import { createAuditLogAsync, type CreateAuditLogParams, type InitiatedByType } from './auditService';
-import { cancelDeviceCommands } from './commandCancelPropagation';
 import { hasPermission, type UserPermissions } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
@@ -58,6 +56,7 @@ import {
   type SweepTargetsResolved,
 } from './securityScanSweepTargets';
 import { normalizeSiteAllowlist } from './siteAllowlist';
+import { stopSweepChildren } from './securityScanSweepStop';
 
 const SWEEP_CREATE_LIMIT_PER_HOUR = 10;
 const SCAN_INSERT_CHUNK = 1000;
@@ -490,50 +489,23 @@ async function cancelMatching(
         .set({ state: 'cancelled', cancelledAt: now, cancelledBy: auth.user.id })
         .where(and(eq(securityScanSweeps.id, row.id), eq(securityScanSweeps.state, 'active')));
 
-      const queued = await db
-        .update(securityScans)
-        .set({ status: 'cancelled', completedAt: now })
-        .where(and(eq(securityScans.sweepId, row.id), eq(securityScans.orgId, row.orgId), eq(securityScans.status, 'queued')))
-        .returning({ id: securityScans.id });
-
-      // Claimed but undelivered: the command is still `pending`. A delivered
-      // scan finishes (the agent has no cancel wire for a running scan).
-      const pending = await db
-        .select({ scanId: securityScans.id, commandId: deviceCommands.id })
-        .from(securityScans)
-        .innerJoin(deviceCommands, eq(deviceCommands.id, securityScans.commandId))
-        .where(
-          and(
-            eq(securityScans.sweepId, row.id),
-            eq(securityScans.orgId, row.orgId),
-            eq(securityScans.status, 'running'),
-            eq(deviceCommands.status, 'pending'),
-          ),
-        );
-      let undelivered = 0;
-      if (pending.length > 0) {
-        const cancelled = await cancelDeviceCommands({
-          where: and(inArray(deviceCommands.id, pending.map((p) => p.commandId)), eq(deviceCommands.status, 'pending'))!,
-          result: { status: 'cancelled', reason: 'security_sweep_cancelled', cancelledBy: auth.user.id },
-          completedAt: now,
-        });
-        undelivered = cancelled.length;
-        if (cancelled.length > 0) {
-          await db
-            .update(securityScans)
-            .set({ status: 'cancelled', completedAt: now })
-            .where(and(inArray(securityScans.commandId, cancelled.map((c) => c.id)), eq(securityScans.status, 'running')));
-        }
-      }
-      cancelledQueued += queued.length;
-      cancelledUndelivered += undelivered;
+      const stopped = await stopSweepChildren({
+        sweepId: row.id,
+        orgId: row.orgId,
+        status: 'cancelled',
+        reason: 'security_sweep_cancelled',
+        cancelledBy: auth.user.id,
+        now,
+      });
+      cancelledQueued += stopped.queued;
+      cancelledUndelivered += stopped.undelivered;
       audits.push({
         orgId: row.orgId,
         ...auditActor(auth),
         action: 'security.scan_sweep.cancel',
         resourceType: 'security_scan_sweep',
         resourceId: row.id,
-        details: { groupId: row.groupId, cancelledQueued: queued.length, cancelledUndelivered: undelivered },
+        details: { groupId: row.groupId, cancelledQueued: stopped.queued, cancelledUndelivered: stopped.undelivered },
         ipAddress: opts.requestMeta?.ipAddress,
         userAgent: opts.requestMeta?.userAgent,
         result: 'success',
