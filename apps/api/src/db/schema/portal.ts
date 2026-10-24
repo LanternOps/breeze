@@ -277,7 +277,7 @@ export const tickets = pgTable('tickets', {
   // table. Partial index idx_tickets_migration_window (2026-12-25-120100) is
   // not modeled here, like the other partial indexes in this file.
   migrationWindowId: uuid('migration_window_id'),
-  // #8972 ticket merge (2027-01-03-170000): a merged source stays as a
+  // #8972 ticket merge (2027-01-04-110000): a merged source stays as a
   // read-only tombstone pointing at its survivor, one hop (merge compresses
   // paths, so the target is never itself merged). Composite same-org FK
   // tickets_merged_into_org_fk below — DEFERRABLE INITIALLY IMMEDIATE in SQL
@@ -402,7 +402,7 @@ export const ticketComments = pgTable('ticket_comments', {
   originalAuthorEmail: varchar('original_author_email', { length: 320 }),
   originalAuthorKind: text('original_author_kind').$type<'staff' | 'requester'>(),
   importSourceId: varchar('import_source_id', { length: 255 }),
-  // #8972 ticket merge (2027-01-03-170000): the ticket this comment was merged
+  // #8972 ticket merge (2027-01-04-110000): the ticket this comment was merged
   // from, set only when null so a comment merged twice keeps its earliest
   // origin. Plain FK, ON DELETE SET NULL.
   mergedFromTicketId: uuid('merged_from_ticket_id').references(() => tickets.id, { onDelete: 'set null' }),

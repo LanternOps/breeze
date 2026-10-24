@@ -24,7 +24,7 @@ describe('ticketOutboxEventEnum', () => {
     // row that silently fails to insert.
     // The NEWEST migration that redefines the CHECK (#8972 widened it for
     // ticket.merged); the original is 2026-09-19-ai-agents-ticket-shadow.sql.
-    const sqlPath = new URL('../../../migrations/2027-01-03-170000-ticket-merge.sql', import.meta.url);
+    const sqlPath = new URL('../../../migrations/2027-01-04-110000-ticket-merge.sql', import.meta.url);
     const sql = readFileSync(sqlPath, 'utf8');
     const check = sql.slice(sql.indexOf('ticket_outbox_event_type_check'));
     for (const event of ticketOutboxEventEnum) {
