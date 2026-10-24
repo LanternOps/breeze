@@ -521,3 +521,171 @@ describe('reconciliation reads (Gate B #15, Advisor finding 4)', () => {
     expect(useAiStore.getState().messages.map((m) => m.id)).toEqual(['b1']);
   });
 });
+
+describe('review round: a bind attempt is not a rebind (#9996 review)', () => {
+  it('a failed History pick leaves the live attach running (no stuck spinner)', async () => {
+    const live = liveSse();
+    on('/ai/sessions/s1', () => session());
+    on('/ai/sessions/s1/stream', () => live.res);
+    on('/ai/sessions/s2', () => json({ error: 'boom' }, 500));
+    routes.set('/ai/sessions/s1', [() => session({}, [{ id: 'u1', role: 'user', content: 'q', createdAt: '2026-10-23T10:00:00Z' }])]);
+
+    await useAiStore.getState().loadSession('s1');
+    live.push(frame(snap({ lastSeq: 1, turnUserMessageId: 'u1', replay: [{ type: 'message_start', messageId: 'a1' }] })));
+    await vi.waitFor(() => expect(useAiStore.getState().isStreaming).toBe(true));
+
+    await useAiStore.getState().switchSession('s2');
+    expect(useAiStore.getState().sessionId).toBe('s1');
+    expect(useAiStore.getState().error).toBe('Failed to load session');
+    expect(signalOf(streamCalls()[0]!)?.aborted).toBe(false);
+
+    live.push(frame({ type: 'content_delta', delta: 'still here', seq: 2 }));
+    live.push(frame({ type: 'done', seq: 3 }));
+    await vi.waitFor(() => expect(useAiStore.getState().isStreaming).toBe(false));
+    expect(useAiStore.getState().messages.find((m) => m.id === 'a1')?.content).toBe('still here');
+  });
+
+  it('closing the attached session stops the attach and the spinner', async () => {
+    const live = liveSse();
+    on('/ai/sessions/s1', () => session());
+    on('/ai/sessions/s1/stream', () => live.res);
+
+    await useAiStore.getState().loadSession('s1');
+    live.push(frame(snap({ lastSeq: 1 })));
+    await vi.waitFor(() => expect(useAiStore.getState().isStreaming).toBe(true));
+    routes.set('/ai/sessions/s1', [() => json({ success: true })]);
+
+    await useAiStore.getState().closeSession();
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().isStreaming).toBe(false);
+    expect(signalOf(streamCalls()[0]!)?.aborted).toBe(true);
+  });
+
+  it('the #5684 org-mismatch drop aborts a live attach synchronously and nothing lands after it', async () => {
+    const live = liveSse();
+    on('/ai/sessions/s1', () => session({ orgId: ORG_A }));
+    on('/ai/sessions/s1/stream', () => live.res);
+
+    await useAiStore.getState().loadSession('s1');
+    live.push(frame(snap({ lastSeq: 1, replay: [{ type: 'message_start', messageId: 'a1' }] })));
+    await vi.waitFor(() => expect(useAiStore.getState().isStreaming).toBe(true));
+
+    useAiStore.getState().setPageContext({ type: 'device', id: 'd', hostname: 'h', orgId: ORG_B });
+    expect(signalOf(streamCalls()[0]!)?.aborted).toBe(true);
+    await flush();
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().messages).toEqual([]);
+    expect(useAiStore.getState().isStreaming).toBe(false);
+  });
+
+  it('switching to another chat drops the old chat\'s running turn and card even when the new attach fails', async () => {
+    const live = liveSse();
+    on('/ai/sessions/s1', () => session());
+    on('/ai/sessions/s1/stream', () => live.res);
+    on('/ai/sessions/s2', () => session({ id: 's2' }));
+    on('/ai/sessions/s2/stream', () => json({ error: 'boom' }, 500));
+
+    await useAiStore.getState().loadSession('s1');
+    live.push(frame(snap({ lastSeq: 1, pendingCards: [{ type: 'approval_required', executionId: 'exA', toolName: 't', input: {}, description: 'A card' }] })));
+    await vi.waitFor(() => expect(useAiStore.getState().pendingApproval?.executionId).toBe('exA'));
+
+    await useAiStore.getState().switchSession('s2');
+    await vi.waitFor(() => expect(streamCalls('s2')).toHaveLength(1));
+    await flush();
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('s2');
+    expect(s.pendingApproval).toBeNull();
+    expect(s.isStreaming).toBe(false);
+  });
+
+  it('a 409 refusal that resolves after a rebind changes nothing on the new chat', async () => {
+    useAiStore.setState({ sessionId: 's1', sessionOrgId: ORG_A, hydratedSessionId: 's1' });
+    let refuse!: (r: Response) => void;
+    on('/ai/sessions/s1/messages', () => new Promise<Response>((r) => { refuse = r; }));
+    on('/ai/sessions/s2', () => session({ id: 's2' }));
+    const liveB = liveSse();
+    on('/ai/sessions/s2/stream', () => liveB.res);
+
+    const sending = useAiStore.getState().sendMessage('text for A');
+    await vi.waitFor(() => expect(callsTo('/ai/sessions/s1/messages')).toHaveLength(1));
+    await useAiStore.getState().switchSession('s2');
+    liveB.push(frame(snap({ lastSeq: 1 })));
+    await vi.waitFor(() => expect(useAiStore.getState().isStreaming).toBe(true));
+
+    refuse(json({ code: 'turn_in_progress' }, 409));
+    await sending;
+    await flush();
+
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBe('s2');
+    expect(s.composerDraft).toBe('');
+    expect(s.isStreaming).toBe(true);
+    expect(streamCalls('s2')).toHaveLength(1);
+    expect(signalOf(streamCalls('s2')[0]!)?.aborted).toBe(false);
+    expect(streamCalls('s1')).toHaveLength(0);
+  });
+});
+
+describe('review round: re-attach outcomes (#9996 review)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+  });
+
+  it('a re-attach un-applies the previous running snapshot: no duplicated rows', async () => {
+    useAiStore.setState({ sessionId: 's1', sessionOrgId: ORG_A, hydratedSessionId: 's1', messages: [{ id: 'u1', role: 'user', content: 'q', createdAt: new Date() }] });
+    const replay = [{ type: 'message_start', messageId: 'a1' }, { type: 'content_delta', delta: 'R' }];
+    const second = liveSse();
+    on('/ai/sessions/s1/stream',
+      () => sse(frame(snap({ lastSeq: 2, turnUserMessageId: 'u1', replay }))), // ends without done → closed
+      () => second.res);
+
+    const run = useAiStore.getState().attachCurrent();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useAiStore.getState().messages.map((m) => m.id)).toEqual(['u1']); // un-applied before the backoff
+    await vi.advanceTimersByTimeAsync(500);
+    expect(streamCalls()).toHaveLength(2);
+    second.push(frame(snap({ lastSeq: 2, turnUserMessageId: 'u1', replay })));
+    second.push(frame({ type: 'content_delta', delta: 'S', seq: 3 }));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const s = useAiStore.getState();
+    expect(s.messages.map((m) => m.id)).toEqual(['u1', 'a1']);
+    expect(s.messages.find((m) => m.id === 'a1')?.content).toBe('RS');
+    second.push(frame({ type: 'done', seq: 4 }));
+    second.end();
+    await vi.advanceTimersByTimeAsync(0);
+    await run;
+  });
+
+  it.each([
+    ['gap', () => sse(frame(snap({ lastSeq: 2 })), frame({ type: 'content_delta', delta: 'x', seq: 5 }))],
+    ['busy', () => json({ error: 'attach_limit' }, 429)],
+  ])('%s → re-attach after the backoff', async (_kind, first) => {
+    useAiStore.setState({ sessionId: 's1', sessionOrgId: ORG_A, hydratedSessionId: 's1' });
+    on('/ai/sessions/s1/stream', first, () => sse(frame(snap({ turn: 'idle', turnId: null }))));
+
+    const run = useAiStore.getState().attachCurrent();
+    await vi.advanceTimersByTimeAsync(499);
+    expect(streamCalls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(streamCalls()).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await run;
+    expect(streamCalls()).toHaveLength(2);
+    expect(useAiStore.getState().error).toBeNull();
+  });
+
+  it('a 404 on a re-attach unbinds and stops', async () => {
+    useAiStore.setState({ sessionId: 's1', sessionOrgId: ORG_A, hydratedSessionId: 's1' });
+    on('/ai/sessions/s1/stream', () => sse(frame(snap({ lastSeq: 1 }))), () => json({ error: 'Not found' }, 404));
+
+    const run = useAiStore.getState().attachCurrent();
+    await vi.advanceTimersByTimeAsync(500);
+    await run;
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().isStreaming).toBe(false);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(streamCalls()).toHaveLength(2);
+  });
+});

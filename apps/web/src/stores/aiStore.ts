@@ -218,6 +218,15 @@ const CLEARED_SESSION = {
   joinedMidResponse: false,
 } as const;
 
+/** #9427: turn state that belongs to the chat being switched away from. */
+const SWITCHED_TURN_STATE = {
+  isStreaming: false,
+  joinedMidResponse: false,
+  pendingApproval: null,
+  pendingPlan: null,
+  activePlan: null,
+} as const;
+
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
   const picker = useAiModelPickerStore.getState();
@@ -270,8 +279,6 @@ let activeStreamToken = 0;
 let sessionOwnerToken = 0;
 const claimSessionOwnership = (): (() => boolean) => {
   const token = ++sessionOwnerToken;
-  // A bind change ends the live attach now, not at its next frame (#9427).
-  abortCurrentAttach();
   return () => sessionOwnerToken === token;
 };
 
@@ -282,13 +289,13 @@ const claimSessionOwnership = (): (() => boolean) => {
  */
 let currentSendReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
-/** #9427: the live attach loop's controller (one per attachCurrent call). */
-let currentAttachController: AbortController | null = null;
+/** #9427: the live attach loop (one per attachCurrent call) and the session it follows. */
+let currentAttach: { controller: AbortController; sessionId: string } | null = null;
 
 function abortCurrentAttach(): void {
-  const controller = currentAttachController;
-  currentAttachController = null;
-  controller?.abort();
+  const attach = currentAttach;
+  currentAttach = null;
+  attach?.controller.abort();
 }
 
 /**
@@ -391,18 +398,20 @@ function startAttach(
   }
 
   const streamToken = ++activeStreamToken;
-  // Observed, not claimed: an attach is a reader and must not cancel an
-  // in-flight create/load/switch/close. Any later one invalidates this attach.
-  const ownerToken = sessionOwnerToken;
   abortCurrentAttach();
   const controller = new AbortController();
-  currentAttachController = controller;
+  const self = { controller, sessionId };
+  currentAttach = self;
   const untrack = trackAttach(controller);
 
+  // The attach follows the BOUND session, not a bind attempt: a create/load/
+  // switch/adopt/close that is still in flight (or fails) leaves it running,
+  // so a failed rebind cannot strand a spinner. A committed rebind changes
+  // `sessionId` (and aborts this controller, see the store subscription); a
+  // newer send, release or attach takes the stream token.
   const owns = () =>
     !controller.signal.aborted
     && activeStreamToken === streamToken
-    && sessionOwnerToken === ownerToken
     && get().sessionId === sessionId;
   const topology = get().topologySiteId !== null;
   const filter = topology ? (e: AiStreamEvent) => TOPOLOGY_TURN_EVENTS.has(e.type) : undefined;
@@ -519,10 +528,13 @@ function startAttach(
   };
 
   const finished = run()
-    .catch((err) => { console.error('[AI] Attach loop failed:', err); })
+    .catch((err) => {
+      console.error('[AI] Attach loop failed:', err);
+      if (owns()) set({ isStreaming: false, joinedMidResponse: false });
+    })
     .finally(() => {
       untrack();
-      if (currentAttachController === controller) currentAttachController = null;
+      if (currentAttach === self) currentAttach = null;
       settleReady('stopped');
     });
   return { ready, finished };
@@ -603,7 +615,7 @@ export const useAiStore = create<AiState>()(
   setPageContext: (ctx) =>
     set((s) =>
       pageContextOrgMismatch(ctx, s.sessionOrgId)
-        ? (resetModelPicker(), abortCurrentAttach(), { pageContext: ctx, ...CLEARED_SESSION })
+        ? (resetModelPicker(), { pageContext: ctx, ...CLEARED_SESSION })
         : { pageContext: ctx },
     ),
 
@@ -773,6 +785,9 @@ export const useAiStore = create<AiState>()(
       const messages = mapMessagesFromApi(data.messages || []);
 
       set({
+        // #9427: another chat's running turn (and its cards) is not this one's;
+        // this chat's attach sets them from its own snapshot.
+        ...(get().sessionId !== sessionId ? SWITCHED_TURN_STATE : {}),
         sessionId,
         sessionOrgId: restoredOrgId,
         hydratedSessionId: sessionId,
@@ -878,6 +893,9 @@ export const useAiStore = create<AiState>()(
         const refusal = classifySendRefusal(res.status, code);
 
         if (refusal === 'attach') {
+          // A refusal that arrives after a rebind/release belongs to a chat
+          // that is no longer on screen: it must not touch this one.
+          if (!ownsStream()) return;
           // #9427 (Gate B #7): another turn is running on this conversation
           // (turn_in_progress, or an uncoded 409 from an older API). Join it;
           // the refused text goes back in the composer, no error banner. The
@@ -1103,7 +1121,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null });
+      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null, isStreaming: false, joinedMidResponse: false });
       resetModelPicker();
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
@@ -1170,6 +1188,9 @@ export const useAiStore = create<AiState>()(
       const messages = mapMessagesFromApi(data.messages || []);
 
       set({
+        // #9427: another chat's running turn (and its cards) is not this one's;
+        // this chat's attach sets them from its own snapshot.
+        ...(get().sessionId !== sessionId ? SWITCHED_TURN_STATE : {}),
         sessionId,
         // An explicit pick from the history panel is authoritative — it is not
         // dropped on an org mismatch, but the org is recorded so a later page
@@ -1279,46 +1300,55 @@ export const useAiStore = create<AiState>()(
     if (signal?.aborted) return 'aborted';
     const ownsSession = claimSessionOwnership();
     const stale = () => !!signal?.aborted || !ownsSession();
+    let data: {
+      session?: Record<string, unknown> & {
+        orgId?: string | null; flaggedAt?: unknown; flagReason?: string | null;
+        delegantM365ConnectionId?: string | null; lastTurnModel?: unknown;
+      };
+      messages?: Record<string, unknown>[];
+    };
     try {
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`, signal ? { signal } : undefined);
       if (stale()) return 'aborted';
       if (res.status === 404) return 'not_found';
       if (!res.ok) return 'error';
-      const data = await res.json();
-      if (stale()) return 'aborted';
-      if (!isChatSessionType(data.session?.type)) return 'not_found';
-      if (data.session?.status !== 'active') return 'closed';
-
-      // Committed from here on: the signal no longer applies.
-      if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
-      set({
-        ...CLEARED_SESSION,
-        sessionId,
-        // An explicit pick, like switchSession: not dropped on an org mismatch,
-        // but the org is recorded so a later page navigation can rebind (#5684).
-        sessionOrgId: data.session.orgId ?? null,
-        hydratedSessionId: sessionId,
-        messages: mapMessagesFromApi(data.messages || []),
-        isLoading: false,
-        error: null,
-        errorCode: null,
-        showHistory: false,
-        isFlagged: !!data.session.flaggedAt,
-        flagReason: data.session.flagReason ?? null,
-        boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
-        turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
-        ...topologyFieldsOf(data.session),
-        composerDraft: opts?.draft ?? '',
-      });
-      adoptSessionModelPicker(sessionId);
-      get().open();
-      const ready = await startAttach(set, get).ready;
-      return ready === 'not_found' ? 'not_found' : 'ok';
+      data = await res.json();
     } catch (err) {
       if (stale()) return 'aborted';
       console.warn('[AI] Adopting a session failed:', err);
       return 'error';
     }
+    if (stale()) return 'aborted';
+    if (!data.session || !isChatSessionType(data.session.type)) return 'not_found';
+    if (data.session.status !== 'active') return 'closed';
+
+    // Committed from here on: the signal no longer applies.
+    if (get().sessionId !== sessionId) useAiModelPickerStore.getState().clearSelection();
+    set({
+      ...CLEARED_SESSION,
+      sessionId,
+      // An explicit pick, like switchSession: not dropped on an org mismatch,
+      // but the org is recorded so a later page navigation can rebind (#5684).
+      sessionOrgId: data.session.orgId ?? null,
+      hydratedSessionId: sessionId,
+      messages: mapMessagesFromApi(data.messages || []),
+      isLoading: false,
+      error: null,
+      errorCode: null,
+      showHistory: false,
+      isFlagged: !!data.session.flaggedAt,
+      flagReason: data.session.flagReason ?? null,
+      boundM365ConnectionId: data.session.delegantM365ConnectionId ?? null,
+      turnModel: (data.session.lastTurnModel ?? null) as AiTurnModel | null,
+      ...topologyFieldsOf(data.session),
+      composerDraft: opts?.draft ?? '',
+    });
+    adoptSessionModelPicker(sessionId);
+    get().open();
+    // An attach 404 here means the session went away between the read and the
+    // attach: the loop unbinds it like loadSession's 404 path.
+    const ready = await startAttach(set, get).ready;
+    return ready === 'not_found' ? 'not_found' : 'ok';
   },
     }),
     {
@@ -1330,3 +1360,10 @@ export const useAiStore = create<AiState>()(
     }
   )
 );
+
+// #9427: once the bound session changes (a committed rebind, a release, the
+// #5684 org-mismatch drop), the attach that followed the old one stops now —
+// its reader is cancelled instead of waiting for its next frame.
+useAiStore.subscribe((state) => {
+  if (currentAttach && currentAttach.sessionId !== state.sessionId) abortCurrentAttach();
+});

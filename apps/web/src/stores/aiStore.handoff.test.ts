@@ -277,3 +277,35 @@ describe('adoptSession', () => {
     expect(useAiStore.getState().isOpen).toBe(true);
   });
 });
+
+describe('adoptSession: review round (#9996 review)', () => {
+  it('a failed adopt leaves the previous session\'s live attach running', async () => {
+    useAiStore.setState({ isOpen: true, sessionId: 's0', sessionOrgId: ORG_A, hydratedSessionId: 's0' });
+    const live = liveSse();
+    on('/ai/sessions/s0/stream', () => live.res);
+    on('/ai/sessions/s1', () => json({ error: 'Not found' }, 404));
+    const run = useAiStore.getState().attachCurrent();
+    live.push(frame(snap({ lastSeq: 1, replay: [{ type: 'message_start', messageId: 'a0' }] })));
+    await vi.waitFor(() => expect(useAiStore.getState().isStreaming).toBe(true));
+
+    await expect(useAiStore.getState().adoptSession('s1')).resolves.toBe('not_found');
+    expect((callsTo('/ai/sessions/s0/stream')[0]![1] as { signal: AbortSignal }).signal.aborted).toBe(false);
+
+    live.push(frame({ type: 'done', seq: 2 }));
+    await run;
+    expect(useAiStore.getState().sessionId).toBe('s0');
+    expect(useAiStore.getState().isStreaming).toBe(false);
+  });
+
+  it('pinned: the session vanishing between the read and the attach → not_found, unbound (the carried draft stays)', async () => {
+    bindS0();
+    on('/ai/sessions/s1', () => session());
+    on('/ai/sessions/s1/stream', () => json({ error: 'Not found' }, 404));
+
+    await expect(useAiStore.getState().adoptSession('s1', { draft: 'carried' })).resolves.toBe('not_found');
+    const s = useAiStore.getState();
+    expect(s.sessionId).toBeNull();
+    expect(s.isStreaming).toBe(false);
+    expect(s.composerDraft).toBe('carried');
+  });
+});
