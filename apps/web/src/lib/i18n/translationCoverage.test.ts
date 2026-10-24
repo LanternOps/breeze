@@ -177,7 +177,7 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in pt-BR.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 141,
+    'settings.json': 146, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -355,7 +355,7 @@ const namespaceDuplicateBaselines = {
     // +1: emailTemplates.variables.total — "Total" is spelled identically in es-419.
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 143,
+    'settings.json': 146, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -560,7 +560,7 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) fr-FR: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
     // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
     // +7 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, noLimits is the em-dash placeholder, and source.license "Licence" is the French spelling — identical to English.
-    'settings.json': 193,
+    'settings.json': 195, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -765,7 +765,7 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) fr-CA: aiModels.offering.speed.standard "Standard" is spelled identically (+1).
     // #7609 aiModels.quality.columns.conversations: "Conversations" is the identical word in French.
     // +7 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, noLimits is the em-dash placeholder, and source.license "Licence" is the French spelling — identical to English.
-    'settings.json': 198,
+    'settings.json': 200, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -968,7 +968,7 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) de-DE: aiModels.models.details "Details" and offering.speed.standard "Standard" are spelled identically (+2).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical German term.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 209,
+    'settings.json': 215, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1128,7 +1128,7 @@ const namespaceDuplicateBaselines = {
     // W04 Task 12 (#7602) it-IT: aiModels.offering.prices.input/output ("Input"/"Output") and speed.standard "Standard" are spelled identically (+3).
     // +1 customer work approval (#8196): timeTrackingSettingsCard.approval.source.partner — "Partner" is the identical Italian term.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 187,
+    'settings.json': 188, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -1261,7 +1261,7 @@ const namespaceDuplicateBaselines = {
     // AI model registry W04 (#7602) aiModels.*: cognates/loanwords (Chat, Helper, Endpoint, Status, Anthropic names, interpolation-only labels) — reviewed.
     // #7609 aiModels.quality.groupBy.model: "Model" is the identical word in Turkish.
     // +6 Plan & features (#9907): planAndFeatures.plans.{starter,community,pro,enterprise} are plan-tier product names, features.wisp.label is the Wisp product name, and noLimits is the em-dash placeholder — identical in every catalog.
-    'settings.json': 81,
+    'settings.json': 84, // +ticketRouting loanwords (Portal/API/Normal/Status)
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,

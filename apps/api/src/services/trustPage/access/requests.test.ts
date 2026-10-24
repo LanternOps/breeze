@@ -194,7 +194,7 @@ describe('verifyAccessRequest', () => {
     await expect(verifyAccessRequest(RAW, NOW)).resolves.toEqual({ orgName: 'Contoso' });
     expect(createTicket).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', source: 'api' }), expect.objectContaining({ kind: 'system' }));
     // #8883 W5 T5.4: no hard-coded priority, so a routing rule may set one.
-    expect(createTicket.mock.calls.at(-1)![0]).not.toHaveProperty('priority');
+    expect((createTicket.mock.calls.at(-1) as unknown as [Record<string, unknown>])[0]).not.toHaveProperty('priority');
   });
 });
 
