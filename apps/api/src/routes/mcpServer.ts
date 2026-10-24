@@ -79,7 +79,7 @@ import {
   writeLegacySessionExtensions,
   type McpClientExtensions,
 } from '../services/mcpClientExtensions';
-import { buildCreateTaskResult, toMcpTask, type McpTask, type McpTaskIntentRow } from '../services/mcpTasks';
+import { MCP_TASK_ID_MAX_CHARS, MCP_TASK_NOT_FOUND, buildCreateTaskResult, buildTasksExtensionRequiredData, toMcpTask, type McpTask, type McpTaskIntentRow } from '../services/mcpTasks';
 import {
   MCP_APPS,
   findMcpAppByTool,
@@ -105,7 +105,7 @@ import {
   type McpActionStatus,
 } from '../services/mcpActionStatus';
 import { computeToolsListCatalogFingerprint, decodeToolsListCursor, encodeToolsListCursor, isModernMcpProtocolVersion, mcpStatelessEnabled, mcpToolsListPageSize, negotiateMcpProtocolVersion, parseMcpProtocolVersionHeader, type McpProtocolVersion } from '../services/mcpProtocol';
-import { classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
+import { MCP_CAPABILITY_REQUIRED, classifyMcpRequest, validateJsonRpcEnvelope, type McpRejection, type ModernRequestMeta } from '../services/mcpModernEnvelope';
 import { buildDiscoverResult, decorateModernResult, recordMcpEraRejection, resolveMcpHttpStatus } from '../services/mcpModernResult';
 import { buildMcpRequestCorrelation, correlationAuditDetails, type McpRequestCorrelation } from '../services/mcpRequestCorrelation';
 import { requestAuditSink, runMcpTier3Lifecycle, writeMcpToolAuditEvent, type McpTier3ExecutionOutcome } from '../services/mcpTier3Lifecycle';
@@ -1418,6 +1418,15 @@ async function handleJsonRpc(
       case 'prompts/get':
         return handlePromptsGet(req.id, req.params ?? {});
 
+      // B-W06 (#6160, D-B47/D-B51): Tasks are modern-only and exist only
+      // while effective; otherwise these are exactly the default below.
+      case 'tasks/get':
+      case 'tasks/update':
+      case 'tasks/cancel':
+        if (ctx.era === 'modern' && mcpTasksEffective()) {
+          return await handleTasksRequest(req.method, req.id, req.params ?? {}, auth, scopes, apiKey, ctx);
+        }
+      // falls through
       default:
         return jsonRpcError(req.id, -32601, `Method not found: ${req.method}`);
     }
@@ -2733,6 +2742,87 @@ async function handleCancelActionCall(
   } catch (err) {
     console.error('[MCP] cancel_action failed:', err);
     return jsonRpcError(id, -32000, 'Unable to cancel the action');
+  }
+}
+
+/** The UUID shape loadOwnedMcpIntent accepts; the only taskId shape ever audited. */
+const MCP_TASK_ID_AUDIT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * B-W06 (#6160, D-B51): `tasks/get` / `tasks/update` / `tasks/cancel`. A task
+ * id is a name, never a capability: every call re-runs the same gates as
+ * get_action_status / cancel_action, in this order —
+ *   1. the ai:read preflight (already ran before dispatch);
+ *   2. this request declares the Tasks extension, else -32021 (no DB read);
+ *   3. taskId is a string of ≤ 64 chars, else not-found;
+ *   4. canOwnMcpIntents, else not-found;
+ *   5. tasks/cancel: ai:write or ai:execute (the exact cancel_action error);
+ *   6. tasks/update: inputResponses, when present, is a plain object;
+ *   7. loadOwnedMcpIntent / cancelOwnedMcpIntent — null → not-found;
+ *   8. act.
+ * Unknown, foreign and malformed ids all get the same not-found body. An
+ * infrastructure failure is the get_action_status / cancel_action -32000
+ * body, never an empty ack. The only intent write is cancelOwnedMcpIntent.
+ */
+async function handleTasksRequest(
+  method: 'tasks/get' | 'tasks/update' | 'tasks/cancel',
+  id: string | number,
+  params: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  apiKey: McpApiKeyContext | undefined,
+  ctx: McpDispatchContext,
+): Promise<JsonRpcResponse> {
+  const taskNotFound = () => jsonRpcError(id, -32602, 'Task not found', MCP_TASK_NOT_FOUND);
+  const taskId = params.taskId;
+  // D-B53: bounded, server-validated — never arbitrary caller text.
+  if (typeof taskId === 'string' && MCP_TASK_ID_AUDIT_RE.test(taskId)) ctx.auditExtras.taskId = taskId.toLowerCase();
+
+  if (!(await ctx.resolveClientExtensions()).tasks) {
+    return jsonRpcError(id, MCP_CAPABILITY_REQUIRED, 'Tasks extension required', buildTasksExtensionRequiredData());
+  }
+  if (typeof taskId !== 'string' || taskId.length > MCP_TASK_ID_MAX_CHARS) return taskNotFound();
+  if (!canOwnMcpIntents(auth, apiKey)) return taskNotFound();
+  if (method === 'tasks/cancel' && !scopes.includes('ai:write') && !scopes.includes('ai:execute')) {
+    return jsonRpcError(id, -32603, `Tool "${MCP_CANCEL_ACTION_TOOL_NAME}" requires ai:write scope`, INSUFFICIENT_SCOPE_WRITE);
+  }
+  if (method === 'tasks/update') {
+    const responses = params.inputResponses;
+    if (responses !== undefined && (!responses || typeof responses !== 'object' || Array.isArray(responses))) {
+      return jsonRpcError(id, -32602, 'Invalid params', { reason: 'invalid_input_responses' });
+    }
+  }
+
+  if (method === 'tasks/cancel') {
+    try {
+      const { cancelOwnedMcpIntent } = await liveMcpIntentCreation();
+      // Cooperative (SEP-2663): cancelled and not_cancellable (already
+      // running or finished) both ack; tasks/get then reports the real end.
+      const outcome = await cancelOwnedMcpIntent(auth, taskId, mcpAppBaseUrl());
+      if (outcome.kind === 'not_found') return taskNotFound();
+      return jsonRpcResult(id, {});
+    } catch (err) {
+      console.error('[MCP] tasks/cancel failed:', err);
+      captureException(err);
+      return jsonRpcError(id, -32000, 'Unable to cancel the action');
+    }
+  }
+
+  try {
+    if (method === 'tasks/update') {
+      // No input request is ever outstanding (D-B49), so the keys are ignored
+      // once the caller has proved ownership.
+      const { loadOwnedMcpIntent } = await liveMcpIntentCreation();
+      if (!(await loadOwnedMcpIntent(auth, taskId))) return taskNotFound();
+      return jsonRpcResult(id, {});
+    }
+    const task = await loadOwnedMcpTask(auth, taskId);
+    if (!task) return taskNotFound();
+    return jsonRpcResult(id, task);
+  } catch (err) {
+    console.error(`[MCP] ${method} failed:`, err);
+    captureException(err);
+    return jsonRpcError(id, -32000, 'Unable to read the action status');
   }
 }
 

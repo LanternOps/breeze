@@ -708,3 +708,319 @@ describe('B-W06 tools/call returns a task to a declaring modern client', () => {
     expect(body.result.pollIntervalMs).toBe(60_000);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task 4: tasks/get, tasks/update, tasks/cancel
+// ---------------------------------------------------------------------------
+
+const NOT_FOUND_ERROR = { code: -32602, message: 'Task not found', data: { reason: 'not_found' } };
+const CANCEL_SCOPE_ERROR = {
+  code: -32603,
+  message: 'Tool "cancel_action" requires ai:write scope',
+  data: { reason: 'insufficient_scope', requiredScope: 'ai:write' },
+};
+
+function b64(value: string): string {
+  return `=?base64?${Buffer.from(value).toString('base64')}?=`;
+}
+
+describe('B-W06 tasks/get', () => {
+  it.each([
+    ['pending_approval', { status: 'working', pollIntervalMs: 30_000, statusMessage: `Waiting for approval in the Breeze mobile or web app: ${APPROVAL_URL}` }],
+    ['approved', { status: 'working', pollIntervalMs: 5_000, statusMessage: 'Approved — running.' }],
+    ['executing', { status: 'working', pollIntervalMs: 5_000, statusMessage: 'Approved — running.' }],
+    ['completed', { status: 'completed' }],
+    ['failed', { status: 'completed' }],
+    ['rejected', { status: 'completed' }],
+    ['expired', { status: 'completed' }],
+    ['cancelled', { status: 'cancelled' }],
+  ])('maps intent %s (flat, resultType complete, task ttlMs kept, no cacheScope)', async (rowStatus, expected) => {
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow(rowStatus, 'execute_command', rowStatus === 'completed' ? { result: { ok: 1 } } : {}));
+    const { status, body } = await modernTasks('tasks/get', { taskId: ID });
+    expect(status).toBe(200);
+    expect(body.error).toBeUndefined();
+    const r = body.result;
+    expect(r).toMatchObject({ resultType: 'complete', taskId: ID, ...expected });
+    expect(r.ttlMs).toBe(25 * 3_600_000);
+    expect(r.createdAt).toBe('2026-10-24T10:00:00.000Z');
+    expect(r.lastUpdatedAt).toBe('2026-10-24T10:00:02.000Z');
+    expect(r).not.toHaveProperty('cacheScope');
+    expect(r).not.toHaveProperty('task');
+    expect(['working', 'completed', 'cancelled']).toContain(r.status);
+    if (expected.status === 'completed') {
+      expect(r.result.structuredContent.actionId).toBe(ID);
+      expect(Boolean(r.result.isError)).toBe(rowStatus !== 'completed');
+    } else {
+      expect(r).not.toHaveProperty('result');
+    }
+  });
+
+  it('an immediate tasks/get after a task result resolves', async () => {
+    const created = await modernCall('execute_command', ARGS, { caps: TASK_CAPS });
+    expect(created.body.result.resultType).toBe('task');
+    const { body } = await modernTasks('tasks/get', { taskId: created.body.result.taskId });
+    expect(body.result.taskId).toBe(ID);
+    expect(body.result.status).toBe('working');
+  });
+
+  it('pollIntervalMs reflects the caller\'s live count (20 live → ≥ 20000)', async () => {
+    intentMocks.countLiveMcpIntentsForOrigin.mockResolvedValue(20);
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow('executing'));
+    const { body } = await modernTasks('tasks/get', { taskId: ID });
+    expect(body.result.pollIntervalMs).toBeGreaterThanOrEqual(20_000);
+    expect(intentMocks.countLiveMcpIntentsForOrigin).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['pending_approval', 'approved', 'executing', 'completed', 'failed', 'rejected', 'expired', 'cancelled'])(
+    'get_action_status and tasks/get agree for %s',
+    async (rowStatus) => {
+      const row = intentRow(rowStatus, 'execute_command', rowStatus === 'completed' ? { result: { ok: 1 } } : rowStatus === 'failed' ? { errorCode: 'boom' } : {});
+      intentMocks.loadOwnedMcpIntent.mockResolvedValue(row);
+      const viaTool = await modernCall('get_action_status', { actionId: ID }, { caps: TASK_CAPS });
+      const viaTask = await modernTasks('tasks/get', { taskId: ID });
+      const actionStatus = viaTool.body.result.structuredContent;
+      const task = viaTask.body.result;
+      const expectedTaskStatus = { pending_approval: 'working', in_progress: 'working', cancelled: 'cancelled' }[actionStatus.status as string] ?? 'completed';
+      expect(task.status).toBe(expectedTaskStatus);
+      if (task.status === 'completed') expect(task.result.structuredContent).toEqual(actionStatus);
+    },
+  );
+});
+
+describe('B-W06 tasks/* gate order (D-B51)', () => {
+  it.each(['tasks/get', 'tasks/update', 'tasks/cancel'] as const)(
+    'undeclared %s → -32021 with requiredCapabilities, before any DB read',
+    async (method) => {
+      const { status, body } = await modernTasks(method, { taskId: ID }, { caps: {} });
+      expect(status).toBe(200);
+      expect(body.error).toEqual({
+        code: -32021,
+        message: 'Tasks extension required',
+        data: { requiredCapabilities: { extensions: { [TASKS_EXT]: {} } } },
+      });
+      expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+      expect(intentMocks.cancelOwnedMcpIntent).not.toHaveBeenCalled();
+      expect(intentMocks.countLiveMcpIntentsForOrigin).not.toHaveBeenCalled();
+      expect(dbSelect).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['an unknown UUID', '99999999-9999-4999-8999-999999999999', true],
+    ['another key\'s intent', ID, true],
+    ['the same user\'s OAuth-grant intent', ID, true],
+    ['a chat-source intent', ID, true],
+    ['another org\'s intent', ID, true],
+    ['a 65-character string', 'a'.repeat(65), false],
+    ['a number', 12345, false],
+    ['absent', undefined, false],
+  ] as const)('%s → the identical not-found body on tasks/get, tasks/update and tasks/cancel', async (_label, taskId, reachesLoad) => {
+    // Ownership lives in loadOwnedMcpIntent (origin credential + source mcp_api,
+    // under the caller's RLS context): every foreign row reads as null.
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(null);
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'not_found' });
+    const params = taskId === undefined ? {} : { taskId };
+    for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel'] as const) {
+      const { body } = await modernTasks(method, params);
+      expect(body.error).toEqual(NOT_FOUND_ERROR);
+      expect(body.result).toBeUndefined();
+    }
+    if (!reachesLoad) {
+      expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+      expect(intentMocks.cancelOwnedMcpIntent).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ['org service key', { principalType: 'service' }],
+  ] as const)('%s → not found, no lookup', async (_label, patch) => {
+    Object.assign(testState, patch);
+    for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel'] as const) {
+      const { body } = await modernTasks(method, { taskId: ID });
+      expect(body.error).toEqual(NOT_FOUND_ERROR);
+    }
+    expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+  });
+
+  it('tasks/get and tasks/update need only ai:read; tasks/cancel needs ai:write or ai:execute (the exact cancel_action error)', async () => {
+    testState.scopes = ['ai:read'];
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow('pending_approval'));
+    expect((await modernTasks('tasks/get', { taskId: ID })).body.result.taskId).toBe(ID);
+    expect((await modernTasks('tasks/update', { taskId: ID })).body.result).toEqual(expect.objectContaining({ resultType: 'complete' }));
+    const denied = await modernTasks('tasks/cancel', { taskId: ID });
+    expect(denied.body.error).toEqual(CANCEL_SCOPE_ERROR);
+    expect(intentMocks.cancelOwnedMcpIntent).not.toHaveBeenCalled();
+    // Same body cancel_action itself answers.
+    const viaTool = await modernCall('cancel_action', { actionId: ID }, { caps: TASK_CAPS });
+    expect(viaTool.body.error).toEqual(denied.body.error);
+  });
+
+  it('an ai:execute key (no ai:write) may cancel', async () => {
+    testState.scopes = ['ai:read', 'ai:execute'];
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'cancelled', status: statusOf('cancelled') });
+    const { body } = await modernTasks('tasks/cancel', { taskId: ID });
+    expect(body.error).toBeUndefined();
+    expect(intentMocks.cancelOwnedMcpIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a key with mcp_domains=[\'devices\'] can tasks/get and tasks/cancel its own task (core-domain parity)', async () => {
+    testState.mcpDomains = ['devices'];
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow('pending_approval'));
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'cancelled', status: statusOf('cancelled') });
+    expect((await modernTasks('tasks/get', { taskId: ID })).body.result.status).toBe('working');
+    expect((await modernTasks('tasks/cancel', { taskId: ID })).body.error).toBeUndefined();
+    // get_action_status agrees for the same key.
+    expect((await modernCall('get_action_status', { actionId: ID }, { caps: TASK_CAPS })).body.error).toBeUndefined();
+  });
+});
+
+describe('B-W06 tasks/cancel and tasks/update', () => {
+  it('tasks/cancel on pending → {} (flat ack), and the next tasks/get → cancelled', async () => {
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'cancelled', status: statusOf('cancelled') });
+    const ack = await modernTasks('tasks/cancel', { taskId: ID });
+    const { _meta, ...rest } = ack.body.result;
+    expect(rest).toEqual({ resultType: 'complete' });
+    expect(_meta).toHaveProperty('io.modelcontextprotocol/serverInfo');
+    expect(intentMocks.cancelOwnedMcpIntent).toHaveBeenCalledWith(expect.anything(), ID, 'https://app.example.com');
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow('cancelled'));
+    expect((await modernTasks('tasks/get', { taskId: ID })).body.result.status).toBe('cancelled');
+  });
+
+  it('cancel during execution acks and does not lie: {} now, the real end later', async () => {
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'not_cancellable', status: statusOf('in_progress') });
+    const ack = await modernTasks('tasks/cancel', { taskId: ID });
+    expect(ack.body.error).toBeUndefined();
+    expect(Object.keys(ack.body.result).sort()).toEqual(['_meta', 'resultType']);
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow('executing'));
+    expect((await modernTasks('tasks/get', { taskId: ID })).body.result.status).toBe('working');
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(intentRow('completed', 'execute_command', { result: { ok: 1 }, statusChangedAt: new Date('2026-10-24T10:30:00.000Z') }));
+    const done = await modernTasks('tasks/get', { taskId: ID });
+    expect(done.body.result.status).toBe('completed');
+    expect(done.body.result.lastUpdatedAt).toBe('2026-10-24T10:30:00.000Z');
+  });
+
+  it('tasks/cancel on a cancel that finds nothing → not found (never an empty ack)', async () => {
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'not_found' });
+    expect((await modernTasks('tasks/cancel', { taskId: ID })).body.error).toEqual(NOT_FOUND_ERROR);
+  });
+
+  it('tasks/update acks {} and ignores well-formed inputResponses, with no write', async () => {
+    const { body } = await modernTasks('tasks/update', { taskId: ID, inputResponses: { anything: { action: 'accept' } } });
+    expect(Object.keys(body.result).sort()).toEqual(['_meta', 'resultType']);
+    expect(intentMocks.cancelOwnedMcpIntent).not.toHaveBeenCalled();
+    expect(intentMocks.loadOwnedMcpIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([['a string', 'x'], ['an array', []], ['null', null], ['a number', 7]])(
+    'tasks/update with inputResponses as %s → -32602 invalid_input_responses',
+    async (_label, inputResponses) => {
+      const { body } = await modernTasks('tasks/update', { taskId: ID, inputResponses });
+      expect(body.error).toEqual({ code: -32602, message: 'Invalid params', data: { reason: 'invalid_input_responses' } });
+    },
+  );
+});
+
+describe('B-W06 tasks/* infrastructure failures', () => {
+  it('a DB failure in tasks/get or tasks/update → the get_action_status -32000 body, never {}', async () => {
+    intentMocks.loadOwnedMcpIntent.mockRejectedValue(new Error('db down'));
+    const viaTool = await modernCall('get_action_status', { actionId: ID }, { caps: TASK_CAPS });
+    for (const method of ['tasks/get', 'tasks/update'] as const) {
+      const { body } = await modernTasks(method, { taskId: ID });
+      expect(body.result).toBeUndefined();
+      expect(body.error).toEqual({ code: -32000, message: 'Unable to read the action status' });
+      expect(body.error).toEqual(viaTool.body.error);
+    }
+    expect(mocks.captureException).toHaveBeenCalled();
+  });
+
+  it('a live-count failure in tasks/get is the same -32000 body', async () => {
+    intentMocks.countLiveMcpIntentsForOrigin.mockRejectedValue(new Error('db down'));
+    const { body } = await modernTasks('tasks/get', { taskId: ID });
+    expect(body.error).toEqual({ code: -32000, message: 'Unable to read the action status' });
+  });
+
+  it('a DB failure in tasks/cancel → the cancel_action -32000 body, never {}', async () => {
+    intentMocks.cancelOwnedMcpIntent.mockRejectedValue(new Error('db down'));
+    const viaTool = await modernCall('cancel_action', { actionId: ID }, { caps: TASK_CAPS });
+    const { body } = await modernTasks('tasks/cancel', { taskId: ID });
+    expect(body.result).toBeUndefined();
+    expect(body.error).toEqual({ code: -32000, message: 'Unable to cancel the action' });
+    expect(body.error).toEqual(viaTool.body.error);
+    expect(mocks.captureException).toHaveBeenCalled();
+  });
+});
+
+describe('B-W06 tasks/* availability', () => {
+  it('MCP_TIER3_INTENTS_ENABLED off: existing tasks remain readable and cancellable; no new task is created', async () => {
+    delete process.env.MCP_TIER3_INTENTS_ENABLED;
+    expect((await modernTasks('tasks/get', { taskId: ID })).body.result.status).toBe('working');
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'cancelled', status: statusOf('cancelled') });
+    expect((await modernTasks('tasks/cancel', { taskId: ID })).body.error).toBeUndefined();
+    const call = await modernCall('execute_command', ARGS, { caps: TASK_CAPS });
+    expect(call.body.result?.resultType).not.toBe('task');
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['MCP_TASKS_ENABLED off', () => { delete process.env.MCP_TASKS_ENABLED; }],
+  ])('%s: tasks/* → -32601, HTTP 404', async (_label, setup) => {
+    setup();
+    for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel'] as const) {
+      const { status, body } = await modernTasks(method, { taskId: ID });
+      expect(status).toBe(404);
+      expect(body.error).toEqual({ code: -32601, message: `Method not found: ${method}` });
+    }
+    expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+  });
+
+  it('legacy era: tasks/* → -32601 (HTTP 200, legacy status) with no lookup', async () => {
+    for (const method of ['tasks/get', 'tasks/update', 'tasks/cancel']) {
+      const { status, body } = await legacyMethod(method, { taskId: ID });
+      expect(status).toBe(200);
+      expect(body.error).toEqual({ code: -32601, message: `Method not found: ${method}` });
+    }
+    expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+  });
+
+  it('a mismatched Mcp-Name → 400 header_mismatch, nothing dispatched', async () => {
+    const { status, body } = await modernTasks('tasks/get', { taskId: ID }, { name: '99999999-9999-4999-8999-999999999999' });
+    expect(status).toBe(400);
+    expect(body.error.code).toBe(-32020);
+    expect(intentMocks.loadOwnedMcpIntent).not.toHaveBeenCalled();
+  });
+
+  it('tasks/* never charge checkToolRateLimit, the creation limiter, or create an intent', async () => {
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'cancelled', status: statusOf('cancelled') });
+    await modernTasks('tasks/get', { taskId: ID });
+    await modernTasks('tasks/update', { taskId: ID });
+    await modernTasks('tasks/cancel', { taskId: ID });
+    expect(checkToolRateLimit).not.toHaveBeenCalled();
+    expect(creationLimiter).not.toHaveBeenCalled();
+    expect(intentMocks.createMcpActionIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe('B-W06 tasks/* audit (D-B53)', () => {
+  it('mcp.tasks.get carries taskId only when it is a UUID', async () => {
+    await modernTasks('tasks/get', { taskId: ID });
+    const junk = `${'x'.repeat(40)}\n<script>${'y'.repeat(15)}`;
+    expect(junk.length).toBeLessThanOrEqual(64);
+    intentMocks.loadOwnedMcpIntent.mockResolvedValue(null);
+    await modernTasks('tasks/get', { taskId: junk }, { name: b64(junk) });
+    const rows = auditFor('tasks/get');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].action).toBe('mcp.tasks.get');
+    expect(rows[0].details.taskId).toBe(ID);
+    expect(rows[1].details).not.toHaveProperty('taskId');
+    expect(rows[1].result).toBe('failure');
+  });
+
+  it('tasks/update and tasks/cancel audit as mcp.tasks.update / mcp.tasks.cancel with the taskId', async () => {
+    intentMocks.cancelOwnedMcpIntent.mockResolvedValue({ kind: 'cancelled', status: statusOf('cancelled') });
+    await modernTasks('tasks/update', { taskId: ID });
+    await modernTasks('tasks/cancel', { taskId: ID });
+    expect(auditFor('tasks/update')[0]).toMatchObject({ action: 'mcp.tasks.update', details: { taskId: ID } });
+    expect(auditFor('tasks/cancel')[0]).toMatchObject({ action: 'mcp.tasks.cancel', details: { taskId: ID } });
+    expect(auditFor('tasks/cancel')[0].details).not.toHaveProperty('taskResult');
+  });
+});
