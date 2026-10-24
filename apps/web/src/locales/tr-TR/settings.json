@@ -1161,6 +1161,9 @@
       "autosaved": "Kaydedildi · {{time}}",
       "autosaveFailed": "Kaydedilemedi — tekrar deneyin",
       "readOnly": "Kaydetmek için tam iş ortağı erişimi gerekir"
+    },
+    "validation": {
+      "retentionDays": "1 ile 3650 arasında tam sayı olarak gün girin."
     }
   },
   "partnerSendingDomains": {

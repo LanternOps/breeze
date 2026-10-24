@@ -1161,6 +1161,9 @@
       "autosaved": "Enregistré · {{time}}",
       "autosaveFailed": "Échec de l’enregistrement — réessayez",
       "readOnly": "L’enregistrement nécessite un accès partenaire complet"
+    },
+    "validation": {
+      "retentionDays": "Entrez un nombre entier de jours entre 1 et 3650."
     }
   },
   "partnerSendingDomains": {

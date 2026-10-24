@@ -1161,6 +1161,9 @@
       "autosaved": "Saved · {{time}}",
       "autosaveFailed": "Couldn't save — try again",
       "readOnly": "Saving needs full partner access"
+    },
+    "validation": {
+      "retentionDays": "Enter a whole number of days from 1 to 3650."
     }
   },
   "partnerSendingDomains": {

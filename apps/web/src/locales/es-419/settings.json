@@ -1161,6 +1161,9 @@
       "autosaved": "Guardado · {{time}}",
       "autosaveFailed": "No se pudo guardar; inténtalo de nuevo",
       "readOnly": "Para guardar se necesita acceso completo de socio"
+    },
+    "validation": {
+      "retentionDays": "Ingresa un número entero de días entre 1 y 3650."
     }
   },
   "partnerSendingDomains": {

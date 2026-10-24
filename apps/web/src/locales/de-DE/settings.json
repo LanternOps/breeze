@@ -1161,6 +1161,9 @@
       "autosaved": "Gespeichert · {{time}}",
       "autosaveFailed": "Speichern fehlgeschlagen – bitte erneut versuchen",
       "readOnly": "Zum Speichern ist voller Partnerzugriff erforderlich"
+    },
+    "validation": {
+      "retentionDays": "Geben Sie eine ganze Zahl an Tagen von 1 bis 3650 ein."
     }
   },
   "partnerSendingDomains": {

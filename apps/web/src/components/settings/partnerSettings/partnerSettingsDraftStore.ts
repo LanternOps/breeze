@@ -257,24 +257,31 @@ export function useDraftSlice<T>(id: DraftUnitId, loader: Loader<T>) {
 
 /**
  * A draft slice as a header-Save unit. Subscribes to the slice, so the page
- * re-renders its status line and dirty dots as the draft changes. `validate`
- * derives validity from the draft; without it the slice's stored validity is used.
+ * re-renders its status line and dirty dots as the draft changes.
  */
 export function useDraftSaveUnit<T>(
   id: DraftUnitId,
   save: () => Promise<SaveOutcome>,
-  validate?: (draft: T) => TabValidity
+  opts: {
+    /** Derives validity from the draft; without it the slice's stored validity is used. */
+    validate?: (draft: T) => TabValidity;
+    /** A unit-specific dirty check (e.g. set-valued fields); defaults to a stable JSON compare. */
+    isDirty?: (baseline: T, draft: T) => boolean;
+  } = {}
 ): SaveUnit {
   const slice = usePartnerSettingsDraftStore(s => s.slices[id]) as Slice<T>;
+  const { validate, isDirty } = opts;
   return useMemo(() => {
     const [tab] = UNIT_TABS[id];
-    const validity = validate && slice.status === 'ready' && slice.draft !== null ? validate(slice.draft) : slice.validity;
+    const ready = slice.status === 'ready' && slice.draft !== null && slice.baseline !== null;
+    const validity = validate && ready ? validate(slice.draft as T) : slice.validity;
+    const dirty = ready && isDirty ? isDirty(slice.baseline as T, slice.draft as T) : isSliceDirty(slice);
     return {
       id,
       tabs: UNIT_TABS[id],
-      isDirty: () => isSliceDirty(slice),
+      isDirty: () => dirty,
       validity: () => ({ [tab]: validity }),
       save,
     };
-  }, [id, slice, save, validate]);
+  }, [id, slice, save, validate, isDirty]);
 }

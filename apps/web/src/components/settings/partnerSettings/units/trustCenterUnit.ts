@@ -79,5 +79,5 @@ const save = () => saveSlice<TrustCenterValue>('trustCenter', async (value, revi
 
 /** Partner Trust Center template (`PUT /trust-page-template`, revisioned) as a header-Save unit. */
 export function useTrustCenterUnit() {
-  return useDraftSaveUnit<TrustCenterValue>('trustCenter', save, validate);
+  return useDraftSaveUnit<TrustCenterValue>('trustCenter', save, { validate });
 }

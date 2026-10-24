@@ -18,6 +18,7 @@ const authState = vi.hoisted(() => ({ user: { id: 'u-1', canManagePartnerWide: t
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
   useAuthStore: (sel: (s: unknown) => unknown) => sel(authState),
+  handleSessionExpired: vi.fn(),
 }));
 vi.mock('../../stores/orgStore', () => ({ useOrgStore: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
@@ -302,5 +303,23 @@ describe('Caller verification and Login page save through the header (W2 Task 20
     await act(async () => { releaseMe(); });
     await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
     expect(order).toEqual(['partnersMe:start', 'partnersMe:end', 'callerVerification', 'loginBranding']);
+  });
+});
+
+describe('AI data policy saves through the header (W2 Task 22)', () => {
+  it('a radio change marks AI Features dirty and the header Save sends the PUT', async () => {
+    routeFetch({
+      'GET /orgs/partners/me': () => json(partnerWith()),
+      'GET /partner/ai/data-policy': () => json({ policy: null, canManage: true, defaults: { deviceFileReadLevel: 'no_user_profiles', toolOutputRetentionDays: 30 } }),
+      'PUT /partner/ai/data-policy': () => json({ ok: true }),
+    });
+    const user = await renderPage('#ai-features');
+    await user.click(await screen.findByTestId('partner-ai-data-policy-level-off'));
+    const puts = () => fetchMock.mock.calls.filter(([url, init]) => url === '/partner/ai/data-policy' && (init as RequestInit | undefined)?.method === 'PUT');
+    expect(puts()).toHaveLength(0);
+    expect(status().textContent).toBe('Unsaved changes in AI Features.');
+    await user.click(saveButton());
+    await waitFor(() => expect(status().getAttribute('data-state')).toBe('clean'));
+    expect((puts()[0][1] as RequestInit).body).toBe(JSON.stringify({ deviceFileReadLevel: 'off' }));
   });
 });

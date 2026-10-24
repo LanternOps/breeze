@@ -37,6 +37,8 @@ import { usePartnerSettingsDraftStore } from './partnerSettings/partnerSettingsD
 import { useCallerVerificationUnit } from './partnerSettings/units/callerVerificationUnit';
 import { useLoginBrandingUnit } from './partnerSettings/units/loginBrandingUnit';
 import { useTrustCenterUnit } from './partnerSettings/units/trustCenterUnit';
+import { useAiFeatureDefaultsUnit } from './partnerSettings/units/aiFeatureDefaultsUnit';
+import { useAiDataPolicyUnit } from './partnerSettings/units/aiDataPolicyUnit';
 import PartnerSettingsStatus, { deriveStatus } from './partnerSettings/PartnerSettingsStatus';
 
 // Kept on this module's surface: existing callers and tests import it from here.
@@ -60,9 +62,11 @@ export default function PartnerSettingsPage() {
   const callerVerificationUnit = useCallerVerificationUnit();
   const loginBrandingUnit = useLoginBrandingUnit();
   const trustCenterUnit = useTrustCenterUnit();
+  const aiFeatureDefaultsUnit = useAiFeatureDefaultsUnit();
+  const aiDataPolicyUnit = useAiDataPolicyUnit();
   const units: SaveUnit[] = useMemo(
-    () => [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit],
-    [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit]
+    () => [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit, aiFeatureDefaultsUnit, aiDataPolicyUnit],
+    [me.unit, callerVerificationUnit, loginBrandingUnit, trustCenterUnit, aiFeatureDefaultsUnit, aiDataPolicyUnit]
   );
   const dirtyTabs = useMemo(() => {
     const dirty: Partial<Record<TabKey, boolean>> = { ...me.dirtyTabs };
