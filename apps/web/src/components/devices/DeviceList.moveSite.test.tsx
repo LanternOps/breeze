@@ -115,7 +115,7 @@ describe('DeviceList — bulk "Move to site"', () => {
     expect(screen.getByTestId('devices-bulk-move-site')).toBeDisabled();
     expect(screen.getByTestId('devices-bulk-move-site-disabled-reason'))
       .toHaveTextContent(`Select at most ${BULK_SITE_MOVE_CAP} devices to move at once`);
-  });
+  }, 30_000); // renders 101 full rows: ~1.3 s alone, past the 5 s default on a loaded runner
 
   it('is hidden without devices:write', () => {
     granted.clear();

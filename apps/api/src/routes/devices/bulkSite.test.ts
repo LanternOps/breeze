@@ -131,8 +131,9 @@ function rigDb() {
       let rows: unknown[] = [];
       if (table === devicesTable) {
         rows = params.map((id) => state.devices.get(id)).filter(Boolean).map((row) => {
-          if (locking && state.concurrentMove?.deviceId === row!.id) {
-            row!.siteId = state.concurrentMove.siteId; // the concurrent move committed first
+          const concurrent = state.concurrentMove;
+          if (locking && concurrent && concurrent.deviceId === row!.id) {
+            row!.siteId = concurrent.siteId; // the concurrent move committed first
           }
           return { ...row };
         });

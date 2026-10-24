@@ -175,7 +175,7 @@ export function bulkMoveSiteAgents<T extends MoveSiteCandidate>(selection: reado
  * MoveDeviceOrgDialog's job), and no more than the API cap. Mixed orgs is
  * reported before the cap: it is the reason the user can act on first.
  */
-export function bulkMoveSiteBlock(selection: readonly MoveSiteCandidate[]): BulkMoveSiteBlock | null {
+export function bulkMoveSiteBlock<T extends MoveSiteCandidate>(selection: readonly T[]): BulkMoveSiteBlock | null {
   const agents = bulkMoveSiteAgents(selection);
   if (agents.length === 0) return 'no_agents';
   if (new Set(agents.map((d) => d.orgId)).size > 1) return 'mixed_org';
