@@ -424,6 +424,12 @@ export const actionIntents = pgTable(
     // Committed under the requester+target subject locks immediately before
     // the outbound mutation (prepareCallerDispatch). Mutable lifecycle marker.
     dispatchStartedAt: timestamp('dispatch_started_at', { withTimezone: true }),
+    // B-W06 (#6160, D-B50): the time of the last status change. Stamped ONLY
+    // by the BEFORE UPDATE trigger action_intents_stamp_status_changed_at
+    // (clock_timestamp() when status changes, else the old value — an app
+    // write can neither forge nor clear it) and by the insert default. NULL
+    // for rows that predate 2027-01-04-121000-action-intents-status-changed-at.sql.
+    statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).defaultNow(),
     result: jsonb('result').$type<Record<string, unknown> | null>(),
     errorCode: text('error_code'),
 

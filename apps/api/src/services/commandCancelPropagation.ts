@@ -1,6 +1,6 @@
 import { and, eq, inArray, type SQL } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runAfterDbContextExit } from '../db';
-import { deploymentResults, deviceCommands, deviceFilesystemCleanupRuns } from '../db/schema';
+import { deploymentResults, deviceCommands, deviceFilesystemCleanupRuns, securityScans } from '../db/schema';
 import { terminalPayloadErasureSet } from './sensitiveCommandPayload';
 import { applyAutomationActionTerminal } from './automationActionResults';
 import { captureException } from './sentry';
@@ -309,6 +309,22 @@ export async function propagateCancelledDeviceCommand(params: {
       completedAt,
       executor,
     });
+  }
+
+  // #6263 W05 — a cancelled security_scan leaves its scan row waiting
+  // forever otherwise: no result will ever arrive for a command the agent
+  // never received. Bound by `security_scans.command_id` (stamped at
+  // dispatch), never by the payload, which the cancel has just erased.
+  // `queued` covers a manual Scan now (it stays queued until its result);
+  // `running` covers a claimed scan. A scan a sweep cancel or expiry already
+  // terminalised keeps its own status. Rows dispatched before W05 carry no
+  // command_id and are untouched. In the caller's transaction, like every
+  // branch above.
+  if (type === 'security_scan') {
+    await executor
+      .update(securityScans)
+      .set({ status: 'cancelled', completedAt })
+      .where(and(eq(securityScans.commandId, commandId), inArray(securityScans.status, ['queued', 'running'])));
   }
 
   await executor

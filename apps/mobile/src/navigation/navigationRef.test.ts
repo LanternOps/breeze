@@ -9,7 +9,12 @@ vi.mock('@react-navigation/native', () => ({
   }),
 }));
 
-import { __resetPendingForTests, flushPendingNavigation, navigateToTicket } from './navigationRef';
+import {
+  __resetPendingForTests,
+  flushPendingNavigation,
+  navigateToTicket,
+  navigateToWispThread,
+} from './navigationRef';
 
 describe('navigateToTicket (#4336)', () => {
   beforeEach(() => {
@@ -171,5 +176,71 @@ describe('navigateToTicket composer params (#5366)', () => {
 
     const params = ref.navigate.mock.calls[0]?.[1]?.params as Record<string, unknown>;
     expect(Object.keys(params).sort()).toEqual(['ticketId']);
+  });
+});
+
+describe('navigateToWispThread (Wisp W06)', () => {
+  beforeEach(() => {
+    ref.ready = false;
+    ref.navigate.mockClear();
+    __resetPendingForTests();
+  });
+
+  it('navigates into the Home stack with initial:false', () => {
+    ref.ready = true;
+
+    navigateToWispThread({ threadId: 't1', grantId: 'g1', concernId: 'c1' });
+
+    expect(ref.navigate).toHaveBeenCalledWith('HomeTab', {
+      screen: 'WispThread',
+      initial: false,
+      params: { threadId: 't1', grantId: 'g1', concernId: 'c1' },
+    });
+  });
+
+  it('buffers before ready and flushes exactly once', () => {
+    navigateToWispThread({ threadId: 't1', grantId: 'g1' });
+    expect(ref.navigate).not.toHaveBeenCalled();
+
+    ref.ready = true;
+    flushPendingNavigation();
+    flushPendingNavigation();
+
+    expect(ref.navigate).toHaveBeenCalledTimes(1);
+    expect(ref.navigate).toHaveBeenCalledWith('HomeTab', {
+      screen: 'WispThread',
+      initial: false,
+      params: { threadId: 't1', grantId: 'g1' },
+    });
+  });
+
+  it('a later ticket tap replaces a buffered wisp tap (single slot)', () => {
+    navigateToWispThread({ threadId: 't1', grantId: 'g1' });
+    navigateToTicket('tk-1');
+
+    ref.ready = true;
+    flushPendingNavigation();
+
+    expect(ref.navigate).toHaveBeenCalledTimes(1);
+    expect(ref.navigate).toHaveBeenCalledWith('TicketsTab', {
+      screen: 'TicketDetail',
+      initial: false,
+      params: { ticketId: 'tk-1' },
+    });
+  });
+
+  it('a later wisp tap replaces a buffered ticket tap', () => {
+    navigateToTicket('tk-1', { focusComposer: true });
+    navigateToWispThread({ threadId: 't2', grantId: 'g2', approvalIntentId: 'i1' });
+
+    ref.ready = true;
+    flushPendingNavigation();
+
+    expect(ref.navigate).toHaveBeenCalledTimes(1);
+    expect(ref.navigate).toHaveBeenCalledWith('HomeTab', {
+      screen: 'WispThread',
+      initial: false,
+      params: { threadId: 't2', grantId: 'g2', approvalIntentId: 'i1' },
+    });
   });
 });

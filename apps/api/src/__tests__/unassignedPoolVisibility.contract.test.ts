@@ -174,8 +174,10 @@ const EPHEMERAL_ONLY: Record<string, string> = {
  * jobs/patchComplianceReportWorker.ts now take their device population from
  * techFacingDeviceConditions() in services/deviceStats.ts, which stays in this
  * scan with the ephemeral filter and notParkedDeviceCondition() side by side.
+ * 74 → 75 (#6263 W05): services/securityScanSweepTargets.ts, the IOC sweep
+ * target selector (a FANOUT_MODULES entry, parked guard beside the filter).
  */
-const EPHEMERAL_DISCOVERED_FILES = 74;
+const EPHEMERAL_DISCOVERED_FILES = 75;
 
 describe('contract: device counts and listings leave parked devices out', () => {
   const found = DEVICE_FILES
