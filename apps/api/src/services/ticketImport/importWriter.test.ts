@@ -57,6 +57,7 @@ function stored(overrides: Record<string, unknown> = {}) {
     id: 't-1', orgId: ORG, migrationWindowId: 'w-1', deletedAt: null, status: 'open' as const,
     subject: 'Printer jams', description: 'Every second page.', priority: 'normal' as const, categoryId: null,
     tags: [] as string[], ticketType: 'incident', assignedTo: null as string | null, fieldProvenance: {} as Record<string, string>,
+    requesterContactId: null as string | null, submitterEmail: 'maya@customer.example' as string | null,
     ...overrides,
   };
 }

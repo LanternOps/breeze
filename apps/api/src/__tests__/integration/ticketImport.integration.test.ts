@@ -22,7 +22,8 @@
  *     skipped on its unique-index conflict, and the rest of its chunk commits;
  *   - another partner's window is not found, whatever its state;
  *   - (#8313 W0, spec 2026-10-19 §5.3) a display-only requester may have no
- *     email.
+ *     email; a resume reports, and does not apply, a changed requester, org,
+ *     edited or flipped comment and a comment deleted in the source.
  */
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -79,7 +80,7 @@ import type { ImportedTicket } from '../../services/ticketImport/importedTicket'
 import { migrationWindowRateKey } from '../../services/ticketImport/throughput';
 import { windowWriteContext } from '../../services/ticketImport/windowLock';
 import { ticketSearchCondition } from '../../services/ticketSearch';
-import { assignTicket, changeTicketStatus, createTicket, updateTicketFields } from '../../services/ticketService';
+import { assignTicket, changeTicketStatus, createTicket, editTicketComment, updateTicketFields } from '../../services/ticketService';
 import type { OpenWindow } from '../../services/ticketWriteMode';
 import { assignUserToPartner, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import { getTestDb } from './setup';
@@ -178,6 +179,9 @@ function source(fx: Fx, overrides: Partial<ImportedTicket> = {}): ImportedTicket
   };
 }
 
+/** A resume's report-only fields when the source changed nothing (and a first import's). */
+const NOTHING_CHANGED = { requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [] };
+
 async function bucketSize(windowId: string): Promise<number> {
   return Number(await getRedis()!.zcard(migrationWindowRateKey(windowId)));
 }
@@ -207,7 +211,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     const ticket = source(fx);
 
     const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
-    expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false });
+    expect(result).toEqual({ ticketId: expect.any(String), outcome: 'created', commentsWritten: 3, commentsSkipped: 0, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED });
 
     const [row] = await getTestDb().select().from(tickets).where(eq(tickets.id, result.ticketId));
     expect(row).toMatchObject({
@@ -269,7 +273,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
 
     // A second run resumes and finds nothing to do: no write, no charge.
     const again = await importTicket(window.id, ticket, { partnerId: fx.partner.id });
-    expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0, statusSkipped: false });
+    expect(again).toEqual({ ticketId: result.ticketId, outcome: 'resumed', commentsWritten: 0, commentsSkipped: 3, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED });
     expect(await bucketSize(window.id)).toBe(8);
     expect(await getTestDb().select().from(ticketComments).where(eq(ticketComments.ticketId, result.ticketId))).toHaveLength(rows.length);
 
@@ -317,7 +321,7 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
 
     const second = await openWindow(fx);
     const resumed = await importTicket(second.id, ticket, { chunkSize: 2, partnerId: fx.partner.id });
-    expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0, statusSkipped: false });
+    expect(resumed).toEqual({ ticketId: partial!.id, outcome: 'resumed', commentsWritten: 3, commentsSkipped: 2, fieldsUpdated: 0, statusSkipped: false, ...NOTHING_CHANGED });
     const all = await getTestDb().select().from(ticketComments)
       .where(and(eq(ticketComments.ticketId, partial!.id), sql`${ticketComments.importSourceId} IS NOT NULL`));
     expect(all).toHaveLength(5);
@@ -464,6 +468,81 @@ describe('ticket import mode (real Postgres, as breeze_app)', () => {
     expect((await outboxFor(a.ticketId)).length + (await outboxFor(b.ticketId)).length).toBe(outboxBefore);
     expect(queued).toEqual([]);
     expect(audited).toEqual([]);
+  });
+
+  runDb('a resume reports what changed in the source and applies none of it: requester, org, edited, flipped and deleted comments', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const article = (i: number, isPublic: boolean, content: string) => ({
+      sourceId: uniq(`article-${i}`), createdAt: minutes(10 + i), isPublic,
+      author: { kind: 'staff' as const, name: 'Former Agent' }, content,
+    });
+    const edited = article(1, true, 'First reply.');
+    const flipped = article(2, true, 'Customer phone: 555-0100.');
+    const deleted = article(3, false, 'Will be deleted in the source.');
+    const editedInBreeze = article(4, true, 'Typo in teh reply.');
+    const timeNote = { ...article(5, false, 'Time accounted: 3h.'), sourceId: `${uniq('zammad-ticket')}:time` };
+    const open = { assigneeUserId: undefined, finalStatus: 'open' as const, resolvedAt: undefined, closedAt: undefined, resolutionNote: undefined };
+    const first = source(fx, { ...open, comments: [edited, flipped, deleted, editedInBreeze, timeNote] });
+    const created = await importTicket(window.id, first, { partnerId: fx.partner.id });
+    expect(created).toMatchObject({ outcome: 'created', commentsWritten: 5, ...NOTHING_CHANGED });
+
+    // A technician fixes a typo in Breeze.
+    const [breezeEdited] = await getTestDb().select({ id: ticketComments.id }).from(ticketComments)
+      .where(eq(ticketComments.importSourceId, editedInBreeze.sourceId));
+    const tech = { kind: 'user' as const, userId: fx.owner.id, name: 'Owner' };
+    await withDbAccessContext(fx.ownerContext(), () => editTicketComment(breezeEdited!.id, { content: 'Typo in the reply.' }, tech, { canManageAny: true }));
+    const snapshot = async () => ({
+      ticket: (await getTestDb().select().from(tickets).where(eq(tickets.id, created.ticketId)))[0],
+      comments: await getTestDb().select().from(ticketComments)
+        .where(eq(ticketComments.ticketId, created.ticketId)).orderBy(ticketComments.createdAt, ticketComments.id),
+    });
+    const before = await snapshot();
+    const charged = await bucketSize(window.id);
+
+    // The delta: the source moved the ticket to org B, changed the
+    // requester's address, edited one article, made another internal, deleted
+    // a third, and stopped composing the time note; the article Breeze edited
+    // was edited in the source too. One new article.
+    const added = article(6, false, 'New note.');
+    const isSourceArticleId = (id: string) => !id.endsWith(':time');
+    const resumed = await importTicket(window.id, {
+      ...first,
+      orgId: fx.orgB.id,
+      requester: { name: 'Maya Customer', email: 'maya.new@customer.example' },
+      comments: [{ ...edited, content: 'First reply, edited.' }, { ...flipped, isPublic: false }, { ...editedInBreeze, content: 'Typo in teh reply!' }, added],
+    }, { partnerId: fx.partner.id, isSourceArticleId });
+
+    expect(resumed).toEqual({
+      ticketId: created.ticketId,
+      outcome: 'resumed',
+      commentsWritten: 1,
+      commentsSkipped: 3,
+      fieldsUpdated: 0,
+      statusSkipped: false,
+      requesterChanged: true,
+      orgChanged: true,
+      // The flipped flag is listed; the Breeze edit wins, so its source edit is not.
+      commentsChangedInSource: [
+        { sourceId: edited.sourceId, contentChanged: true, visibility: null },
+        { sourceId: flipped.sourceId, contentChanged: false, visibility: 'made_internal' },
+      ],
+      // The composed time note is not an article.
+      commentsMissingInSource: [deleted.sourceId],
+    });
+
+    // None of it was applied: only the new article was written, and charged.
+    const after = await snapshot();
+    expect(after.ticket).toMatchObject({ orgId: fx.orgA.id, submitterEmail: 'maya@customer.example', requesterContactId: null });
+    const withoutAdded = after.comments.filter((c) => c.importSourceId !== added.sourceId);
+    expect(withoutAdded.map((c) => [c.id, c.content, c.isPublic, c.deletedAt]))
+      .toEqual(before.comments.map((c) => [c.id, c.content, c.isPublic, c.deletedAt]));
+    expect(after.comments.filter((c) => c.importSourceId === added.sourceId)).toHaveLength(1);
+    expect(await bucketSize(window.id)).toBe(charged + 1);
+
+    // Without isSourceArticleId, nothing is counted missing.
+    const again = await importTicket(window.id, { ...first, comments: [] }, { partnerId: fx.partner.id });
+    expect(again).toMatchObject({ commentsMissingInSource: [], requesterChanged: false, orgChanged: false });
   });
 
   runDb('a re-import applies the source status only while the import set it last: a Breeze status change wins', async () => {

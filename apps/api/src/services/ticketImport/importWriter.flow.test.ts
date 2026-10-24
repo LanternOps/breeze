@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
     if (q.table === 'tickets' && q.fields.includes('fieldProvenance')) return 'storedTicket';
     if (q.table === 'tickets' && q.lock === 'no key update') return 'statusRow';
     if (q.table === 'tickets') return 'importable';
+    if (q.table === 'ticket_comments' && q.fields.includes('contentHash')) return 'importedComments';
     if (q.table === 'ticket_comments' && q.fields.includes('kind')) return 'feedRow';
     if (q.table === 'ticket_comments' && q.fields.length === 1 && q.fields[0] === 'sourceId') return 'presentByPrincipal';
     return `${q.table}:${q.fields.join(',')}`;
@@ -94,7 +95,7 @@ vi.mock('../ticketService', () => ({
   }),
 }));
 
-import { importTicket, IMPORT_COMMENT_CHUNK_BYTES } from './importWriter';
+import { importTicket, IMPORT_COMMENT_CHUNK_BYTES, type ImportTicketOptions } from './importWriter';
 import type { ImportedTicket } from './importedTicket';
 
 const PRINCIPAL = '44444444-4444-4444-8444-444444444444';
@@ -135,13 +136,14 @@ function storedRow(overrides: Record<string, unknown> = {}) {
     id: TICKET, orgId: ORG, migrationWindowId: 'w-1', deletedAt: null, status: 'open',
     subject: 'Printer jams', description: 'Every second page.', priority: 'normal', categoryId: null,
     tags: [], ticketType: 'incident', assignedTo: null, fieldProvenance: {},
+    requesterContactId: null, submitterEmail: 'maya@customer.example',
     ...overrides,
   };
 }
 
 const ours = { kind: 'service_principal', principalId: PRINCIPAL };
 const technician = { kind: 'user', principalId: null };
-const run = (t: ImportedTicket, extra: { chunkSize?: number; chunkBytes?: number } = {}) => importTicket('w-2', t, { partnerId: 'p-1', ...extra });
+const run = (t: ImportedTicket, extra: Omit<ImportTicketOptions, 'partnerId'> = {}) => importTicket('w-2', t, { partnerId: 'p-1', ...extra });
 const statusWrites = () => h.writes.filter((w) => w[0] === 'changeTicketStatus').map((w) => w[2]);
 
 beforeEach(() => {
@@ -271,5 +273,55 @@ describe('importTicket — a predicted skip is charged when a transaction runs (
     expect(h.locks).toBe(1);
     expect(h.charges).toEqual([2]);
     expect(statusWrites()).toEqual(['resolved', 'closed']);
+  });
+});
+
+describe('importTicket — the resume report reads nothing extra (spec 2026-10-19 §5.3 item 3)', () => {
+  it('plans a first import with the ref read alone, and reports nothing changed', async () => {
+    h.fallback.set('statusRow', [{ status: 'new' }]);
+    const result = await run(ticket({ comments: [comment('a1', 1)] }), { isSourceArticleId: () => true });
+    expect(h.log.slice(0, h.log.indexOf('lock'))).toEqual(['ref']);
+    expect(h.log).not.toContain('importedComments');
+    expect(result).toMatchObject({ requesterChanged: false, orgChanged: false, commentsChangedInSource: [], commentsMissingInSource: [] });
+  });
+
+  it('reports a resume from the read that also answers presence: nothing else is asked when every comment is on the ticket', async () => {
+    answer('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
+    answer('storedTicket', [storedRow({ submitterEmail: 'old@customer.example' })]);
+    const row = { isPublic: true, contentHash: 'stale', edited: false, deleted: false, mergedIn: false };
+    answer('importedComments', [{ ...row, sourceId: 'a0' }, { ...row, sourceId: 'a1' }]);
+    answer('feedRow', [], [ours]);
+
+    const result = await run(ticket({ comments: [comment('a1', 1)] }), { isSourceArticleId: () => true });
+
+    expect(h.log).toEqual(['ref', 'storedTicket', 'importedComments', 'feedRow', 'feedRow']);
+    expect(result).toMatchObject({
+      outcome: 'resumed',
+      commentsWritten: 0,
+      commentsSkipped: 1,
+      requesterChanged: true,
+      orgChanged: false,
+      commentsChangedInSource: [{ sourceId: 'a1', contentChanged: true, visibility: 'made_internal' }],
+      commentsMissingInSource: ['a0'],
+    });
+    // Report-only: no transaction, no charge, no write.
+    expect(h.locks).toBe(0);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('asks the principal-wide presence read only for the comments the ticket does not hold', async () => {
+    answer('ref', [{ ticketId: TICKET, externalNumber: '#41023', externalUrl: null }]);
+    answer('storedTicket', [storedRow()]);
+    answer('importedComments', [{ sourceId: 'a1', isPublic: false, contentHash: 'h', edited: false, deleted: false, mergedIn: false }]);
+    // a2 was imported onto another ticket (a merge in the source moved it).
+    answer('presentByPrincipal', [{ sourceId: 'a2' }]);
+    answer('feedRow', [], [ours]);
+    h.fallback.set('statusRow', [{ status: 'open' }]);
+
+    const result = await run(ticket({ comments: [comment('a1', 1), comment('a2', 2), comment('a3', 3)] }));
+
+    expect(h.log.filter((k) => k === 'presentByPrincipal').length).toBe(2); // the plan's, then the chunk's re-check
+    expect(result).toMatchObject({ commentsWritten: 1, commentsSkipped: 2 });
+    expect(h.writes.filter((w) => w[0] === 'addTicketComment').map((w) => w[2])).toEqual(['a3']);
   });
 });

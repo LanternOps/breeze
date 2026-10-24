@@ -17,7 +17,15 @@ import {
 } from '../ticketService';
 import type { OpenWindow, TicketWriteMode } from '../ticketWriteMode';
 import { parseImportedTicket, type ImportedComment, type ImportedTicket } from './importedTicket';
+import {
+  importedCommentsOf,
+  noSourceChanges,
+  sourceChanges,
+  storedCommentContent,
+  type SourceChanges,
+} from './sourceChanges';
 import { chargeWindowThroughput } from './throughput';
+export type { CommentChangedInSource, SourceChanges } from './sourceChanges';
 import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type WindowDescriptor } from './windowLock';
 
 /**
@@ -43,7 +51,9 @@ import { lockOpenWindowForWrite, readWindowDescriptor, windowWriteContext, type 
  * id is missing, then its final status unless a Breeze change owns the status
  * (see `statusSteps`), and — a deviation from §4.6 for the delta pass of a
  * cutover — the header fields that changed in the source, unless a Breeze
- * user set them since (see `headerChanges`).
+ * user set them since (see `headerChanges`). It also reports, without
+ * applying, what changed in the source that it does not converge on: the
+ * requester, the org, edited, flipped or deleted comments (`SourceChanges`).
  *
  * Must be called with no ambient DB context: it opens its own transactions,
  * and the throughput charge is a Redis round trip that must not hold one.
@@ -80,7 +90,7 @@ export type ImportTicketResult = {
   statusSkipped: boolean;
   /** Why, when `statusSkipped` is true (absent otherwise): see `StatusSkip`. */
   statusSkip?: StatusSkip;
-};
+} & SourceChanges;
 
 /**
  * Why a source status was not applied (#8884 review, finding 1), for the run
@@ -109,6 +119,13 @@ export type ImportTicketOptions = {
    * state.
    */
   partnerId: string;
+  /**
+   * Tells a source article id from a comment id the module composed (a
+   * time-accounting note, an owner note), for `commentsMissingInSource`: a
+   * composed note a later pass does not send is not an article deleted in
+   * the source. Without it, nothing is counted as missing.
+   */
+  isSourceArticleId?: (sourceId: string) => boolean;
 };
 
 type WriteScope = {
@@ -131,6 +148,8 @@ type StoredTicket = {
   ticketType: string;
   assignedTo: string | null;
   fieldProvenance: Record<string, string>;
+  requesterContactId: string | null;
+  submitterEmail: string | null;
 };
 
 type StoredRef = { ticketId: string; externalNumber: string | null; externalUrl: string | null };
@@ -218,6 +237,8 @@ async function readStoredTicket(ticketId: string): Promise<StoredTicket | null> 
       ticketType: tickets.ticketType,
       assignedTo: tickets.assignedTo,
       fieldProvenance: tickets.fieldProvenance,
+      requesterContactId: tickets.requesterContactId,
+      submitterEmail: tickets.submitterEmail,
     })
     .from(tickets)
     .where(eq(tickets.id, ticketId))
@@ -485,7 +506,7 @@ async function writeComments(
       await addTicketComment(
         ticketId,
         {
-          content: comment.content,
+          content: storedCommentContent(comment),
           isPublic: comment.isPublic,
           imported: { sourceId: comment.sourceId, author: comment.author },
         },
@@ -574,8 +595,12 @@ export async function importTicket(
     if (!stored.migrationWindowId) throw inUse(t.sourceId, { reason: 'live_ticket', ticketId: ref.ticketId });
     if (stored.deletedAt) throw inUse(t.sourceId, { reason: 'deleted', ticketId: stored.id });
     if (!descriptor.orgIds.includes(stored.orgId)) throw inUse(t.sourceId, { reason: 'org_outside_window', ticketId: stored.id });
-    const presentIds = await presentCommentSourceIds(principalId, t.comments.map((c) => c.sourceId));
-    const missing = inSourceOrder(t.comments.filter((c) => !presentIds.has(c.sourceId)));
+    // Present: on this ticket (the read the report also uses), or imported by
+    // this principal onto another ticket, which is asked only for the rest.
+    const storedComments = await importedCommentsOf(stored.id, principalId);
+    const onTicket = new Set(storedComments.map((c) => c.sourceId));
+    const elsewhere = await presentCommentSourceIds(principalId, t.comments.map((c) => c.sourceId).filter((id) => !onTicket.has(id)));
+    const missing = inSourceOrder(t.comments.filter((c) => !onTicket.has(c.sourceId) && !elsewhere.has(c.sourceId)));
     const changes = headerChanges(stored, ref, await lastFeedRowBy(stored.id, 'assignment'), t, principalId);
     const statusAfterHeader: TicketStatus = changes.assign?.to && stored.status === 'new' ? 'open' : stored.status;
     const status = statusSteps(statusAfterHeader, await lastFeedRowBy(stored.id, 'status_change'), t, principalId);
@@ -592,6 +617,7 @@ export async function importTicket(
       statusCost: finalStatusSteps(statusAfterHeader, t).length,
       statusApplies: status.steps.length > 0,
       statusSkip: status.skip,
+      sourceChanges: sourceChanges(stored, storedComments, t, options.isSourceArticleId),
     };
   });
 
@@ -709,5 +735,6 @@ export async function importTicket(
     fieldsUpdated,
     statusSkipped: statusSkip !== null,
     ...(statusSkip ? { statusSkip } : {}),
+    ...(plan.kind === 'resume' ? plan.sourceChanges : noSourceChanges()),
   };
 }
