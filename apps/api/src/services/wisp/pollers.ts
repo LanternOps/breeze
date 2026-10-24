@@ -121,3 +121,12 @@ export async function pollStaleTickets(
   }
   return { scanned: rows.length, published };
 }
+
+// CONTRACT STUB (W05b orchestrator) — Task 14 replaces this body; the
+// signature is fixed (w00 A30) because the wake tick (Task 9) calls it.
+export async function pollTicketClusters(
+  _now: Date,
+  _opts?: { limit?: number },
+): Promise<{ scanned: number; clustersOpened: number; clustersUpdated: number }> {
+  throw new Error('not implemented');
+}
