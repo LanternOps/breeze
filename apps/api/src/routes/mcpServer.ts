@@ -1631,19 +1631,34 @@ async function liveExecuteTenantToolDetailed(
 // tools/list
 // ============================================
 
-async function handleToolsList(
-  id: string | number,
+/**
+ * B-W05 (#6159, D-B43): the per-caller inputs of the core-registry tools/list
+ * filter, computed once per request. Extracted from handleToolsList without
+ * behaviour change so the MCP App gate in resources/read asks exactly the
+ * same "is this tool listed for this caller?" question.
+ */
+type McpListingContext = {
+  domainGrant: McpDomainGrant;
+  hasExecute: boolean;
+  requireExecuteAdmin: boolean;
+  hasExecuteAdmin: boolean;
+  hasWrite: boolean;
+  callerFailsMfaGate: boolean;
+  ownsIntents: boolean;
+  canRunTier3Unattended: (toolName: string) => boolean;
+  canFileTier3Intent: (toolName: string) => boolean;
+};
+
+function buildMcpListingContext(
   scopes: string[],
   auth: AuthContext,
-  params?: Record<string, unknown>,
-  apiKey?: McpApiKeyContext,
-): Promise<JsonRpcResponse> {
+  apiKey: McpApiKeyContext | undefined,
+): McpListingContext {
   const unattendedPrincipal = isUnattendedTier3PrincipalOverMcp(apiKey);
   // B-W02 (#6156): per-grant tool domains — a second axis on the SAME filter,
   // applied after every existing gate. Listed ⇒ callable: handleToolsCall
   // applies the identical predicate to the canonical name.
   const domainGrant = parseStoredMcpDomains(apiKey?.mcpDomains);
-  const allTools = getToolDefinitions();
   const hasExecute = scopes.includes('ai:execute');
   const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
   const hasExecuteAdmin = scopes.includes('ai:execute_admin');
@@ -1671,40 +1686,74 @@ async function handleToolsList(
     && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
     && (process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(toolName));
 
+  return {
+    domainGrant,
+    hasExecute,
+    requireExecuteAdmin,
+    hasExecuteAdmin,
+    hasWrite,
+    callerFailsMfaGate,
+    ownsIntents,
+    canRunTier3Unattended,
+    canFileTier3Intent,
+  };
+}
+
+/** B-W05 (#6159): the per-tool filter body of handleToolsList, moved verbatim. */
+function isToolListedForCaller(
+  tool: ReturnType<typeof getToolDefinitions>[number],
+  ctx: McpListingContext,
+): boolean {
+  const {
+    domainGrant, hasExecute, requireExecuteAdmin, hasExecuteAdmin, hasWrite,
+    callerFailsMfaGate, canRunTier3Unattended, canFileTier3Intent,
+  } = ctx;
+  // Deployment kill switch (e.g. FLOWS_ENABLED): never listed when off.
+  if (isToolEnvGatedOff(tool.name)) return false;
+  // A wholly-gated tool (every possible invocation resolves to a gated
+  // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
+  // it would be denied by the tools/call gate below, so listing it is
+  // exactly the advertised-but-dead pattern this payoff eliminates.
+  if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
+  // Same invariant for the MFA gate: every call would be refused by the handler.
+  if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
+
+  const registryTier = getToolTier(tool.name);
+  if (registryTier === undefined) return false;
+  const tier = Math.max(registryTier, mcpTierFloor(tool.name));
+
+  if (!isMcpToolGranted(domainGrant, tool.name)) return false;
+
+  // Tier 1 (read-only) = ai:read is enough
+  if (tier <= 1) return true;
+  // Tier 2 (low-risk mutations) = ai:write
+  if (tier === 2) return hasWrite;
+  // Tier 3+ (destructive) = ai:execute. (A FLAT Tier 3 tool never reaches
+  // here — isToolWhollyGatedOverMcp already suppressed it above — but a
+  // multiplexer whose base tier is <3 can still surface here if only SOME
+  // of its actions escalate to Tier 3, and those callers need ai:execute
+  // to reach the tools/call gate at all, same as before this payoff.)
+  return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
+    // Listed ⇒ callable: tools/call rejects a Tier 3 tool missing from the
+    // production allowlist, so don't advertise it. Only a whole-tool Tier 3
+    // (flat Tier 3 or an approval extra) is filtered here; a mixed
+    // multiplexer keeps its lower-tier actions.
+    && (tier < 3 || process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(tool.name));
+}
+
+async function handleToolsList(
+  id: string | number,
+  scopes: string[],
+  auth: AuthContext,
+  params?: Record<string, unknown>,
+  apiKey?: McpApiKeyContext,
+): Promise<JsonRpcResponse> {
+  const listing = buildMcpListingContext(scopes, auth, apiKey);
+  const { domainGrant, hasWrite, callerFailsMfaGate, ownsIntents, canRunTier3Unattended, canFileTier3Intent } = listing;
+  const allTools = getToolDefinitions();
+
   // Filter tools based on API key scopes.
-  const scopedTools = allTools.filter((tool) => {
-    // Deployment kill switch (e.g. FLOWS_ENABLED): never listed when off.
-    if (isToolEnvGatedOff(tool.name)) return false;
-    // A wholly-gated tool (every possible invocation resolves to a gated
-    // tier — see isToolWhollyGatedOverMcp) is never advertised: every call to
-    // it would be denied by the tools/call gate below, so listing it is
-    // exactly the advertised-but-dead pattern this payoff eliminates.
-    if (isToolWhollyGatedOverMcp(tool.name, tool.input_schema, getToolTier, canRunTier3Unattended(tool.name) || canFileTier3Intent(tool.name))) return false;
-    // Same invariant for the MFA gate: every call would be refused by the handler.
-    if (callerFailsMfaGate && isToolWhollyMfaGated(tool.name, extractActionEnum(tool.input_schema))) return false;
-
-    const registryTier = getToolTier(tool.name);
-    if (registryTier === undefined) return false;
-    const tier = Math.max(registryTier, mcpTierFloor(tool.name));
-
-    if (!isMcpToolGranted(domainGrant, tool.name)) return false;
-
-    // Tier 1 (read-only) = ai:read is enough
-    if (tier <= 1) return true;
-    // Tier 2 (low-risk mutations) = ai:write
-    if (tier === 2) return hasWrite;
-    // Tier 3+ (destructive) = ai:execute. (A FLAT Tier 3 tool never reaches
-    // here — isToolWhollyGatedOverMcp already suppressed it above — but a
-    // multiplexer whose base tier is <3 can still surface here if only SOME
-    // of its actions escalate to Tier 3, and those callers need ai:execute
-    // to reach the tools/call gate at all, same as before this payoff.)
-    return hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)
-      // Listed ⇒ callable: tools/call rejects a Tier 3 tool missing from the
-      // production allowlist, so don't advertise it. Only a whole-tool Tier 3
-      // (flat Tier 3 or an approval extra) is filtered here; a mixed
-      // multiplexer keeps its lower-tier actions.
-      && (tier < 3 || process.env.NODE_ENV !== 'production' || isExecuteToolAllowedInProd(tool.name));
-  });
+  const scopedTools = allTools.filter((tool) => isToolListedForCaller(tool, listing));
 
   const result = scopedTools.map((tool) => {
     // A mixed multiplexer (some but not all actions gated over MCP) stays
