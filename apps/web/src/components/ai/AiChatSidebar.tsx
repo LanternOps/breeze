@@ -4,9 +4,7 @@ import {
   MessageSquare,
   Plus,
   History,
-  Search,
   ArrowLeft,
-  Loader2,
   Flag,
   Building2,
   ExternalLink,
@@ -24,6 +22,10 @@ import { noSessionOrgId, useAiModelPickerStore } from "@/stores/aiModelPickerSto
 import { useOrgStore } from "@/stores/orgStore";
 import AiContextBadge from "./AiContextBadge";
 import AiCostIndicator from "./AiCostIndicator";
+import AiConversationList from "./AiConversationList";
+import { useAiConversationSource, type ConversationRow } from "./useAiConversationSource";
+import { useContinueInPanel } from "../workspace/useContinueInPanel";
+import { showToast } from "../shared/Toast";
 import BuyCreditsLink from "./BuyCreditsLink";
 import WispToggle from "./WispToggle";
 import WispThreadHeader from "./WispThreadHeader";
@@ -58,9 +60,6 @@ export default function AiChatSidebar() {
     sessionId,
     hydratedSessionId,
     showHistory,
-    sessions,
-    searchResults,
-    isSearching,
     sendMessage,
     approveExecution,
     clearPendingApproval,
@@ -71,9 +70,7 @@ export default function AiChatSidebar() {
     closeSession,
     clearError,
     toggleHistory,
-    loadSessions,
     loadSession,
-    searchConversations,
     switchSession,
     interruptResponse,
     isInterrupting,
@@ -101,7 +98,6 @@ export default function AiChatSidebar() {
   const { can } = usePermissions();
   const canUseAi = can("ai_sessions", "use");
 
-  const [searchQuery, setSearchQuery] = useState("");
   const restoredSessionIdRef = useRef<string | null>(null);
 
   // Keyboard shortcut: Cmd+Shift+A to toggle. With Shift held, `e.key` is "A"
@@ -153,11 +149,6 @@ export default function AiChatSidebar() {
     }
   }, [isOpen, sessionId, menuOrgId]);
 
-  // Load sessions when history panel opens
-  useEffect(() => {
-    if (showHistory) loadSessions();
-  }, [showHistory, loadSessions]);
-
   // Load M365 customer connections when the sidebar opens
   useEffect(() => {
     if (isOpen) loadM365Connections();
@@ -166,13 +157,6 @@ export default function AiChatSidebar() {
   const boundConnection = boundM365ConnectionId
     ? m365Connections.find((conn) => conn.id === boundM365ConnectionId)
     : null;
-
-  // Debounced search
-  useEffect(() => {
-    if (!searchQuery || searchQuery.length < 2) return;
-    const timer = setTimeout(() => searchConversations(searchQuery), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery, searchConversations]);
 
   const handleNewConversation = useCallback(async () => {
     await closeSession();
@@ -283,73 +267,8 @@ export default function AiChatSidebar() {
         </div>
 
         {showHistory ? (
-          /* History panel */
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {/* Search input */}
-            <div className="border-b px-3 py-2">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={t("aiChatSidebar.searchPlaceholder")}
-                  className="w-full rounded-md border bg-muted py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-hidden focus:border-primary"
-                />
-              </div>
-            </div>
-
-            {/* Results */}
-            <div className="flex-1 overflow-y-auto">
-              {isSearching && (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                </div>
-              )}
-
-              {searchQuery.length >= 2 &&
-                !isSearching &&
-                searchResults.length === 0 && (
-                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-                    {t("aiChatSidebar.noResults")}
-                  </p>
-                )}
-
-              {(searchQuery.length >= 2 ? searchResults : sessions).map(
-                (item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => switchSession(item.id)}
-                    className={`w-full border-b px-4 py-3 text-left transition-colors hover:bg-muted ${
-                      item.id === sessionId
-                        ? "bg-muted border-l-2 border-l-primary"
-                        : ""
-                    }`}
-                  >
-                    <p className="text-xs font-medium text-foreground truncate">
-                      {item.title || t("aiChatSidebar.untitledConversation")}
-                    </p>
-                    {"matchedContent" in item && item.matchedContent && (
-                      <p className="mt-0.5 text-[10px] text-muted-foreground truncate">
-                        {item.matchedContent}
-                      </p>
-                    )}
-                    <p className="mt-0.5 text-[10px] text-muted-foreground/60">
-                      {new Date(item.createdAt).toLocaleDateString()}
-                    </p>
-                  </button>
-                ),
-              )}
-
-              {searchQuery.length < 2 &&
-                sessions.length === 0 &&
-                !isSearching && (
-                  <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-                    {t("aiChatSidebar.noConversations")}
-                  </p>
-                )}
-            </div>
-          </div>
+          /* History panel — mounted only while open, so its query resets on close. */
+          <AiChatHistory currentSessionId={sessionId} onSwitch={switchSession} />
         ) : (
           /* Chat panel */
           <>
@@ -491,6 +410,64 @@ export default function AiChatSidebar() {
           onClick={close}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * #9840 W4 (spec §3.7): the side panel's History — the shared conversation
+ * list. A row a workspace tab holds moves here through W3's
+ * continueInSidePanel (adopt first, the tab closes only after 'ok', a busy
+ * panel asks first, never a DELETE); any other row is a switchSession, as
+ * before (closed search hits and topology investigations included).
+ */
+function AiChatHistory({
+  currentSessionId,
+  onSwitch,
+}: {
+  currentSessionId: string | null;
+  onSwitch: (sessionId: string) => Promise<void>;
+}) {
+  const { t } = useTranslation("ai");
+  const { items, query, setQuery, isLoading, isSearching, error } = useAiConversationSource({ surface: "panel" });
+  const { continueInPanel, replaceDialog } = useContinueInPanel();
+
+  const pick = useCallback(
+    (row: ConversationRow) => {
+      if (row.openIn !== "workspace") {
+        void onSwitch(row.id);
+        return;
+      }
+      // Lazy: keeps workspaceStore out of the side panel's bundle.
+      import("@/stores/workspaceStore")
+        .then(({ useWorkspaceStore }) => {
+          const tab = useWorkspaceStore.getState().tabs.find((t) => t.sessionId === row.id);
+          // The tab closed since the list rendered: nothing holds it elsewhere now.
+          if (tab) continueInPanel(tab.id);
+          else void onSwitch(row.id);
+        })
+        .catch((err) => {
+          console.error("[AI] Moving a conversation to the side panel failed:", err);
+          showToast({ type: "error", message: t("aiConversationMove.notAvailable") });
+        });
+    },
+    [continueInPanel, onSwitch, t],
+  );
+
+  return (
+    <>
+      <AiConversationList
+        rows={items}
+        currentSessionId={currentSessionId}
+        onPick={pick}
+        surface="panel"
+        query={query}
+        onQueryChange={setQuery}
+        isLoading={isLoading}
+        isSearching={isSearching}
+        error={error}
+      />
+      {replaceDialog}
     </>
   );
 }

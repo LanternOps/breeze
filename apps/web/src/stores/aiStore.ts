@@ -21,13 +21,6 @@ import {
   type ChatRunState,
 } from './processStreamEvent';
 
-interface SearchResult {
-  id: string;
-  title: string | null;
-  matchedContent: string;
-  createdAt: string;
-}
-
 interface M365Connection {
   id: string;
   customerLabel: string;
@@ -117,8 +110,6 @@ interface AiState {
   isPaused: boolean;
   sessions: Array<{ id: string; title: string | null; status: string; createdAt: string }>;
   showHistory: boolean;
-  searchResults: SearchResult[];
-  isSearching: boolean;
   isInterrupting: boolean;
   isFlagged: boolean;
   flagReason: string | null;
@@ -183,7 +174,6 @@ interface AiState {
   clearError: () => void;
   toggleHistory: () => void;
   interruptResponse: () => Promise<void>;
-  searchConversations: (query: string) => Promise<void>;
   switchSession: (sessionId: string) => Promise<void>;
   flagSession: (reason?: string) => Promise<void>;
   unflagSession: () => Promise<void>;
@@ -670,8 +660,6 @@ export const useAiStore = create<AiState>()(
   isPaused: false,
   sessions: [],
   showHistory: false,
-  searchResults: [],
-  isSearching: false,
   isInterrupting: false,
   isFlagged: false,
   flagReason: null,
@@ -1243,7 +1231,7 @@ export const useAiStore = create<AiState>()(
     }
   },
 
-  toggleHistory: () => set((s) => ({ showHistory: !s.showHistory, searchResults: [] })),
+  toggleHistory: () => set((s) => ({ showHistory: !s.showHistory })),
 
   interruptResponse: async () => {
     const { sessionId } = get();
@@ -1261,27 +1249,6 @@ export const useAiStore = create<AiState>()(
       set({ error: 'Failed to interrupt the response' });
     } finally {
       set({ isInterrupting: false });
-    }
-  },
-
-  searchConversations: async (query: string) => {
-    if (query.length < 2) {
-      set({ searchResults: [], isSearching: false });
-      return;
-    }
-    set({ isSearching: true });
-    try {
-      const res = await fetchWithAuth(`/ai/sessions/search?q=${encodeURIComponent(query)}&limit=20`);
-      if (res.ok) {
-        const data = await res.json();
-        set({ searchResults: data.data || [], isSearching: false });
-      } else {
-        const data = await res.json().catch(() => null);
-        set({ isSearching: false, error: extractApiError(data, 'Search failed') });
-      }
-    } catch (err) {
-      console.error('[AI] Search failed:', err);
-      set({ isSearching: false, error: 'Search failed' });
     }
   },
 

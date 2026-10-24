@@ -19,6 +19,12 @@ vi.mock('./AiChatMessages', () => ({ default: () => <div data-testid="ai-chat-me
 vi.mock('./AiChatInput', () => ({ default: () => null }));
 vi.mock('./AiContextBadge', () => ({ default: () => null }));
 vi.mock('./AiCostIndicator', () => ({ default: () => null }));
+// #9840 W4: History renders the shared list; its source is tested in its own
+// file and with the real stores in AiChatSidebar.history.test.tsx.
+vi.mock('./useAiConversationSource', () => ({
+  MIN_SEARCH_CHARS: 2,
+  useAiConversationSource: () => ({ items: [], query: '', setQuery: () => undefined, isLoading: false, isSearching: false, error: null }),
+}));
 vi.mock('./WispToggle', () => ({ default: () => null }));
 vi.mock('./WispThreadHeader', () => ({ default: () => null }));
 vi.mock('./WispThreadAttachments', () => ({ default: () => null }));
@@ -33,11 +39,11 @@ const baseState = {
   isOpen: true, toggle: noop, close: noop, messages: [], isStreaming: false, isLoading: false,
   error: null, pageContext: null, pendingApproval: null, pendingPlan: null,
   activePlan: null, approvalMode: 'manual', isPaused: false, sessionId: SID, hydratedSessionId: SID,
-  showHistory: false, sessions: [], searchResults: [], isSearching: false,
+  showHistory: false, sessions: [],
   sendMessage: noop, approveExecution: noop, approvePlan: noop, abortPlan: noop,
   pauseAi: noop, createSession: noop, closeSession: noop, clearError: noop,
   toggleHistory: noop, loadSessions: noop, loadSession: noop,
-  searchConversations: noop, switchSession: noop, interruptResponse: noop,
+  switchSession: noop, interruptResponse: noop,
   isInterrupting: false, isFlagged: false, flagSession: noop, unflagSession: noop,
   m365Connections: [], selectedM365ConnectionId: null, boundM365ConnectionId: null,
   loadM365Connections: noop, setSelectedM365Connection: noop,

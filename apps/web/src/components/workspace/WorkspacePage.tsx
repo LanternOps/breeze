@@ -4,14 +4,14 @@ import { usePermissions } from '@/lib/permissions';
 import { useHashState } from '@/lib/useHashState';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useAiStore } from '@/stores/aiStore';
-import { abortHandoff, completeHandoff, continueInSidePanel, takeHandoff } from '@/stores/aiConversationHandoff';
+import { abortHandoff, completeHandoff, takeHandoff } from '@/stores/aiConversationHandoff';
 import AccessDenied from '../shared/AccessDenied';
-import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { showToast } from '../shared/Toast';
 import WorkspaceTabBar from './WorkspaceTabBar';
 import WorkspaceChatPanel from './WorkspaceChatPanel';
 import WorkspaceEmptyState from './WorkspaceEmptyState';
 import { parseSessionHash, toastForOpenResult, writeSessionHash } from './sessionHash';
+import { useContinueInPanel } from './useContinueInPanel';
 
 /**
  * #9427 W3 (spec §3.6, D6): `#session=<uuid>` opens or focuses that
@@ -83,50 +83,6 @@ function WorkspaceSessionLink() {
   }, [linked, activeSessionId]);
 
   return null;
-}
-
-/**
- * #9427 W3: "Continue in side panel" from the tab menu, the header and the
- * error banner. One move at a time; replacing a busy side-panel conversation
- * asks first (continueInSidePanel decides when).
- */
-function useContinueInPanel() {
-  const { t } = useTranslation('ai');
-  const [pendingConfirm, setPendingConfirm] = useState<((ok: boolean) => void) | null>(null);
-  const moving = useRef(false);
-
-  const continueInPanel = useCallback((tabId: string) => {
-    if (moving.current) return;
-    moving.current = true;
-    continueInSidePanel(tabId, {
-      confirm: () => new Promise<boolean>((resolve) => setPendingConfirm(() => resolve)),
-    })
-      .catch((err) => {
-        console.error('[Workspace] Continue in side panel failed:', err);
-        showToast({ type: 'error', message: t('aiConversationMove.notAvailable') });
-      })
-      .finally(() => { moving.current = false; });
-  }, [t]);
-
-  const settle = (ok: boolean) => {
-    pendingConfirm?.(ok);
-    setPendingConfirm(null);
-  };
-
-  const replaceDialog = (
-    <ConfirmDialog
-      open={pendingConfirm !== null}
-      onClose={() => settle(false)}
-      onConfirm={() => settle(true)}
-      title={t('aiConversationMove.continueInPanel')}
-      message={t('aiConversationMove.replaceConfirm')}
-      confirmLabel={t('aiConversationMove.continueInPanel')}
-      variant="warning"
-      confirmTestId="workspace-replace-panel-confirm"
-    />
-  );
-
-  return { continueInPanel, replaceDialog };
 }
 
 export default function WorkspacePage() {
