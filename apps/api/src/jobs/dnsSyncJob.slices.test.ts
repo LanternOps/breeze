@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ---------------------------------------------------------------------------
 // #7207 — a provider that yields its window in time slices is persisted and
@@ -255,9 +257,33 @@ describe('dnsSyncJob — per-slice persistence and checkpointing (#7207)', () =>
       const configWrites = updatePayloads.filter((u) => 'config' in u.payload);
       expect(configWrites).toHaveLength(1);
       expect(configWrites[0]!.depth).toBeGreaterThan(0);
+      // A MERGE into the existing config under the key the next run reads —
+      // never a replacement that would wipe the tenant's settings.
+      const query = new PgDialect().sqlToQuery(configWrites[0]!.payload.config as SQL);
+      expect(query.sql).toBe(
+        `"dns_filter_integrations"."config" || jsonb_build_object('syncSliceWidthMs', $1::bigint)`
+      );
+      expect(query.params).toEqual([900_000]);
       // A walk that reached `until` is not partial: the slice's success stands.
       expect(partialWrites()).toEqual([]);
       expect(configWrites[0]!.payload).not.toHaveProperty('lastSyncStatus');
+    });
+
+    it.each([
+      ['an unchanged width', 900_000],
+      ['no width', undefined],
+    ])('records partial when the walk stops short with %s, without touching config', async (_label, sliceWidthMs) => {
+      selectResults = [[{ ...integrationRow(), config: { syncSliceWidthMs: 900_000 } }], []];
+      async function* syncEventSlices(_since: Date, until: Date) {
+        yield { events: [], until: SLICE_1_END };
+        return { stoppedShort: { from: SLICE_1_END, to: until }, sliceWidthMs };
+      }
+      createDnsProviderMock.mockReturnValue({ syncEvents: vi.fn(), syncEventSlices });
+
+      await processSyncIntegration({ type: 'sync-integration', integrationId: 'int-1' });
+
+      expect(partialWrites()).toHaveLength(1);
+      expect(partialWrites()[0]!.payload).not.toHaveProperty('config');
     });
 
     it('writes nothing extra when the walk completes at the width already stored', async () => {

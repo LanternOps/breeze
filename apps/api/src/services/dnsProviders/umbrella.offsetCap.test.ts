@@ -360,14 +360,81 @@ describe('UmbrellaProvider request budget — a backlog keeps advancing (#10018)
   );
 
   it('reports no stoppedShort, and the working slice width, when the window completes', async () => {
-    fakeActivityApi(spread(25_000, SINCE.getTime(), UNTIL.getTime()));
+    const day = spread(25_000, SINCE.getTime(), UNTIL.getTime());
+    fakeActivityApi(day);
 
     const { slices, end } = await walk(makeProvider(), SINCE, UNTIL);
 
     expect(slices[slices.length - 1]!.until.getTime()).toBe(UNTIL.getTime());
     expect(end?.stoppedShort).toBeUndefined();
-    expect(end?.sliceWidthMs).toBeGreaterThanOrEqual(1000);
-    expect(end?.sliceWidthMs).toBeLessThanOrEqual(30 * 24 * HOUR);
+    // 24h and 12h overflow; 6h slices (~6.25k records) fit and do not double.
+    expect(end?.sliceWidthMs).toBe(6 * HOUR);
+
+    // Fed back in, that width walks the same day without a single split.
+    vi.clearAllMocks();
+    served.length = 0;
+    fakeActivityApi(day);
+    await walk(makeProvider(), SINCE, UNTIL, { initialSliceMs: end!.sliceWidthMs });
+    expect(overflowProbes()).toEqual([]);
+  });
+
+  it('bounds the first slice by exactly what the remaining budget can page', async () => {
+    // Server page 100, nothing spent yet. After the first page (request 1)
+    // and the probe (request 2), 98 requests remain: 97 pages reach offset
+    // 9800 and the 100th is the empty page that ends the walk. So 9800
+    // records fit this run, and the probe sits at offset 9800.
+    fakeActivityApi(spread(9800, SINCE.getTime(), UNTIL.getTime()), 100);
+    const fits = await walk(makeProvider(), SINCE, UNTIL);
+    expect(served.filter((r) => r.limit === 1).map((r) => r.offset)).toEqual([9800]);
+    expect(overflowProbes()).toEqual([]);
+    expect(fits.slices).toHaveLength(1);
+    expect(fits.slices[0]!.until.getTime()).toBe(UNTIL.getTime());
+    expect(fits.end?.stoppedShort).toBeUndefined();
+    expect(activityCalls()).toHaveLength(100);
+
+    // One more record and the window can no longer finish: split it.
+    vi.clearAllMocks();
+    served.length = 0;
+    fakeActivityApi(spread(9801, SINCE.getTime(), UNTIL.getTime()), 100);
+    await walk(makeProvider(), SINCE, UNTIL);
+    expect(overflowProbes()[0]).toMatchObject({ offset: 9800, from: SINCE.getTime(), to: UNTIL.getTime() });
+  });
+
+  it('keeps the working width, and probes at the cap, once a slice has completed', async () => {
+    fakeActivityApi(backlog, 100);
+
+    const { slices, end } = await walk(makeProvider(), BACKLOG_SINCE, BACKLOG_UNTIL);
+
+    expect(slices).toHaveLength(1);
+    expect(end?.stoppedShort).toBeDefined();
+    const firstUntil = slices[0]!.until.getTime();
+    // After the first slice the budget no longer sizes slices: the next
+    // window is probed at Cisco's cap, not at what the budget has left.
+    const laterProbes = served.filter((r) => r.limit === 1 && r.from === firstUntil);
+    expect(laterProbes.map((r) => r.offset)).toEqual([OFFSET_CAP]);
+    // The width that completed a slice is what the next run starts at — not
+    // halved because the budget ran out partway through the next one.
+    const completedWidth = firstUntil - BACKLOG_SINCE.getTime();
+    expect(end!.sliceWidthMs).toBe(completedWidth);
+  });
+
+  it('skips the probe for a first page shorter than one already served this run', async () => {
+    const half = SINCE.getTime() + 12 * HOUR;
+    // 5000 records in the first 12h (full 1000-record pages), 300 in the second.
+    fakeActivityApi([
+      ...spread(5000, SINCE.getTime(), half - 1),
+      ...spread(300, half + 1, UNTIL.getTime())
+    ]);
+
+    const { slices } = await walk(makeProvider(), SINCE, UNTIL, { initialSliceMs: 12 * HOUR });
+
+    expect(slices).toHaveLength(2);
+    const secondWindow = served.filter((r) => r.from === half);
+    // First page (300 < 1000 already seen) + the empty page; no probe.
+    expect(secondWindow.map((r) => ({ offset: r.offset, limit: r.limit }))).toEqual([
+      { offset: 0, limit: 1000 },
+      { offset: 300, limit: 1000 }
+    ]);
   });
 
   it('starts the next run at the remembered slice width instead of re-splitting the backlog', async () => {
