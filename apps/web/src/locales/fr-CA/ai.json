@@ -578,7 +578,9 @@
       "noOrg": "Sélectionnez d’abord une organisation dans l’en-tête.",
       "confirm": "Confirmer",
       "cancel": "Annuler",
-      "stepUpUnavailable": "Impossible de vérifier votre facteur. Réessayez."
+      "stepUpUnavailable": "Impossible de vérifier votre facteur. Réessayez.",
+      "reverify": "Votre accès a changé pendant la confirmation. Entrez un nouveau code pour continuer.",
+      "invalidCode": "Ce code n’a pas été accepté. Réessayez."
     },
     "header": {
       "scopeAll": "Toutes les organisations",
@@ -632,7 +634,8 @@
       "attached": "Joint au fil",
       "attachFailed": "Impossible de joindre l’élément",
       "attachTooLarge": "Ce fichier dépasse 5 Mo",
-      "attachUnsupported": "Seuls les fichiers texte peuvent être joints"
+      "attachUnsupported": "Seuls les fichiers texte peuvent être joints",
+      "threadFailed": "Wisp est activé, mais son fil n’a pas pu être ouvert. Réactivez Wisp pour le rouvrir."
     }
   }
 }

@@ -10,12 +10,15 @@ const h = vi.hoisted(() => ({
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
 vi.mock('@/lib/mfaStepUp', () => ({
   mintStepUpGrant: h.mintStepUpGrant,
-  StepUpMintError: class StepUpMintError extends Error {},
+  StepUpMintError: class StepUpMintError extends Error {
+    constructor(readonly code: string, message: string) { super(message); }
+  },
 }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: h.showToast }));
 vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => h.claims }));
 
 import WispGrantStepUpModal from './WispGrantStepUpModal';
+import { StepUpMintError } from '@/lib/mfaStepUp';
 
 const HASH = 'a'.repeat(64);
 const res = (payload: unknown, status = 200): Response =>
@@ -35,18 +38,26 @@ const threadBody = (orgId: string | null) => ({
 });
 
 type Route = (url: string, init?: RequestInit) => Response | undefined;
-function routes(extra: Route = () => undefined) {
+/** `granted` starts false: /wisp/thread is 404 no_active_grant until a grant is created (or `liveGrant`). */
+function routes(extra: Route = () => undefined, opts: { liveGrant?: boolean; passkey?: boolean } = {}) {
+  let granted = opts.liveGrant ?? false;
   h.fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
     const hit = extra(url, init);
-    if (hit) return hit;
+    if (hit) {
+      if (hit.ok && (url === '/wisp/grants' || url.endsWith('/refresh'))) granted = true;
+      return hit;
+    }
     if (url === '/users/me') return res({ mfaMethod: 'totp' });
-    if (url === '/auth/passkeys') return res([]);
+    if (url === '/auth/passkeys') return res(opts.passkey ? [{ id: 'pk-1' }] : []);
     if (url.startsWith('/wisp/grants/preview')) return res({ scope: {}, ceilingSnapshot: {}, ceilingHash: HASH });
     if (url === '/wisp/grants' && init?.method === 'POST') {
+      granted = true;
       const body = JSON.parse(String(init.body));
       return res(grantDto(body.orgId), 201);
     }
-    if (url.startsWith('/wisp/thread')) return res(threadBody(url.includes('orgId=') ? 'org-1' : null));
+    if (url.startsWith('/wisp/thread')) {
+      return granted ? res(threadBody(url.includes('orgId=') ? 'org-1' : null)) : res({ code: 'no_active_grant' }, 404);
+    }
     return res({}, 404);
   });
 }
@@ -74,7 +85,8 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     await waitFor(() => expect(onGranted).toHaveBeenCalled());
 
     const order = h.fetchWithAuth.mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith('/wisp/'));
-    expect(order.slice(0, 2)).toEqual(['/wisp/grants/preview?orgId=org-1', '/wisp/grants']);
+    // live-grant probe (404) → preview → create → thread
+    expect(order).toEqual(['/wisp/thread?orgId=org-1', '/wisp/grants/preview?orgId=org-1', '/wisp/grants', '/wisp/thread?orgId=org-1']);
     expect(h.mintStepUpGrant).toHaveBeenCalledWith({
       operation: 'wisp_grant',
       resource: { partnerId: 'p-1', orgId: 'org-1', requestedCeilingHash: HASH },
@@ -98,32 +110,95 @@ describe('WispGrantStepUpModal (W04 Task 7, w00 A4 handshake)', () => {
     expect(h.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Wisp is on' }));
   });
 
-  it('a 403 STEP_UP_REQUIRED on the POST re-runs preview + mint once, then shows wisp.modal.stepUpUnavailable', async () => {
+  it('a 403 STEP_UP_REQUIRED with a TOTP factor asks for a fresh code instead of replaying the spent one', async () => {
     routes((url, init) =>
       url === '/wisp/grants' && init?.method === 'POST' ? res({ error: 'stale proof', code: 'STEP_UP_REQUIRED' }, 403) : undefined,
     );
     const onGranted = vi.fn();
     render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={onGranted} />);
     await confirmWithCode();
-    expect(await screen.findByText('Could not verify your factor. Try again.')).toBeInTheDocument();
-    expect(calls('/wisp/grants/preview')).toHaveLength(2);
-    expect(h.mintStepUpGrant).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText(/Enter a new code/)).toBeInTheDocument();
+    expect(h.mintStepUpGrant).toHaveBeenCalledTimes(1);
+    expect((screen.getByTestId('wisp-stepup-code') as HTMLInputElement).value).toBe('');
     expect(onGranted).not.toHaveBeenCalled();
-    // The expected re-mint path is not an error toast.
+    // The expected re-verify path is not an error toast.
     expect(h.showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
-  it('a 403 STEP_UP_REQUIRED followed by success grants on the second attempt', async () => {
+  it('with a passkey, a 403 STEP_UP_REQUIRED re-runs preview + mint once, then shows wisp.modal.stepUpUnavailable', async () => {
+    routes(
+      (url, init) => (url === '/wisp/grants' && init?.method === 'POST' ? res({ error: 'stale proof', code: 'STEP_UP_REQUIRED' }, 403) : undefined),
+      { passkey: true },
+    );
+    const onGranted = vi.fn();
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={onGranted} />);
+    await screen.findByText('You will confirm with your passkey.');
+    fireEvent.click(screen.getByTestId('wisp-grant-confirm'));
+    expect(await screen.findByText('Could not verify your factor. Try again.')).toBeInTheDocument();
+    expect(calls('/wisp/grants/preview')).toHaveLength(2);
+    expect(h.mintStepUpGrant).toHaveBeenCalledTimes(2);
+    expect(h.mintStepUpGrant).toHaveBeenLastCalledWith(expect.objectContaining({ reauth: { method: 'passkey' } }));
+    expect(onGranted).not.toHaveBeenCalled();
+  });
+
+  it('with a passkey, a 403 STEP_UP_REQUIRED followed by success grants on the second attempt', async () => {
     let posts = 0;
+    routes(
+      (url, init) => (url === '/wisp/grants' && init?.method === 'POST' && ++posts === 1 ? res({ error: 'stale', code: 'STEP_UP_REQUIRED' }, 403) : undefined),
+      { passkey: true },
+    );
+    const onGranted = vi.fn();
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={onGranted} />);
+    await screen.findByText('You will confirm with your passkey.');
+    fireEvent.click(screen.getByTestId('wisp-grant-confirm'));
+    await waitFor(() => expect(onGranted).toHaveBeenCalledTimes(1));
+    expect(h.mintStepUpGrant).toHaveBeenCalledTimes(2);
+  });
+
+  it('a grant already live for the scope is re-entered with no new step-up', async () => {
+    routes(undefined, { liveGrant: true });
+    const onGranted = vi.fn();
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={onGranted} />);
+    await confirmWithCode();
+    await waitFor(() => expect(onGranted).toHaveBeenCalledWith(expect.objectContaining({ grantId: 'g-1', threadId: 't-1' })));
+    expect(h.mintStepUpGrant).not.toHaveBeenCalled();
+    expect(calls('/wisp/grants')).toHaveLength(0);
+  });
+
+  it('a 409 ALREADY_ACTIVE (lost race) opens the live grant instead of failing', async () => {
+    let probed = false;
     routes((url, init) => {
-      if (url === '/wisp/grants' && init?.method === 'POST' && ++posts === 1) return res({ error: 'stale', code: 'STEP_UP_REQUIRED' }, 403);
+      if (url === '/wisp/thread?orgId=org-1' && !probed) { probed = true; return res({ code: 'no_active_grant' }, 404); }
+      if (url === '/wisp/grants' && init?.method === 'POST') return res({ error: 'already', code: 'ALREADY_ACTIVE' }, 409);
+      if (url === '/wisp/thread?orgId=org-1') return res(threadBody('org-1'));
       return undefined;
     });
     const onGranted = vi.fn();
     render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={onGranted} />);
     await confirmWithCode();
     await waitFor(() => expect(onGranted).toHaveBeenCalledTimes(1));
-    expect(h.mintStepUpGrant).toHaveBeenCalledTimes(2);
+    expect(h.showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+  });
+
+  it('a rejected code says so (not the generic factor error)', async () => {
+    h.mintStepUpGrant.mockRejectedValueOnce(new (StepUpMintError as unknown as new (c: string, m: string) => Error)('invalid_factor', 'bad'));
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={vi.fn()} onGranted={vi.fn()} />);
+    await confirmWithCode();
+    expect(await screen.findByText('That code was not accepted. Try again.')).toBeInTheDocument();
+  });
+
+  it('a grant whose thread does not open reports that once, never "Wisp is on"', async () => {
+    routes((url) => (url === '/wisp/thread?orgId=org-1' ? res({ error: 'boom' }, 500) : undefined));
+    const onClose = vi.fn();
+    const onGranted = vi.fn();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(<WispGrantStepUpModal open defaultOrgId="org-1" onClose={onClose} onGranted={onGranted} />);
+    await confirmWithCode();
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(onGranted).not.toHaveBeenCalled();
+    expect(h.showToast).toHaveBeenCalledTimes(1);
+    expect(h.showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: expect.stringMatching(/thread could not be opened/) }));
+    errSpy.mockRestore();
   });
 
   it('hides the "All organizations" option for an org-scoped token', async () => {

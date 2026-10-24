@@ -578,7 +578,9 @@
       "noOrg": "Wählen Sie zuerst oben eine Organisation aus.",
       "confirm": "Bestätigen",
       "cancel": "Abbrechen",
-      "stepUpUnavailable": "Ihr Faktor konnte nicht verifiziert werden. Versuchen Sie es erneut."
+      "stepUpUnavailable": "Ihr Faktor konnte nicht verifiziert werden. Versuchen Sie es erneut.",
+      "reverify": "Ihre Zugriffsrechte haben sich während der Bestätigung geändert. Geben Sie einen neuen Code ein, um fortzufahren.",
+      "invalidCode": "Dieser Code wurde nicht akzeptiert. Versuchen Sie es erneut."
     },
     "header": {
       "scopeAll": "Alle Organisationen",
@@ -632,7 +634,8 @@
       "attached": "An den Thread angehängt",
       "attachFailed": "Anhängen fehlgeschlagen",
       "attachTooLarge": "Diese Datei ist größer als 5 MB",
-      "attachUnsupported": "Es können nur Textdateien angehängt werden"
+      "attachUnsupported": "Es können nur Textdateien angehängt werden",
+      "threadFailed": "Wisp ist aktiv, aber der Thread konnte nicht geöffnet werden. Aktivieren Sie Wisp erneut, um ihn wieder zu öffnen."
     }
   }
 }

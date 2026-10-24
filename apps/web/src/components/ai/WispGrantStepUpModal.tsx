@@ -68,12 +68,31 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
   const canConfirm =
     !busy && !!partnerId && !missingOrg && (tier === 'passkey' || (tier === 'totp' && code.length === 6));
 
+  /** Open the grant's thread, then report "on" — never "on" for a thread that did not open. */
+  const finish = async (successMessage: string) => {
+    let state: NonNullable<WispState>;
+    try {
+      // The scope the user chose, not the response body: it is what /wisp/thread is keyed by.
+      state = await fetchWispThread(orgId);
+    } catch (err) {
+      // The grant exists; only its thread failed to open. Re-confirming later
+      // reopens it through the live-grant probe below (no second grant).
+      console.error('[wisp] grant ok but its thread did not open', err);
+      showToast({ type: 'error', message: t('wisp.toast.threadFailed') });
+      if (live.current) onClose();
+      return;
+    }
+    showToast({ type: 'success', message: successMessage });
+    if (live.current) onGranted(state);
+  };
+
   const submit = async () => {
     if (!canConfirm || !partnerId || !tier) return;
     setBusy(true);
     setError(null);
     const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
     const errorFallback = refresh ? t('wisp.toast.refreshFailed') : t('wisp.toast.onFailed');
+    const successMessage = refresh ? t('wisp.toast.refreshed') : t('wisp.toast.on');
     const attempt = async (): Promise<GrantDto> => {
       const stepUpGrantId = await mintWispGrantStepUp({ partnerId, orgId, reauth });
       return runAction<GrantDto>({
@@ -82,37 +101,56 @@ export default function WispGrantStepUpModal({ open, defaultOrgId, onClose, onGr
             ? fetchWithAuth(`/wisp/grants/${refresh.grantId}/refresh`, { method: 'POST', body: JSON.stringify({ stepUpGrantId }) })
             : fetchWithAuth('/wisp/grants', { method: 'POST', body: JSON.stringify({ orgId, stepUpGrantId }) }),
         errorFallback,
-        successMessage: refresh ? t('wisp.toast.refreshed') : t('wisp.toast.on'),
-        // The expected re-mint path is handled here, not toasted.
-        suppressErrorToast: (status, errorCode) => status === 403 && errorCode === 'STEP_UP_REQUIRED',
+        // Handled below rather than toasted: a stale proof (re-verify) and an
+        // already-live grant for this scope (reopen it).
+        suppressErrorToast: (status, errorCode) =>
+          (status === 403 && errorCode === 'STEP_UP_REQUIRED') || (status === 409 && errorCode === 'ALREADY_ACTIVE'),
       });
     };
     try {
-      let grant: GrantDto;
+      // One live grant per scope (W02 ONE_LIVE_PER_SCOPE_INDEX): a grant made
+      // earlier (before a reload, another tab) is re-entered, not re-created —
+      // entering Wisp on an existing grant needs no new proof.
+      if (!refresh) {
+        const existing = await fetchWispThread(orgId).then(() => true, () => false);
+        if (existing) {
+          await finish(successMessage);
+          return;
+        }
+      }
       try {
-        grant = await attempt();
+        await attempt();
       } catch (err) {
+        if (err instanceof ActionError && err.status === 409 && err.code === 'ALREADY_ACTIVE') {
+          await finish(successMessage);
+          return;
+        }
         if (!isStepUpRequired(err)) throw err;
-        grant = await attempt();
+        // Reach changed between preview and submit. A TOTP code is single-use
+        // (the server records its time step), so ask for a fresh one; a
+        // passkey can simply run the ceremony again, once.
+        if (tier !== 'passkey') {
+          if (live.current) {
+            setCode('');
+            setError(t('wisp.modal.reverify'));
+          }
+          return;
+        }
+        await attempt();
       }
-      let state: NonNullable<WispState>;
-      try {
-        state = await fetchWispThread(grant.orgId ?? null);
-      } catch {
-        // The grant exists; only opening its thread failed. Say so and close —
-        // retrying the create would hit the one-active-grant rule.
-        showToast({ type: 'error', message: errorFallback });
-        if (live.current) onClose();
-        return;
-      }
-      if (live.current) onGranted(state);
+      await finish(successMessage);
     } catch (err) {
       if (!live.current) return;
-      if (isStepUpRequired(err) || err instanceof StepUpMintError) setError(t('wisp.modal.stepUpUnavailable'));
-      else if (err instanceof WispPreviewError) setError(err.message);
+      if (isStepUpRequired(err)) setError(t('wisp.modal.stepUpUnavailable'));
+      else if (err instanceof StepUpMintError) {
+        setError(err.code === 'invalid_factor' ? t('wisp.modal.invalidCode') : t('wisp.modal.stepUpUnavailable'));
+      } else if (err instanceof WispPreviewError) setError(err.message);
       else if (err instanceof ActionError) {
         // runAction already toasted it (401 is the auth redirect's job); the modal stays open.
-      } else setError(t('wisp.modal.stepUpUnavailable'));
+      } else {
+        console.error('[wisp] grant step-up failed', err);
+        setError(t('wisp.modal.stepUpUnavailable'));
+      }
     } finally {
       if (live.current) setBusy(false);
     }

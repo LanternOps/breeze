@@ -578,7 +578,9 @@
       "noOrg": "Selecione primeiro uma organização no cabeçalho.",
       "confirm": "Confirmar",
       "cancel": "Cancelar",
-      "stepUpUnavailable": "Não foi possível verificar seu fator. Tente novamente."
+      "stepUpUnavailable": "Não foi possível verificar seu fator. Tente novamente.",
+      "reverify": "Seu acesso mudou durante a confirmação. Digite um novo código para continuar.",
+      "invalidCode": "Esse código não foi aceito. Tente novamente."
     },
     "header": {
       "scopeAll": "Todas as organizações",
@@ -632,7 +634,8 @@
       "attached": "Anexado à conversa",
       "attachFailed": "Não foi possível anexar",
       "attachTooLarge": "Esse arquivo tem mais de 5 MB",
-      "attachUnsupported": "Só é possível anexar arquivos de texto"
+      "attachUnsupported": "Só é possível anexar arquivos de texto",
+      "threadFailed": "O Wisp está ativado, mas não foi possível abrir a conversa. Ative o Wisp novamente para reabri-la."
     }
   }
 }

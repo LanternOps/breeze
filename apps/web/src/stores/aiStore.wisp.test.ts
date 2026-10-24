@@ -102,14 +102,14 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ message: 'Customer focus cleared' }));
   });
 
-  it('a failed Wisp session create leaves the error visible and Wisp still on', async () => {
+  it('a Wisp session create refused for a recoverable reason (focus_mismatch) keeps Wisp on with the error visible', async () => {
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url === '/ai/sessions' && init?.method === 'POST') return response({ error: 'Grant is not active', code: 'grant_inactive' }, 409);
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ error: 'Focus changed in another tab', code: 'focus_mismatch' }, 409);
       return response({ data: [] });
     });
     await useAiStore.getState().enterWispMode(wisp());
-    expect(useAiStore.getState().error).toBe('Grant is not active');
-    expect(useAiStore.getState().errorCode).toBe('grant_inactive');
+    expect(useAiStore.getState().error).toBe('Focus changed in another tab');
+    expect(useAiStore.getState().errorCode).toBe('focus_mismatch');
     expect(useAiStore.getState().sessionId).toBeNull();
     expect(useAiStore.getState().wisp).not.toBeNull();
   });
@@ -161,6 +161,73 @@ describe('aiStore — Wisp slice (W04 Task 7)', () => {
     useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
     await useAiStore.getState().switchSession('sess-plain');
     expect(useAiStore.getState().wisp).toBeNull();
+  });
+
+  const threadBody = (grantId: string, orgId: string | null) => ({
+    data: {
+      thread: { id: 'thread-9', summary: '', focusOrgId: null },
+      focusOrgName: null,
+      grant: { id: grantId, status: 'active', orgId, expiresAt: '2027-01-01T00:00:00.000Z', budgetCentsPerDay: 200, floorTickMinutes: 30 },
+      wideningAvailable: false,
+    },
+  });
+
+  it('restoring a Wisp session after a reload (wisp null) rehydrates Wisp mode from its grant', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', status: 'active', orgId: 'org-a', wispGrantId: 'grant-pw' }, messages: [] });
+      if (url === '/wisp/thread?orgId=org-a') return response({ code: 'no_active_grant' }, 404);
+      if (url === '/wisp/thread') return response(threadBody('grant-pw', null));
+      return response({ data: [] });
+    });
+    await useAiStore.getState().loadSession('sess-w');
+    await vi.waitFor(() => expect(useAiStore.getState().wisp).toMatchObject({ grantId: 'grant-pw', threadId: 'thread-9', scopeOrgId: null }));
+  });
+
+  it('a Wisp session whose grant is no longer live stays plain (no header for a dead grant)', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-w') return response({ session: { id: 'sess-w', status: 'active', orgId: 'org-a', wispGrantId: 'grant-old' }, messages: [] });
+      if (url.startsWith('/wisp/thread')) return response(threadBody('grant-new', 'org-a'));
+      return response({ data: [] });
+    });
+    await useAiStore.getState().switchSession('sess-w');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMock).toHaveBeenCalledWith('/wisp/thread?orgId=org-a');
+    expect(useAiStore.getState().wisp).toBeNull();
+  });
+
+  it('loadSession of a plain session leaves Wisp mode', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/ai/sessions/sess-plain') return response({ session: { id: 'sess-plain', status: 'active', orgId: 'org-a' }, messages: [] });
+      return response({ data: [] });
+    });
+    useAiStore.setState({ wisp: wisp() });
+    await useAiStore.getState().loadSession('sess-plain');
+    expect(useAiStore.getState().wisp).toBeNull();
+    expect(fetchMock.mock.calls.some(([u]) => String(u).startsWith('/wisp/thread'))).toBe(false);
+  });
+
+  it('a Wisp session create refused because the grant is unusable leaves Wisp mode and keeps the reason', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/ai/sessions' && init?.method === 'POST') return response({ error: 'Grant revoked', code: 'grant_inactive' }, 409);
+      return response({ data: [] });
+    });
+    useAiStore.setState({ wisp: wisp(), sessionId: null });
+    await useAiStore.getState().createSession();
+    expect(useAiStore.getState().wisp).toBeNull();
+    expect(useAiStore.getState().error).toBe('Grant revoked');
+  });
+
+  it('exitWispMode does not leave a stale close-failure banner in plain chat', async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return response({ error: 'nope' }, 500);
+      return response({ data: [] });
+    });
+    useAiStore.setState({ wisp: wisp(), sessionId: 'sess-w' });
+    await useAiStore.getState().exitWispMode();
+    expect(useAiStore.getState().wisp).toBeNull();
+    expect(useAiStore.getState().sessionId).toBeNull();
+    expect(useAiStore.getState().error).toBeNull();
   });
 
   it('switching to a history session on the same grant keeps Wisp mode', async () => {

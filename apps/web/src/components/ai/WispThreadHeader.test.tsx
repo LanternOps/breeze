@@ -157,6 +157,39 @@ describe('WispThreadHeader (W04 Task 8)', () => {
     expect(h.setWispFocus).toHaveBeenLastCalledWith(null, null);
   });
 
+  it('the focus switcher is disabled while a change is in flight (no racing PATCHes)', async () => {
+    let release!: () => void;
+    h.setWispFocus.mockImplementationOnce(() => new Promise<void>((r) => { release = r; }));
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.change(screen.getByTestId('wisp-focus'), { target: { value: 'org-a' } });
+    expect(screen.getByTestId('wisp-focus')).toBeDisabled();
+    await act(async () => { release(); });
+    expect(screen.getByTestId('wisp-focus')).toBeEnabled();
+  });
+
+  it('an emptied settings field is left unchanged, never saved as 0', async () => {
+    h.fetchWithAuth.mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: 'g-1', budgetCentsPerDay: 200, floorTickMinutes: 60 }) });
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '' } });
+    fireEvent.change(screen.getByTestId('wisp-settings-tick'), { target: { value: '60' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.updateWisp).toHaveBeenCalled());
+    const [, init] = h.fetchWithAuth.mock.calls.find(([u]) => u === '/wisp/grants/g-1/settings')!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ floorTickMinutes: 60 });
+  });
+
+  it('a refused settings save changes nothing and keeps the popover open', async () => {
+    h.runAction.mockRejectedValueOnce(new Error('400 SETTINGS_OUT_OF_BOUNDS'));
+    render(<WispThreadHeader wisp={wisp()} orgName={null} wideningAvailable={false} />);
+    fireEvent.click(screen.getByTestId('wisp-settings'));
+    fireEvent.change(screen.getByTestId('wisp-settings-budget'), { target: { value: '900' } });
+    fireEvent.click(screen.getByTestId('wisp-settings-save'));
+    await waitFor(() => expect(h.runAction).toHaveBeenCalled());
+    expect(h.updateWisp).not.toHaveBeenCalled();
+    expect(screen.getByTestId('wisp-settings-panel')).toBeInTheDocument();
+  });
+
   it('an org-scoped grant offers only its own org as a focus', () => {
     render(<WispThreadHeader wisp={wisp({ scopeOrgId: 'org-a' })} orgName="Alpha" wideningAvailable={false} />);
     const values = Array.from((screen.getByTestId('wisp-focus') as HTMLSelectElement).options).map((o) => o.value);

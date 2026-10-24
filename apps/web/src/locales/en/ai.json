@@ -578,7 +578,9 @@
       "noOrg": "Select an organization in the header first.",
       "confirm": "Confirm",
       "cancel": "Cancel",
-      "stepUpUnavailable": "Could not verify your factor. Try again."
+      "stepUpUnavailable": "Could not verify your factor. Try again.",
+      "reverify": "Your access changed while you were confirming. Enter a new code to continue.",
+      "invalidCode": "That code was not accepted. Try again."
     },
     "header": {
       "scopeAll": "All organizations",
@@ -632,7 +634,8 @@
       "attached": "Attached to the thread",
       "attachFailed": "Could not attach",
       "attachTooLarge": "That file is over 5 MB",
-      "attachUnsupported": "Only text files can be attached"
+      "attachUnsupported": "Only text files can be attached",
+      "threadFailed": "Wisp is on, but its thread could not be opened. Turn on Wisp again to reopen it."
     }
   }
 }

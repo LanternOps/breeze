@@ -578,7 +578,9 @@
       "noOrg": "Önce üst bölümden bir kuruluş seçin.",
       "confirm": "Onayla",
       "cancel": "İptal",
-      "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin."
+      "stepUpUnavailable": "Doğrulama yönteminiz doğrulanamadı. Tekrar deneyin.",
+      "reverify": "Onaylama sırasında erişiminiz değişti. Devam etmek için yeni bir kod girin.",
+      "invalidCode": "Bu kod kabul edilmedi. Tekrar deneyin."
     },
     "header": {
       "scopeAll": "Tüm kuruluşlar",
@@ -632,7 +634,8 @@
       "attached": "Konuya eklendi",
       "attachFailed": "Eklenemedi",
       "attachTooLarge": "Bu dosya 5 MB sınırını aşıyor",
-      "attachUnsupported": "Yalnızca metin dosyaları eklenebilir"
+      "attachUnsupported": "Yalnızca metin dosyaları eklenebilir",
+      "threadFailed": "Wisp açık, ancak iş parçacığı açılamadı. Yeniden açmak için Wisp'i tekrar açın."
     }
   }
 }

@@ -63,6 +63,18 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
   const [budget, setBudget] = useState(String(wisp.budgetCentsPerDay));
   const [tick, setTick] = useState(String(wisp.floorTickMinutes));
   const [saving, setSaving] = useState(false);
+  const [focusPending, setFocusPending] = useState(false);
+
+  // One focus change at a time: two racing PATCHes could leave the header
+  // showing a focus the server no longer holds.
+  const changeFocus = async (id: string | null) => {
+    setFocusPending(true);
+    try {
+      await setWispFocus(id, id ? (focusOptions.find((o) => o.id === id)?.name ?? null) : null);
+    } finally {
+      setFocusPending(false);
+    }
+  };
 
   // An org grant can only focus its own org; a partner-wide grant offers the
   // orgs this token reaches (the ceiling re-check is the server's, w00 A24).
@@ -101,8 +113,10 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
   };
 
   const saveSettings = async () => {
-    const nextBudget = clamp(Number(budget) || 0, 0, budgetMax);
-    const nextTick = clamp(Number(tick) || tickMin, tickMin, TICK_MAX);
+    // An emptied or non-numeric field means "leave as is" — never a budget of 0.
+    const typed = (raw: string, current: number) => (raw.trim() === '' || !Number.isFinite(Number(raw)) ? current : Number(raw));
+    const nextBudget = clamp(typed(budget, wisp.budgetCentsPerDay), 0, budgetMax);
+    const nextTick = clamp(typed(tick, wisp.floorTickMinutes), tickMin, TICK_MAX);
     const patch: { budgetCentsPerDay?: number; floorTickMinutes?: number } = {};
     if (nextBudget !== wisp.budgetCentsPerDay) patch.budgetCentsPerDay = nextBudget;
     if (nextTick !== wisp.floorTickMinutes) patch.floorTickMinutes = nextTick;
@@ -175,10 +189,8 @@ export default function WispThreadHeader({ wisp, orgName, wideningAvailable }: W
           data-testid="wisp-focus"
           aria-label={t('wisp.focus.label')}
           value={wisp.focusOrgId ?? ''}
-          onChange={(e) => {
-            const id = e.target.value || null;
-            void setWispFocus(id, id ? (focusOptions.find((o) => o.id === id)?.name ?? null) : null);
-          }}
+          disabled={focusPending}
+          onChange={(e) => void changeFocus(e.target.value || null)}
           className="min-w-0 flex-1 rounded border bg-background px-2 py-1"
         >
           <option value="">{t('wisp.focus.none')}</option>

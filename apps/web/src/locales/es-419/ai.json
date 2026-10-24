@@ -578,7 +578,9 @@
       "noOrg": "Primero selecciona una organización en el encabezado.",
       "confirm": "Confirmar",
       "cancel": "Cancelar",
-      "stepUpUnavailable": "No se pudo verificar tu factor. Inténtalo de nuevo."
+      "stepUpUnavailable": "No se pudo verificar tu factor. Inténtalo de nuevo.",
+      "reverify": "Tu acceso cambió mientras confirmabas. Ingresa un código nuevo para continuar.",
+      "invalidCode": "No se aceptó ese código. Inténtalo de nuevo."
     },
     "header": {
       "scopeAll": "Todas las organizaciones",
@@ -632,7 +634,8 @@
       "attached": "Adjuntado al hilo",
       "attachFailed": "No se pudo adjuntar",
       "attachTooLarge": "Ese archivo supera los 5 MB",
-      "attachUnsupported": "Solo se pueden adjuntar archivos de texto"
+      "attachUnsupported": "Solo se pueden adjuntar archivos de texto",
+      "threadFailed": "Wisp está activado, pero no se pudo abrir su hilo. Vuelve a activar Wisp para abrirlo de nuevo."
     }
   }
 }

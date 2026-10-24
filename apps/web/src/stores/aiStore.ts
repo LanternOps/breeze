@@ -226,6 +226,36 @@ function wispForLoadedSession(wisp: WispState, session: Record<string, unknown> 
   return session?.wispGrantId === wisp.grantId ? wisp : null;
 }
 
+/**
+ * A loaded session that runs under a grant the panel is not showing (a page
+ * reload — `wisp` is not persisted — or a pick from history) gets its Wisp
+ * state back from that grant's thread, so the header (scope, focus, revoke)
+ * matches the ceiling the server is enforcing. A grant that is no longer live
+ * for the session's scope stays headerless: its tool calls are refused anyway.
+ */
+async function rehydrateWispForSession(sessionId: string, session: Record<string, unknown> | undefined): Promise<void> {
+  const grantId = typeof session?.wispGrantId === 'string' ? session.wispGrantId : null;
+  if (!grantId || useAiStore.getState().wisp?.grantId === grantId) return;
+  const orgId = typeof session?.orgId === 'string' ? session.orgId : null;
+  try {
+    // Lazy: the step-up/WebAuthn graph stays out of every page's chat bundle.
+    const { fetchWispThread } = await import('@/lib/wispGrant');
+    // An org grant is keyed by the session's org; a partner-wide one by none.
+    for (const scope of orgId ? [orgId, null] : [null]) {
+      const state = await fetchWispThread(scope).catch(() => null);
+      if (state?.grantId === grantId) {
+        if (useAiStore.getState().sessionId === sessionId) useAiStore.setState({ wisp: state });
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('[AiStore] Could not restore Wisp mode for the session:', err);
+  }
+}
+
+/** Session-create refusals that mean the grant cannot carry a session at all. */
+const WISP_GRANT_UNUSABLE = new Set(['grant_inactive', 'grant_not_found', 'grant_not_yours', 'wisp_disabled', 'entitlement_required']);
+
 /** A cleared session has no stamped model: drop the picker, then reload the default menu. */
 function resetModelPicker(): void {
   const picker = useAiModelPickerStore.getState();
@@ -466,7 +496,12 @@ export const useAiStore = create<AiState>()(
         const data = await res.json().catch(() => null);
         // A refused Wisp create (grant_inactive, focus_mismatch, …) keeps its
         // machine code so the panel can tell it apart; plain chat is unchanged.
-        if (wispGrantId && ownsSession()) set({ errorCode: typeof data?.code === 'string' ? data.code : null });
+        if (wispGrantId && ownsSession()) {
+          const code = typeof data?.code === 'string' ? data.code : null;
+          // A dead grant must not keep the Wisp header up over a panel with no
+          // session; the error banner keeps the server's reason.
+          set({ errorCode: code, ...(code && WISP_GRANT_UNUSABLE.has(code) ? { wisp: null } : {}) });
+        }
         throw new Error(extractApiError(data, 'Failed to create session'));
       }
       const data = await res.json();
@@ -569,6 +604,7 @@ export const useAiStore = create<AiState>()(
         wisp: wispForLoadedSession(get().wisp, data.session),
       });
       adoptSessionModelPicker(sessionId);
+      void rehydrateWispForSession(sessionId, data.session);
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -957,6 +993,7 @@ export const useAiStore = create<AiState>()(
         wisp: wispForLoadedSession(get().wisp, data.session),
       });
       adoptSessionModelPicker(sessionId);
+      void rehydrateWispForSession(sessionId, data.session);
     } catch (err) {
       if (!ownsSession()) return;
       set({
@@ -1064,8 +1101,11 @@ export const useAiStore = create<AiState>()(
   updateWisp: (patch) => set((s) => (s.wisp ? { wisp: { ...s.wisp, ...patch } } : {})),
 
   exitWispMode: async () => {
+    // Best-effort close: a session left open idles out and the server
+    // finalizes its thread summary on expiry, so a failed close is not
+    // surfaced over the plain chat the user is returning to.
     if (get().sessionId) await get().closeSession();
-    set({ wisp: null, ...CLEARED_SESSION });
+    set({ wisp: null, ...CLEARED_SESSION, error: null, errorCode: null });
   },
     }),
     {

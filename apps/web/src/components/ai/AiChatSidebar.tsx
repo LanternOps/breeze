@@ -389,7 +389,7 @@ export default function AiChatSidebar() {
                   </button>
                   {wispAttachmentsOpen && (
                     <div className="pt-2">
-                      <WispThreadAttachments wisp={wisp} />
+                      <WispThreadAttachments key={wisp.threadId} wisp={wisp} />
                     </div>
                   )}
                 </div>

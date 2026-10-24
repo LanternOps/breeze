@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fetchWithAuth = vi.fn();
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 const runAction = vi.fn();
-vi.mock('@/lib/runAction', () => ({
-  runAction: (o: { request: () => Promise<unknown> }) => runAction(o),
-  ActionError: class ActionError extends Error { status = 0; },
-}));
+const real = vi.hoisted(() => ({ runAction: null as null | ((o: unknown) => Promise<unknown>) }));
+vi.mock('@/lib/runAction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/runAction')>();
+  real.runAction = actual.runAction as (o: unknown) => Promise<unknown>;
+  return { ...actual, runAction: (o: { request: () => Promise<unknown> }) => runAction(o) };
+});
 const showToast = vi.fn();
 vi.mock('@/components/shared/Toast', () => ({ showToast: (...a: unknown[]) => showToast(...a) }));
 
@@ -96,5 +98,21 @@ describe('WispThreadAttachments', () => {
     render(<WispThreadAttachments wisp={wisp} />);
     expect((await screen.findByTestId('wisp-attachments-load-error')).textContent).toBe('Could not load attachments');
     expect(screen.queryByTestId('wisp-attachments-empty')).toBeNull();
+  });
+
+  it.each([
+    [413, 'too_large', 'That file is over 5 MB'],
+    [415, 'unsupported_type', 'Only text files can be attached'],
+    [409, 'focus_required', 'Pick a customer focus before attaching'],
+  ])('a %s %s from the server toasts its own copy once (real runAction)', async (status, code, message) => {
+    runAction.mockImplementation((o: unknown) => real.runAction!(o));
+    fetchWithAuth.mockImplementation(async (_url: string, init?: { method?: string }) =>
+      init?.method === 'POST' ? { ok: false, status, json: async () => ({ error: 'server prose', code }) } : listRes([]));
+    render(<WispThreadAttachments wisp={wisp} />);
+    await screen.findByTestId('wisp-attachments-empty');
+    fireEvent.change(screen.getByTestId('wisp-attachment-paste'), { target: { value: 'From: a@b.c' } });
+    fireEvent.click(screen.getByTestId('wisp-attachment-add'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message })));
+    expect(showToast).toHaveBeenCalledTimes(1);
   });
 });

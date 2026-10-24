@@ -578,7 +578,9 @@
       "noOrg": "Seleziona prima un'organizzazione nell'intestazione.",
       "confirm": "Conferma",
       "cancel": "Annulla",
-      "stepUpUnavailable": "Impossibile verificare il tuo fattore. Riprova."
+      "stepUpUnavailable": "Impossibile verificare il tuo fattore. Riprova.",
+      "reverify": "Il tuo accesso è cambiato durante la conferma. Inserisci un nuovo codice per continuare.",
+      "invalidCode": "Il codice non è stato accettato. Riprova."
     },
     "header": {
       "scopeAll": "Tutte le organizzazioni",
@@ -632,7 +634,8 @@
       "attached": "Allegato al thread",
       "attachFailed": "Impossibile allegare",
       "attachTooLarge": "Il file supera i 5 MB",
-      "attachUnsupported": "È possibile allegare solo file di testo"
+      "attachUnsupported": "È possibile allegare solo file di testo",
+      "threadFailed": "Wisp è attivo, ma non è stato possibile aprire il suo thread. Riattiva Wisp per riaprirlo."
     }
   }
 }
