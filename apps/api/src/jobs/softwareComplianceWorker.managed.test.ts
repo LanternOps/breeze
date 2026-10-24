@@ -25,12 +25,14 @@ const {
   // one such read to every allowlist pass with a catalogId rule (the
   // software_versions lookup for service_running clauses); [] there means
   // "no clause", which leaves every assertion in this file unchanged.
-  dbSelectMock: vi.fn(() => ({
-    from: () => ({
+  dbSelectMock: vi.fn(() => {
+    const joined: Record<string, unknown> = {
       where: () => Object.assign(Promise.resolve([]), { limit: () => Promise.resolve([]) }),
       limit: () => Promise.resolve([]),
-    }),
-  })),
+    };
+    joined.innerJoin = () => joined;
+    return { from: () => joined };
+  }),
   dbUpdateSetMock: vi.fn((_values: Record<string, unknown>) => ({ where: async () => undefined })),
   resolveDeviceIdsMock: vi.fn(async () => ['device-1']),
   upsertMock: vi.fn(async (_inputs: Array<Record<string, unknown>>) => undefined),

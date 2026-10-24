@@ -89,8 +89,10 @@ const POLICY = {
   managedByLinkId: null,
 };
 
+/** One row per (latest version, device org that can reach its catalog item). */
 const CTRLD_VERSION = {
   catalogId: CATALOG,
+  orgId: 'org-1',
   supportedOs: ['windows'],
   detectionRules: [
     { type: 'file_exists', path: 'C:\\ControlD\\ctrld.exe' },
@@ -106,7 +108,9 @@ function chain(result: unknown[]) {
     limit: () => Promise.resolve(result),
     orderBy: () => Promise.resolve(result),
   });
-  return { from: () => ({ where: terminal, limit: () => Promise.resolve(result) }) };
+  const joined: Record<string, unknown> = { where: terminal, limit: () => Promise.resolve(result) };
+  joined.innerJoin = () => joined;
+  return { from: () => joined };
 }
 
 function primeSelects(rows: unknown[][]) {
@@ -228,6 +232,18 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
     expect((row.violations as SoftwarePolicyViolation[]).map((v) => v.type)).toEqual(['missing']);
   });
 
+  it('a version row reachable only from ANOTHER device org derives nothing for this device', async () => {
+    const other: Device = { ...WIN_NEW, id: 'device-2', orgId: 'org-2' };
+    primePass({ devices: [WIN_NEW, other], versions: [{ ...CTRLD_VERSION, orgId: 'org-2' }] });
+    primeObservations([]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upserted('device-1').serviceWatches).toBeNull();
+    expect((upserted('device-1').violations as SoftwarePolicyViolation[]).map((v) => v.type)).toEqual(['missing']);
+    expect(upserted('device-2').serviceWatches).toEqual([{ name: 'ctrld' }]);
+  });
+
   it('a policy with no catalogId rule issues neither extra read and writes service_watches null', async () => {
     primePass({
       policy: { ...POLICY, rules: { software: [{ name: 'Control D' }], allowUnknown: true } },
@@ -267,9 +283,9 @@ describe('processCheckPolicy — service_running bridge (#6958 PR E3)', () => {
   it('sorts names case-insensitively and caps service_watches at 50', async () => {
     const names = Array.from({ length: 60 }, (_, i) => `svc-${String(59 - i).padStart(2, '0')}`);
     primePass({
-      versions: [{ catalogId: CATALOG, supportedOs: null, detectionRules: names.slice(0, 20).map((serviceName) => ({ type: 'service_running', serviceName })) },
-        { catalogId: 'catalog-2', supportedOs: null, detectionRules: names.slice(20, 40).map((serviceName) => ({ type: 'service_running', serviceName })) },
-        { catalogId: 'catalog-3', supportedOs: null, detectionRules: names.slice(40).map((serviceName) => ({ type: 'service_running', serviceName })) }],
+      versions: [{ catalogId: CATALOG, orgId: 'org-1', supportedOs: null, detectionRules: names.slice(0, 20).map((serviceName) => ({ type: 'service_running', serviceName })) },
+        { catalogId: 'catalog-2', orgId: 'org-1', supportedOs: null, detectionRules: names.slice(20, 40).map((serviceName) => ({ type: 'service_running', serviceName })) },
+        { catalogId: 'catalog-3', orgId: 'org-1', supportedOs: null, detectionRules: names.slice(40).map((serviceName) => ({ type: 'service_running', serviceName })) }],
       policy: {
         ...POLICY,
         rules: { software: [

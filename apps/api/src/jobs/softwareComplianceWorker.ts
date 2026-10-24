@@ -1,9 +1,11 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, asc, desc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   devices,
+  organizations,
   serviceProcessCheckResults,
+  softwareCatalog,
   softwareComplianceStatus,
   softwarePolicies,
   softwareVersions,
@@ -574,23 +576,32 @@ export async function processScanPolicies(): Promise<{ queued: number }> {
 
 // ---- #6958 PR E: service_running compliance bridge (inputs) ----------------
 
-type ServiceBridgeVersion = { catalogId: string; supportedOs: unknown; detectionRules: unknown };
+/** A latest catalog version, once per device org that can reach its catalog item. */
+type ServiceBridgeVersion = { catalogId: string; supportedOs: unknown; detectionRules: unknown; orgId: string };
 
 /**
  * The latest catalog version of every catalog item an ALLOWLIST rule points at
  * (one read per chunk of catalog ids; system context, as the whole pass runs).
  * Null — and no read at all — when the policy is not an allowlist or no rule
  * carries a catalogId: such a policy can derive no service names.
+ *
+ * Reachability is the install path's (softwarePolicyInstallRemediation.ts
+ * readReachableCatalogItem): the item is not deleted/archived and is owned by
+ * the device's org, or is partner-wide and owned by that org's partner. A rule
+ * naming another tenant's catalog id therefore derives nothing — the system
+ * context must not turn a foreign catalog's detection rules into watches. One
+ * row comes back per (version, reachable device org).
  */
-async function loadServiceBridgeVersions(
+export async function loadServiceBridgeVersions(
   mode: string,
   rules: SoftwarePolicyRuleDefinition[],
+  deviceOrgIds: string[],
 ): Promise<ServiceBridgeVersion[] | null> {
   if (mode !== 'allowlist') return null;
   const catalogIds = Array.from(new Set(
     rules.map((rule) => rule.catalogId).filter((id): id is string => typeof id === 'string' && id.length > 0),
   ));
-  if (catalogIds.length === 0) return null;
+  if (catalogIds.length === 0 || deviceOrgIds.length === 0) return null;
   const versions: ServiceBridgeVersion[] = [];
   for (const chunk of chunkArray(catalogIds)) {
     const rows = await db
@@ -598,25 +609,40 @@ async function loadServiceBridgeVersions(
         catalogId: softwareVersions.catalogId,
         supportedOs: softwareVersions.supportedOs,
         detectionRules: softwareVersions.detectionRules,
+        orgId: organizations.id,
       })
       .from(softwareVersions)
-      .where(and(inArray(softwareVersions.catalogId, chunk), eq(softwareVersions.isLatest, true)));
+      .innerJoin(softwareCatalog, eq(softwareCatalog.id, softwareVersions.catalogId))
+      .innerJoin(organizations, and(
+        inArray(organizations.id, deviceOrgIds),
+        or(
+          eq(softwareCatalog.orgId, organizations.id),
+          and(isNull(softwareCatalog.orgId), eq(softwareCatalog.partnerId, organizations.partnerId)),
+        ),
+      ))
+      .where(and(
+        inArray(softwareVersions.catalogId, chunk),
+        eq(softwareVersions.isLatest, true),
+        isNull(softwareCatalog.deletedAt),
+      ));
     versions.push(...rows);
   }
   return versions;
 }
 
-/** OS-filtered service names per catalog id, memoised per OS for the pass. */
-function serviceNamesByCatalogForOs(
+/** Service names per reachable catalog id for one (device org, OS), memoised for the pass. */
+function serviceNamesByCatalogFor(
   versions: ServiceBridgeVersion[],
+  orgId: string,
   osType: string,
   memo: Map<string, Map<string, string[]>>,
 ): Map<string, string[]> {
-  const key = osType.toLowerCase();
+  const key = `${orgId}|${osType.toLowerCase()}`;
   const cached = memo.get(key);
   if (cached) return cached;
   const byCatalog = new Map<string, string[]>();
   for (const version of versions) {
+    if (version.orgId !== orgId) continue;
     const names = serviceNamesForOs(version.detectionRules, version.supportedOs, osType);
     if (names.length > 0) byCatalog.set(version.catalogId, names);
   }
@@ -858,8 +884,12 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   // for (or qualify) inventory evidence in applyServiceRules. Two reads per
   // pass at most (versions, then observations), and none for a policy that
   // cannot derive a name.
-  const bridgeVersions = await loadServiceBridgeVersions(policy.mode, normalizedRules.software ?? []);
-  const namesByOsMemo = new Map<string, Map<string, string[]>>();
+  const bridgeVersions = await loadServiceBridgeVersions(
+    policy.mode,
+    normalizedRules.software ?? [],
+    Array.from(new Set(deviceIds.map((id) => orgByDevice.get(id)!))),
+  );
+  const namesByOrgOsMemo = new Map<string, Map<string, string[]>>();
   const serviceWatchesByDevice = new Map<string, Array<{ name: string }> | null>();
   const derivedLowerNames = new Set<string>();
   const devicesWithWatches: string[] = [];
@@ -867,7 +897,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     const watches = bridgeVersions
       ? derivedServiceWatches(
         normalizedRules.software ?? [],
-        serviceNamesByCatalogForOs(bridgeVersions, osTypeByDevice.get(deviceId) ?? '', namesByOsMemo),
+        serviceNamesByCatalogFor(bridgeVersions, orgByDevice.get(deviceId)!, osTypeByDevice.get(deviceId) ?? '', namesByOrgOsMemo),
       )
       : null;
     serviceWatchesByDevice.set(deviceId, watches);
@@ -922,7 +952,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
           violations: evaluatedViolations,
           rules: normalizedRules.software ?? [],
           inventoryMatchedRuleNames: evaluated.matchedRuleNames,
-          serviceNamesByCatalogId: serviceNamesByCatalogForOs(bridgeVersions ?? [], osTypeByDevice.get(deviceId) ?? '', namesByOsMemo),
+          serviceNamesByCatalogId: serviceNamesByCatalogFor(bridgeVersions ?? [], orgByDevice.get(deviceId)!, osTypeByDevice.get(deviceId) ?? '', namesByOrgOsMemo),
           observations: observationsByDevice.get(deviceId) ?? new Map(),
           now,
         });

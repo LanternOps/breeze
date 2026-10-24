@@ -18,12 +18,14 @@ const {
   // one such read to every allowlist pass with a catalogId rule (the
   // software_versions lookup for service_running clauses); [] there means
   // "no clause", which leaves every assertion in this file unchanged.
-  dbSelectMock: vi.fn(() => ({
-    from: () => ({
+  dbSelectMock: vi.fn(() => {
+    const joined: Record<string, unknown> = {
       where: () => Object.assign(Promise.resolve([]), { limit: () => Promise.resolve([]) }),
       limit: () => Promise.resolve([]),
-    }),
-  })),
+    };
+    joined.innerJoin = () => joined;
+    return { from: () => joined };
+  }),
   // Captures the `.set()` payload so the SQL attempt-counter increment is
   // actually assertable. A mock that swallowed it would make
   // `expect(dbUpdateMock).toHaveBeenCalled()` pass against a wrong column, a
