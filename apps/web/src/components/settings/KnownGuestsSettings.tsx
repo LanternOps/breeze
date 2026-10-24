@@ -108,6 +108,7 @@ export default function KnownGuestsSettings() {
         <input
           type="text"
           aria-label={t('knownGuestsSettings.columns.macAddress')}
+          data-testid="known-guests-mac"
           placeholder={t('knownGuestsSettings.placeholders.mac')}
           value={mac}
           onChange={e => setMac(e.target.value)}
@@ -116,6 +117,7 @@ export default function KnownGuestsSettings() {
         <input
           type="text"
           aria-label={t('knownGuestsSettings.columns.label')}
+          data-testid="known-guests-label"
           placeholder={t('knownGuestsSettings.placeholders.label')}
           value={label}
           onChange={e => setLabel(e.target.value)}
@@ -131,6 +133,7 @@ export default function KnownGuestsSettings() {
         />
         <button
           type="submit"
+          data-testid="known-guests-add"
           disabled={saving}
           className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
@@ -155,7 +158,7 @@ export default function KnownGuestsSettings() {
             ) : guests.length === 0 ? (
               <tr><td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">{t('knownGuestsSettings.empty')}</td></tr>
             ) : guests.map(guest => (
-              <tr key={guest.id} className="hover:bg-muted/40">
+              <tr key={guest.id} className="hover:bg-muted/40" data-testid={`known-guests-row-${guest.macAddress}`}>
                 <td className="px-4 py-3 font-mono text-sm">{guest.macAddress}</td>
                 <td className="px-4 py-3 text-sm">{guest.label}</td>
                 <td className="px-4 py-3 text-sm text-muted-foreground">{guest.notes ?? '\u2014'}</td>
@@ -163,6 +166,7 @@ export default function KnownGuestsSettings() {
                   <button
                     type="button"
                     onClick={() => void handleRemove(guest.id)}
+                    data-testid={`known-guests-remove-${guest.macAddress}`}
                     className="flex h-8 w-8 items-center justify-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10 ml-auto"
                     title={t('common:actions.remove')}
                   >
