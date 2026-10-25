@@ -23,7 +23,29 @@ const fake = vi.hoisted(() => ({
   googleConnId: null as string | null,
   probe: {} as import('./identityOnboardingHarness').FakeProviders['probe'],
   h: {} as Record<string, (...args: any[]) => any>,
+  /** When set, the contact-link upsert (called AFTER the in-transaction bump and freeze) aborts the transition. */
+  abortAfterBump: false,
+  /** How many times the forced abort fired (proves the abort was reached, i.e. after the bump). */
+  abortsFired: 0,
 }));
+
+// Passthrough, except that `abortAfterBump` makes the link upsert — the step
+// after `bumpPlanRevisionInTx` and the freeze — throw the transition's typed
+// sentinel, so the whole leased transaction must roll back.
+vi.mock('../../services/aiOperator/targetService', async (orig) => {
+  const real = await orig<typeof import('../../services/aiOperator/targetService')>();
+  return {
+    ...real,
+    upsertContactExternalLinks: async (...a: Parameters<typeof real.upsertContactExternalLinks>) => {
+      if (fake.abortAfterBump) {
+        fake.abortsFired += 1;
+        const { OnboardingStageTransitionAbort } = await import('../../services/aiOperator/onboardingAccounts');
+        throw new OnboardingStageTransitionAbort('facts_invalid', 'forced abort after the bump (test)');
+      }
+      return real.upsertContactExternalLinks(...a);
+    },
+  };
+});
 
 vi.mock('../../services/m365ControlPlane/readActionService', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -75,9 +97,9 @@ import {
 } from './planApprovalFixtures';
 import {
   CREATE_STEP, CREATED_M365_ID, FAKE_PASSWORD, PROVISION_STEP, SKU_E3,
-  accessTokenFor, approvalFor, approvals, approve, asPlanTenant, bindFakeProviders, childIntents,
-  driveToCreateProposed, driveToProvisionProposed, effectsFor, getTaskDetail, operations, pgCode, planIntents,
-  readTask, releaseInFlight, resetFakes, revealSecret, seedTenant, system, wake, walk,
+  accessTokenFor, approvalFor, approvals, approve, asPlanTenant, bindFakeProviders, childIntents, contactLinks,
+  contactTargets, driveToCreateProposed, driveToProvisionProposed, effectsFor, events, getTaskDetail, operations, pgCode,
+  planIntents, readTask, releaseInFlight, resetFakes, revealSecret, seedTenant, system, targetAccounts, wake, walk,
   type Admitted,
 } from './identityOnboardingHarness';
 
@@ -92,6 +114,8 @@ beforeEach(() => {
   vi.stubEnv('AI_OPERATOR_TASKS_ENABLED', 'true');
   vi.stubEnv('AI_OPERATOR_RECIPE_IDENTITY_ONBOARDING_ENABLED', 'true');
   resetFakes();
+  fake.abortAfterBump = false;
+  fake.abortsFired = 0;
 });
 afterEach(() => { vi.unstubAllEnvs(); });
 
@@ -326,6 +350,37 @@ describe('two-stage plan approval (identity_onboarding)', () => {
       expect(later.errorCode).toBe('plan_approval_revoked');
       expect(later.details?.refusal).toBe('tool_not_in_set');
     }
+  }, 180_000);
+
+  // PIN of shipped behaviour (review item 6a): passes on first run by design.
+  // Control run: with the forced abort replaced by a passthrough, this case
+  // fails at 'the bump rolled back' (revision r+1), so it discriminates.
+  runDb('9. a stage transition that aborts AFTER the in-transaction bump rolls back entirely: revision r, creation approval still approved, no bump/freeze events, nothing frozen or linked', async () => {
+    const t = await seedTenant({ google: false });
+    const a = await driveToCreateProposed(t);
+    await approve(a, CREATE_STEP);
+    await walk(a, CREATE_STEP);
+    const before = await readTask(a);
+    expect(before.currentStepKey).toBe('resolve_accounts');
+    const r = before.revision;
+
+    fake.abortAfterBump = true;
+    await wake(a); // resolve_accounts: bump r -> r+1, freeze, then the forced abort
+    expect(fake.abortsFired, 'the abort was reached (after the bump and the freeze)').toBe(1);
+
+    const task = await readTask(a);
+    expect(task.revision, 'the bump rolled back').toBe(r);
+    expect(task).toMatchObject({ state: 'handed_off', currentStepKey: 'resolve_accounts' });
+    expect(task.outcomeDetail).toContain('facts_invalid');
+    const createApproval = await approvalFor(a, CREATE_STEP);
+    expect(createApproval).toMatchObject({ state: 'approved', planRevision: r, supersededByRevision: null });
+    expect((await approvals(a)).filter((x) => x.planRevision === r + 1)).toHaveLength(0);
+    const types = (await events(a)).map((e) => e.eventType);
+    expect(types).not.toContain('plan_revision_bumped');
+    expect(types).not.toContain('target_account_frozen');
+    expect(await targetAccounts(a), 'the freeze rolled back').toHaveLength(0);
+    const [ct] = await contactTargets(a);
+    expect(await contactLinks(ct!.contactId!)).toHaveLength(0);
   }, 180_000);
 
   // ── D-R2-6, pinned both ways through the REAL HTTP route ────────────────
