@@ -58,6 +58,9 @@ const (
 	rebindCodeConfirmationTokenReused = "confirmation_token_reused"
 	rebindCodeIntentNotFound          = "intent_not_found"
 	rebindCodeNotStaged               = "not_staged"
+	// The end code the agent records when confirm named an identity the
+	// signed directive did not (never a server code).
+	rebindCodeIdentityMismatch = "identity_mismatch"
 )
 
 // rebindAgentIDPattern is the server's agent id shape (it goes into a URL).
@@ -405,7 +408,7 @@ func (h *Heartbeat) driveRebind(d *RebindDirective) {
 // disk, or a fresh one generated and persisted now. Caller holds rebind.mu.
 func (h *Heartbeat) adoptRebindDirective(s *config.RebindStagedSet, d *RebindDirective, now time.Time) *config.RebindStagedSet {
 	if s != nil && s.IntentID == d.IntentID {
-		return s
+		return h.refreshRebindTarget(s, d, now)
 	}
 	if s != nil {
 		if s.Phase == config.RebindPhaseConfirmed {
@@ -438,4 +441,29 @@ func (h *Heartbeat) adoptRebindDirective(s *config.RebindStagedSet, d *RebindDir
 	log.Info("a reattach of this install was requested; staged a fresh credential set",
 		"intentId", d.IntentID, "targetDeviceId", d.TargetDeviceID, "targetOrgId", d.TargetOrgID)
 	return fresh
+}
+
+// refreshRebindTarget follows the site a later verified directive for the
+// same intent names: the target may move site after the request, and the
+// server signs its current site on every beat. The device and org never
+// change for an intent; a directive naming others is ignored. Only before
+// confirm. Caller holds rebind.mu.
+func (h *Heartbeat) refreshRebindTarget(s *config.RebindStagedSet, d *RebindDirective, now time.Time) *config.RebindStagedSet {
+	signed := config.RebindTarget{DeviceID: d.TargetDeviceID, OrgID: d.TargetOrgID, SiteID: d.TargetSiteID}
+	if s.DirectiveTarget.Equal(signed) || (s.Phase != config.RebindPhaseGenerated && s.Phase != config.RebindPhaseStaged) {
+		return s
+	}
+	if signed.DeviceID != s.DirectiveTarget.DeviceID || signed.OrgID != s.DirectiveTarget.OrgID {
+		h.logRebindOnce("error", "a rebind directive for the same intent names another target; keeping the first",
+			"intent "+s.IntentID)
+		return s
+	}
+	next := *s
+	next.DirectiveTarget.SiteID = signed.SiteID
+	if err := h.persistRebind(&next); err != nil {
+		h.logRebindOnce("warn", "could not record the reattach target's new site", err.Error())
+		h.rebindRetryLater(now, 0)
+		return s
+	}
+	return &next
 }

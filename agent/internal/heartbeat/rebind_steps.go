@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -88,10 +89,10 @@ func (h *Heartbeat) acceptRebindStage(s *config.RebindStagedSet, ans rebindAnswe
 		!identityUUIDPattern.MatchString(t.DeviceID) || !identityUUIDPattern.MatchString(t.OrgID) || !identityUUIDPattern.MatchString(t.SiteID):
 		h.rebindWait(now, "reattach phase 1 answered 200 with an incomplete body; resending", rebindAnswer{status: ans.status})
 		return nil
-	case t.DeviceID != s.DirectiveTarget.DeviceID || t.OrgID != s.DirectiveTarget.OrgID:
+	case !s.DirectiveTarget.Equal(*t):
 		// Never confirm a target other than the one the signed directive
-		// named. (The site may differ: the directive carries the target's
-		// site at signing, phase 1 its current one.)
+		// named. A site the target moved to since comes with the next
+		// directive (refreshRebindTarget), and phase 1 is retried then.
 		h.logRebindOnce("error", "reattach phase 1 named a different target than the signed directive; not confirming",
 			"intent "+s.IntentID)
 		h.rebindRetryLater(now, 0)
@@ -197,11 +198,9 @@ func (h *Heartbeat) rebindConfirm(s *config.RebindStagedSet) *config.RebindStage
 			h.rebindWait(now, "reattach confirm answered 200 with an unreadable identity; replaying", rebindAnswer{status: ans.status})
 			return nil
 		}
-		if id.DeviceID != s.DirectiveTarget.DeviceID || (s.StagedAgentID != "" && id.AgentID != s.StagedAgentID) {
-			// The server committed this identity with this install's staged
-			// credentials: it is the only one they authenticate as.
-			log.Warn("reattach confirm names a different device or agent than expected; adopting what the server committed",
-				"intentId", s.IntentID, "deviceId", id.DeviceID, "agentId", id.AgentID)
+		if !rebindIdentitySigned(s, id) {
+			h.refuseRebindIdentity(s, id)
+			return nil
 		}
 		return h.confirmRebind(s, id, now, "confirm")
 	case ans.refusal.intentOver(ans.status):
@@ -239,10 +238,34 @@ func (h *Heartbeat) rebindProbe(s *config.RebindStagedSet, now time.Time) *confi
 		h.logRebindOnce("warn", "probe as the reattached device was not accepted; retrying", ans.String())
 		return nil
 	}
+	// The device, org and site the server signed; the agent id phase 1 gave.
 	id := config.RebindConfirmedIdentity{
-		DeviceID: s.Target.DeviceID, OrgID: s.Target.OrgID, SiteID: s.Target.SiteID, AgentID: s.StagedAgentID,
+		DeviceID: s.DirectiveTarget.DeviceID, OrgID: s.DirectiveTarget.OrgID, SiteID: s.DirectiveTarget.SiteID,
+		AgentID: s.StagedAgentID,
 	}
 	return h.confirmRebind(s, id, now, "probe")
+}
+
+// rebindIdentitySigned reports whether a confirmed identity is the one the
+// signed directive named (device, org, site) with the staged agent id phase 1
+// gave. When phase 1's answer was never received (it said `confirmed`), the
+// agent id cannot be checked: no signature ever covers it.
+func rebindIdentitySigned(s *config.RebindStagedSet, id config.RebindConfirmedIdentity) bool {
+	if !s.DirectiveTarget.Equal(config.RebindTarget{DeviceID: id.DeviceID, OrgID: id.OrgID, SiteID: id.SiteID}) {
+		return false
+	}
+	return s.StagedAgentID == "" || id.AgentID == s.StagedAgentID
+}
+
+// refuseRebindIdentity is the fail-safe of a confirm whose identity is not the
+// signed one: nothing unsigned is ever written to agent.yaml. The set is kept
+// (ended, identity_mismatch) until the source credentials are proven current.
+// If the server did commit, this install stays offline until a human acts:
+// by design, since only a compromised or broken control plane answers so.
+func (h *Heartbeat) refuseRebindIdentity(s *config.RebindStagedSet, id config.RebindConfirmedIdentity) {
+	h.logRebindOnce("error", "SECURITY: reattach confirm named an identity the signed directive did not; refusing the swap",
+		fmt.Sprintf("intent %s: device %s org %s site %s agent %s", s.IntentID, id.DeviceID, id.OrgID, id.SiteID, id.AgentID))
+	h.endRebind(s, rebindAnswer{status: http.StatusOK, refusal: rebindRefusal{Code: rebindCodeIdentityMismatch}})
 }
 
 // confirmRebind persists the confirmed identity: from here the swap is owed

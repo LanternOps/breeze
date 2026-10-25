@@ -90,6 +90,9 @@ type rebindFake struct {
 
 	// directive rides on the source's heartbeat answer while set.
 	directive *RebindDirective
+	// identityOverride replaces fields of the identity confirm answers with
+	// (a compromised or broken control plane).
+	identityOverride map[string]any
 	// onCall records the call in the harness's event order.
 	onCall func(event string)
 
@@ -308,7 +311,11 @@ func (f *rebindFake) stage(w http.ResponseWriter, id string, call rebindCall) {
 }
 
 func (f *rebindFake) identity() map[string]any {
-	return map[string]any{"deviceId": f.target.DeviceID, "orgId": f.target.OrgID, "siteId": f.target.SiteID, "agentId": f.stagedAgentID}
+	id := map[string]any{"deviceId": f.target.DeviceID, "orgId": f.target.OrgID, "siteId": f.target.SiteID, "agentId": f.stagedAgentID}
+	for k, v := range f.identityOverride {
+		id[k] = v
+	}
+	return id
 }
 
 func (f *rebindFake) confirm(w http.ResponseWriter, id string, call rebindCall) {
@@ -556,6 +563,21 @@ func (r *rebindHarness) directive(intentID string) *RebindDirective {
 	d.IntentID = intentID
 	d.ExpiresAt = r.now().Add(15 * time.Minute).UTC().Format("2006-01-02T15:04:05Z")
 	return signRebindTestDirective(r.t, d, r.h.config.AgentID)
+}
+
+// settle waits until no drive of the flow is running (one a trigger started
+// on its own goroutine), so the next step does not find the flow busy.
+func (r *rebindHarness) settle() {
+	r.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	for !r.h.rebind.mu.TryLock() {
+		if time.Now().After(deadline) {
+			r.t.Fatal("the flow never settled")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	r.h.rebind.mu.Unlock()
 }
 
 // drive runs the flow synchronously, past any backoff.

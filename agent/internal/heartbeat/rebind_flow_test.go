@@ -377,6 +377,7 @@ func TestRebindEndedSetIsDiscardedOnlyOnceTheSourceIsProvenCurrent(t *testing.T)
 		t.Fatalf("staged set = %+v, want ended (target_alive)", s)
 	}
 	r.h.noteSourceCredentialsRejected()
+	r.settle()
 	r.drive(nil)
 	if r.staged() == nil {
 		t.Fatal("an ended set was discarded without proof that the source credentials are current")

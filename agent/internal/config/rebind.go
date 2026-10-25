@@ -61,6 +61,11 @@ type RebindTarget struct {
 	SiteID   string `json:"siteId"`
 }
 
+// Equal reports whether both name the same device, org and site.
+func (t RebindTarget) Equal(o RebindTarget) bool {
+	return t.DeviceID == o.DeviceID && t.OrgID == o.OrgID && t.SiteID == o.SiteID
+}
+
 // RebindCertificate is the target's next mTLS certificate from phase 1.
 type RebindCertificate struct {
 	Certificate  string `json:"certificate"`
