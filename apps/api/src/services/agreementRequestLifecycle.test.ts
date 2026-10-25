@@ -155,7 +155,7 @@ describe('org scoping: a request in an org the caller cannot access is a 404, ne
 
 describe('createAgreementRequest', () => {
   const input = {
-    orgId: ORG, templateId: TEMPLATE, recipients: ['jane@example.com', 'jane@example.com', 'bob@example.com'],
+    orgId: ORG, templateId: TEMPLATE, recipients: ['jane@example.com', ' Jane@Example.com ', 'bob@example.com'],
     variableValues: { 'custom.po': 'PO-1', 'client.name': 'Spoofed', 'undeclared': 'x' },
   };
 

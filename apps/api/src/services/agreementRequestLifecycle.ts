@@ -184,8 +184,11 @@ function assertExpiresInFuture(expiresAt: Date, now: Date): void {
   }
 }
 
-function dedupe(emails: string[]): string[] {
-  return [...new Set(emails)];
+/** Lower/trim + dedupe. The validator already normalizes, but the table's
+ *  lower/trim CHECK must never be the first thing to notice a direct caller
+ *  that skipped it. */
+function normalizeRecipients(emails: string[]): string[] {
+  return [...new Set(emails.map((e) => e.trim().toLowerCase()).filter((e) => e.length > 0))];
 }
 
 /** Resolve `templateId` to its latest PUBLISHED version (visible in the
@@ -432,7 +435,7 @@ export async function createAgreementRequest(
     })
     .returning();
   if (!row) throw new AgreementRequestServiceError('Failed to create the agreement request', 500, 'INVALID_STATE');
-  await insertRecipients(row.id, row.orgId, dedupe(input.recipients));
+  await insertRecipients(row.id, row.orgId, normalizeRecipients(input.recipients));
   return getAgreementRequestDetail(auth, row.id);
 }
 
@@ -477,7 +480,7 @@ export async function updateAgreementRequest(
   }
 
   await db.update(agreementRequests).set(patch).where(eq(agreementRequests.id, id));
-  if (input.recipients) await replaceRecipients(id, row.orgId, dedupe(input.recipients));
+  if (input.recipients) await replaceRecipients(id, row.orgId, normalizeRecipients(input.recipients));
   return getAgreementRequestDetail(auth, id);
 }
 
