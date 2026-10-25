@@ -286,7 +286,7 @@ Indexes: `UNIQUE (device_id) WHERE state NOT IN (<resolved terminal set>)` (cove
 
 **OD1 — Windows engine.** (a) WFP via BFE with persistent filters and per-app permits (needs a pure-Go binding; Tailscale `wf` as reference/vendor candidate, licence check in the plan). (b) `netsh advfirewall` rules. (c) WFP for enforcement, `netsh` only for the Windows Firewall *profile* display. **Recommend (a):** (b) is silently inert on hosts with the firewall service off or a third-party firewall registered, which is exactly the compromised-server case this feature exists for.
 
-> **Decided 2026-10-25 (Gate A, Todd):** (a) WFP via BFE, persistent filters, per-app permits; the Go binding/licence choice is made in plan W1 Task W1.4.
+> **Decided 2026-10-25 (Gate A, Todd):** (a) WFP via BFE, persistent filters, per-app permits; the Go binding/licence choice is made in plan W1f Task 1 (Gate B decision 2).
 
 **OD2 — Process scoping as the only control-plane permit (Windows, Linux).** (a) `scope: "breeze"` entries are per-app/per-cgroup only; no destination permit to the control plane for other processes. (b) Destination permits for everyone (simpler, porous through shared anycast edges). **Recommend (a)** on Windows and Linux, (b) necessarily on macOS, documented. The DNS/DHCP baseline stays destination-based on all three because the OS resolver/DHCP client, not the agent, sends those packets.
 

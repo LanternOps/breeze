@@ -29,7 +29,7 @@ related: [4149, 3397, 9118, 8869, 6758, 6754, 10065]
 
 **Spec:** `docs/superpowers/specs/security/2026-10-25-network-isolation-containment-spec.md`. Gate A approved it on 2026-10-25, and each OD carries its decision.
 - Read §3.2–§3.7 before any agent task, §4 before W1a, and §3.11 before W4a.
-- The spec wins any disagreement with this plan, **except** the five plan-stage refinements in Gate B decision 4. Those only tighten the spec; none reverses an OD.
+- The spec wins any disagreement with this plan, **except** the eight plan-stage refinements in Gate B decision 4. They tighten or correct the spec; none reverses an OD.
 - If you find a further disagreement, raise it on #4618. Do not silently follow either document.
 
 ## Global Constraints
@@ -90,7 +90,22 @@ Each device has at most one unresolved episode.
 - Human isolate and release require all of `requireInteractiveSession()`, `requireScope('organization','partner','system')`, `requirePermission(DEVICES_EXECUTE)` and `requireMfa()`, plus a site check.
 - API keys cannot isolate or release in v1.
 
+**Run commands.** In this plan, "Run it" or "Run them" means the following, scoped to the files the task names:
+
+| Area | Command |
+|---|---|
+| API | `pnpm --filter @breeze/api exec vitest run <test file>` |
+| Web | `pnpm --filter @breeze/web exec vitest run <test file>` |
+| Shared | `pnpm --filter @breeze/shared exec vitest run <test file>` |
+| Viewer | `pnpm --filter @breeze/viewer exec vitest run <test file>` |
+| Go | `cd agent && go test -race ./<package dir>/...` |
+| Integration-only suites | the test-stack recipe in `docs/agents/testing.md` |
+
+- Never run `pnpm --filter <pkg> test -- --run <path>`.
+- Vitest path filters are substring matches, so pass the exact file.
+
 **Repo conventions**
+- Every new API env var also gets an explicit pass-through in `docker-compose.yml` and `deploy/docker-compose.prod.yml`, using `${VAR:-}` (flags default to `false`). Precedent: `MCP_UNATTENDED_TIER3_PRINCIPALS` at `docker-compose.yml:630` and `deploy/docker-compose.prod.yml:599`. Without the pass-through, the flag is silently ignored in container deployments.
 - New org tables: RLS shape 1, forced, with policies in the creating migration and every registration (W1a Task 1).
 - Every new web string ships in all 8 locales (`en de-DE es-419 fr-CA fr-FR it-IT pt-BR tr-TR`), and `humanizedKeyBaseline.json` stays in sync.
 - PR bodies carry `Closes #<wave sub-issue>` and `Refs #4618`. #4618 closes only through `close_feature`.
@@ -119,7 +134,7 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
 | **W1d** agent core | `agent/internal/isolation` types, journal + lock, state machine, resolver, probe driver, break-glass, Manager (fake isolator); capability 0 | W1a (vectors file) | none |
 | **W1e** agent wiring | heartbeat request/response, handlers + strict payload validation, CLI, updater isolation gate, recovery-binary skeleton | W1d, W1b | none |
 | **W1f** Windows WFP | WFP binding, WFP isolator, Windows recovery scheduler | W1e | none (capability still 0) |
-| **W1g** Windows recovery + activation | recovery distribution, uninstall/upgrade/MSI, release pipeline, Windows capability 1 after readiness, pin the version gate | W1f | **L1 Windows lab leg** |
+| **W1g** Windows recovery + activation | recovery distribution, uninstall/upgrade/MSI, release pipeline, Windows capability 1 after readiness, pin the version gate | W1f **and** W1c, W1h, W1i. A capability-1 agent must never ship before the bypass closure, the release UI and relay-only RD are on `main` | **L1 Windows lab leg** |
 | **W1h** console + docs | DeviceActions/dialog/badge/code/ack/incident/list filter, locales, docs + runbook | W1b | part of L1 |
 | **W1i** relay-only remote desktop | API session offer `relayOnly`, Pion relay policy, viewer `iceTransportPolicy` + no STUN-only fallback while isolated | W1b | part of L1 |
 | **W2** Linux | cgroup split, `procspawn` at-spawn placement, nft isolator, systemd units, recovery, scripts | W1g | **L2 Linux lab leg** |
@@ -169,7 +184,9 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
   - `{kind:'cidr', cidr, proto, ports, scope}`
 - `startNetworkIsolationSchema` is `{ incidentId?: uuid, createIncident?: { severity, title }, ttlHours?: 1..720, reason: 1..2000 chars, remoteRelay?: boolean }`. Exactly one of `incidentId` and `createIncident` must be present.
 - `releaseNetworkIsolationSchema` is `{ reason }`; `extendNetworkIsolationSchema` is `{ ttlHours: 1..720 }`.
-- `containmentDesiredBlockSchema` (heartbeat response) is `{ networkIsolation: { isolationId, generation, desired:'isolated'|'released', expiresAt, deadManSeconds, remoteRelay, allow, breakGlass?: { secretEnc } } | null }`.
+- `containmentDesiredBlockSchema` (heartbeat response) is `{ networkIsolation: { isolationId, generation, desired:'isolated'|'released', expiresAt, deadManSeconds, remoteRelay, allow, breakGlassSecret?: string } | null }`.
+  - `breakGlassSecret` is base64 of the 32-byte secret. The server decrypts it from `break_glass_secret_enc` when it builds the block, and sends it over the agent's TLS channel only. That is the same trust model as the command path, where `decryptCommandForDelivery` decrypts just before sending.
+  - It is present only until `break_glass_ack_seq` is set. It is never logged or audited.
 - `networkIsolationReportSchema` (heartbeat request) is `{ isolationId, generation, journalSeq, state, phase, mechanism, appliedAt, lastVerifiedAt, ruleDigest, lastError, secretAckSeq?, recoveryVersion?, events?: JournalEvent[] }`. The report also carries `{ isolationId: null, phase: 'none' }`, meaning "nothing Breeze-owned is installed". The server uses that form to confirm a tombstone.
 
 **Go wire, `agent/internal/isolation/types.go`** (W1d Task 1). The JSON tags match the Zod schemas exactly.
@@ -234,7 +251,7 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
 - [ ] **Step 3: Write the migration and the Drizzle table.**
   - Declare both composite FKs in Drizzle. `moveOrg.coverage.test.ts` reads them from there.
   - Export buckets follow spec §4: `break_glass_secret_enc` is `excludedSensitive`; `allow_snapshot` and `last_agent_report` are `excludedOpen`; everything else is `included`.
-  - The org-move disposition is **delete**, the same as `topology_device_presence`. Read `moveDeviceOrgInTransaction.ts:551` (the `devices` flip), `:955-958` (the restamp loop skips move-delete tables) and `:1048` (the delete loop).
+  - The org-move disposition is **delete**, the same as `topology_device_presence`. Read `apps/api/src/services/deviceOrgMove/moveDeviceOrgInTransaction.ts:551` (the `devices` flip), `:955-958` (the restamp loop skips move-delete tables) and `:1048` (the delete loop).
   - W1c Task 2's move refusal ensures only resolved history is ever deleted.
 - [ ] **Step 4: Run the checks.** Run the migration test, `pnpm db:check-drift`, `moveOrg.coverage.test.ts` and `cascadeDelete.test.ts`. Then run `rls-coverage`, `tenantCascade`, `orgMergeRegistry`, `tenant-export-policy`, `tenantExportErasureRoundtrip` and `orgLifecycleFoundations` against the test stack (`docs/agents/testing.md`). Expected: PASS.
 - [ ] **Step 5: Commit** `feat(api): device_network_isolations table + tenancy registrations (#4618)`.
@@ -346,14 +363,14 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
     - Reported `{phase:'none'}` or `released` at the tombstone's generation → `release_confirmed_at` is set, and only then is the block `null`.
     - Digest change → a `drift_reapplied` event.
     - Stale generation or stale seq → journal only.
-    - `breakGlass.secretEnc` is present while `break_glass_ack_seq` is null, and absent afterwards.
+    - `breakGlassSecret` is present while `break_glass_ack_seq` is null, and absent afterwards. It is never written to logs, audit rows or `last_agent_report`.
     - The block never carries resolved addresses.
     - A tombstone for a **resolved** episode, such as `failed:not_delivered`, is still sent until it is confirmed.
 - [ ] **Step 2: Write the failing route test.**
   - Every response has a `containment` key, including for a device that has never been isolated.
   - A malformed report is dropped and the rest of the heartbeat proceeds.
 - [ ] **Step 3: Run both.** Expected: FAIL.
-- [ ] **Step 4: Implement.** The secret leaves the server only as `encryptSensitivePayloadFields` output.
+- [ ] **Step 4: Implement.** The secret is decrypted only while the block is being built, and is sent only in the heartbeat response body.
 - [ ] **Step 5: Run both, plus `heartbeat.test.ts`, `heartbeat.ech.test.ts` and `agentRoleCoverage.test.ts`.** Expected: PASS.
 - [ ] **Step 6: Commit.**
 
@@ -364,16 +381,22 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
   - `commandTypes.ts:235`: add `RELEASE_CONTAINMENT: 'release_containment'`.
   - `commandOfflinePolicy.ts:324`: queue both commands. Isolate gets `deliverBy = min(expiresAt, standard TTL)`.
   - `commandTimeouts.ts:121` and `commandQueue.ts:447`.
-  - `commandClaimEligibility.ts:174`: add `release_containment` to `TEARDOWN_CLAIM_EXEMPT_TYPES`. That exempts it from the requester-active, org-drift, erased-submitter-org, device-lifecycle (incl. `quarantined`) and trust cancels.
+  - `commandClaimEligibility.ts:174`: add `release_containment` to `TEARDOWN_CLAIM_EXEMPT_TYPES`.
+    - Effect: it is exempt from the requester-active, org-drift, erased-submitter-org, device-lifecycle (including `quarantined`) and trust cancels.
+    - Update the set's doc comment: membership means the type only reduces capability. The operator's `reason` is audit text, not device-executed content.
+    - Update the forbidden-membership test at `commandClaimEligibility.test.ts:676-684` to match.
+    - The parked-device cancel, which still applies to teardown types, is accepted for release. A parked device is not delivering anything, and the heartbeat tombstone takes over when it un-parks.
   - `commandResultHandlers.ts:1271`: add `release_containment`.
-  - `sensitiveCommandPayload.ts:151,173`: `parameters.breakGlass.secret` is encrypted at enqueue and stripped by every terminal writer.
+  - `sensitiveCommandPayload.ts`: the module only handles **top-level** string fields (`SENSITIVE_PAYLOAD_FIELDS`, `encryptSensitivePayloadFields` `:219-250`, strip keys `:150,171`).
+    - The isolate payload therefore carries the secret as the top-level field `breakGlassSecret`, not `parameters.breakGlass.secret` (Gate B decision 4 vii).
+    - Register `execute_containment: ['breakGlassSecret']` in `SENSITIVE_PAYLOAD_FIELDS`.
+    - Add `breakGlassSecret` to `TYPE_SCOPED_TERMINAL_STRIP_KEYS` for `execute_containment`. Only that key is stripped, so `process_kill` payloads and their forensics are untouched.
   - `partnerTrust.ts:30`: add `release_containment` to `LIFECYCLE_COMMAND_TYPES`.
-  - `commandMinVersion.ts:25`: `release_containment` → `NETWORK_ISOLATION_MIN_AGENT_VERSION`.
+  - `commandMinVersion.ts`: **no** `release_containment` entry. That map refuses or fails commands sent to older agents, and the version gate never blocks release. An agent too old to know `release_containment` fails it as an unknown type, which is harmless because such an agent can never have been isolated.
 - Modify `apps/api/src/jobs/staleCommandReaper.ts:346-353` and `services/commandCancelPropagation.ts:299-303` so that a reaped or cancelled isolate command never changes the episode. The heartbeat desired state still delivers it.
 - Modify `services/incidentContainmentResults.ts:239`: `handleExecuteContainmentResult` branches to `handleNetworkIsolationResult` when `payload.actionType === 'network_isolation'`. Every other action type is unchanged.
 - Create `services/networkIsolation/finalizer.ts`.
-- Modify `agent/internal/privilege/check.go:7`: add `execute_containment` and `release_containment` to `elevatedCommandTypes`. This is a one-line agent edit that lands with the server registration; W1e tests it.
-- Tests: `finalizer.ordering.test.ts`, `sensitiveCommandPayload.networkIsolation.test.ts` and `commandClaimEligibility.release.test.ts`.
+- Tests: `finalizer.ordering.test.ts`, `sensitiveCommandPayload.networkIsolation.test.ts`, `commandClaimEligibility.release.test.ts`, and `commandMinVersion.release.test.ts`, which checks that a release is queued for an agent below the gate.
 
 **Interfaces:**
 - `handleNetworkIsolationResult(args): Promise<void>` and `handleReleaseContainmentResult(args): Promise<void>`.
@@ -386,7 +409,8 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
   - `verified` writes `containment_executed` and publishes `incident.contained` exactly once.
   - `failed` writes `containment_failed`.
   - A release writes `containment_released` and sets `incident_actions.reversed`.
-  - The secret is ciphertext after enqueue. It is absent after the result, reaper and cancel writers.
+  - `breakGlassSecret` is ciphertext in `device_commands.payload` after enqueue, and plaintext only in the delivered copy (`decryptCommandForDelivery`, `:351`).
+  - It is absent after the result, reaper and cancel writers. A `process_kill` row's `parameters` are unchanged by any of them.
   - A `release_containment` row is delivered when the requester is deactivated, the org has drifted, the device is quarantined, or the partner is restricted.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
@@ -401,7 +425,10 @@ Every row can merge on its own. Until W1g, every agent reports capability 0, the
 - Create `apps/api/src/routes/agents/isolationVerify.ts`, which serves `POST /agents/isolation/:isolationId/verify` under agent auth. It stamps `verified_at` with server time and returns the server's `Date`.
 - Modify `apps/api/src/config/validate.ts:1087` to add `NETWORK_ISOLATION_ENABLED: z.enum(['true','false']).default('false')` and `NETWORK_ISOLATION_ENABLED_PARTNER_IDS` (optional, comma-separated UUIDs).
 - Add both variables, with no values, to `/.env.example` and `deploy/.env.example`.
-- Tests: `service.start.test.ts`, `release.gates.test.ts`, `routes/devices/networkIsolation.test.ts` and `routes/agents/isolationVerify.test.ts`.
+- Add pass-throughs to `docker-compose.yml` and `deploy/docker-compose.prod.yml`, next to `AGENT_ECH_ENABLED` (`:157` and `:347`):
+  - `NETWORK_ISOLATION_ENABLED: ${NETWORK_ISOLATION_ENABLED:-false}`
+  - `NETWORK_ISOLATION_ENABLED_PARTNER_IDS: ${NETWORK_ISOLATION_ENABLED_PARTNER_IDS:-}`
+- Tests: `service.start.test.ts`, `release.gates.test.ts`, `routes/devices/networkIsolation.test.ts`, `routes/agents/isolationVerify.test.ts`, and a compose-parity assertion. Extend the existing compose env test if there is one; otherwise create `apps/api/src/config/networkIsolationCompose.test.ts`, which greps both compose files for both keys.
 
 **Interfaces:**
 - `startNetworkIsolation(auth, deviceId, input, opts: { requestedByKind:'user'|'brain'|'system'; approvalRef?: string }): Promise<{ episode; commandId } | { error: IsolationStartRefusal }>`
@@ -528,7 +555,8 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 
 **Files:**
 - Create in `agent/internal/isolation/`: `types.go`, `statemachine.go`, `clock.go`, `journal/journal.go`, `journal/lock_{unix,windows}.go` and `journal/acl_{unix,windows}.go`.
-- Modify `agent/internal/wire/errorcodes.go:22`.
+- Modify `agent/internal/wire/errorcodes.go:22`, adding the codes **and** their `AllCommandErrorCodes` entries.
+- In the same PR, modify `apps/api/src/routes/agents/schemas.ts:601` (`AGENT_COMMAND_ERROR_CODES`). The Go pin `TestCommandErrorCodesMatchServerSchema` (`agent/internal/wire/errorcodes_test.go:20-36`) regex-parses that list, and `schemas.commandResult.test.ts` checks the reverse direction, so both sides must change together.
 - Tests: `statemachine_test.go`, `statemachine_fuzz_test.go` (pattern: `agent/internal/pamlifetime/state_machine_fuzz_test.go`), `clock_test.go`, `journal/journal_test.go` and `breakglass_vectors_test.go`.
 
 **Interfaces:**
@@ -559,7 +587,9 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - Tests: `resolve_test.go`, `probe_test.go`, `breakglass_test.go`, `manager_test.go`, `manager_crash_test.go` and `manager_fence_test.go`.
 
 **Interfaces:**
-- `NewManager(deps ManagerDeps) *Manager`, where `ManagerDeps{ Isolator; Scheduler RecoveryScheduler; DataDir string; Resolver; VerifyRoundTrip func(ctx, isolationID string) (serverTime time.Time, err error); Clock; Dialer; Recovery RecoveryReadiness }`.
+- `NewManager(deps ManagerDeps) *Manager`, where `ManagerDeps{ Isolator; Scheduler RecoveryScheduler; DataDir string; Resolver; VerifyRoundTrip func(ctx, isolationID string) (serverTime time.Time, err error); Clock; Dialer; Proxy func() (*url.URL, error) }`.
+  - `Scheduler.Ready()` reports recovery readiness.
+  - `Proxy` is the transport's effective proxy (`http.ProxyFromEnvironment`, as at `heartbeat.go:1131`).
 - `Manager` methods:
   - `HandleIsolate(ctx, payload map[string]any) tools.CommandResult`
   - `HandleRelease(ctx, payload) tools.CommandResult`
@@ -600,6 +630,7 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
   - **Break-glass.** Buckets −1, 0 and +1 are accepted. The 6th attempt in an hour is refused. `--force` records `released_locally:forced`.
   - **Generations.** `Reconcile` with a newer released generation releases. With an older generation it does nothing.
   - **Capability.** Capability 0 returns `unsupported_platform` before touching anything.
+  - **Proxy** (spec §3.4 baseline row). When `Proxy()` returns a URL for the control-plane host, `ResolvedSpec` gains a `scope:"breeze"` entry for the proxy host and port, and the control-plane permit stays. A proxy that does not resolve fails preflight with `mechanism_unavailable`. Every isolator's golden test (W1f Task 2, W2 Task 3, W3 Task 2) includes a proxy fixture: Breeze-process scope on Windows and Linux, destination-only on macOS.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.** The positive probe uses a new `http.Transport` with `DisableKeepAlives`, so it is a fresh TLS session. The server time it returns updates `HighWaterWall`.
 - [ ] **Step 4: Run them with `-race`.** Expected: PASS.
@@ -622,6 +653,7 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - Modify `agent/internal/heartbeat/handlers_incident_response.go:16`. For `network_isolation`, call `h.isolation.HandleIsolate`. Every other action keeps `tools.ExecuteContainment`.
 - Change `incident_response.go:189`. The `network_isolation` case there returns `isolation_invalid_spec` ("dispatched outside the isolation manager"), so the tools path can never isolate.
 - Create `handlers_containment.go` (`release_containment`). Modify `remote/tools/types.go:277` to add `CmdReleaseContainment`, and `handlers_test.go:142`.
+- Modify `agent/internal/privilege/check.go:7`: add `execute_containment` and `release_containment` to `elevatedCommandTypes`. Neither is there today.
 - Modify `agent/internal/agentapp/main.go`. Add a `containment` cobra group with the subcommands `status`, `release --code <c> | --force`, `boot-apply` and `expire-check`.
 - Modify `agent/internal/updater/updater.go:1515` and `pkg_source.go:~34`. While `isolation.Active()`, refuse any artifact URL, or any redirect hop, whose host is not the control-plane host, with `ErrUpdateBlockedByIsolation`. Never start a self-update that has not been staged and verified.
 - Create `agent/cmd/breeze-isolation-recovery/main.go` with these subcommands:
@@ -638,7 +670,7 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - `generation ≥ 1`;
 - `now < expiresAt ≤ now + 720 h`;
 - `allow` is non-empty and contains a `scope:"breeze"` entry for the agent's own server host;
-- the break-glass secret is 32 bytes after decryption;
+- the top-level `breakGlassSecret` base64-decodes to 32 bytes;
 - no entry has `scope:"any"` unless the payload also carries `policyRevision` (W4a).
 
 - [ ] **Step 1: Write the failing tests.**
@@ -657,9 +689,9 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - [ ] **Step 5: Commit.**
 
 **W1e CI traps:**
-- `tools/agentsim/sim/payloads.go:60` uses `CompiledSecurityCapabilities()`, so keep it compiling.
+- `agent/tools/agentsim/sim/payloads.go:60` uses `CompiledSecurityCapabilities()`, so keep it compiling.
 - Run Go lint for `GOOS=windows`.
-- The wire error-code pin test needs the server-side codes, which W1b Task 2 adds.
+- The wire error codes and the server list change together in W1d Task 1. Never split them across PRs.
 
 ---
 
@@ -832,10 +864,17 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - `isolator_windows.go`: report `Capability{Version:1, Mechanism:"wfp", Ready}`. `Ready` is true only when `FwpmEngineOpen0` succeeds **and** `EnsureRecovery` has succeeded **and** `Scheduler.Ready()`. Report `Version:0` with an `UnsupportedReason` otherwise.
 - `packages/shared/src/utils/networkIsolation.ts`: pin `NETWORK_ISOLATION_MIN_AGENT_VERSION` to the agent release carrying this PR. If that number is unknown at merge, keep `'999.0.0'`, pin it in the release PR, and say which you did in the PR body.
 - The server's start eligibility also requires `networkIsolationReady === true`.
-- Tests: the capability matrix and the shared pin test.
+- Tests: `isolator_windows_capability_test.go`, `packages/shared/src/utils/networkIsolation.pin.test.ts`, and `service.start.test.ts` (extended).
 
 - [ ] **Step 1: Write the failing tests.**
-- [ ] **Step 2: Run them.** Expected: FAIL.
+  - With fakes, the capability is `{Version:0, Ready:false}` with a named `UnsupportedReason` in each of three cases:
+    - `FwpmEngineOpen0` returns an error (`bfe_unavailable`);
+    - `EnsureRecovery` fails (`recovery_unavailable`);
+    - `Scheduler.Ready()` is false (`scheduler_unavailable`).
+  - It is `{Version:1, Mechanism:"wfp", Ready:true}` only when all three succeed.
+  - The pin test checks that the gate is a valid semver and is either `'999.0.0'` or below it.
+  - The server refuses start with `agent_unsupported` when `networkIsolationReady` is false, even if version ≥ 1.
+- [ ] **Step 2: Run** `cd agent && go test -race ./internal/isolation/...` (Windows runner) and the shared and API tests. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run `go test -race ./...` on Windows CI (`test-agent`), plus the shared tests.** Expected: PASS.
 - [ ] **Step 5: Commit.**
@@ -1036,24 +1075,39 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - The two one-shots are `systemd-run --unit=breeze-isolation-rollback-<attempt> --on-active=90s …` and `systemd-run --unit=breeze-isolation-expire --on-calendar=<expiresAt> …`.
 - `recoveryinstall/install_linux.go`, the updater asset for Linux, and `install-linux.sh`, which installs the recovery binary side by side.
 - `uninstall.sh`, `apps/web/public/scripts/uninstall.sh` and `handlers_uninstall.go:295,314`: each releases first.
-- Tests: unit-file golden tests, uninstall-order tests, and shellcheck in Lint.
+- Tests: `scheduler_linux_test.go` (unit-file golden), `handlers_uninstall_linux_test.go`, `recoveryinstall/install_linux_test.go`, and shellcheck in Lint.
 
 - [ ] **Step 1: Write the failing tests.**
-- [ ] **Step 2: Run them.** Expected: FAIL.
+  - The unit files match golden files exactly:
+    - the oneshot has both `Before=network-pre.target` and `Wants=network-pre.target`;
+    - the timer has `OnBootSec=1min` and `OnUnitActiveSec=15min`.
+  - The `ArmProvisional` argv is `systemd-run --unit=breeze-isolation-rollback-<attempt> --on-active=90s <recovery> rollback-if-uncommitted --data-dir <d> --attempt <attempt>`.
+  - `ArmExpiry` uses `--on-calendar` with `expiresAt` in UTC.
+  - `RemoveAll` stops and removes all of them.
+  - `buildLinuxUninstallScript` runs `release-all --reason uninstall` before any `systemctl disable` or `rm`, and aborts if release-all exits non-zero.
+  - `uninstall.sh` (both copies) does the same.
+  - `install-linux.sh` installs the recovery binary into a versioned directory and never overwrites an existing one.
+- [ ] **Step 2: Run** `cd agent && go test -race ./internal/isolation/... ./internal/heartbeat/...` on Linux, plus Lint. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
 ### Task 5: Linux capability on
 
-- Report `Capability{1, "nft", Ready}` when all of these hold:
-  - nft is present;
-  - cgroup v2 is in use and the layout is set up;
-  - recovery is ready;
-  - the scheduler is ready.
-- Add no per-OS version gate. The capability already carries the per-OS truth.
-- Update the platform table on the docs page.
-- Test: the capability matrix.
+**Files:** `isolator_linux.go` (`Capability`) and the docs page's platform table. Test: `isolator_linux_capability_test.go`.
+
+- [ ] **Step 1: Write the failing test.** Each failing condition yields `{Version:0, Ready:false}` with its named reason:
+  - `nft` missing → `nft_missing`;
+  - cgroup v1 → `cgroup_v1`;
+  - no `Delegate` → `cgroup_not_delegated`;
+  - recovery missing → `recovery_unavailable`;
+  - scheduler not ready → `scheduler_unavailable`.
+
+  Only when all five hold is the result `{Version:1, Mechanism:"nft", Ready:true}`. Do not add a per-OS version gate: the capability already carries the per-OS truth.
+- [ ] **Step 2: Run it.** Expected: FAIL.
+- [ ] **Step 3: Implement it, and update the docs table.**
+- [ ] **Step 4: Run it.** Expected: PASS.
+- [ ] **Step 5: Commit.**
 
 **L2 Linux lab leg (Todd gate).**
 - Covers the spec §7 Linux row and the Linux items in the All row.
@@ -1121,20 +1175,35 @@ Audit through `writeRouteAudit` (`services/auditEvents.ts:225`): `device.isolati
 - `macosuninstall/{script.go, functions.sh}`: release first.
 - `handlers_uninstall.go:185,226`.
 - `recoveryinstall/install_darwin.go`, and notarisation of the recovery binary in `release.yml`.
-- Tests: plist golden tests and uninstall-order tests.
+- Tests: `scheduler_darwin_test.go` (plist golden), `macosuninstall/script_test.go`, `handlers_uninstall_darwin_test.go` and `recoveryinstall/install_darwin_test.go`.
 
 - [ ] **Step 1: Write the failing tests.**
-- [ ] **Step 2: Run them.** Expected: FAIL.
+  - The plists match golden files:
+    - root ownership and `RunAtLoad`;
+    - `StartInterval 900` on the main plist and `15` on the rollback plist;
+    - `ProgramArguments` naming the versioned recovery path;
+    - `ExpireAt` uses `StartCalendarInterval` from `expiresAt`, converted to local time with a test for the DST edge.
+  - The uninstall script runs `release-all` before `launchctl bootout` of any Breeze daemon, and aborts on a non-zero exit.
+  - The pkg `postinstall` never overwrites an existing recovery version directory.
+- [ ] **Step 2: Run** `cd agent && go test -race ./internal/isolation/... ./internal/macosuninstall/... ./internal/heartbeat/...` on the macOS runner. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
 ### Task 4: macOS capability on
 
-- Report `Capability{1, "pf", Ready}`. The `CheckCompatible` refusal happens at apply time, so the console shows `mechanism_unavailable` with the reason.
-- Docs:
-  - macOS has no per-process scope.
-  - The boot window is measured in the lab.
+**Files:** `isolator_darwin.go` (`Capability`) and the docs page. Test: `isolator_darwin_capability_test.go`.
+
+- [ ] **Step 1: Write the failing test.** Each failing condition yields `{Version:0, Ready:false}` with its named reason:
+  - `pfctl` missing → `pfctl_missing`;
+  - recovery missing → `recovery_unavailable`;
+  - scheduler not ready → `scheduler_unavailable`.
+
+  Otherwise the result is `{Version:1, Mechanism:"pf", Ready:true}`. `CheckCompatible` is **not** consulted here: it runs at apply time, so a refused apply shows `mechanism_unavailable` with its reason in the console.
+- [ ] **Step 2: Run it.** Expected: FAIL.
+- [ ] **Step 3: Implement it.** Document the macOS limits: there is no per-process scope, and the boot window is measured in L3.
+- [ ] **Step 4: Run it.** Expected: PASS.
+- [ ] **Step 5: Commit.**
 
 **L3 macOS lab leg (Todd gate).**
 - Covers the spec §7 macOS row and the macOS items in the All row.
@@ -1219,7 +1288,7 @@ Read the "Partner-Wide First" 7-step playbook in `docs/agents/tenancy-rls.md` an
   - Handler: `releaseNetworkIsolation(..., { kind:'ai', approvalBinding })`.
 - Tier, rate-limit and digest tables:
   - `aiGuardrails.ts:601` (`TIER3_FOUR_EYES_TOOLS`)
-  - `aiToolRateLimits.ts:181` (5 per 600 s)
+  - `aiToolRateLimits.ts:184` (5 per 600 s, the same as `execute_containment`)
   - `actionIntents/effectDigest.ts:167` (`{orgId, deviceId, isolationId, generation}`)
 - Tool catalogs:
   - `aiToolSchemas.ts`
@@ -1243,8 +1312,10 @@ Read the "Partner-Wide First" 7-step playbook in `docs/agents/tenancy-rls.md` an
   - MCP stays denied, both unattended and through intents (W1c).
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
-  - Measure `aiToolIndex.test.ts`. If it goes over 7 040 B, raise `INDEX_BUDGET_BYTES` **once**, by 128 B, with a comment.
-  - If even that would exceed 7 680 B, use the lazy index from #10065 instead.
+  - Measure the index with `aiToolIndex.test.ts`.
+  - If it exceeds 7 040 B, raise `INDEX_BUDGET_BYTES` **once**, to 7 168 B (+128 B, the per-wave allowance), with a comment.
+  - If it still exceeds 7 168 B, do not raise the budget again. Shorten the new tool's index entry or use the lazy index from #10065.
+  - Whatever happens, the cap of 7 680 B is never exceeded.
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit.**
 
@@ -1255,7 +1326,10 @@ Read the "Partner-Wide First" 7-step playbook in `docs/agents/tenancy-rls.md` an
 ### Task 1: Server signing, agent verification, console and policy
 
 **Files:**
-- `services/networkIsolation/releaseToken.ts`: Ed25519, signed with `NETWORK_ISOLATION_TOKEN_SIGNING_KEY` (Gate B decision 5). Add it to `validate.ts` and both `.env.example` files.
+- `services/networkIsolation/releaseToken.ts`: Ed25519, signed with `NETWORK_ISOLATION_TOKEN_SIGNING_KEY` (Gate B decision 5).
+  - Register the key in `validate.ts` and both `.env.example` files.
+  - Pass it through `docker-compose.yml` and `deploy/docker-compose.prod.yml` as `${NETWORK_ISOLATION_TOKEN_SIGNING_KEY:-}`.
+  - Extend the compose-parity test from W1b Task 3.
 - `Spec.ReleaseTokenPublicKey`, pinned in the journal at apply.
 - `agent/internal/isolation/releasetoken.go`.
 - The CLI gets `containment release --token`.
@@ -1380,14 +1454,17 @@ No disagreement remains open. Every codex position is either adopted or recorded
    - (c) MSI/pkg only.
 
    **Recommend (a).** (c) misses every raw-swap-updated agent, and (b) ties recovery to the agent binary that recovery exists to survive.
-4. **Five plan-stage refinements that tighten the spec.** None reverses an OD.
+4. **Eight plan-stage refinements.** Each one tightens or corrects the spec; none reverses an OD. (vi)–(viii) came from the PR review.
    - (i) Relay-only remote desktop moves from "W4 if not earlier" into W1, as W1i.
    - (ii) A clock high-water-mark rule: after a reboot, a wall clock below the largest journalled or server time minus 5 min counts as expired.
    - (iii) A one-shot expiry task at `expiresAt`, in addition to the 15-min poll.
    - (iv) Four extra columns (`expiry_warned_at`, `break_glass_ack_seq`, `last_journal_seq`, `release_confirmed_at`), and the tombstone persists until confirmed, even for `failed:not_delivered`.
    - (v) Dead-man requires agent capability v2.
+   - (vi) W4a's policy adds a `requireSignedReleaseToken` setting, which is not in spec §3.11. The policy stores `deadManMinutes`; the wire carries `deadManSeconds = deadManMinutes × 60`.
+   - (vii) The break-glass secret moves on the wire. It becomes the top-level payload field `breakGlassSecret`, not `parameters.breakGlass.secret` (spec §3.3), because `sensitiveCommandPayload.ts` encrypts and strips only top-level keys. In the heartbeat block it is plaintext over the agent's TLS channel, the same trust model as command delivery. It is not ciphertext the agent cannot open.
+   - (viii) A spec §2 correction. "Isolate is a `device_execute`-gated command, so probation/restricted partners cannot isolate" is not true of the code: `execute_containment` is in `LIFECYCLE_COMMAND_TYPES` (`partnerTrust.ts:101`). The plan gates start on trust explicitly (W1b Task 3) to deliver the spec's intent.
 
-   **Recommend: confirm all five as plan-level refinements.** Fold them into the spec as a dated "Plan refinements (Gate B)" note in the same docs PR once you approve.
+   **Recommend: confirm all eight as plan-level refinements.** Fold them into the spec as a dated "Plan refinements (Gate B)" note in the same docs PR once you approve.
 5. **Signing key for the W4c release token.**
    - (a) A dedicated `NETWORK_ISOLATION_TOKEN_SIGNING_KEY` (Ed25519).
    - (b) Reuse the agent release-manifest signing key.
