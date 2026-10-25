@@ -67,9 +67,15 @@ function mockReads(opts: { orgDevices: Array<{ id: string; siteId: string | null
     if ('devices' in cols && Object.keys(cols).length === 1) {
       return { from: () => ({ where: () => Promise.resolve(opts.storedGroups) }) };
     }
+    // W03-D10: the active-execution check (`select({ id })` on dr_executions) — none running.
+    if ('id' in cols && Object.keys(cols).length === 1) {
+      return { from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) };
+    }
     return { from: () => ({ where: () => ({ orderBy: () => Promise.resolve(opts.storedGroups) }) }) };
   });
   mockDb.insert.mockReturnValue({ values: () => ({ returning: () => Promise.resolve([{ id: 'group-1' }]) }) });
+  // W03-D10: group writes bump dr_plans.updated_at first.
+  (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mockReturnValue({ set: () => ({ where: () => Promise.resolve([]) }) });
 }
 
 describe('execute_dr_plan — stored-device scope', () => {

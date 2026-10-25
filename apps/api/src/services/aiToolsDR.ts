@@ -213,6 +213,33 @@ async function loadPlanWithAccess(planId: string, auth: AuthContext) {
 // Register all DR tools into the aiTools Map
 // ============================================
 
+/**
+ * W03-D10 (#6757, quorum QW3). A pending or running execution re-reads its
+ * plan's groups on every tick (drExecutionService.ts), so a plan or group
+ * write landing mid-run would change a restore a four-eyes approver already
+ * signed off on. Refused until the execution reaches a terminal status.
+ */
+export const DR_PLAN_EXECUTION_IN_PROGRESS = 'dr_plan_execution_in_progress';
+
+async function planHasActiveExecution(planId: string): Promise<boolean> {
+  const [active] = await db
+    .select({ id: drExecutions.id })
+    .from(drExecutions)
+    .where(and(eq(drExecutions.planId, planId), inArray(drExecutions.status, ['pending', 'running'])))
+    .limit(1);
+  return Boolean(active);
+}
+
+/**
+ * W03-D10. The execute_dr_plan effect digest pins dr_plans.updated_at
+ * (actionIntents/effectDigest.ts), not the groups, so every group write bumps
+ * the plan row. Called BEFORE the group write: if the write then fails, the
+ * worst case is a spurious digest mismatch (fail closed), never a missed edit.
+ */
+async function touchPlanRevision(planId: string): Promise<void> {
+  await db.update(drPlans).set({ updatedAt: new Date() }).where(eq(drPlans.id, planId));
+}
+
 export function registerDRTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
     aiTools.set(tool.definition.name, tool);
@@ -640,6 +667,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Plan not found or access denied' });
         }
 
+        if (await planHasActiveExecution(plan.id)) return JSON.stringify({ error: DR_PLAN_EXECUTION_IN_PROGRESS });
+
         const updateData: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updateData.name = input.name.trim();
         if (typeof input.description === 'string') updateData.description = input.description;
@@ -684,6 +713,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         ) {
           return JSON.stringify({ error: DEPENDS_ON_GROUP_DENIED });
         }
+        if (await planHasActiveExecution(plan.id)) return JSON.stringify({ error: DR_PLAN_EXECUTION_IN_PROGRESS });
+        await touchPlanRevision(plan.id);
 
         const [group] = await db
           .insert(drPlanGroups)
@@ -755,6 +786,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
         if (input.estimatedDurationMinutes !== undefined) {
           updateData.estimatedDurationMinutes = Number(input.estimatedDurationMinutes);
         }
+        if (await planHasActiveExecution(planId)) return JSON.stringify({ error: DR_PLAN_EXECUTION_IN_PROGRESS });
+        await touchPlanRevision(planId);
 
         const [group] = await db
           .update(drPlanGroups)
@@ -786,6 +819,8 @@ export function registerDRTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Group not found or access denied' });
         }
 
+        if (await planHasActiveExecution(planId)) return JSON.stringify({ error: DR_PLAN_EXECUTION_IN_PROGRESS });
+        await touchPlanRevision(planId);
         await db.delete(drPlanGroups).where(eq(drPlanGroups.id, groupId));
         return JSON.stringify({ success: true, deleted: true, groupId });
       }
