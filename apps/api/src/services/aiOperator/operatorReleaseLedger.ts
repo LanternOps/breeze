@@ -164,7 +164,10 @@ export async function beginOperatorReleaseLedger(
       if (finished) return;
       finished = true;
       const durationMs = Date.now() - startedAt;
-      const error = outcome.error instanceof Error ? outcome.error : undefined;
+      // A non-Error rejection still records why the release failed.
+      const error = outcome.error instanceof Error
+        ? outcome.error
+        : outcome.error !== undefined ? new Error(String(outcome.error)) : undefined;
       const toolOutput: Record<string, unknown> = { source: 'ai_operator', status: outcome.status, durationMs };
       if (outcome.status === 'success' && outcome.ledgerResult) {
         toolOutput.result = summarizeToolResult(outcome.ledgerResult, { maxStringLength: 500 });

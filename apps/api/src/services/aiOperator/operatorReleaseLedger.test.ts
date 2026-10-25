@@ -100,6 +100,28 @@ describe('beginOperatorReleaseLedger', () => {
     expect((dbMock.updated[0]!.toolOutput as Record<string, unknown>).result).toBeUndefined();
   });
 
+  it('never stores argument values: a secret-shaped argument stays out of the ledger row', async () => {
+    await beginOperatorReleaseLedger({ ...intent, arguments: { userPrincipalName: 'a@b.example', password: 'Hunter2-Plaintext!' } } as never);
+    const [, execution] = dbMock.inserted;
+    expect(JSON.stringify(execution)).not.toContain('Hunter2-Plaintext!');
+  });
+
+  it('finish on success summarizes a given result (never the raw body)', async () => {
+    const ledger = (await beginOperatorReleaseLedger({ ...intent, actionName: 'm365_add_to_group' } as never))!;
+    await ledger.finish({ status: 'success', ledgerResult: JSON.stringify({ success: true, displayName: 'Raw-Body-Marker' }) });
+    expect(dbMock.updated[0]).toMatchObject({ status: 'completed', toolOutput: { result: expect.any(Object) } });
+    expect(JSON.stringify(dbMock.updated[0])).not.toContain('Raw-Body-Marker');
+  });
+
+  it('finish on failure records failed, the redacted message and the error class; a non-Error rejection is kept too', async () => {
+    const a = (await beginOperatorReleaseLedger(intent as never))!;
+    await a.finish({ status: 'failure', error: new TypeError('boom') });
+    expect(dbMock.updated[0]).toMatchObject({ status: 'failed', errorMessage: 'boom', toolOutput: { errorClass: 'TypeError' } });
+    const b = (await beginOperatorReleaseLedger(intent as never))!;
+    await b.finish({ status: 'failure', error: 'plain string rejection' });
+    expect(dbMock.updated[1]).toMatchObject({ status: 'failed', errorMessage: 'plain string rejection', toolOutput: { errorClass: 'Error' } });
+  });
+
   it('finish never throws when the completion write fails', async () => {
     const ledger = (await beginOperatorReleaseLedger(intent as never))!;
     dbMock.updateFails = true;
