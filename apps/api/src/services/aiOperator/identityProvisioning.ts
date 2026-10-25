@@ -758,6 +758,11 @@ function enforceByteBudget(facts: OnboardingDiscoveryFacts): void {
 // The draft's reads (W07 R2a Task 14, Amendment G7)
 // ---------------------------------------------------------------------------
 
+const DRAFT_REDACTED_FLAG_CODES: ReadonlySet<string> = new Set([
+  'm365_collision_check_failed', 'm365_seats_read_failed', 'google_collision_check_failed', 'google_connection_unavailable',
+]);
+const DRAFT_READ_FAILED_DETAIL = 'The provider read failed, so Breeze could not check.';
+
 /** What `POST /task-drafts` may know before anything exists: the two collision checks and the seats. */
 export interface OnboardingDraftReads {
   collisions: OnboardingDiscoveryFacts['collisions'];
@@ -828,9 +833,15 @@ export async function readOnboardingDraftFacts(args: DiscoverOnboardingFactsInpu
   };
 
   const [m365, google] = await Promise.all([readM365Draft(), readGoogleDraft()]);
+  // A draft answers a caller; raw provider text (which can carry tenant
+  // detail) must not reach it. The read-failure flags keep their code and
+  // subject but get a fixed detail. Discovery's own flags are unchanged.
+  const flags = (c.flags as DiscoveryFlagRow[]).map((f) => (
+    DRAFT_REDACTED_FLAG_CODES.has(f.code) ? { ...f, detail: DRAFT_READ_FAILED_DETAIL } : f
+  ));
   return {
     collisions: { m365: m365.collision, google },
     seats: { m365: m365.seats },
-    flags: c.flags as DiscoveryFlagRow[],
+    flags,
   };
 }

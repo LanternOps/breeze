@@ -86,7 +86,7 @@ vi.mock('../../db', async () => {
 
 import { DISCOVERY_FACTS_MAX_BYTES, DISCOVERY_LIMITS, DiscoveryTransientError } from './identityDiscovery';
 import { identityOnboardingCreateFactsSchema } from './recipes/identityOnboarding';
-import { discoverOnboardingFacts } from './identityProvisioning';
+import { discoverOnboardingFacts, readOnboardingDraftFacts } from './identityProvisioning';
 
 const ORG = '00000000-0000-4000-8000-0000000000aa';
 const OTHER_ORG = '00000000-0000-4000-8000-0000000000ab';
@@ -754,5 +754,21 @@ describe('read-only and model-free, on the module source', () => {
     expect(src).not.toMatch(/createAndEnqueueAgentRun|aiAgentSdk|anthropic|submit_task_step/);
     expect(src).not.toMatch(/\.insert\(|\.update\(|\.delete\(/);
     expect(src).not.toMatch(/\.(patch|insert|create|update|delete)\(\s*\{/);
+  });
+});
+
+describe('readOnboardingDraftFacts — flags carry no raw provider text (R2a Task 14)', () => {
+  it('a provider error message never reaches the draft flags', async () => {
+    const SECRET = 'AADSTS-raw-tenant-detail-7f3a';
+    m365Default({
+      'm365.user.get': () => { throw new Error(`boom ${SECRET}`); },
+      'm365.org.skus.list': () => { throw new Error(`sku boom ${SECRET}`); },
+    });
+    h.dir.users.get.mockRejectedValue(Object.assign(new Error(`google boom ${SECRET}`), { code: 400 }));
+    const reads = await readOnboardingDraftFacts({ orgId: ORG, input: input(), now: NOW });
+    const codes = reads.flags.map((f) => f.code);
+    expect(codes).toEqual(expect.arrayContaining(['m365_collision_check_failed', 'm365_seats_read_failed']));
+    expect(JSON.stringify(reads.flags)).not.toContain(SECRET);
+    expect(JSON.stringify(reads.flags)).not.toContain('boom');
   });
 });

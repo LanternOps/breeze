@@ -72,7 +72,7 @@ import {
   users,
   wispGrants,
 } from '../db/schema';
-import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, hasSatisfiedMfa, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { aiOperatorServiceRecoveryEnabled, aiOperatorTasksEnabled } from '../config/env';
 import { admitServiceRecoveryTask, admitTask, recipeEnabled } from '../services/aiOperator/taskService';
@@ -1166,6 +1166,16 @@ async function draftIdentityOnboardingFromRoute(c: Context, args: {
 }) {
   const auth = c.get('auth');
   const { orgId, recipe, input, readiness, workflow } = args;
+  // The shared draft route only requires organizations:read, but this branch
+  // does live directory lookups by a caller-supplied name: admission's own
+  // gates (organizations:write + MFA) apply before any provider read.
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  if (!perms || !hasPermission(perms, PERMISSIONS.ORGS_WRITE.resource, PERMISSIONS.ORGS_WRITE.action)) {
+    return c.json({ error: 'Permission denied', code: 'PERMISSION_DENIED' }, 403);
+  }
+  if (!hasSatisfiedMfa(auth)) {
+    return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
+  }
   if (!canMutateOrgWideGovernance(auth)) {
     return c.json({
       error: 'Onboarding creates organization-wide identity accounts; site-restricted users cannot start it.',

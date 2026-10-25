@@ -37,6 +37,8 @@ vi.mock('../middleware/auth', async (importOriginal) => {
       c: { json: (body: unknown, status: number) => Response },
       next: () => Promise<void>,
     ) => (mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)),
+    // The onboarding DRAFT branch re-checks MFA itself (the shared draft route has no requireMfa).
+    hasSatisfiedMfa: () => mfaOkMock(),
     buildOrgAccessClosures: actual.buildOrgAccessClosures,
   };
 });
@@ -1042,10 +1044,9 @@ describe('identity_onboarding through the shipped routes (W07 R2a Task 14)', () 
       const { recipeEnabled } = await import('../services/aiOperator/taskService');
       const { M365_PERMISSION_PROFILES } = await import('@breeze/shared/m365');
       const profile = M365_PERMISSION_PROFILES['customer-graph-actions'];
-      // NEEDS ORCHESTRATOR: recipeReadiness.ts registers no agent kind for
-      // identity_onboarding (RECIPE_AGENT_KINDS has two entries), so the real
-      // route answers OPERATOR_NO_AGENT. Spec §6.8 / D3 names the helpdesk
-      // agent; it is supplied here until that one-line registration lands.
+      // Spec §6.8 / D3: onboarding runs under the helpdesk agent
+      // (RECIPE_AGENT_KINDS registers it; restated here so this mock is
+      // self-contained).
       const kinds: Record<string, string> = { ...real.RECIPE_AGENT_KINDS, identity_onboarding: 'helpdesk' };
       return {
         ...real,
@@ -1271,6 +1272,26 @@ describe('identity_onboarding through the shipped routes (W07 R2a Task 14)', () 
     // Writes nothing and resolves no contact: not one Breeze row read or written.
     expect(ob.writes).toBe(0);
     expect(ob.selectCalls).toBe(0);
+  });
+
+  it('R2a T14: an onboarding draft without organizations:write is 403 PERMISSION_DENIED and reads no provider', async () => {
+    ob.permissions = [{ resource: 'organizations', action: 'read' }];
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Permission denied', code: 'PERMISSION_DENIED' });
+    expect(ob.m365).not.toHaveBeenCalled();
+    expect(ob.resolveGoogle).not.toHaveBeenCalled();
+    expect(ob.dirUsersGet).not.toHaveBeenCalled();
+  });
+
+  it('R2a T14: an onboarding draft without satisfied MFA is 403 MFA_REQUIRED and reads no provider', async () => {
+    mfaOkMock.mockReturnValue(false);
+    const res = await obPost('/task-drafts', draftBody());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'MFA required', code: 'MFA_REQUIRED' });
+    expect(ob.m365).not.toHaveBeenCalled();
+    expect(ob.resolveGoogle).not.toHaveBeenCalled();
+    expect(ob.dirUsersGet).not.toHaveBeenCalled();
   });
 
   it('G7: a taken sign-in name is a FLAG and an empty create plan, never an error', async () => {
