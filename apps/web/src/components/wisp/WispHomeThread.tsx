@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageSquare } from 'lucide-react';
 import { useAiStore, type WispState } from '@/stores/aiStore';
+import { fetchWithAuth } from '@/stores/auth';
 import AiChatMessages from '../ai/AiChatMessages';
 import AiChatInput from '../ai/AiChatInput';
 import AiThinkingIndicator from '../ai/AiThinkingIndicator';
@@ -12,16 +13,35 @@ type Wisp = NonNullable<WispState>;
 type Binding = 'binding' | 'live' | 'failed';
 
 /**
+ * `thread.lastSessionId` is the last session stamped on the thread, not the
+ * last live one: an idled-out (`expired`) or closed session would load its
+ * transcript and then refuse the first send. Resume only an active session
+ * that still runs under this grant. A failed read is "not resumable".
+ */
+async function resumable(sessionId: string, grantId: string): Promise<boolean> {
+  try {
+    const res = await fetchWithAuth(`/ai/sessions/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) return false;
+    const body = (await res.json().catch(() => null)) as { session?: { status?: unknown; wispGrantId?: unknown } } | null;
+    return body?.session?.status === 'active' && body.session.wispGrantId === grantId;
+  } catch (err) {
+    console.warn('[WispHomeThread] could not check the last Wisp session; starting a new one', err);
+    return false;
+  }
+}
+
+/**
  * Bind the global chat (aiStore) to this thread's Wisp session without
  * minting a session per visit: reuse the live one, else resume the thread's
- * last session (the store keeps Wisp mode when the session runs under the same
- * grant), else start the first one. Only for an active grant — a paused or
- * ended one cannot run a turn, so nothing is created for it.
+ * last session when it is still active (the store keeps Wisp mode when the
+ * session runs under the same grant), else start a new one. Only for an
+ * active grant — a paused or ended one cannot run a turn, so nothing is
+ * created for it.
  */
 async function bindWispSession(wisp: Wisp, lastSessionId: string | null): Promise<boolean> {
   const store = useAiStore.getState();
   if (store.wisp?.threadId === wisp.threadId && store.sessionId) return true;
-  if (lastSessionId) {
+  if (lastSessionId && (await resumable(lastSessionId, wisp.grantId))) {
     useAiStore.setState({ wisp });
     await store.switchSession(lastSessionId);
     const after = useAiStore.getState();
@@ -42,6 +62,9 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
   const active = wisp.status === 'active';
   const [binding, setBinding] = useState<Binding>('binding');
   const attempt = useRef(0);
+  // Read at bind time only: a poll reporting a newer last session must not rebind a live thread.
+  const lastSessionRef = useRef(lastSessionId);
+  lastSessionRef.current = lastSessionId;
 
   // The whole store, as AiChatSidebar binds it (a selector returning a fresh object would never settle).
   const {
@@ -57,7 +80,7 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
     if (!active) return;
     const token = ++attempt.current;
     setBinding('binding');
-    bindWispSession(wisp, lastSessionId)
+    bindWispSession(wisp, lastSessionRef.current)
       .then((ok) => { if (token === attempt.current) setBinding(ok ? 'live' : 'failed'); })
       .catch((err: unknown) => {
         console.error('[WispHomeThread] opening the Wisp session failed', err);
@@ -65,7 +88,7 @@ export default function WispHomeThread({ wisp, lastSessionId }: { wisp: Wisp; la
       });
     // The grant id and thread id identify the session; other Wisp fields (spend, summary) changing must not rebind.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, wisp.grantId, wisp.threadId, lastSessionId]);
+  }, [active, wisp.grantId, wisp.threadId]);
 
   // The panel (or another tab of the store) moved the chat to another conversation: say so rather than show it here.
   const showingThisThread = storeThreadId === wisp.threadId;

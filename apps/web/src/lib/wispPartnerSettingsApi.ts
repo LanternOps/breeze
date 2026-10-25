@@ -28,5 +28,7 @@ export async function setWispPartnerEnabled(enabled: boolean): Promise<boolean> 
     errorFallback: i18n.t('ai:wisp.partnerSwitch.saveFailed'),
     successMessage: enabled ? i18n.t('ai:wisp.partnerSwitch.savedOn') : i18n.t('ai:wisp.partnerSwitch.savedOff'),
   });
-  return typeof body?.data?.enabled === 'boolean' ? body.data.enabled : enabled;
+  // Like the read: a 2xx without the stored value is a contract break, not "saved as asked".
+  if (typeof body?.data?.enabled !== 'boolean') throw new Error('wisp partner settings write: malformed payload');
+  return body.data.enabled;
 }

@@ -4,7 +4,7 @@
  * resume the thread's last session, else start the first — and nothing for a
  * paused or ended grant.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => {
@@ -16,6 +16,10 @@ const h = vi.hoisted(() => {
   return { state, store };
 });
 vi.mock('@/stores/aiStore', () => ({ useAiStore: h.store }));
+const fetchMock = vi.hoisted(() => vi.fn());
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: fetchMock }));
+const sessionRes = (status: string, wispGrantId = 'g-1') =>
+  ({ ok: true, status: 200, json: async () => ({ session: { id: 's-old', status, wispGrantId } }) }) as Response;
 vi.mock('../ai/AiChatMessages', () => ({ default: () => <div data-testid="ai-chat-messages-mock" /> }));
 vi.mock('../ai/AiChatInput', () => ({ default: () => <div data-testid="ai-chat-input-mock" /> }));
 vi.mock('../ai/AiThinkingIndicator', () => ({ default: () => null }));
@@ -41,7 +45,11 @@ const reset = (over: Record<string, unknown> = {}) => {
 };
 
 describe('WispHomeThread (W08 Task 9)', () => {
-  beforeEach(() => reset());
+  beforeEach(() => {
+    reset();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(sessionRes('active'));
+  });
 
   it('reuses a live session already on this thread: no switch, no new session', async () => {
     reset({ wisp, sessionId: 's-live' });
@@ -86,5 +94,56 @@ describe('WispHomeThread (W08 Task 9)', () => {
     render(<WispHomeThread wisp={wisp} lastSessionId={null} />);
     expect(await screen.findByTestId('wisp-home-thread-failed')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-chat-input-mock')).toBeNull();
+  });
+
+  it.each(['closed', 'expired'])('a %s last session is not resumed (its first send would fail): a fresh session starts', async (status) => {
+    fetchMock.mockResolvedValue(sessionRes(status));
+    render(<WispHomeThread wisp={wisp} lastSessionId="s-old" />);
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+    expect(fetchMock).toHaveBeenCalledWith('/ai/sessions/s-old');
+    expect(h.state.switchSession).not.toHaveBeenCalled();
+  });
+
+  it('a last session under another grant is not resumed', async () => {
+    fetchMock.mockResolvedValue(sessionRes('active', 'g-rotated'));
+    render(<WispHomeThread wisp={wisp} lastSessionId="s-old" />);
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+    expect(h.state.switchSession).not.toHaveBeenCalled();
+  });
+
+  it('switchSession landing under a different grant falls back to a fresh session', async () => {
+    reset({ switchSession: vi.fn(async (id: string) => { Object.assign(h.state, { sessionId: id, wisp: { ...wisp, grantId: 'g-other' } }); }) });
+    render(<WispHomeThread wisp={wisp} lastSessionId="s-old" />);
+    await waitFor(() => expect(h.state.enterWispMode).toHaveBeenCalledWith(wisp));
+  });
+
+  it('the docked panel moving the store to another conversation hides the composer here', async () => {
+    reset({ wisp, sessionId: 's-live' });
+    const view = render(<WispHomeThread wisp={wisp} lastSessionId={null} />);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    act(() => { Object.assign(h.state, { wisp: null, sessionId: 's-plain' }); });
+    view.rerender(<WispHomeThread wisp={wisp} lastSessionId={null} />);
+    expect(screen.getByTestId('wisp-home-thread-failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-chat-input-mock')).toBeNull();
+  });
+
+  it('retry after a failed open binds a fresh session without re-resuming', async () => {
+    const enter = vi.fn()
+      .mockRejectedValueOnce(new Error('createSession failed'))
+      .mockImplementationOnce(async (w: typeof wisp) => { Object.assign(h.state, { wisp: w, sessionId: 's-new' }); });
+    reset({ enterWispMode: enter });
+    render(<WispHomeThread wisp={wisp} lastSessionId={null} />);
+    fireEvent.click(await screen.findByTestId('wisp-home-thread-retry'));
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    expect(enter).toHaveBeenCalledTimes(2);
+    expect(h.state.switchSession).not.toHaveBeenCalled();
+  });
+
+  it('a new lastSessionId from a poll does not rebind a live thread (no "opening…" flash)', async () => {
+    const view = render(<WispHomeThread wisp={wisp} lastSessionId="s-old" />);
+    expect(await screen.findByTestId('ai-chat-input-mock')).toBeInTheDocument();
+    view.rerender(<WispHomeThread wisp={wisp} lastSessionId="s-newer" />);
+    expect(screen.queryByTestId('wisp-home-thread-binding')).toBeNull();
+    expect(h.state.switchSession).toHaveBeenCalledTimes(1);
   });
 });

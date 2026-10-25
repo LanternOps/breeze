@@ -223,7 +223,11 @@ export default function WispHomeContent() {
               threadId={wisp.threadId}
               links={links}
               canAdd={wisp.status === 'active'}
-              onLinksChange={(next) => setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v))}
+              onLinksChange={(next) => {
+                // Same as onWispChange: a poll already in flight read the links before this change.
+                loadToken.current++;
+                setView((v) => (v.kind === 'ready' ? { ...v, links: next } : v));
+              }}
             />
           </div>
         </div>

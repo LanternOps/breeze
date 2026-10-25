@@ -8,10 +8,14 @@ import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
-  server: 'loading' as 'loading' | 'on' | 'off',
+  server: 'loading' as 'loading' | 'on' | 'off' | 'error',
+  opts: undefined as undefined | { enabled?: boolean },
   claims: { status: 'resolved', claims: { scope: 'partner', partnerId: 'p-1', orgId: null } } as Record<string, unknown>,
 }));
-vi.mock('@/lib/wispVisibility', () => ({ useWispServerState: () => h.server, useWispEnabled: () => h.server === 'on' }));
+vi.mock('@/lib/wispVisibility', () => ({
+  useWispServerState: (opts?: { enabled?: boolean }) => { h.opts = opts; return h.server; },
+  useWispEnabled: () => h.server === 'on',
+}));
 vi.mock('@/lib/authScope', () => ({ useJwtClaims: () => h.claims }));
 vi.mock('./WispHomeContent', () => ({ default: () => <div data-testid="wisp-home-content-mock" /> }));
 
@@ -56,5 +60,18 @@ describe('WispHomePage gate (W08 Task 8)', () => {
     render(<WispHomePage />);
     expect(screen.getByTestId('wisp-home-content-mock')).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('a failed server read is an error with reload, never a redirect that looks like "Wisp is off"', () => {
+    h.server = 'error';
+    render(<WispHomePage />);
+    expect(screen.getByTestId('wisp-home-gate-error')).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('asks the server only for a partner-scoped token', () => {
+    h.claims = { status: 'resolved', claims: { scope: 'system', partnerId: null, orgId: null } };
+    render(<WispHomePage />);
+    expect(h.opts).toEqual({ enabled: false });
   });
 });

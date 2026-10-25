@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useJwtClaims } from '@/lib/authScope';
 import { useWispServerState } from '@/lib/wispVisibility';
 import WispHomeContent from './WispHomeContent';
@@ -17,15 +18,29 @@ export const WISP_CHAT_PATH = '/wisp/chat';
  * Nothing is decided until both answers are in.
  */
 export default function WispHomePage() {
-  const server = useWispServerState();
+  const { t } = useTranslation('ai');
   const claims = useJwtClaims();
   const scope = claims.status === 'resolved' ? claims.claims.scope : null;
+  // Only a partner token can have a Wisp home: nobody else asks the partner route.
+  const server = useWispServerState({ enabled: scope === 'partner' });
   const decided = server !== 'loading' && claims.status === 'resolved';
   const homeAvailable = server === 'on' && scope === 'partner';
 
   useEffect(() => {
-    if (decided && !homeAvailable) window.location.replace(`${WISP_CHAT_PATH}${window.location.hash}`);
-  }, [decided, homeAvailable]);
+    if (decided && server !== 'error' && !homeAvailable) window.location.replace(`${WISP_CHAT_PATH}${window.location.hash}`);
+  }, [decided, homeAvailable, server]);
+
+  // No usable answer is not "Wisp is off": say so instead of quietly sending the user to the chat.
+  if (decided && server === 'error') {
+    return (
+      <div className="space-y-2 p-6 text-sm" data-testid="wisp-home-gate-error">
+        <p className="text-destructive">{t('wisp.home.loadFailed')}</p>
+        <button type="button" onClick={() => window.location.reload()} className="rounded border px-3 py-1 hover:bg-muted">
+          {t('wisp.thread.retry')}
+        </button>
+      </div>
+    );
+  }
 
   if (!decided || !homeAvailable) {
     return <div className="p-6 text-sm text-muted-foreground" data-testid="wisp-home-loading" aria-busy="true" />;

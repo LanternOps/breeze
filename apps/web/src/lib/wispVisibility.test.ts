@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({ fetchWithAuth: vi.fn() }));
 vi.mock('../stores/auth', () => ({ fetchWithAuth: h.fetchWithAuth }));
 
-import { useWispServerState } from './wispVisibility';
+import { useWispEnabled, useWispServerState } from './wispVisibility';
 
 const res = (ok: boolean, body: unknown) => ({ ok, status: ok ? 200 : 500, json: async () => body }) as Response;
 
@@ -16,9 +16,22 @@ describe('useWispServerState (W08 #9921)', () => {
     const on = renderHook(() => useWispServerState());
     expect(on.result.current).toBe('loading');
     await waitFor(() => expect(on.result.current).toBe('on'));
-    h.fetchWithAuth.mockResolvedValueOnce(res(false, {}));
+    h.fetchWithAuth.mockResolvedValueOnce(res(true, { wispEnabled: false }));
     const off = renderHook(() => useWispServerState());
     await waitFor(() => expect(off.result.current).toBe('off'));
+  });
+
+  it('a failed read is `error`, not a real off (the home must not act on it); useWispEnabled still reads false', async () => {
+    h.fetchWithAuth.mockResolvedValueOnce(res(false, {}));
+    const failed = renderHook(() => useWispServerState());
+    await waitFor(() => expect(failed.result.current).toBe('error'));
+    h.fetchWithAuth.mockRejectedValueOnce(new Error('network'));
+    const thrown = renderHook(() => useWispServerState());
+    await waitFor(() => expect(thrown.result.current).toBe('error'));
+    h.fetchWithAuth.mockResolvedValueOnce(res(false, {}));
+    const bool = renderHook(() => useWispEnabled());
+    await waitFor(() => expect(h.fetchWithAuth).toHaveBeenCalledTimes(3));
+    expect(bool.result.current).toBe(false);
   });
 
   it('enabled: false asks nothing and reads off; enabling starts at loading, never a stale off', async () => {

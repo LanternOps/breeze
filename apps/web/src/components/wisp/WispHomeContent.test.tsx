@@ -3,7 +3,7 @@
  * no grant (start card), not entitled (FeatureLock), partner switch off
  * (explanation, no start button), and populated (every section).
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WispHomePayload } from '@breeze/shared';
 
@@ -14,18 +14,25 @@ const h = vi.hoisted(() => ({
   modalProps: null as null | Record<string, unknown>,
   threadProps: null as null | Record<string, unknown>,
   linksProps: null as null | Record<string, unknown>,
+  headerProps: null as null | Record<string, unknown>,
+  store: { wisp: null as null | Record<string, unknown>, updateWisp: vi.fn(), exitWispMode: vi.fn() },
 }));
 vi.mock('@/hooks/useEntitlement', () => ({ useEntitlement: () => h.entitlement }));
 vi.mock('@/stores/orgStore', () => ({ useOrgStore: (sel: (s: unknown) => unknown) => sel({ organizations: [], currentOrgId: null }) }));
 vi.mock('@/stores/aiStore', () => ({
-  useAiStore: (sel: (s: unknown) => unknown) => sel({ wisp: null, updateWisp: vi.fn(), exitWispMode: vi.fn() }),
+  useAiStore: (sel: (s: unknown) => unknown) => sel(h.store),
 }));
 vi.mock('./wispHome', async (orig) => ({
   ...(await orig<typeof import('./wispHome')>()),
   fetchWispHome: h.fetchWispHome,
   fetchWispPartnerEnabled: h.fetchWispPartnerEnabled,
 }));
-vi.mock('../ai/WispThreadHeader', () => ({ default: () => <div data-testid="wisp-thread-header-mock" /> }));
+vi.mock('../ai/WispThreadHeader', () => ({
+  default: (props: Record<string, unknown>) => {
+    h.headerProps = props;
+    return <div data-testid="wisp-thread-header-mock" />;
+  },
+}));
 vi.mock('../ai/WispGrantStepUpModal', () => ({
   default: (props: Record<string, unknown>) => {
     h.modalProps = props;
@@ -67,6 +74,7 @@ const wisp = { grantId: 'g-1', threadId: 'th-1', scopeOrgId: null, focusOrgId: n
 describe('WispHomeContent (W08 Task 9)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.store = { wisp: null, updateWisp: vi.fn(), exitWispMode: vi.fn() };
     h.entitlement = { state: 'enabled', failed: false, reload: vi.fn() };
     h.fetchWispPartnerEnabled.mockResolvedValue(true);
   });
@@ -135,5 +143,63 @@ describe('WispHomeContent (W08 Task 9)', () => {
     render(<WispHomeContent />);
     fireEvent.click(await screen.findByTestId('wisp-home-retry'));
     await waitFor(() => expect(screen.getByTestId('wisp-home-start')).toBeInTheDocument());
+  });
+
+  /** Start a background poll whose answer the test releases (the visible-tab catch-up path). */
+  function deferPoll() {
+    let release!: (v: unknown) => void;
+    h.fetchWispHome.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    return (v: unknown) => act(async () => { release(v); });
+  }
+
+  it('a link added while a poll is in flight survives that poll', async () => {
+    h.fetchWispHome.mockResolvedValueOnce({ kind: 'ready', payload: payload(), wisp });
+    render(<WispHomeContent />);
+    await screen.findByTestId('wisp-links-mock');
+    const release = deferPoll();
+    const added = { id: 'l-2', ref: { kind: 'device', id: 'd-1', orgId: 'o-1' }, label: 'host-1', status: 'online', href: '/devices/d-1', addedBy: 'user', createdAt: '' };
+    act(() => (h.linksProps?.onLinksChange as (l: unknown[]) => void)([...(h.linksProps?.links as unknown[]), added]));
+    await release({ kind: 'ready', payload: payload(), wisp });
+    expect((h.linksProps?.links as Array<{ id: string }>).map((l) => l.id)).toEqual(['l-1', 'l-2']);
+  });
+
+  it('a pause the server just confirmed survives a poll that started before it', async () => {
+    h.fetchWispHome.mockResolvedValueOnce({ kind: 'ready', payload: payload(), wisp });
+    render(<WispHomeContent />);
+    await screen.findByTestId('wisp-thread-header-mock');
+    const release = deferPoll();
+    act(() => (h.headerProps?.onWispChange as (p: unknown) => void)({ status: 'paused', pausedReason: 'user_paused' }));
+    await release({ kind: 'ready', payload: payload(), wisp });
+    expect(h.headerProps?.wisp).toMatchObject({ status: 'paused' });
+    // The store does not own this thread: its Wisp state is not touched.
+    expect(h.store.updateWisp).not.toHaveBeenCalled();
+  });
+
+  it('two failed background polls mark the page stale but keep it; the next good poll clears it', async () => {
+    h.fetchWispHome.mockResolvedValueOnce({ kind: 'ready', payload: payload(), wisp });
+    render(<WispHomeContent />);
+    await screen.findByTestId('wisp-thread-header-mock');
+    h.fetchWispHome.mockRejectedValueOnce(new Error('500')).mockRejectedValueOnce(new Error('500'));
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(screen.queryByTestId('wisp-home-stale')).toBeNull();
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(screen.getByTestId('wisp-home-stale')).toBeInTheDocument();
+    expect(screen.getByTestId('wisp-thread-header-mock')).toBeInTheDocument();
+    h.fetchWispHome.mockResolvedValueOnce({ kind: 'ready', payload: payload(), wisp });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(screen.queryByTestId('wisp-home-stale')).toBeNull();
+  });
+
+  it('revoking a grant the docked chat is running leaves Wisp mode there before reloading', async () => {
+    h.store.wisp = { threadId: 'th-1' };
+    h.fetchWispHome.mockResolvedValueOnce({ kind: 'ready', payload: payload(), wisp }).mockResolvedValueOnce({ kind: 'noGrant' });
+    render(<WispHomeContent />);
+    await screen.findByTestId('wisp-thread-header-mock');
+    act(() => (h.headerProps?.onWispChange as (p: unknown) => void)({ spentTodayCents: 40 }));
+    expect(h.store.updateWisp).toHaveBeenCalledWith({ spentTodayCents: 40 });
+    await act(async () => { await (h.headerProps?.onRevoked as () => Promise<void>)(); });
+    expect(h.store.exitWispMode).toHaveBeenCalled();
+    expect(await screen.findByTestId('wisp-home-start')).toBeInTheDocument();
   });
 });

@@ -123,4 +123,33 @@ describe('WispLinkButton (W08 Task 10)', () => {
     render(<WispLinkButton kind="ticket" id="t-1" orgId="org-1" size="sm" />);
     expect((await screen.findByTestId('wisp-link-button')).className).toContain('text-xs');
   });
+
+  it('one lookup per org per page: a found partner-wide thread is one call, shared by every button', async () => {
+    h.fetchWithAuth.mockResolvedValue(res(200, threadBody('th-1', 'g-1')));
+    render(<><WispLinkButton kind="ticket" id="t-1" orgId="org-1" /><WispLinkButton kind="device" id="d-1" orgId="org-1" /></>);
+    await waitFor(() => expect(screen.getAllByTestId('wisp-link-button')).toHaveLength(2));
+    expect(h.fetchWithAuth).toHaveBeenCalledTimes(1);
+    expect(h.fetchWithAuth).toHaveBeenCalledWith('/wisp/thread', { skipOrgIdInjection: true });
+  });
+
+  it('a paused partner-wide grant falls through to the item org’s grant', async () => {
+    h.fetchWithAuth
+      .mockResolvedValueOnce(res(200, threadBody('th-p', 'g-p', 'paused')))
+      .mockResolvedValueOnce(res(200, threadBody('th-o', 'g-o')));
+    h.addWispLink.mockResolvedValue(ticketLink);
+    render(<WispLinkButton kind="ticket" id="t-1" orgId="org-1" />);
+    fireEvent.click(await screen.findByTestId('wisp-link-button'));
+    await waitFor(() => expect(h.addWispLink).toHaveBeenCalledWith('th-o', { kind: 'ticket', id: 't-1', orgId: 'org-1' }));
+  });
+
+  it('a failed lookup is not cached for the rest of the page: the next mount retries', async () => {
+    h.fetchWithAuth.mockRejectedValueOnce(new Error('network'));
+    const first = render(<WispLinkButton kind="ticket" id="t-1" orgId={null} />);
+    await waitFor(() => expect(h.fetchWithAuth).toHaveBeenCalledTimes(1));
+    first.unmount();
+    h.fetchWithAuth.mockResolvedValueOnce(res(200, threadBody('th-1', 'g-1')));
+    render(<WispLinkButton kind="ticket" id="t-1" orgId={null} />);
+    expect(await screen.findByTestId('wisp-link-button')).toBeInTheDocument();
+    expect(h.fetchWithAuth).toHaveBeenCalledTimes(2);
+  });
 });
