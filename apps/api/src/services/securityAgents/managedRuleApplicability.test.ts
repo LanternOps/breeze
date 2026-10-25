@@ -252,6 +252,14 @@ describe('loadManagedRuleApplicability — tenant-variable (DNS) rules and servi
     }
   });
 
+  it("a Linux device (no row for its OS) is platform_unsupported, never judged on the Windows row's readiness", async () => {
+    prime({ catalog: [{ id: NEXTDNS_WIN, integrationProvider: null, builtinPackageKey: 'nextdns_windows' }], link: NEXTDNS_LINK });
+    orgReadiness.mockResolvedValueOnce(new Map([['org-ready', { ok: true }]]));
+    const a = await loadManagedRuleApplicability(NEXTDNS_POLICY, [{ deviceId: 'd-linux', orgId: 'org-ready', osType: 'linux' }]);
+    expect(a.evaluateDevice('d-linux')).toEqual([{ catalogId: NEXTDNS_WIN, vendor: 'nextdns', result: { ok: false, reason: 'platform_unsupported' } }]);
+    expect(a.filterViolations('d-linux', [violation('service_unverified')]).notApplicable[0]?.reason).toBe('platform_unsupported');
+  });
+
   it('unauthorized violations are untouched on a not-ready device', async () => {
     const a = await nextdnsApplicability();
     const unauthorized: SoftwarePolicyViolation = { type: 'unauthorized', software: { name: 'x' }, severity: 'medium', detectedAt: '2026-01-01T00:00:00Z' };

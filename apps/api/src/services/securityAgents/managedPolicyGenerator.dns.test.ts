@@ -228,6 +228,29 @@ describe('syncManagedSoftwarePolicy — tenant-variable vendors (#6960 W05)', ()
   });
 });
 
+describe('desiredManagedPolicy — guards (#6960 W05)', () => {
+  it('a tenant-variable vendor row with no built-in key throws rather than naming a rule after the vendor (an inventory glob)', () => {
+    expect(() => desiredManagedPolicy({
+      configPolicy: PARTNER_WIDE,
+      settings: settings({ vendor: 'nextdns', enabled: true }),
+      catalogByVendor: new Map([['nextdns', [{ catalogId: CATALOG_NEXTDNS_WIN, builtinPackageKey: null }]]]),
+    })).toThrow(/nextdns/i);
+  });
+
+  it('EDR and DNS vendors missing together: one message naming each remedy', async () => {
+    catalogIdForBuiltinKey.mockResolvedValue(null);
+    const { executor } = fakeExecutor([[PARTNER_WIDE], []]);
+    const err = await syncManagedSoftwarePolicy(executor, {
+      ...NEXTDNS_LINK,
+      inlineSettings: settings({ vendor: 'huntress', enabled: true }, { vendor: 'nextdns', enabled: true }),
+    }, { onMissingCatalog: 'refuse' }).catch((e: unknown) => e) as SecurityAgentsLinkWriteError;
+    expect(err.body.vendors).toEqual(['huntress', 'nextdns']);
+    expect(err.body.error).toMatch(/Huntress cannot be enabled until its integration is connected/);
+    expect(err.body.error).toMatch(/NextDNS cannot be enabled until its client is added .*Built-in packages/);
+    expect(err.body.setupPath).toBe('/integrations#huntress');
+  });
+});
+
 describe('checkSecurityAgentsLinkWrite — DNS platform limits (#6960 W05)', () => {
   it('Control D limited to macOS is refused before any catalog read', () => {
     const result = checkSecurityAgentsLinkWrite({

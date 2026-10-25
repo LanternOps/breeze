@@ -94,8 +94,14 @@ export const SECURITY_AGENTS_BINARY_MISSING_CODE = 'security_agents_binary_missi
 /** The software-policy rule name for one of a vendor's catalog rows. */
 function ruleNameFor(vendor: ReturnType<typeof getVendor>, row: VendorCatalogRow): string {
   if (row.builtinPackageKey) return BUILTIN_TENANT_VAR_PACKAGES[row.builtinPackageKey].name;
-  // EDR vendors always carry a glob (pinned by the registry test).
-  return vendor.detectionRuleName ?? vendor.label;
+  // EDR vendors always carry a glob (pinned by the registry test). A
+  // tenant-variable vendor's row always carries its built-in key; naming its
+  // rule after the vendor instead would be an inventory glob that could match
+  // an unrelated product, so refuse loudly (the sweep logs + reports it).
+  if (!vendor.detectionRuleName) {
+    throw new Error(`Security agents: ${vendor.key} catalog row ${row.catalogId} has no built-in package key; refusing to generate an inventory-glob rule`);
+  }
+  return vendor.detectionRuleName;
 }
 
 /** Pure: the row the link's settings ask for. */

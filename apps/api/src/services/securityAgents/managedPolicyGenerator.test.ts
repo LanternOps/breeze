@@ -387,3 +387,18 @@ describe('repairManagedSoftwarePolicies', () => {
     err.mockRestore();
   });
 });
+
+describe('DNS vendors with the REAL registry (code-only W05: not enableable)', () => {
+  it('a stored blob enabling NextDNS generates no rule and reads no catalog row', async () => {
+    const { executor, select, writes } = fakeExecutor([[PARTNER_WIDE], []]);
+    const result = await syncManagedSoftwarePolicy(
+      executor,
+      { id: 'link-dns', configPolicyId: 'cp-1', inlineSettings: { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] } },
+      { onMissingCatalog: 'refuse' },
+    );
+    expect(result).toMatchObject({ action: 'none', vendors: [], skippedVendors: [] });
+    // config policy + existing-row lock only: no catalog read for a vendor that cannot get a rule.
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(writes).toEqual([]);
+  });
+});
