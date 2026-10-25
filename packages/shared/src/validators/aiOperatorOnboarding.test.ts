@@ -115,6 +115,19 @@ describe('identityOnboardingInputSchema — nothing is granted by default', () =
     expect(() => identityOnboardingInputSchema.parse({ ...base, m365: { ...base.m365, skuIds: ['not-a-guid'] } })).toThrow();
   });
 
+  it('de-duplicates uuid grant lists case-insensitively (lowercased) and Google group addresses by their canonical lowercase form', () => {
+    const v = identityOnboardingInputSchema.parse({
+      ...base,
+      m365: { ...base.m365, skuIds: [SKU, SKU.toUpperCase()], groupIds: [GROUP.toUpperCase(), GROUP] },
+      google: { ...googleBlock, groupEmails: ['Staff@Customer.Example', 'staff@customer.example', 'other@customer.example'] },
+    });
+    expect(v.m365!.skuIds).toEqual([SKU]);
+    expect(v.m365!.groupIds).toEqual([GROUP]);
+    expect(v.google!.groupEmails).toEqual(['staff@customer.example', 'other@customer.example']);
+    // Idempotent: the stored output parses again to itself.
+    expect(identityOnboardingInputSchema.parse(JSON.parse(JSON.stringify(v)))).toEqual(v);
+  });
+
   it('bounds the Google group list and the OU path', () => {
     expect(identityOnboardingInputSchema.parse({ ...base, google: { ...googleBlock, orgUnitPath: '/Staff/Finance' } }).google!.orgUnitPath)
       .toBe('/Staff/Finance');
@@ -157,6 +170,8 @@ describe('identityOnboardingInputSchema — round-trips through a stored checkpo
       { ...base, google: googleBlock },
       { displayName: 'Priya Raman', google: { ...googleBlock, groupEmails: ['a@customer.example', 'a@customer.example'] } },
       { ...base, m365: { ...base.m365, skuIds: [SKU, SKU] }, startAt: '2026-10-05T13:00:00.000Z', siteId: SITE },
+      { ...base, m365: { ...base.m365, skuIds: [SKU.toUpperCase(), SKU], groupIds: [GROUP.toUpperCase()] },
+        google: { ...googleBlock, groupEmails: ['A@Customer.Example', 'a@customer.example'] } },
     ]) {
       const once = identityOnboardingInputSchema.parse(x);
       const twice = identityOnboardingInputSchema.parse(JSON.parse(JSON.stringify(once)));

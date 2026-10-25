@@ -32,9 +32,16 @@ const usageLocationSchema = z.string().regex(/^[A-Z]{2}$/);
 /** Graph's mailNickname alphabet, mirroring W05's arm for `m365.user.create`. */
 const mailNicknameSchema = z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/);
 
-/** Bounded BEFORE de-duplication (the bound is on what was sent), then de-duplicated in place. */
-const uniqueArray = <T extends z.ZodType<string>>(inner: T, max: number) =>
-  z.array(inner).max(max).overwrite((xs) => [...new Set(xs)]);
+/**
+ * Bounded BEFORE de-duplication (the bound is on what was sent), then
+ * lowercased and de-duplicated in place. Lowercase is the canonical form for
+ * every list this is used on: Graph GUIDs compare case-insensitively, and the
+ * recipe and discovery compare Google group addresses by their lowercase
+ * form. Lowercasing an already-lowercase list is a no-op, so this stays
+ * idempotent (a parsed value parses again to itself).
+ */
+const uniqueLowercaseArray = <T extends z.ZodType<string>>(inner: T, max: number) =>
+  z.array(inner).max(max).overwrite((xs) => [...new Set(xs.map((x) => x.toLowerCase()))]);
 
 /**
  * The Microsoft 365 account to create and what it gets.
@@ -49,8 +56,8 @@ const m365BlockSchema = z.object({
   userPrincipalName: addressSchema,
   mailNickname: mailNicknameSchema,
   usageLocation: usageLocationSchema,
-  skuIds: uniqueArray(uuid, 20).default([]),
-  groupIds: uniqueArray(uuid, 50).default([]),
+  skuIds: uniqueLowercaseArray(uuid, 20).default([]),
+  groupIds: uniqueLowercaseArray(uuid, 50).default([]),
 }).strict();
 
 /**
@@ -72,7 +79,7 @@ const googleBlockSchema = z.object({
     productId: z.string().min(1).max(128),
     skuId: z.string().min(1).max(128),
   }).strict()).max(10).default([]),
-  groupEmails: uniqueArray(addressSchema, 50).default([]),
+  groupEmails: uniqueLowercaseArray(addressSchema, 50).default([]),
 }).strict();
 
 export const IDENTITY_ONBOARDING_PROVIDERS = Object.freeze(['m365', 'google'] as const);
