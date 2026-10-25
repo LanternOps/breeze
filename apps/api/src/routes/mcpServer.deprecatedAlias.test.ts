@@ -178,8 +178,11 @@ beforeEach(() => {
   // tier 1 (a plain read), so no scope/approval gate stands between alias
   // resolution and dispatch — keeping the mock minimal isolates exactly the
   // alias-resolution behavior under test.
+  // manage_billing_catalog (W02 D3, #6756) is base tier 2, so its cases run
+  // with an ai:write key; create_item is its one tier-2 action (the price
+  // actions are supervised and MCP-denied).
   mocks.getToolTier.mockReset().mockImplementation((name: string) =>
-    name === 'get_invite_funnel' ? 1 : undefined,
+    name === 'get_invite_funnel' ? 1 : name === 'manage_billing_catalog' ? 2 : undefined,
   );
   mocks.ledgerBegin.mockReset().mockResolvedValue({ id: 'ledger-1' });
   mocks.ledgerComplete.mockReset().mockResolvedValue(undefined);
@@ -254,5 +257,43 @@ describe('MCP tools/call deprecated alias dispatch (#5362)', () => {
     expect(body.error?.code).toBe(-32602);
     expect(body.error?.message).toContain('Unknown tool');
     expect(mocks.executeTool).not.toHaveBeenCalled();
+  });
+
+  // W02 D3 (#6756): `manage_catalog` was renamed to `manage_billing_catalog`
+  // so the billing price book is never mistaken for the software catalog.
+  describe('manage_catalog -> manage_billing_catalog (W02 D3, #6756)', () => {
+    beforeEach(() => {
+      testState.scopes = ['ai:read', 'ai:write'];
+    });
+
+    it('dispatches a call for "manage_catalog" as "manage_billing_catalog"', async () => {
+      const res = await callTool('manage_catalog', { action: 'create_item', name: 'Managed Workstation', itemType: 'service' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result?.isError).toBeFalsy();
+      expect(mocks.executeTool).toHaveBeenCalledTimes(1);
+      expect(mocks.executeTool.mock.calls[0]?.[0]).toBe('manage_billing_catalog');
+    });
+
+    it('audits the canonical name with requestedToolName "manage_catalog" and deprecatedToolAlias', async () => {
+      await callTool('manage_catalog', { action: 'create_item', name: 'Managed Workstation', itemType: 'service' });
+      const event = findToolExecutionAuditEvent();
+      expect(event).toBeDefined();
+      expect(event.action).toBe('mcp.tool.manage_billing_catalog');
+      expect(event.details.toolName).toBe('manage_billing_catalog');
+      expect(event.details.requestedToolName).toBe('manage_catalog');
+      expect(event.details.deprecatedToolAlias).toBe(true);
+    });
+
+    it('an aliased supervised action is still MCP-denied, exactly like the canonical name', async () => {
+      for (const name of ['manage_catalog', 'manage_billing_catalog']) {
+        mocks.executeTool.mockClear();
+        const res = await callTool(name, { action: 'set_price', itemId: '00000000-0000-4000-8000-000000000001', currencyCode: 'USD', price: 65 });
+        const body = await res.json();
+        expect(body.error ?? body.result?.isError, `${name} set_price must be refused over MCP`).toBeTruthy();
+        expect(mocks.executeTool).not.toHaveBeenCalled();
+      }
+    });
   });
 });

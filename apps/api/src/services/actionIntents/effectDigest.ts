@@ -5,6 +5,7 @@ import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
   tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
+  notificationChannels,
 } from '../../db/schema';
 import { aiOperatorPlanApprovalEffects } from '../../db/schema/aiOperatorPlanApprovals';
 import { yaraRuleSets } from '../../db/schema/yara';
@@ -557,6 +558,31 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       .limit(1);
     if (!ticket) return TARGET_ABSENT;
     return material(JSON.stringify({ orgId: ticket.orgId, status: ticket.status }));
+  },
+
+  // manage_notification_channels:delete (full-control W02, #6756; four_eyes
+  // per QV3) — pins the channel's IDENTITY (name, type, org/partner scope),
+  // deliberately NOT updated_at: a `test` run or a delivery-status write
+  // touches the row without changing which channel the approvers agreed to
+  // destroy. The destination lives in notification_channel_configs and is
+  // destroyed with the channel, so a repointed destination does not change
+  // what the delete does. A rename or re-scope does: the approvers signed
+  // off on "delete <name>", and that name now identifies something else.
+  'manage_notification_channels:delete': async (args, database) => {
+    const channelId = typeof args.channelId === 'string' ? args.channelId : null;
+    if (!channelId) return MISSING_ARG;
+    const [channel] = await database
+      .select({
+        name: notificationChannels.name,
+        type: notificationChannels.type,
+        orgId: notificationChannels.orgId,
+        partnerId: notificationChannels.partnerId,
+      })
+      .from(notificationChannels)
+      .where(eq(notificationChannels.id, channelId))
+      .limit(1);
+    if (!channel) return TARGET_ABSENT;
+    return material(JSON.stringify(channel));
   },
 
   // execute_dr_plan — structurally the same TOCTOU shape as run_script: the

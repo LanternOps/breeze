@@ -179,6 +179,7 @@
     "securityScans": "IOC Taramaları",
     "devicesTime": "Saat eşitleme",
     "adminAiModels": "Yapay zeka modelleri",
+    "adminWisp": "Wisp",
     "billingAutopay": "Otomatik ödemeler",
     "endpointMessages": "Uç Nokta Mesajları",
     "securityDetectionRules": "Tespit Kuralları",

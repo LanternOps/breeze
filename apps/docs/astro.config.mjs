@@ -64,6 +64,7 @@ export default defineConfig({
                 { slug: 'features/script-ai' },
                 { slug: 'features/ai-agents' },
                 { slug: 'features/ai-analysis-runs' },
+                { slug: 'features/wisp' },
                 { slug: 'features/ai-impact' },
                 { slug: 'features/automations' },
                 { slug: 'features/playbooks' },

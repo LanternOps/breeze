@@ -1,0 +1,22 @@
+{
+  "_source": "reference",
+  "_recordedFrom": "reference: Microsoft Graph v1.0 GET /users/{id} and GET /groups/{id}/members?$filter=id eq '{userId}' (read profile); DELETE /groups/{id}/members/{id}/$ref (actions executor)",
+  "toolName": "m365_remove_from_group",
+  "provider": "m365",
+  "preSatisfied": null,
+  "preSatisfiedUnreachable": "the membership index is eventually consistent and the write is idempotent, so a not-a-member read before the write answers unknown by design",
+  "preUnsatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "accountEnabled": true } },
+    "read:m365.group.member.get": { "ok": true, "kind": "collection", "items": [ { "id": "00000000-0000-4000-8000-0000000a0001" } ], "truncated": false }
+  },
+  "writeOk": {
+    "write:m365.group.membership.remove": { "ok": true, "result": { "success": true, "action": "m365.group.membership.remove", "userId": "00000000-0000-4000-8000-0000000a0001", "groupId": "00000000-0000-4000-8000-0000000b0001", "noop": false } }
+  },
+  "postSatisfied": {
+    "read:m365.user.get": { "ok": true, "kind": "resource", "resource": { "id": "00000000-0000-4000-8000-0000000a0001", "userPrincipalName": "dana@customer.example", "accountEnabled": true } },
+    "read:m365.group.member.get": { "ok": true, "kind": "collection", "items": [], "truncated": false }
+  },
+  "writeRefusal": {
+    "write:m365.group.membership.remove": { "ok": false, "code": "unsupported_group_type", "message": "This group's membership is dynamic or role-assignable and cannot be edited directly." }
+  }
+}

@@ -88,4 +88,11 @@ export const GOLDEN_CASES: readonly GoldenCase[] = [
   { id: 'g68', prompt: 'Isolate SALES-LT-12 with Bitdefender — it has a ransomware detection.', expect: [{ tool: 'edr_endpoint_action', action: 'isolate' }, { tool: 'resolve_device_context' }, { tool: 'list_edr_detections' }] },
   // #8167 W03 PR-B: "sync now" for a framework EDR vendor (mutating, so chat set, like g68).
   { id: 'g69', prompt: 'Pull the latest Bitdefender detections now instead of waiting for the next sync.', expect: [{ tool: 'sync_edr_data' }] },
+  // Full-control W02 (#6756): PSA and billing writes reach chat (plan ids g73-g78).
+  { id: 'g70', prompt: 'Add an internal note to ticket 1042: waiting on the vendor RMA.', expect: [{ tool: 'manage_tickets', action: 'comment' }] },
+  { id: 'g71', prompt: 'Set the USD price of our "Managed Workstation" plan to $65.', expect: [{ tool: 'manage_billing_catalog', action: 'set_price' }, { tool: 'search_catalog' }] },
+  { id: 'g72', prompt: 'Save a device filter called "Offline Windows laptops".', expect: [{ tool: 'manage_saved_filters', action: 'create' }] },
+  { id: 'g73', prompt: 'Is the Contoso Slack alert channel set up correctly? Test it.', expect: [{ tool: 'manage_notification_channels', action: 'test' }] },
+  { id: 'g74', prompt: 'Fire a test delivery at our PSA webhook.', expect: [{ tool: 'test_webhook' }, { tool: 'query_webhooks' }] },
+  { id: 'g75', prompt: 'Mark quote Q-2041 declined — the customer said no on the phone today.', expect: [{ tool: 'manage_quotes', action: 'decline' }, { tool: 'list_quotes' }] },
 ];

@@ -561,6 +561,61 @@
         "mfaRequired": "Das Umschalten des KI-Notausschalters erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Übersicht der Wisp-Berechtigungen und der heutigen Aktivität pro Partner. Nur Lesezugriff.",
+      "refresh": "Aktualisieren",
+      "retry": "Erneut versuchen",
+      "loading": "Wird geladen...",
+      "empty": "Noch keine Partner mit Wisp-Berechtigungen",
+      "disabled": "Wisp ist auf dieser Bereitstellung nicht aktiviert (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Die Wisp-Übersicht konnte nicht geladen werden"
+      },
+      "platformAdmin": {
+        "title": "Nur für Plattformadministratoren",
+        "description": "Die Wisp-Übersicht steht Plattformadministratoren zur Verfügung."
+      },
+      "table": {
+        "partner": "Partner",
+        "plan": "Tarif",
+        "activeGrants": "Aktive Berechtigungen",
+        "pausedGrants": "Pausierte Berechtigungen",
+        "assessmentsToday": "Bewertungen heute",
+        "specialistRequestsToday": "Spezialistenanfragen heute",
+        "openConcerns": "Offene Bedenken",
+        "budgetExhaustedToday": "Heute erschöpfte Budgets"
+      },
+      "grants": {
+        "loading": "Berechtigungen werden geladen...",
+        "error": "Berechtigungen konnten nicht geladen werden",
+        "empty": "Dieser Partner hat keine Berechtigungen",
+        "grantor": "Erteilt von",
+        "scope": "Geltungsbereich",
+        "status": "Status",
+        "pausedReason": "Pausierungsgrund",
+        "expires": "Läuft ab",
+        "budget": "Budget (Cent/Tag)",
+        "tickMinutes": "Takt (Min.)",
+        "assessmentsToday": "Bewertungen heute",
+        "partnerWide": "Partnerweit"
+      },
+      "status": {
+        "active": "Aktiv",
+        "paused": "Pausiert",
+        "revoked": "Widerrufen",
+        "expired": "Abgelaufen"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Budget erschöpft",
+        "grantor_suspended": "Erteiler gesperrt",
+        "grantor_access_lost": "Erteiler hat Zugriff verloren",
+        "factor_expired": "Faktor abgelaufen",
+        "entitlement_lost": "Berechtigung verloren",
+        "user_paused": "Vom Benutzer pausiert",
+        "partner_disabled": "Partner deaktiviert"
+      }
+    },
     "systemPage": {
       "title": "System",
       "description": "Bereitstellungsweiter Status für Plattformadministratoren. Diese Seite ist schreibgeschützt.",

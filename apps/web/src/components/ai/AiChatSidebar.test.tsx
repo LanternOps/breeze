@@ -224,3 +224,33 @@ describe('AiChatSidebar Wisp mode (W04)', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 });
+
+// #9840 W5: the E2E (e2e-tests/tests/ai-move-conversation.spec.ts) drives the
+// header by data-testid only. Each id must sit on the control it names.
+describe('AiChatSidebar header test ids (#9840 W5)', () => {
+  it('History, New and Close carry their ids and their own handlers', () => {
+    const toggleHistory = vi.fn();
+    const close = vi.fn();
+    const closeSession = vi.fn(async () => undefined);
+    vi.mocked(useAiStore).mockReturnValue({
+      ...baseState, isOpen: true, sessionId: 's-1', toggleHistory, close, closeSession,
+    });
+    render(<AiChatSidebar />);
+    fireEvent.click(screen.getByTestId('ai-chat-history-toggle'));
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('ai-chat-close'));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('ai-chat-new-conversation'));
+    expect(closeSession).toHaveBeenCalledTimes(1);
+    expect(toggleHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('New is absent without a bound session; History and Close are always there', () => {
+    vi.mocked(useAiStore).mockReturnValue({ ...baseState, isOpen: true, sessionId: null });
+    render(<AiChatSidebar />);
+    expect(screen.getByTestId('ai-chat-history-toggle')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-chat-close')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-chat-new-conversation')).toBeNull();
+  });
+});

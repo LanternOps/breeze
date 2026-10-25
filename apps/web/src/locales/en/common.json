@@ -90,6 +90,7 @@
     "sectionExtensions": "Extensions",
     "llmProviderCatalog": "LLM Provider Catalog",
     "aiKillSwitch": "AI Kill Switch",
+    "wisp": "Wisp",
     "sectionAi": "AI",
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",

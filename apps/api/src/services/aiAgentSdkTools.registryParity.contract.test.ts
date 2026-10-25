@@ -58,7 +58,8 @@ function humanOnlyProblems(
  * chat. Frozen as of #3300 (measured against f400fc315: 215 registered, 133
  * tiered, 86 missing); re-frozen at 88 on d1cbf4fe27 for the spec
  * 2026-09-23 W01-W04 rollout. W01 (#6755) wired 42 read-only tools
- * (14 of them after their route-permission parity fixes landed), leaving 46.
+ * (14 of them after their route-permission parity fixes landed), leaving 45.
+ * W02 (#6756) wired the 7 PSA/billing write tools, leaving 38.
  * Deleted entirely at the end of W04, not W01.
  *
  * **This list may only shrink.** Removing a name means the tool was given a
@@ -80,19 +81,13 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'instant_boot_vm',
   'manage_backup_profiles',
   'manage_browser_policy',
-  'manage_catalog',
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
-  'manage_notification_channels',
   'manage_peripheral_policy',
   'manage_processes',
-  'manage_quotes',
-  'manage_saved_filters',
   'manage_scheduled_tasks',
   'manage_software_policy',
-  'manage_tags',
-  'manage_tickets',
   'registry_operations',
   'remediate_sensitive_data',
   'remediate_software_violation',
@@ -103,7 +98,6 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'restore_mssql_database',
   'restore_snapshot',
   'revoke_elevation',
-  'test_webhook',
   'trigger_agent_restart',
   'trigger_agent_upgrade',
   'trigger_backup',
@@ -383,6 +377,29 @@ describe('W01 read-only wiring (#6755)', () => {
   });
 });
 
+
+/** Spec 2026-09-23 W02 (#6756): PSA and billing writes. Pinned so a later
+ * wave cannot silently un-wire one. */
+const W02_WRITE_TOOLS = [
+  'manage_tickets', 'manage_quotes', 'manage_billing_catalog', 'manage_saved_filters',
+  'manage_tags', 'manage_notification_channels', 'test_webhook',
+] as const;
+
+describe('W02 write wiring (#6756)', () => {
+  it.each(W02_WRITE_TOOLS)('%s: TOOL_TIERS === registry tier, declared, SDK shape keys === toolInputSchemas', (name) => {
+    expect(TOOL_TIERS[name as keyof typeof TOOL_TIERS]).toBe(getToolTier(name));
+    expect(KNOWN_MISSING_TOOL_TIERS.has(name)).toBe(false);
+    const decl = declaredToolsByName().get(name);
+    expect(decl, `${name} not declared`).toBeDefined();
+    expect(Object.keys(decl!.inputSchema).sort()).toEqual(
+      Object.keys((toolInputSchemas[name as keyof typeof toolInputSchemas] as unknown as { shape: Record<string, unknown> }).shape).sort(),
+    );
+  });
+
+  it('test_webhook is registry tier 3 (a real outbound POST)', () => {
+    expect(TOOL_TIERS.test_webhook).toBe(3);
+  });
+});
 
 describe('SDK declarations use the registry description (A-W03, one description surface)', () => {
   const configurations = [

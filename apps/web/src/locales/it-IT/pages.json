@@ -179,6 +179,7 @@
     "securityScans": "Scansioni IOC",
     "devicesTime": "Sincronizzazione dell’ora",
     "adminAiModels": "Modelli di IA",
+    "adminWisp": "Wisp",
     "billingAutopay": "Pagamenti automatici",
     "endpointMessages": "Messaggi agli endpoint",
     "securityDetectionRules": "Regole di rilevamento",

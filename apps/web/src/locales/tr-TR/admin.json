@@ -561,6 +561,61 @@
         "mfaRequired": "Yapay zeka acil durdurma anahtarını değiştirmek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
       }
     },
+    "wisp": {
+      "title": "Wisp",
+      "description": "Wisp yetkilerinin ve bugünkü etkinliğin iş ortağı bazında genel görünümü. Salt okunur.",
+      "refresh": "Yenile",
+      "retry": "Yeniden dene",
+      "loading": "Yükleniyor...",
+      "empty": "Henüz Wisp yetkisi olan iş ortağı yok",
+      "disabled": "Wisp bu dağıtımda etkin değil (BREEZE_WISP_ENABLED).",
+      "errors": {
+        "load": "Wisp genel görünümü yüklenemedi"
+      },
+      "platformAdmin": {
+        "title": "Yalnızca platform yöneticileri",
+        "description": "Wisp genel görünümü platform yöneticileri için kullanılabilir."
+      },
+      "table": {
+        "partner": "İş ortağı",
+        "plan": "Plan",
+        "activeGrants": "Etkin yetkiler",
+        "pausedGrants": "Duraklatılmış yetkiler",
+        "assessmentsToday": "Bugünkü değerlendirmeler",
+        "specialistRequestsToday": "Bugünkü uzman istekleri",
+        "openConcerns": "Açık endişeler",
+        "budgetExhaustedToday": "Bugün bütçesi tükenen yetkiler"
+      },
+      "grants": {
+        "loading": "Yetkiler yükleniyor...",
+        "error": "Yetkiler yüklenemedi",
+        "empty": "Bu iş ortağının yetkisi yok",
+        "grantor": "Yetkiyi veren",
+        "scope": "Kapsam",
+        "status": "Durum",
+        "pausedReason": "Duraklatma nedeni",
+        "expires": "Bitiş",
+        "budget": "Bütçe (sent/gün)",
+        "tickMinutes": "Aralık (dk)",
+        "assessmentsToday": "Bugünkü değerlendirmeler",
+        "partnerWide": "Tüm iş ortağı"
+      },
+      "status": {
+        "active": "Etkin",
+        "paused": "Duraklatıldı",
+        "revoked": "İptal edildi",
+        "expired": "Süresi doldu"
+      },
+      "pausedReason": {
+        "budget_exhausted": "Bütçe tükendi",
+        "grantor_suspended": "Yetkiyi veren askıya alındı",
+        "grantor_access_lost": "Yetkiyi veren erişimi kaybetti",
+        "factor_expired": "Faktörün süresi doldu",
+        "entitlement_lost": "Hak kaybedildi",
+        "user_paused": "Kullanıcı tarafından duraklatıldı",
+        "partner_disabled": "İş ortağı devre dışı"
+      }
+    },
     "systemPage": {
       "title": "Sistem",
       "description": "Platform yöneticileri için tüm dağıtımın durumu. Bu sayfa salt okunurdur.",

@@ -502,3 +502,229 @@ describe('tier-3 approval scope classification', () => {
     expect(TIER3_SUPERVISED_TOOLS.has('test_webhook')).toBe(true);
   });
 });
+
+// ── W02 (#6756): PSA + billing write classes ───────────────────────────────
+// Class table: docs/superpowers/plans/ai-mcp/2026-09-23-ai-full-control-w02-
+// psa-billing-writes.md, "Quorum amendments" → "Final per-action classes".
+describe('manage_tickets input-aware escalation (W02, #6756)', () => {
+  const T = '11111111-1111-4111-8111-111111111111';
+  const tier = (input: Record<string, unknown>) => checkGuardrails('manage_tickets', input);
+  it.each([
+    [{ action: 'comment', ticketId: T, content: 'x', isPublic: true }, 3, 'supervised'],
+    [{ action: 'comment', ticketId: T, content: 'x' }, 2, undefined],              // handler default is private
+    [{ action: 'comment', ticketId: T, content: 'x', isPublic: false }, 2, undefined],
+    [{ action: 'comment', ticketId: T, content: 'x', isPublic: 'true' }, 2, undefined], // handler writes private for a non-boolean
+    [{ action: 'update_status', ticketId: T, status: 'resolved' }, 3, 'supervised'],
+    [{ action: 'update_status', ticketId: T, statusName: 'Done' }, 3, 'supervised'],   // custom status: DB-resolved, fail safe
+    [{ action: 'update_status', ticketId: T, status: 'in_progress' }, 2, undefined],
+    [{ action: 'update_status', ticketId: T, status: 'closed' }, 2, undefined],
+    [{ action: 'update_fields', ticketId: T, fields: { submitterEmail: 'a@b.c' } }, 3, 'supervised'],
+    [{ action: 'update_fields', ticketId: T, fields: { submitterName: 'Pat' } }, 3, 'supervised'],
+    [{ action: 'update_fields', ticketId: T, fields: { submittedBy: null } }, 3, 'supervised'],
+    [{ action: 'update_fields', ticketId: T, fields: { priority: 'high' } }, 2, undefined],
+    [{ action: 'update_fields', ticketId: T }, 2, undefined],
+    [{ action: 'list', isPublic: true, status: 'resolved' }, 1, undefined],           // a read is never escalated
+  ])('%j → tier %i (%s)', (input, t, scope) => {
+    const r = tier(input);
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+
+  it('the three pairs are input-aware and absent from the static scope tables', () => {
+    for (const a of ['comment', 'update_status', 'update_fields']) {
+      expect(TIER3_INPUT_AWARE_ACTIONS.has(`manage_tickets:${a}`)).toBe(true);
+      expect(TIER3_ACTIONS.manage_tickets ?? []).not.toContain(a);
+      expect(TIER3_SUPERVISED_ACTIONS.manage_tickets ?? []).not.toContain(a);
+      expect(TIER3_FOUR_EYES_ACTIONS.manage_tickets ?? []).not.toContain(a);
+    }
+  });
+
+  it('approval descriptions say what reaches the customer and never echo content', () => {
+    const pub = tier({ action: 'comment', ticketId: T, content: 'SECRET-BODY', isPublic: true }).description ?? '';
+    expect(pub).toMatch(/public.*emails the requester/i);
+    expect(pub).not.toContain('SECRET-BODY');
+    expect(tier({ action: 'comment', ticketId: T, content: 'x' }).description).toMatch(/internal note/i);
+    expect(tier({ action: 'update_status', ticketId: T, status: 'resolved', resolutionNote: 'SECRET' }).description)
+      .toMatch(/resolved.*emails the requester/i);
+    expect(tier({ action: 'update_fields', ticketId: T, fields: { submitterEmail: 'x@y.z' } }).description)
+      .toMatch(/requester/i);
+  });
+});
+
+describe('W02 approval descriptions name what leaves the tenant (#6756)', () => {
+  it('channel create/update names the destination HOST, never the URL path (webhook paths carry tokens)', () => {
+    const d = checkGuardrails('manage_notification_channels', {
+      action: 'update', channelId: '22222222-2222-4222-8222-222222222222',
+      config: { webhookUrl: 'https://hooks.example.com/services/T000/B000/SECRETTOKEN' },
+    }).description ?? '';
+    expect(d).toContain('hooks.example.com');
+    expect(d).not.toContain('SECRETTOKEN');
+    expect(checkGuardrails('manage_notification_channels', {
+      action: 'create', type: 'email', name: 'Ops', config: { recipients: ['a@x.test', 'b@x.test'] },
+    }).description).toMatch(/email notification channel → 2 recipient\(s\) at x\.test named "Ops"/);
+  });
+  // PR review (#6756): the headline is type-agnostic, so it must show EVERY
+  // destination the config carries — a decoy key must not hide the real one.
+  const channelHeadline = (config: Record<string, unknown>) => checkGuardrails('manage_notification_channels', {
+    action: 'update', channelId: '22222222-2222-4222-8222-222222222222', config,
+  }).description ?? '';
+  it('channel headline names every URL host present, so a decoy key cannot hide the real one', () => {
+    const d = channelHeadline({ webhookUrl: 'https://hooks.slack.com/x/TOKEN1', url: 'https://collector.example.net/c?k=TOKEN2' });
+    expect(d).toContain('hooks.slack.com');
+    expect(d).toContain('collector.example.net');
+    expect(d).not.toMatch(/TOKEN1|TOKEN2/);
+  });
+  it('channel headline names recipient email domains (never full addresses) across every recipient key', () => {
+    const d = channelHeadline({ recipients: ['ops@msp.example'], to: 'someone@outside.example', phoneNumbers: ['+15550100'] });
+    expect(d).toContain('msp.example');
+    expect(d).toContain('outside.example');
+    expect(d).not.toContain('ops@');
+    expect(d).toMatch(/1 phone number/);
+  });
+  it('channel headline never drops a recipient domain', () => {
+    const domains = ['a.example', 'b.example', 'c.example', 'd.example', 'e.example', 'f.example', 'g.example'];
+    const d = channelHeadline({ recipients: domains.map((x) => `ops@${x}`) });
+    for (const x of domains) expect(d).toContain(x);
+  });
+  it('channel headline puts the destination before the model-chosen name, and caps the name', () => {
+    const d = checkGuardrails('manage_notification_channels', {
+      action: 'create', type: 'webhook', name: 'N'.repeat(500), config: { url: 'https://collector.example.net/c' },
+    }).description ?? '';
+    expect(d.indexOf('collector.example.net')).toBeGreaterThan(-1);
+    expect(d.indexOf('collector.example.net')).toBeLessThan(d.indexOf('NNNN'));
+    expect(d).not.toContain('N'.repeat(81));
+  });
+  it('channel headline says a routing key or token is being set, without echoing it', () => {
+    const d = channelHeadline({ routingKey: 'R0UTINGKEY' });
+    expect(d).toMatch(/routing key/i);
+    expect(d).not.toContain('R0UTINGKEY');
+    expect(channelHeadline({ token: 'T0K', user: 'U53R' })).toMatch(/credential/i);
+  });
+  it('catalog update_item shows the new price-affecting values', () => {
+    const d = checkGuardrails('manage_billing_catalog', {
+      action: 'update_item', catalogId: '44444444-4444-4444-8444-444444444444',
+      item: { unitPrice: 70, markupPercent: 15, isActive: false, name: 'Managed Workstation' },
+    }).description ?? '';
+    expect(d).toMatch(/unitPrice → 70/);
+    expect(d).toMatch(/markupPercent → 15/);
+    expect(d).toMatch(/isActive → false/);
+    expect(d).toContain('name');
+  });
+  it('quote decline and catalog set_price say what they do', () => {
+    expect(checkGuardrails('manage_quotes', { action: 'decline', quoteId: '33333333-3333-4333-8333-333333333333', method: 'phone' }).description)
+      .toMatch(/DECLINED by the customer \(via phone\)/);
+    expect(checkGuardrails('manage_billing_catalog', { action: 'set_price', catalogId: '44444444-4444-4444-8444-444444444444', currencyCode: 'usd', price: { unitPrice: 65 } }).description)
+      .toMatch(/Set the USD price of catalog item 44444444\.\.\. to 65/);
+  });
+});
+
+describe('W02 static classes (#6756)', () => {
+  it.each([
+    ['manage_tickets', 'edit_comment', 3, 'supervised'],
+    ['manage_tickets', 'delete_comment', 3, 'supervised'],
+    ['manage_tickets', 'move_org', 3, 'four_eyes'],
+    ['manage_tickets', 'create', 2, undefined],
+    ['manage_tickets', 'assign', 2, undefined],
+    ['manage_tickets', 'log_time_entry', 2, undefined],
+    ['manage_tickets', 'update_time_entry', 2, undefined],
+    ['manage_tickets', 'link_ticket', 2, undefined],
+    ['manage_tickets', 'link_device', 2, undefined],
+    ['manage_tickets', 'draft', 2, undefined],
+    ['manage_quotes', 'decline', 3, 'supervised'],
+    ['manage_quotes', 'create_pay_link', 3, 'supervised'],
+    ['manage_quotes', 'send', 3, 'four_eyes'],
+    ['manage_quotes', 'create_draft', 2, undefined],
+    ['manage_quotes', 'delete_draft', 2, undefined],
+    ['manage_quotes', 'add_catalog_line', 2, undefined],
+    ['manage_billing_catalog', 'create_item', 2, undefined],
+    ['manage_billing_catalog', 'update_item', 3, 'supervised'],
+    ['manage_billing_catalog', 'archive_item', 3, 'supervised'],
+    ['manage_billing_catalog', 'set_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'remove_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'set_org_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'remove_org_price', 3, 'supervised'],
+    ['manage_billing_catalog', 'set_bundle_components', 3, 'supervised'],
+    ['manage_notification_channels', 'create', 3, 'supervised'],
+    ['manage_notification_channels', 'update', 3, 'supervised'],
+    ['manage_notification_channels', 'delete', 3, 'four_eyes'],
+    ['manage_notification_channels', 'test', 2, undefined],
+    ['manage_notification_channels', 'list', 1, undefined],
+    ['manage_saved_filters', 'create', 2, undefined],
+    ['manage_saved_filters', 'delete', 2, undefined],
+    ['manage_tags', 'add', 2, undefined],
+    ['manage_tags', 'remove', 2, undefined],
+    ['manage_tags', 'list', 1, undefined],
+  ])('%s:%s → tier %i (%s)', (tool, action, t, scope) => {
+    const r = checkGuardrails(tool, { action });
+    expect(r.tier).toBe(t);
+    expect(r.approvalScope).toBe(scope);
+  });
+});
+
+// ── W02 class rows (#6756, spec checklist item 3) ──────────────────────────
+// Copied from the plan's "Final per-action classes" table, NOT derived from
+// the guardrail tables. Every action-enum member of the seven tools must have
+// a row, so a new action reds here until someone classifies it. Input-aware
+// actions (comment, update_status, update_fields) are pinned on EMPTY input:
+// their escalation arms are covered by the input-aware suite above.
+// Billable time writes stay t2 (QV1: Todd kept t2, 2026-10-22).
+type W02Class = 't1' | 't2' | 'supervised' | 'four_eyes';
+const W02_EXPECTED: Record<string, Record<string, W02Class>> = {
+  manage_tickets: {
+    list: 't1', get: 't1', list_work_types: 't1', list_links: 't1', merge_preview: 't1',
+    create: 't2', assign: 't2', link_alert: 't2', unlink_alert: 't2', create_from_alert: 't2',
+    log_time_entry: 't2', start_timer: 't2', stop_timer: 't2', update_time_entry: 't2',
+    link_device: 't2', draft: 't2', link_ticket: 't2', unlink_ticket: 't2',
+    comment: 't2', update_status: 't2', update_fields: 't2',
+    edit_comment: 'supervised', delete_comment: 'supervised',
+    move_org: 'four_eyes',
+    merge: 'supervised',
+  },
+  manage_quotes: {
+    create_draft: 't2', update: 't2', delete_draft: 't2', add_block: 't2', update_block: 't2',
+    delete_block: 't2', reorder_blocks: 't2', add_manual_line: 't2', add_catalog_line: 't2',
+    update_line: 't2', remove_line: 't2', move_line: 't2', reorder_lines: 't2',
+    decline: 'supervised', create_pay_link: 'supervised',
+    send: 'four_eyes',
+  },
+  manage_billing_catalog: {
+    create_item: 't2',
+    update_item: 'supervised', archive_item: 'supervised', set_price: 'supervised', remove_price: 'supervised',
+    set_org_price: 'supervised', remove_org_price: 'supervised', set_bundle_components: 'supervised',
+  },
+  manage_saved_filters: { list: 't1', get: 't1', create: 't2', delete: 't2' },
+  manage_tags: { list: 't1', add: 't2', remove: 't2' },
+  manage_notification_channels: { list: 't1', test: 't2', create: 'supervised', update: 'supervised', delete: 'four_eyes' },
+};
+/** test_webhook has no action enum: the whole tool is supervised. */
+const W02_WHOLE_TOOL: Record<string, W02Class> = { test_webhook: 'supervised' };
+
+function classOf(tool: string, input: Record<string, unknown>): W02Class {
+  const r = checkGuardrails(tool, input);
+  if (r.tier === 3) {
+    expect(['supervised', 'four_eyes'], `${tool} tier 3 needs a scope`).toContain(r.approvalScope);
+    return r.approvalScope as W02Class;
+  }
+  expect(r.approvalScope, `${tool} tier ${r.tier} must not carry an approval scope`).toBeUndefined();
+  expect([1, 2]).toContain(r.tier);
+  return r.tier === 1 ? 't1' : 't2';
+}
+
+describe('W02 class rows (#6756)', () => {
+  it.each(Object.keys(W02_EXPECTED))('%s: W02_EXPECTED covers exactly the action enum', (tool) => {
+    const actions = toolActionEnum(tool) ?? [];
+    expect(actions.length, `${tool} has no action enum`).toBeGreaterThan(0);
+    expect(Object.keys(W02_EXPECTED[tool]!).sort()).toEqual([...actions].sort());
+  });
+
+  it.each(Object.entries(W02_EXPECTED).flatMap(([tool, m]) => Object.entries(m).map(([a, c]) => [tool, a, c] as const)))(
+    '%s:%s is %s', (tool, action, cls) => {
+      expect(classOf(tool, { action })).toBe(cls);
+    },
+  );
+
+  it.each(Object.entries(W02_WHOLE_TOOL))('%s (whole tool) is %s and has no action enum', (tool, cls) => {
+    expect(toolActionEnum(tool) ?? []).toEqual([]);
+    expect(classOf(tool, {})).toBe(cls);
+  });
+});
