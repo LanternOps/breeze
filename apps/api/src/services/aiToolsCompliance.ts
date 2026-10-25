@@ -119,6 +119,9 @@ export function registerComplianceTools(aiTools: Map<string, AiTool>): void {
     aiTools.set(tool.definition.name, tool);
   }
 
+/** Input keys a pure manage_software_policy deactivation may carry (W04 review). */
+const PURE_DEACTIVATION_KEYS: ReadonlySet<string> = new Set(['action', 'policyId', 'orgId', 'isActive']);
+
 // ============================================
 // get_software_compliance - Tier 1 (auto-execute)
 // ============================================
@@ -453,10 +456,14 @@ registerTool({
           ? input.remediationOptions
           : undefined,
       });
-      // Deactivating is protective — an inactive policy installs nothing, and
-      // re-activating it later goes back through this gate (or REST's) — so
-      // the AI may switch an install-armed policy off (W04 review).
-      if (resultingArmed && input.isActive !== false) {
+      // A PURE deactivation is protective — an inactive policy installs
+      // nothing — so the AI may switch an install-armed policy off (W04
+      // review). Only that: combined with any other field it could stage
+      // AI-authored rules or arming on an armed policy that a human's later
+      // re-activation would arm, so it is refused like any other update.
+      const pureDeactivation = existing.isActive === true && input.isActive === false
+        && Object.keys(input).every((key) => PURE_DEACTIVATION_KEYS.has(key));
+      if (resultingArmed && !pureDeactivation) {
         return JSON.stringify({
           error: 'This policy is armed for automatic install; the AI cannot change it. Edit it in the software policy page.',
         });
