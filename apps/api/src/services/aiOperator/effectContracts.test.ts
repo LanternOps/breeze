@@ -1,8 +1,11 @@
 /**
- * Spec §9(a) — the deterministic gate's per-effect contract for
- * `identity_offboarding` (wave #6171, PR R1c, plan Task 24).
+ * Spec §9(a) — the deterministic gate's per-effect contract, over BOTH identity
+ * catalogs: `identity_offboarding` (wave #6171, PR R1c, plan Task 24) and
+ * `identity_onboarding` (wave #6172, PR R2c, W07 plan Task 23). One file, an
+ * outer loop over the two catalogs, so a tool added to either catalog without a
+ * fixture is a red here rather than a silent gap.
  *
- * For every effect in the recipe's CLOSED catalog, against provider-response
+ * For every effect in either recipe's CLOSED catalog, against provider-response
  * fixtures (`__fixtures__/providers/<toolName>.json`). Today every fixture is a
  * REFERENCE shape authored from the API docs; the lab run re-records them, and
  * the gate-mode tripwire below stays red until it does:
@@ -28,6 +31,25 @@
  *   5. Each tool declares an idempotency class, and a `non_idempotent` one is
  *      never auto-retried.
  *
+ * And, for R2, the two properties only a CREATING recipe needs:
+ *
+ *   6. A NON_IDEMPOTENT EFFECT'S PRE-PROBE HAS ONE ACTIONABLE ANSWER.
+ *      `unsatisfied` dispatches; `unknown` and `satisfied` both hand off
+ *      (D-R2-4), and neither hand-off mints an intent or writes an operation
+ *      row. Driven off the classification over both catalogs, so it cannot be
+ *      met for `m365_create_user` alone. The `satisfied` case is the one worth
+ *      reading twice: M1's criterion for `m365.user.create` is "a user with this
+ *      UPN exists", which cannot tell "we did this already" from "somebody else
+ *      holds this name", and only one of those is safe (the fixture's
+ *      `preSatisfied` is a COLLISION, and its `_meaning` says so).
+ *   7. THE CREATE IS NEVER RETRIED. Driven twice, the second time under a FRESH
+ *      operation key (a later plan revision, so the permanent
+ *      (org_id, task_id, operation_key) index cannot be what stops it), and
+ *      asserted against the operation rows this module writes plus the mints it
+ *      makes: exactly one mint, ever, and no operation row on the second pass.
+ *      The real-row form (one `ai_operator_operations` row, one executor call)
+ *      is aiOperatorIdentityOnboardingGate.integration.test.ts.
+ *
  * WHAT IS REAL AND WHAT IS MOCKED. A fixture is only evidence if it is read by
  * the production code that reads the provider, so:
  *   - the PROBES are the real ones (`registerAllEffectProbes`, `probeEffect`,
@@ -42,9 +64,10 @@
  *     `executeM365ToolHeadless`) with only the provider boundary mocked: the
  *     googleapis clients (`googleClient`), the org connection lookup, and the
  *     M365 control-plane read/write services;
- *   - the PLANNED EFFECTS come from the real `buildIdentityOffboardingPlan`, so
- *     the arguments each probe and executor sees are the recipe's, never the
- *     fixture's.
+ *   - the PLANNED EFFECTS come from the real `buildIdentityOffboardingPlan` and
+ *     the real `buildIdentityOnboardingCreatePlan` /
+ *     `buildIdentityOnboardingProvisionPlan`, so the arguments each probe and
+ *     executor sees are the recipe's, never the fixture's.
  * Every mocked provider call answers ONLY from the fixture phase in play; a
  * call the fixture does not record throws a FixtureGapError, and every
  * property asserts that no such gap was hit (a probe would swallow it into
@@ -115,13 +138,21 @@ const h = vi.hoisted(() => {
     directory: {
       users: { get: g('directory.users.get'), update: g('directory.users.update'), signOut: g('directory.users.signOut') },
       groups: { list: g('directory.groups.list') },
-      members: { delete: g('directory.members.delete') },
+      members: {
+        delete: g('directory.members.delete'),
+        // identity_onboarding (R2c): the add-to-group probe and write.
+        get: g('directory.members.get'),
+        insert: g('directory.members.insert'),
+      },
       mobiledevices: { list: g('directory.mobiledevices.list'), action: g('directory.mobiledevices.action') },
     },
     licensing: {
       licenseAssignments: {
         listForProduct: g('licensing.licenseAssignments.listForProduct'),
         delete: g('licensing.licenseAssignments.delete'),
+        // identity_onboarding (R2c): the assign-license probe and write.
+        listForProductAndSku: g('licensing.licenseAssignments.listForProductAndSku'),
+        insert: g('licensing.licenseAssignments.insert'),
       },
     },
     gmail: {
@@ -212,6 +243,16 @@ import {
   buildIdentityOffboardingPlan,
   identityOffboardingRecipe,
 } from './recipes/identityOffboarding';
+import {
+  IDENTITY_ONBOARDING_CREATE_TOOLS,
+  IDENTITY_ONBOARDING_EFFECT_TOOLS,
+  IDENTITY_ONBOARDING_PROVISION_TOOLS,
+  IDENTITY_ONBOARDING_UNOBSERVABLE_EFFECTS,
+  buildIdentityOnboardingCreatePlan,
+  buildIdentityOnboardingProvisionPlan,
+  identityOnboardingRecipe,
+} from './recipes/identityOnboarding';
+import { isSecretBearingTool } from '../actionIntents/secretBearingTools';
 import type { PlannedEffect } from './recipes/types';
 import { registerAllEffectProbes } from './effectProbes/bootstrap';
 import { isStructurallyUnobservable, listProbedTools, probeEffect } from './effectProbes';
@@ -233,6 +274,8 @@ const fixtureSchema = z.object({
   _source: z.string().regex(/^(reference|lab-run-\d{4}-\d{2}-\d{2})$/),
   _recordedFrom: z.string().min(1),
   _notes: z.string().optional(),
+  /** Per-phase reading notes, for a phase a future reader is likely to misread (README). */
+  _meaning: z.partialRecord(z.enum(['preSatisfied', 'preUnsatisfied', 'writeOk', 'postSatisfied', 'writeRefusal']), z.string().min(1)).optional(),
   toolName: z.string(),
   provider: z.enum(['google', 'm365']),
   preSatisfied: worldSchema.nullable(),
@@ -304,13 +347,95 @@ const PLAN_FACTS = {
   degradedTools: [],
 };
 const PLAN = buildIdentityOffboardingPlan(PLAN_INPUT, PLAN_FACTS);
-const EFFECT_FOR = new Map<string, PlannedEffect>(PLAN.map((e) => [e.toolName, e]));
+
+/**
+ * identity_onboarding's synthetic identities (README). The new hire, the
+ * account the create returns, and the provisioning targets. Distinct from the
+ * offboarding values so a fixture can never satisfy the other recipe's tool.
+ */
+const ONB = Object.freeze({
+  upn: 'priya@customer.example',
+  googleEmail: 'priya@customer.example',
+  googleId: '102',
+  googleGroup: 'staff@customer.example',
+  googleProduct: 'Google-Apps',
+  googleSku: '1010020027',
+  orgUnitPath: '/Staff',
+  m365Oid: '00000000-0000-4000-8000-0000000a0101',
+  /** Someone who already holds the UPN: the create fixture's `preSatisfied` (a collision). */
+  m365Holder: '00000000-0000-4000-8000-0000000a0199',
+  m365Group: '00000000-0000-4000-8000-0000000b0101',
+  m365Sku: '00000000-0000-4000-8000-0000000c0101',
+  contactTarget: '00000000-0000-4000-8000-0000000e0101',
+  displayName: 'Priya Example',
+});
+
+const ONBOARDING_INPUT = identityOnboardingRecipe.inputSchema.parse({
+  displayName: ONB.displayName, jobTitle: 'Staff Accountant', siteId: null,
+  managerContactId: null, modelAfterContactId: null, startAt: null,
+  m365: { userPrincipalName: ONB.upn, mailNickname: 'priya', usageLocation: 'US', skuIds: [ONB.m365Sku], groupIds: [ONB.m365Group] },
+  google: {
+    primaryEmail: ONB.googleEmail, givenName: 'Priya', familyName: 'Example', orgUnitPath: ONB.orgUnitPath,
+    licenses: [{ productId: ONB.googleProduct, skuId: ONB.googleSku }], groupEmails: [ONB.googleGroup],
+  },
+});
+/** Snapshot 1: both names verified free, the seat available, the groups described and ordinary. */
+const ONBOARDING_CREATE_FACTS = {
+  stage: 'create' as const,
+  targets: { contactTargetId: ONB.contactTarget, contactLabel: ONB.displayName },
+  collisions: { m365: { upnTaken: false, existingObjectId: null }, google: { emailTaken: false, existingUserId: null } },
+  seats: { m365: [{ skuId: ONB.m365Sku, skuPartNumber: 'SPE_E3', state: 'available', available: 5, observedAt: '2026-09-17T09:59:00.000Z', reason: null }] },
+  groups: {
+    m365: [{ id: ONB.m365Group, name: 'All Staff', dynamic: false, roleAssignable: null }],
+    google: [{ email: ONB.googleGroup, name: 'Staff', modelAfterRole: null }],
+  },
+  modelAfter: null,
+  degradedTools: [],
+  capabilityReadiness: {},
+  flags: [],
+  truncated: [],
+};
+/** Snapshot 2 = snapshot 1 + the accounts `resolve_accounts` froze (B2). */
+const ONBOARDING_PROVISION_FACTS = {
+  ...ONBOARDING_CREATE_FACTS,
+  stage: 'provision' as const,
+  accounts: {
+    m365: { externalId: ONB.m365Oid, principalLabel: ONB.upn },
+    google: { externalId: ONB.googleId, principalLabel: ONB.googleEmail },
+  },
+};
+const ONBOARDING_CREATE_PLAN = buildIdentityOnboardingCreatePlan(ONBOARDING_INPUT, ONBOARDING_CREATE_FACTS);
+const ONBOARDING_PROVISION_PLAN = buildIdentityOnboardingProvisionPlan(ONBOARDING_INPUT, ONBOARDING_PROVISION_FACTS);
+
+/** The two closed catalogs that drive this suite. */
+const CATALOGS = [
+  { recipeKey: 'identity_offboarding', tools: IDENTITY_OFFBOARDING_EFFECT_TOOLS, unobservable: IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS as Readonly<Record<string, string>> },
+  { recipeKey: 'identity_onboarding', tools: IDENTITY_ONBOARDING_EFFECT_TOOLS, unobservable: IDENTITY_ONBOARDING_UNOBSERVABLE_EFFECTS as Readonly<Record<string, string>> },
+] as const;
+const ALL_TOOLS: readonly string[] = CATALOGS.flatMap((c) => [...c.tools]);
+
+/** Each tool's planned effect, and the effect step it is dispatched at. */
+const EFFECT_FOR = new Map<string, PlannedEffect>([
+  ...PLAN.map((e) => [e.toolName, e] as const),
+  ...ONBOARDING_CREATE_PLAN.map((e) => [e.toolName, e] as const),
+  ...ONBOARDING_PROVISION_PLAN.map((e) => [e.toolName, e] as const),
+]);
+const STEP_FOR = new Map<string, string>([
+  ...PLAN.map((e) => [e.toolName, 'effects'] as const),
+  ...ONBOARDING_CREATE_PLAN.map((e) => [e.toolName, 'create_accounts'] as const),
+  ...ONBOARDING_PROVISION_PLAN.map((e) => [e.toolName, 'provision_effects'] as const),
+]);
 
 const NOW = new Date('2026-09-17T10:00:00.000Z');
 const ORG = '00000000-0000-4000-8000-0000000f0001';
 const TASK = { id: '00000000-0000-4000-8000-0000000f00a1', orgId: ORG, attemptOrdinal: 0 };
 const APPROVAL = { id: 'p1', planRevision: 1, approverUserId: 'u-approver' };
-const STEP_KEY = 'effects';
+
+function stepKeyFor(toolName: string): string {
+  const s = STEP_FOR.get(toolName);
+  if (!s) throw new Error(`no recipe plans ${toolName}`);
+  return s;
+}
 
 /** Spec §6.6 classes this recipe's gate expects; the code must agree (property 5). */
 const EXPECTED_CLASS: Readonly<Record<string, 'idempotent' | 'idempotent_by_probe' | 'non_idempotent'>> = {
@@ -329,6 +454,13 @@ const EXPECTED_CLASS: Readonly<Record<string, 'idempotent' | 'idempotent_by_prob
   m365_retire_intune_device: 'idempotent',
   // Unclassified in EFFECT_IDEMPOTENCY, so the strictest default (deviation G9).
   google_account_wipe_mobile_device: 'non_idempotent',
+  // identity_onboarding (spec §6.6; R2a Task 6 classified the Google three).
+  m365_create_user: 'non_idempotent',
+  m365_assign_license: 'idempotent_by_probe',
+  m365_add_to_group: 'idempotent',
+  google_move_ou: 'idempotent',
+  google_assign_license: 'idempotent_by_probe',
+  google_add_to_group: 'idempotent',
 };
 
 /**
@@ -345,6 +477,9 @@ const WRITE_CALL: Readonly<Record<string, string>> = {
   google_account_wipe_mobile_device: 'directory.mobiledevices.action',
   google_signout: 'directory.users.signOut',
   google_suspend_user: 'directory.users.update',
+  google_move_ou: 'directory.users.update',
+  google_assign_license: 'licensing.licenseAssignments.insert',
+  google_add_to_group: 'directory.members.insert',
   ...Object.fromEntries(Object.entries(M365_HEADLESS_ACTIONS).map(([tool, actionId]) => [tool, `write:${actionId}`])),
 };
 
@@ -384,6 +519,18 @@ const WRITE_ARGS: Readonly<Record<string, { args: Record<string, unknown>; mailb
   m365_revoke_sessions: { args: { type: 'm365.user.revoke_sessions', userIdentifier: ID.m365Oid } },
   // Caller-protected: the PINNED object id, never the identifier the plan carries.
   m365_disable_user: { args: { type: 'm365.user.disable', oid: PINNED_OID } },
+  // identity_onboarding. The create carries the REQUESTED name and nothing an
+  // approver did not see; every provisioning write addresses the RESOLVED
+  // account (the immutable Entra object id; Google's frozen primary email).
+  m365_create_user: {
+    args: { type: 'm365.user.create', userPrincipalName: ONB.upn, displayName: ONB.displayName, mailNickname: 'priya', usageLocation: 'US' },
+  },
+  m365_assign_license: { args: { type: 'm365.user.license.assign', userIdentifier: ONB.m365Oid, skuIds: [ONB.m365Sku] } },
+  m365_add_to_group: { args: { type: 'm365.group.membership.add', groupId: ONB.m365Group, userIdentifier: ONB.m365Oid } },
+  google_move_ou: { args: { userKey: ONB.googleEmail, requestBody: { orgUnitPath: ONB.orgUnitPath } } },
+  google_assign_license: { args: { productId: ONB.googleProduct, skuId: ONB.googleSku, requestBody: { userId: ONB.googleEmail } } },
+  // MEMBER, pinned in the approved arguments (D-R2-9) and carried to the write.
+  google_add_to_group: { args: { groupKey: ONB.googleGroup, requestBody: { email: ONB.googleEmail, role: 'MEMBER' } } },
 };
 
 /** The error code each Google executor must return on its recorded refusal. */
@@ -396,6 +543,9 @@ const GOOGLE_REFUSAL_CODE: Readonly<Record<string, string>> = {
   google_account_wipe_mobile_device: 'google_not_found',
   google_signout: 'google_forbidden',
   google_suspend_user: 'google_forbidden',
+  google_move_ou: 'google_error',
+  google_assign_license: 'google_error',
+  google_add_to_group: 'google_forbidden',
 };
 
 /**
@@ -407,6 +557,8 @@ const GOOGLE_REFUSAL_CODE: Readonly<Record<string, string>> = {
  */
 const REPLAY_REQUESTS_SAME_OPERATION: ReadonlySet<string> = new Set([
   'google_signout', 'm365_set_auto_reply', 'm365_remove_from_group', 'm365_retire_intune_device',
+  // Its membership probe answers `unknown` before any write (eventual index), like the removal.
+  'm365_add_to_group',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -438,8 +590,8 @@ function effectFor(toolName: string): PlannedEffect {
   return e;
 }
 
-function dispatch(effect: PlannedEffect) {
-  return dispatchPlannedEffect({ task: TASK, stepKey: STEP_KEY, approval: APPROVAL, effect, partnerId: null, now: NOW });
+function dispatch(effect: PlannedEffect, approval: typeof APPROVAL = APPROVAL) {
+  return dispatchPlannedEffect({ task: TASK, stepKey: stepKeyFor(effect.toolName), approval, effect, partnerId: null, now: NOW });
 }
 
 function verify(effect: PlannedEffect) {
@@ -465,7 +617,7 @@ function parsedError(result: string): string | null {
   }
 }
 
-const unobservable = (tool: string) => Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, tool);
+const unobservable = (tool: string) => CATALOGS.some((c) => (c.tools as readonly string[]).includes(tool) && Object.hasOwn(c.unobservable, tool));
 
 /** No probe swallowed an error into `unknown`, and no call went unanswered by the fixture. */
 function expectClean(): void {
@@ -502,32 +654,59 @@ afterAll(() => {
 });
 
 // ---------------------------------------------------------------------------
-// The suite, driven off the catalog constant
+// The suite, driven off the two catalog constants
 // ---------------------------------------------------------------------------
 
-describe('the catalog drives the suite', () => {
-  it('the recipe plans exactly one effect per catalog tool for the full-catalog facts', () => {
+describe('the catalogs drive the suite', () => {
+  it('identity_offboarding plans exactly one effect per catalog tool for the full-catalog facts', () => {
     expect(PLAN.map((e) => e.toolName).sort()).toEqual([...IDENTITY_OFFBOARDING_EFFECT_TOOLS].sort());
     expect(IDENTITY_OFFBOARDING_EFFECT_TOOLS.length).toBeGreaterThan(0);
   });
 
-  it('there is exactly one fixture file per catalog tool, and no orphan', () => {
+  it('identity_onboarding plans each catalog tool exactly once, create tools in stage 1 and provisioning tools in stage 2', () => {
+    expect(ONBOARDING_CREATE_PLAN.map((e) => e.toolName)).toEqual([...IDENTITY_ONBOARDING_CREATE_TOOLS]);
+    expect(ONBOARDING_PROVISION_PLAN.map((e) => e.toolName)).toEqual([...IDENTITY_ONBOARDING_PROVISION_TOOLS]);
+    expect([...ONBOARDING_CREATE_PLAN, ...ONBOARDING_PROVISION_PLAN].map((e) => e.toolName).sort())
+      .toEqual([...IDENTITY_ONBOARDING_EFFECT_TOOLS].sort());
+    // The secrecy split the two approvals rest on (D-R2-2): every create tool
+    // is secret-bearing, no provisioning tool is.
+    expect(IDENTITY_ONBOARDING_CREATE_TOOLS.every(isSecretBearingTool)).toBe(true);
+    expect(IDENTITY_ONBOARDING_PROVISION_TOOLS.some(isSecretBearingTool)).toBe(false);
+  });
+
+  it('the two catalogs are disjoint, so one fixture directory serves both', () => {
+    expect(new Set(ALL_TOOLS).size).toBe(ALL_TOOLS.length);
+  });
+
+  it('there is exactly one fixture file per catalog tool across both catalogs, and no orphan', () => {
     const files = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.json')).sort();
-    expect(files).toEqual([...IDENTITY_OFFBOARDING_EFFECT_TOOLS].map((t) => `${t}.json`).sort());
+    expect(files).toEqual(ALL_TOOLS.map((t) => `${t}.json`).sort());
   });
 
   it('every fixture labels its provenance honestly (reference shape or a dated lab run)', () => {
-    for (const tool of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
+    for (const tool of ALL_TOOLS) {
       const f = loadFixture(tool);
       if (f._source === 'reference') expect(f._recordedFrom, tool).toMatch(/^reference: /);
       else expect(f._recordedFrom, tool).toBe(f._source);
       expect(f.provider, tool).toBe(effectFor(tool).provider);
     }
   });
+
+  it('the create fixture\'s pre-probe "satisfied" world is labelled a COLLISION, never "already done"', () => {
+    const f = loadFixture('m365_create_user');
+    expect(f._meaning?.preSatisfied).toMatch(/COLLISION/);
+    expect(f._meaning?.preSatisfied).toMatch(/HANDOFF, never a no-op/);
+    // And it really is someone else: the holder is not the account the create returns.
+    const holder = (f.preSatisfied!['read:m365.user.get'] as { resource: { id: string } }).resource.id;
+    const created = (f.writeOk['write:m365.user.create'] as { result: { userId: string } }).result.userId;
+    expect(holder).toBe(ONB.m365Holder);
+    expect(holder).not.toBe(created);
+    expect(created).toBe(ONB.m365Oid);
+  });
 });
 
-for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
-  describe(`effect contract: ${toolName}`, () => {
+for (const { recipeKey, tools } of CATALOGS) for (const toolName of tools) {
+  describe(`effect contract: ${recipeKey} / ${toolName}`, () => {
     it('pre-probe satisfied → dispatches NO write (noop when idempotent, hand-off when not)', async () => {
       const f = loadFixture(toolName);
       const effect = effectFor(toolName);
@@ -557,7 +736,7 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
         expect(h.inserted).toHaveLength(1);
         expect(h.inserted[0]).toMatchObject({
           intentId: null, resultState: 'succeeded', result: expect.objectContaining({ noop: true }),
-          taskStepKey: STEP_KEY,
+          taskStepKey: stepKeyFor(toolName),
         });
       }
     });
@@ -573,7 +752,7 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       expect(h.createActionIntent).toHaveBeenCalledTimes(1);
       expect(h.createActionIntent.mock.calls[0]![1]).toMatchObject({
         toolName, input: effect.canonicalArguments,
-        task: { taskId: TASK.id, taskStepKey: STEP_KEY },
+        task: { taskId: TASK.id, taskStepKey: stepKeyFor(toolName) },
         planApproval: { approvalId: APPROVAL.id, ordinal: effect.ordinal },
       });
 
@@ -676,7 +855,7 @@ for (const toolName of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
       drainCalls();
       expectClean();
       const key = planEffectOperationKey({
-        stepKey: STEP_KEY, planRevision: APPROVAL.planRevision, toolName, targetId: effect.targetId, ordinal: effect.ordinal,
+        stepKey: stepKeyFor(toolName), planRevision: APPROVAL.planRevision, toolName, targetId: effect.targetId, ordinal: effect.ordinal,
       });
       if (REPLAY_REQUESTS_SAME_OPERATION.has(toolName)) {
         // The pre-probe cannot certify the done world before a write, so the
@@ -734,16 +913,190 @@ describe('the unobservable exceptions are explicit, not accidental', () => {
     expect(IDENTITY_OFFBOARDING_EFFECT_TOOLS).toContain('google_suspend_user');
   });
 
-  it('every tool in the catalog either has a probe registered or is declared unobservable', () => {
+  it('every tool in either catalog either has a probe registered or is declared unobservable', () => {
     const probed = new Set(listProbedTools());
-    for (const t of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
-      const declared = Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, t);
-      expect(probed.has(t) || declared, `${t} has neither a probe nor an unobservable declaration`).toBe(true);
+    for (const { recipeKey, tools, unobservable: declaredMap } of CATALOGS) {
+      for (const t of tools) {
+        const declared = Object.hasOwn(declaredMap, t);
+        expect(probed.has(t) || declared, `${recipeKey}: ${t} has neither a probe nor an unobservable declaration`).toBe(true);
+        // And no OTHER catalog tool is quietly structurally unobservable.
+        if (!declared) expect(isStructurallyUnobservable(t), `${recipeKey}: ${t}`).toBe(false);
+      }
     }
-    // And no OTHER catalog tool is quietly structurally unobservable.
-    for (const t of IDENTITY_OFFBOARDING_EFFECT_TOOLS) {
-      if (!Object.hasOwn(IDENTITY_OFFBOARDING_UNOBSERVABLE_EFFECTS, t)) expect(isStructurallyUnobservable(t), t).toBe(false);
+  });
+
+  it('identity_onboarding declares NO unobservable effect: every one of its tools is verified by a real probe (D-R2-11)', () => {
+    expect(Object.keys(IDENTITY_ONBOARDING_UNOBSERVABLE_EFFECTS)).toEqual([]);
+    const probed = new Set(listProbedTools());
+    for (const t of IDENTITY_ONBOARDING_EFFECT_TOOLS) expect(probed.has(t), t).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Property 6: the non_idempotent pre-probe rule (D-R2-4), driven off the
+// classification over BOTH catalogs, so it cannot hold for m365_create_user alone.
+// ---------------------------------------------------------------------------
+
+const NON_IDEMPOTENT_TOOLS = ALL_TOOLS.filter((t) => classifyEffectIdempotency(t) === 'non_idempotent');
+
+describe('the non_idempotent pre-probe rule, over every non_idempotent tool in either catalog (D-R2-4)', () => {
+  it('the classification finds the create, and the offboarding wipe (strictest default)', () => {
+    // A vacuity guard: an empty list would make every case below pass.
+    expect(NON_IDEMPOTENT_TOOLS).toEqual(expect.arrayContaining(['m365_create_user', 'google_account_wipe_mobile_device']));
+  });
+
+  for (const toolName of NON_IDEMPOTENT_TOOLS) {
+    it(`${toolName}: dispatches ONLY on unsatisfied; hands off on unknown AND on satisfied, minting nothing and writing no operation row`, async () => {
+      const f = loadFixture(toolName);
+      const effect = effectFor(toolName);
+
+      // satisfied → hand-off (never a noop: a noop would be a succeeded operation row).
+      expect(f.preSatisfied, `${toolName} must record a satisfied pre-world for this rule to be exercised`).not.toBeNull();
+      use(f, 'preSatisfied');
+      const onSatisfied = await dispatch(effect);
+      drainCalls();
+      expectClean();
+      expect(onSatisfied.kind).toBe('handoff');
+      expect(h.createActionIntent).not.toHaveBeenCalled();
+      expect(h.inserted, 'no operation row on the satisfied hand-off').toHaveLength(0);
+
+      // unknown → hand-off. An empty world makes every read a gap, which the
+      // registry turns into `unknown`; the gaps are the point, so clear them.
+      h.state.world = {};
+      h.state.phase = 'unknown';
+      h.state.tool = toolName;
+      h.captureException.mockImplementation(() => undefined);
+      const onUnknown = await dispatch(effect);
+      h.state.calls.length = 0;
+      h.state.gaps.length = 0;
+      expect(onUnknown.kind).toBe('handoff');
+      expect(h.createActionIntent).not.toHaveBeenCalled();
+      expect(h.inserted, 'no operation row on the unknown hand-off').toHaveLength(0);
+      h.captureException.mockReset();
+
+      // unsatisfied → the ONLY answer that dispatches.
+      use(f, 'preUnsatisfied');
+      const onUnsatisfied = await dispatch(effect);
+      drainCalls();
+      expectClean();
+      expect(onUnsatisfied).toMatchObject({ kind: 'dispatching', intentId: 'i1' });
+      expect(h.createActionIntent).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it('the create\'s satisfied hand-off names a COLLISION, not "already done"', async () => {
+    use(loadFixture('m365_create_user'), 'preSatisfied');
+    const out = await dispatch(effectFor('m365_create_user'));
+    drainCalls();
+    expectClean();
+    expect(out.kind).toBe('handoff');
+    if (out.kind === 'handoff') expect(out.handoffSummary).toMatch(/collision/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Property 7: the create is never retried, asserted on operation rows
+// ---------------------------------------------------------------------------
+
+describe('m365_create_user is issued at most once, ever — even under a fresh operation key', () => {
+  it('a second dispatch at a LATER plan revision (a new operation key) observes the created account and mints nothing', async () => {
+    const f = loadFixture('m365_create_user');
+    const effect = effectFor('m365_create_user');
+
+    // Pass 1, revision r: the world has no such user, so the create is minted.
+    use(f, 'preUnsatisfied');
+    expect((await dispatch(effect)).kind).toBe('dispatching');
+    drainCalls();
+    const keyAtR = planEffectOperationKey({
+      stepKey: 'create_accounts', planRevision: APPROVAL.planRevision, toolName: effect.toolName, targetId: effect.targetId, ordinal: effect.ordinal,
+    });
+
+    // Pass 2, revision r+1: a different operation key, so the permanent
+    // (org, task, operation_key) index CANNOT be what stops a second create.
+    // The account now exists; the pre-probe must.
+    const later = { ...APPROVAL, id: 'p2', planRevision: APPROVAL.planRevision + 1 };
+    const keyAtR1 = planEffectOperationKey({
+      stepKey: 'create_accounts', planRevision: later.planRevision, toolName: effect.toolName, targetId: effect.targetId, ordinal: effect.ordinal,
+    });
+    expect(keyAtR1, 'the second pass really uses a fresh key').not.toBe(keyAtR);
+    use(f, 'postSatisfied');
+    const second = await dispatch(effect, later);
+    drainCalls();
+    expectClean();
+    expect(second.kind).toBe('handoff');
+
+    // The operation rows and mints, not a call count on a provider mock:
+    // one mint, under the revision-r key, and no operation row written by
+    // either hand-off (a noop row would read as a succeeded second create).
+    const mintedKeys = h.createActionIntent.mock.calls.map((c) => (c[1] as { task: { operationKey: string } }).task.operationKey);
+    expect(mintedKeys).toEqual([keyAtR]);
+    expect(h.inserted).toEqual([]);
+  });
+
+  it('a create whose post-probe does not see the account is unverified and NOT retryable', async () => {
+    use(loadFixture('m365_create_user'), 'preUnsatisfied');
+    const out = await verify(effectFor('m365_create_user'));
+    drainCalls();
+    expectClean();
+    expect(out).toMatchObject({ kind: 'unverified', retryable: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// No fixture carries a credential
+// ---------------------------------------------------------------------------
+
+/**
+ * The executor's generator (`generateTemporaryPassword`, the M365 actions
+ * executor) emits 20 non-space characters mixing lower case, upper case and
+ * digits. Anything of that shape in a checked-in fixture would be a real
+ * secret in a public repo.
+ */
+const CREDENTIAL_SHAPE = /^(?=\S*[a-z])(?=\S*[A-Z])(?=\S*\d)\S{16,}$/;
+const CREDENTIAL_KEY = /pass(word)?|secret|token|credential|apikey|privatekey/i;
+const SYNTHETIC_CREDENTIAL = 'REDACTED-FIXTURE-VALUE';
+
+function stringsIn(value: unknown, path: string, out: { path: string; key: string; value: string }[]): void {
+  if (typeof value === 'string') { out.push({ path, key: path.split('.').at(-1) ?? '', value }); return; }
+  if (Array.isArray(value)) { value.forEach((v, i) => stringsIn(v, `${path}.${i}`, out)); return; }
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) stringsIn(v, path ? `${path}.${k}` : k, out);
+  }
+}
+
+describe('no fixture contains credential-shaped material', () => {
+  it('every credential-named field holds the synthetic marker, and no string anywhere has a generated-credential shape', () => {
+    const files = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBe(ALL_TOOLS.length);
+    const findings: string[] = [];
+    let markers = 0;
+    for (const file of files) {
+      const strings: { path: string; key: string; value: string }[] = [];
+      stringsIn(JSON.parse(readFileSync(join(FIXTURE_DIR, file), 'utf8')), '', strings);
+      for (const s of strings) {
+        if (CREDENTIAL_KEY.test(s.key)) {
+          if (s.value === SYNTHETIC_CREDENTIAL) markers += 1;
+          else findings.push(`${file}:${s.path} is credential-named and not the synthetic marker`);
+        }
+        if (CREDENTIAL_SHAPE.test(s.value)) findings.push(`${file}:${s.path} has a generated-credential shape`);
+      }
     }
+    expect(findings).toEqual([]);
+    // Non-vacuity: the scan reached the create's success body.
+    expect(markers).toBeGreaterThanOrEqual(1);
+  });
+
+  it('the create-success fixture\'s temporaryPassword is the literal synthetic marker', () => {
+    const f = loadFixture('m365_create_user');
+    expect((f.writeOk['write:m365.user.create'] as { result: { temporaryPassword: string } }).result.temporaryPassword)
+      .toBe(SYNTHETIC_CREDENTIAL);
+  });
+
+  it('the shape check is live: a generated-shape value is caught (control)', () => {
+    // Fixed sample in the generator's shape; not a credential for anything.
+    expect(CREDENTIAL_SHAPE.test('xK7pQ2mZ9vR4tL8wN3bY')).toBe(true);
+    expect(CREDENTIAL_SHAPE.test(SYNTHETIC_CREDENTIAL)).toBe(false);
+    expect(CREDENTIAL_SHAPE.test(ONB.m365Oid)).toBe(false);
   });
 });
 
@@ -777,10 +1130,15 @@ describe('the recording harness never reaches production', () => {
 });
 
 describe('every fixture is a recording, not a guess', () => {
-  it.skipIf(!GATE_SIGNOFF)('GATE TRIPWIRE (BREEZE_GATE_SIGNOFF=1): no fixture is still marked _source: "reference"', () => {
-    // RED until the lab run (Task 27, spec §9(e)) re-records every fixture.
-    // That failure IS the gate. Do not edit `_source` to make it pass.
-    const stillReference = IDENTITY_OFFBOARDING_EFFECT_TOOLS.filter((t) => loadFixture(t)._source === 'reference');
-    expect(stillReference).toEqual([]);
-  });
+  // One tripwire per recipe: each recipe's gate is signed off by its own lab
+  // run (W06 Task 27; W07 Task 26), so one recipe's re-recording must not wait
+  // on, or be masked by, the other's.
+  for (const { recipeKey, tools } of CATALOGS) {
+    it.skipIf(!GATE_SIGNOFF)(`GATE TRIPWIRE (BREEZE_GATE_SIGNOFF=1): no ${recipeKey} fixture is still marked _source: "reference"`, () => {
+      // RED until that recipe's lab run (spec §9(e)) re-records every fixture.
+      // That failure IS the gate. Do not edit `_source` to make it pass.
+      const stillReference = tools.filter((t) => loadFixture(t)._source === 'reference');
+      expect(stillReference).toEqual([]);
+    });
+  }
 });
