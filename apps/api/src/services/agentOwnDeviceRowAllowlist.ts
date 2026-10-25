@@ -62,6 +62,23 @@ export const AGENT_OWN_DEVICE_ROW_ALLOWLIST: readonly OwnDeviceRowAllowlistEntry
 
   // ── Non-agent paths in files an agent entry point reaches ───────────────
   {
+    file: 'src/services/deviceReattach/confirm.ts',
+    marker: 'reattach-confirm-target-identity',
+    kind: 'non_agent_path',
+    reason:
+      'The reattach confirm (#8318 §6.4) hands the TARGET row to the new install. It is not the caller writing ' +
+      'its own row: the caller authenticated with the confirm-only token, the row is locked FOR UPDATE and ' +
+      'version-checked, and the UPDATE carries `agent_id = intent.target_agent_id` itself.',
+  },
+  {
+    file: 'src/services/deviceReattach/confirm.ts',
+    marker: 'reattach-confirm-source-credentials',
+    kind: 'non_agent_path',
+    reason:
+      'The reattach confirm retires the SOURCE row (decommissioned in the same transaction) and clears every ' +
+      'token hash of it, under its FOR UPDATE lock; the UPDATE carries `agent_id = intent.source_agent_id`.',
+  },
+  {
     file: 'src/jobs/offlineDetector.ts',
     marker: 'offline-sweep-mark-offline',
     kind: 'non_agent_path',
