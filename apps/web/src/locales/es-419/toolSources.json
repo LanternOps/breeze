@@ -1,9 +1,9 @@
 {
   "title": "Fuentes de herramientas",
-  "subtitle": "Conecte un servidor MCP o una API OpenAPI (REST) para que sus herramientas estén disponibles en el chat de IA, con niveles de riesgo y aprobaciones por herramienta.",
+  "subtitle": "Conecta un servidor MCP o una API OpenAPI (REST) para que sus herramientas estén disponibles para Breeze AI, con niveles de riesgo y aprobaciones por herramienta.",
   "empty": {
     "title": "Aún no hay fuentes de herramientas",
-    "body": "Agregue un servidor MCP o una API OpenAPI para darle al asistente acceso de lectura y escritura a los sistemas que su equipo ya usa."
+    "body": "Agrega un servidor MCP o una API OpenAPI para dar a Breeze AI acceso de lectura y escritura a los sistemas que tu equipo ya usa."
   },
   "list": {
     "add": "Agregar fuente",
@@ -37,7 +37,7 @@
     "scope": "Disponibilidad",
     "allOrganizations": "Todas las organizaciones",
     "thisOrganizationOnly": "Solo esta organización",
-    "partnerWideWarning": "Una fuente en todo el socio expone todo lo que esta credencial puede alcanzar en {{vendor}} al chat de IA de cada organización. Use una fuente propiedad de la organización cuando el proveedor emita credenciales por cliente.",
+    "partnerWideWarning": "Una fuente para todo el partner expone todo lo que esta credencial puede alcanzar en {{vendor}} a Breeze AI de todas las organizaciones. Usa una fuente propiedad de la organización cuando el proveedor emita credenciales por cliente.",
     "save": "Guardar",
     "cancel": "Cancelar",
     "auth": {
@@ -65,7 +65,7 @@
     "edit": "Editar",
     "delete": "Eliminar",
     "deleteTitle": "¿Eliminar esta fuente de herramientas?",
-    "deleteConfirm": "Sus herramientas descubiertas dejan de ofrecerse al chat de IA de inmediato, y su credencial almacenada se destruye. Esto no se puede deshacer.",
+    "deleteConfirm": "Sus herramientas descubiertas dejan de ofrecerse a Breeze AI de inmediato y su credencial almacenada se destruye. Esta acción no se puede deshacer.",
     "endpoint": "Punto final",
     "specUrl": "Documento OpenAPI",
     "lastDiscovered": "Último descubrimiento",
@@ -109,7 +109,7 @@
     "notAddressable": "Nombre no utilizable",
     "enableReads": "Habilitar todas las lecturas",
     "enableReadsConfirmTitle": "¿Habilitar lecturas para estas herramientas?",
-    "enableReadsConfirmMessage": "{{count}} herramienta(s) podrán ser llamadas por el chat de IA sin aprobación requerida:",
+    "enableReadsConfirmMessage": "{{count}} herramienta(s) podrán ser invocadas por Breeze AI sin necesidad de aprobación:",
     "enableReadsConfirmEmpty": "Ninguna herramienta es elegible — las demás ya están habilitadas, no son de nivel 1 o aún necesitan revisión.",
     "enableReadsConfirmSkipped": "{{count}} herramienta(s) adicional(es) aún necesitan revisión y no se habilitarán.",
     "disableAll": "Deshabilitar todas",

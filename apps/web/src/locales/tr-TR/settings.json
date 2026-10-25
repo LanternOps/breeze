@@ -1096,7 +1096,7 @@
       },
       "aiApprovals": {
         "label": "Yapay Zeka Onay Zaman Aşımı",
-        "description": "Yapay zeka sohbetinin kısıtlı bir eylem onayını ne kadar bekleyeceği"
+        "description": "Breeze AI'ın kısıtlı bir eylemin onaylanmasını ne kadar bekleyeceği"
       },
       "callerVerification": {
         "label": "Arayan doğrulama",
@@ -2401,7 +2401,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Yapay Zeka Kullanımı",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "AI asistanının kullanımını izleyin ve bütçe sınırlarını yapılandırın",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Breeze AI kullanımını izleyin ve bütçe sınırlarını yapılandırın",
     "budgetConfiguration": "Bütçe Yapılandırması",
     "aIEnabled": "Yapay Zeka Etkin",
     "enabled": "Etkin",
@@ -2455,7 +2455,7 @@
     "creditsRemaining": "Kalan Breeze yapay zeka kredisi",
     "defaultValue": "Varsayılan ({{value}})",
     "viewPartnerWideBudgets": "İş ortağı yapay zeka bütçeleri",
-    "monitorAIAssistantUsage": "Yapay zeka asistanı kullanımını izleyin",
+    "monitorAIAssistantUsage": "Breeze AI kullanımını izleyin",
     "effectiveBudget": "Geçerli bütçe",
     "effectiveBudgetHelp": "Bu kuruluş için şu anda geçerli olan sınırlar ve her birinin nerede belirlendiği.",
     "effectiveBudgetUnavailable": "Geçerli bütçe yüklenemedi. Yeniden denemek için sayfayı yeniden yükleyin.",
@@ -5439,7 +5439,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Yapay zeka bütçesi",
-    "description": "Bu kuruluşta yapay zeka asistanı için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
+    "description": "Bu kuruluşta Breeze AI için harcama sınırları, hız sınırları ve onay modu. İş ortağınızın belirlediği alanlar burada gösterilir ancak yalnızca iş ortağı sekmesinden değiştirilebilir.",
     "selectOrganization": "Yapay zeka bütçesini yapılandırmak için bir kuruluş seçin."
   },
   "orgSettingsPage": {
@@ -5499,7 +5499,7 @@
       "ticketing": "Biletleme",
       "ticketingDescription": "SLA ve faturalandırmayı geçersiz kılma",
       "ai": "Yapay Zeka",
-      "aiDescription": "Yapay zeka asistanı bütçesi, hız sınırları ve onay modu"
+      "aiDescription": "Breeze AI bütçesi, hız sınırları ve onay modu"
     },
     "overview": {
       "title": "Organizasyona genel bakış",
@@ -6728,7 +6728,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Betik yazımı",
-    "subtitle": "Asistanın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
+    "subtitle": "Breeze AI'ın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
     "partnerCard": {
       "title": "İş ortağı üst sınırı",
       "description": "Bu iş ortağına bağlı herhangi bir kuruluşun kullanabileceği en geniş ayar. Tek tek kuruluşlar bunu yalnızca daraltabilir.",
@@ -6896,13 +6896,13 @@
     "timeoutLabel": "Etkileşimli onay zaman aşımı",
     "productDefault": "Ürün varsayılanı ({{minutes}} dakika)",
     "range": "{{min}}-{{max}} dakika arasında seçin.",
-    "description": "Devam eden bir yapay zeka sohbet turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını ne kadar bekleyeceği.",
+    "description": "Canlı bir Breeze AI turunun, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği.",
     "orgOverrideNote": "Kuruluşlar bu değeri kendi yapay zeka ayarlarından geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "notForUnattendedNote": "Bu, gece boyu veya gözetimsiz çalışmalar için değildir — uzun süreli çalışmalar kendi son kullanma tarihine sahip Onaylar kuyruğundan geçer."
   },
   "orgAiApprovalTimeout": {
     "title": "Yapay Zeka Onay Zaman Aşımı",
-    "description": "Bir yapay zeka sohbetinin, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
+    "description": "Breeze AI'ın, kısıtlı (Katman 2/3) bir eylemi birinin onaylamasını vazgeçmeden önce ne kadar bekleyeceği. Kuruluşlar burada ortak varsayılanını geçersiz kılabilir; ayarlandığında kuruluş değeri geçerli olur.",
     "fieldLabel": "Etkileşimli onay zaman aşımı",
     "inherit": "Devral",
     "inheritLabel": "Devral ({{minutes}} dakika, {{source}})",

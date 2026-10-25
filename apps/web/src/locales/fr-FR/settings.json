@@ -1096,7 +1096,7 @@
       },
       "aiApprovals": {
         "label": "Délai d'approbation IA",
-        "description": "Durée d'attente du chat IA pour l'approbation d'une action contrôlée"
+        "description": "Durée d'attente de Breeze AI pour l'approbation d'une action contrôlée"
       },
       "callerVerification": {
         "label": "Vérification de l’appelant",
@@ -2401,7 +2401,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilisation de l’IA",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de Breeze AI et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
     "enabled": "Activé",
@@ -2455,7 +2455,7 @@
     "creditsRemaining": "Crédits IA Breeze restants",
     "defaultValue": "Par défaut ({{value}})",
     "viewPartnerWideBudgets": "Budgets IA du partenaire",
-    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de Breeze AI",
     "effectiveBudget": "Budget en vigueur",
     "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
     "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
@@ -5386,7 +5386,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Budget IA",
-    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de Breeze AI dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
     "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
   },
   "orgSettingsPage": {
@@ -5446,7 +5446,7 @@
       "ticketing": "Ticketterie",
       "ticketingDescription": "SLA et les dérogations de facturation",
       "ai": "IA",
-      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
+      "aiDescription": "Budget de Breeze AI, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",
@@ -6728,7 +6728,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Rédaction de scripts",
-    "subtitle": "Permettez à l'assistant et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
+    "subtitle": "Permettez à Breeze AI et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
     "partnerCard": {
       "title": "Plafond du partenaire",
       "description": "Le paramètre le plus large que toute organisation de ce partenaire peut utiliser. Chaque organisation ne peut que le restreindre.",
@@ -6896,13 +6896,13 @@
     "timeoutLabel": "Délai d'approbation interactive",
     "productDefault": "Valeur par défaut du produit ({{minutes}} minutes)",
     "range": "Choisissez {{min}}-{{max}} minutes.",
-    "description": "Durée pendant laquelle un tour de chat IA en cours attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner.",
+    "description": "Durée pendant laquelle un tour de Breeze AI en cours attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner.",
     "orgOverrideNote": "Les organisations peuvent remplacer cette valeur depuis leurs propres paramètres IA ; la valeur de l'organisation prévaut si elle est définie.",
     "notForUnattendedNote": "Ceci n'est pas destiné au travail nocturne ou sans surveillance — le travail de longue durée passe par la file d'approbations, qui a son propre délai d'expiration."
   },
   "orgAiApprovalTimeout": {
     "title": "Délai d'approbation IA",
-    "description": "Durée pendant laquelle un chat IA attend qu'une personne approuve une action contrôlée (niveau 2/3) avant d'abandonner. Les organisations peuvent remplacer ici la valeur par défaut du partenaire ; la valeur de l'organisation prévaut si elle est définie.",
+    "description": "Durée pendant laquelle Breeze AI attend qu'une personne approuve une action contrôlée (Tier 2/3) avant d'abandonner. Les organisations peuvent remplacer ici la valeur par défaut du partenaire ; la valeur de l'organisation prévaut si elle est définie.",
     "fieldLabel": "Délai d'approbation interactive",
     "inherit": "Hériter",
     "inheritLabel": "Hériter ({{minutes}} minutes, {{source}})",

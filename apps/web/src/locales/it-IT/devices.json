@@ -2176,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Durata: {{duration}}",
     "empty": "Nessuna esecuzione di playbook trovata per questo dispositivo.",
-    "emptyHelp": "I playbook possono essere avviati tramite l'assistente AI per automatizzare gli interventi di correzione.",
+    "emptyHelp": "I playbook possono essere avviati tramite Breeze AI per automatizzare gli interventi di correzione.",
     "loading": "Caricamento della cronologia dei playbook...",
     "noStepResults": "Nessun risultato dei passaggi registrato.",
     "rollbackExecuted": "Rollback eseguito",

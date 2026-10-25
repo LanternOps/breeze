@@ -2176,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Süre: {{duration}}",
     "empty": "Bu cihaz için oynatma kitabı yürütmesi bulunamadı.",
-    "emptyHelp": "Başucu Kitapları, iyileştirme görevlerini otomatikleştirmek için AI asistanı aracılığıyla tetiklenebilir.",
+    "emptyHelp": "Başucu Kitapları, iyileştirme görevlerini otomatikleştirmek için Breeze AI aracılığıyla tetiklenebilir.",
     "loading": "Başucu kitabı geçmişi yükleniyor...",
     "noStepResults": "Adım sonucu kaydedilmedi.",
     "rollbackExecuted": "Geri alma gerçekleştirildi",

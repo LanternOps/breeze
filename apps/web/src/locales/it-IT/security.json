@@ -2488,7 +2488,7 @@
       "origin": {
         "web": "Interfaccia web",
         "api": "Accesso tramite API",
-        "ai_chat": "Chat IA",
+        "ai_chat": "Breeze AI",
         "mcp": "Client MCP"
       },
       "scanType": {

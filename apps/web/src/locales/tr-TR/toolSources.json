@@ -1,9 +1,9 @@
 {
   "title": "Araç Kaynakları",
-  "subtitle": "Araçlarının Yapay Zeka sohbetinde, araç başına risk seviyeleri ve onaylarla kullanılabilir hale gelmesi için bir MCP sunucusu veya OpenAPI (REST) API’si bağlayın.",
+  "subtitle": "Araçlarının Breeze AI için, araç başına risk seviyeleri ve onaylarla kullanılabilir hale gelmesi için bir MCP sunucusu veya OpenAPI (REST) API'si bağlayın.",
   "empty": {
     "title": "Henüz araç kaynağı yok",
-    "body": "Asistana ekibinizin zaten kullandığı sistemlere okuma ve yazma erişimi vermek için bir MCP sunucusu veya OpenAPI API’si ekleyin."
+    "body": "Breeze AI'a ekibinizin zaten kullandığı sistemlere okuma ve yazma erişimi vermek için bir MCP sunucusu veya OpenAPI API'si ekleyin."
   },
   "list": {
     "add": "Kaynak ekle",
@@ -37,7 +37,7 @@
     "scope": "Kullanılabilirlik",
     "allOrganizations": "Tüm kuruluşlar",
     "thisOrganizationOnly": "Yalnızca bu kuruluş",
-    "partnerWideWarning": "İş ortağı çapındaki bir kaynak, bu kimlik bilgisinin {{vendor}} içinde erişebileceği her şeyi her kuruluşun Yapay Zeka sohbetine açar. Sağlayıcı müşteri başına kimlik bilgisi veriyorsa kuruluşa ait bir kaynak kullanın.",
+    "partnerWideWarning": "İş ortağı çapındaki bir kaynak, bu kimlik bilgisinin {{vendor}} içinde erişebileceği her şeyi her kuruluşun Breeze AI'ına açar. Sağlayıcı müşteri başına kimlik bilgisi veriyorsa kuruluşa ait bir kaynak kullanın.",
     "save": "Kaydet",
     "cancel": "İptal",
     "auth": {
@@ -65,7 +65,7 @@
     "edit": "Düzenle",
     "delete": "Sil",
     "deleteTitle": "Bu araç kaynağı silinsin mi?",
-    "deleteConfirm": "Keşfedilen araçları hemen Yapay Zeka sohbetine sunulmaktan çıkar ve kayıtlı kimlik bilgisi yok edilir. Bu işlem geri alınamaz.",
+    "deleteConfirm": "Keşfedilen araçları hemen Breeze AI'a sunulmaktan çıkar ve kayıtlı kimlik bilgisi yok edilir. Bu işlem geri alınamaz.",
     "endpoint": "Uç nokta",
     "specUrl": "OpenAPI belgesi",
     "lastDiscovered": "Son keşif",
@@ -109,7 +109,7 @@
     "notAddressable": "Ad kullanılamıyor",
     "enableReads": "Tüm okumaları etkinleştir",
     "enableReadsConfirmTitle": "Bu araçlar için okuma erişimi etkinleştirilsin mi?",
-    "enableReadsConfirmMessage": "{{count}} araç, onay gerekmeden AI sohbeti tarafından çağrılabilir hale gelecek:",
+    "enableReadsConfirmMessage": "{{count}} araç, onay gerekmeden Breeze AI tarafından çağrılabilir hale gelecek:",
     "enableReadsConfirmEmpty": "Uygun araç yok — kalanlar zaten etkin, katman 1 değil veya hâlâ inceleme bekliyor.",
     "enableReadsConfirmSkipped": "{{count}} ek araç hâlâ inceleme bekliyor ve etkinleştirilmeyecek.",
     "disableAll": "Tümünü devre dışı bırak",

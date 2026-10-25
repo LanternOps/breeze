@@ -2176,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Dauer: {{duration}}",
     "empty": "Für dieses Gerät wurden keine Playbook-Ausführungen gefunden.",
-    "emptyHelp": "Playbooks können über den KI-Assistenten ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
+    "emptyHelp": "Playbooks können über Breeze AI ausgelöst werden, um Behebungsaufgaben zu automatisieren.",
     "loading": "Playbook-Verlauf wird geladen...",
     "noStepResults": "Es wurden keine Schrittergebnisse aufgezeichnet.",
     "rollbackExecuted": "Rollback wurde ausgeführt",

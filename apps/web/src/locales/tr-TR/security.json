@@ -2488,7 +2488,7 @@
       "origin": {
         "web": "Web arayüzü",
         "api": "API erişimi",
-        "ai_chat": "Yapay zekâ sohbeti",
+        "ai_chat": "Breeze AI",
         "mcp": "MCP istemcisi"
       },
       "scanType": {

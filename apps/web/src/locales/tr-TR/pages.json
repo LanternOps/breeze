@@ -27,7 +27,7 @@
     "flowDetail": "Akış",
     "aiAgentsRunsDetail": "Çalıştırma Detayı",
     "aiAgentsRuns": "Aracı Çalıştırmaları",
-    "aiForOffice": "Office için AI",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Yapay Zeka Risk Motoru",
     "alertsDelivery": "Uyarılar – Teslimat",
     "alertsCorrelations": "Uyarı Korelasyonları",
@@ -186,7 +186,7 @@
     "settingsWispMemory": "Wisp belleği",
     "wispThread": "Wisp konuşması",
     "wisp": "Wisp",
-    "wispChat": "Wisp — Sohbetler"
+    "wispChat": "Breeze AI"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -240,7 +240,7 @@
       },
       "connectedApps": {
         "title": "Bağlı Uygulamalar",
-        "description": "Kiracınıza erişim yetkisi verilen yapay zeka asistanlarını ve MCP istemcilerini inceleyin ve iptal edin."
+        "description": "Kiracınıza erişim yetkisi verilen AI istemcilerini inceleyin ve iptal edin."
       },
       "officeAddinBindings": {
         "title": "Outlook Eklenti Bağlamaları",
@@ -299,7 +299,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Bağlı uygulamalar",
-    "description": "OAuth üzerinden kiracınıza erişim yetkisi verilen yapay zeka asistanları ve diğer MCP istemcileri. Erişimi istediğiniz zaman iptal edin — uygulamanın belirteci 10 dakika içinde reddedilir."
+    "description": "OAuth üzerinden kiracınıza erişim yetkisi verilen AI istemcileri. Erişimi istediğiniz zaman iptal edin — uygulamanın belirteci 10 dakika içinde reddedilir."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Organizasyon ayarları",

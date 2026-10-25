@@ -27,7 +27,7 @@
     "flowDetail": "Flux",
     "aiAgentsRunsDetail": "Détail de l'exécution",
     "aiAgentsRuns": "Exécutions des agents",
-    "aiForOffice": "IA pour Office",
+    "aiForOffice": "Breeze AI for Office",
     "aiRisk": "Moteur de risque IA",
     "alertsDelivery": "Alertes – Livraison",
     "alertsCorrelations": "Corrélations d'alertes",
@@ -186,7 +186,7 @@
     "settingsWispMemory": "Mémoire de Wisp",
     "wispThread": "Fil Wisp",
     "wisp": "Wisp",
-    "wispChat": "Wisp — discussions"
+    "wispChat": "Breeze AI"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -240,7 +240,7 @@
       },
       "connectedApps": {
         "title": "Applications connectées",
-        "description": "Vérifiez et révoquez les assistants IA et clients MCP autorisés à accéder à votre organisation."
+        "description": "Vérifiez et révoquez les clients IA autorisés à accéder à votre locataire."
       },
       "officeAddinBindings": {
         "title": "Liaisons du module Outlook",
@@ -299,7 +299,7 @@
   },
   "settingsConnectedAppsPage": {
     "heading": "Applications connectées",
-    "description": "Assistants IA et autres clients MCP autorisés à accéder à votre organisation via OAuth. Révoquez l'accès à tout moment — le jeton de l'application sera rejeté dans les 10 minutes."
+    "description": "Clients IA autorisés à accéder à votre locataire via OAuth. Révoquez l'accès à tout moment — le jeton de l'application sera rejeté dans les 10 minutes."
   },
   "settingsOrganizationBillingPage": {
     "backLink": "← Paramètres de l'organisation",

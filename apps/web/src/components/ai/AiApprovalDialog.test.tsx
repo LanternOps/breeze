@@ -794,7 +794,7 @@ describe('AiApprovalDialog — script run context (#4888)', () => {
 
     const row = screen.getByTestId('approval-run-context');
     expect(row).toHaveTextContent(/system/i);
-    expect(row).toHaveTextContent(/chosen by the assistant/i);
+    expect(row).toHaveTextContent(/chosen by Breeze AI/i);
   });
 
   it('calls out an assistant override of the script’s saved default', () => {
@@ -835,7 +835,7 @@ describe('AiApprovalDialog — script run context (#4888)', () => {
     const row = screen.getByTestId('approval-run-context');
     expect(row).toHaveTextContent(/logged-in user/i);
     expect(row).toHaveTextContent(/saved default/i);
-    expect(row).not.toHaveTextContent(/chosen by the assistant/i);
+    expect(row).not.toHaveTextContent(/chosen by Breeze AI/i);
   });
 
   it('names the pinned Windows session for a session-targeted user run', () => {

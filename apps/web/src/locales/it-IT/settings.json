@@ -1096,7 +1096,7 @@
       },
       "aiApprovals": {
         "label": "Timeout di approvazione IA",
-        "description": "Per quanto tempo la chat IA attende l'approvazione di un'azione controllata"
+        "description": "Per quanto tempo Breeze AI attende l'approvazione di un'azione controllata"
       },
       "callerVerification": {
         "label": "Verifica del chiamante",
@@ -2401,7 +2401,7 @@
   },
   "aiUsagePage": {
     "aIUsageBudget": "Utilizzo AI",
-    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitora l'utilizzo dell'assistente AI e configura i limiti di budget",
+    "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitora l'utilizzo di Breeze AI e configura i limiti di budget",
     "budgetConfiguration": "Configurazione budget",
     "aIEnabled": "AI abilitata",
     "enabled": "Abilitato",
@@ -2455,7 +2455,7 @@
     "creditsRemaining": "Crediti IA Breeze rimanenti",
     "defaultValue": "Predefinito ({{value}})",
     "viewPartnerWideBudgets": "Budget AI del partner",
-    "monitorAIAssistantUsage": "Monitora l’utilizzo dell’assistente AI",
+    "monitorAIAssistantUsage": "Monitora l'utilizzo di Breeze AI",
     "effectiveBudget": "Budget effettivo",
     "effectiveBudgetHelp": "I limiti attualmente in vigore per questa organizzazione e dove è stato impostato ciascuno.",
     "effectiveBudgetUnavailable": "Non è stato possibile caricare il budget effettivo. Ricarica la pagina per riprovare.",
@@ -5434,7 +5434,7 @@
   },
   "orgAiBudgetSettings": {
     "title": "Budget AI",
-    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per l’assistente AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
+    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per Breeze AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
     "selectOrganization": "Seleziona un'organizzazione per configurare il suo budget AI."
   },
   "orgSettingsPage": {
@@ -5494,7 +5494,7 @@
       "ticketing": "Ticketing",
       "ticketingDescription": "Override SLA e fatturazione",
       "ai": "IA",
-      "aiDescription": "Budget dell’assistente AI, limiti di frequenza e modalità di approvazione"
+      "aiDescription": "Budget di Breeze AI, limiti di frequenza e modalità di approvazione"
     },
     "overview": {
       "title": "Panoramica organizzazione",
@@ -6728,7 +6728,7 @@
   },
   "scriptAuthoringPage": {
     "title": "Creazione di script",
-    "subtitle": "Consenti all'assistente e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
+    "subtitle": "Consenti a Breeze AI e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
     "partnerCard": {
       "title": "Limite del partner",
       "description": "L'impostazione più ampia che qualsiasi organizzazione di questo partner può utilizzare. Le singole organizzazioni possono solo restringerla.",
@@ -6896,13 +6896,13 @@
     "timeoutLabel": "Timeout di approvazione interattiva",
     "productDefault": "Predefinito del prodotto ({{minutes}} minuti)",
     "range": "Scegli tra {{min}} e {{max}} minuti.",
-    "description": "Per quanto tempo un turno di chat IA in corso attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare.",
+    "description": "Per quanto tempo un turno live di Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare.",
     "orgOverrideNote": "Le organizzazioni possono sovrascrivere questo valore dalle proprie impostazioni IA; il valore dell'organizzazione prevale se impostato.",
     "notForUnattendedNote": "Questo non è per lavoro notturno o incustodito — il lavoro di lunga durata passa attraverso la coda delle approvazioni, che ha una propria scadenza."
   },
   "orgAiApprovalTimeout": {
     "title": "Timeout di approvazione IA",
-    "description": "Per quanto tempo una chat IA attende che qualcuno approvi un'azione controllata (Livello 2/3) prima di rinunciare. Le organizzazioni possono sovrascrivere qui il valore predefinito del partner; il valore dell'organizzazione prevale se impostato.",
+    "description": "Per quanto tempo Breeze AI attende che qualcuno approvi un'azione controllata (Tier 2/3) prima di rinunciare. Le organizzazioni possono sovrascrivere qui il valore predefinito del partner; il valore dell'organizzazione prevale se impostato.",
     "fieldLabel": "Timeout di approvazione interattiva",
     "inherit": "Eredita",
     "inheritLabel": "Eredita ({{minutes}} minuti, {{source}})",

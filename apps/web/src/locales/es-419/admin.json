@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Aplicaciones conectadas (en toda la organización)",
       "description": {
-        "prefix": "asistentes AI y otros clientes MCP que los usuarios en",
+        "prefix": "Clientes de IA que los usuarios de",
         "yourOrganization": "su organización",
         "suffix": "han autorizado. Bloquee a cualquier cliente para revocar inmediatamente todas las concesiones activas."
       },
@@ -889,10 +889,10 @@
       "backup.restore.unattested_override": "Restauración de una instantánea no verificada confirmada",
       "ai.tool_approval.update": "Aprobación de herramienta de IA actualizada",
       "ai.tool.*": "Herramienta de IA: {tool}",
-      "ai.session.create": "Chat de IA iniciado",
-      "ai.session.close": "Chat de IA cerrado",
-      "ai.session.flag": "Chat de IA marcado",
-      "ai.session.unflag": "Marca de chat de IA quitada",
+      "ai.session.create": "Inició una conversación con Breeze AI",
+      "ai.session.close": "Cerró una conversación con Breeze AI",
+      "ai.session.flag": "Marcó una conversación con Breeze AI",
+      "ai.session.unflag": "Quitó la marca de una conversación con Breeze AI",
       "ai.message.interrupt": "Respuesta de IA detenida",
       "ai.command.executed": "La IA ejecutó un comando",
       "ai.script.executed": "La IA ejecutó un script",

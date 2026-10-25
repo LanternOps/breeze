@@ -121,7 +121,7 @@
     "orgConnectedAppsPage": {
       "title": "Verbundene Apps (organisationsweit)",
       "description": {
-        "prefix": "KI-Assistenten und andere MCP-Clients, die Benutzer in",
+        "prefix": "KI-Clients, die Benutzer in",
         "yourOrganization": "Ihrer Organisation",
         "suffix": "autorisiert haben. Sperren Sie einen Client, um alle aktiven Berechtigungen sofort zu widerrufen."
       },
@@ -889,10 +889,10 @@
       "backup.restore.unattested_override": "Wiederherstellung eines ungeprüften Snapshots bestätigt",
       "ai.tool_approval.update": "KI-Tool-Genehmigung aktualisiert",
       "ai.tool.*": "KI-Tool: {tool}",
-      "ai.session.create": "KI-Chat gestartet",
-      "ai.session.close": "KI-Chat geschlossen",
-      "ai.session.flag": "KI-Chat markiert",
-      "ai.session.unflag": "KI-Chat-Markierung entfernt",
+      "ai.session.create": "Eine Unterhaltung mit Breeze AI gestartet",
+      "ai.session.close": "Eine Unterhaltung mit Breeze AI geschlossen",
+      "ai.session.flag": "Eine Unterhaltung mit Breeze AI markiert",
+      "ai.session.unflag": "Markierung einer Unterhaltung mit Breeze AI entfernt",
       "ai.message.interrupt": "KI-Antwort gestoppt",
       "ai.command.executed": "KI hat einen Befehl ausgeführt",
       "ai.script.executed": "KI hat ein Skript ausgeführt",

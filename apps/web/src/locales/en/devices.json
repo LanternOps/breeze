@@ -2176,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Duration: {{duration}}",
     "empty": "No playbook executions found for this device.",
-    "emptyHelp": "Playbooks can be triggered via the AI assistant to automate remediation tasks.",
+    "emptyHelp": "Playbooks can be triggered via Breeze AI to automate remediation tasks.",
     "loading": "Loading playbook history...",
     "noStepResults": "No step results recorded.",
     "rollbackExecuted": "Rollback was executed",

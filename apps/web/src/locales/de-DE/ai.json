@@ -44,9 +44,9 @@
     "deniedToast_other": "{{count}} Aktionen abgelehnt",
     "refusedToast": "Genehmigung verweigert. Die Anfrage wurde abgelehnt.",
     "runContextLabel": "Ausführungskontext:",
-    "runContextChosenByAssistant": "vom Assistenten ausgewählt",
+    "runContextChosenByAssistant": "von Breeze AI gewählt",
     "runContextScriptDefault": "der gespeicherte Standard des Skripts",
-    "runContextOverrides": "vom Assistenten ausgewählt und überschreibt den gespeicherten Standard des Skripts ({{context}})"
+    "runContextOverrides": "von Breeze AI gewählt, überschreibt den gespeicherten Standard des Skripts ({{context}})"
   },
   "aiChatInput": {
     "waiting": "Antwort wird erwartet…",
@@ -56,7 +56,7 @@
     "sendShortcut": "Mit Cmd+Enter senden"
   },
   "aiChatMessages": {
-    "title": "Breeze AI-Assistent",
+    "title": "Breeze AI",
     "description": "Fragen zu Geräten, Warnmeldungen und Metriken stellen oder Probleme beheben.",
     "unknownTool": "Unbekanntes Tool",
     "toolResult": "Tool-Ergebnis",
@@ -107,10 +107,10 @@
     "dismiss": "Schließen"
   },
   "aiConversationMove": {
-    "openInAssistant": "In Wisp-Chats öffnen",
+    "openInAssistant": "In Breeze AI öffnen",
     "continueInPanel": "In der Seitenleiste fortsetzen",
     "openPastConversation": "Frühere Unterhaltung öffnen",
-    "closeTabInAssistant": "Schließen Sie einen Tab in den Wisp-Chats, um diese Unterhaltung zu öffnen",
+    "closeTabInAssistant": "Schließen Sie einen Tab in Breeze AI, um diese Unterhaltung zu öffnen",
     "closeTabToOpen": "Schließen Sie einen Tab, um diese Unterhaltung zu öffnen",
     "notAvailable": "Diese Unterhaltung ist nicht verfügbar",
     "wasClosed": "Diese Unterhaltung wurde geschlossen",
@@ -160,7 +160,7 @@
     "outputExpired": "Ausgabe gemäß der Aufbewahrungsrichtlinie abgelaufen"
   },
   "aiForOfficePage": {
-    "title": "KI für Office",
+    "title": "Breeze AI for Office",
     "description": "Kontrollierter KI-Assistent in den Excel-Anwendungen Ihrer Kunden – Bereitstellung, Richtlinien, Audit, Nutzung und Vorlagen",
     "tabs": {
       "orgs": "Organisationen",
@@ -194,7 +194,7 @@
       "description": "<code>CLIENT_AI_ENTRA_CLIENT_ID</code> (die Entra-App-Registrierung für das Add-In) in der API festlegen und neu laden."
     },
     "title": "Kundenorganisationen",
-    "description": "Den Excel-KI-Assistenten je Kundenorganisation bereitstellen: Entra-Mandanten zuordnen, Administratorzustimmung erteilen, Richtlinie aktivieren und Add-In bereitstellen.",
+    "description": "Breeze AI for Office pro Kundenorganisation bereitstellen: Entra-Mandanten zuordnen, Administratorzustimmung erteilen, Richtlinie aktivieren, Add-in verteilen.",
     "columns": {
       "aiEnabled": "KI aktiviert",
       "entraTenant": "Entra-Mandant",
@@ -208,7 +208,7 @@
     "noOrganizations": "Keine Organisationen",
     "removeMapping": {
       "title": "Mandantenzuordnung entfernen",
-      "message": "Benutzer im Entra-Mandanten von {{orgName}} können sich danach nicht mehr beim Excel-Assistenten anmelden. Die Organisationsrichtlinie und der Nutzungsverlauf bleiben erhalten.",
+      "message": "Benutzer im Entra-Mandanten von {{orgName}} können sich nicht mehr bei Breeze AI for Office anmelden. Die Organisationsrichtlinie und der Nutzungsverlauf bleiben erhalten.",
       "confirm": "Zuordnung entfernen"
     },
     "wizard": {
@@ -230,7 +230,7 @@
       "openNewTab": "In neuem Tab öffnen",
       "afterConsent": "Nach der Erteilung leitet Microsoft auf eine Breeze-Bestätigungsseite weiter. Die Zustimmung wird hier als erteilt angezeigt, sobald sich der erste Benutzer über Excel anmeldet – es erfolgt keine Live-Abfrage bei Microsoft (Plan-4, Entscheidung 1).",
       "consentGranted": "Zustimmung wurde erteilt",
-      "enableDescription": "Den Assistenten für diese Organisation aktivieren. Dadurch wird <code>enabled: true</code> mit sicheren Standardwerten in die Organisationsrichtlinie geschrieben (alle Benutzer, Lese-/Schreibzugriff mit Genehmigung durch den Endbenutzer, DLP-Schwärzung für Finanz- und Anmeldedatentypen). Alle Einstellungen können anschließend im Richtlinieneditor angepasst werden.",
+      "enableDescription": "Breeze AI for Office für diese Organisation aktivieren. Dabei wird <code>enabled: true</code> mit sicheren Standardwerten in die Organisationsrichtlinie geschrieben (alle Benutzer, Lesen/Schreiben mit Genehmigung durch den Endbenutzer, DLP-Schwärzung für Finanz- und Zugangsdatentypen). Passen Sie anschließend alles im Richtlinien-Editor an.",
       "enabling": "Wird aktiviert…",
       "alreadyEnabled": "Bereits aktiviert – fortfahren",
       "enableAi": "AI for Office aktivieren",
@@ -257,7 +257,7 @@
     },
     "organizations": "Organisationen",
     "title": "Organisationsrichtlinie",
-    "description": "Alle Aktionen, die der Excel-Assistent dieser Kundenorganisation ausführen darf.",
+    "description": "Alles, was Breeze AI for Office dieser Kundenorganisation tun darf.",
     "sections": {
       "general": "Allgemein",
       "userAccess": "Benutzerzugriff",
@@ -454,8 +454,8 @@
     "dismiss": "Schließen"
   },
   "workspaceEmptyState": {
-    "title": "Wisp-Chats",
-    "description": "Mehrere KI-Unterhaltungen gleichzeitig führen. Ein Geräteproblem in einem Tab untersuchen und parallel in einem anderen eine Richtlinie konfigurieren.",
+    "title": "Breeze AI",
+    "description": "Führen Sie mehrere Unterhaltungen gleichzeitig. Untersuchen Sie ein Gerät in einem Tab, während Sie in einem anderen eine Richtlinie einrichten.",
     "newConversation": "Neue Unterhaltung",
     "limit": "Bis zu 5 gleichzeitige Unterhaltungen"
   },

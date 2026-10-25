@@ -1,9 +1,9 @@
 {
   "title": "Fonti degli strumenti",
-  "subtitle": "Connetti un server MCP o un’API OpenAPI (REST) in modo che i suoi strumenti diventino disponibili nella chat IA, con livelli di rischio e approvazioni per ogni strumento.",
+  "subtitle": "Connetti un server MCP o un'API OpenAPI (REST) in modo che i suoi strumenti diventino disponibili a Breeze AI, con livelli di rischio e approvazioni per ogni strumento.",
   "empty": {
     "title": "Nessuna fonte di strumenti",
-    "body": "Aggiungi un server MCP o un’API OpenAPI per dare all’assistente accesso in lettura e scrittura ai sistemi che il tuo team utilizza già."
+    "body": "Aggiungi un server MCP o un'API OpenAPI per dare a Breeze AI accesso in lettura e scrittura ai sistemi che il tuo team utilizza già."
   },
   "list": {
     "add": "Aggiungi fonte",
@@ -37,7 +37,7 @@
     "scope": "Disponibilità",
     "allOrganizations": "Tutte le organizzazioni",
     "thisOrganizationOnly": "Solo questa organizzazione",
-    "partnerWideWarning": "Una fonte a livello di partner espone tutto ciò che questa credenziale può raggiungere in {{vendor}} alla chat IA di ogni organizzazione. Usa una fonte di proprietà dell’organizzazione quando il fornitore emette credenziali per singolo cliente.",
+    "partnerWideWarning": "Una fonte a livello di partner espone tutto ciò che questa credenziale può raggiungere in {{vendor}} a Breeze AI di ogni organizzazione. Usa una fonte di proprietà dell'organizzazione quando il fornitore emette credenziali per singolo cliente.",
     "save": "Salva",
     "cancel": "Annulla",
     "auth": {
@@ -65,7 +65,7 @@
     "edit": "Modifica",
     "delete": "Elimina",
     "deleteTitle": "Eliminare questa fonte di strumenti?",
-    "deleteConfirm": "I suoi strumenti rilevati smettono immediatamente di essere offerti alla chat IA e la credenziale memorizzata viene distrutta. Questa azione non può essere annullata.",
+    "deleteConfirm": "I suoi strumenti rilevati smettono immediatamente di essere offerti a Breeze AI e la credenziale memorizzata viene distrutta. Questa azione non può essere annullata.",
     "endpoint": "Punto di connessione",
     "specUrl": "Documento OpenAPI",
     "lastDiscovered": "Ultimo rilevamento",
@@ -109,7 +109,7 @@
     "notAddressable": "Nome non utilizzabile",
     "enableReads": "Abilita tutte le letture",
     "enableReadsConfirmTitle": "Abilitare le letture per questi strumenti?",
-    "enableReadsConfirmMessage": "{{count}} strumento/i diventeranno richiamabili dalla chat IA senza approvazione richiesta:",
+    "enableReadsConfirmMessage": "{{count}} strumento/i diventeranno richiamabili da Breeze AI senza approvazione richiesta:",
     "enableReadsConfirmEmpty": "Nessuno strumento è idoneo — gli altri sono già abilitati, non sono di livello 1 o necessitano ancora di revisione.",
     "enableReadsConfirmSkipped": "{{count}} strumento/i aggiuntivo/i necessitano ancora di revisione e non verranno abilitati.",
     "disableAll": "Disabilita tutto",

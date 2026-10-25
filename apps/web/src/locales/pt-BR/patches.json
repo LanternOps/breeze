@@ -426,7 +426,7 @@
     }
   },
   "patchJobsList": {
-    "empty": "Ainda não há trabalhos de patch. Trabalhos criados por políticas, anéis de atualização ou pelo assistente de IA aparecerão aqui.",
+    "empty": "Ainda não há trabalhos de patch. Trabalhos criados por políticas, anéis de atualização ou pelo Breeze AI aparecerão aqui.",
     "loading": "Carregando trabalhos de patch...",
     "columns": {
       "name": "Trabalho",

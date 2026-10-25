@@ -2176,7 +2176,7 @@
   "devicePlaybookHistory": {
     "duration": "Durée : {{duration}}",
     "empty": "Aucune exécution de procédure automatisée n’a été trouvée pour cet appareil.",
-    "emptyHelp": "Les playbooks peuvent être déclenchés via l’assistant IA pour automatiser les tâches de remédiation.",
+    "emptyHelp": "Les playbooks peuvent être déclenchés via Breeze AI pour automatiser les tâches de remédiation.",
     "loading": "Chargement de l’historique du playbook...",
     "noStepResults": "Aucun résultat de pas enregistré.",
     "rollbackExecuted": "Le retour en arrière a été exécuté",

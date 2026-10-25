@@ -132,7 +132,7 @@
     "durationValue": "{{minutes}} minutos desde la aprobación",
     "purpose": "Propósito",
     "requestedBy": "Solicitado por",
-    "principalUser": "Chat de IA de Breeze",
+    "principalUser": "Breeze AI",
     "principalApiKey": "Clave de API de MCP",
     "principalOauth": "Conexión OAuth de MCP",
     "paths": "Rutas",
