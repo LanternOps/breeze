@@ -54,7 +54,7 @@ const G_DYN = 'aaaaaaaa-0000-4000-8000-000000000002';
 const G_ROLE = 'aaaaaaaa-0000-4000-8000-000000000003';
 const CONTACT_TARGET = '00000000-0000-4000-8000-0000000000c1';
 const UPN = 'priya@customer.example';
-const M365_ID = 'obj-1111';
+const M365_ID = '00000000-0000-4000-8000-00000000b111';
 const GOOGLE_ID = '900100';
 const GOOGLE_LABEL = 'priya@customer.example';
 

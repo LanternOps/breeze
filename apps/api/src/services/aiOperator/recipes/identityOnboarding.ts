@@ -291,6 +291,16 @@ const resolvedAccountSchema = z.object({
   /** Google: the canonical primary email the Google tools address. M365: the UPN, for display only. */
   principalLabel: z.string().min(1).max(320),
 }).strict();
+/** M365 is addressed by the immutable Entra object id, which is always a GUID. */
+const ENTRA_OBJECT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const resolvedM365AccountSchema = resolvedAccountSchema.extend({
+  externalId: z.string().regex(ENTRA_OBJECT_ID, 'not an Entra object id (GUID)'),
+}).strict();
+
+/** The comparison form of an address (the canonical form `resolve_accounts` freezes: trimmed, lowercased). */
+function canonicalAddress(raw: string): string {
+  return raw.trim().toLowerCase();
+}
 
 export const identityOnboardingCreateFactsSchema = z.object({
   stage: z.literal('create'),
@@ -301,7 +311,7 @@ export const identityOnboardingProvisionFactsSchema = z.object({
   stage: z.literal('provision'),
   ...factsBaseShape,
   accounts: z.object({
-    m365: resolvedAccountSchema.nullable(),
+    m365: resolvedM365AccountSchema.nullable(),
     google: resolvedAccountSchema.nullable(),
   }).strict(),
 }).strict();
@@ -477,6 +487,11 @@ export function buildIdentityOnboardingProvisionPlan(
       const g = input.google;
       const account = f.accounts.google;
       if (g === null || account === null) continue;
+      // The Google tools address the account by this label: it must be the
+      // address the technician asked for, never another user's.
+      if (canonicalAddress(account.principalLabel) !== canonicalAddress(g.primaryEmail)) {
+        throw new Error('identity_onboarding: the resolved Google account\'s principal label is not the requested primary email');
+      }
       const userEmail = account.principalLabel;
       const id = account.externalId;
       if (g.orgUnitPath !== null) push('google', 'google_move_ou', id, { userEmail, orgUnitPath: g.orgUnitPath });

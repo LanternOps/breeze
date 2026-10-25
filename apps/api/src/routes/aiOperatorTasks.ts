@@ -1126,8 +1126,13 @@ aiOperatorTasksRoutes.post(
 
 /** Never leaves the server: the draft's facts need a contact target id, and there is no contact. */
 const DRAFT_CONTACT_TARGET_ID = '00000000-0000-0000-0000-000000000000';
-/** Never leaves the server either: the account a stage-1 create would produce has no id yet. */
-const DRAFT_PENDING_ACCOUNT_ID = 'pending-account';
+/**
+ * Never leaves the server either: the account a stage-1 create would produce
+ * has no id yet. M365 accounts are addressed by an Entra object id (a GUID),
+ * so the placeholder is the nil GUID; the preview hides `userIdentifier`.
+ */
+const DRAFT_PENDING_M365_ACCOUNT_ID = '00000000-0000-0000-0000-000000000000';
+const DRAFT_PENDING_GOOGLE_ACCOUNT_ID = 'pending-account';
 /** Arguments that name the account or audit the call; the preview states the account through `principalLabel`. */
 const DRAFT_HIDDEN_ARGUMENTS: ReadonlySet<string> = new Set(['userIdentifier', 'userEmail', 'reason']);
 
@@ -1208,8 +1213,8 @@ async function draftIdentityOnboardingFromRoute(c: Context, args: {
     ...facts,
     stage: 'provision' as const,
     accounts: {
-      m365: m365Free && input.m365 ? { externalId: DRAFT_PENDING_ACCOUNT_ID, principalLabel: input.m365.userPrincipalName } : null,
-      google: googleFree && input.google ? { externalId: DRAFT_PENDING_ACCOUNT_ID, principalLabel: input.google.primaryEmail } : null,
+      m365: m365Free && input.m365 ? { externalId: DRAFT_PENDING_M365_ACCOUNT_ID, principalLabel: input.m365.userPrincipalName } : null,
+      google: googleFree && input.google ? { externalId: DRAFT_PENDING_GOOGLE_ACCOUNT_ID, principalLabel: input.google.primaryEmail } : null,
     },
   };
 

@@ -51,6 +51,7 @@ const GRP_ROLE = 'aaaaaaaa-0000-4000-8000-000000000003';
 const GRP_UNREAD = 'aaaaaaaa-0000-4000-8000-000000000004';
 const CONTACT_TARGET = '00000000-0000-4000-8000-0000000000c1';
 const UPN = 'priya@customer.example';
+const M365_ID = '00000000-0000-4000-8000-00000000b111';
 const recipe = identityOnboardingRecipe as unknown as AnyRecipeDefinition;
 
 function input(over: Record<string, unknown> = {}): IdentityOnboardingInput {
@@ -116,7 +117,7 @@ function provisionFacts(over: Record<string, unknown> = {}): Record<string, unkn
     ...createFacts(),
     stage: 'provision',
     accounts: {
-      m365: { externalId: 'obj-1111', principalLabel: UPN },
+      m365: { externalId: M365_ID, principalLabel: UPN },
       google: { externalId: '900100', principalLabel: UPN },
     },
     ...over,
@@ -344,6 +345,22 @@ describe('the strict facts contract (B2 "Strict facts")', () => {
     expect(() => identityOnboardingRecipe.buildPlan(input(), google)).toThrow(/collision/);
   });
 
+  it('a stage-2 Microsoft 365 account id must be a GUID (the immutable Entra object id)', () => {
+    const bad = provisionFacts({ accounts: { m365: { externalId: 'not-a-guid', principalLabel: UPN }, google: null } });
+    expect(identityOnboardingFactsSchema.safeParse(bad).success).toBe(false);
+    expect(() => buildIdentityOnboardingProvisionPlan(input(), bad)).toThrow(/identity_onboarding/);
+    const upper = provisionFacts({ accounts: { m365: { externalId: M365_ID.toUpperCase(), principalLabel: UPN }, google: null } });
+    expect(identityOnboardingFactsSchema.safeParse(upper).success).toBe(true);
+  });
+
+  it('the provision plan THROWS when the Google account\'s principal label is not the requested primary email (canonicalized)', () => {
+    const other = provisionFacts({ accounts: { m365: null, google: { externalId: '900100', principalLabel: 'someone@customer.example' } } });
+    expect(() => buildIdentityOnboardingProvisionPlan(input(), other)).toThrow(/principal/);
+    // Case and surrounding space are not a different address.
+    const cased = provisionFacts({ accounts: { m365: null, google: { externalId: '900100', principalLabel: 'Priya@Customer.Example' } } });
+    expect(() => buildIdentityOnboardingProvisionPlan(input(), cased)).not.toThrow();
+  });
+
   it('each builder refuses the other stage\'s facts', () => {
     expect(() => buildIdentityOnboardingCreatePlan(input(), provisionFacts())).toThrow(/stage/);
     expect(() => buildIdentityOnboardingProvisionPlan(input(), createFacts())).toThrow(/stage/);
@@ -468,8 +485,8 @@ describe('buildIdentityOnboardingProvisionPlan — stage 2', () => {
 
   it('addresses M365 by the IMMUTABLE external id, never the UPN, in metadata AND arguments', () => {
     for (const e of plan.filter((x) => x.provider === 'm365')) {
-      expect(e.accountExternalId).toBe('obj-1111');
-      expect(e.canonicalArguments).toMatchObject({ userIdentifier: 'obj-1111' });
+      expect(e.accountExternalId).toBe(M365_ID);
+      expect(e.canonicalArguments).toMatchObject({ userIdentifier: M365_ID });
       expect(JSON.stringify(e.canonicalArguments)).not.toContain(UPN);
     }
   });
@@ -499,7 +516,7 @@ describe('buildIdentityOnboardingProvisionPlan — stage 2', () => {
     }), facts);
     expect(toolsOf(p).filter((n) => n === 'm365_assign_license')).toHaveLength(1);
     expect(p.find((e) => e.toolName === 'm365_assign_license')!.canonicalArguments)
-      .toMatchObject({ userIdentifier: 'obj-1111', skuIds: [SKU_A, SKU_B] });
+      .toMatchObject({ userIdentifier: M365_ID, skuIds: [SKU_A, SKU_B] });
   });
 
   it('plans ONLY SKUs whose seat state is `available`; every other state is omitted (B6)', () => {
@@ -578,7 +595,7 @@ describe('buildIdentityOnboardingProvisionPlan — stage 2', () => {
 
   it('omits a provider whose account did not resolve, and keeps the other', () => {
     const m365Only = buildIdentityOnboardingProvisionPlan(input(), provisionFacts({
-      accounts: { m365: { externalId: 'obj-1111', principalLabel: UPN }, google: null },
+      accounts: { m365: { externalId: M365_ID, principalLabel: UPN }, google: null },
     }));
     expect(m365Only.length).toBeGreaterThan(0);
     expect(m365Only.every((e) => e.provider === 'm365')).toBe(true);

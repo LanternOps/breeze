@@ -106,7 +106,7 @@ const STAGE1 = identityOnboardingFactsSchema.parse({ stage: 'create', ...BASE })
 const STAGE2 = identityOnboardingFactsSchema.parse({
   stage: 'provision', ...BASE,
   accounts: {
-    m365: { externalId: 'obj-2222', principalLabel: 'robin@customer.example' },
+    m365: { externalId: '00000000-0000-4000-8000-00000000b222', principalLabel: 'robin@customer.example' },
     google: { externalId: '900100', principalLabel: 'robin@customer.example' },
   },
 }) as IdentityOnboardingFacts;
