@@ -5,7 +5,7 @@
  * timeline viewing, and report generation.
  * - create_incident (Tier 2): Create a new security incident
  * - execute_containment (Tier 3): Execute containment actions on a device
- * - collect_evidence (Tier 2): Collect forensic evidence from a device
+ * - collect_evidence (Tier 2; Tier 3 supervised when evidenceTypes includes screenshot): Collect forensic evidence from a device
  * - get_incident_timeline (Tier 1): View full incident timeline
  * - generate_incident_report (Tier 1): Generate structured incident report
  */
@@ -370,7 +370,7 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // collect_evidence — Tier 2 (medium risk)
+  // collect_evidence — Tier 2; screenshot → Tier 3 supervised (W04-D3, isInputAwareTier3)
   // ============================================
 
   registerTool({

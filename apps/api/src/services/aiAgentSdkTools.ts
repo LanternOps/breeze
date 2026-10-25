@@ -444,8 +444,8 @@ export const TOOL_TIERS = {
   manage_monitors: 1,           // Read-only; retired mutations return guidance
   get_service_monitoring_status: 1,
   // W01 (spec §4.4) — read-only reachability for a discovered network asset,
-  // with the source and age of the evidence. Wired here rather than added to
-  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // with the source and age of the evidence. Wired with a tier (the registry
+  // ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS contract): without one, createSessionPreToolUse rejects
   // it as "Unknown tool" and the chat tells the user the capability does not
   // exist.
   list_network_assets: 1,
@@ -469,10 +469,9 @@ export const TOOL_TIERS = {
   // M4 Task 4 (#6000): the one topology action — approval-gated (supervised,
   // fresh second factor, pinned effect digest); runs only as a release.
   diagnose_connectivity: 3,
-  // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
-  // get_monitor remain in the frozen
-  // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
-  // — these two are new and wired directly instead of widening that list.
+  // Monitor definition activity/escalation tools (#5290 W03), wired directly.
+  // (The frozen KNOWN_MISSING_TOOL_TIERS baseline they avoided widening was
+  // emptied and deleted in full-control W04, #6758.)
   get_monitor_activity: 2,
   reset_monitor_escalation: 2,
   // #6669: the only chat path to author a monitor (e.g. software_presence
@@ -3614,8 +3613,8 @@ export function buildBreezeSdkTools(
     ),
 
     // Spec 2026-09-23 W01 (#6755): read-only reads, previously registered but
-    // untiered (aiAgentSdkTools.registryParity.contract.test.ts's
-    // KNOWN_MISSING_TOOL_TIERS). Backup, Hyper-V, MSSQL, vault, SLA and
+    // untiered (the since-deleted KNOWN_MISSING_TOOL_TIERS list, #3300).
+    // Backup, Hyper-V, MSSQL, vault, SLA and
     // C2C reads. Shape derived from toolInputSchemas (W01-D7).
     tool(
       'get_backup_status',

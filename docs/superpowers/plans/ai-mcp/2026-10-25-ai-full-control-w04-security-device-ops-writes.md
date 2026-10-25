@@ -20,7 +20,7 @@ Paths are under `apps/api/src/`; line numbers drift, so re-grep before editing.
 
 ## Starting state (measured, `30d2519965`)
 
-- **Tiering and declaration:** all 19 are registered; none is in `TOOL_TIERS` or `HUMAN_ONLY_TOOLS`. `KNOWN_MISSING_TOOL_TIERS` holds 38 (W03's 19 + these 19). Whichever of W03/W04 merges second deletes it (spec "Contracts").
+- **Tiering and declaration:** all 19 are registered; none is in `TOOL_TIERS` or `HUMAN_ONLY_TOOLS`. `KNOWN_MISSING_TOOL_TIERS` holds 38 (W03's 19 + these 19). Whichever of W03/W04 merges second deletes it (spec "Contracts"). **Done:** W03 merged first, so this PR deleted it after the merge and the rule is now `registry ⊆ TOOL_TIERS ∪ HUMAN_ONLY_TOOLS`.
 - **Schemas:** all 19 have a plain `z.object` `toolInputSchemas` entry; `action` enums equal the registry's. **One key drift:** `manage_peripheral_policy` advertises `priority` in the registry; Zod lacks it, so the chat SDK shape (derived from Zod) would drop it (W04-D16).
 - **Chat index (W19):** the always-on index is unchanged by W04 (2,494 B). Six domain blocks grow (largest: security 970 → 1,268 B, < 2,048). Worst page turn: alert 4,190 → 4,423 B (< 7,040). Legacy whole index (informational): 6,917 → 7,636 B default, 6,966 → 7,685 B flag-on. None of the 19 is `alwaysLoad`.
 - **Device-path fields (#8852):** `registry_operations.keyPath` is classified `exempt` (a registry key; `isDeniedRegistryTarget` applies) and `remediate_sensitive_data.quarantineDir` is `safePath`. No other W04 field names a device path. **No path-policy work.**

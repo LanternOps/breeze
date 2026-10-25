@@ -726,7 +726,7 @@ These tools change security settings or act on devices. They are available in AI
 |------|------|-------------|
 | `request_elevation` | 3 | Request a temporary admin elevation on a device. Needs a second approver (four-eyes) |
 | `revoke_elevation` | 2 | Revoke an active elevation and request cleanup on the device |
-| `create_remote_session` | 3 | Open a remote terminal or file session. Needs a second approver (four-eyes), and respects the remote-access, consent and concurrent-session limits |
+| `create_remote_session` | 3 | Open a remote terminal or file session. Needs a second approver (four-eyes), and respects the remote-access policy and the concurrent-session limits |
 | `manage_processes` (list) | 2 | List running processes |
 | `manage_processes` (kill) | 3 | Terminate a process |
 | `manage_scheduled_tasks` (list) | 2 | List scheduled tasks |

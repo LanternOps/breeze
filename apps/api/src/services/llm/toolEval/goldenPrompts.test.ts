@@ -7,8 +7,8 @@ import { GOLDEN_CASES } from './goldenPrompts';
 // A-W02 Task 5 declares the currently mute documentation tool; remove this set then.
 const PENDING_DECLARATION = new Set<string>([]); // search_documentation was declared by A-W02 (#6341)
 
-// The plan's fixed prompts also reference these pre-existing #3300 gaps from
-// aiAgentSdkTools.registryParity.contract.test.ts (KNOWN_MISSING_TOOL_TIERS).
+// The plan's fixed prompts also referenced pre-existing #3300 gaps (the
+// KNOWN_MISSING_TOOL_TIERS list, emptied and deleted in full-control W04 #6758).
 // Preserve them in the eval: unavailable tools must still count as misses, not
 // disappear from the baseline. A-W01 must not change product tool exposure.
 // Frozen at A-W01; only shrink this set as declarations land. Unlike the g57
