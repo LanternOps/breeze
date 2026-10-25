@@ -34,6 +34,7 @@ type T = ReturnType<typeof useTranslation>['t'];
 function recipeName(t: T, w: AiOperatorWorkflowDto): string {
   switch (w.recipeKey) {
     case 'identity_offboarding': return t('recipeLibrary.recipe.identityOffboardingName');
+    case 'identity_onboarding': return t('recipeLibrary.recipe.identityOnboardingName');
     case 'service_recovery': return t('recipeLibrary.recipe.serviceRecoveryName');
     default: return w.name;
   }
@@ -42,6 +43,7 @@ function recipeName(t: T, w: AiOperatorWorkflowDto): string {
 function recipeSummary(t: T, w: AiOperatorWorkflowDto): string {
   switch (w.recipeKey) {
     case 'identity_offboarding': return t('recipeLibrary.recipe.identityOffboardingSummary');
+    case 'identity_onboarding': return t('recipeLibrary.recipe.identityOnboardingSummary');
     case 'service_recovery': return t('recipeLibrary.recipe.serviceRecoverySummary');
     default: return w.summary;
   }
@@ -74,7 +76,12 @@ function unavailableReason(t: T, w: AiOperatorWorkflowDto): string {
 
 /** Only identity_offboarding has a Library-launched form; service_recovery needs a device. */
 function startLabel(t: T, w: AiOperatorWorkflowDto): string | null {
-  return w.recipeKey === 'identity_offboarding' ? t('recipeLibrary.start.offboard') : null;
+  switch (w.recipeKey) {
+    case 'identity_offboarding': return t('recipeLibrary.start.offboard');
+    // W07 R2b: started from the Library with no context (the form starts empty).
+    case 'identity_onboarding': return t('recipeLibrary.start.onboard');
+    default: return null;
+  }
 }
 
 /**

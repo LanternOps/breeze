@@ -227,7 +227,9 @@
       "identityOffboardingName": "Offboard a person",
       "identityOffboardingSummary": "Confirm who is leaving, route their mail, and remove their access across Microsoft 365 and Google Workspace in a safe order with one approval. Hand work is tracked on the ticket.",
       "serviceRecoveryName": "Restore a stopped service",
-      "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up."
+      "serviceRecoverySummary": "Investigate a stopped Windows service, restart it with approval, and verify that it stays up.",
+      "identityOnboardingName": "Onboard a person",
+      "identityOnboardingSummary": "Create a new person's Microsoft 365 account with one approval, then assign the licences and groups you choose with a second. Google Workspace accounts are created by hand from a checklist item. The temporary password is revealed once, by the approver."
     },
     "refreshFailed": "The recipe library could not be refreshed; what is shown may be out of date."
   },
