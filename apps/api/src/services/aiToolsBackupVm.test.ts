@@ -42,6 +42,7 @@ import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
+import { TOOL_SDK_INPUT_SHAPES } from './aiToolSchemasBackup';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerBackupVmTools } from './aiToolsBackupVm';
 import { startRebuildEngineVmRestore } from './vmRestoreRebuildEngine';
@@ -272,6 +273,23 @@ describe('restore_as_vm — rebuild engine (W05a)', () => {
 
   it('declares the rebuild host as a device arg so the central gate covers it', () => {
     expect(toolMap.get('restore_as_vm')!.deviceArgs).toEqual(expect.arrayContaining(['targetDeviceId', 'rebuildHostDeviceId']));
+  });
+
+  // W03-D4 (#6757): the Agent SDK's `tool()` takes a ZodRawShape and strips
+  // keys absent from it, so the chat/agent surface needs a flat envelope of
+  // both engine arms. It must carry exactly the registry's keys; the full pipe
+  // (validateToolInput) still enforces each arm.
+  it('exposes an SDK envelope whose keys are exactly the registry properties (W03-D4)', () => {
+    const registryKeys = Object.keys(
+      (toolMap.get('restore_as_vm')!.definition.input_schema as { properties: Record<string, unknown> }).properties,
+    ).sort();
+    expect(Object.keys(TOOL_SDK_INPUT_SHAPES.restore_as_vm!).sort()).toEqual(registryKeys);
+  });
+
+  it('accepts the registry-advertised switchName and refuses a hypervisor the handler refuses (W03-D4 drift)', () => {
+    const hyperv = { snapshotId: SNAPSHOT_ID, targetDeviceId: DEVICE_ID, hypervisor: 'hyperv', vmName: 'VM' };
+    expect(validateToolInput('restore_as_vm', { ...hyperv, switchName: 'LAN' })).toEqual({ success: true });
+    expect(validateToolInput('restore_as_vm', { ...hyperv, hypervisor: 'vmware' }).success).toBe(false);
   });
 
   it('validates the rebuild variant and rejects an identity override', () => {
