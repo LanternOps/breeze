@@ -453,7 +453,10 @@ registerTool({
           ? input.remediationOptions
           : undefined,
       });
-      if (resultingArmed) {
+      // Deactivating is protective — an inactive policy installs nothing, and
+      // re-activating it later goes back through this gate (or REST's) — so
+      // the AI may switch an install-armed policy off (W04 review).
+      if (resultingArmed && input.isActive !== false) {
         return JSON.stringify({
           error: 'This policy is armed for automatic install; the AI cannot change it. Edit it in the software policy page.',
         });
@@ -671,6 +674,7 @@ registerTool({
     let deviceIds = Array.isArray(input.deviceIds)
       ? Array.from(new Set((input.deviceIds as string[]).filter((id) => typeof id === 'string' && id.length > 0)))
       : [];
+    let truncated = false;
 
     // Mirror POST /software-policies/:id/remediate: an explicit list over the
     // cap is refused (the route's zod .max()); the implicit set is truncated.
@@ -719,14 +723,21 @@ registerTool({
       const remediationDeviceCondition = deviceScopeCondition(auth, softwareComplianceStatus.deviceId);
       if (remediationDeviceCondition) complianceConditions.push(remediationDeviceCondition);
 
+      // One row per device (a device can carry several violation rows), in a
+      // stable order, one past the cap so truncation is detectable: the model
+      // must be told when more violating devices remain (W04 review).
       const rows = await db
         .select({ deviceId: softwareComplianceStatus.deviceId })
         .from(softwareComplianceStatus)
         .innerJoin(devices, eq(softwareComplianceStatus.deviceId, devices.id))
         .where(and(...complianceConditions))
-        .limit(MAX_REMEDIATION_DEVICES);
+        .groupBy(softwareComplianceStatus.deviceId)
+        .orderBy(softwareComplianceStatus.deviceId)
+        .limit(MAX_REMEDIATION_DEVICES + 1);
 
-      deviceIds = Array.from(new Set(rows.map((row) => row.deviceId)));
+      const distinct = Array.from(new Set(rows.map((row) => row.deviceId)));
+      truncated = distinct.length > MAX_REMEDIATION_DEVICES;
+      deviceIds = distinct.slice(0, MAX_REMEDIATION_DEVICES);
     }
 
     if (deviceIds.length === 0) {
@@ -755,10 +766,14 @@ registerTool({
     });
 
     return JSON.stringify({
-      message: `Remediation scheduled for ${queued} device(s)`,
+      message: `Remediation scheduled for ${queued} device(s)`
+        + (truncated
+          ? `; more violating devices remain beyond the ${MAX_REMEDIATION_DEVICES}-device limit — run it again after this batch completes`
+          : ''),
       policyId: policy.id,
       queued,
       deviceIds,
+      ...(truncated ? { truncated: true, maxDevices: MAX_REMEDIATION_DEVICES } : {}),
     });
   },
 });

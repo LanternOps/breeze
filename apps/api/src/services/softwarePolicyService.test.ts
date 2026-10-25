@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('./pamActuationLifecycle', () => ({
+vi.mock('./pamActuationLifecycle', async (importOriginal) => ({
+  PamActuationNotFoundError: (await importOriginal<typeof import('./pamActuationLifecycle')>()).PamActuationNotFoundError,
   requestPamCleanup: vi.fn(),
 }));
 
@@ -14,7 +15,7 @@ import {
   withStableViolationTimestamps,
 } from './softwarePolicyService';
 import type { SoftwarePolicyViolation } from '../db/schema';
-import { requestPamCleanup } from './pamActuationLifecycle';
+import { PamActuationNotFoundError, requestPamCleanup } from './pamActuationLifecycle';
 
 describe('softwarePolicyService', () => {
   it('compares semantic-like versions correctly', () => {
@@ -332,5 +333,17 @@ describe('cleanupSoftwarePolicyElevations', () => {
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }] }) } as any;
     vi.mocked(requestPamCleanup).mockRejectedValueOnce(new Error('cleanup failed'));
     await expect(cleanupSoftwarePolicyElevations(tx, 'policy-1')).rejects.toThrow('cleanup failed');
+  });
+
+  // W04 review (#6758): an approved elevation that was never actuated has no
+  // pam_actuations row; nothing reached the device, so there is nothing to
+  // clean up — it must not roll back the policy deactivation (the expiry
+  // enforcer and revoke_elevation read it the same way).
+  it('treats a request that was never actuated as nothing to clean up, and keeps going', async () => {
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [{ id: 'elevation-1' }, { id: 'elevation-2' }] }) } as any;
+    vi.mocked(requestPamCleanup).mockClear();
+    vi.mocked(requestPamCleanup).mockRejectedValueOnce(new PamActuationNotFoundError('elevation-1'));
+    await expect(cleanupSoftwarePolicyElevations(tx, 'policy-1')).resolves.toBe(2);
+    expect(requestPamCleanup).toHaveBeenCalledTimes(2);
   });
 });

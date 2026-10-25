@@ -77,8 +77,24 @@ describe('remediate_software_violation — device cap (W04-D14)', () => {
       if (call === 1) return chain([POLICY]);
       return chain(ids(3).map((deviceId) => ({ deviceId })), (n) => limits.push(n));
     });
-    await handlerFor('remediate_software_violation')({ policyId: 'pol-1' }, auth);
-    expect(limits).toContain(MAX_REMEDIATION_DEVICES);
+    const result = JSON.parse(await handlerFor('remediate_software_violation')({ policyId: 'pol-1' }, auth));
+    // One past the cap, so truncation is detectable (review fix, #6758).
+    expect(limits).toContain(MAX_REMEDIATION_DEVICES + 1);
+    expect(result.truncated).toBeUndefined();
+  });
+
+  it('an implicit set over the cap schedules the first batch and SAYS it was truncated', async () => {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      call += 1;
+      if (call === 1) return chain([POLICY]);
+      return chain(ids(MAX_REMEDIATION_DEVICES + 1).map((deviceId) => ({ deviceId })));
+    });
+    vi.mocked(scheduleSoftwareRemediation).mockResolvedValueOnce(MAX_REMEDIATION_DEVICES);
+    const result = JSON.parse(await handlerFor('remediate_software_violation')({ policyId: 'pol-1' }, auth));
+    expect(vi.mocked(scheduleSoftwareRemediation).mock.calls[0]![1]).toHaveLength(MAX_REMEDIATION_DEVICES);
+    expect(result).toMatchObject({ truncated: true, maxDevices: MAX_REMEDIATION_DEVICES });
+    expect(result.message).toMatch(/more violating devices remain/i);
   });
 
   it('schedules an explicit list at exactly the cap', async () => {

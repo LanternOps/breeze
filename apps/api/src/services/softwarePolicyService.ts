@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { captureException } from './sentry';
-import { requestPamCleanup } from './pamActuationLifecycle';
+import { PamActuationNotFoundError, requestPamCleanup } from './pamActuationLifecycle';
 import {
   devices,
   softwareComplianceStatus,
@@ -771,10 +771,18 @@ export async function cleanupSoftwarePolicyElevations(
   `);
   const rows = (result as { rows?: Array<{ id: string }> }).rows ?? [];
   for (const row of rows) {
-    await requestPamCleanup(tx, {
-      elevationRequestId: row.id,
-      cause: 'policy_removed',
-    });
+    try {
+      await requestPamCleanup(tx, {
+        elevationRequestId: row.id,
+        cause: 'policy_removed',
+      });
+    } catch (err) {
+      // No pam_actuations row: the grant was approved but never actuated, so
+      // nothing reached the device and the revoke above is the whole cleanup
+      // (the expiry enforcer's reading, jobs/pamJobs.ts). Any other failure
+      // rolls the caller's transaction back.
+      if (!(err instanceof PamActuationNotFoundError)) throw err;
+    }
   }
   return rows.length;
 }

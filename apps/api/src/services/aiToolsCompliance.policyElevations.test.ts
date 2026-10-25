@@ -149,6 +149,13 @@ describe('manage_software_policy update — merged-state install gate (QW10)', (
     expect(result.success).toBe(true);
   });
 
+  it('allows DEACTIVATING an install-armed policy (protective; review fix) and revokes its elevations', async () => {
+    mockDb.select.mockImplementation(() => chain([policyRow({ ...armed, isActive: true })]));
+    const result = JSON.parse(await handler()({ action: 'update', policyId: POLICY_ID, isActive: false }, makeAuth()));
+    expect(result.success).toBe(true);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it('allows updating a stored autoInstall policy that is not effectively armed (enforceMode off)', async () => {
     mockDb.select.mockImplementation(() => chain([policyRow({ enforceMode: false, remediationOptions: { autoInstall: true } })]));
     const result = JSON.parse(await handler()({ action: 'update', policyId: POLICY_ID, name: 'x' }, makeAuth()));
