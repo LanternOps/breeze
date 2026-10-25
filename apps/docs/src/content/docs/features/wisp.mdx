@@ -15,13 +15,72 @@ Wisp is a triage companion that works on behalf of one person. Once that person 
 
 Wisp never has more authority than the person it works for. It acts inside a **grant** that snapshots that person's reach, and it cannot widen it. Anything that changes something in the world goes through the same approval cards you already use on web and mobile. Wisp adds no new approval tier and no bypass.
 
-Wisp threads open at `/ai/wisp/thread/<id>`. The docked AI chat sidebar has a Wisp toggle for starting or continuing a conversation with it.
+Wisp threads open at `/ai/wisp/thread/<id>`. The docked AI chat sidebar has a Wisp toggle for starting or continuing a conversation with it, and the **Wisp** entry in the AI section of the navigation opens the [Wisp home](#the-wisp-home).
 
 ## Turning it on
 
 Wisp is a paid-plan feature. It is enabled by default for **Pro, Enterprise and Unlimited** partners. On other plans the Wisp controls appear locked with an upgrade prompt; they are not hidden. Breeze operators control a deployment-level switch; if Wisp is off for the deployment, no partner can use it.
 
 Creating a grant requires **step-up MFA**: you are asked to confirm your second factor, even if you signed in recently.
+
+### Switches that control Wisp
+
+Wisp has three independent gates, and none of them overrides another:
+
+- **The plan.** Wisp is a paid-plan feature (above). Without it the controls are locked with an upgrade prompt.
+- **The deployment switch** (`BREEZE_WISP_ENABLED`). Turns the Wisp engine and the Wisp home on or off for a whole deployment.
+- **The partner switch.** A partner administrator can turn Wisp off for their own company; see [Turning Wisp off for your company](#turning-wisp-off-for-your-company).
+
+<Aside type="note" title="For self-hosters and operators: the knowledge connector">
+  The built-in extension that indexes files and email for Wisp is labelled **Wisp knowledge connector** in the interface (its pages are **Wisp Sources** and **Wisp Dashboard**). It has its own flag, `BREEZE_WORKSPACE_ENABLED`, which also accepts the alias `BREEZE_WISP_CONNECTOR_ENABLED`; setting either one enables it. It needs the pgvector extension in Postgres. `BREEZE_WISP_ENABLED` is a separate flag and never loads the connector, and Wisp runs fine without the connector.
+</Aside>
+
+## The Wisp home
+
+The **Wisp** entry in the AI section of the navigation opens the Wisp home at `/wisp`. It is where you see, at a glance, what Wisp has been doing for you and what is waiting on you. The page is drawn from stored results; opening it never runs a model.
+
+The home appears when Wisp is on for the deployment and you signed in at partner scope. Otherwise `/wisp` sends you to **Wisp chats** (`/wisp/chat`). If your plan does not include Wisp you see the same locked upgrade prompt as elsewhere. If you have no grant yet, a **Put Wisp to work** card starts one and opens the usual step-up confirmation.
+
+The home has these sections:
+
+| Section | What it shows |
+|---|---|
+| Grant header | The grant's scope, the spend meter, pause and resume, and a live "Wisp is checking ..." line while an assessment is running. |
+| **This morning's brief** | The sections of the most recent morning brief from the last 36 hours. A brief older than about 20 hours carries a **From an earlier day** badge. |
+| **Needs your attention** | Open and snoozed concerns for your grant, approvals first and then by severity, with a count of items waiting for your approval. Snooze, dismiss and give feedback exactly as on the thread page. Approvals open in the Approvals page. |
+| Activity | A timeline of what Wisp did. |
+| **Talk to Wisp** | The conversation, inline. It resumes the thread's last session instead of starting a new one on every visit. Nothing starts while the grant is paused or ended. |
+| **Linked items** | The tickets, devices and other items you pinned to Wisp; see [Linked items](#linked-items). |
+
+The page also links to **All chats** (`/wisp/chat`) and to **Memory** (`/settings/wisp-memory`).
+
+You can link straight to a section: `/wisp#needs-you`, `#brief`, `#activity`, `#thread` and `#links`. `/wisp#concern=<id>` opens **Needs your attention** on that concern.
+
+The docked chat sidebar's Wisp mode has an **Open in Wisp** link that goes to the home; concerns are listed on the home, not in the sidebar. On mobile, the Wisp thread screen shows the brief sections, the full activity timeline and the linked items (read-only, each opening its item).
+
+### Wisp chats
+
+The multi-tab chat page now lives at `/wisp/chat`, titled **Wisp chats**. It is unchanged: the same tabs (open tabs survive a reload), the same shortcuts, and it works with Wisp off exactly as before. The old `/workspace` address redirects permanently to it, and old `#session=<id>` links still open their tab. In the side panel, the control that moves a conversation to the page is now **Open in Wisp chats**. See [AI assistant](/features/ai/#chat-surfaces-the-side-panel-and-wisp-chats).
+
+## Linked items
+
+You can link items to your Wisp thread so Wisp keeps them in view. A thread holds up to 50 links. Link a ticket, quote, invoice, contract, device, organization, site, alert, agent run, operator task or user.
+
+Add a link in either of two ways:
+
+1. On the Wisp home, use **Link an item** in the Linked items section and pick a kind. The picker searches each kind's normal list, so you only see what you could already see.
+2. On a ticket, quote, invoice, contract, device or organization page, click **Link to Wisp**. The button appears only when Wisp is on, you are signed in at partner scope, your partner's plan includes Wisp and you have an active grant. Once linked it reads **Linked in Wisp**.
+
+Wisp can also link items during a conversation; those are marked **Added by Wisp**.
+
+Links are re-checked against your current access and the grant's reach every time they are read:
+
+- An item you can no longer see is hidden. The link is kept and reappears if your access returns.
+- An item that was deleted disappears.
+- The label is read from the item each time, so it follows renames.
+- Removing a link never needs an active grant.
+
+A link gives Wisp only a handle to the item (its kind, id and title), never the body of the record.
 
 ## Grants
 
@@ -41,6 +100,7 @@ A grant can be **paused** rather than ended. You can pause and resume it yoursel
 | Account suspended | Your account is suspended. |
 | Sign-in check expired | Your MFA confirmation lapsed. Confirm it and resume. |
 | Plan no longer includes Wisp | The partner lost the entitlement. Grants pause rather than disappear. |
+| Partner disabled | A partner administrator turned Wisp off for the company; see [Turning Wisp off for your company](#turning-wisp-off-for-your-company). |
 
 ## What Wisp does alone vs asks first
 
@@ -49,6 +109,20 @@ A grant can be **paused** rather than ended. You can pause and resume it yoursel
 | Reads anything you may see. Drafts ticket replies. Nudges you. Opens a ticket from an alert that an existing rule already turns into a ticket. Re-runs a check. Schedules a sweep. Stages work in a sandbox. | Sends anything to a client contact. Closes or reassigns tickets. Applies or edits a configuration policy. Runs a script on a device. Changes alert thresholds. Anything billing. Anything that grants access. | Acts outside the authority of the person it works for. Lets a sub-agent exceed that authority. |
 
 "Asks first" means an approval card in the Approvals inbox, on web and mobile. Approving is a decision by a person; Wisp cannot approve for itself.
+
+## Turning Wisp off for your company
+
+A partner administrator can switch Wisp off for the whole company. Go to **Settings → AI Agents** and use the **Wisp enabled** switch on the Wisp card. It is set at partner level only (there is no per-organization override), is on by default, and changes autosave with a confirmation toast. Users who are not partner administrators see it read-only.
+
+When the switch is off:
+
+- New grants, resume and refresh are refused.
+- Every active grant is paused (reason `partner_disabled`, shown as "Partner disabled" on the admin overview) at its next scheduled check. Saving the switch also triggers an immediate check. Nothing is deleted.
+- On the Wisp home, someone with no grant is told that an administrator turned Wisp off, instead of being offered **Put Wisp to work**.
+
+When you turn it back on, only grants that this switch paused resume. A grant you paused yourself, or one paused because the plan lost Wisp, stays paused.
+
+This is a governance control. Your plan is the commercial gate and the deployment switch is the operator's kill switch; none of the three overrides another.
 
 ## Nudges, quiet hours and the morning brief
 

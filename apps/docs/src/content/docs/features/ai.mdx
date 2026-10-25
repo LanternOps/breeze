@@ -18,26 +18,26 @@ Six capabilities extend and govern this system:
 
 ---
 
-## Chat surfaces: the side panel and the AI Assistant
+## Chat surfaces: the side panel and Wisp chats
 
 You can talk to the assistant in two places:
 
 - **The side panel** — opened from the sparkle button in the header, available on every page. It holds one conversation at a time.
-- **The AI Assistant** — the full page at `/workspace` (**AI Assistant** in the sidebar). It holds up to five conversations, one per tab.
+- **Wisp chats** — the full page at `/wisp/chat`, reached from **Wisp** in the sidebar (the old `/workspace` address redirects here). It holds up to five conversations, one per tab. The **Wisp** entry itself opens the Wisp home; see [Wisp](/features/wisp/).
 
 A conversation can move between the two at any time. It is the same conversation on both: the full history, the device it is bound to, its model, any customer binding and any approval card that is waiting all come along. A move never duplicates a conversation and never deletes it.
 
-### Move a conversation to the AI Assistant
+### Move a conversation to Wisp chats
 
 <Steps>
 
-1. In the side panel, click **Open in AI Assistant** (the arrow icon in the panel header).
-2. The AI Assistant opens with the conversation in a tab. Anything you had typed but not sent is in the tab's message box.
+1. In the side panel, click **Open in Wisp chats** (the arrow icon in the panel header).
+2. Wisp chats opens with the conversation in a tab. Anything you had typed but not sent is in the tab's message box.
 3. The side panel closes and lets the conversation go. It stays in your history.
 
 </Steps>
 
-If the AI Assistant already has five tabs, nothing moves and you see **Close a tab in the AI Assistant to open this conversation**. Topology investigations stay in the side panel, so the button does not appear for them.
+If Wisp chats already has five tabs, nothing moves and you see **Close a tab in Wisp chats to open this conversation**. Topology investigations stay in the side panel, so the button does not appear for them.
 
 ### Move a conversation back to the side panel
 
@@ -54,26 +54,26 @@ For a very long reply you may see **Joined mid-response. The full reply appears 
 ### Open a past conversation
 
 - In the side panel, click **History** (the clock icon).
-- In the AI Assistant, click **+** on the tab bar → **Open a past conversation**, or use **Open a past conversation** on the empty page.
+- In Wisp chats, click **+** on the tab bar → **Open a past conversation**, or use **Open a past conversation** on the empty page.
 
 Both lists show your active conversations from every organization you can access, most recent first, and each has a search box:
 
 - An **organization chip** names the conversation's organization when you work in more than one. It reads **Another organization** until the name loads.
 - A **Device** chip marks a conversation bound to a device.
-- A conversation already open on the other surface is labelled **Open in AI Assistant** (in the side panel's History) or **Open in side panel** (in the AI Assistant's list). Picking it moves it there.
+- A conversation already open on the other surface is labelled **Open in Wisp chats** (in the side panel's History) or **Open in side panel** (in the Wisp chats list). Picking it moves it there.
 - Topology investigations are listed in the side panel only. Script-authoring and MCP sessions are not chat conversations and do not appear in either list.
 
 Opening a conversation from another organization does not change the organization switcher.
 
 ### Links to a conversation
 
-`/workspace#session=<conversation id>` opens that conversation in the AI Assistant, or switches to its tab if it is already open. The address follows the tab you are on, so you can copy the link or reload the page and land on the same conversation.
+`/wisp/chat#session=<conversation id>` (old `/workspace#session=...` links redirect) opens that conversation in Wisp chats, or switches to its tab if it is already open. The address follows the tab you are on, so you can copy the link or reload the page and land on the same conversation.
 
 | Message | Meaning |
 |---|---|
 | **This conversation isn't available** | The conversation does not exist or you cannot access it. |
 | **This conversation was closed** | The conversation has ended and can no longer be continued. |
-| **Close a tab to open this conversation** | The AI Assistant already has five tabs. Nothing is closed for you. |
+| **Close a tab to open this conversation** | Wisp chats already has five tabs. Nothing is closed for you. |
 | **Investigations open from the topology map** | Topology investigations live in the side panel; the message offers to open it there. |
 | **Continue in side panel to choose a model** | The next message needs a model choice, which is made in the side panel. |
 
@@ -186,7 +186,7 @@ When other users are eligible to approve, the inline button does not appear: som
 
 #### Who can approve
 
-Opening the assistant at all requires the **`ai_sessions:use`** permission, granted by default to Org Admin, Org Technician and Partner Technician (Partner Admin holds it through its full-access role). Roles without it do not see the assistant button, the **AI Assistant** sidebar entry, or the full-page AI Workspace at `/workspace`. The permission opens the conversation only — each tool the assistant calls is checked against the same permission the equivalent page or API route requires.
+Opening the assistant at all requires the **`ai_sessions:use`** permission, granted by default to Org Admin, Org Technician and Partner Technician (Partner Admin holds it through its full-access role). Roles without it do not see the assistant button, the **Wisp** sidebar entry, or the `/wisp` and `/wisp/chat` pages. The permission opens the conversation only — each tool the assistant calls is checked against the same permission the equivalent page or API route requires.
 
 Approving or rejecting a **four-eyes** action requires the **`approvals:decide`** permission. It is granted by default to **Org Admin** (and to Partner Admin through its full-access role) and is deliberately **not** granted to Org Technician or Org Viewer. Approving a **supervised** action needs no extra permission — only the requester's own permission for the underlying action, which was already checked when the AI proposed it.
 

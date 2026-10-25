@@ -12,12 +12,20 @@ Two independent switches carry the feature:
 | Flag | Gates | Needs |
 |---|---|---|
 | `BREEZE_WISP_ENABLED` | The Wisp **engine and home**: grants, assessments, concerns, nudges, memory, specialists, `/admin/wisp`. | `IS_HOSTED=true` and `BREEZE_AI_AGENTS_ENABLED=true`. Production refuses to boot with it on otherwise. |
-| `BREEZE_WORKSPACE_ENABLED` | Wisp's **knowledge connector** (the `ee/workspace` file/email index). User-facing copy calls it Wisp; its technical identity stays `workspace`. | A Postgres image with **pgvector**. Optional: the engine runs without it. |
+| `BREEZE_WORKSPACE_ENABLED` (alias `BREEZE_WISP_CONNECTOR_ENABLED`) | Wisp's **knowledge connector** (the `ee/workspace` file/email index). The UI labels it "Wisp knowledge connector" ("Wisp Sources", "Wisp Dashboard"); its technical identity stays `workspace`. Either variable name enables it. | A Postgres image with **pgvector**. Optional: the engine runs without it. |
+
+`BREEZE_WISP_ENABLED` never implies the connector, and the connector flag never
+enables the engine or home. Set each deliberately.
 
 Per partner, the commercial switch is the `wisp` **entitlement** (on by default
 for Pro, Enterprise and Unlimited). The entitlement never overrides a kill
 switch: `BREEZE_AI_AGENTS_ENABLED`, the AI kill state and the flags above all
 still win.
+
+Per partner there is also a governance switch, **Wisp enabled** (Settings → AI
+Agents → the Wisp card; partner level only, default on, changeable only by
+partner administrators). It is not a kill switch and overrides neither the
+entitlement nor the deployment flag (see "Partner switch" below).
 
 ## 1. Environment (hosted API **and** worker)
 
@@ -32,8 +40,9 @@ still win.
       three `VERCEL_*` values, artifact storage). Without it, `analysis`
       requests are refused and every other specialist kind still works.
 - [ ] Only if the knowledge connector is wanted: `BREEZE_WORKSPACE_ENABLED=true`
-      on a pgvector-capable Postgres image (see the upgrade caveat in
-      `deploy/.env.example`).
+      (or the alias `BREEZE_WISP_CONNECTOR_ENABLED=true`) on a pgvector-capable
+      Postgres image (see the upgrade caveat in `deploy/.env.example`).
+      `BREEZE_WISP_ENABLED` does not turn it on.
 - [ ] Set the flags on **both** the API and the worker services; the worker
       runs the wake scheduler, assessments, nudges and the specialist release
       path. A flag on only one side gives routes without engine (or the reverse).
@@ -98,6 +107,20 @@ SELECT p.id
       grant needing a refresh.
 - [ ] The global AI kill switch (`docs/deploy/ai-kill-switch.md`) also stops
       Wisp assessments and specialist runs, because both are agent runs.
+
+### Partner switch (per-company opt-out)
+
+- [ ] As a partner administrator, switch **Wisp enabled** off in Settings → AI
+      Agents. New grants, resume and refresh answer 403 `PARTNER_DISABLED`, and
+      every active grant is paused with reason `partner_disabled` at its next
+      scheduled check (saving also queues an immediate reconcile). Nothing is
+      deleted.
+- [ ] Switch it back on: only grants paused by this switch resume. Grants a user
+      paused, or that paused because the plan lost Wisp, stay paused.
+- [ ] With no grant and the switch off, `/wisp` explains that an administrator
+      turned Wisp off instead of offering Start.
+- [ ] Use this, not the deployment flag, to stop Wisp for one company. The
+      deployment flag stays the whole-deployment kill switch.
 
 ## 6. Alerts
 
