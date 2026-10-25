@@ -734,6 +734,16 @@ export async function executeTool(
     handlerContext = { ...handlerContext, topologyRequest: gate.ctx, topologyAliasScope: topologyAiAliasScope(gate.sessionId) };
   }
 
+  // Tool Catalog W04 (#5219): `run_flow` starts a run attributed to the chat
+  // session it runs in. Name-gated and always overwritten, like the topology
+  // keys above, so a caller-supplied `chatSessionId` is never trusted and every
+  // other tool's context keeps its identity.
+  if (coreTool && toolName === 'run_flow') {
+    const { chatSessionId: _dropped, ...rest } = handlerContext ?? {};
+    const sessionId = opts?.capture?.sessionId;
+    handlerContext = sessionId ? { ...rest, chatSessionId: sessionId } : rest;
+  }
+
   // Only CORE handlers receive the execution context. Extension handlers are
   // third-party code and are called with exactly two arguments — not merely
   // typed without a third one, since a handler written `(input, auth, ...rest)`

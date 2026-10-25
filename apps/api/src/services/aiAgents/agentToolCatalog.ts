@@ -223,6 +223,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   validate_flow: 'automations_reports',
   get_flow: 'automations_reports',
   list_flows: 'automations_reports',
+  run_flow: 'automations_reports',
+  list_flow_runs: 'automations_reports',
+  get_flow_run: 'automations_reports',
+  cancel_flow_run: 'automations_reports',
   list_business_calendars: 'tickets', // #8973 W4: read-only
   list_ticket_routing_rules: 'tickets', // #8883 W5: read-only
   test_ticket_routing_rule: 'tickets', // #8883 W5: dry run, writes nothing

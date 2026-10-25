@@ -226,6 +226,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_fleet_findings',
   'get_fleet_health',
   'get_flow', // Tool Catalog W03 (#5218) Tier-1 read
+  'get_flow_run', // Tool Catalog W04 (#5219) Tier-1 read
   'get_huntress_incidents',
   'get_huntress_status',
   // W01 (#6755)
@@ -295,6 +296,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'list_deliverable_templates',
   'list_device_restore_point_attempts', // #8584: Tier 1 device-scoped ledger read, same as get_device_time_status
   'list_edr_detections', // EDR provider framework (#8166) Tier-1 read
+  'list_flow_runs', // Tool Catalog W04 (#5219) Tier-1 read
   'list_flows', // Tool Catalog W03 (#5218) Tier-1 read
   'list_incidents', // A-W06 Tier-1 read
   'list_invoices',

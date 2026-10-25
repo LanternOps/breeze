@@ -175,6 +175,14 @@ export type ToolExecutionContext = {
    * is attached to a Wisp thread; it lets the read also match that thread's
    * attachments (see `ArtifactCallerAnchor.wispThreadId`).
    */
+  /**
+   * The chat session (`ai_sessions.id`) a `run_flow` call runs in: set by
+   * `executeTool` ONLY for `run_flow`, from the chat path's `capture.sessionId`,
+   * and always OVERWRITTEN there (a caller-supplied value is dropped). Absent
+   * for MCP, agent and script callers, which is what makes `run_flow` refuse
+   * them (`run_flow_requires_chat`). Never taken from tool input.
+   */
+  chatSessionId?: string;
   captureAnchor?: { orgId: string; runId?: string | null; sessionId?: string | null; wispThreadId?: string | null };
   /**
    * Topology M4-D1 (#6000): the site context the topology gate

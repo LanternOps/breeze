@@ -479,6 +479,20 @@ Prompt-size review for the four flow authoring tools (`draft_flow`, `validate_fl
 
 Both fit under the existing 6.5 KB (6656 B) ceiling in `aiToolIndex.test.ts`, so the 6.75 KB raise approved for this wave (plan Decision 5, 2026-10-20) was not needed and was not taken. The test now also measures the flag-on index, so a later flag-gated addition cannot grow the prompt unmeasured.
 
+### Tool Catalog W4 delta (#5219, Task A11)
+
+Four more flow tools, all in the Scripts domain and declared to chat only when `FLOWS_ENABLED=true`: `run_flow` (Tier 3, supervised), `list_flow_runs` and `get_flow_run` (Tier 1), `cancel_flow_run` (Tier 2). The whole-index ceiling this section's table measured against is retired (W19, #10065); the bounds below are the W19 ones, measured on `listChatSurfaceToolNames()` with the flag off and on.
+
+| W19 bound | Limit | `FLOWS_ENABLED` unset | `FLOWS_ENABLED=true` | All flags on |
+|---|---|---|---|---|
+| B1 always-on index | < 2,560 B | 2,494 | 2,494 (unchanged) | 2,494 |
+| B2 Scripts block (all eight flow tools) | < 2,048 B | 363 | 469 (+106) | 469 |
+| B2 largest block (Security) | < 2,048 B | 1,268 | 1,268 | 1,268 (Integrations 1,472) |
+| B3 worst page turn (alert page) | < 7,040 B | 4,423 | 4,423 | 4,423 |
+| B3 device page (adds Scripts) | < 7,040 B | 3,999 | 4,105 (+106) | 4,105 |
+
+The four W4 names add roughly 57 B to the Scripts line (the W3 four were +49 B on the whole-index measure). Flag off is byte-identical: the tools are not declared, so no index text changes. Nothing was trimmed.
+
 ## 12. Full-control W02 (#6756) delta
 
 **Date measured:** 2026-10-22 · **Branch:** `feature/6754-ai-full-control/wave-6756-r2` @ `13e5e61e59` against its base `origin/main` @ `27c9c043d8` · **Plan:** `2026-09-23-ai-full-control-w02-psa-billing-writes.md` (Task 14, gate W02-D10: ≤ +8,000 turn-1 tokens per surface)

@@ -201,14 +201,22 @@ describe('renderToolIndexByDomain (A-W02)', () => {
     vi.stubEnv('FLOWS_ENABLED', 'true');
     try {
       const flagOn = renderToolIndexByDomain(listChatSurfaceToolNames());
-      for (const name of ['draft_flow', 'get_flow', 'list_flows', 'validate_flow']) expect(flagOn).toContain(name);
+      // Tool Catalog W04 (#5219, A11): +4 names (run_flow, list_flow_runs, get_flow_run,
+      // cancel_flow_run) on the Scripts line. Measured against the W19 bounds with
+      // FLOWS_ENABLED=true: always-on 2494 B (unchanged, < 2560), scripts block 363 -> 469 B
+      // (flag off -> on, all eight flow tools; < 2048), largest block security 1268 B,
+      // worst page turn 4423 B (alert page; device page 3999 -> 4105 B) < 7040.
+      for (const name of [
+        'draft_flow', 'get_flow', 'list_flows', 'validate_flow',
+        'run_flow', 'list_flow_runs', 'get_flow_run', 'cancel_flow_run',
+      ]) expect(flagOn).toContain(name);
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
   it('with FLOWS_ENABLED unset the index never mentions the flow tools', () => {
-    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows)\b/);
+    expect(text).not.toMatch(/\b(draft_flow|validate_flow|get_flow|list_flows|run_flow|list_flow_runs|get_flow_run|cancel_flow_run)\b/);
   });
 });
 

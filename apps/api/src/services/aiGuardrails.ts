@@ -851,6 +851,9 @@ export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
 };
 
 export const TIER3_SUPERVISED_TOOLS = new Set<string>([
+  // Tool Catalog W04 (#5219, Decision 11): starting a flow carries the upper
+  // bound of any flow's tier until W05's per-flow tiers; one requester tap.
+  'run_flow',
   // Wisp W07: the specialist approval carrier — one approver, no four-eyes and
   // no effect-digest pin (the coordinator re-runs every gate at release under
   // the approver). launch_specialist is NOT here: its base tier is 2, and its
@@ -1550,6 +1553,11 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   validate_flow: { resource: 'automations', action: 'read' },
   get_flow: { resource: 'automations', action: 'read' },
   list_flows: { resource: 'automations', action: 'read' },
+  // Tool Catalog W04 (#5219): flow runs.
+  run_flow: { resource: 'automations', action: 'write' },
+  list_flow_runs: { resource: 'automations', action: 'read' },
+  get_flow_run: { resource: 'automations', action: 'read' },
+  cancel_flow_run: { resource: 'automations', action: 'write' },
   // #8973 W4: business-hours calendars read with the ticket permission.
   list_business_calendars: { resource: 'tickets', action: 'read' },
   // #8883 W5: ticket routing rules (reads here; manage_ticket_routing_rules is per-action below).
