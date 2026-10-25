@@ -295,6 +295,51 @@ describe('trigger_agent_restart', () => {
     expect(db.select).not.toHaveBeenCalled();
     expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
+
+  // QW11 — mirror POST /devices/:id/agent-recovery (routes/devices/agentRecovery.ts).
+  it('refuses a decommissioned device and records it per device (QW11)', async () => {
+    mockSelectSequence([
+      [offlineDeviceRow()],
+      [{ id: DEVICE_ID, orgId: ORG_ID, status: 'decommissioned' }, { id: OTHER_DEVICE_ID, orgId: ORG_ID, status: 'offline' }],
+      [],
+    ]);
+
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID, OTHER_DEVICE_ID] }, makeAuth()));
+
+    expect(result.errors[DEVICE_ID]).toMatch(/decommissioned/i);
+    expect(result.queued).toBe(1);
+    expect(aiExecuteCommand).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(aiExecuteCommand).mock.calls[0]![2]).toBe(OTHER_DEVICE_ID);
+  });
+
+  it('does not queue a second restart while one is pending/in flight (QW11)', async () => {
+    mockSelectSequence([
+      [offlineDeviceRow()],
+      [{ id: DEVICE_ID, orgId: ORG_ID, status: 'offline' }],
+      [{ deviceId: DEVICE_ID }],
+    ]);
+
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+
+    expect(result.queued).toBe(0);
+    expect(result.errors[DEVICE_ID]).toMatch(/already (pending|waiting)/i);
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('pins the dispatch to the device org via expectedOrgId (QW7)', async () => {
+    mockSelectSequence([
+      [offlineDeviceRow()],
+      [{ id: DEVICE_ID, orgId: ORG_ID, status: 'offline' }],
+      [],
+    ]);
+
+    await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth());
+
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_restart', DEVICE_ID, 'restart_agent', {},
+      expect.objectContaining({ expectedOrgId: ORG_ID }),
+    );
+  });
 });
 
 // issue #2124 — the manual upgrade path resolves the SAME tenant version pin the
@@ -308,7 +353,7 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
   // Device→org rows for the default-resolution select now also carry platform/arch,
   // because the target is resolved per device (fail-closed on a missing build).
   const deviceOrgRow = (id: string, orgId: string) => ({
-    id, orgId, osType: 'windows', architecture: 'amd64',
+    id, orgId, osType: 'windows', architecture: 'amd64', agentVersion: '0.50.0',
   });
 
   beforeEach(() => {
@@ -618,4 +663,66 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(result.error).toMatch(/No agent build resolved/i);
     expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
+});
+
+// QW7 — the AI never downgrades or re-pushes an agent, and pins the dispatch
+// to the org the target was resolved for.
+describe('trigger_agent_upgrade — never downgrade / re-push (QW7)', () => {
+  let tool: AiTool;
+  const onlineDeviceRow = () => ({ id: DEVICE_ID, orgId: ORG_ID, siteId: null, status: 'online', hostname: 'pc' });
+  const row = (agentVersion: string | null | undefined) => ({
+    id: DEVICE_ID, orgId: ORG_ID, osType: 'windows', architecture: 'amd64', agentVersion,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(aiExecuteCommand).mockResolvedValue({ status: 'completed', result: {} } as any);
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({
+      settings: { policy: 'staged', maintenanceWindow: null },
+      pins: { agent: null, watchdog: null },
+    });
+    vi.mocked(resolvePinnedUpgradeTarget).mockImplementation(
+      async ({ pin }: { pin: string | null }) => pin ?? '0.88.0',
+    );
+    tool = buildToolMap().get('trigger_agent_upgrade')!;
+  });
+
+  it('omitted targetVersion: a device NEWER than the sanctioned target is not downgraded', async () => {
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [row('0.95.0')]]);
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+    expect(result.queued ?? 0).toBe(0);
+    expect(result.errors[DEVICE_ID]).toBe(
+      'Already at 0.95.0 (sanctioned 0.88.0); the AI never downgrades or re-pushes an agent',
+    );
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('a device already AT the sanctioned version is not re-pushed (explicit version too)', async () => {
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.88.0' }], [row('0.88.0')]]);
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.88.0' }, makeAuth()));
+    expect(result.queued ?? 0).toBe(0);
+    expect(result.errors[DEVICE_ID]).toMatch(/Already at 0\.88\.0/);
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('a strictly older device is dispatched, pinned to its org', async () => {
+    mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [row('0.87.9')]]);
+    const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+    expect(result.queued).toBe(1);
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.88.0' },
+      expect.objectContaining({ expectedOrgId: ORG_ID, targetRole: 'watchdog' }),
+    );
+  });
+
+  it.each([['dev build', 'dev-abc123'], ['missing', null], ['empty', '']])(
+    'fails closed when the installed version is unknown (%s)',
+    async (_n, v) => {
+      mockSelectSequence([[onlineDeviceRow()], [{ id: DEVICE_ID }], [row(v as any)]]);
+      const result = JSON.parse(await tool.handler({ deviceIds: [DEVICE_ID] }, makeAuth()));
+      expect(result.queued ?? 0).toBe(0);
+      expect(result.errors[DEVICE_ID]).toMatch(/installed (agent )?version/i);
+      expect(aiExecuteCommand).not.toHaveBeenCalled();
+    },
+  );
 });

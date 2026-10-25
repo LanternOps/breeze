@@ -8,7 +8,7 @@
  */
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { devices, agentVersions } from '../db/schema';
+import { devices, agentVersions, deviceCommands } from '../db/schema';
 import { eq, ne, and, desc, sql, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -18,6 +18,8 @@ import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOT
 import { aiExecuteCommand } from './aiDispatch';
 import { notParkedDeviceCondition } from './unassignedPool/selectorPredicate';
 import { inToolDbPhase } from './aiToolDbContext';
+import { compareAgentVersions, parseComparableVersion } from './agentEditionCompat';
+import { WATCHDOG_RECOVERY_COMMAND_TYPES } from './watchdogCommands';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -258,7 +260,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
       // caller-scoped context that commits before the dispatch loop, which
       // waits up to 60 s per device (≤50) and must hold no transaction.
       const resolved = await inToolDbPhase(auth, async (): Promise<
-        { response: string } | { targetByDevice: Map<string, string>; errors: Record<string, string> }
+        { response: string } | { targetByDevice: Map<string, string>; orgByDevice: Map<string, string>; errors: Record<string, string> }
       > => {
         // Verify access to the first device
         const firstAccess = await verifyDeviceAccess(deviceIds[0]!, auth);
@@ -290,6 +292,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         // otherwise the device is refused and recorded in `errors`.
         const errors: Record<string, string> = {};
         const targetByDevice = new Map<string, string>();
+        const orgByDevice = new Map<string, string>();
 
         if (explicitVersion) {
           // Cheap up-front reject for a version this server serves no agent
@@ -327,6 +330,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             orgId: devices.orgId,
             osType: devices.osType,
             architecture: devices.architecture,
+            agentVersion: devices.agentVersion,
           })
           .from(devices)
           .where(inArray(devices.id, deviceIds));
@@ -389,12 +393,30 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             continue;
           }
 
+          // QW7 — upgrade-only, the same strictly-newer rule the heartbeat
+          // applies (routes/agents/heartbeat.ts, compareAgentVersions > 0).
+          // Fail closed on a missing/unparseable installed version (dev builds):
+          // we cannot prove the target is newer, so we do not dispatch.
+          const installed = d.agentVersion?.trim();
+          if (!installed || !parseComparableVersion(installed)) {
+            errors[d.id] =
+              `Installed agent version is unknown or not comparable (${installed ? `"${installed}"` : 'missing'}); ` +
+              'not dispatching an upgrade (the AI never downgrades or re-pushes an agent)';
+            continue;
+          }
+          if (target && compareAgentVersions(target, installed) <= 0) {
+            errors[d.id] =
+              `Already at ${installed} (sanctioned ${target}); the AI never downgrades or re-pushes an agent`;
+            continue;
+          }
+
           if (target && explicitVersion && target !== explicitVersion) {
             errors[d.id] =
               `targetVersion ${explicitVersion} is not this device's sanctioned version (${target}); ` +
               'the AI cannot override the org\'s agent pin or roll an agent back';
           } else if (target) {
             targetByDevice.set(d.id, target);
+            orgByDevice.set(d.id, d.orgId);
           } else if (explicitVersion) {
             errors[d.id] =
               `No sanctioned agent build resolves for this device (${d.osType}/${normalizedArch}); ` +
@@ -425,10 +447,10 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             ...(Object.keys(errors).length > 0 ? { errors } : {}),
           }) };
         }
-        return { targetByDevice, errors };
+        return { targetByDevice, orgByDevice, errors };
       });
       if ('response' in resolved) return resolved.response;
-      const { targetByDevice, errors } = resolved;
+      const { targetByDevice, orgByDevice, errors } = resolved;
 
       // Dispatch upgrade commands
       let queued = 0;
@@ -455,6 +477,9 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             userId: auth.user.id,
             timeoutMs: 60000,
             targetRole: 'watchdog',
+            // A device moved to another org after resolution must not receive
+            // its former org's target (QW7).
+            expectedOrgId: orgByDevice.get(deviceId),
           });
           if (result.status === 'failed') {
             errors[deviceId] = result.error ?? 'Failed to queue upgrade';
@@ -515,6 +540,8 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
       // #7918 — self-managed: the access checks run in one short caller-scoped
       // context that commits before the dispatch loop below waits.
+      const orgByDevice = new Map<string, string>();
+      const errors: Record<string, string> = {};
       const denied = await inToolDbPhase(auth, async (): Promise<{ response: string } | null> => {
         // Verify access to the first device (org + site axes).
         const firstAccess = await verifyDeviceAccess(deviceIds[0]!, auth);
@@ -526,7 +553,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         if (orgCond) accessConditions.push(orgCond);
 
         const accessibleDevices = await db
-          .select({ id: devices.id })
+          .select({ id: devices.id, orgId: devices.orgId, status: devices.status })
           .from(devices)
           .where(and(...accessConditions));
 
@@ -534,6 +561,34 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         const deniedIds = deviceIds.filter(id => !accessibleIds.has(id));
         if (deniedIds.length > 0) {
           return { response: JSON.stringify({ error: `Access denied for devices: ${deniedIds.join(', ')}` }) };
+        }
+
+        // Mirrors POST /devices/:id/agent-recovery (routes/devices/agentRecovery.ts):
+        // refuse decommissioned devices, and allow one recovery in flight per
+        // device (watchdog-targeted restart/start still pending or sent).
+        for (const d of accessibleDevices) {
+          if (d.status === 'decommissioned') {
+            errors[d.id] = 'Cannot send commands to a decommissioned device';
+          } else if (d.orgId) {
+            orgByDevice.set(d.id, d.orgId);
+          }
+        }
+        const candidateIds = deviceIds.filter(id => !errors[id]);
+        if (candidateIds.length > 0) {
+          const inFlight = await db
+            .select({ deviceId: deviceCommands.deviceId })
+            .from(deviceCommands)
+            .where(
+              and(
+                inArray(deviceCommands.deviceId, candidateIds),
+                eq(deviceCommands.targetRole, 'watchdog'),
+                inArray(deviceCommands.type, [...WATCHDOG_RECOVERY_COMMAND_TYPES]),
+                inArray(deviceCommands.status, ['pending', 'sent']),
+              ),
+            );
+          for (const row of inFlight) {
+            errors[row.deviceId] = 'An agent restart is already pending for the watchdog on this device; not queuing another';
+          }
         }
         return null;
       });
@@ -548,9 +603,9 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
       // require the device to be online: a silent agent is exactly the case
       // this tool exists to recover.
       let queued = 0;
-      const errors: Record<string, string> = {};
 
       for (const deviceId of deviceIds) {
+        if (errors[deviceId]) continue;
         try {
           // aiExecuteCommand signals dispatch failure by RETURNING
           // status:'failed' (device not found, watchdog not reporting, etc.) —
@@ -563,6 +618,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             userId: auth.user.id,
             timeoutMs: 60000,
             targetRole: 'watchdog',
+            expectedOrgId: orgByDevice.get(deviceId),
           });
           if (result.status === 'failed') {
             errors[deviceId] = result.error ?? 'Failed to queue restart';
