@@ -109,7 +109,7 @@ export function desiredManagedPolicy(input: {
     }
     vendors.push(vendor.key);
     software.push({
-      name: vendor.detectionRuleName,
+      name: vendor.detectionRuleName ?? vendor.label,
       catalogId,
       reason: `${vendor.label} is required by a configuration policy (Security Agents)`,
     });
