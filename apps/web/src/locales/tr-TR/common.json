@@ -27,7 +27,7 @@
     "patches": "Yamalar",
     "vulnerabilities": "Güvenlik Açıkları",
     "oneDrive": "OneDrive",
-    "aiForOffice": "Office için AI",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Ağ",
     "jobs": "İşler",
     "flows": "Akışlar",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Betik yazımı",
     "toolSources": "Araç Kaynakları",
     "aiAgents": "Yapay Zeka Aracıları",
-    "aiAgentRuns": "Yapay Zeka Ajan Çalıştırmaları",
-    "aiImpact": "Yapay Zeka Etkisi",
-    "fixMemory": "Düzeltme belleği",
-    "fleetDesign": "Filo Tasarımı",
     "customFields": "Özel Alanlar",
     "variables": "Değişkenler",
     "savedFilters": "Kayıtlı Filtreler",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Filo Yönetimi",
     "sectionBilling": "Faturalama",
     "sectionAdministration": "Yönetim",
-    "fleetOrchestration": "Filo Orkestrasyonu",
     "software": "Yazılım",
     "softwareInventory": "Yazılım Envanteri",
     "softwarePolicies": "Yazılım Politikaları",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Değişiklikler",
     "endpointMessages": "Mesajlar",
     "securityDetectionRules": "Tespit Kuralları",
-    "planAndFeatures": "Plan ve özellikler"
+    "planAndFeatures": "Plan ve özellikler",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Çalışanlar",
+    "agents": "Ajanlar",
+    "runs": "Çalıştırmalar",
+    "aiTasks": "Yapay Zekâ Görevleri",
+    "findings": "Bulgular",
+    "impact": "Etki",
+    "aiKnowledgeSources": "Bilgi kaynakları",
+    "wispLockedServer": "Wisp, Breeze Cloud üzerinde çalışır. Bu sunucuda kullanılamaz."
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -1997,8 +2001,8 @@
         "errors": {
           "loadFailed": "Filo istatistikleri yüklenemedi"
         },
-        "title": "Filo Düzenlemesi",
-        "description": "Filonuz genelinde politikaları, dağıtımları, yamaları ve otomasyonları yönetin",
+        "title": "Bulgular",
+        "description": "Çalışanların cihazlar arasında bulduğu örüntüler: birçok işlem yerine tek bir işlem",
         "partialWarning": "Bazı veriler eksik olabilir. Yükleme başarısız oldu: {{endpoints}}",
         "cards": {
           "policies": "Politikalar",

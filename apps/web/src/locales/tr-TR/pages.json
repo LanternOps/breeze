@@ -72,7 +72,7 @@
     "dnsSecurity": "DNS Güvenlik",
     "dr": "Olağanüstü Durum Kurtarma",
     "extensionsNamePath": "Uzantı",
-    "fleet": "Filo Orkestrasyonu",
+    "fleet": "Bulgular",
     "forgotPassword": "Şifremi Unuttum",
     "incidentsDetail": "Olay Ayrıntısı",
     "incidents": "Güvenlik Olayları",
@@ -188,7 +188,8 @@
     "wisp": "Wisp",
     "wispChat": "Breeze AI",
     "aiTasks": "Yapay Zekâ Görevleri",
-    "aiTask": "Yapay zekâ görevi"
+    "aiTask": "Yapay zekâ görevi",
+    "settingsAi": "Yapay zeka ayarları"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

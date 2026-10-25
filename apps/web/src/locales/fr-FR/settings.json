@@ -79,6 +79,10 @@
         "categoryLabel": "Catégorie",
         "categoryUnresolved": "Suggéré — nom non disponible dans cette vue"
       }
+    },
+    "headerLinks": {
+      "fixMemoryReport": "Mémoire des correctifs",
+      "fleetDesignReport": "Conception de flotte"
     }
   },
   "aiDataPolicy": {
@@ -2564,7 +2568,9 @@
       "patch": "Passe en revue les correctifs manquants et propose ceux à installer.",
       "helpdesk": "Prend en charge les tickets et propose des réponses et des étapes suivantes.",
       "designer": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
-      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien."
+      "research": "Intégré. Étudie un problème sur un appareil à la demande d’un technicien et propose des correctifs sûrs. N’exécute jamais rien.",
+      "researchLink": "Ouvrir la mémoire des correctifs",
+      "designerLink": "Ouvrir la conception de flotte"
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",

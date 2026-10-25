@@ -27,7 +27,7 @@
     "patches": "Correctifs",
     "vulnerabilities": "Vulnérabilités",
     "oneDrive": "OneDrive",
-    "aiForOffice": "IA pour Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Réseau",
     "jobs": "Tâches",
     "flows": "Flux",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Rédaction de scripts",
     "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
-    "aiAgentRuns": "Exécutions des agents IA",
-    "aiImpact": "Impact de l’IA",
-    "fixMemory": "Mémoire des correctifs",
-    "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "moreSettings": "Plus de paramètres",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Gestion de la flotte",
     "sectionBilling": "Facturation",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Orchestration de la flotte",
     "software": "Logiciels",
     "softwareInventory": "Inventaire logiciel",
     "softwarePolicies": "Politiques logicielles",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Changements",
     "endpointMessages": "Messagerie",
     "securityDetectionRules": "Règles de détection",
-    "planAndFeatures": "Forfait et fonctionnalités"
+    "planAndFeatures": "Forfait et fonctionnalités",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Travailleurs",
+    "agents": "Agents",
+    "runs": "Exécutions",
+    "aiTasks": "Tâches IA",
+    "findings": "Constats",
+    "impact": "Impact",
+    "aiKnowledgeSources": "Sources de connaissances",
+    "wispLockedServer": "Wisp fonctionne sur Breeze Cloud. Il n’est pas disponible sur ce serveur."
   },
   "documentTitles": {
     "dashboard": "Tableau de bord",
@@ -1997,8 +2001,8 @@
         "errors": {
           "loadFailed": "Impossible de charger les statistiques de flotte"
         },
-        "title": "Orchestration de la flotte",
-        "description": "Gérez les politiques, les déploiements, les correctifs et les automatisations à travers votre flotte",
+        "title": "Constats",
+        "description": "Tendances communes à plusieurs appareils repérées par les travailleurs : une seule action au lieu de plusieurs",
         "partialWarning": "Certaines données peuvent être incomplètes. Échec du chargement : {{endpoints}}",
         "cards": {
           "policies": "Politiques",

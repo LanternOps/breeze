@@ -27,7 +27,7 @@
     "patches": "Correções",
     "vulnerabilities": "Vulnerabilidades",
     "oneDrive": "OneDrive",
-    "aiForOffice": "IA para Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Rede",
     "jobs": "Jobs",
     "flows": "Fluxos",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Criação de scripts",
     "toolSources": "Fontes de ferramentas",
     "aiAgents": "Agentes de IA",
-    "aiAgentRuns": "Execuções de Agentes de IA",
-    "aiImpact": "Impacto da IA",
-    "fixMemory": "Memória de correções",
-    "fleetDesign": "Design de frota",
     "customFields": "Campos Personalizados",
     "savedFilters": "Filtros Salvos",
     "moreSettings": "Mais configurações",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Gestão de Frota",
     "sectionBilling": "Faturamento",
     "sectionAdministration": "Administração",
-    "fleetOrchestration": "Orquestração de Frota",
     "software": "Software",
     "softwareInventory": "Inventário de software",
     "softwarePolicies": "Políticas de software",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Mudanças",
     "endpointMessages": "Mensagens",
     "securityDetectionRules": "Regras de detecção",
-    "planAndFeatures": "Plano e recursos"
+    "planAndFeatures": "Plano e recursos",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Trabalhadores",
+    "agents": "Agentes",
+    "runs": "Execuções",
+    "aiTasks": "Tarefas de IA",
+    "findings": "Descobertas",
+    "impact": "Impacto",
+    "aiKnowledgeSources": "Fontes de conhecimento",
+    "wispLockedServer": "O Wisp é executado no Breeze Cloud. Ele não está disponível neste servidor."
   },
   "documentTitles": {
     "dashboard": "Painel",
@@ -1997,8 +2001,8 @@
         "errors": {
           "loadFailed": "Falha ao carregar estatísticas da frota"
         },
-        "title": "Orquestração da Frota",
-        "description": "Gerencie políticas, implantações, correções e automações em toda a sua frota",
+        "title": "Descobertas",
+        "description": "Padrões entre dispositivos encontrados pelos trabalhadores: uma ação em vez de muitas",
         "partialWarning": "Alguns dados podem estar incompletos. Falha ao carregar: {{endpoints}}",
         "cards": {
           "policies": "Políticas",

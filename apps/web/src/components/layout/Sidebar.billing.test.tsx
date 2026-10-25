@@ -60,7 +60,7 @@ describe('Sidebar — billing nav permission gate', () => {
   it('hides Invoices, Contracts, and Catalog when the user has no billing grants', async () => {
     setPermissions([{ resource: 'devices', action: 'read' }]);
     const { container } = render(<Sidebar currentPath="/fleet" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/billing/invoices"]')).toBeNull();
     expect(container.querySelector('a[href="/contracts"]')).toBeNull();
     expect(container.querySelector('a[href="/settings/catalog"]')).toBeNull();

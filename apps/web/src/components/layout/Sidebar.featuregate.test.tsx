@@ -67,7 +67,7 @@ describe('Sidebar — AI for Office per-partner gate', () => {
   it('hides the AI for Office nav item when the partner is not enabled', async () => {
     mockPartner(false);
     const { container } = render(<Sidebar currentPath="/ai-for-office" />);
-    await waitFor(() => expect(container.querySelector('a[href="/fleet"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('a[href="/"]')).not.toBeNull());
     expect(container.querySelector('a[href="/ai-for-office"]')).toBeNull();
   });
 });

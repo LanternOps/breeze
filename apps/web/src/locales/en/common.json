@@ -27,7 +27,7 @@
     "patches": "Patches",
     "vulnerabilities": "Vulnerabilities",
     "oneDrive": "OneDrive",
-    "aiForOffice": "AI for Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Network",
     "jobs": "Jobs",
     "flows": "Flows",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Script authoring",
     "toolSources": "Tool Sources",
     "aiAgents": "AI Agents",
-    "aiAgentRuns": "AI Agent Runs",
-    "aiImpact": "AI Impact",
-    "fixMemory": "Fix memory",
-    "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Fleet Management",
     "sectionBilling": "Billing",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Fleet Orchestration",
     "software": "Software",
     "softwareInventory": "Software Inventory",
     "softwarePolicies": "Software Policies",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Changes",
     "endpointMessages": "Messages",
     "securityDetectionRules": "Detection Rules",
-    "planAndFeatures": "Plan & features"
+    "planAndFeatures": "Plan & features",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Workers",
+    "agents": "Agents",
+    "runs": "Runs",
+    "aiTasks": "AI Tasks",
+    "findings": "Findings",
+    "impact": "Impact",
+    "aiKnowledgeSources": "Knowledge sources",
+    "wispLockedServer": "Wisp runs on Breeze Cloud. It is not available on this server."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1997,8 +2001,8 @@
         "errors": {
           "loadFailed": "Failed to load fleet stats"
         },
-        "title": "Fleet Orchestration",
-        "description": "Manage policies, deployments, patches, and automations across your fleet",
+        "title": "Findings",
+        "description": "Cross-device patterns the workers found, worth one action instead of many",
         "partialWarning": "Some data may be incomplete. Failed to load: {{endpoints}}",
         "cards": {
           "policies": "Policies",

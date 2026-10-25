@@ -27,7 +27,7 @@
     "patches": "Patches",
     "vulnerabilities": "Schwachstellen",
     "oneDrive": "OneDrive",
-    "aiForOffice": "KI für Office",
+    "aiForOffice": "Breeze AI for Office",
     "networkMonitor": "Netzwerk",
     "jobs": "Aufträge",
     "flows": "Abläufe",
@@ -66,10 +66,6 @@
     "scriptAuthoring": "Skripterstellung",
     "toolSources": "Tool-Quellen",
     "aiAgents": "KI-Agenten",
-    "aiAgentRuns": "KI-Agenten-Läufe",
-    "aiImpact": "KI-Wirkung",
-    "fixMemory": "Fix-Gedächtnis",
-    "fleetDesign": "Flottendesign",
     "customFields": "Benutzerdefinierte Felder",
     "savedFilters": "Gespeicherte Filter",
     "moreSettings": "Weitere Einstellungen",
@@ -95,7 +91,6 @@
     "sectionFleetManagement": "Flottenverwaltung",
     "sectionBilling": "Abrechnung",
     "sectionAdministration": "Administration",
-    "fleetOrchestration": "Flottenorchestrierung",
     "software": "Software",
     "softwareInventory": "Software-Inventar",
     "softwarePolicies": "Software-Richtlinien",
@@ -119,7 +114,16 @@
     "ticketsChanges": "Änderungen",
     "endpointMessages": "Nachrichten",
     "securityDetectionRules": "Erkennungsregeln",
-    "planAndFeatures": "Tarif & Funktionen"
+    "planAndFeatures": "Tarif & Funktionen",
+    "breezeAi": "Breeze AI",
+    "workersHeading": "Worker",
+    "agents": "Agenten",
+    "runs": "Läufe",
+    "aiTasks": "KI-Aufgaben",
+    "findings": "Erkenntnisse",
+    "impact": "Wirkung",
+    "aiKnowledgeSources": "Wissensquellen",
+    "wispLockedServer": "Wisp läuft in der Breeze Cloud. Auf diesem Server ist es nicht verfügbar."
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -1997,8 +2001,8 @@
         "errors": {
           "loadFailed": "Die Flottenstatistiken konnten nicht geladen werden"
         },
-        "title": "Flottenorchestrierung",
-        "description": "Verwalten Sie Richtlinien, Bereitstellungen, Patches und Automatisierungen in Ihrer gesamten Flotte",
+        "title": "Erkenntnisse",
+        "description": "Geräteübergreifende Muster, die die Worker gefunden haben – eine Aktion statt vieler",
         "partialWarning": "Einige Daten sind möglicherweise unvollständig. Fehler beim Laden: {{endpoints}}",
         "cards": {
           "policies": "Richtlinien",

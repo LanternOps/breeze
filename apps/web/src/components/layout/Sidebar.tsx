@@ -34,7 +34,6 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
-  DraftingCompass,
   Bot,
   History,
   Activity,
@@ -61,7 +60,6 @@ import {
   MapPin,
   Cpu,
   TrendingUp,
-  BookCheck,
   Power,
   ServerCog,
   Inbox,
@@ -238,7 +236,16 @@ type NavItem = {
   requiresPartnerWideAdmin?: boolean;
   // Additional permissions the user must all hold (see navGates.ts).
   alsoRequiredPermissions?: readonly PermissionGrant[];
+  // #10135: the in-section heading this item sits under (declared once in the
+  // section's `headings`). Members of one heading are contiguous; the heading
+  // renders only while at least one member passes its gates, so a user who can
+  // see none of them never gets a label over nothing.
+  heading?: NavHeadingId;
 };
+
+// In-section group headings. A heading is a label, never a link or a page.
+type NavHeadingId = 'workers';
+type NavHeading = { label: string; labelKey: string };
 
 // ---------------------------------------------------------------------------
 // Top-level items (always visible, 6-8 max)
@@ -283,6 +290,8 @@ interface NavSection {
   // section does not have to repeat `requiresModule` on each entry (and cannot
   // half-hide if a later item forgets it).
   requiresModule?: 'service_management';
+  // Labels for the headings this section's items reference (`NavItem.heading`).
+  headings?: Partial<Record<NavHeadingId, NavHeading>>;
 }
 
 // Exported for structural nav tests (see Sidebar.nav.test.tsx).
@@ -292,34 +301,38 @@ export const navSections: NavSection[] = [
     label: 'AI',
     labelKey: 'nav.sectionAi',
     icon: BrainCircuit,
+    // AI surface cohesion W04 (#10135, spec §5): the section reads as the
+    // sentence "Operators run Breeze. The workers do the work. Wisp runs your
+    // day." Settings-like AI pages (usage, script authoring, tool sources) live
+    // under Settings → AI (/settings/ai); fix memory and fleet design are
+    // reports reached from the agents that write them (Agents, Runs).
+    headings: {
+      workers: { label: 'Workers', labelKey: 'nav.workersHeading' },
+    },
     items: [
-      { name: 'Fleet Orchestration', labelKey: 'nav.fleetOrchestration', href: '/fleet', icon: BrainCircuit },
-      // Wisp W08 (#9921): the Wisp home; the multi-tab chat that used to be
-      // "AI Assistant" at /workspace lives at /wisp/chat (/workspace redirects).
-      // #6498: both drive the own-session /ai/* routes, every one of which
-      // requires ai_sessions:use (#6396). Without this gate a role holding only
-      // devices:read saw the full chat page and a bare "Permission denied" on send.
+      // Wisp W08 (#9921): the Wisp home. #6498: Wisp and the chat drive the
+      // own-session /ai/* routes, every one of which requires ai_sessions:use
+      // (#6396). Without this gate a role holding only devices:read saw the full
+      // chat page and a bare "Permission denied" on send.
       { name: 'Wisp', labelKey: 'nav.wisp', href: '/wisp', icon: Sparkles, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
-      { name: 'AI Agents', labelKey: 'nav.aiAgents', href: '/settings/ai-agents', icon: Bot, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // The full-page multi-tab chat (formerly "AI Assistant" at /workspace,
+      // which redirects here). W05 moves it to /ai/chat.
+      { name: 'Breeze AI', labelKey: 'nav.breezeAi', href: '/wisp/chat', icon: MessageSquare, requiredPermission: { resource: 'ai_sessions', action: 'use' } },
+      { name: 'Agents', labelKey: 'nav.agents', href: '/settings/ai-agents', icon: Bot, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Execution-trace runs list/detail (Wave 6 PR 1, #3828) — file-routed under
       // /ai-agents/runs (not /settings/*) since a run is fleet activity, not
       // agent configuration.
-      { name: 'AI Agent Runs', labelKey: 'nav.aiAgentRuns', href: '/ai-agents/runs', icon: History, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // Operator Recipe Library W06 R1b (#6171): the Operator tasks + recipe
-      // library workspace. Same server flag as "Delegate to Operator".
-      { name: 'AI Tasks', labelKey: 'aiOperator:nav.operator', href: '/operator', icon: ListChecks, requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'Runs', labelKey: 'nav.runs', href: '/ai-agents/runs', icon: History, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Operator Recipe Library W06 R1b (#6171): AI tasks + the recipe library.
+      // Same server flag as the "Delegate" action that starts one.
+      { name: 'AI Tasks', labelKey: 'nav.aiTasks', href: '/operator', icon: ListChecks, heading: 'workers', requiresAiOperatorTasks: true, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Cross-device patterns the workers found (formerly "Fleet Orchestration").
+      { name: 'Findings', labelKey: 'nav.findings', href: '/fleet', icon: Sparkles, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
-      { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // AI Suggested Fixes W2 — observed fix track records (data, not settings).
-      { name: 'Fix memory', labelKey: 'nav.fixMemory', href: '/ai-agents/fix-memory', icon: BookCheck, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      // Fleet Designer W03 (#5653) — apply/rollback surface for a Fleet
-      // Design report, so it sits beside the other AI-report reads.
-      { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'AI Usage', labelKey: 'nav.aiUsage', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
-      { name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, requiredPermission: { resource: 'ai_agents', action: 'read' } },
-      { name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
-      { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
+      { name: 'Impact', labelKey: 'nav.impact', href: '/ai-agents/impact', icon: TrendingUp, heading: 'workers', requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // A door for other people (end users in Office), not a worker.
+      { name: 'Breeze AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
   {
@@ -558,7 +571,23 @@ const pathAliases: Record<string, string> = {
   // sibling route, not a child, so prefix matching would leave the item
   // unhighlighted there.
   '/agreements/signed': '/agreements/templates',
+  // #10135: fix memory and fleet design are reports reached from the agents
+  // that write them, so the roster entry stays lit (and the AI section open).
+  '/ai-agents/fix-memory': '/settings/ai-agents',
+  '/ai-agents/fleet-design': '/settings/ai-agents',
 };
+
+// Splits a section's items into consecutive runs that share a heading (or have
+// none), in order, so the renderer can label each headed run.
+function groupByHeading(items: NavItem[]): Array<{ heading?: NavHeadingId; items: NavItem[] }> {
+  const runs: Array<{ heading?: NavHeadingId; items: NavItem[] }> = [];
+  for (const item of items) {
+    const last = runs[runs.length - 1];
+    if (last && last.heading === item.heading) last.items.push(item);
+    else runs.push({ heading: item.heading, items: [item] });
+  }
+  return runs;
+}
 
 // Determine which section a given href belongs to (for auto-expand)
 function sectionForHref(href: string): string | null {
@@ -1087,7 +1116,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
     const labels = forMobileOverlay ? true : showLabels;
 
     return (
-      <div key={section.id}>
+      <div key={section.id} data-testid={`nav-section-${section.id}`}>
         <div className="my-2 border-t" />
         {/* In collapsed mode (no labels), show only the section icon */}
         {!labels ? (
@@ -1120,7 +1149,30 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
             inert={!expanded || undefined}
           >
             <div>
-              {section.items.map((item) => renderNavItem(item, forMobileOverlay))}
+              {groupByHeading(section.items).map((run) => {
+                if (!run.heading) return run.items.map((item) => renderNavItem(item, forMobileOverlay));
+                // A heading over nothing is noise (Review Focus 3): drop it
+                // when every member is hidden by its gates.
+                if (!run.items.some(isNavItemVisible)) return null;
+                const heading = section.headings?.[run.heading];
+                const headingId = `nav-heading-${section.id}-${run.heading}${forMobileOverlay ? '-mobile' : ''}`;
+                return (
+                  <div key={`heading:${run.heading}`} role="group" aria-labelledby={headingId}>
+                    <div
+                      id={headingId}
+                      data-testid={`nav-heading-${run.heading}`}
+                      className="px-3 pb-1 pt-2 text-xs font-medium text-muted-foreground/80"
+                    >
+                      {heading
+                        ? t(/* i18n-dynamic */ heading.labelKey, { defaultValue: heading.label })
+                        : run.heading}
+                    </div>
+                    <div className="ml-3 border-l pl-1">
+                      {run.items.map((item) => renderNavItem(item, forMobileOverlay))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
