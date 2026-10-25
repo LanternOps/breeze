@@ -204,6 +204,49 @@ describe('the Zammad 7.2.x module through the import worker (fake Zammad over HT
     expect(s3.objects.size).toBe(0);
   }, CASE_TIMEOUT);
 
+  runDb('an answer the module cannot read fails only its ticket and is no outage; an unreadable list page stops the run (review 2, 6)', async () => {
+    const fx = await seedZammad();
+    const window = await openWindow(fx);
+    const data = loadZammadFixtures('base');
+    const template = data.tickets.find((t) => t.id === 113)!;
+    // 101 is fine; 150's row is malformed; 201..221 list fine but their articles are not.
+    const broken = Array.from({ length: 21 }, (_, i) => ({ ...template, id: 201 + i, number: String(32001 + i) }));
+    data.tickets = [
+      data.tickets.find((t) => t.id === 101)!,
+      { ...template, id: 150, number: '31050', customer_id: 'not a user' },
+      ...broken,
+    ];
+    for (const t of broken) data.byTicket.set(t.id, [{ id: 'not an article' }] as never);
+    fake.use(data);
+
+    const run = await startImportRun(fx, 'import', window.id);
+    await drive(fx, run.id, { deps });
+    const row = await runRow(run.id);
+    // Before: 21 consecutive "outages" stopped the run as source_unavailable.
+    expect(row).toMatchObject({ state: 'completed', stopReason: null });
+    expect((row.cursor as { sourceFailures?: number }).sourceFailures).toBe(0);
+    expect(normalizeCounters(row.counters).tickets).toMatchObject({ seen: 23, created: 1, failed: 22 });
+    const items = await ledger(fx.sourceId);
+    expect(items.get('101')).toMatchObject({ state: 'imported' });
+    expect(items.get('150')).toMatchObject({ state: 'failed', failureCode: 'source_shape_invalid' });
+    expect([...items.values()].filter((i) => i.failureCode === 'source_shape_invalid')).toHaveLength(22);
+    // The malformed row was never loaded.
+    expect(requested('/api/v1/ticket_articles/by_ticket/150')).toEqual([]);
+
+    // A list answer that is not a list cannot be split per row: the run stops, with its own reason.
+    const original = fake.handle.bind(fake);
+    fake.handle = (method, url, auth) => (url.pathname === '/api/v1/tickets' && url.searchParams.get('per_page') === '100'
+      ? { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":"not a list"}') }
+      : original(method, url, auth));
+    try {
+      const stopped = await startImportRun(fx, 'import', window.id);
+      await drive(fx, stopped.id, { deps });
+      expect(await runRow(stopped.id)).toMatchObject({ state: 'stopped', stopReason: 'source_shape_invalid' });
+    } finally {
+      fake.handle = original;
+    }
+  }, CASE_TIMEOUT);
+
   runDb('an import, then a delta pass after the source changed', async () => {
     const fx = await seedZammad();
     // The fallback org takes the tickets with no org or an unmapped one.

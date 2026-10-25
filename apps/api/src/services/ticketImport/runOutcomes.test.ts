@@ -18,7 +18,7 @@ import {
   versionKey,
 } from './runOutcomes';
 import { emptyCounters, IssueBuffer, normalizeCounters, type RunIssue } from './runReport';
-import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceUnavailableError } from './sourceFetch';
+import { SourceAuthError, SourceHttpError, SourceResponseTooLargeError, SourceShapeError, SourceUnavailableError } from './sourceFetch';
 
 const NOW = new Date('2026-10-25T12:00:00.000Z');
 const at = (msFromNow: number) => new Date(NOW.getTime() + msFromNow);
@@ -194,6 +194,8 @@ describe('classifyImportError (spec §5.8)', () => {
     expect(classifySourceError(new SourceHttpError(404))).toEqual({ kind: 'http', status: 404 });
     expect(classifySourceError(new SourceUnavailableError('x', 9000))).toEqual({ kind: 'unavailable', retryAfterMs: 9000 });
     expect(classifySourceError(new SourceResponseTooLargeError(1))).toEqual({ kind: 'too_large' });
+    // A shape the module cannot read is not an outage (review 6).
+    expect(classifySourceError(new SourceShapeError('x'))).toEqual({ kind: 'shape' });
     expect(classifySourceError(new TypeError('bug'))).toEqual({ kind: 'rethrow' });
   });
 });

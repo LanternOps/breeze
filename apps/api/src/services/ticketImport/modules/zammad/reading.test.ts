@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { SourceAuthError, SourceUnavailableError } from '../../sourceFetch';
-import { clearZammadDirectoryCache, zammadPeople } from './directory';
+import { SourceAuthError, SourceShapeError, SourceUnavailableError } from '../../sourceFetch';
+import { clearZammadDirectoryCache, takeZammadInvalidRows, zammadPeople } from './directory';
 import { FakeZammad, FAKE_ZAMMAD_BASE_URL, loadZammadFixtures, zammadTestHandle } from './fakeZammad.fixtures';
 import { loadZammad, rememberedFileLocation, scanZammad, zammadRow } from './reading';
 import { ZammadShapeError, type ZammadLoadedData } from './shapes';
@@ -88,12 +88,40 @@ describe('scan (Z2: id ASC, 100 a page, a short page ends it)', () => {
     expect(calls).toBe(4);
   });
 
-  it('a malformed cursor starts at page 1; an answer that is not a ticket page is a shape error', async () => {
+  it('a malformed cursor starts at page 1', async () => {
     const fake = new FakeZammad();
     const rows = await scanZammad(zammadTestHandle(fake), { page: -3, lastId: 'x' } as never);
     expect(rows.rows).toHaveLength(19);
-    fake.data.tickets = [{ id: 1, nonsense: true }] as never;
-    await expect(scanZammad(zammadTestHandle(fake), null)).rejects.toBeInstanceOf(ZammadShapeError);
+  });
+
+  it('a malformed row with an id fails as its own ticket; the rest of the page is read (review 2)', async () => {
+    const fake = new FakeZammad();
+    const good = fake.data.tickets.find((t) => t.id === 101)!;
+    fake.data.tickets = [
+      good,
+      { ...good, id: 150, customer_id: 'not a user', organization_id: 3, updated_at: '2026-08-01T00:00:00.000Z', number: '31050' },
+      { ...good, id: 151, created_at: null },
+    ] as never;
+    const page = await scanZammad(zammadTestHandle(fake), null);
+    expect(page.rows.map((r) => [r.key, r.failure?.code ?? null])).toEqual([
+      ['101', null], ['150', 'source_shape_invalid'], ['151', 'source_shape_invalid'],
+    ]);
+    // Keyed from what the row has: the ledger and the report still name it.
+    expect(page.rows[1]).toMatchObject({ version: '2026-08-01T00:00:00.000Z', orgKey: '3', number: '31050', summary: null });
+  });
+
+  it('a row with no id, or an answer that is not a list, cannot be split per row: a shape error, not an outage', async () => {
+    const fake = new FakeZammad();
+    fake.data.tickets = [{ id: 101, title: 'x' }, { title: 'no id' }] as never;
+    const noId = await scanZammad(zammadTestHandle(fake), null).catch((e: unknown) => e);
+    expect(noId).toBeInstanceOf(ZammadShapeError);
+    expect(noId).toBeInstanceOf(SourceShapeError);
+    expect(noId).not.toBeInstanceOf(SourceUnavailableError);
+    const original = fake.handle.bind(fake);
+    fake.handle = (method, url, auth) => (url.pathname === '/api/v1/tickets'
+      ? { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":"maintenance"}') }
+      : original(method, url, auth));
+    await expect(scanZammad(zammadTestHandle(fake), null)).rejects.toBeInstanceOf(SourceShapeError);
   });
 
   it('retries a 503, honours a long Retry-After as a deferral, and stops on a refused token', async () => {
@@ -199,6 +227,28 @@ describe('load (§6.2: by_ticket, tags, the survivor of a merge, people)', () =>
 });
 
 describe('the directory (users cached 30 min per source; one read per missing user)', () => {
+  it('skips and counts an unreadable user row, never failing the load (review 2)', async () => {
+    const fake = new FakeZammad();
+    fake.data.users = [...fake.data.users, { id: 'x', login: 7 }, { id: 40, email: 12 }] as never;
+    // A user missing from the index whose own record is unreadable.
+    const original = fake.handle.bind(fake);
+    fake.handle = (method, url, auth) => (url.pathname === '/api/v1/users/41'
+      ? { status: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"id":41,"email":["not","text"]}') }
+      : original(method, url, auth));
+    const src = zammadTestHandle(fake, { sourceId: 'dir-invalid' });
+    const people = await zammadPeople(src, [3, 40, 41]);
+    expect(people.get(3)).toMatchObject({ firstname: 'Alice' });
+    expect(people.get(40)).toBeNull();
+    expect(people.get(41)).toBeNull();
+    // Two unreadable index rows, then 40 and 41 read on their own, both unreadable.
+    expect(takeZammadInvalidRows(src)).toEqual({ users: 4 });
+    // Reported once.
+    expect(takeZammadInvalidRows(src)).toEqual({});
+    // A load hands the rows its own directory read skipped to its conversion.
+    const { data } = await load(fake, 101);
+    expect(data.invalidRows).toEqual({ users: 2 });
+  });
+
   it('pages the users once, reads a user created since on its own, and caches one the source no longer has', async () => {
     const fake = new FakeZammad();
     const src = zammadTestHandle(fake, { sourceId: 'dir-1' });

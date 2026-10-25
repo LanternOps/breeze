@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SourceUnavailableError } from '../../sourceFetch';
+import { SourceShapeError } from '../../sourceFetch';
 
 /**
  * The Zammad 7.2.x JSON the module reads: shapes from the 7.2.2 source,
@@ -207,15 +207,17 @@ export type ZammadLoadedData = {
   merge: { survivorId: number | null; survivorNumber: string | null; survivorCreatedAt: string | null } | null;
   /** The people the ticket names (owner, customer, authors) by id; null for one the source no longer has. */
   people: Record<string, ZammadPerson | null>;
+  /** Directory rows skipped as unreadable since the last load reported them, by list (counted once). */
+  invalidRows?: Record<string, number>;
 };
 
 /**
- * A Zammad answer that is not the 7.2.2 shape: not the API (a proxy's page
- * parsed as JSON), or a release the module does not know. Transient for the
- * framework, like an answer that is not JSON (sourceFetch.ts): the item is
- * retried, and a source that keeps answering so stops the run.
+ * A Zammad answer that is not the 7.x shape: a malformed record, or a release
+ * the module does not know. Not an outage (a SourceShapeError): confined to
+ * one ticket it fails that ticket permanently (`source_shape_invalid`); on a
+ * list page that cannot be split per row it stops the run.
  */
-export class ZammadShapeError extends SourceUnavailableError {
+export class ZammadShapeError extends SourceShapeError {
   constructor(what: string) {
     super(`Zammad answered ${what} with an unexpected shape`);
     this.name = 'ZammadShapeError';

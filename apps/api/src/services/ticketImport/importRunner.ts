@@ -35,6 +35,7 @@ import {
   isInfrastructureError,
   predictTicket,
   recordImportResult,
+  SOURCE_SHAPE_INVALID,
   versionKey,
   type IssueTarget,
 } from './runOutcomes';
@@ -388,6 +389,8 @@ class SliceRunner {
       this.stage({ ...item, ...seen });
       return { kind: 'done', slow: false };
     }
+    // A row the module could key but not read: this ticket fails, never the page.
+    if (row.failure) return this.failItem(row, item, target, row.failure.code);
     const orgId = this.resolveOrg(row.orgKey);
     if (!orgId) {
       this.counters.tickets.skipped += 1;
@@ -647,6 +650,8 @@ class SliceRunner {
     if (f.kind === 'unauthorized') return { kind: 'stop', reason: 'source_unauthorized' };
     if (f.kind === 'http') return { kind: 'stop', reason: `source_${f.status}` };
     if (f.kind === 'too_large') return { kind: 'stop', reason: 'source_page_too_large' };
+    // A list page (or a connect) the module cannot read and cannot split per row: not an outage to wait out.
+    if (f.kind === 'shape') return { kind: 'stop', reason: SOURCE_SHAPE_INVALID };
     if (f.kind === 'rethrow') throw error;
     if (f.retryAfterMs !== null) return this.sourceWait(f.retryAfterMs);
     this.cursor.sourceFailures += 1;
@@ -678,6 +683,8 @@ class SliceRunner {
     }
     if (f.kind === 'http') return this.failItem(row, item, target, `source_${f.status}`);
     if (f.kind === 'too_large') return this.failItem(row, item, target, 'ticket_too_large');
+    // This ticket's answer only: permanent for it, and no consecutive source failure.
+    if (f.kind === 'shape') return this.failItem(row, item, target, SOURCE_SHAPE_INVALID);
     if (f.retryAfterMs !== null) return this.sourceWait(f.retryAfterMs);
     this.cursor.sourceFailures += 1;
     if (this.cursor.sourceFailures >= SOURCE_FAILURE_LIMIT) return { kind: 'stop', reason: 'source_unavailable' };
@@ -704,6 +711,8 @@ class SliceRunner {
       code = `source_${f.status}`;
     } else if (f.kind === 'too_large') {
       code = 'response_too_large';
+    } else if (f.kind === 'shape') {
+      code = SOURCE_SHAPE_INVALID;
     } else {
       if (isInfrastructureError(error)) throw error;
       this.reportTicketFault(error, target.key, 'probe');

@@ -80,6 +80,12 @@ export type SourceRow = {
   orgKey: string | null;
   number?: string | null;
   summary: unknown;
+  /**
+   * The module could key this row but not read the rest (a malformed record
+   * in an otherwise good page): the framework fails this ticket with `code`
+   * without loading it, and the page goes on. The next run retries it.
+   */
+  failure?: { code: string };
 };
 
 /**

@@ -410,6 +410,20 @@ describe('content and edge cases', () => {
   });
 });
 
+describe('directory rows the load skipped (review 2)', () => {
+  it('are counted once by name, and the ticket converts', async () => {
+    const data = loadZammadFixtures('base');
+    data.users = [...data.users, { id: 'x' }, { id: 41, email: 3 }] as never;
+    data.priorities = [...data.priorities, { id: 'y' }] as never;
+    const { conversion } = await convert(101, { data });
+    expect(conversion.kind).toBe('ticket');
+    expect(conversion.notes).toEqual(expect.arrayContaining([
+      { kind: 'module_count', name: 'invalid_rows_users', count: 2 },
+      { kind: 'module_count', name: 'invalid_rows_priorities', count: 1 },
+    ]));
+  });
+});
+
 describe('clock skew (§5.2): the framework clamps what the conversion keeps exact', () => {
   it('a source time up to the skew limit ahead is clamped to now and counted; beyond, the ticket fails clock_skew', async () => {
     const data = loadZammadFixtures('base');

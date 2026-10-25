@@ -318,6 +318,11 @@ export function convertZammadTicket(loaded: LoadedTicket, ctx: ConversionContext
   if (tags.cut > 0) notes.push({ kind: 'module_count', name: 'tags_cut', count: tags.cut });
   if (renderErrors > 0) notes.push({ kind: 'module_count', name: 'body_rendering_error', count: renderErrors });
   if (raised > 0) notes.push({ kind: 'module_count', name: 'article_time_raised', count: raised });
+  // Directory rows the load skipped as unreadable (users, states, priorities), counted once.
+  for (const list of ['users', 'states', 'priorities'] as const) {
+    const n = data.invalidRows?.[list] ?? 0;
+    if (n > 0) notes.push({ kind: 'module_count', name: `invalid_rows_${list}`, count: n });
+  }
 
   const subject = cleanText(t.title).trim().slice(0, 5000) || '(no subject)';
   const sourceNumber = cleanText(String(t.number)).trim().slice(0, 255);

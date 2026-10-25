@@ -115,7 +115,7 @@ describe('catalog', () => {
     // No admin.object: attribute names are discovered from tickets during the dry run.
     expect(catalog.attributes).toEqual([]);
     expect(catalog.counts).toEqual({
-      organizations: 4, groups: 5, inactiveGroups: 1, users: 10, states: 8, priorities: 4, attributeDefinitionsReadable: 0,
+      organizations: 4, groups: 5, inactiveGroups: 1, users: 10, states: 8, priorities: 4, attributeDefinitionsReadable: 0, invalidRows: 0,
     });
   });
 

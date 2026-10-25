@@ -9,8 +9,9 @@ import {
   ticketLinks,
   ticketTags,
   ZAMMAD_TICKET_PAGE_SIZE,
+  type UnreadableTicketRow,
 } from './api';
-import { zammadPeople, zammadPriorityName, zammadState } from './directory';
+import { takeZammadInvalidRows, zammadPeople, zammadPriorityName, zammadState } from './directory';
 import { usableEmail } from './mapping';
 import {
   ZammadShapeError,
@@ -39,6 +40,8 @@ import {
  */
 
 export const ZAMMAD_BIG_TICKET_ARTICLES = 500;
+/** The failure code of a ticket whose row or answer the module cannot read (runOutcomes' SOURCE_SHAPE_INVALID). */
+export const ZAMMAD_SHAPE_FAILURE = 'source_shape_invalid';
 /** Full pages that bring no new id before the scan treats the list as ended (a server ignoring `page`). */
 const STALE_PAGE_LIMIT = 3;
 
@@ -61,16 +64,38 @@ export function zammadRow(ticket: ZammadTicket): SourceRow {
   };
 }
 
+/**
+ * A list row the module can key but not read: its ticket fails on its own
+ * (`source_shape_invalid`), never the page, and the next run retries it.
+ */
+export function unreadableZammadRow(row: UnreadableTicketRow): SourceRow {
+  const { raw } = row;
+  const org = raw.organization_id;
+  const number = raw.number;
+  return {
+    key: String(row.id),
+    version: typeof raw.updated_at === 'string' && raw.updated_at ? raw.updated_at : 'unreadable',
+    orgKey: typeof org === 'number' && Number.isSafeInteger(org) && org > 0 ? String(org) : null,
+    number: typeof number === 'string' || typeof number === 'number' ? String(number) : null,
+    summary: null,
+    failure: { code: ZAMMAD_SHAPE_FAILURE },
+  };
+}
+
 export async function scanZammad(
   src: SourceHandle<unknown>,
   rawCursor: ZammadCursor | null,
 ): Promise<{ rows: SourceRow[]; next: ZammadCursor | null }> {
   const cursor = cursorOf(rawCursor);
-  const { body } = await listTicketsPage(src, cursor.page);
-  const fresh = body.filter((t) => t.id > cursor.lastId).sort((a, b) => a.id - b.id);
+  const page = await listTicketsPage(src, cursor.page);
+  const listed = [
+    ...page.tickets.map((t) => ({ id: t.id, row: zammadRow(t) })),
+    ...page.unreadable.map((u) => ({ id: u.id, row: unreadableZammadRow(u) })),
+  ];
+  const fresh = listed.filter((t) => t.id > cursor.lastId).sort((a, b) => a.id - b.id);
   const lastId = fresh.reduce((max, t) => Math.max(max, t.id), cursor.lastId);
-  const rows = fresh.map(zammadRow);
-  if (body.length < ZAMMAD_TICKET_PAGE_SIZE) return { rows, next: null };
+  const rows = fresh.map((t) => t.row);
+  if (page.size < ZAMMAD_TICKET_PAGE_SIZE) return { rows, next: null };
   const stale = fresh.length === 0 ? (cursor.stale ?? 0) + 1 : 0;
   if (stale >= STALE_PAGE_LIMIT) return { rows, next: null };
   return { rows, next: { page: cursor.page + 1, lastId, ...(stale > 0 ? { stale } : {}) } };
@@ -177,6 +202,7 @@ export async function loadZammad(src: SourceHandle<unknown>, row: SourceRow): Pr
     priorityName,
     merge,
     people: Object.fromEntries([...people].map(([id, person]) => [String(id), person])),
+    invalidRows: takeZammadInvalidRows(src),
   };
   const ownerEmail = ownerId === 1 ? null : usableEmail(people.get(ownerId)?.email);
   const customerEmail = usableEmail(people.get(ticket.customer_id)?.email);

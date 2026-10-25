@@ -51,6 +51,20 @@ export class SourceResponseTooLargeError extends Error {
 }
 
 /**
+ * The source answered, but not in the shape the module knows (a release the
+ * module does not know, a malformed record). Not an outage, so it never
+ * counts toward the run's consecutive source failures: confined to one
+ * ticket (its row or its load) it fails that ticket permanently
+ * (`source_shape_invalid`); on a list page or a connect it stops the run.
+ */
+export class SourceShapeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SourceShapeError';
+  }
+}
+
+/**
  * The source could not be reached now: a timeout, a network failure, a 5xx or
  * a 429 after the retries, or an answer that is not the JSON it should be.
  * Transient. `retryAfterMs` is the source's own `Retry-After` when it asked

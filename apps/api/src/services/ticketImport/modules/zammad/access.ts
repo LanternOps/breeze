@@ -66,7 +66,7 @@ async function tokenUser(src: SourceHandle<unknown>): Promise<{ me: Me | null; p
   const meResponse = await quiet(getMe(src));
   const me = meResponse?.body ?? null;
   if (!me) return { me: null, permissions: null, access: null };
-  const roles = await quiet(listRoles(src));
+  const roles = (await quiet(listRoles(src)))?.rows ?? null;
   const mine = (roles ?? []).filter((r) => (me.role_ids ?? []).includes(r.id) && r.active !== false);
   const permissions = roles ? [...new Set(mine.flatMap((r) => r.permissions ?? []))].sort() : null;
   const access: GroupAccess = new Map();
@@ -89,7 +89,7 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
   const probe = await firstTicket(src);
   const clockSkewMs = clockSkewFromDateHeader(probe.headers);
   const warnings: ConnectReport['warnings'] = [];
-  if (probe.body.length === 0) warnings.push({ code: 'no_visible_tickets' });
+  if (probe.count === 0) warnings.push({ code: 'no_visible_tickets' });
 
   const version = await quiet(getVersion(src));
   const sourceVersion = version === null ? null : cleanText(version).trim().slice(0, 100);
@@ -101,7 +101,7 @@ export async function connectZammad(src: SourceHandle<unknown>): Promise<Connect
   if (me && permissions === null) warnings.push({ code: 'permissions_unreadable' });
   if (permissions && !permissions.includes('ticket.agent')) warnings.push({ code: 'token_user_not_agent' });
 
-  for (const group of await listGroups(src)) {
+  for (const group of (await listGroups(src)).rows) {
     const label = `${cleanText(group.name)} (id ${group.id})`;
     if (group.active === false) warnings.push({ code: 'group_inactive', detail: label });
     else if (canRead(access, group.id) === false) warnings.push({ code: 'group_unreadable', detail: label });
@@ -125,29 +125,32 @@ export async function catalogZammad(src: SourceHandle<unknown>): Promise<SourceC
   const priorities = await listPriorities(src);
   const states = await listStates(src);
   const { access } = await tokenUser(src);
+  const lists = [organizations, groups, priorities, states];
   // Definitions need admin.object (Z17); without it the dry run discovers attribute names from ticket keys.
   const definitions = await quiet(listObjectAttributes(src));
-  const attributes = (definitions ?? [])
+  const attributes = (definitions?.rows ?? [])
     .filter((a) => (a.object == null || a.object === 'Ticket') && isCustomTicketAttribute(a.name))
     .map((a) => ({ key: a.name, name: cleanText(a.display ?? a.name), active: a.active !== false }));
   const users = await listUsers(src);
   return {
-    orgs: organizations.map((o) => ({ key: String(o.id), name: cleanText(o.name), active: o.active !== false })),
-    groups: groups.map((g) => {
+    orgs: organizations.rows.map((o) => ({ key: String(o.id), name: cleanText(o.name), active: o.active !== false })),
+    groups: groups.rows.map((g) => {
       const readable = g.active !== false && canRead(access, g.id) !== false;
       return { key: String(g.id), name: cleanText(g.name), active: g.active !== false, readable };
     }),
-    priorities: priorities.map((p) => ({ key: String(p.id), name: cleanText(p.name), active: p.active !== false })),
-    states: states.map((s) => ({ key: String(s.id), name: `${cleanText(s.name)} (${stateTypeName(s.state_type_id, s.state_type)})`, active: s.active !== false })),
+    priorities: priorities.rows.map((p) => ({ key: String(p.id), name: cleanText(p.name), active: p.active !== false })),
+    states: states.rows.map((s) => ({ key: String(s.id), name: `${cleanText(s.name)} (${stateTypeName(s.state_type_id, s.state_type)})`, active: s.active !== false })),
     attributes,
     counts: {
-      organizations: organizations.length,
-      groups: groups.length,
-      inactiveGroups: groups.filter((g) => g.active === false).length,
-      users: users.length,
-      states: states.length,
-      priorities: priorities.length,
+      organizations: organizations.rows.length,
+      groups: groups.rows.length,
+      inactiveGroups: groups.rows.filter((g) => g.active === false).length,
+      users: users.rows.length,
+      states: states.rows.length,
+      priorities: priorities.rows.length,
       attributeDefinitionsReadable: definitions ? 1 : 0,
+      // Rows of these lists the module could not read, skipped one by one.
+      invalidRows: [...lists, users, ...(definitions ? [definitions] : [])].reduce((n, l) => n + l.invalid, 0),
     },
   };
 }
