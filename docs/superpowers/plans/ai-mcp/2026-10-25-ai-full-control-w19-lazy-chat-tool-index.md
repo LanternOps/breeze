@@ -106,6 +106,7 @@ The simulated catalog is `[...listChatSurfaceToolNames(), ...FIXTURE_W03_W04]`. 
   - Cases: 3 device-page; 2 alert-page; 2 dashboard-page in an unexpanded domain (billing, backup); 1 always-on hot tool; 2 action-enum cases (the right action on a deferred multi-action tool).
   - It runs on the branch with `AI_TOOL_INDEX=lazy` against `full`, with equal caps. `full` is main's index plus the same page lines.
 - **Capture:** one `tool-capture --surface chat --proxy --tool-search on|off` row per tree, for system bytes and turn-1 tokens.
+- **As run (deviation).** The main arm is this branch with `AI_TOOL_INDEX=full`, not a detached main worktree. A scratch test proved its static prompt byte-identical to `origin/main`'s (sha256 `5138161a0739…`), and the declared tool set is unchanged. The eval CLI prices runs from `ai_platform_models` (it needs a migrated DB; the brief's unused `DATABASE_URL` no longer works), so it ran against a throwaway migrated Postgres container, removed afterwards. Results: baseline spec §13.
 
 ## 6. Quorum (`codex exec`, gpt-6-astra, xhigh, read-only)
 

@@ -503,3 +503,90 @@ Harness: `tool-capture.ts --surface <chat|agent-full> --proxy --tool-search off`
 
   The 6,656 B ceiling did not fit after 8 → 7, so the 6.75 KB (6,912 B) raise signed off for Tool Catalog W3 was taken for W02 (Todd 2026-10-22, option 1). Headroom is about 230 B default and 181 B flag-on. At 7, the action lists of `generate_report`, `manage_deployments`, `manage_monitor_definitions` and `manage_billing_catalog` render as `(8 actions)`; the names stay in each tool's schema.
 - **Headroom is now thin on chat.** The next chat write wave cannot fit +8k on top of this without A-W04 tool search or a schema-size pass.
+
+
+## 13. Lazy chat tool index (W19 #10065)
+
+**Date measured:** 2026-10-24 · **Branch:** `feature/6754-ai-full-control/wave-10065` against `origin/main` `dd2556224f` · **SDK:** `@anthropic-ai/claude-agent-sdk` (repo pin) · **Model:** `claude-sonnet-5-5` (default) · **Plan:** `plans/ai-mcp/2026-10-25-ai-full-control-w19-lazy-chat-tool-index.md`
+
+**Wire fact behind the design** (verified 2026-10-24 with a request-dumping proxy, chat, search on):
+- `tools[]` holds `ToolSearch`, the 15 alwaysLoad tools and `DeferredToolPlaceholder`.
+- `messages[1]` (role `system`, 8.7 KB) lists every deferred tool by name, as §9.2 found for tenant tools.
+- So the system-prompt index is no longer the only way the model learns a deferred tool's name. On full-list hosts every schema is inline anyway.
+
+**What ships.** `AI_TOOL_INDEX=lazy`, the default:
+- one line per domain (label plus plain-word vocabulary), the existing domain notes, and one sentence on loading deferred tools;
+- a device page also adds the Devices and Scripts tool lines, and an alert page adds Monitoring and Devices;
+- `AI_TOOL_INDEX=full` is the previous index.
+
+**Main arm.** It is this branch with `AI_TOOL_INDEX=full`. Its static prompt is byte-identical to `origin/main`'s: a scratch test composed both from main's `aiToolIndex.ts` and this branch's. Default env: 18,299 B, sha256 `5138161a0739…` for both. All flags on: 19,335 B. The declared tool set is unchanged (no registry or declaration diff).
+
+**Bytes** (`aiToolIndex.test.ts` bounds; "fixture" = the 38 W03/W04 tools):
+
+| Measure | Today's catalog | With fixture | Bound |
+|---|---|---|---|
+| Whole index (`full`) | 6,917 (flags on 7,953) | 8,199 | none (kill switch) |
+| Always-on index (`lazy`) | 2,494 (flags on 2,494) | 2,494 (Δ 0) | < 2,560 |
+| Largest domain block | security 970 | security 1,268 | < 2,048 |
+| Device page: always-on + blocks | 3,822 | 3,999 | < 7,040 |
+| Alert page: always-on + blocks | 4,190 | 4,423 | < 7,040 |
+| Static chat prompt | 18,299 → 13,876 (−4,423) | — | — |
+
+**Golden eval, chat, 75 cases** (`ai:tool-eval`, first real call; search-on cap 3 turns, search-off 1):
+
+| arm | runs | hits main (full) | hits branch (lazy) | mean main → branch | cases searched | API calls to first tool | context at first tool | through first tool | priced to first tool / run |
+|---|---|---|---|---|---|---|---|---|---|
+| default (search on) | 3 | 23, 26, 25 | 24, 24, 26 | 24.7 → 24.7 | 66 → 65 | 1.27 → 1.28 | 21,540 → 19,910 | 27,190 → 25,340–25,590 | $1.22–1.25 → $1.22–1.25 |
+| off | 2 | 23, 24 | 25, 24 | 23.5 → 24.5 | 0 | 1 | 118,259 → 116,456 | same | $2.71 → $1.89 |
+
+Of the 75 cases, 39 are deferred-only: every acceptable first tool is deferred under search. Paired runs, main → lazy:
+- **Search on:** 12 → 13, 15 → 13, 14 → 15.
+- **Search off:** 14 → 15, 14 → 15.
+
+**Changed cases, search on:**
+- **g26 "Which customers are breaching their backup SLA?" — lost in all 3 lazy runs.**
+  - Lazy keyword-searches and calls `query_backup_sla`; main selects `get_sla_breaches`.
+  - `query_backup_sla`'s hint is "backup SLA configurations, active breaches and compliance state", so this is a defensible near-miss.
+  - The vocabulary was not tuned to it.
+- **Run-to-run swings, not systematic:**
+  - g40 (lost once: `search_catalog` instead of `lookup_distributor_product`);
+  - g70 (once each way: the `get` vs `comment` action on `manage_tickets`);
+  - g51 (gained twice);
+  - g71 (gained once).
+
+**Changed cases, search off:**
+- g06 gained in both runs (`manage_alert_rules` instead of `list_monitors`).
+- g07 flipped once each way. In both directions the observed tool and action matched the expectation. The scorer reports a hit on one side and a miss on the other; the cause was not checked.
+
+**Authored page-context set** (`--suite lazy-index`, 10 cases, search on, 2 runs each). Main arm: 7, 7. Lazy: 6, 6.
+- **Shared misses (both arms, both runs).** These are expectation strictness, not index text: the model opens with a loaded generic read.
+  - l01: `get_device_details` before `analyze_disk_usage`.
+  - l04 and l05: `manage_alerts get` before the alert-specific tool.
+- **The only difference: l09** ("Disable the OneDrive startup item on this machine", device page).
+  - Lazy first calls `query_devices` (loaded) and does not open with `manage_startup_items disable`. It does this in both runs, although that line, with its actions, is in the page block.
+  - Main opens with `manage_startup_items disable`.
+  - The fixture device id is not a UUID. That may prompt the lookup, but it is the same in both arms. Not checked further.
+
+**tool-capture** (`--surface chat --proxy`, one row each):
+
+| tool search | index | system bytes (wire) | tools sent | turn-1 tokens |
+|---|---|---|---|---|
+| on | full (main) | 18,682 | 17 | 21,152 |
+| on | lazy | 14,260 | 17 | 19,349 (−1,803) |
+| off | full (main) | 18,682 | 222 | 118,142 |
+| off | lazy | 14,260 | 222 | 116,362 (−1,780) |
+
+**Spend.** $17.60 priced by the harness (to the first tool, all eval runs), plus four capture runs (unpriced, one response each).
+
+**Not measured:**
+- BYO and catalog hosts;
+- Haiku;
+- a live sidebar session that navigates mid-conversation (the page block follows query creation, not navigation);
+- the cost delta search-off, which is larger than the ~1.8k-token prompt delta explains. Its cause was not investigated, so it is not claimed as a saving.
+
+**For W03/W04.** A wave that adds chat tools to an existing domain adds **0 bytes** to the always-on index. To land it:
+1. Run `aiToolIndex.test.ts`. B1 invariance, B2 (its domain block < 2,048 B) and B3 (worst page turn < 7,040 B) must stay green.
+2. Remove its tools from `FIXTURE_W03_W04`; the fixture test fails once they are chat-declared.
+3. Do not edit `DOMAIN_VOCABULARY` or the bounds to make room.
+
+A new `DOMAIN_NOTES` sentence costs always-on bytes, and 66 B of headroom are left.
