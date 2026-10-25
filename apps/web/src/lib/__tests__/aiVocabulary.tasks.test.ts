@@ -36,9 +36,14 @@ describe('AI vocabulary — tasks family (#10133)', () => {
 
   it('the Operator page titles are not hard-coded in the .astro files', () => {
     const pagesDir = join(__dirname, '..', '..', 'pages', 'operator');
-    for (const rel of ['index.astro', join('tasks', '[taskId].astro')]) {
+    const pages: Array<[string, string]> = [
+      ['index.astro', 'titleKey="titles.aiTasks"'],
+      [join('tasks', '[taskId].astro'), 'titleKey="titles.aiTask"'],
+    ];
+    for (const [rel, titleKey] of pages) {
       const source = readFileSync(join(pagesDir, rel), 'utf8');
       expect(source, rel).not.toContain('title="Operator');
+      expect(source, rel).toContain(titleKey);
     }
   });
 });
