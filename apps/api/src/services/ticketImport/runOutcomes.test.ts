@@ -97,12 +97,17 @@ describe('applyNotes and recordImportResult (spec §5.10)', () => {
       { kind: 'comments_system_skipped', count: 3 },
       { kind: 'attachments_alternative_ignored', count: 1 },
       { kind: 'custom_attribute', name: 'customer_tier' },
+      { kind: 'module_count', name: 'tags_cut', count: 2 },
+      { kind: 'module_count', name: 'tags_cut' },
+      { kind: 'module_count', name: 'state_removed', count: 0 },
     ], counters, issues, owners, target);
     // ownersUnmatched counts the rows the unique index lets in, at commit.
     expect(counters).toMatchObject({ ownersUnmatched: 0, requestersWithoutContact: 1, contentTruncated: 2, customAttributes: { customer_tier: 1 } });
     expect(owners.map((o) => [o.kind, o.code, o.sourceTicketKey])).toEqual([['owner_unmatched', '42', 'k'], ['owner_unmatched', '42', 'k']]);
     expect(counters.comments.systemSkipped).toBe(3);
     expect(counters.attachments.alternativesIgnored).toBe(1);
+    // A module's own counts: by name, no issue row.
+    expect(counters.moduleCounts).toEqual({ tags_cut: 3, state_removed: 0 });
     expect(issues.take().map((i) => [i.kind, i.code, i.count])).toEqual([['content_truncated', null, 2]]);
   });
 
@@ -196,8 +201,8 @@ describe('classifyImportError (spec §5.8)', () => {
 describe('the stored run state', () => {
   it('normalizes counters and cursors from an empty or partial row', () => {
     expect(normalizeCounters({})).toEqual(emptyCounters());
-    expect(normalizeCounters({ tickets: { created: 3, bogus: 1 }, customAttributes: { a: 2, b: -1 }, linksWritten: 'x' }))
-      .toMatchObject({ tickets: { created: 3, seen: 0 }, customAttributes: { a: 2, b: 0 }, linksWritten: 0 });
+    expect(normalizeCounters({ tickets: { created: 3, bogus: 1 }, customAttributes: { a: 2, b: -1 }, moduleCounts: { c: 4, d: 'x' }, linksWritten: 'x' }))
+      .toMatchObject({ tickets: { created: 3, seen: 0 }, customAttributes: { a: 2, b: 0 }, moduleCounts: { c: 4, d: 0 }, linksWritten: 0 });
     expect(normalizeCursor(null)).toMatchObject({ scan: { page: null, index: 0, done: false }, sourceFailures: 0, clockSkewMs: undefined });
     // Positions and counts only (review #13): an old cursor's lists are dropped.
     const cursor = normalizeCursor({ scan: { page: 3, index: 2 }, clockSkewMs: null, ownersSeen: ['a'], links: { queue: [1], index: 4, after: 'k9' } });

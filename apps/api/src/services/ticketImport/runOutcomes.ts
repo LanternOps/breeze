@@ -95,6 +95,11 @@ export function applyNotes(
         counters.customAttributes[name] = (counters.customAttributes[name] ?? 0) + Math.max(1, note.count ?? 1);
         break;
       }
+      case 'module_count': {
+        const name = note.name.slice(0, 64);
+        counters.moduleCounts[name] = (counters.moduleCounts[name] ?? 0) + Math.max(0, note.count ?? 1);
+        break;
+      }
     }
   }
 }

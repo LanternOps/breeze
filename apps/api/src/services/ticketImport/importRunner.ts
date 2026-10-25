@@ -522,7 +522,7 @@ class SliceRunner {
     try {
       result = await (this.deps.importTicket ?? importTicket)(this.window!.id, ticket, {
         partnerId: this.input.partnerId,
-        isSourceArticleId: (id) => this.module.isSourceArticleId(id),
+        isSourceArticleId: (id) => this.module.isSourceArticleId(id, loaded),
         fetchAttachment: this.attachmentFetcher(row.key),
       });
     } catch (error) {

@@ -141,7 +141,14 @@ export type ReportNote =
   /** Alternative parts not imported (an HTML mail's message.html copy). */
   | { kind: 'attachments_alternative_ignored'; count: number }
   /** A custom attribute with a value, not imported in v1. */
-  | { kind: 'custom_attribute'; name: string; count?: number };
+  | { kind: 'custom_attribute'; name: string; count?: number }
+  /**
+   * A module-specific count the report lists by name, with no issue row
+   * (Zammad: a legacy `removed` state, tags cut to Breeze's limits, a body
+   * the source could not render). Names are fixed strings of the module,
+   * never source content.
+   */
+  | { kind: 'module_count'; name: string; count?: number };
 
 export type Conversion =
   | { kind: 'ticket'; ticket: ImportedTicket; links: ImportedLink[]; notes: ReportNote[] }
@@ -182,7 +189,16 @@ export interface TicketImportModule<Options = unknown, Cursor = unknown> {
    */
   fetchAttachment(src: SourceHandle<Options>, ref: AttachmentRef, maxBytes: number): Promise<Uint8Array>;
   probe(src: SourceHandle<Options>, sourceTicketKey: string): Promise<ProbeResult>;
-  isSourceArticleId(commentSourceId: string): boolean;
+  /**
+   * A comment id the writer stored that this pass's conversion no longer
+   * sends: is it a source article deleted in the source (§5.3 item 3)? False
+   * for a note the module composed. `loaded` is the ticket this pass loaded,
+   * so a module can also answer false for an article the source still holds
+   * but did not send as a comment (it became the description, a toggle now
+   * skips it) or moved to another ticket (a merge in the source, W0's note):
+   * none of those was deleted.
+   */
+  isSourceArticleId(commentSourceId: string, loaded?: LoadedTicket): boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
