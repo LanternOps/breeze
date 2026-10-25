@@ -6,6 +6,8 @@
  *
  *  - one partner: both orgs' `partner_id` = the intent's, read in this
  *    transaction after the device locks (`partner_mismatch`);
+ *  - both orgs still live: `active` or `trial` and not soft-deleted, the
+ *    request's own refusal (`org_draining`);
  *  - the requester is still an active member of the partner who satisfies the
  *    §8 access rule for both devices (`requester_revoked`);
  *  - row versions, as the human authorized them: target agent_id,
@@ -18,9 +20,14 @@
  *    confirmed reattach (`target_changed`).
  */
 import type { DeviceReattachIntent } from '../../db/schema';
-import { canActorReattach, loadReattachActor } from './access';
+import { canActorReattach, loadReattachActor, REACHABLE_ORG_STATUSES } from './access';
 import { wasRetiredReattachSource, type LockedReattachDevice, type ReattachTx } from './intentStore';
 import type { ReattachCancelReason } from './protocol';
+
+/** The device's org is one a reattach may touch: active or trial, not soft-deleted. */
+export function isLiveOrg(device: Pick<LockedReattachDevice, 'orgStatus' | 'orgDeletedAt'>): boolean {
+  return (REACHABLE_ORG_STATUSES as readonly string[]).includes(device.orgStatus) && device.orgDeletedAt === null;
+}
 
 export async function revalidateLockedIntent(
   tx: ReattachTx,
@@ -31,6 +38,9 @@ export async function revalidateLockedIntent(
   if (source.orgPartnerId !== intent.partnerId || target.orgPartnerId !== intent.partnerId) {
     return 'partner_mismatch';
   }
+  // Either org suspended, churned, deleted, offboarding… since the request:
+  // the request's own `org_draining` refusal, now cancelling the intent.
+  if (!isLiveOrg(source) || !isLiveOrg(target)) return 'org_draining';
 
   const actor = intent.requestedBy ? await loadReattachActor(tx, intent.requestedBy, intent.partnerId) : null;
   const access = canActorReattach(actor, {

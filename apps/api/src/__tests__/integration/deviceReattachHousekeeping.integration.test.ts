@@ -90,7 +90,9 @@ describe('the reattach intent sweep (#8318 §6.5 "Expiry", §4.3 "Retention")', 
 
     // Requested 2 h ago: past its 60 minutes.
     const s1 = await parkedSource(tenant);
-    const stale = await requested(tenant, s1, await silentTarget(tenant.orgA), new Date(now - 2 * 3_600_000));
+    // (Its target must have been silent at that past request time too.)
+    const staleTarget = await silentTarget(tenant.orgA, { lastSeenAt: new Date(now - 4 * 3_600_000) });
+    const stale = await requested(tenant, s1, staleTarget, new Date(now - 2 * 3_600_000));
     // Requested 40 min ago, staged 20 min ago: past its 15 minutes.
     const s2 = await parkedSource(tenant);
     const t2 = await silentTarget(tenant.orgA);

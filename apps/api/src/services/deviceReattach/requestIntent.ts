@@ -23,7 +23,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import { deviceReattachIntents, users, type DeviceReattachEvidenceLevel, type DeviceReattachIntent } from '../../db/schema';
+import { deviceReattachIntents, devices, users, type DeviceReattachEvidenceLevel, type DeviceReattachIntent } from '../../db/schema';
 import { lockPartnerHoldingArea } from '../unassignedPool/holdingAreaLock';
 import { isUnassignedPoolOrgType } from '../unassignedPool/orgType';
 import { isHiddenOrgType } from '../unassignedPool/visibility';
@@ -39,11 +39,10 @@ import {
   wasRetiredReattachSource,
   type LockedReattachDevice,
 } from './intentStore';
+import { decideTargetLiveness, readRedisLivenessSignals } from './liveness';
 import { REATTACH_REQUESTED_TTL_MS, type ReattachCancelReason } from './protocol';
+import { isLiveOrg } from './revalidation';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
-
-/** Org statuses a reattach may touch: the same set parked assignment accepts. */
-const ACTIVE_ORG_STATUSES = new Set(['active', 'trial']);
 
 const ACCESS_DENIAL_STATUS: Record<ReattachAccessDenial, 403 | 409> = {
   not_partner_user: 403,
@@ -87,9 +86,21 @@ function refuse(status: ReattachRefusal['status'], code: string, message: string
 function refuseUnhealthy(device: LockedReattachDevice, role: 'source' | 'target'): void {
   if (device.status === 'quarantined') refuse(409, 'device_quarantined', `The ${role} device is quarantined`);
   if (device.agentTokenSuspendedAt) refuse(409, 'device_suspended', `The ${role} device's agent credentials are suspended`);
-  if (!ACTIVE_ORG_STATUSES.has(device.orgStatus) || device.orgDeletedAt) {
-    refuse(409, 'org_draining', `The ${role} device's organization is not active`);
-  }
+}
+
+/** An org a reattach may touch: active or trial, not soft-deleted (the same test phase 1 and confirm repeat). */
+function refuseDrainingOrg(device: LockedReattachDevice, role: 'source' | 'target'): void {
+  if (!isLiveOrg(device)) refuse(409, 'org_draining', `The ${role} device's organization is not active`);
+}
+
+/** The target's install, read unlocked before the transaction, for the Redis liveness half. */
+async function readTargetInstall(targetDeviceId: string): Promise<{ agentId: string } | null> {
+  const [row] = await runOutsideDbContext(() => withSystemDbAccessContext(() => db
+    .select({ agentId: devices.agentId })
+    .from(devices)
+    .where(eq(devices.id, targetDeviceId))
+    .limit(1)));
+  return row ?? null;
 }
 
 export async function requestDeviceReattach(input: RequestDeviceReattachInput): Promise<RequestDeviceReattachResult> {
@@ -100,6 +111,14 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
   if (input.evidenceLevel !== 'hint' && input.evidenceLevel !== 'tpm_continuity') {
     return reattachRefusal(400, 'invalid_evidence_level', 'Unknown evidence level');
   }
+
+  // §6.5 at request (§8 refusals `target_alive` / `liveness_unknown`): the
+  // Redis half is read BEFORE any lock, outside every DB context; the DB half
+  // comes from the target row locked below. Confirm checks again.
+  const targetInstall = await readTargetInstall(input.targetDeviceId);
+  const redisLiveness = targetInstall
+    ? await readRedisLivenessSignals({ deviceId: input.targetDeviceId, agentId: targetInstall.agentId })
+    : null;
 
   let created: { intent: DeviceReattachIntent; source: LockedReattachDevice; target: LockedReattachDevice };
   try {
@@ -121,6 +140,16 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       // One partner: the requester's, the source's and the target's (§8).
       if (source.orgPartnerId !== partnerId || target.orgPartnerId !== partnerId) {
         refuse(409, 'partner_mismatch', ACCESS_DENIAL_MESSAGES.partner_mismatch);
+      }
+      // Before the access rule: a draining org is out of everyone's reach,
+      // and this is the precise answer.
+      refuseDrainingOrg(source, 'source');
+      refuseDrainingOrg(target, 'target');
+      // A target is a record people manage and see: never one in a hidden org
+      // (the holding org, a Quick Support org). Before the access rule too,
+      // which would otherwise answer it as an org nobody can reach.
+      if (isHiddenOrgType(target.orgType)) {
+        refuse(409, 'target_ineligible', 'The target device is not a managed record');
       }
       const sourceParked = isUnassignedPoolOrgType(source.orgType);
 
@@ -144,11 +173,6 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
 
       // The target: an existing, managed, non-ephemeral record.
       if (target.isEphemeral) refuse(409, 'target_ephemeral', 'The target device is ephemeral');
-      // A target is a record people manage and see: never one in a hidden org
-      // (the holding org, a Quick Support org).
-      if (isHiddenOrgType(target.orgType)) {
-        refuse(409, 'target_ineligible', 'The target device is not a managed record');
-      }
       if (target.status === 'decommissioned' && !input.restoreDecommissioned) {
         refuse(409, 'target_decommissioned', 'The target device is removed; restoring it must be explicit');
       }
@@ -160,6 +184,19 @@ export async function requestDeviceReattach(input: RequestDeviceReattachInput): 
       }
       if (await wasRetiredReattachSource(tx, target.id)) {
         refuse(409, 'target_retired', 'The target was the source of a confirmed reattach and is retired');
+      }
+
+      // §6.5: the target must be silent. Its install changing since the
+      // unlocked read is itself a credential use (an F3 re-enroll).
+      if (!targetInstall || !redisLiveness || targetInstall.agentId !== target.agentId) {
+        refuse(409, 'target_alive', 'The target device is in use: it authenticated recently');
+      }
+      const liveness = decideTargetLiveness(redisLiveness, target, now, now);
+      if (liveness.state === 'unknown') {
+        refuse(409, 'liveness_unknown', 'Whether the target is in use could not be checked; try again');
+      }
+      if (liveness.state === 'alive') {
+        refuse(409, 'target_alive', 'The target device is in use: it authenticated recently');
       }
 
       const [intent] = await tx

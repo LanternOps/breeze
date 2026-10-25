@@ -20,7 +20,7 @@ function actor(overrides: Partial<ReattachActorAccess> = {}, membership: Partial
     partnerId: PARTNER,
     membership: membership === null
       ? null
-      : { orgAccess: 'all', orgIds: [], grants: WRITE_DELETE, ...membership },
+      : { orgAccess: 'all', reachableOrgIds: [ORG_A, ORG_B, ORG_C], grants: WRITE_DELETE, ...membership },
     ...overrides,
   };
 }
@@ -63,7 +63,7 @@ describe('canActorReattach (#8318 §8)', () => {
   });
 
   describe('a technician limited to selected orgs', () => {
-    const tech = (orgIds: string[]) => actor({}, { orgAccess: 'selected', orgIds });
+    const tech = (reachableOrgIds: string[]) => actor({}, { orgAccess: 'selected', reachableOrgIds });
 
     it('may reattach when both the target org and the real source org are theirs', () => {
       expect(canActorReattach(tech([ORG_A, ORG_B]), realSource)).toEqual({ allowed: true, fullAdmin: false });
@@ -86,7 +86,28 @@ describe('canActorReattach (#8318 §8)', () => {
     });
   });
 
+  // Review of wave 1b-2, finding 1: only the LIVE reachable set counts (the
+  // RLS population: active/trial, undeleted, not the holding org).
+  describe('the live reachable set, not raw membership', () => {
+    it('a full partner admin is refused a target org they cannot reach now (suspended, deleted)', () => {
+      expect(canActorReattach(actor({}, { reachableOrgIds: [ORG_A] }), realSource)).toEqual({ allowed: false, code: 'org_access_denied' });
+    });
+
+    it('a full partner admin is refused a real source org they cannot reach now', () => {
+      expect(canActorReattach(actor({}, { reachableOrgIds: [ORG_B] }), realSource)).toEqual({ allowed: false, code: 'org_access_denied' });
+    });
+
+    it('a full partner admin may still act on a parked source (the holding org is never reachable)', () => {
+      expect(canActorReattach(actor({}, { reachableOrgIds: [ORG_B] }), parkedSource)).toEqual({ allowed: true, fullAdmin: true });
+    });
+
+    it('a technician whose selected target org is no longer reachable is refused', () => {
+      expect(canActorReattach(actor({}, { orgAccess: 'selected', reachableOrgIds: [ORG_A] }), realSource))
+        .toEqual({ allowed: false, code: 'org_access_denied' });
+    });
+  });
+
   it("org_access 'none' is refused", () => {
-    expect(canActorReattach(actor({}, { orgAccess: 'none', orgIds: [ORG_A, ORG_B] }), realSource)).toEqual({ allowed: false, code: 'org_access_denied' });
+    expect(canActorReattach(actor({}, { orgAccess: 'none', reachableOrgIds: [ORG_A, ORG_B] }), realSource)).toEqual({ allowed: false, code: 'org_access_denied' });
   });
 });

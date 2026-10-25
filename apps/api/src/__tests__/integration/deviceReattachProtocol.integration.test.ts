@@ -46,6 +46,7 @@ import {
   deviceReattachIntents,
   deviceReattachments,
   devices,
+  organizations,
   users,
 } from '../../db/schema';
 import { __resetAgentAuthNegativeCacheForTests } from '../../middleware/agentAuthNegativeCache';
@@ -522,15 +523,30 @@ describe('rebind-confirm (#8318 §6.4, §6.5)', () => {
     });
   });
 
-  it('a target that was active within the quiet period before the request is alive too', async () => {
-    const tenant = await seedReattachTenant();
-    const source = await parkedSource(tenant);
-    // Seen five minutes ago: older than the request, but inside the 10-minute quiet period.
-    const target = await seedAgentDevice(tenant.orgA, { status: 'offline', lastSeenAt: new Date(Date.now() - 5 * 60 * 1000) });
-    const intent = await requestIntent(tenant, source, target);
-    const set = stagedSet();
-    expect((await phase1(source, intent.id, set.hashes)).status).toBe(200);
+  it('a use inside the 10-minute quiet period counts at confirm even when it predates the request', async () => {
+    const { source, target, set } = await arrangeStaged();
+    // Recorded as five minutes ago: before the request, inside the quiet period.
+    await getTestDb().update(devices).set({ lastSeenAt: new Date(Date.now() - 5 * 60 * 1000) }).where(eq(devices.id, target.id));
     expect(await confirm(source.agentId, set.tokens.confirmationToken)).toMatchObject({ status: 409, body: { code: 'target_alive' } });
+  });
+
+  // Review of wave 1b-2, finding 1: the orgs are revalidated at every step.
+  it('cancels with org_draining when the target org was suspended after staging (confirm)', async () => {
+    const { source, target, intent, set } = await arrangeStaged();
+    await getTestDb().update(organizations).set({ status: 'suspended' }).where(eq(organizations.id, target.orgId));
+    const targetBefore = await identitySnapshot(target.id);
+    expect(await confirm(source.agentId, set.tokens.confirmationToken))
+      .toMatchObject({ status: 409, body: { code: 'org_draining', state: 'cancelled', cancelReason: 'org_draining' } });
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'cancelled', cancelReason: 'org_draining' });
+    expect(await identitySnapshot(target.id)).toEqual(targetBefore);
+  });
+
+  it('cancels with org_draining at phase 1 when the target org was soft-deleted after the request', async () => {
+    const { tenant, source, intent } = await arrange();
+    await getTestDb().update(organizations).set({ deletedAt: new Date() }).where(eq(organizations.id, tenant.orgA.orgId));
+    expect(await phase1(source, intent.id, stagedSet().hashes))
+      .toMatchObject({ status: 409, body: { code: 'org_draining', state: 'cancelled' } });
+    expect(await readIntent(intent.id)).toMatchObject({ state: 'cancelled', cancelReason: 'org_draining' });
   });
 
   it('fails closed without Redis: 409 liveness_unknown', async () => {

@@ -46,6 +46,7 @@ export type ReattachCancelReason =
   | 'target_alive'
   | 'liveness_unknown'
   | 'partner_mismatch'
+  | 'org_draining'
   | 'requester_revoked'
   | 'restage_refused'
   | 'key_revoked'

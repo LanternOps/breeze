@@ -13,10 +13,28 @@
 import './setup';
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
-import { auditLogs, deviceReattachments, devices, organizations } from '../../db/schema';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { db, withSystemDbAccessContext } from '../../db';
+import { auditLogs, deviceReattachments, devices, organizations, partnerUsers } from '../../db/schema';
+import { agentCredentialUseKey } from '../../services/agentCredentialUse';
+import { setAgentPresence } from '../../services/agentPresence';
+import { loadReattachActor } from '../../services/deviceReattach/access';
 import { cancelReattachIntent, requestDeviceReattach } from '../../services/deviceReattach/requestIntent';
+import { getRedis } from '../../services/redis';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
+
+// Redis down for one test: every getRedis() caller sees "not configured".
+const redisSeam = vi.hoisted(() => ({ down: false }));
+vi.mock('../../services/redis', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/redis')>();
+  return {
+    ...actual,
+    getRedis: (...args: Parameters<typeof actual.getRedis>) => (redisSeam.down ? null : actual.getRedis(...args)),
+  };
+});
+beforeEach(() => {
+  redisSeam.down = false;
+});
 import {
   parkedSource,
   readIntent,
@@ -203,6 +221,67 @@ describe('requestDeviceReattach (#8318 §8)', () => {
     const source = await parkedSource(tenant);
     expect(await request(tenant, source.id, source.id)).toMatchObject({ ok: false, status: 400, code: 'same_device' });
     expect(await request(tenant, source.id, randomUUID())).toMatchObject({ ok: false, status: 404, code: 'device_not_found' });
+  });
+
+  // Review of wave 1b-2, finding 5: the §8 refusals target_alive and
+  // liveness_unknown apply at request, with the §6.5 rule (requested_at = now).
+  describe('target liveness at request (§6.5)', () => {
+    it('refuses a target whose agent heartbeated within the 10-minute quiet period', async () => {
+      const tenant = await seedReattachTenant();
+      const target = await seedAgentDevice(tenant.orgA, { status: 'online', lastSeenAt: new Date(Date.now() - 5 * 60_000) });
+      expect(await request(tenant, (await parkedSource(tenant)).id, target.id))
+        .toMatchObject({ ok: false, status: 409, code: 'target_alive' });
+    });
+
+    it('refuses a target whose watchdog beat within the quiet period', async () => {
+      const tenant = await seedReattachTenant();
+      const target = await silentTarget(tenant.orgA, { watchdogLastSeen: new Date(Date.now() - 60_000) });
+      expect(await request(tenant, (await parkedSource(tenant)).id, target.id))
+        .toMatchObject({ ok: false, status: 409, code: 'target_alive' });
+    });
+
+    it('refuses a target whose credentials were used recently (the credential-use marker)', async () => {
+      const tenant = await seedReattachTenant();
+      const target = await silentTarget(tenant.orgA);
+      await getRedis()!.set(agentCredentialUseKey(target.id), String(Date.now() - 60_000), 'EX', 3600);
+      expect(await request(tenant, (await parkedSource(tenant)).id, target.id))
+        .toMatchObject({ ok: false, status: 409, code: 'target_alive' });
+    });
+
+    it('refuses a target holding a live WebSocket (the presence lease)', async () => {
+      const tenant = await seedReattachTenant();
+      const target = await silentTarget(tenant.orgA);
+      await setAgentPresence(target.agentId, { instanceId: 'test-instance', connectionToken: 'tok' });
+      expect(await request(tenant, (await parkedSource(tenant)).id, target.id))
+        .toMatchObject({ ok: false, status: 409, code: 'target_alive' });
+    });
+
+    it('fails closed without Redis: 409 liveness_unknown, nothing written', async () => {
+      const tenant = await seedReattachTenant();
+      const source = await parkedSource(tenant);
+      const target = await silentTarget(tenant.orgA);
+      redisSeam.down = true;
+      try {
+        expect(await request(tenant, source.id, target.id)).toMatchObject({ ok: false, status: 409, code: 'liveness_unknown' });
+      } finally {
+        redisSeam.down = false;
+      }
+      expect((await request(tenant, source.id, target.id)).ok).toBe(true);
+    });
+  });
+
+  // Review of wave 1b-2, finding 1: the access rule counts the LIVE reachable set.
+  it('loadReattachActor reaches only live orgs: a selected org that is suspended or deleted grants nothing', async () => {
+    const tenant = await seedReattachTenant();
+    const suspended = await createOrganization({ partnerId: tenant.partnerId, status: 'suspended' });
+    const deleted = await createOrganization({ partnerId: tenant.partnerId, deletedAt: new Date() });
+    await getTestDb().update(partnerUsers)
+      .set({ orgIds: [tenant.orgA.orgId, suspended.id, deleted.id, tenant.pool.orgId] })
+      .where(eq(partnerUsers.userId, tenant.techA.id));
+    const tech = await withSystemDbAccessContext(() => loadReattachActor(db, tenant.techA.id, tenant.partnerId));
+    expect([...(tech!.membership!.reachableOrgIds)].sort()).toEqual([tenant.orgA.orgId]);
+    const admin = await withSystemDbAccessContext(() => loadReattachActor(db, tenant.admin.id, tenant.partnerId));
+    expect([...(admin!.membership!.reachableOrgIds)].sort()).toEqual([tenant.orgA.orgId, tenant.orgB.orgId].sort());
   });
 
   describe('the §8 access rule', () => {

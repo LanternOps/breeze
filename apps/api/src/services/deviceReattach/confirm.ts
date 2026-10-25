@@ -90,7 +90,7 @@ import {
   type LockedReattachDevice,
   type ReattachTx,
 } from './intentStore';
-import { readTargetLiveness } from './liveness';
+import { decideTargetLiveness, readRedisLivenessSignals, type RedisLivenessSignals } from './liveness';
 import { REATTACH_SOURCE_CERT_GRACE_MS, type ReattachCancelReason } from './protocol';
 import { revalidateLockedIntent } from './revalidation';
 
@@ -203,6 +203,7 @@ async function confirmUnderLocks(
   located: DeviceReattachIntent,
   input: ConfirmRebindInput,
   now: Date,
+  redisLiveness: RedisLivenessSignals,
 ): Promise<ConfirmOutcome> {
   await lockPartnerHoldingArea(tx, located.partnerId);
   const locked = await lockReattachDevices(tx, [located.sourceDeviceId, located.targetDeviceId], 'update');
@@ -263,8 +264,9 @@ async function confirmUnderLocks(
     stagedCertificate = row;
   }
 
-  // §6.5: read under the device row lock. Fail closed without Redis.
-  const liveness = await readTargetLiveness(target, intent.requestedAt, now);
+  // §6.5: the DB signals from the row locked above; the Redis ones were read
+  // before any lock (fail closed: `unknown` when Redis could not answer).
+  const liveness = decideTargetLiveness(redisLiveness, target, intent.requestedAt, now);
   if (liveness.state === 'unknown') return cancel('liveness_unknown');
   if (liveness.state === 'alive') return cancel('target_alive');
 
@@ -561,10 +563,16 @@ export async function confirmRebindIntent(input: ConfirmRebindInput): Promise<Co
   }
   if (intent.state !== 'staged') return intentStateRefusal(intent.state, intent.cancelReason);
 
+  // §6.5, the Redis half: before the advisory and row locks, outside every DB
+  // context, bounded (a slow or absent Redis reads `unknown` → fail closed).
+  // The install whose use matters is the one the human authorized; a target
+  // whose agent_id has moved on fails the version check under the locks.
+  const redisLiveness = await readRedisLivenessSignals({ deviceId: intent.targetDeviceId, agentId: intent.targetAgentId });
+
   let outcome: ConfirmOutcome;
   try {
     outcome = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-      db.transaction((tx) => confirmUnderLocks(tx, intent, input, now))));
+      db.transaction((tx) => confirmUnderLocks(tx, intent, input, now, redisLiveness))));
   } catch (err) {
     if (err instanceof ReattachRefusedError) return err.refusal;
     throw err;
