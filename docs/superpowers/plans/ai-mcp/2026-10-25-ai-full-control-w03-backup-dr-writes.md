@@ -226,7 +226,7 @@ Each requested change is resolved on the merits below.
 - **QW5: vault update site race. Accepted, fixed before exposure (new W03-D12).** The REST `PATCH` row-locks the device inside the site allowlist (`updateVaultWithinCurrentSite`, `routes/backup/vault.ts:78-130`). The tool re-checks and then updates without a lock.
 - **QW6: W03-D1's reversibility evidence was wrong. Accepted.** The approver sees only the new values, and the handler returned only the updated row. `update` now returns `previous` (name, description, selections, isActive), so the change can be undone from the transcript. D1 is rewritten below. The headline says ownership is resolved at run time, because input alone cannot show it.
 - **QW7: profile reads carry technician free text. Accepted as a rationale correction.** The agent-exposure row now says it: `description` is free text written by a staff member with `backup:write`. Exposure stays reachable, because it is tenant-internal and not device-originated.
-- **QW8: MCP wording. Accepted.** W03-D6 now says "denied by default". The MCP intent path (`MCP_APPROVAL_INTENTS`) and operator-authorized unattended principals (`MCP_UNATTENDED_TIER3_PRINCIPALS`) already exist (`routes/mcpServer.ts:2314-2339`).
+- **QW8: MCP wording. Accepted.** W03-D6 now says "denied by default". The MCP intent path (`MCP_TIER3_INTENTS_ENABLED=true`) and operator-authorized unattended principals (`MCP_UNATTENDED_TIER3_PRINCIPALS`) already exist (`routes/mcpServer.ts:2314-2339`).
 
 ## Decisions (W03-D1 … W03-D12)
 
@@ -246,7 +246,7 @@ Each requested change is resolved on the merits below.
   - `validateToolInput` still validates the full pipe, so the strict rebuild arm and the required hyperv fields keep rejecting bad input.
   - **Drift fixed in the same task:** the hyperv arm gains `switchName`, which the registry advertises and the handler stores (`aiToolsBackupVm.ts:262`) but Zod did not list. `hypervisor` narrows to `['hyperv']`, matching the registry enum and the handler, which refuses anything else (`:264`).
 - **W03-D5: no W03 tool returns content, and `search_c2c_items` stays `AGENT_DENIED_READ_TOOLS`.** `restore_c2c_items` takes item ids and returns `{restoreJobId, status, itemCount}`. An agent can therefore propose a restore only from ids it already holds, and it cannot read mailbox items through this wave.
-- **W03-D6: MCP surface loss (Todd signs off in the PR).** Over MCP, tier 3 is denied **by default** (`MCP_APPROVAL_REQUIRED`, W02 r6). Two exceptions exist: deployments that enable `MCP_APPROVAL_INTENTS`, which turns the call into an approval intent, and principals listed in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`routes/mcpServer.ts:2314-2339`). So, by default, these become MCP-denied until #6158:
+- **W03-D6: MCP surface loss (Todd signs off in the PR).** Over MCP, tier 3 is denied **by default** (`MCP_APPROVAL_REQUIRED`, W02 r6). Two exceptions exist: deployments that enable `MCP_TIER3_INTENTS_ENABLED=true`, which turns the call into an approval intent, and principals listed in `MCP_UNATTENDED_TIER3_PRINCIPALS` (`routes/mcpServer.ts:2314-2339`). So, by default, these become MCP-denied until #6158:
   - `trigger_vault_sync`, `trigger_c2c_sync`, `verify_mssql_backup`: whole tool. `tools/list` stops advertising them (`isToolWhollyGatedOverMcp`).
   - `configure_vault`: `create` and `update`, which is every action.
   - `manage_hyperv_checkpoints:create`. `delete` and `apply` were already four-eyes.
