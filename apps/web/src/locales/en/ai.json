@@ -751,7 +751,7 @@
         "site": "Sites",
         "alert": "Alerts",
         "run": "Agent runs",
-        "task": "Operator tasks",
+        "task": "AI tasks",
         "user": "Users"
       },
       "loading": "Searching…",

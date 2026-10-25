@@ -530,7 +530,7 @@
         "device_vulnerabilities": "Schwachstellen: {{count}}",
         "organization_key_dates": "Erinnerungen an Stichtage: {{count}}",
         "service_deliverable_occurrences": "Leistungstermine: {{count}}",
-        "ai_operator_task_targets": "Ziele des KI-Operators: {{count}}",
+        "ai_operator_task_targets": "Ziele der KI-Aufgabe: {{count}}",
         "ticket_drafts": "Verworfene Entwürfe: {{count}}"
       },
       "droppedHeading": "Verknüpfungen, die entfernt werden",

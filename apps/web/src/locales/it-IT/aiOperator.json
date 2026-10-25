@@ -114,29 +114,29 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Caricamento attività Operator...",
-    "loadFailed": "Impossibile caricare le attività Operator.",
-    "empty": "Nessuna attività Operator per questo dispositivo.",
-    "emptyHint": "L'Operatore IA indaga e risolve i problemi di un dispositivo quando gli deleghi un avviso. Le attività delegate per questo dispositivo appariranno qui.",
-    "learnMore": "Scopri di più sull'Operatore IA"
+    "loading": "Caricamento attività IA…",
+    "loadFailed": "Impossibile caricare le attività IA.",
+    "empty": "Nessuna attività IA per questo dispositivo.",
+    "emptyHint": "I worker IA indagano e risolvono i problemi di un dispositivo quando avvii un'attività IA da un avviso. Le attività IA di questo dispositivo appaiono qui.",
+    "learnMore": "Scopri di più sulle attività IA"
   },
   "delegate": {
-    "button": "Delega all'Operatore",
-    "dialogTitle": "Delega all'Operatore",
-    "dialogMessage": "L'Operatore analizzerà il problema e tenterà di risolverlo con il seguente flusso di lavoro.",
+    "button": "Avvia un'attività IA",
+    "dialogTitle": "Avvia un'attività IA",
+    "dialogMessage": "I worker IA analizzeranno il problema e tenteranno di risolverlo con la seguente ricetta.",
     "orgLabel": "Organizzazione",
     "deviceLabel": "Dispositivo",
     "serviceNameLabel": "Nome del servizio",
     "serviceNamePlaceholder": "es. Spooler",
     "serviceNameError": "Inserisci il nome del servizio per delegare questa attività.",
-    "workflowLabel": "Flusso di lavoro",
+    "workflowLabel": "Ricetta",
     "workflowName": "Ripristino del servizio",
     "confirmLabel": "Delega",
-    "queued": "Attività delegata all'Operatore.",
-    "failed": "Impossibile delegare l'attività all'Operatore."
+    "queued": "Attività IA avviata.",
+    "failed": "Impossibile avviare l'attività IA."
   },
   "nav": {
-    "operator": "Operatore"
+    "operator": "Attività IA"
   },
   "effectTool": {
     "googleSetVacation": "Impostare la risposta automatica di Gmail",
@@ -156,7 +156,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Sezioni dell'Operatore",
+      "label": "Sezioni dell'attività IA",
       "tasks": "Attività",
       "library": "Libreria"
     },
@@ -165,7 +165,7 @@
   "taskList": {
     "loading": "Caricamento delle attività...",
     "loadFailed": "Impossibile caricare le attività.",
-    "empty": "Nessuna attività dell'Operatore per ora.",
+    "empty": "Nessuna attività IA per ora.",
     "emptyHint": "Le attività che avvii dalla Libreria, da un ticket, da un contatto o da un avviso compaiono qui.",
     "loadMore": "Carica altro",
     "loadMoreFailed": "Impossibile caricare altre attività."

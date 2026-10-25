@@ -977,8 +977,8 @@
     "strip": "şerit",
     "networkAsset": "Ağ varlığı",
     "networkAssets": "Ağ varlıkları",
-    "operatorTasks": "Operatör Görevleri",
-    "operatorTasksForThisDevice": "Bu cihaz için Operatör görevleri",
+    "operatorTasks": "Yapay Zekâ Görevleri",
+    "operatorTasksForThisDevice": "Bu cihaz için yapay zekâ görevleri",
     "tabGroups": {
       "monitoring": "İzleme",
       "inventory": "Envanter",

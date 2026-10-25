@@ -977,8 +977,8 @@
     "strip": "banda",
     "networkAsset": "Activo de red",
     "networkAssets": "Activos de red",
-    "operatorTasks": "Tareas del operador",
-    "operatorTasksForThisDevice": "Tareas del operador de IA para este dispositivo",
+    "operatorTasks": "Tareas de IA",
+    "operatorTasksForThisDevice": "Tareas de IA para este dispositivo",
     "tabGroups": {
       "monitoring": "Monitoreo",
       "inventory": "Inventario",

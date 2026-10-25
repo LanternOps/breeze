@@ -751,7 +751,7 @@
         "site": "Emplacements",
         "alert": "Alertes",
         "run": "Exécutions d’agents",
-        "task": "Tâches d’opérateur",
+        "task": "Tâches IA",
         "user": "Utilisateurs"
       },
       "loading": "Recherche en cours…",

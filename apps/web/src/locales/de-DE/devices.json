@@ -977,8 +977,8 @@
     "strip": "Streifen",
     "networkAsset": "Netzwerk-Asset",
     "networkAssets": "Netzwerk-Assets",
-    "operatorTasks": "Operator-Aufgaben",
-    "operatorTasksForThisDevice": "KI-Operator-Aufgaben für dieses Gerät",
+    "operatorTasks": "KI-Aufgaben",
+    "operatorTasksForThisDevice": "KI-Aufgaben für dieses Gerät",
     "tabGroups": {
       "monitoring": "Überwachung",
       "inventory": "Inventar",

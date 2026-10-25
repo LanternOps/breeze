@@ -114,29 +114,29 @@
     }
   },
   "operatorTaskFeed": {
-    "loading": "Cargando tareas de Operator...",
-    "loadFailed": "No se pudieron cargar las tareas de Operator.",
-    "empty": "No hay tareas de Operator para este dispositivo.",
-    "emptyHint": "El Operador de IA investiga y resuelve problemas en un dispositivo cuando le delegas una alerta. Las tareas delegadas para este dispositivo aparecerán aquí.",
-    "learnMore": "Más información sobre el Operador de IA"
+    "loading": "Cargando tareas de IA…",
+    "loadFailed": "No se pudieron cargar las tareas de IA.",
+    "empty": "No hay tareas de IA para este dispositivo.",
+    "emptyHint": "Los trabajadores de IA investigan y resuelven problemas en un dispositivo cuando inicias una tarea de IA desde una alerta. Las tareas de IA de este dispositivo aparecerán aquí.",
+    "learnMore": "Más información sobre las tareas de IA"
   },
   "delegate": {
-    "button": "Delegar al Operador",
-    "dialogTitle": "Delegar al Operador",
-    "dialogMessage": "El Operador investigará e intentará resolver esto con el siguiente flujo de trabajo.",
+    "button": "Iniciar una tarea de IA",
+    "dialogTitle": "Iniciar una tarea de IA",
+    "dialogMessage": "Los trabajadores de IA investigarán e intentarán resolver esto con la siguiente receta.",
     "orgLabel": "Organización",
     "deviceLabel": "Dispositivo",
     "serviceNameLabel": "Nombre del servicio",
     "serviceNamePlaceholder": "p. ej. Spooler",
     "serviceNameError": "Ingresa el nombre del servicio para delegar esta tarea.",
-    "workflowLabel": "Flujo de trabajo",
+    "workflowLabel": "Receta",
     "workflowName": "Recuperación de servicio",
     "confirmLabel": "Delegar",
-    "queued": "Tarea delegada al Operador.",
-    "failed": "No se pudo delegar la tarea al Operador."
+    "queued": "Tarea de IA iniciada.",
+    "failed": "No se pudo iniciar la tarea de IA."
   },
   "nav": {
-    "operator": "Operador"
+    "operator": "Tareas de IA"
   },
   "effectTool": {
     "googleSetVacation": "Configurar la respuesta automática de Gmail",
@@ -156,7 +156,7 @@
   },
   "workspace": {
     "tabs": {
-      "label": "Secciones del Operador",
+      "label": "Secciones de la tarea de IA",
       "tasks": "Tareas",
       "library": "Biblioteca"
     },
@@ -165,7 +165,7 @@
   "taskList": {
     "loading": "Cargando tareas...",
     "loadFailed": "No se pudieron cargar las tareas.",
-    "empty": "Aún no hay tareas del Operador.",
+    "empty": "Aún no hay tareas de IA.",
     "emptyHint": "Las tareas que inicie desde la Biblioteca, un ticket, un contacto o una alerta aparecen aquí.",
     "loadMore": "Cargar más",
     "loadMoreFailed": "No se pudieron cargar más tareas."

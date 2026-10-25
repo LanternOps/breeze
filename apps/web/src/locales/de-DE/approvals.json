@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plan für die Aufgabe des KI-Operators",
+    "title": "Plan für die KI-Aufgabe",
     "summary_one": "{{count}} Auswirkung, Planrevision {{revision}}",
     "summary_other": "{{count}} Auswirkungen, Planrevision {{revision}}",
     "groupBreeze": "Breeze-Geräte",

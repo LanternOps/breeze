@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Plano para a tarefa do operador de IA",
+    "title": "Plano para a tarefa de IA",
     "summary_one": "{{count}} efeito, revisão {{revision}} do plano",
     "summary_other": "{{count}} efeitos, revisão {{revision}} do plano",
     "groupBreeze": "Dispositivos Breeze",

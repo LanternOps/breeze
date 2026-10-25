@@ -1348,7 +1348,6 @@
   "devices.deviceDetails.metricAnomalySignalsForThisDevice",
   "devices.deviceDetails.networkAsset",
   "devices.deviceDetails.networkAssets",
-  "devices.deviceDetails.operatorTasks",
   "devices.deviceDetails.rebootPending",
   "devices.deviceDetails.resolvedConfigurationFromAllAssignedPolicies",
   "devices.deviceDetails.restartScheduled",

@@ -977,8 +977,8 @@
     "strip": "Strip",
     "networkAsset": "Actif réseau",
     "networkAssets": "Actifs réseau",
-    "operatorTasks": "Tâches de l'opérateur",
-    "operatorTasksForThisDevice": "Tâches de l'opérateur IA pour cet appareil",
+    "operatorTasks": "Tâches IA",
+    "operatorTasksForThisDevice": "Tâches IA pour cet appareil",
     "tabGroups": {
       "monitoring": "Surveillance",
       "inventory": "Inventaire",

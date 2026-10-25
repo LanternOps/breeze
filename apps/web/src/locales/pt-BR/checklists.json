@@ -21,11 +21,11 @@
     "manual": "Manual",
     "deliverable": "Entrega",
     "checklist_template": "Modelo",
-    "operator_task": "Etapa do Operador"
+    "operator_task": "Etapa de tarefa de IA"
   },
   "operator": {
     "viewTask": "Ver tarefa",
-    "badgeTitle": "Criado por uma tarefa do Operador de IA. Marque quando concluir e a tarefa continua."
+    "badgeTitle": "Criado por uma tarefa de IA. Marque quando concluir e a tarefa continua."
   },
   "editDoneWarning": "Alterar o texto da etapa apaga quem a concluiu e quando. Editar apenas a observação mantém a marcação.",
   "resolveConfirm": {
@@ -40,7 +40,7 @@
     "saveFailed": "Falha ao salvar a etapa do checklist.",
     "reorderFailed": "Falha ao reordenar o checklist.",
     "tickRequiresUser": "Marcar uma etapa exige uma sessão de usuário autenticada.",
-    "operatorStepWaiting": "Uma tarefa do Operador ainda depende desta etapa, então ela não pode ser excluída. Marque quando concluir, ou pare a tarefa antes."
+    "operatorStepWaiting": "Uma tarefa de IA ainda depende desta etapa, então ela não pode ser excluída. Marque quando concluir, ou pare a tarefa antes."
   },
   "templates": {
     "title": "Modelos de checklist",
@@ -74,7 +74,7 @@
       "loadFailed": "Falha ao carregar os modelos de checklist.",
       "saveFailed": "Falha ao salvar o modelo de checklist.",
       "applyFailed": "Falha ao aplicar o modelo de checklist.",
-      "operatorStepWaiting": "Uma tarefa do Operador depende de uma etapa não marcada deste chamado, então o modelo não pode substituí-las. Escolha “Adicionar estas etapas ao checklist existente”, marque a etapa quando concluir, ou pare a tarefa antes.",
+      "operatorStepWaiting": "Uma tarefa de IA depende de uma etapa não marcada deste chamado, então o modelo não pode substituí-las. Escolha “Adicionar estas etapas ao checklist existente”, marque a etapa quando concluir, ou pare a tarefa antes.",
       "saveAsFailed": "Falha ao salvar o checklist como modelo.",
       "noSteps": "Este ticket não tem etapas reutilizáveis para salvar.",
       "duplicateFailed": "Falha ao duplicar o modelo de checklist."
@@ -87,7 +87,7 @@
       "allOrganizations": "Disponibilizar para todas as organizações",
       "submit": "Salvar modelo",
       "success": "Salvo como modelo “{{name}}”.",
-      "skipped": "Ignoradas: {{operator}} etapa(s) do Operator e {{duplicates}} etapa(s) repetida(s)."
+      "skipped": "Ignoradas: {{operator}} etapa(s) de tarefa de IA e {{duplicates}} etapa(s) repetida(s)."
     }
   }
 }

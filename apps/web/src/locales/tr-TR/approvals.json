@@ -150,7 +150,7 @@
     }
   },
   "operatorPlan": {
-    "title": "Yapay zekâ operatörü görevi için plan",
+    "title": "Yapay zekâ görevi için plan",
     "summary_one": "{{count}} etki, plan revizyonu {{revision}}",
     "summary_other": "{{count}} etki, plan revizyonu {{revision}}",
     "groupBreeze": "Breeze cihazları",

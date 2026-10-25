@@ -977,8 +977,8 @@
     "strip": "strip",
     "networkAsset": "Ativo de rede",
     "networkAssets": "Ativos de rede",
-    "operatorTasks": "Tarefas do operador",
-    "operatorTasksForThisDevice": "Tarefas do operador de IA para este dispositivo",
+    "operatorTasks": "Tarefas de IA",
+    "operatorTasksForThisDevice": "Tarefas de IA para este dispositivo",
     "tabGroups": {
       "monitoring": "Monitoramento",
       "inventory": "Inventário",

@@ -977,8 +977,8 @@
     "strip": "strip",
     "networkAsset": "Network asset",
     "networkAssets": "Network assets",
-    "operatorTasks": "Operator Tasks",
-    "operatorTasksForThisDevice": "AI Operator tasks for this device",
+    "operatorTasks": "AI Tasks",
+    "operatorTasksForThisDevice": "AI tasks for this device",
     "tabGroups": {
       "monitoring": "Monitoring",
       "inventory": "Inventory",

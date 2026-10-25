@@ -751,7 +751,7 @@
         "site": "Standorte",
         "alert": "Warnungen",
         "run": "Agent-Ausführungen",
-        "task": "Operator-Aufgaben",
+        "task": "KI-Aufgaben",
         "user": "Benutzer"
       },
       "loading": "Suche läuft…",

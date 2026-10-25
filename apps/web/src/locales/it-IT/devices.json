@@ -977,8 +977,8 @@
     "strip": "striscia",
     "networkAsset": "Asset di rete",
     "networkAssets": "Asset di rete (elenco)",
-    "operatorTasks": "Attività dell'operatore",
-    "operatorTasksForThisDevice": "Attività dell'operatore IA per questo dispositivo",
+    "operatorTasks": "Attività IA",
+    "operatorTasksForThisDevice": "Attività IA per questo dispositivo",
     "tabGroups": {
       "monitoring": "Monitoraggio",
       "inventory": "Inventario",
