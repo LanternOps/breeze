@@ -240,7 +240,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           },
           targetVersion: {
             type: 'string',
-            description: 'Target agent version (defaults to latest if not specified)',
+            description: 'Optional. Only accepted if it equals the device\'s sanctioned version (org pin, else promoted latest); never overrides a pin or rolls back. Omit to use that.',
           },
         },
         required: ['deviceIds'],
@@ -280,16 +280,14 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           return { response: JSON.stringify({ error: `Access denied for devices: ${deniedIds.join(', ')}` }) };
         }
 
-        // Resolve the target version PER DEVICE, through ONE resolver for both
-        // input shapes (#4093). Without an explicit targetVersion each device
-        // resolves its org's effective AGENT pin (issue #2124) — the SAME pin
-        // the heartbeat honors — falling back to the globally promoted latest.
-        // With one, that version is treated as a per-device pin: it still has to
-        // have a build registered for this device's platform/arch under THIS
-        // server's edition. Before #4093 the explicit branch only checked that
-        // the version string existed in agent_versions at all, so a version with
-        // no build for the device dispatched an update_agent that could only
-        // fail on the box.
+        // Resolve the target version PER DEVICE through the DEFAULT path only:
+        // the org's effective AGENT pin (issue #2124) — the SAME pin the
+        // heartbeat honors — falling back to the globally promoted latest, and
+        // fail closed when that has no build for the device's platform/arch
+        // (#4093). The AI makes no release decision (W04-D13): an explicit
+        // targetVersion is NOT a pin override or a rollback lever; it is
+        // accepted for a device only when it equals that sanctioned version,
+        // otherwise the device is refused and recorded in `errors`.
         const errors: Record<string, string> = {};
         const targetByDevice = new Map<string, string>();
 
@@ -338,37 +336,31 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
 
         for (const d of deviceRows) {
           let pin: string | null;
-          if (explicitVersion) {
-            // An explicit version overrides any tenant pin — the org's update
-            // config is not consulted at all on this path.
-            pin = explicitVersion;
-          } else {
-            if (failedOrgs.has(d.orgId)) {
+          if (failedOrgs.has(d.orgId)) {
+            errors[d.id] = 'Failed to resolve version pin for this organization';
+            continue;
+          }
+          if (!pinByOrg.has(d.orgId)) {
+            // Effective pin needs the parent partners row (partner-set defaults),
+            // which org-scoped RLS can't read — resolve in a system context, the
+            // same pattern the heartbeat and aiAgent use. Isolate per org so one
+            // org's resolver failure doesn't abort the whole batch.
+            try {
+              const cfg = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrgAgentUpdateConfig(d.orgId)));
+              pinByOrg.set(d.orgId, cfg.pins.agent);
+            } catch (err) {
+              // The operator-facing string is deliberately generic; the cause
+              // has to go somewhere or a batch-wide pin outage is undebuggable.
+              console.error(
+                `[aiToolsAgentMgmt] failed to resolve the agent pin for org ${d.orgId}:`,
+                err,
+              );
+              failedOrgs.add(d.orgId);
               errors[d.id] = 'Failed to resolve version pin for this organization';
               continue;
             }
-            if (!pinByOrg.has(d.orgId)) {
-              // Effective pin needs the parent partners row (partner-set defaults),
-              // which org-scoped RLS can't read — resolve in a system context, the
-              // same pattern the heartbeat and aiAgent use. Isolate per org so one
-              // org's resolver failure doesn't abort the whole batch.
-              try {
-                const cfg = await runOutsideDbContext(() => withSystemDbAccessContext(() => getOrgAgentUpdateConfig(d.orgId)));
-                pinByOrg.set(d.orgId, cfg.pins.agent);
-              } catch (err) {
-                // The operator-facing string is deliberately generic; the cause
-                // has to go somewhere or a batch-wide pin outage is undebuggable.
-                console.error(
-                  `[aiToolsAgentMgmt] failed to resolve the agent pin for org ${d.orgId}:`,
-                  err,
-                );
-                failedOrgs.add(d.orgId);
-                errors[d.id] = 'Failed to resolve version pin for this organization';
-                continue;
-              }
-            }
-            pin = pinByOrg.get(d.orgId) ?? null;
           }
+          pin = pinByOrg.get(d.orgId) ?? null;
 
           const normalizedArch = normalizeAgentArchitecture(d.architecture);
           if (!d.osType || !normalizedArch) {
@@ -397,11 +389,16 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
             continue;
           }
 
-          if (target) {
+          if (target && explicitVersion && target !== explicitVersion) {
+            errors[d.id] =
+              `targetVersion ${explicitVersion} is not this device's sanctioned version (${target}); ` +
+              'the AI cannot override the org\'s agent pin or roll an agent back';
+          } else if (target) {
             targetByDevice.set(d.id, target);
           } else if (explicitVersion) {
             errors[d.id] =
-              `Agent version "${explicitVersion}" has no build for this device (${d.osType}/${normalizedArch})`;
+              `No sanctioned agent build resolves for this device (${d.osType}/${normalizedArch}); ` +
+              `targetVersion ${explicitVersion} not dispatched (the AI cannot override the org's agent pin or roll an agent back)`;
           } else {
             errors[d.id] = pin
               ? `Pinned agent version "${pin}" has no build for this device (${d.osType}/${normalizedArch})`
@@ -423,7 +420,7 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
         if (targetByDevice.size === 0) {
           return { response: JSON.stringify({
             error: explicitVersion
-              ? `Agent version "${explicitVersion}" has no build for any of the selected devices`
+              ? `targetVersion ${explicitVersion} is not the sanctioned version for any of the selected devices`
               : 'No agent build resolved for any of the selected devices',
             ...(Object.keys(errors).length > 0 ? { errors } : {}),
           }) };

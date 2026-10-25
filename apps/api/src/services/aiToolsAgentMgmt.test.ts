@@ -384,10 +384,36 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
     expect(aiExecuteCommand).not.toHaveBeenCalled();
   });
 
-  it('an explicit targetVersion overrides any pin and is used verbatim', async () => {
-    // #1 verifyDeviceAccess, #2 org-wide check, #3 explicit-version existence,
-    // #4 device→org+platform lookup (the explicit version is resolved per
-    // device too, #4093).
+  // W04-D13 — the AI makes no release decision: an explicit targetVersion is
+  // accepted for a device ONLY when it equals what the default path resolves.
+  const sanctionedMsg = /not this device's sanctioned version/i;
+
+  it('explicit targetVersion equal to the org pin is dispatched', async () => {
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({
+      settings: { policy: 'staged', maintenanceWindow: null },
+      pins: { agent: '0.80.0', watchdog: null },
+    });
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.80.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.80.0' }, makeAuth()),
+    );
+
+    expect(result.queued).toBe(1);
+    expect(aiExecuteCommand).toHaveBeenCalledWith(
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.80.0' },
+      expect.objectContaining({ targetRole: 'watchdog' }),
+    );
+  });
+
+  it('explicit targetVersion different from the org pin is refused, not dispatched', async () => {
+    vi.mocked(getOrgAgentUpdateConfig).mockResolvedValue({
+      settings: { policy: 'staged', maintenanceWindow: null },
+      pins: { agent: '0.80.0', watchdog: null },
+    });
     mockSelectSequence([
       [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
       [deviceOrgRow(DEVICE_ID, ORG_ID)],
@@ -397,22 +423,44 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
       await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth()),
     );
 
+    expect(result.errors[DEVICE_ID]).toMatch(sanctionedMsg);
+    expect(result.errors[DEVICE_ID]).toContain('0.80.0');
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('explicit targetVersion when unpinned and equal to the promoted latest is dispatched', async () => {
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.88.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.88.0' }, makeAuth()),
+    );
+
     expect(result.queued).toBe(1);
-    expect(result.targetVersion).toBe('0.90.0');
-    // The org's pin config is never consulted when a version is explicitly given.
-    expect(getOrgAgentUpdateConfig).not.toHaveBeenCalled();
     expect(aiExecuteCommand).toHaveBeenCalledWith(
-      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.90.0' },
+      expect.anything(), 'trigger_agent_upgrade', DEVICE_ID, 'update_agent', { version: '0.88.0' },
       expect.objectContaining({ targetRole: 'watchdog' }),
     );
   });
 
-  // #4093 — before this, an explicit targetVersion only had to EXIST in
-  // agent_versions: no component, edition, platform or arch scoping. A version
-  // with no build for the device dispatched an update_agent that could only
-  // fail on the box (download-info 404), reported to the operator as `queued`.
-  it('explicit targetVersion: no build for THIS device is reported, not dispatched', async () => {
-    // The version exists (row #3) but has no build for this platform/arch.
+  it('explicit targetVersion when unpinned but older than latest (a downgrade) is refused', async () => {
+    mockSelectSequence([
+      [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.70.0' }],
+      [deviceOrgRow(DEVICE_ID, ORG_ID)],
+    ]);
+
+    const result = JSON.parse(
+      await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.70.0' }, makeAuth()),
+    );
+
+    expect(result.errors[DEVICE_ID]).toMatch(sanctionedMsg);
+    expect(result.errors[DEVICE_ID]).toContain('0.88.0');
+    expect(aiExecuteCommand).not.toHaveBeenCalled();
+  });
+
+  it('explicit targetVersion: no sanctioned build for THIS device is reported, not dispatched', async () => {
     vi.mocked(resolvePinnedUpgradeTarget).mockResolvedValue(null);
     mockSelectSequence([
       [onlineDeviceRow()], [{ id: DEVICE_ID }], [{ version: '0.90.0' }],
@@ -423,13 +471,12 @@ describe('trigger_agent_upgrade — pin-aware default target (#2124)', () => {
       await tool.handler({ deviceIds: [DEVICE_ID], targetVersion: '0.90.0' }, makeAuth()),
     );
 
-    expect(result.errors[DEVICE_ID]).toMatch(/has no build for this device/i);
+    expect(result.errors[DEVICE_ID]).toMatch(/no sanctioned agent build/i);
     expect(aiExecuteCommand).not.toHaveBeenCalled();
-    // The explicit version IS resolved through the same fail-closed resolver
-    // the pinned path uses, with this device's platform/arch.
+    // Resolved via the DEFAULT path (org pin / promoted latest), never the explicit string.
     expect(resolvePinnedUpgradeTarget).toHaveBeenCalledWith(
       expect.objectContaining({
-        component: 'agent', pin: '0.90.0', platform: 'windows', architecture: 'amd64',
+        component: 'agent', pin: null, platform: 'windows', architecture: 'amd64',
       }),
     );
   });
