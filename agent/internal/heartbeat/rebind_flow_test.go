@@ -71,7 +71,7 @@ func TestRebindStagesConfirmsSwapsAndRestarts(t *testing.T) {
 	if r.restarts.Load() != 1 {
 		t.Fatalf("restarts = %d, want 1", r.restarts.Load())
 	}
-	r.now = r.now.Add(rebindRestartRetry)
+	r.advance(rebindRestartRetry)
 	r.drive(nil)
 	r.waitRestarts(2)
 }
@@ -235,7 +235,7 @@ func TestRebindPhase1Answers(t *testing.T) {
 			}
 			if tc.wantRetryMin > 0 {
 				at := r.h.rebind.retryAt.Load()
-				if at == nil || at.Sub(r.now) < tc.wantRetryMin {
+				if at == nil || at.Sub(r.now()) < tc.wantRetryMin {
 					t.Fatalf("next attempt at %v, want at least %v later", at, tc.wantRetryMin)
 				}
 			}
@@ -275,7 +275,7 @@ func (r *rebindHarness) firstWritten() *config.RebindStagedSet {
 // delivered (the server answers 403 certificate_binding_failed, retried).
 func TestRebindPhase1ConfirmedGoesToConfirm(t *testing.T) {
 	r := newRebindHarness(t)
-	r.fake.noMTLS = true
+	r.fake.with(func(f *rebindFake) { f.noMTLS = true })
 	// Phase 1 commits and its answer is lost; then the intent is confirmed
 	// by this set's token (a confirm whose answer was also lost).
 	r.fake.queue(&r.fake.stageQueue, rebindInjection{commitThenDrop: true})
@@ -351,7 +351,7 @@ func TestRebindConfirmAnswers(t *testing.T) {
 				}
 			}
 			if tc.name == "429 rate_limited" {
-				if at := r.h.rebind.retryAt.Load(); at == nil || at.Sub(r.now) < 90*time.Second {
+				if at := r.h.rebind.retryAt.Load(); at == nil || at.Sub(r.now()) < 90*time.Second {
 					t.Fatal("the confirm Retry-After was not honoured")
 				}
 			}
@@ -403,7 +403,7 @@ func TestRebindStaleSetIsDiscardedOnlyWhenNotConfirmed(t *testing.T) {
 	if r.staged() == nil {
 		t.Fatal("a fresh staged set was discarded")
 	}
-	r.now = r.now.Add(rebindStaleAfter + time.Minute)
+	r.advance(rebindStaleAfter + time.Minute)
 	r.h.noteSourceCredentialsCurrent()
 	if r.staged() != nil {
 		t.Fatal("a staged set older than any intent was kept with the source proven current")
@@ -412,7 +412,7 @@ func TestRebindStaleSetIsDiscardedOnlyWhenNotConfirmed(t *testing.T) {
 	r2 := newRebindHarness(t)
 	r2.killAfter = config.RebindPhaseConfirmed
 	r2.drive(r2.directive(rebindGoldenIntent))
-	r2.now = r2.now.Add(48 * time.Hour)
+	r2.advance(48 * time.Hour)
 	r2.h.noteSourceCredentialsCurrent()
 	if s := r2.staged(); s == nil || s.Phase != config.RebindPhaseConfirmed {
 		t.Fatal("a confirmed set was discarded")
@@ -431,12 +431,12 @@ func TestRebindIgnoresDirectivesItMustNotActOn(t *testing.T) {
 		},
 		"another install": func(r *rebindHarness) (*RebindDirective, bool) {
 			d := goldenRebindDirective()
-			d.ExpiresAt = r.now.Add(time.Minute).UTC().Format("2006-01-02T15:04:05Z")
+			d.ExpiresAt = r.now().Add(time.Minute).UTC().Format("2006-01-02T15:04:05Z")
 			return signRebindTestDirective(r.t, d, strings.Repeat("d", 64)), false
 		},
 		"expired": func(r *rebindHarness) (*RebindDirective, bool) {
 			d := r.directive(rebindGoldenIntent)
-			r.now = r.now.Add(16 * time.Minute)
+			r.advance(16 * time.Minute)
 			return d, false
 		},
 		"support mode": func(r *rebindHarness) (*RebindDirective, bool) {
@@ -468,7 +468,7 @@ func TestRebindIgnoresDirectivesItMustNotActOn(t *testing.T) {
 // confirmed.
 func TestRebindRefusesAPhase1TargetOtherThanTheSignedOne(t *testing.T) {
 	r := newRebindHarness(t)
-	r.fake.target.DeviceID = "00000000-0000-4000-8000-0000000000dd"
+	r.fake.with(func(f *rebindFake) { f.target.DeviceID = "00000000-0000-4000-8000-0000000000dd" })
 	r.drive(r.directive(rebindGoldenIntent))
 	if n := len(r.fake.callsTo("/rebind-confirm")); n != 0 {
 		t.Fatalf("confirm calls = %d, want 0", n)
@@ -482,7 +482,7 @@ func TestRebindRefusesAPhase1TargetOtherThanTheSignedOne(t *testing.T) {
 // source's client and the swap clears the source's certificate.
 func TestRebindWithoutCertificate(t *testing.T) {
 	r := newRebindHarness(t)
-	r.fake.noMTLS = true
+	r.fake.with(func(f *rebindFake) { f.noMTLS = true })
 	r.drive(r.directive(rebindGoldenIntent))
 	r.waitRestarts(1)
 	if c := r.fake.callsTo("/rebind-confirm")[0]; c.cert != "source" {
@@ -529,7 +529,8 @@ func TestRebindRunsFromTheHeartbeatResponse(t *testing.T) {
 	r.h.healthMon = health.NewMonitor()
 	r.h.retryCfg = httputil.RetryConfig{MaxRetries: 0}
 	r.h.tunnelMgr = &tunnel.Manager{}
-	r.fake.directive = r.directive(rebindGoldenIntent)
+	d := r.directive(rebindGoldenIntent)
+	r.fake.with(func(f *rebindFake) { f.directive = d })
 	r.fake.queue(&r.fake.confirmQueue, rebindInjection{commitThenDrop: true})
 
 	if !r.h.postHeartbeat(r.fake.srv.URL, &HeartbeatPayload{Status: "ok", AgentVersion: "1.2.3"}) {

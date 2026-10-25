@@ -205,7 +205,7 @@ func TestRebindCrashConfirmCommittedThenProbe(t *testing.T) {
 	if !r.h.rebind.sourceRejected.Load() {
 		t.Fatal("the source 401 was not noted")
 	}
-	r.now = r.now.Add(rebindRetryMax) // past the backoff: the next ticks
+	r.advance(rebindRetryMax) // past the backoff: the next ticks
 	r.tickUntilRestart()
 	if n := len(r.fake.callsTo("/heartbeat")); n < 2 {
 		t.Fatalf("heartbeat calls = %d, want the source's 401 and the probe", n)
@@ -264,7 +264,7 @@ func TestRebindCrashServerMidConfirm(t *testing.T) {
 	if r.fake.currentState() != "staged" || r.restarts.Load() != 0 {
 		t.Fatal("expected the intent still staged after a rolled-back confirm")
 	}
-	r.now = r.now.Add(time.Minute)
+	r.advance(time.Minute)
 	r.tickUntilRestart()
 	r.assertSwapped(r.lastWritten())
 }

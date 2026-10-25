@@ -122,6 +122,13 @@ func (f *rebindFake) callsTo(suffix string) []rebindCall {
 	return out
 }
 
+// with changes the fake's state under its lock.
+func (f *rebindFake) with(change func(*rebindFake)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f)
+}
+
 func (f *rebindFake) setState(state, reason string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -416,7 +423,7 @@ type rebindHarness struct {
 	fake     *rebindFake
 	cfgPath  string
 	h        *Heartbeat
-	now      time.Time
+	clock    atomic.Int64 // the fake clock, unix nanoseconds (read by flow goroutines)
 	restarts atomic.Int32
 	logs     *syncBuffer
 	secrets  map[string]bool
@@ -454,7 +461,6 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 		t:       t,
 		fake:    newRebindFake(t),
 		cfgPath: filepath.Join(t.TempDir(), "agent.yaml"),
-		now:     rebindGoldenNow,
 		logs:    &syncBuffer{},
 		secrets: map[string]bool{rebindTestSourceToken: true},
 	}
@@ -480,7 +486,8 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 		rebindWriteStaged, rebindApplyIdentity, rebindConfigFile = origWrite, origApply, origFile
 		logging.Init("text", "info", nil)
 	})
-	rebindNow = func() time.Time { return r.now }
+	r.clock.Store(rebindGoldenNow.UnixNano())
+	rebindNow = r.now
 	rebindRestartFn = func() error { r.restarts.Add(1); return nil }
 	newRebindHTTPClient = stagedCertClient
 	rebindConfigFile = func() string { return r.cfgPath }
@@ -518,6 +525,11 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 	return r
 }
 
+// now is the fake clock; advance moves it (safe against flow goroutines).
+func (r *rebindHarness) now() time.Time { return time.Unix(0, r.clock.Load()).UTC() }
+
+func (r *rebindHarness) advance(d time.Duration) { r.clock.Add(int64(d)) }
+
 // restart is a new agent process over the same directory: the identity is
 // loaded from disk and every in-memory rebind state starts empty.
 func (r *rebindHarness) restart() {
@@ -542,7 +554,7 @@ func (r *rebindHarness) restart() {
 func (r *rebindHarness) directive(intentID string) *RebindDirective {
 	d := goldenRebindDirective()
 	d.IntentID = intentID
-	d.ExpiresAt = r.now.Add(15 * time.Minute).UTC().Format("2006-01-02T15:04:05Z")
+	d.ExpiresAt = r.now().Add(15 * time.Minute).UTC().Format("2006-01-02T15:04:05Z")
 	return signRebindTestDirective(r.t, d, r.h.config.AgentID)
 }
 
