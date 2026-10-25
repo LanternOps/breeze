@@ -185,3 +185,112 @@ describe('loadManagedRuleApplicability — SentinelOne rule (#6960 W04, vendor-g
     ]);
   });
 });
+
+describe('loadManagedRuleApplicability — tenant-variable (DNS) rules and service violations (#6960 W05)', () => {
+  const NEXTDNS_WIN = 'cat-nextdns-win';
+  const CONTROLD_WIN = 'cat-controld-win';
+  const CONTROLD_MAC = 'cat-controld-mac';
+  const NEXTDNS_POLICY = {
+    id: 'policy-dns',
+    managedByLinkId: 'link-dns',
+    rules: { software: [{ name: 'NextDNS CLI (Windows)', catalogId: NEXTDNS_WIN }], allowUnknown: true },
+  };
+  const NEXTDNS_LINK = [{ inlineSettings: { version: 1, agents: [{ vendor: 'nextdns', enabled: true }] } }];
+
+  function violation(type: 'missing' | 'not_running' | 'service_unverified', catalogId = NEXTDNS_WIN): SoftwarePolicyViolation {
+    return {
+      type,
+      rule: { name: 'NextDNS CLI (Windows)', catalogId },
+      ...(type === 'missing' ? {} : { service: { name: 'nextdns', observedStatus: type === 'not_running' ? 'stopped' : null, observedAt: null } }),
+      severity: type === 'not_running' ? 'high' : 'low',
+      detectedAt: '2026-01-01T00:00:00Z',
+    } as SoftwarePolicyViolation;
+  }
+
+  async function nextdnsApplicability() {
+    prime({ catalog: [{ id: NEXTDNS_WIN, integrationProvider: null, builtinPackageKey: 'nextdns_windows' }], link: NEXTDNS_LINK });
+    orgReadiness.mockResolvedValueOnce(new Map([
+      ['org-ready', { ok: true }],
+      ['org-novar', { ok: false, reason: 'var_missing' }],
+      ['org-secret', { ok: false, reason: 'var_secret' }],
+    ]));
+    return loadManagedRuleApplicability(NEXTDNS_POLICY, [
+      { deviceId: 'd-ready', orgId: 'org-ready', osType: 'windows' },
+      { deviceId: 'd-novar', orgId: 'org-novar', osType: 'windows' },
+      { deviceId: 'd-secret', orgId: 'org-secret', osType: 'windows' },
+      { deviceId: 'd-mac', orgId: 'org-ready', osType: 'macos' },
+    ]);
+  }
+
+  it('maps a rule to its vendor through the catalog row\'s builtin_package_key and reads that vendor\'s readiness', async () => {
+    const a = await nextdnsApplicability();
+    expect(orgReadiness).toHaveBeenCalledWith('nextdns', ['org-ready', 'org-novar', 'org-secret']);
+    expect(a.vendors()).toEqual(['nextdns']);
+  });
+
+  it.each([
+    ['missing', 'd-ready', 'kept'],
+    ['missing', 'd-novar', 'var_missing'],
+    ['missing', 'd-secret', 'var_secret'],
+    ['missing', 'd-mac', 'platform_unsupported'],
+    ['not_running', 'd-ready', 'kept'],
+    ['not_running', 'd-novar', 'var_missing'],
+    ['not_running', 'd-secret', 'var_secret'],
+    ['not_running', 'd-mac', 'platform_unsupported'],
+    ['service_unverified', 'd-ready', 'kept'],
+    ['service_unverified', 'd-novar', 'var_missing'],
+    ['service_unverified', 'd-secret', 'var_secret'],
+    ['service_unverified', 'd-mac', 'platform_unsupported'],
+  ] as const)('%s on %s → %s', async (type, deviceId, expected) => {
+    const a = await nextdnsApplicability();
+    const v = violation(type);
+    const out = a.filterViolations(deviceId, [v]);
+    if (expected === 'kept') {
+      expect(out).toEqual({ violations: [v], notApplicable: [] });
+    } else {
+      expect(out).toEqual({ violations: [], notApplicable: [{ catalogId: NEXTDNS_WIN, vendor: 'nextdns', reason: expected }] });
+    }
+  });
+
+  it('unauthorized violations are untouched on a not-ready device', async () => {
+    const a = await nextdnsApplicability();
+    const unauthorized: SoftwarePolicyViolation = { type: 'unauthorized', software: { name: 'x' }, severity: 'medium', detectedAt: '2026-01-01T00:00:00Z' };
+    expect(a.filterViolations('d-novar', [unauthorized]).violations).toEqual([unauthorized]);
+  });
+
+  it("a per-OS row applies only to its own OS: a Windows device is not a target of the macOS row, even in a ready org", async () => {
+    prime({
+      catalog: [
+        { id: CONTROLD_WIN, integrationProvider: null, builtinPackageKey: 'controld_windows' },
+        { id: CONTROLD_MAC, integrationProvider: null, builtinPackageKey: 'controld_macos' },
+      ],
+      link: [{ inlineSettings: { version: 1, agents: [{ vendor: 'controld', enabled: true }] } }],
+    });
+    orgReadiness.mockResolvedValueOnce(new Map([['org-ready', { ok: true }]]));
+    const a = await loadManagedRuleApplicability(
+      {
+        id: 'policy-cd',
+        managedByLinkId: 'link-cd',
+        rules: {
+          software: [
+            { name: 'Control D (Windows)', catalogId: CONTROLD_WIN },
+            { name: 'Control D (macOS)', catalogId: CONTROLD_MAC },
+          ],
+          allowUnknown: true,
+        },
+      },
+      [{ deviceId: 'd-win', orgId: 'org-ready', osType: 'windows' }],
+    );
+    // One vendor, read once, however many OS rows it has.
+    expect(orgReadiness).toHaveBeenCalledTimes(1);
+    expect(a.vendors()).toEqual(['controld']);
+    const winMissing = violation('missing', CONTROLD_WIN);
+    const macMissing = violation('missing', CONTROLD_MAC);
+    expect(a.filterViolations('d-win', [winMissing, macMissing])).toEqual({
+      violations: [winMissing],
+      notApplicable: [{ catalogId: CONTROLD_MAC, vendor: 'controld', reason: 'platform_unsupported' }],
+    });
+    // Coverage keys one status row per (device, vendor): the device's own OS row.
+    expect(a.evaluateDevice('d-win')).toEqual([{ catalogId: CONTROLD_WIN, vendor: 'controld', result: { ok: true } }]);
+  });
+});
