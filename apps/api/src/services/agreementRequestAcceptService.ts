@@ -13,7 +13,7 @@
 // after the transaction commits — never inside it (step 8). Both functions
 // return what that needs.
 
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { agreementRequests, type AgreementRequestRow } from '../db/schema/contractDocuments';
 import type { TemplateVersionRenderData } from './contractTemplateRender';
@@ -186,6 +186,31 @@ export async function acceptAgreementRequest(params: AcceptAgreementRequestParam
   }
 
   return { requestId: row.id, orgId: row.orgId, signedAgreementId, contentSha256, revoke: revokeFor(row, claims.jti) };
+}
+
+/** First open of the signing link (spec §3.5 `viewed`; #9075 W2b, reused by
+ *  W3a's portal GET): `sent → viewed`, `first_viewed_at` set once. Conditional
+ *  on `status = 'sent'`, so a request settled or voided between the caller's
+ *  read and this write is left alone — matching zero rows is the correct
+ *  outcome for a cosmetic stamp, not an error. Same CONTEXT CONTRACT as the
+ *  rest of this file (the caller's system transaction). The caller treats a
+ *  throw as non-fatal (log + capture; the view still renders). Returns whether
+ *  a row was stamped. */
+export async function markAgreementRequestViewed(requestId: string, orgId: string, now: Date): Promise<boolean> {
+  const stamped = await db
+    .update(agreementRequests)
+    .set({
+      status: 'viewed',
+      firstViewedAt: sql`COALESCE(${agreementRequests.firstViewedAt}, ${now})`,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(agreementRequests.id, requestId),
+      eq(agreementRequests.orgId, orgId),
+      eq(agreementRequests.status, 'sent'),
+    ))
+    .returning({ id: agreementRequests.id });
+  return stamped.length > 0;
 }
 
 export interface DeclineAgreementRequestParams {

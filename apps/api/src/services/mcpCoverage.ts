@@ -281,6 +281,8 @@ export const MCP_COVERAGE: Readonly<Record<string, McpCoverageEntry>> = {
   'agents/uninstallIntent.ts': { exempt: 'agent_transport' },
   'agents/wingetBootstrap.ts': { exempt: 'agent_transport' },
   'agents/workloads.ts': { exempt: 'agent_transport' },
+  // #9075 W2b: the client's unauthenticated signing link (token-bearer, like quotesPublic.ts).
+  'agreementsPublic.ts': { exempt: 'portal' },
   'ai.ts': { exempt: 'ai_transport', note: 'Chat session transport (sessions, messages, interrupt, approve-plan); usage/budget/admin sub-routes are AI governance.' },
   'ai/dataPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Org override of the AI data policy (device file read level, tool-output retention) -- the AI must not loosen the limits on what it may read or how long its outputs persist.' },
   'ai/scriptPolicy.ts': { exempt: 'human_only_ai_governance', note: 'Unattended script-lane grant plus lane reset (approvals:decide + step-up) -- the AI must not widen its own authority.' },

@@ -242,19 +242,42 @@ function utcDay(at: Date): string {
 /** The party snapshot a request renders with: the frozen send-time columns
  *  once sent, the live org/partner for a draft. */
 async function renderSnapshotFor(row: AgreementRequestRow, now: Date): Promise<RequestFreezeSnapshot> {
-  const effectiveDate = row.effectiveDate ?? utcDay(now);
-  if (row.status !== 'draft') {
-    return {
-      clientNameSnapshot: row.clientNameSnapshot,
-      clientAddressSnapshot: row.clientAddressSnapshot,
-      sellerSnapshot: row.sellerSnapshot,
-      renderLocale: row.renderLocale,
-      documentLocale: row.documentLocale,
-      effectiveDate,
-    };
-  }
+  if (row.status !== 'draft') return frozenRenderSnapshot(row, now);
   const { org, partner } = await loadSendingParties(row.orgId);
-  return { ...buildPartySnapshotColumns(org, partner), effectiveDate };
+  return { ...buildPartySnapshotColumns(org, partner), effectiveDate: row.effectiveDate ?? utcDay(now) };
+}
+
+/** The frozen send-time party snapshot of a SENT (non-draft) request — what the
+ *  staff preview and the public signing page (#9075 W2b) both render with. No
+ *  DB read: a sent row carries every column. The effective date defaults to
+ *  today (the signing day), exactly as the accept freeze resolves it. */
+export function frozenRenderSnapshot(row: AgreementRequestRow, now: Date): RequestFreezeSnapshot {
+  return {
+    clientNameSnapshot: row.clientNameSnapshot,
+    clientAddressSnapshot: row.clientAddressSnapshot,
+    sellerSnapshot: row.sellerSnapshot,
+    renderLocale: row.renderLocale,
+    documentLocale: row.documentLocale,
+    effectiveDate: row.effectiveDate ?? utcDay(now),
+  };
+}
+
+/** THE client render of a request: the one derivation (resolveRequestRender)
+ *  plus renderAgreementRequestHtml. Shared by the staff preview and the public
+ *  signing page so the sender previews exactly what the client sees. An
+ *  uploaded template renders no HTML (its file is the document). */
+export function renderRequestForClient(
+  snapshot: RequestFreezeSnapshot,
+  renderData: Pick<TemplateVersionRenderData, 'sourceType' | 'bodyHtml' | 'declaredVariables'>,
+  variableValues: Record<string, string>,
+): { html: string | null; unresolved: string[] } {
+  const { auto, manualValues, unresolved } = resolveRequestRender(snapshot, renderData, variableValues);
+  return {
+    html: renderData.sourceType === 'authored'
+      ? renderAgreementRequestHtml(renderData.bodyHtml ?? '', { ...auto, ...manualValues })
+      : null,
+    unresolved: [...unresolved].sort(),
+  };
 }
 
 /** The org and its owning partner, read in the caller's RLS context. The
@@ -406,13 +429,11 @@ export async function previewAgreementRequest(auth: AuthContext, id: string, now
   const row = await loadRequestOr404(auth, id);
   const snapshot = await renderSnapshotFor(row, now);
   const renderData = await loadTemplateVersionRenderData(row.templateVersionId);
-  const { auto, manualValues, unresolved } = resolveRequestRender(snapshot, renderData, row.variableValues ?? {});
+  const { html, unresolved } = renderRequestForClient(snapshot, renderData, row.variableValues ?? {});
   return {
     sourceType: renderData.sourceType,
-    html: renderData.sourceType === 'authored'
-      ? renderAgreementRequestHtml(renderData.bodyHtml ?? '', { ...auto, ...manualValues })
-      : null,
-    unresolved: [...unresolved].sort(),
+    html,
+    unresolved,
     templateName: renderData.templateName,
     versionNumber: renderData.versionNumber,
   };
