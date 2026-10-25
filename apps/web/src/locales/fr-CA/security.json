@@ -678,6 +678,10 @@
     "wed": "mer."
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Annulé",
+      "expired": "Expiré"
+    },
     "activeScans": "Scans actifs",
     "allScanRequestsFailed": "Les {{count}} demandes d’analyse ont échoué",
     "cData": "C:\\\\Data\\\\",
@@ -762,6 +766,7 @@
     "notFound": "Cette menace est introuvable. Elle a peut-être été supprimée, ou vous n’avez pas accès à son appareil.",
     "relatedLoadFailed": "Impossible de charger les menaces associées.",
     "rule": {
+      "version": "Version nº {{version}}",
       "title": "Règle de détection",
       "legacy": "Signature intégrée (ancien balayage)",
       "ruleName": "Règle",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Balayages",
     "iocScans": "Balayages IOC",
     "subtitle": "Balayages de logiciels malveillants et d'IOC basés sur des signatures sur votre parc. Ne remplace pas une protection complète des points de terminaison.",
     "scansTab": "Balayages",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "En attente du rapport du fournisseur",
       "awaitingEvaluation": "En attente d'évaluation",
       "vendorOrgMismatch": "Le fournisseur signale une autre organisation"
+    }
+  },
+  "sweeps": {
+    "title": "Balayages IOC",
+    "started": "Balayage lancé",
+    "cancelled": "Balayage annulé. Arrêtés avant l'envoi: {{queued}}. Déjà envoyés et en cours de finalisation sur l'appareil: {{stillRunning}}.",
+    "detectOnly": "Les balayages se limitent à la détection. Rien n'est mis en quarantaine automatiquement et aucune analyse Defender n'est lancée.",
+    "version": "Version nº {{version}}",
+    "sweepNow": "Lancer un balayage",
+    "sweepNowUnpublished": "Publiez cet ensemble de règles avant de l'utiliser dans un balayage.",
+    "sweepNowDisabled": "Activez cet ensemble de règles avant de l'utiliser dans un balayage.",
+    "progress": {
+      "label": "{{done}} appareils sur {{total}} terminés"
+    },
+    "errors": {
+      "orgOutOfScope": "Une ou plusieurs organisations sont en dehors de votre accès.",
+      "siteOutOfScope": "Un ou plusieurs sites sont en dehors de votre accès.",
+      "deviceOutOfScope": "Un ou plusieurs appareils sont en dehors de votre accès.",
+      "ruleSetNotFound": "Un ensemble de règles sélectionné n'existe plus.",
+      "ruleSetNotPublished": "Un ensemble de règles sélectionné est désactivé ou n'a jamais été publié.",
+      "sweepTooLarge": "Ce balayage analyserait {{targeted}} appareils ; un balayage est limité à {{max}}. Réduisez le périmètre.",
+      "noEligibleDevices": "Aucun appareil de ce périmètre ne peut exécuter le balayage pour le moment. Vérifiez les versions de l'agent et le périmètre.",
+      "scopeChanged": "Les appareils ou les ensembles de règles ont changé depuis l'aperçu. Vérifiez les nouveaux chiffres.",
+      "alreadyRunning": "Ce balayage est déjà en cours sur ces appareils.",
+      "tooManyActive": "Cette organisation a déjà {{max}} balayages actifs. Attendez la fin de l'un d'eux ou annulez-en un.",
+      "mfaRequired": "Ce balayage vise {{targeted}} appareils, soit plus de {{threshold}}. Connectez-vous avec l'authentification multifacteur ou réduisez le périmètre.",
+      "rateLimited": "Trop de balayages ont été lancés récemment. Réessayez plus tard."
+    },
+    "skipReasons": {
+      "agent_too_old": "appareils dont l'agent est trop ancien",
+      "busy_same_sweep": "appareils qui exécutent déjà ce balayage",
+      "rule_set_not_eligible": "appareils auxquels les ensembles de règles ne s'appliquent pas"
+    },
+    "skipExplain": {
+      "agent_too_old": "L'agent doit être mis à jour avant de pouvoir exécuter des ensembles de règles YARA.",
+      "busy_same_sweep": "Un balayage identique est encore actif sur ces appareils.",
+      "rule_set_not_eligible": "Le système d'exploitation ou l'organisation de l'appareil est hors de portée de l'ensemble de règles."
+    },
+    "dialog": {
+      "title": "Balayer les appareils à la recherche de correspondances IOC",
+      "ruleSets": "Ensembles de règles: {{names}}",
+      "rescopeNote": "Un balayage ne retient pas ses appareils. Choisissez à nouveau le périmètre ; les ensembles de règles et le type d'analyse sont conservés.",
+      "back": "Retour",
+      "next": "Suivant",
+      "previewAction": "Aperçu",
+      "confirm": "Balayer {{targeted}} appareils",
+      "viewRunning": "Voir le balayage en cours",
+      "confirmSummary": "{{targeted}} appareils répartis dans {{orgs}} organisations seront analysés avec les versions d'ensembles de règles indiquées dans l'aperçu. Les correspondances sont signalées comme des menaces ; rien n'est modifié sur les appareils.",
+      "steps": {
+        "scope": "Périmètre",
+        "type": "Type d'analyse",
+        "duration": "Durée",
+        "preview": "Aperçu",
+        "confirm": "Confirmer"
+      },
+      "scope": {
+        "legend": "Quels appareils ?",
+        "all": "Tous les appareils joignables",
+        "orgs": "Organisations",
+        "sites": "Sites",
+        "groups": "Groupes d'appareils",
+        "devices": "Appareils",
+        "allHelp": "Tous les appareils auxquels vous avez accès et qui peuvent exécuter le balayage.",
+        "noOrgs": "Aucune organisation disponible.",
+        "siteOrg": "Organisation",
+        "pickOrg": "Choisir une organisation",
+        "noSites": "Cette organisation n'a aucun site.",
+        "sitesFailed": "Impossible de charger les sites.",
+        "sitesSelected": "Sites sélectionnés: {{selected}}"
+      },
+      "type": {
+        "label": "Type d'analyse",
+        "quick": "Rapide",
+        "full": "Complète",
+        "custom": "Chemins personnalisés",
+        "paths": "Chemins, un par ligne",
+        "pathsHelp": "Jusqu'à {{max}} chemins, de {{chars}} caractères chacun."
+      },
+      "duration": {
+        "label": "Durée d'exécution (heures)",
+        "help": "Les appareils hors ligne exécutent l'analyse à leur retour dans ce délai. Entre 1 et {{max}} heures."
+      },
+      "preview": {
+        "targeted": "{{devices}} appareils dans {{orgs}} organisations",
+        "org": "{{org}}: {{devices}} appareils",
+        "ruleSets": "Ensembles de règles",
+        "skipped": "Ignorés",
+        "scopeChanged": "Les appareils ou les ensembles de règles ont changé depuis l'aperçu. Vérifiez les nouveaux chiffres, puis confirmez à nouveau."
+      }
+    },
+    "panel": {
+      "empty": "Aucun balayage IOC pour le moment. Lancez-en un depuis un ensemble de règles de détection.",
+      "refreshFailed": "La liste n'a pas pu être actualisée. Ce que vous voyez est peut-être obsolète.",
+      "allSweeps": "Tous les balayages",
+      "openGroup": "Ouvrir le groupe",
+      "cancel": "Annuler",
+      "cancelAll": "Tout annuler",
+      "resweep": "Balayer à nouveau avec les règles actuelles",
+      "rulesChanged": "Règles modifiées depuis le début de ce balayage",
+      "queued": "En file d'attente: {{queued}}",
+      "columns": {
+        "ruleSets": "Ensembles de règles",
+        "origin": "Lancé depuis",
+        "progress": "Progression",
+        "skipped": "Ignorés",
+        "degraded": "Couverture réduite",
+        "threats": "Menaces",
+        "created": "Créé",
+        "state": "État"
+      },
+      "state": {
+        "active": "Actif",
+        "completed": "Terminé",
+        "cancelled": "Annulé",
+        "expired": "Expiré"
+      },
+      "origin": {
+        "web": "Interface web",
+        "api": "Accès par API",
+        "ai_chat": "Clavardage IA",
+        "mcp": "Client MCP"
+      },
+      "scanType": {
+        "quick": "Analyse rapide",
+        "full": "Analyse complète",
+        "custom": "Chemins personnalisés"
+      }
     }
   },
   "detectionRules": {

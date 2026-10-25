@@ -43,6 +43,7 @@ import {
   SYSTEM_CLEANUP_ACTION_IDS,
 } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
+import { SPECIALIST_KINDS, type SpecialistKind } from './wisp/specialistPolicy';
 import { keysetZodShape, pageZodShape } from './aiToolPagination';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
 import { backupToolSchemas } from './aiToolSchemasBackup';
@@ -376,8 +377,40 @@ export const createWatchShape = {
   cadenceMinutes: cw.cadenceMinutes.describe('How often to check, in minutes (15 to 10080)'),
 };
 
+// Wisp W07 specialists (services/aiToolsWisp.ts; plan Tasks 4 and 6). The kind
+// list is SPECIALIST_KINDS (leaf module), never a re-typed copy.
+const specialistKindSchema = z.enum(SPECIALIST_KINDS as unknown as [SpecialistKind, ...SpecialistKind[]]);
+export const launchSpecialistInputSchema = z.strictObject({
+  orgId: uuid,
+  kind: specialistKindSchema,
+  params: z.record(z.string(), z.unknown()).optional(),
+  reason: z.string().trim().min(5).max(500),
+});
+const ls = launchSpecialistInputSchema.shape;
+export const launchSpecialistShape = {
+  orgId: ls.orgId.describe('The customer organization the specialist works on (UUID)'),
+  kind: ls.kind.describe('Which specialist. sweep and analysis start at once; every other kind needs approval first'),
+  params: ls.params.describe('Kind-specific: analysis {goal}; remediation_research {deviceId}; bulk_ticket_reply {concernId, ticketIds, message}; operator_recipe {workflowKey, ...}'),
+  reason: ls.reason.describe('Why, in one sentence a technician would accept'),
+};
+// The approval carrier: never model-callable (HUMAN_ONLY_TOOLS); the schema
+// bounds what the coordinator mints.
+export const wispSpecialistRequestSchema = z.strictObject({
+  requestId: uuid,
+  kind: specialistKindSchema,
+  orgId: uuid,
+  grantId: uuid,
+  grantRevisionId: uuid,
+  params: z.record(z.string(), z.unknown()),
+  reason: z.string().max(500),
+  pinnedDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+});
+
 // Tool schemas
 export const toolInputSchemas: Record<string, z.ZodType> = {
+  // Wisp W07 specialists.
+  launch_specialist: launchSpecialistInputSchema,
+  wisp_specialist_request: wispSpecialistRequestSchema,
   // Wisp W03 memory (services/wisp/memoryTools.ts).
   recall: z.object(recallShape),
   remember: rememberInputSchema,

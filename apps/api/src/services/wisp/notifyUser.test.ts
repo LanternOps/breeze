@@ -326,3 +326,41 @@ describe('notifyUser', () => {
     expect(h.dispatchPushToTokens).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ collapseId: 'wisp:brief:t1' }), 'wisp-nudge');
   });
 });
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('notifyUser metrics', () => {
+  it('maps the delivery decision to wisp_nudges_total{result}', async () => {
+    h.results.length = 0;
+    vi.clearAllMocks();
+    h.recipientState.mockResolvedValue({ nudgeCount: 0, nextEligibleNudgeAt: null, snoozedUntil: null, dismissedAt: null });
+    h.loadNudgePrefs.mockResolvedValue(WISP_NUDGE_PREFERENCE_DEFAULTS);
+    h.loadUrgentCapableSeverities.mockResolvedValue([]);
+    h.checkNotificationThrottle.mockResolvedValue({ allowed: true, currentCount: 1 });
+    h.deliverInApp.mockResolvedValue({ created: true });
+    h.dispatchPushToTokens.mockResolvedValue({ tokensFound: 2, dispatched: 2, errors: 0 });
+    h.recordNudge.mockResolvedValue({ nudgeCount: 1, nextEligibleNudgeAt: new Date() });
+    h.userPushTargetsQuery.mockImplementation(() => h.db.select());
+    const p: NudgePayload = {
+      userId: 'u1', category: 'wisp_nudge', kind: 'concern', title: 't', body: 'b',
+      deepLink: 'breeze://wisp/thread/t1?concern=c1', concernId: 'c1', threadId: 't1', grantId: 'g1', approvalIntentId: 'i1',
+    };
+    const threadRow = { grantId: 'g1', partnerId: 'p1', grantorUserId: 'u1' };
+    const concernRow = { orgId: 'o1', partnerId: 'p1', severity: 'high', status: 'open' };
+    const devices = [{ userId: 'u1', fcm: null, apns: 'apns-a', platform: 'ios', quietHours: null }];
+
+    h.results.push([threadRow], [concernRow], devices);
+    await notifyUser(p);
+    expect(wm.incWispNudge).toHaveBeenLastCalledWith('sent');
+
+    h.recipientState.mockResolvedValue({ nudgeCount: 1, nextEligibleNudgeAt: new Date(Date.now() + 60_000), snoozedUntil: null, dismissedAt: null });
+    h.results.push([threadRow], [concernRow], devices);
+    await notifyUser(p);
+    expect(wm.incWispNudge).toHaveBeenLastCalledWith('suppressed_backoff');
+  });
+});

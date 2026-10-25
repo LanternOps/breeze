@@ -61,6 +61,10 @@ vi.mock('./wisp/concernTools', () => ({
   registerWispConcernTools: vi.fn(),
 }));
 
+vi.mock('./aiToolsWisp', () => ({
+  registerWispTools: vi.fn(),
+}));
+
 vi.mock('./aiToolsConfigPolicy', () => ({
   registerConfigPolicyTools: vi.fn(),
 }));

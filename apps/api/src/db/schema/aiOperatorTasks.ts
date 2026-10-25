@@ -8,6 +8,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -157,6 +158,11 @@ export const aiOperatorTasks = pgTable(
     // (migrations/2027-01-04-100100-wisp-grants.sql), like ai_agent_runs.task_id.
     grantId: uuid('grant_id'),
     grantRevisionId: uuid('grant_revision_id'),
+    // Wisp W07 (w00 A11): specialist lineage — see ai_agent_runs. SQL-only FKs
+    // (migrations/2027-01-05-100400-wisp-specialist-lineage.sql).
+    requestedByRunId: uuid('requested_by_run_id'),
+    parentGrantRevisionId: uuid('parent_grant_revision_id'),
+    depth: smallint('depth').notNull().default(0),
 
     // Bounded exportable text. Spec §11: every jsonb column is `excludedOpen`
     // in the export policy without exception, so anything a customer must be

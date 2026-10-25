@@ -29,7 +29,7 @@ const h = vi.hoisted(() => ({
   queueAdd: vi.fn(async (..._a: unknown[]) => ({})),
   getRepeatableJobs: vi.fn(async () => [] as Array<{ name: string; key: string }>),
   removeRepeatableByKey: vi.fn(async (..._a: unknown[]) => undefined),
-  workers: [] as Array<{ name: string; processor: (job: { name: string; data: unknown }) => Promise<unknown>; opts: Record<string, unknown> }>,
+  workers: [] as Array<{ name: string; processor: (job: { name: string; data: unknown; id?: string; timestamp?: number }) => Promise<unknown>; opts: Record<string, unknown> }>,
   attachWorkerObservability: vi.fn(),
   chargeableUnderGrant: vi.fn(async (..._a: unknown[]): Promise<{ ok: true } | { ok: false; reason: 'budget_exhausted' }> => ({ ok: true })),
   notifyBudgetExhaustedOnce: vi.fn(async (..._a: unknown[]) => true),
@@ -66,7 +66,7 @@ vi.mock('bullmq', () => ({
     close = async () => undefined;
   },
   Worker: class {
-    constructor(name: string, processor: (job: { name: string; data: unknown }) => Promise<unknown>, opts: Record<string, unknown>) {
+    constructor(name: string, processor: (job: { name: string; data: unknown; id?: string; timestamp?: number }) => Promise<unknown>, opts: Record<string, unknown>) {
       h.workers.push({ name, processor, opts });
     }
     on = vi.fn();
@@ -553,6 +553,12 @@ describe('processAssessJob', () => {
     expect(h.enqueueAssessment).toHaveBeenCalledWith(data);
   });
 
+  it('threads the job occurrence key into enqueueAssessment (retry-stable dedupe)', async () => {
+    const data = { grantId: G1, orgId: O1, reason: { kind: 'tick' as const } };
+    await processAssessJob(data, 'wisp-assess:g:o@1700000000000');
+    expect(h.enqueueAssessment).toHaveBeenCalledWith({ ...data, occurrenceKey: 'wisp-assess:g:o@1700000000000' });
+  });
+
   it('does nothing when the flag is off', async () => {
     h.enabled = false;
     await processAssessJob({ grantId: G1, orgId: O1, reason: { kind: 'tick' } });
@@ -584,9 +590,35 @@ describe('worker lifecycle', () => {
     const processor = h.workers[0]!.processor;
     await expect(processor({ name: 'tick', data: {} })).resolves.toMatchObject({ grantsTicked: 0 });
     h.enabled = true;
-    await processor({ name: 'assess', data: { grantId: G1, orgId: O1, reason: { kind: 'tick' } } });
-    expect(h.enqueueAssessment).toHaveBeenCalledWith({ grantId: G1, orgId: O1, reason: { kind: 'tick' } });
+    await processor({ name: 'assess', id: 'assess-job', timestamp: 1700000000000, data: { grantId: G1, orgId: O1, reason: { kind: 'tick' } } });
+    expect(h.enqueueAssessment).toHaveBeenCalledWith({
+      grantId: G1, orgId: O1, reason: { kind: 'tick' }, occurrenceKey: 'assess-job@1700000000000',
+    });
     await expect(processor({ name: 'mystery', data: {} })).rejects.toThrow(/unknown/);
     await shutdownWispWakeScheduler();
+  });
+});
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../services/wispMetrics', () => wm);
+
+describe('processWakeTick metrics', () => {
+  it('sets wisp_grants_active to the active grants left after the reconcile (no extra query)', async () => {
+    wm.setWispGrantsActive.mockClear();
+    useFixtures({
+      reconcile: [
+        { id: G1, partner_id: P1, status: 'active', paused_reason: null },
+        { id: G3, partner_id: P1, status: 'active', paused_reason: null },
+        { id: G2, partner_id: P2, status: 'paused', paused_reason: 'entitlement_lost' },
+      ],
+    });
+    h.hasEntitlement.mockImplementation(async (partnerId: unknown) => partnerId === P2);
+    await processWakeTick(NOW);
+    // G1 + G3 paused (P1 lost the entitlement), G2 resumed => 1 active.
+    expect(wm.setWispGrantsActive).toHaveBeenCalledExactlyOnceWith(1);
   });
 });

@@ -562,3 +562,22 @@ describe('listGrants', () => {
     expect(new WispGrantError('not_found', 'x').code).toBe('not_found');
   });
 });
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('pauseGrant metrics', () => {
+  it('counts wisp_grant_pauses_total{reason} only when a row actually transitioned', async () => {
+    wm.incWispGrantPause.mockClear();
+    h.results.push([grantRow({ status: 'revoked' })]);
+    await pauseGrant('g1', 'grantor_access_lost');
+    expect(wm.incWispGrantPause).not.toHaveBeenCalled();
+    h.results.push([grantRow()], [grantRow({ status: 'paused', pausedReason: 'grantor_suspended' })]);
+    await pauseGrant('g1', 'grantor_suspended');
+    expect(wm.incWispGrantPause).toHaveBeenCalledExactlyOnceWith('grantor_suspended');
+  });
+});

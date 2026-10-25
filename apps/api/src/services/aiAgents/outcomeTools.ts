@@ -64,6 +64,7 @@ import {
   raiseConcernSchema,
   requestSpecialistSchema,
   updateConcernSchema,
+  validateRequestSpecialist,
   type NudgeInput,
   type ProposeActionInput,
   type RaiseConcernInput,
@@ -358,7 +359,7 @@ export function validateOutcomeToolInput(
     case 'propose_action':
       return proposeActionSchema.parse(input);
     case 'request_specialist':
-      return requestSpecialistSchema.parse(input);
+      return validateRequestSpecialist(input);
     case 'submit_analysis':
       return analysisOutcomeSchema.parse(input);
     case 'submit_suggestions':
@@ -1016,16 +1017,20 @@ export function buildOutcomeSdkTools(
           },
         ) as SdkTool;
       case 'request_specialist':
-        // W07 fills the body behind this. Until then the call is validated,
-        // RECORDED (the post-hook still captures it into
-        // `outcome.assessment.specialistRequests` for W07's audit) and refused.
+        // Wisp W07 (spec §7.5): validate-only, like its siblings. The post-hook
+        // captures the call into `outcome.assessment.specialistRequests`; the
+        // deterministic coordinator admits it AFTER the model's turn
+        // (`wisp/specialistDispatch.ts`). No model-callable tool launches a run.
         return tool(
           'request_specialist',
-          'Not available yet (W07). Calls are recorded and refused.',
+          'Ask Wisp for a specialist (sweep, analysis, operator_recipe, patch_plan, remediation_research, '
+          + 'bulk_ticket_reply) on this org. The request is recorded now and handled by Wisp\'s coordinator after '
+          + 'the assessment ends — nothing launches during this run. Kinds that ask first become an approval card '
+          + 'for the person Wisp works for. At most 3 requests per assessment; extra requests are refused.',
           requestSpecialistSchema.shape,
           async (input) => {
             validateOutcomeToolInput('request_specialist', input); // throws → model retries
-            return { content: [{ type: 'text', text: JSON.stringify({ refused: 'not_available_until_w07' }) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
           },
         ) as SdkTool;
       case 'submit_analysis':

@@ -38,6 +38,7 @@ import {
   type GrantCeiling,
 } from './grantAuthority';
 import { rememberForGrant } from './memoryBroker';
+import { incWispConcern } from '../wispMetrics';
 
 export type { ConcernSubject, ConcernSeverity, ConcernStatus, Concern } from '@breeze/shared';
 
@@ -164,11 +165,17 @@ export async function upsertConcern(input: UpsertConcernInput): Promise<{ id: st
         // unique violation is a real bug and must surface.
         if (!isPgUniqueViolation(err) || !LIVE_INDEXES.has(pgErrorConstraint(err) ?? '')) throw err;
       }
-      if (inserted[0]) return { id: inserted[0].id, created: true };
+      if (inserted[0]) {
+        incWispConcern('opened');
+        return { id: inserted[0].id, created: true };
+      }
 
       const existing = (signature !== null ? await findLiveBySignature(input.partnerId, signature) : null)
         ?? await findLiveBySubject(input.partnerId, input.orgId, input.subject);
-      if (existing) return { id: existing, created: false };
+      if (existing) {
+        incWispConcern('updated');
+        return { id: existing, created: false };
+      }
     }
     throw new Error('upsertConcern: the live concern vanished twice between conflict and read');
   });
@@ -227,6 +234,7 @@ export async function resolveConcern(
     return row ?? null;
   });
   if (!resolved) return { resolved: false, remembered: false };
+  incWispConcern('resolved');
   if (!by.grantId) return { resolved: true, remembered: false };
 
   const grantId = by.grantId;
@@ -307,13 +315,15 @@ export async function dismissConcern(id: string, by: { grantId: string; userId: 
   await inSystemContext(async () => {
     await lockConcern(id);
     await upsertRecipient(id, by.grantId, { dismissedAt: now, answeredAt: now });
-    await db.update(wispConcerns)
+    const closed = await db.update(wispConcerns)
       .set({ status: 'dismissed', updatedAt: sql`now()` })
       .where(and(
         eq(wispConcerns.id, id),
         inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
         sql`NOT EXISTS (SELECT 1 FROM wisp_concern_recipients r WHERE r.concern_id = ${wispConcerns.id} AND r.dismissed_at IS NULL)`,
-      ));
+      ))
+      .returning({ id: wispConcerns.id });
+    if (closed.length > 0) incWispConcern('dismissed');
   });
 }
 
@@ -323,14 +333,16 @@ export async function snoozeConcern(id: string, by: { grantId: string; userId: s
   await inSystemContext(async () => {
     await lockConcern(id);
     await upsertRecipient(id, by.grantId, { snoozedUntil: until, answeredAt: now });
-    await db.update(wispConcerns)
+    const parked = await db.update(wispConcerns)
       .set({ status: 'snoozed', updatedAt: sql`now()` })
       .where(and(
         eq(wispConcerns.id, id),
         inArray(wispConcerns.status, [...LIVE_CONCERN_STATUSES]),
         sql`NOT EXISTS (SELECT 1 FROM wisp_concern_recipients r WHERE r.concern_id = ${wispConcerns.id}
           AND r.dismissed_at IS NULL AND (r.snoozed_until IS NULL OR r.snoozed_until <= now()))`,
-      ));
+      ))
+      .returning({ id: wispConcerns.id });
+    if (parked.length > 0) incWispConcern('snoozed');
   });
 }
 

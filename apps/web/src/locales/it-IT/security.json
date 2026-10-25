@@ -678,6 +678,10 @@
     "wed": "Mer"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Annullata",
+      "expired": "Scaduta"
+    },
     "activeScans": "Scansioni attive",
     "allScanRequestsFailed": "Tutte le {{count}} richieste di scansione sono fallite",
     "cData": "C:\\\\Data\\\\",
@@ -762,6 +766,7 @@
     "notFound": "Minaccia non trovata. Potrebbe essere stata eliminata, oppure non hai accesso al suo dispositivo.",
     "relatedLoadFailed": "Impossibile caricare le minacce correlate.",
     "rule": {
+      "version": "Versione {{version}}",
       "title": "Regola di rilevamento",
       "legacy": "Firma integrata (scansione legacy)",
       "ruleName": "Regola",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Scansioni di massa",
     "iocScans": "Scansioni IOC",
     "subtitle": "Scansioni di malware e IOC basate su firme sull'intera flotta. Non sostituisce una protezione completa degli endpoint.",
     "scansTab": "Scansioni",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "In attesa del report del fornitore",
       "awaitingEvaluation": "In attesa di valutazione",
       "vendorOrgMismatch": "Il fornitore segnala un'altra organizzazione"
+    }
+  },
+  "sweeps": {
+    "title": "Scansioni di massa IOC",
+    "started": "Scansione di massa avviata",
+    "cancelled": "Scansione di massa annullata. Fermate prima della consegna: {{queued}}. Già consegnate e in completamento sul dispositivo: {{stillRunning}}.",
+    "detectOnly": "Le scansioni di massa si limitano a rilevare. Nulla viene messo in quarantena automaticamente e non viene avviata alcuna scansione di Defender.",
+    "version": "Versione {{version}}",
+    "sweepNow": "Avvia scansione di massa",
+    "sweepNowUnpublished": "Pubblica questo set di regole prima di usarlo in una scansione di massa.",
+    "sweepNowDisabled": "Abilita questo set di regole prima di usarlo in una scansione di massa.",
+    "progress": {
+      "label": "{{done}} dispositivi su {{total}} completati"
+    },
+    "errors": {
+      "orgOutOfScope": "Una o più organizzazioni sono fuori dal tuo accesso.",
+      "siteOutOfScope": "Uno o più siti sono fuori dal tuo accesso.",
+      "deviceOutOfScope": "Uno o più dispositivi sono fuori dal tuo accesso.",
+      "ruleSetNotFound": "Un set di regole selezionato non esiste più.",
+      "ruleSetNotPublished": "Un set di regole selezionato è disabilitato o non è mai stato pubblicato.",
+      "sweepTooLarge": "Questa scansione di massa analizzerebbe {{targeted}} dispositivi; il limite per una scansione è {{max}}. Restringi l'ambito.",
+      "noEligibleDevices": "Nessun dispositivo di questo ambito può eseguire la scansione in questo momento. Controlla le versioni dell'agent e l'ambito.",
+      "scopeChanged": "I dispositivi o i set di regole sono cambiati dopo l'anteprima. Controlla i nuovi numeri.",
+      "alreadyRunning": "Questa scansione di massa è già in esecuzione su questi dispositivi.",
+      "tooManyActive": "Questa organizzazione ha già {{max}} scansioni di massa attive. Attendi che una termini o annullane una.",
+      "mfaRequired": "Questa scansione di massa riguarda {{targeted}} dispositivi, più di {{threshold}}. Accedi con l'autenticazione a più fattori oppure restringi l'ambito.",
+      "rateLimited": "Sono state avviate troppe scansioni di massa di recente. Riprova più tardi."
+    },
+    "skipReasons": {
+      "agent_too_old": "dispositivi con un agent troppo vecchio",
+      "busy_same_sweep": "dispositivi che eseguono già questa scansione",
+      "rule_set_not_eligible": "dispositivi a cui i set di regole non si applicano"
+    },
+    "skipExplain": {
+      "agent_too_old": "L'agent deve essere aggiornato prima di poter eseguire i set di regole YARA.",
+      "busy_same_sweep": "Una scansione di massa identica è ancora attiva su questi dispositivi.",
+      "rule_set_not_eligible": "Il sistema operativo o l'organizzazione del dispositivo è fuori dalla portata del set di regole."
+    },
+    "dialog": {
+      "title": "Cerca corrispondenze IOC sui dispositivi",
+      "ruleSets": "Set di regole: {{names}}",
+      "rescopeNote": "Una scansione di massa non ricorda i suoi dispositivi. Scegli di nuovo l'ambito; set di regole e tipo di scansione vengono mantenuti.",
+      "back": "Indietro",
+      "next": "Avanti",
+      "previewAction": "Anteprima",
+      "confirm": "Scansiona {{targeted}} dispositivi",
+      "viewRunning": "Vedi la scansione in corso",
+      "confirmSummary": "{{targeted}} dispositivi in {{orgs}} organizzazioni verranno analizzati con le versioni dei set di regole mostrate nell'anteprima. Le corrispondenze vengono segnalate come minacce; sui dispositivi non viene modificato nulla.",
+      "steps": {
+        "scope": "Ambito",
+        "type": "Tipo di scansione",
+        "duration": "Durata",
+        "preview": "Anteprima",
+        "confirm": "Conferma"
+      },
+      "scope": {
+        "legend": "Quali dispositivi?",
+        "all": "Tutti i dispositivi raggiungibili",
+        "orgs": "Organizzazioni",
+        "sites": "Siti",
+        "groups": "Gruppi di dispositivi",
+        "devices": "Dispositivi",
+        "allHelp": "Tutti i dispositivi a cui hai accesso e che possono eseguire la scansione.",
+        "noOrgs": "Nessuna organizzazione disponibile.",
+        "siteOrg": "Organizzazione",
+        "pickOrg": "Scegli un'organizzazione",
+        "noSites": "Questa organizzazione non ha siti.",
+        "sitesFailed": "Impossibile caricare i siti.",
+        "sitesSelected": "Siti selezionati: {{selected}}"
+      },
+      "type": {
+        "label": "Tipo di scansione",
+        "quick": "Rapida",
+        "full": "Completa",
+        "custom": "Percorsi personalizzati",
+        "paths": "Percorsi, uno per riga",
+        "pathsHelp": "Fino a {{max}} percorsi, di {{chars}} caratteri ciascuno."
+      },
+      "duration": {
+        "label": "Durata (ore)",
+        "help": "I dispositivi offline eseguono la scansione quando tornano entro questo tempo. Da 1 a {{max}} ore."
+      },
+      "preview": {
+        "targeted": "{{devices}} dispositivi in {{orgs}} organizzazioni",
+        "org": "{{org}}: {{devices}} dispositivi",
+        "ruleSets": "Set di regole",
+        "skipped": "Saltati",
+        "scopeChanged": "I dispositivi o i set di regole sono cambiati dopo l'anteprima. Controlla i nuovi numeri, poi conferma di nuovo."
+      }
+    },
+    "panel": {
+      "empty": "Nessuna scansione di massa IOC finora. Avviane una da un set di regole di rilevamento.",
+      "refreshFailed": "Impossibile aggiornare l'elenco. Quanto vedi potrebbe non essere aggiornato.",
+      "allSweeps": "Tutte le scansioni di massa",
+      "openGroup": "Apri gruppo",
+      "cancel": "Annulla",
+      "cancelAll": "Annulla tutto",
+      "resweep": "Ripeti con le regole attuali",
+      "rulesChanged": "Regole modificate dall'avvio di questa scansione",
+      "queued": "In coda: {{queued}}",
+      "columns": {
+        "ruleSets": "Set di regole",
+        "origin": "Avviata da",
+        "progress": "Avanzamento",
+        "skipped": "Saltati",
+        "degraded": "Copertura ridotta",
+        "threats": "Minacce",
+        "created": "Creata",
+        "state": "Stato"
+      },
+      "state": {
+        "active": "Attiva",
+        "completed": "Completata",
+        "cancelled": "Annullata",
+        "expired": "Scaduta"
+      },
+      "origin": {
+        "web": "Interfaccia web",
+        "api": "Accesso tramite API",
+        "ai_chat": "Chat IA",
+        "mcp": "Client MCP"
+      },
+      "scanType": {
+        "quick": "Scansione rapida",
+        "full": "Scansione completa",
+        "custom": "Percorsi personalizzati"
+      }
     }
   },
   "detectionRules": {

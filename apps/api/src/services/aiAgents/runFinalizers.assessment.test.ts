@@ -358,6 +358,17 @@ describe('finalizeAssessment (Wisp W05b)', () => {
       expect(result.outcome.assessmentSkipped).toEqual(['propose_outside_ceiling']);
     });
 
+    it('a human-only tool (e.g. the Wisp approval carrier) is never proposable: propose_tool_blocked, no intent', async () => {
+      TIERS.wisp_specialist_request = 3;
+      const result = makeResult(calls({
+        proposedActions: [{ toolName: 'wisp_specialist_request', input: { kind: 'bulk_ticket_reply' }, reason: 'reply to everyone' }],
+      }));
+      await finalizeAssessment(makeCtx(), result);
+      delete TIERS.wisp_specialist_request;
+      expect(createActionIntent).not.toHaveBeenCalled();
+      expect(result.outcome.assessmentSkipped).toEqual(['propose_tool_blocked']);
+    });
+
     it('Tier 4+ (blocked) → propose_tool_blocked, no intent', async () => {
       const result = makeResult(calls({ proposedActions: [{ toolName: 'wipe_everything', input: {}, reason: 'r' }] }));
       await finalizeAssessment(makeCtx(), result);
@@ -395,7 +406,7 @@ describe('finalizeAssessment (Wisp W05b)', () => {
   });
 
   it('request_specialist entries are left in the outcome untouched', async () => {
-    const req = { kind: 'backup', params: { a: 1 }, reason: 'needs a backup specialist' };
+    const req = { kind: 'sweep' as const, params: { a: 1 }, reason: 'needs a backup specialist' };
     const result = makeResult(calls({ specialistRequests: [req] }));
     await finalizeAssessment(makeCtx(), result);
     expect(result.outcome.assessment!.specialistRequests).toEqual([req]);

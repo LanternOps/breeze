@@ -3302,6 +3302,19 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // proposals. Before the awaiting_approval decision for the same reason as
     // triage: a proposal it turns into a pending intent must be counted.
     const assessmentErrorCode = await finalizeAssessment(ctx, result);
+    // Wisp W07 — hand the recorded `request_specialist` calls to the
+    // coordinator, before `finishRun` serializes the outcome it writes
+    // `specialistResults` into. Lazy so non-assessment runs never load the
+    // coordinator graph; a dispatch failure never fails the assessment run.
+    if (ctx.run.profile === 'assessment') {
+      try {
+        const { dispatchSpecialistRequests } = await import('../wisp/specialistDispatch');
+        await dispatchSpecialistRequests(ctx, result);
+      } catch (error) {
+        console.error('[aiAgentRunLoop] specialist dispatch failed (non-fatal)', { runId: ctx.run.id, error });
+        captureException(error, undefined, { service: 'aiAgents', operation: 'dispatchSpecialistRequests', runId: ctx.run.id });
+      }
+    }
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal

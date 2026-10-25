@@ -287,6 +287,23 @@ describe('enqueueAssessment', () => {
     expect(Number(m?.[2])).toBeGreaterThanOrEqual(before);
   });
 
+  it('a job occurrence key makes the dedupe key deterministic, so a retried job cannot admit a second assessment', async () => {
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' }, occurrenceKey: 'wake:job-1@1700000000000' });
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' }, occurrenceKey: 'wake:job-1@1700000000000' });
+    const k1 = (h.createAndEnqueueAgentRun.mock.calls[0]![0] as Record<string, unknown>).dedupeKey as string;
+    const k2 = (h.createAndEnqueueAgentRun.mock.calls[1]![0] as Record<string, unknown>).dedupeKey as string;
+    expect(k1).toBe(k2);
+    expect(k1).toMatch(new RegExp(`^wisp-assess-${GRANT}-${ORG}-o[0-9a-f]{24}$`));
+    h.results.push([grantRow()]);
+    h.results.push([{ at: null }]);
+    await enqueueAssessment({ grantId: GRANT, orgId: ORG, reason: { kind: 'tick' }, occurrenceKey: 'wake:job-1@1700000009999' });
+    expect((h.createAndEnqueueAgentRun.mock.calls[2]![0] as Record<string, unknown>).dedupeKey).not.toBe(k1);
+  });
+
   it('calls createAndEnqueueAgentRun with no ambient DB context (#1105) even when the caller holds one', async () => {
     h.results.push([grantRow()]);
     h.results.push([{ at: null }]);
@@ -704,5 +721,38 @@ describe('loadAssessmentContext', () => {
     expect(ctx!.nudgeFeedback[0]).toBe('nudge_feedback:ticket:high · useful · Summary 0');
     expect(ctx!.nudgeFeedback[1]).toBe('nudge_feedback:ticket:high · not useful · Summary 1 · note: too noisy');
     for (const line of ctx!.nudgeFeedback) expect(line).not.toContain('\n');
+  });
+});
+
+// --- W07 Task 8: metrics call sites ---
+const wm = vi.hoisted(() => ({
+  incWispAssessment: vi.fn(), incWispNudge: vi.fn(), incWispConcern: vi.fn(),
+  incWispGrantPause: vi.fn(), incWispBudgetExhausted: vi.fn(), setWispGrantsActive: vi.fn(),
+}));
+vi.mock('../wispMetrics', () => wm);
+
+describe('enqueueAssessment metrics', () => {
+  it('maps results to wisp_assessments_total outcomes', async () => {
+    const input = { grantId: GRANT, orgId: ORG, reason: { kind: 'tick' } } as const;
+    wm.incWispAssessment.mockClear();
+    h.results.push([grantRow()]);
+    await enqueueAssessment({ ...input, orgId: OTHER_ORG });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_grant');
+
+    h.results.push([grantRow()]);
+    h.chargeableUnderGrant.mockResolvedValue({ ok: false, reason: 'budget_exhausted' });
+    await enqueueAssessment({ ...input });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_budget');
+
+    h.chargeableUnderGrant.mockResolvedValue({ ok: true });
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'no_effective_agent' });
+    await enqueueAssessment({ ...input });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('skipped_admission');
+
+    h.results.push([grantRow()], [{ at: null }]);
+    h.createAndEnqueueAgentRun.mockResolvedValue({ created: true, run: { id: RUN } });
+    await enqueueAssessment({ ...input });
+    expect(wm.incWispAssessment).toHaveBeenLastCalledWith('admitted');
   });
 });

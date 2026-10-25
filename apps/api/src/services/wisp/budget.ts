@@ -29,6 +29,7 @@ import { deliverInApp } from './deliver';
 import { inSystemContext } from './grantAuthority';
 import type { GrantSettingsBounds } from './grants';
 import { getOrCreateThread } from './threads';
+import { incWispBudgetExhausted } from '../wispMetrics';
 
 /**
  * Spec §16 default `budget_cents_per_day` for a new grant. Plans below pro
@@ -141,7 +142,9 @@ export async function chargeableUnderGrant(
     throw new RangeError(`estimateCents must be a non-negative finite number (got ${estimateCents}).`);
   }
   const { grant, spent } = await grantAndSpend(grantId, now);
-  return spent + estimateCents <= grant.budgetCentsPerDay ? { ok: true } : { ok: false, reason: 'budget_exhausted' };
+  if (spent + estimateCents <= grant.budgetCentsPerDay) return { ok: true };
+  incWispBudgetExhausted();
+  return { ok: false, reason: 'budget_exhausted' };
 }
 
 /**

@@ -678,6 +678,10 @@
     "wed": "Wed"
   },
   "securitySecurityScanManager": {
+    "scanStatus": {
+      "cancelled": "Cancelled",
+      "expired": "Expired"
+    },
     "activeScans": "Active scans",
     "allScanRequestsFailed": "All {{count}} scan requests failed",
     "cData": "C:\\\\Data\\\\",
@@ -762,6 +766,7 @@
     "notFound": "This threat was not found. It may have been deleted, or you may not have access to its device.",
     "relatedLoadFailed": "Related threats could not be loaded.",
     "rule": {
+      "version": "Version {{version}}",
       "title": "Detection rule",
       "legacy": "Built-in signature (legacy scan)",
       "ruleName": "Rule",
@@ -2329,6 +2334,7 @@
     }
   },
   "securityScansPage": {
+    "sweepsTab": "Sweeps",
     "iocScans": "IOC Scans",
     "subtitle": "Signature-based malware and IOC sweeps across your fleet. Not a replacement for full endpoint protection.",
     "scansTab": "Scans",
@@ -2362,6 +2368,133 @@
       "awaitingVendorReport": "Awaiting vendor report",
       "awaitingEvaluation": "Awaiting evaluation",
       "vendorOrgMismatch": "Vendor reports a different organization"
+    }
+  },
+  "sweeps": {
+    "title": "IOC sweeps",
+    "started": "Sweep started",
+    "cancelled": "Sweep cancelled. Stopped before delivery: {{queued}}. Already delivered and finishing on the device: {{stillRunning}}.",
+    "detectOnly": "Sweeps only detect. Nothing is quarantined automatically, and no Defender scan is started.",
+    "version": "Version {{version}}",
+    "sweepNow": "Sweep now",
+    "sweepNowUnpublished": "Publish this rule set before sweeping with it.",
+    "sweepNowDisabled": "Enable this rule set before sweeping with it.",
+    "progress": {
+      "label": "{{done}} of {{total}} devices done"
+    },
+    "errors": {
+      "orgOutOfScope": "One or more organizations are outside your access.",
+      "siteOutOfScope": "One or more sites are outside your access.",
+      "deviceOutOfScope": "One or more devices are outside your access.",
+      "ruleSetNotFound": "A selected rule set no longer exists.",
+      "ruleSetNotPublished": "A selected rule set is disabled or has never been published.",
+      "sweepTooLarge": "This sweep would scan {{targeted}} devices; one sweep is limited to {{max}}. Narrow the scope.",
+      "noEligibleDevices": "No device in this scope can run the sweep right now. Check the agent versions and the scope.",
+      "scopeChanged": "The devices or rule sets changed since the preview. Review the new numbers.",
+      "alreadyRunning": "This sweep is already running on these devices.",
+      "tooManyActive": "This organization already has {{max}} active sweeps. Wait for one to finish or cancel one.",
+      "mfaRequired": "This sweep targets {{targeted}} devices, more than {{threshold}}. Sign in with multi-factor authentication, or narrow the scope.",
+      "rateLimited": "Too many sweeps were started recently. Try again later."
+    },
+    "skipReasons": {
+      "agent_too_old": "devices with an agent that is too old",
+      "busy_same_sweep": "devices already running this sweep",
+      "rule_set_not_eligible": "devices the rule sets do not apply to"
+    },
+    "skipExplain": {
+      "agent_too_old": "The agent must be updated before it can run YARA rule sets.",
+      "busy_same_sweep": "An identical sweep is still active on these devices.",
+      "rule_set_not_eligible": "The device's operating system or organization is outside the rule set's reach."
+    },
+    "dialog": {
+      "title": "Sweep devices for IOC matches",
+      "ruleSets": "Rule sets: {{names}}",
+      "rescopeNote": "A sweep does not remember its devices. Choose the scope again; the rule sets and scan type are kept.",
+      "back": "Back",
+      "next": "Next",
+      "previewAction": "Preview",
+      "confirm": "Sweep {{targeted}} devices",
+      "viewRunning": "View the running sweep",
+      "confirmSummary": "{{targeted}} devices in {{orgs}} organizations will be scanned against the rule set versions shown in the preview. Matches are reported as threats; nothing is changed on the devices.",
+      "steps": {
+        "scope": "Scope",
+        "type": "Scan type",
+        "duration": "Duration",
+        "preview": "Preview",
+        "confirm": "Confirm"
+      },
+      "scope": {
+        "legend": "Which devices?",
+        "all": "All reachable devices",
+        "orgs": "Organizations",
+        "sites": "Sites",
+        "groups": "Device groups",
+        "devices": "Devices",
+        "allHelp": "Every device you can access that can run the sweep.",
+        "noOrgs": "No organizations available.",
+        "siteOrg": "Organization",
+        "pickOrg": "Choose an organization",
+        "noSites": "This organization has no sites.",
+        "sitesFailed": "The sites could not be loaded.",
+        "sitesSelected": "Sites selected: {{selected}}"
+      },
+      "type": {
+        "label": "Scan type",
+        "quick": "Quick",
+        "full": "Full",
+        "custom": "Custom paths",
+        "paths": "Paths, one per line",
+        "pathsHelp": "Up to {{max}} paths, {{chars}} characters each."
+      },
+      "duration": {
+        "label": "Run for (hours)",
+        "help": "Offline devices run the scan when they come back within this time. Between 1 and {{max}} hours."
+      },
+      "preview": {
+        "targeted": "{{devices}} devices in {{orgs}} organizations",
+        "org": "{{org}}: {{devices}} devices",
+        "ruleSets": "Rule sets",
+        "skipped": "Skipped",
+        "scopeChanged": "The devices or rule sets changed since the preview. Review the new numbers, then confirm again."
+      }
+    },
+    "panel": {
+      "empty": "No IOC sweeps yet. Start one from a detection rule set.",
+      "refreshFailed": "The list could not be refreshed. What you see may be out of date.",
+      "allSweeps": "All sweeps",
+      "openGroup": "Open group",
+      "cancel": "Cancel",
+      "cancelAll": "Cancel all",
+      "resweep": "Sweep again with the current rules",
+      "rulesChanged": "Rules changed since this sweep started",
+      "queued": "Queued: {{queued}}",
+      "columns": {
+        "ruleSets": "Rule sets",
+        "origin": "Started from",
+        "progress": "Progress",
+        "skipped": "Skipped",
+        "degraded": "Degraded",
+        "threats": "Threats",
+        "created": "Created",
+        "state": "State"
+      },
+      "state": {
+        "active": "Active",
+        "completed": "Completed",
+        "cancelled": "Cancelled",
+        "expired": "Expired"
+      },
+      "origin": {
+        "web": "Web",
+        "api": "API",
+        "ai_chat": "AI chat",
+        "mcp": "MCP"
+      },
+      "scanType": {
+        "quick": "Quick scan",
+        "full": "Full scan",
+        "custom": "Custom paths"
+      }
     }
   },
   "detectionRules": {

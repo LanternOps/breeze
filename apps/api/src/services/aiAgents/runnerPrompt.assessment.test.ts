@@ -112,6 +112,14 @@ describe('buildAssessmentTaskPrompt (Wisp W05b)', () => {
     expect(p).toContain('one nudge names one person, one subject, one next step.');
   });
 
+  it('W07: describes request_specialist as recorded for Wisp\'s coordinator, not as unavailable', () => {
+    const p = buildAssessmentTaskPrompt(ctx());
+    const line = p.split('\n').find((l) => l.includes('request_specialist'))!;
+    expect(line).not.toMatch(/not available/i);
+    expect(line).toMatch(/after this assessment/i);
+    expect(line).toMatch(/at most 3/i);
+  });
+
   it('one line per open concern: id | severity | subject | summary | recipient state', () => {
     const p = buildAssessmentTaskPrompt(ctx(assessment({
       openConcerns: [concern(), concern({
