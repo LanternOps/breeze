@@ -31,14 +31,14 @@ tracking_issue: LanternOps/breeze#6165
 1. **No `plan_`-prefix arm, no `advancePlanApprovalStep`, no `advanceEffectStep`.** Zero hits in `services/aiOperator/`. Approval lives inside the `effect`-kind step: `KIND_ADVANCERS.effect` → `advanceEffect` (`taskCoordinator.ts:1693`) → `planEffectStep` (`effectDispatch.ts:543`), which builds the plan (`:552`), proposes (`:577-593`), waits, re-seals on every wake (`:596-599`) and walks in order (`:641-737`). An approval is bound to the step that proposed it (`planApproval.ts:332`), one per `(org, task, plan_revision)`. A `probe`-kind `create_approval` / `plan_approval` step would route to `planProbeStep` (`effectDispatch.ts:769`), which approves nothing.
 2. **`splitSecretBearingEffects` / `PlanSplit` do not exist.** `proposePlanApproval` refuses a secret-bearing tool inline with `'secret_bearing_effect'` (`planApproval.ts:387`, `:427-430`).
 3. **One `planningSnapshotStepKey` per recipe** (`recipes/types.ts:267`), one checkpoint ref `planningSnapshot` (`packages/shared/src/validators/aiOperator.ts:247`), and `loadPlanningFacts` refuses any other step's row with `snapshot_wrong_step` (`planningSnapshot.ts:131`). Onboarding's provisioning stage needs a second snapshot. Settled in **B2**.
-4. **D-R2-4's dispatch half is shipped.** `if (membership.idempotencyClass === 'non_idempotent' && pre.state !== 'unsatisfied') return { kind: 'handoff', … }` (`effectDispatch.ts:138`). Task 6 shrinks to the secrecy narrowing (**B5**).
+4. **D-R2-4's dispatch half is shipped.** `if (membership.idempotencyClass === 'non_idempotent' && pre.state !== 'unsatisfied') return { kind: 'handoff', … }` (`effectDispatch.ts:143`). Task 6 shrinks to the secrecy narrowing (**B5**).
 5. **The checkpoint is per-recipe arms**, `taskCheckpointSchema = z.union([serviceRecoveryCheckpointSchema, identityOffboardingCheckpointSchema])` (`validators/aiOperator.ts:305-308`), with `RECIPE_CHECKPOINT_ARMS` (`taskCoordinator.ts:735`) and `checkpointMatchesRecipe` (`:752`). The registry-coverage pin is `taskCoordinatorPlanApproval.test.ts:222-231`. There is no flat union to add scalars to, and no `effectCursor` / `discoveryStepId` (W06 A.8 removed both). Settled in **B3**.
 6. **This item was wrong. `m365LicenseSkus` exists.** It is exported at `apps/api/src/db/schema/m365Sync.ts:209-235`, with columns `graphId`, `skuPartNumber`, `consumedUnits`, `prepaidEnabled`, `prepaidSuspended`, `prepaidWarning`, `capabilityStatus`, `appliesTo`, `isStale`, `staleSince`, `lastChangedAt`. Non-test code reads it: `services/endpointManagementReport.ts:334-342` and the sync writer `services/m365Sync/domains/skus.ts:80`. The table is registered in `tenantCascade.ts:747`, `orgMergeRegistry.ts:568` and `tenantExportPolicyRegistry.ts:620`. **No schema change, no migration and no `pgTable(` count change are needed.** The plan's own `:204-230` anchor is off by five lines. The seat-read *design* is still settled in **B6**.
 7. **`PlannedEffect.targetId` comes from the facts.** `buildIdentityOffboardingPlan(input, facts)` reads `facts.targets.contactTargetId`, which `advanceDiscover` freezes (`identityAdvancers.ts:450-454`). `readPlanLabels` resolves the card's target label by that id and the principal label by `accountExternalId` (`effectDispatch.ts:367-394`). Between `buildRecipePlan` and `proposePlanApproval` there is no advancer that could "stamp" a null `targetId`. Settled in **B4**.
 
 **Found while writing this amendment (each is also settled below):**
 
-8. **A generic `move` out of an effect step keeps `checkpoint.resumeStepKey` unchanged.** `applyEffectDirective` → `settleStepAndMove` (`taskCoordinator.ts:1730-1734`) passes the same checkpoint through. E3's `advanceHumanWork` (`:1607`) and `advanceWait` (`:1655`) then resume at that same key. So **every step an effect step moves into must be a recipe advancer that writes its own successor on entry**, as W06 A.4 already states for R1. The plan's `wait_start` = "E3's generic `advanceWait` with no new code" (D-R2-10) and a generic `manual_create_google` would each resume to themselves. → **B1**.
+8. **A generic `move` out of an effect step keeps `checkpoint.resumeStepKey` unchanged.** `applyEffectDirective` → `settleStepAndMove` (`taskCoordinator.ts:1730-1734`) passes the same checkpoint through. E3's `advanceHumanWork` (`:1503`, reading it at `:1607`) and `advanceWait` (`:1636`, at `:1655`) then resume at that same key. So **every step an effect step moves into must be a recipe advancer that writes its own successor on entry**, as W06 A.4 already states for R1. The plan's `wait_start` = "E3's generic `advanceWait` with no new code" (D-R2-10) and a generic `manual_create_google` would each resume to themselves. → **B1**.
 9. **`manualWork.ts` is keyed to the step key `manual_work`** (`MANUAL_WORK_STEP_KEY`, `manualWork.ts:42`, used at `:140`, `:175` and `:217`). A step named `handover_work` cannot reuse `ensureManualWorkItems` / `readManualWork` unchanged. → **B1** renames the step.
 10. **The shipped offboarding discriminator would accept an onboarding checkpoint.** `isIdentityOffboardingCheckpoint(c) = !('criterion' in c) && 'manualWorkCursor' in c` (`validators/aiOperator.ts:317-319`). The offboarding advancers trust it alone (`identityAdvancers.ts:173-177`). An onboarding arm with a `manualWorkCursor` key would pass that predicate. → **B3**.
 11. **The plan's input schema cannot round-trip through a stored checkpoint.** `identityOnboardingInputSchema` (Task 2, plan `:941-979`) is `.strict()` and then `.transform()`s in a `providers` key. A checkpoint stores the *output*, and re-parsing that output fails `.strict()` on `providers`. That makes the task unparseable on its next wake. → **B3**.
@@ -49,7 +49,7 @@ tracking_issue: LanternOps/breeze#6165
 
     Neither that refusal nor `license_unavailable` reaches the walk as `dispatchPlannedEffect`'s `{ kind: 'refused' }`:
     - that branch covers only membership, approver and mint refusals (`effectDispatch.ts:130-190`);
-    - the headless adapter flattens the executor's typed code to `{ error: message }` (`m365ToolsHeadless.ts:152-157`);
+    - the headless adapter flattens the executor's typed code to `{ error: message }` (`apps/api/src/services/m365ToolsHeadless.ts:152-158`);
     - so the walk sees a failed operation and hands off (`effectDispatch.ts:711-715`).
 
     D-R2-5's "convert the `refused` outcome and continue" therefore has no seam to hook into. → **Task 12** (quorum Q3).
@@ -78,7 +78,7 @@ intake (reason) → confirm_details (human_work) → discover (probe; snapshot 1
   - `resolve_accounts` writes `provision_effects`'s successor (`wait_start` or `manual_work`).
   - `wait_start` (`advanceWaitStart`) writes `waitUntil = input.startAt` and `resumeStepKey = 'manual_work'` on first entry, then delegates to E3's `advanceWait`.
   - `manual_work`, `verify_outcome` and `document` resolve their own successors, as in R1.
-- **Both effect steps wrap `advanceEffect` behind the live-readiness veto** (Todd's D3). The shape is `advanceIdentityEffects` (`identityAdvancers.ts:560-601`), copied and not called, because its checkpoint guard is offboarding's. Each wrapper also checks that the loaded facts' `stage` matches the step (`create` for `create_accounts`, `provision` for `provision_effects`). On a mismatch it delegates to `advanceEffect`, which classifies the snapshot fault by B2's rule. It never decides that fault itself.
+- **Both effect steps wrap `advanceEffect` behind the live-readiness veto** (Todd's D3). The shape is `advanceIdentityEffects` (`identityAdvancers.ts:560-601`), copied and not called, because its checkpoint guard is offboarding's. Each wrapper also checks that the loaded facts' `stage` matches the step (`create` for `create_accounts`, `provision` for `provision_effects`). On a mismatch the wrapper **does not delegate**. `buildPlan` has no step argument and dispatches on `facts.stage`, so `advanceEffect` would plan the other stage. The wrapper settles the mismatch with B2's build-failure classification instead: `fail` at `create_accounts` before any approval at *r*, and `hand_off` otherwise.
 - **The create set, per provider.** An M365 create is planned only when `facts.collisions.m365.upnTaken === false`, strictly.
   - `true` omits the create and emits a `resolve_upn_collision:<upn>` item naming the existing object id.
   - `null` means the check could not run. It omits the create and emits a `collision_check_failed:m365` item.
@@ -87,7 +87,7 @@ intake (reason) → confirm_details (human_work) → discover (probe; snapshot 1
 - **An empty create plan follows A.4's empty-plan rule unchanged.** This covers a collision, a `null` check, a Google-only onboarding, or a degraded `m365_create_user`. With no approval at *r*, `planEffectStep` finishes (`effectDispatch.ts:563-568`) and moves to `resumeStepKey`, so nothing is proposed. If an approval exists at *r* and the plan is empty, that is the seal-mismatch hand-off.
 - **Resolve only what this task created** (B.0 item 13):
   - **M365** is resolved only from this task's own `m365_create_user` operation at revision *r*, using its structured result's `userId` (`packages/shared/src/m365/writeActions.ts:263-269`). Project the non-secret keys with `result->>…` and never select the whole `result`. Then call `m365.user.get` on that id and require its `userPrincipalName` to equal the input's. A UPN lookup is never used to find the account. The provenance rules are in B.9 item 9.
-  - **Google** is resolved only after `manual_create_google`'s item was ticked by a user. Read it by `primaryEmail`, and only when snapshot 1 recorded `collisions.google.emailTaken === false`. On a collision, `manual_create_google` is not opened and Google stays unresolved, with a `resolve_email_collision` item.
+  - **Google** is resolved only after `manual_create_google`'s item was ticked by a user. Read it by `primaryEmail`, and only when snapshot 1 recorded `collisions.google.emailTaken === false`. On a collision (`true`), `manual_create_google` is not opened, and Google stays unresolved with a `resolve_email_collision` item. A check that could not run (`null`) is treated the same way, with a `collision_check_failed:google` item.
   - If neither provider resolves, the result is `no_account_resolved`: hand off, naming the collision or degradation items, and do not bump.
 
 ### B.2 B2 — per-stage planning snapshots (quorum: see B.10)
@@ -95,10 +95,11 @@ intake (reason) → confirm_details (human_work) → discover (probe; snapshot 1
 Recipe data selects the snapshot for the current step. There is one checkpoint ref, and `resolve_accounts` re-points it exactly once. Snapshot 2 is a superset of snapshot 1.
 
 - **`recipes/types.ts`** gains `planningSnapshotStepFor?: Readonly<Record<string, string>>`. It maps a consumer step key to the snapshot step that the step plans from. The map is total when declared; see below. It is absent for `service_recovery` and `identity_offboarding`. Onboarding declares `planningSnapshotStepKey: 'discover'` plus the map below.
-- **`recipeDataProblems`** (`recipes/index.ts:121-134`) gains three checks:
+- **`recipeDataProblems`** (`recipes/index.ts:121-134`) gains four checks:
   - every key and value names a declared step;
   - every value is a `probe`-kind step;
-  - the map is present only with `planningSnapshotStepKey`.
+  - the map is present only with `planningSnapshotStepKey`;
+  - `planningSnapshotStepKey` is one of the map's values.
 - **`loadPlanningFacts(task, recipe, checkpoint, stepKey?)`** (`planningSnapshot.ts:91`) gains an optional fourth parameter.
   - With the map absent, the expected step is `recipe.planningSnapshotStepKey` and the code path is today's, byte for byte.
   - With the map declared, the expected step is `map[stepKey]`, and a missing entry is `snapshot_step_unmapped`.
@@ -109,19 +110,27 @@ Recipe data selects the snapshot for the current step. There is one checkpoint r
   - Every step after `resolve_accounts` reads one verified snapshot, and none needs the discover row's ref.
   - `buildPlan` dispatches on `facts.stage`, never on "any resolved account".
 - **Immutability.** The `discover` row is never rewritten. `resolve_accounts` writes its own row once. A re-entry that finds the ref already pointing at a `succeeded` `resolve_accounts` row writes nothing more. Re-pointing the task's ref is a task-checkpoint write, not a snapshot mutation. A replaced ref still could not change a sealed plan unseen, because every wake re-seals (`effectDispatch.ts:596-599`).
-- **The stage transition is ONE transaction** (B7; quorum Q1 changed this design). Calling today's `bumpPlanRevision` first and then a leased write at *r* would lose the write's CAS, and the window between them would leave a task at *r+1* that is still parked at `resolve_accounts`. Nesting the bump inside a leased callback is no better: the bump opens its own transaction via `runOutsideDbContext` (`planApproval.ts:787`; `db/index.ts:1221`), and that transaction can block on the outer one's task-row lock.
+- **The stage transition is ONE transaction** (B7; quorum Q1 changed this design). Calling today's `bumpPlanRevision` first and then a leased write at *r* would lose the write's CAS, and the window between them would leave a task at *r+1* that is still parked at `resolve_accounts`. Nesting the bump inside a leased callback is no better: the bump opens its own transaction via `runOutsideDbContext` (`planApproval.ts:787`; `apps/api/src/db/index.ts:1230`), and that transaction can block on the outer one's task-row lock.
   - **The fix in `planApproval.ts`.** Extract the body of `bumpPlanRevision` into a transaction-bound core, `bumpPlanRevisionInTx(dbh, args)`, which keeps the same CAS on `(revision, leaseEpoch)` and the same supersede/cancel/event semantics. `bumpPlanRevision(args)` keeps its signature and wraps that core, so its behaviour and its existing tests are unchanged. The core is the same single writer of `revision` the coordinator's comment describes (`taskCoordinator.ts:31`; pinned as a comment by `taskCoordinatorPlanApproval.test.ts:124`).
   - **Order in `advanceResolveAccounts`.** Provider reads come first, outside any transaction: read back this task's own creations (B1). Then one `leasedWrite` at revision *r* = `createPlanRevision` does, in its `alsoInTransaction`:
-    1. Guard that the current step is `resolve_accounts`, that no operation at *r* is `pending` or `unknown`, and that the snapshot ref still points at `discover`.
-    2. Call `bumpPlanRevisionInTx(db, { fromRevision: r, leaseEpoch })` and require `bumped: true`.
+    1. Guard all of the following:
+       - `task.revision === checkpoint.createPlanRevision`;
+       - the current step is `resolve_accounts`;
+       - no operation at *r* is `pending` or `unknown`;
+       - the snapshot ref still points at `discover`.
+    2. Call `bumpPlanRevisionInTx(db, { fromRevision: r, leaseEpoch })`. Anything other than `bumped: true` **throws**, which rolls the transaction back (see below).
     3. Freeze the accounts and upsert their links (Task 9, on the same handle).
     4. Write snapshot 2 to this step's row. Write it once; refuse if the row already carries an envelope. Never read that row through `openStep`, whose conflict path resets the row to `running` (`stepService.ts:104-121`).
     5. Re-point the ref, settle `resolve_accounts`, and open `provision_effects` **at *r+1***. R1's `moveWithStepData` opens the successor at the old revision (`identityAdvancers.ts:225-235`), so it is not reused unchanged.
     6. Write `provision_effects`'s `resumeStepKey` and release the lease.
+
+    `leasedWrite`'s CAS sets the patch but does not touch `revision`. The in-transaction bump then CASes the same row at *r* and moves it to *r+1*.
+
+    **A guard miss inside `alsoInTransaction` must throw**, using a typed sentinel the advancer catches outside the transaction. `leasedWrite` commits whenever its callback returns (`identityAdvancers.ts:145-147`), so returning early would commit the patch without the bump. After catching the sentinel, the advancer settles or returns a lost-lease result. Nothing is committed.
   - **Crash windows.** A crash before commit leaves *r*, snapshot 1 and `resolve_accounts` intact. A crash after commit leaves *r+1*, snapshot 2 and `provision_effects` intact. A stale wake loses the CAS and commits nothing. No other bump call site exists.
 - **Stage-2 planning fault before stage 2's own approval** (B.0 item 14; quorum Q1).
   - **The policy.** A recipe declaring `planningSnapshotStepFor` gets a post-stage-1 build-failure policy, keyed on *trusted* context: the recipe data and the current step, never the possibly broken snapshot. When the current step's mapped snapshot step is not `planningSnapshotStepKey`, a snapshot or `buildPlan` failure is always `hand_off`. It is `unknown_effect` if any operation of the task, at any step or revision, is `pending` or `unknown`, else `unresolved`. The reason is that stage 1 may already have created an account.
-  - **Where it lives.** It sits in `planBuildFailure` only, as a new branch read before today's query. `readPlanFailureContext` is **not** broadened. The empty-plan branch (`effectDispatch.ts:563-568`) keeps reading the current revision only, so an all-degraded provisioning plan at *r+1* still finishes.
+  - **Where it lives.** It sits in `planBuildFailure` only, as a new branch read before today's query. `planBuildFailure(task, stepKey, built)` (`effectDispatch.ts:495`) gains a `recipe` parameter, passed by both of its callers (`:553`, `:778`). `readPlanFailureContext` is **not** broadened. The empty-plan branch (`effectDispatch.ts:563-568`) keeps reading the current revision only, so an all-degraded provisioning plan at *r+1* still finishes.
   - **Who else applies it.** The onboarding effect wrappers apply the same classification when they load facts themselves.
   - **Unchanged recipes.** With the map absent, `planBuildFailure` runs exactly today's code.
 - **The map is total for a recipe that declares it** (quorum Q1). With `planningSnapshotStepFor` declared, a consumer step the map does not name fails closed with a new reason, `snapshot_step_unmapped`. It never falls back to `planningSnapshotStepKey` and never to `{}`. Onboarding therefore names every consumer:
@@ -187,7 +196,7 @@ export function isIdentityOnboardingCheckpoint(c: TaskCheckpoint): c is Identity
   - Add `setSecrecy` to `PlanMembershipResult`'s `ok: true` shape (`:218-227`). It is computed from the effect rows membership already reads. A mixed set refuses with a new `PlanMembershipRefusal`, `'mixed_secret_bearing'`.
 - **`intentService.ts`.** Delete the blanket throw at `:1899-1904`. After the membership check (`:1905-1922`, so `membership.setSecrecy` is in scope), add the symmetric check: refuse `plan_approval_invalid` when `isSecretBearingTool(toolName) !== (membership.setSecrecy === 'all_secret_bearing')`. These stay byte-identical and in order: the `!taskContext` throw (`:1892-1897`), the membership refusal, the approver binding (`:1924-1929`) and the allowlist ceiling (`:1930-1938`).
 - **Consumer sweep.** `secret_bearing_effect` has no non-test consumer outside `planApproval.ts` itself. `planEffectStep` surfaces `proposed.reason` generically (`effectDispatch.ts:583-587`), so no advancer arm changes.
-- **The shipped `non_idempotent` branch** (`effectDispatch.ts:138`) gets a **pin** test, not a red. Its header says it pins the shipped branch and that R2 depends on it. The optional collision wording changes only the `handoffSummary` for `pre.state === 'satisfied'`.
+- **The shipped `non_idempotent` branch** (`effectDispatch.ts:143`) gets a **pin** test, not a red. Its header says it pins the shipped branch and that R2 depends on it. The optional collision wording changes only the `handoffSummary` for `pre.state === 'satisfied'`.
 - **G10.** The catalog case asserts the M365 half honestly. It records that `google_account_wipe_mobile_device` is already `non_idempotent` by default (`effectDispatch.ts:71-85`) and already runs under the shipped branch.
 - **D7's independent adversarial review stays mandatory**, with the plan's five questions verbatim.
 
@@ -268,21 +277,21 @@ export function isIdentityOnboardingCheckpoint(c: TaskCheckpoint): c is Identity
    - `validators/aiOperatorOnboarding.ts`: the input with no transform, `onboardingProviders`, the two reason-output schemas, the flag enum, and the round-trip case.
    - The third arm and `isIdentityOnboardingCheckpoint`. The plan's cases are restated per arm.
    - 1a pins 4/4.
+3a. **Task 3a (B2; HIGH blast radius, the shipped seal path).** This lands **before Task 3**, because Task 3's recipe declares the map. It goes in its own commit, red first.
+    - **`recipes/types.ts`:** `planningSnapshotStepFor`, plus the four `recipeDataProblems` checks.
+    - **`planningSnapshot.ts`:** `loadPlanningFacts`'s optional `stepKey` and the new `snapshot_step_unmapped` reason.
+    - **`effectDispatch.ts`:**
+      - `buildRecipePlan` passes `task.currentStepKey`.
+      - `planBuildFailure` gains a `recipe` parameter and the post-stage-1 hand-off branch, gated on the map. `readPlanFailureContext` and the empty-plan branch are untouched.
+    - **`planApproval.ts`:** extract `bumpPlanRevisionInTx(dbh, args)`. `bumpPlanRevision(args)` wraps it, with an unchanged signature and unchanged tests.
+    - **Tests:** the four cases in B2, appended to `planningSnapshot.test.ts` and `effectDispatch.planEffectStep.test.ts`, plus a `planApproval.test.ts` case pinning that the wrapper and the core produce identical rows.
+    - **Must stay green, unmodified:** the A.6 set, `e4Characterization` 4/4, and R1a's suites.
 3. **Task 3 (B1, B2, B4).**
    - The recipe: twelve step keys, `entryStepKey`, `planningSnapshotStepKey` + `planningSnapshotStepFor`, both builders with two parameters, and `buildPlan` dispatching on `facts.stage`.
    - The per-provider strict-`false` collision gate. The dynamic-group filter. `IDENTITY_ONBOARDING_UNOBSERVABLE_EFFECTS = {}`, asserted.
    - The capabilities, reusing `HELPDESK_ALLOWLIST_CAPABILITY`.
    - Registration plus the `RECIPE_CHECKPOINT_ARMS` entry in one commit, and the `recipes/index.test.ts` key pin.
    - `ONBOARDING_DEGRADABLE_REFUSALS` is **not** created (see Task 12).
-3a. **Task 3a (B2; HIGH blast radius, the shipped seal path).** This lands before Task 4, in its own commit, red first.
-    - **`recipes/types.ts`:** `planningSnapshotStepFor`, plus the three `recipeDataProblems` checks.
-    - **`planningSnapshot.ts`:** `loadPlanningFacts`'s optional `stepKey` and the new `snapshot_step_unmapped` reason.
-    - **`effectDispatch.ts`:**
-      - `buildRecipePlan` passes `task.currentStepKey`.
-      - `planBuildFailure` gains the post-stage-1 hand-off branch, gated on the map. `readPlanFailureContext` and the empty-plan branch are untouched.
-    - **`planApproval.ts`:** extract `bumpPlanRevisionInTx(dbh, args)`. `bumpPlanRevision(args)` wraps it, with an unchanged signature and unchanged tests.
-    - **Tests:** the four cases in B2, appended to `planningSnapshot.test.ts` and `effectDispatch.planEffectStep.test.ts`, plus a `planApproval.test.ts` case pinning that the wrapper and the core produce identical rows.
-    - **Must stay green, unmodified:** the A.6 set, `e4Characterization` 4/4, and R1a's suites.
 4. **Task 4.** The staging property test.
    - P1, the disjoint tool sets, asserts that every create-stage tool is secret-bearing and no provision-stage tool is, using `isSecretBearingTool`. There is no `splitSecretBearingEffects`.
    - It adds P5: a plan built from a stage-1 snapshot never contains a provisioning tool, and one built from a stage-2 snapshot never contains a create tool, over the cross-product.
@@ -428,7 +437,7 @@ No disagreement is left to surface.
 4. **D-R2-6's product consequence, unchanged.** The technician who started an onboarding cannot reveal the credential; the colleague who approved the creation can. Confirm this before R2b builds UI on it.
 5. **The helpdesk allowlist must name `m365_create_user`,** or the mint ceiling refuses it (`planApproval.ts:192-206`). The pieces involved:
    - Allowlist storage is shape-only (`packages/shared/src/validators/aiAgents.ts:281`), so readiness's "add tools" action can store the tool.
-   - The agent tool picker hides secret-bearing tools (`agentToolCatalog.ts:482-488`).
+   - The agent tool picker hides secret-bearing tools (`apps/api/src/services/aiAgents/agentToolCatalog.ts:482-488`).
    - The guardrail still never lets an agent call one (`aiGuardrails.ts:2699-2704`).
 
    *Default: readiness drives it;* R2b states it in the card copy.
@@ -477,6 +486,14 @@ R2b's branch is cut from R2a's; R2c's from R2b's. **Stacked PRs run NO CI** (`ci
 ---
 
 ## Global Constraints
+
+> **Amended 2026-10-25 — B5/B8/B9.** The rules below are superseded where they conflict:
+> - Task 6 pins the shipped `non_idempotent` handoff rather than adding it.
+> - `recipeReadiness.ts` never imported the offboarding capability maps.
+> - PRs are not stacked.
+> - R2a and R2b carry `Part of #6172` and no closing keyword; only R2c may end the sub-issue.
+> - The commit trailer is `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+> The text below is history where it conflicts with the Amendment.
 
 - **Rigor: high.** This wave creates identities, mints credentials, and — in Task 6 — narrows a four-eyes gate. Red test first for every task: write the test, run it, *see it fail for the stated reason*, then implement, then run it green. A test that passes on its first run is a broken test — fix the test before writing code. One independent code-review round per part before its PR, **plus** a separate independent adversarial review of Task 6 alone (D-R2-2), which is this wave's analogue of the spec's D6.
 - **Assume E1 (W01), E2 (W02), E3 (W03), E4 (W04), M1 (W05) and R1 (W06) have all landed.** Consume their identifiers; never rename, redefine or locally re-implement one. If any is missing when a task runs, the wave it belongs to has not merged — **STOP and report**. The complete consumed surface is listed under *Consumed surface*.
@@ -637,7 +654,7 @@ Adding one is not in this wave's scope and would not be cheap: the Google regist
 
 ### D-R2-4 — A `non_idempotent` effect whose PRE-probe is `satisfied` HANDS OFF; it is not a no-op
 
-> **Amended 2026-10-25 — B.0 item 4 / B5: the dispatch half is already shipped (`effectDispatch.ts:138`); Task 6 pins it. The collision gate is per provider, and `null` is not clear (B1).** The text below is history where it conflicts with the Amendment.
+> **Amended 2026-10-25 — B.0 item 4 / B5: the dispatch half is already shipped (`effectDispatch.ts:143`); Task 6 pins it. The collision gate is per provider, and `null` is not clear (B1).** The text below is history where it conflicts with the Amendment.
 
 E4's `dispatchPlannedEffect` settles an operation `succeeded` with `result.noop = true` when the pre-probe observes the desired end state, and dispatches nothing. For every effect in R1's catalog that is right — "already not a member" is the end state, by observation.
 
@@ -4080,6 +4097,8 @@ EOF
 
 ### Task 11: `credentialHandover.ts` — the projection, and the mechanical proof the secret never leaks
 
+> **Amended 2026-10-25 — G8 and B1: the approval that `revealableByUserId` reads is the create approval at `createPlanRevision`, held by the `create_accounts` effect step. It is not a `plan_approval` step.** The text below is history where it conflicts with the Amendment.
+
 **Files:**
 - Create: `apps/api/src/services/aiOperator/credentialHandover.ts`
 - Create: `apps/api/src/services/aiOperator/credentialHandover.test.ts`
@@ -5395,6 +5414,8 @@ Expected: 1 file, ≥ 46 tests (both corpora's cases plus each corpus's structur
 
 ### Task 26: (e, f) The lab run, the gate summary, and the R2c PR — then STOP
 
+> **Amended 2026-10-25 — B1/B9: the two approvals are the `create_accounts` (*r*) and `provision_effects` (*r+1*) effect-step approvals, and there are no `plan_approval` steps. The handover block is `manual_work`.** The text below is history where it conflicts with the Amendment.
+
 - [ ] **Step 1: Write the lab-run checklist doc**
 
 **Files:** `docs/superpowers/qa/2026-09-17-identity-onboarding-lab-run.md`
@@ -5516,6 +5537,8 @@ EOF
 ## Self-review
 
 ### Spec coverage
+
+> **Amended 2026-10-25 — B1/B8: `handover_work` reads `manual_work`, and the task mapping follows B.9, which adds Task 3a.** The text below is history where it conflicts with the Amendment.
 
 | Spec § | Covered by |
 |---|---|
