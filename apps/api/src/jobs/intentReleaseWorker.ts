@@ -54,6 +54,8 @@ import { requiresPinnedEffectDigest } from '../services/actionIntents/pinnedEffe
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { aiTools, executeTool, requiresLiveSession, toolManagesDbContext } from '../services/aiTools';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
+import { claimFlowLinkedIntentForDispatch } from '../services/flows/intentClaim';
+import { withFlowExecutionContext, type FlowExecutionFrame } from '../services/flows/flowExecutionContext';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { isTopologyAiToolName, withTopologyReleasePreconditions } from '../services/topology/aiToolGate';
 import { compactToolResultForChat } from '../services/aiToolOutput';
@@ -747,7 +749,7 @@ export async function terminalizeIntent(
     // is safe because task linkage is immutable (action_intents_immutable_trg).
     await publishIntentTerminalOutbox(
       db,
-      { id: intent.id, orgId: intent.orgId, taskId: intent.taskId },
+      { id: intent.id, orgId: intent.orgId, taskId: intent.taskId, requestingFlowRunId: intent.requestingFlowRunId ?? null },
       to === 'completed' ? 'intent_completed' : 'intent_failed',
     );
     let anchor: IntentEvidenceAnchor | null = null;
@@ -1043,6 +1045,18 @@ async function failOnPlaintextSecretGuard(intent: ActionIntent, err: unknown): P
 }
 
 /**
+ * Tool catalog W04 (#5219): the flow dispatch claim found the run under a live
+ * runner-slice lease and wrote nothing. Thrown so the release job is
+ * redelivered with backoff instead of acked — the intent stays `approved`.
+ */
+export class FlowRunLeasedError extends Error {
+  constructor(intentId: string, runId: string) {
+    super(`flow run ${runId} is leased by a runner slice; release of intent ${intentId} will be retried`);
+    this.name = 'FlowRunLeasedError';
+  }
+}
+
+/**
  * Processes one `intent_approved` job end to end. Exported for direct
  * testing without spinning up a real BullMQ Worker.
  */
@@ -1119,7 +1133,32 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // won path is unchanged; the lost-claim path now pays one read it did not
   // pay before, which is a path that does nothing else.
   let claimed: boolean;
-  if (isTaskLinkedIntent(intent) && intent.taskId) {
+  // Tool catalog W04 (#5219), Decision 5: the run frame a flow step executes
+  // under (Decision 14), set only by a won flow claim.
+  let flowFrame: FlowExecutionFrame | null = null;
+  if (intent.requestingFlowRunId) {
+    // A FLOW-originated intent takes the flow-aware claim instead of the plain
+    // CAS: it re-proves, under lock, that the run is still parked on this
+    // intent and that the flow, its publication, the delegator and the step's
+    // pin still hold. A refusal has ALREADY cancelled the intent and written
+    // the run outcome (and woken the run); `lost_race` wrote nothing and is a
+    // silent no-op, never a drift cancel (quorum Q4).
+    const claim = await claimFlowLinkedIntentForDispatch(intent.id);
+    if (claim.claimed) {
+      claimed = true;
+      flowFrame = { runId: claim.runId, chainDepth: claim.chainDepth };
+    } else if (claim.reason === 'run_leased') {
+      // A runner slice owns the run right now (spurious wake, or the minting
+      // slice has not committed its park yet). Nothing was written; throw so
+      // BullMQ redelivers this release with backoff (ACTION_INTENT_JOB_ATTEMPTS).
+      throw new FlowRunLeasedError(intent.id, intent.requestingFlowRunId);
+    } else {
+      if (claim.reason !== 'lost_race') {
+        console.warn(`[IntentReleaseWorker] flow intent ${intentId} refused the dispatch claim (${claim.reason})`);
+      }
+      claimed = false;
+    }
+  } else if (isTaskLinkedIntent(intent) && intent.taskId) {
     const claim = await claimTaskLinkedIntentForDispatch({
       id: intent.id,
       orgId: intent.orgId,
@@ -1431,15 +1470,21 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
   // `!truncated` guard and recorded as a COMPLETION. Neither can happen when
   // the executor already told us. Stays null for every core tool.
   let externalIsError: boolean | null = null;
+  // Tool catalog W04 (#5219), Decision 14: a released flow step runs inside
+  // its run's flowExecutionContext frame, so every event the tool publishes
+  // carries the run's ancestry (eventBus.publishEvent stamps it). The frame
+  // wraps the whole dispatch, so the tool body starts inside it.
+  const inFlowFrame = <T,>(fn: () => Promise<T>): Promise<T> =>
+    (flowFrame ? withFlowExecutionContext(flowFrame, fn) : fn());
   try {
     if (secretAction) {
-      carrier = await withToolTimeout(
+      carrier = await inFlowFrame(() => withToolTimeout(
         withAuthDbAccessContext(auth, () =>
           executeGoogleSecretToolHeadless(intent.actionName, intent.arguments, intent.orgId),
         ),
         getToolTimeout(intent.actionName),
         intent.actionName,
-      );
+      ));
       rawResult = carrier.llmText;
     } else {
       // Tool catalog W01 PR B (#5216): an EXTERNAL (BYO MCP) tool is
@@ -1455,7 +1500,9 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
             const outcome = await executeTenantToolDetailed(tenantTool, intent.arguments, auth, {
               surface: 'chat',
               orgId: intent.orgId,
-              actor: { kind: 'user', id: auth.user.id },
+              // Tool catalog W04 (#5219): a flow step is attributed to its
+              // RUN, never to the synthetic flow user id.
+              actor: flowFrame ? { kind: 'flow', id: flowFrame.runId } : { kind: 'user', id: auth.user.id },
             });
             externalIsError = outcome.isError;
             // Same string shape `executeTenantTool` produces, so the stored
@@ -1515,7 +1562,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
                 ...(approverRelease ? { approverRelease } : {}),
               },
             });
-      rawResult = await withToolTimeout(
+      rawResult = await inFlowFrame(() => withToolTimeout(
         // Review R1 (#6671 shape): a topology diagnostic release re-checks
         // topology AI availability inside its start transaction, under the
         // org lock. Its partner-axis preconditions are resolved HERE, before
@@ -1537,7 +1584,7 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
             : withAuthDbAccessContext(auth, invoke))),
         getToolTimeout(intent.actionName),
         intent.actionName,
-      );
+      ));
     }
   } catch (err) {
     await mcpRelease?.finish({ status: 'failure', error: err });
@@ -1976,6 +2023,11 @@ async function notifyRequesterOfOutcome(
     return;
   }
 
+  // Tool catalog W04 (#5219): a flow-origin intent has no requester and no
+  // agent recipients — the run's step timeline is its outcome surface (the
+  // terminal transition already woke the run). Notify nobody.
+  if (intent.source === 'flow') return;
+
   // B-W04 (#6158, D-B29): an MCP-origin intent that ended without executing
   // still gets the uniform `mcp.tool.<name>` failure audit the direct MCP path
   // would have written. Deduped inside the writer (at-least-once delivery).
@@ -2294,6 +2346,12 @@ export function classifyIntentReleaseFailure(
 ): WorkerFailureClassification | null {
   if (err instanceof PolicyDecisionTransientError) {
     return { reason: 'action_intent_policy_decide_transient', level: 'error', reportOnlyWhenExhausted: true };
+  }
+  // Tool catalog W04 (#5219): a leased flow run is expected and self-healing
+  // (the slice releases its lease within a checkpoint); report only a release
+  // that exhausted its attempts — that intent then ages out at release_by.
+  if (err instanceof FlowRunLeasedError) {
+    return { reason: 'action_intent_flow_run_leased', level: 'warning', reportOnlyWhenExhausted: true };
   }
   return null;
 }

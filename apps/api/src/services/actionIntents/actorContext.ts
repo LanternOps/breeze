@@ -135,14 +135,18 @@ export async function buildAuthContextForIntent(intent: ActionIntent): Promise<A
     return buildAgentOwnedAuthContext(intent, intent.requestingAgentRunId);
   }
   // Tool catalog W04 (#5219): a flow-originated intent (requestingFlowRunId,
-  // the fourth actor root) has no rebuildable AuthContext until the flow
-  // principal and its release branch land (plan Tasks A4/A5). Refuse it
-  // explicitly — never let it fall through to a user or agent rebuild.
+  // the fourth actor root) rebuilds the RUN's flow principal — structural,
+  // never a user token (checkToolPermission keeps denying it). Any refusal
+  // (run gone, run in an org the flow does not own) is `null` ⇒ actor_invalid.
+  // Dynamic import: keeps this module a light leaf (see the MCP branch above).
   if (intent.requestingFlowRunId) {
-    console.error(
-      `[actorContext] intent ${intent.id} is flow-originated (requestingFlowRunId set); no flow release authority exists yet — refusing`,
-    );
-    return null;
+    const { checkFlowReleaseAuthority } = await import('../flows/releaseAuthority');
+    const authority = await checkFlowReleaseAuthority(intent);
+    if (!authority.ok) {
+      console.error(`[actorContext] intent ${intent.id} flow release authority refused (${authority.code}) — failing closed`);
+      return null;
+    }
+    return authority.auth;
   }
   console.error(
     `[actorContext] intent ${intent.id} has no actor column set (requestedByUserId/requestingApiKeyId/requestingAgentRunId all NULL) — data-integrity violation`,
@@ -189,11 +193,12 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
         : { kind: 'unknown' };
     case 'flow':
       // Tool catalog W04 (#5219): the stored origin of a parked Tier-3 flow
-      // step. AuthContext gains a `flow` principal in plan Task A4; until then
-      // a flow origin is trusted by nothing — the same fail-closed `unknown`
-      // an unrecoverable origin gets, chosen explicitly rather than via the
-      // exhaustiveness fallback below.
-      return { kind: 'unknown' };
+      // step. flowId is originPrincipalId; runId is the FK column. Both are
+      // REQUIRED on the principal type — a flow intent without them is
+      // corruption and stays untrusted (`unknown`).
+      return intent.requestingFlowRunId && intent.originPrincipalId
+        ? { kind: 'flow', flowId: intent.originPrincipalId, runId: intent.requestingFlowRunId }
+        : { kind: 'unknown' };
     default: {
       // Compile-time exhaustiveness: when the origin-kind union widens again,
       // this assignment errors instead of silently downgrading the new kind

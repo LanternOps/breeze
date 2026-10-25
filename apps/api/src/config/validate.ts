@@ -758,6 +758,9 @@ const envObjectSchema = z
     // Tool Catalog W3 (#5218). Platform kill switch for Flows, read at runtime
     // by flowsEnabled() in env.ts. Boolean-format validation only.
     FLOWS_ENABLED: z.string().optional(),
+    // Tool catalog W04 (#5219): approval window of a parked Tier-3 flow step,
+    // in hours (flowApprovalTtlHours() in env.ts). Integer 1..168 when set.
+    FLOW_APPROVAL_TTL_HOURS: z.string().optional(),
 
     // Task A7. Sub-flag allowing a tool source to target private/loopback
     // egress — an SSRF vector on the hosted platform, so it's refused there
@@ -2522,6 +2525,14 @@ const envSchema = envObjectSchema
         path: ['M365_TENANT_SYNC_ENABLED'],
         message:
           'M365_TENANT_SYNC_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the M365 tenant sync ticker and worker are dark).',
+      });
+    }
+    const flowTtlRaw = (data.FLOW_APPROVAL_TTL_HOURS ?? '').trim();
+    if (flowTtlRaw && (!/^\d+$/.test(flowTtlRaw) || Number(flowTtlRaw) < 1 || Number(flowTtlRaw) > 168)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['FLOW_APPROVAL_TTL_HOURS'],
+        message: 'FLOW_APPROVAL_TTL_HOURS must be an integer between 1 and 168 (hours a parked flow step waits for approval; default 24).',
       });
     }
     for (const knob of ['M365_SYNC_CONCURRENCY', 'M365_SYNC_MAX_BACKLOG', 'M365_SYNC_TICK_BATCH'] as const) {

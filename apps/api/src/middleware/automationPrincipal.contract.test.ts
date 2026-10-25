@@ -187,8 +187,11 @@ const AGENT_ONLY_FLOW_HANDLING: Record<string, { reachableVia: readonly string[]
       key,
       {
         // Any Tier-3 flow step parks an intent through createActionIntent.
+        // Task A5: the flow principal has its own lane there (source 'flow',
+        // flow_source_mismatch pairing, server-loaded run facts); every
+        // agent-only site below stays agent-only.
         reachableVia: ['run_script'],
-        flowGuard: 'if (isFlowPrincipal(auth)) {',
+        flowGuard: "const flowPrincipal = auth.principal.kind === 'flow' ? auth.principal : null;",
       },
     ]),
   ),

@@ -386,9 +386,13 @@ export async function disableFlow(auth: AuthContext, flowId: string): Promise<Di
         inArray(actionIntents.status, ['pending_approval', 'approved']),
         isNull(actionIntents.taskId),
       ))
-      .returning({ id: actionIntents.id, orgId: actionIntents.orgId });
+      .returning({ id: actionIntents.id, orgId: actionIntents.orgId, requestingFlowRunId: actionIntents.requestingFlowRunId });
     for (const intent of intents) {
-      await publishIntentTerminalOutbox(db, { id: intent.id, orgId: intent.orgId, taskId: null }, 'intent_cancelled');
+      await publishIntentTerminalOutbox(
+        db,
+        { id: intent.id, orgId: intent.orgId, taskId: null, requestingFlowRunId: intent.requestingFlowRunId },
+        'intent_cancelled',
+      );
     }
     cancelledIntents = intents.length;
   }

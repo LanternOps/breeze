@@ -1231,6 +1231,7 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
                   actionName: actionIntents.actionName,
                   argumentDigest: actionIntents.argumentDigest,
                   source: actionIntents.source,
+                  requestingFlowRunId: actionIntents.requestingFlowRunId,
                 });
               if (cas.length === 0) {
                 return {
@@ -1258,7 +1259,12 @@ approvalRoutes.post('/:id/report-suspicious', async (c) => {
               // because task linkage is immutable.
               await publishIntentTerminalOutbox(
                 tx,
-                { id: intentId, orgId: cas[0]!.orgId, taskId: locked?.taskId ?? null },
+                {
+                  id: intentId,
+                  orgId: cas[0]!.orgId,
+                  taskId: locked?.taskId ?? null,
+                  requestingFlowRunId: cas[0]!.requestingFlowRunId,
+                },
                 'intent_rejected',
               );
 

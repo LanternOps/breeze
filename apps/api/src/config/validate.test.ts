@@ -3989,6 +3989,25 @@ describe('FLOWS_ENABLED boolean guard', () => {
   });
 });
 
+describe('FLOW_APPROVAL_TTL_HOURS range guard (#5219)', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('FLOW_APPROVAL_TTL_HOURS');
+    expect(buildEnvParseInput({ FLOW_APPROVAL_TTL_HOURS: 'sentinel' }).FLOW_APPROVAL_TTL_HOURS).toBe('sentinel');
+  });
+
+  it.each(['1', '24', '168', ' 72 ', ''])('accepts %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['0', '169', '-1', '2.5', 'day'])('refuses boot on %j', (value) => {
+    withEnv({ ...validEnv, FLOW_APPROVAL_TTL_HOURS: value }, () => {
+      expect(() => validateConfig()).toThrow(/FLOW_APPROVAL_TTL_HOURS must be an integer between 1 and 168/);
+    });
+  });
+});
+
 describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
   it('is declared in the schema, so the superRefine rule actually runs', () => {
     expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');

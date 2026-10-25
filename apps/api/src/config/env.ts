@@ -447,6 +447,14 @@ export function positiveIntEnv(name: string, fallback: number, min: number, max:
   return Math.min(Math.max(parsed, min), max);
 }
 
+/**
+ * Tool catalog W04 (#5219): how long a parked Tier-3 flow step's action intent
+ * waits for a human (both approval scopes). Default 24 h, clamped 1..168.
+ */
+export function flowApprovalTtlHours(): number {
+  return positiveIntEnv('FLOW_APPROVAL_TTL_HOURS', 24, 1, 168);
+}
+
 /** Per-API-instance `sync-domain` concurrency (spec §5.3). */
 export function m365SyncConcurrency(): number {
   return positiveIntEnv('M365_SYNC_CONCURRENCY', 4, 1, 64);
