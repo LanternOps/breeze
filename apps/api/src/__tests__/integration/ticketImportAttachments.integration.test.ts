@@ -501,6 +501,31 @@ describe('ticket import attachments (real Postgres and Redis, as breeze_app)', (
     expect(rows.every((r) => r.commentId !== null)).toBe(true);
   }, CASE_TIMEOUT);
 
+  runDb('a file put by a pass that died before marking it, then gone from the source, loses its row and its object', async () => {
+    const fx = await seed();
+    const window = await openWindow(fx);
+    const ticket = source(fx, [comment('c1', 10, 'Gone later.', [file('f1', 'one.png', PNG.length)])]);
+    // Header (1st charge), reservation (2nd), then the process dies before the mark-stored transaction (3rd).
+    chargeHook.before = async (call) => {
+      if (call === 3) throw new Error('simulated crash');
+    };
+    await expect(importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({ f1: PNG }) })).rejects.toThrow('simulated crash');
+    chargeHook.before = null;
+    const [pending] = await bySource(fx.principal.id, 'f1');
+    expect(s3.objects.get(pending!.storageKey!)?.body).toEqual(PNG);
+
+    // The source no longer has the file: a permanent skip on this pass. The
+    // reservation goes, and so does the object the dead pass left behind.
+    const result = await importTicket(window.id, ticket, { partnerId: fx.partner.id, fetchAttachment: fetcher({}) });
+    expect(result).toMatchObject({
+      outcome: 'resumed', commentsWritten: 1, attachmentsWritten: 0,
+      attachmentsSkipped: [{ sourceId: 'f1', reason: 'not_found' }],
+    });
+    expect(await bySource(fx.principal.id, 'f1')).toEqual([]);
+    expect(s3.deleted).toContain(pending!.storageKey);
+    expect(s3.objects.has(pending!.storageKey!)).toBe(false);
+  }, CASE_TIMEOUT);
+
   runDb('past the grace the reaper deletes a crashed reservation and its object, and a later pass reserves again', async () => {
     const fx = await seed();
     const window = await openWindow(fx);

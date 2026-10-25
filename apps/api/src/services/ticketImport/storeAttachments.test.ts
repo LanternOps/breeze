@@ -9,14 +9,16 @@ import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const putBytesMock = vi.hoisted(() => vi.fn());
+const deleteObjectKeysMock = vi.hoisted(() => vi.fn());
 vi.mock('../ticketAttachmentStorage', () => ({
   putBytes: putBytesMock,
+  deleteObjectKeys: deleteObjectKeysMock,
   objectKeyFor: (id: string) => `ticket-attachments/${id}`,
 }));
 vi.mock('../../db', () => ({ db: {} }));
 
 import { MigrationWindowError } from '../migrationWindows';
-import { ImportAttachmentFetchError, storeReservedAttachment } from './storeAttachments';
+import { deleteSkippedReservationObjects, ImportAttachmentFetchError, storeReservedAttachment } from './storeAttachments';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(56, 7)]);
@@ -151,5 +153,33 @@ describe('storeReservedAttachment', () => {
     expect(new ImportAttachmentFetchError('not_found').permanent).toBe(true);
     expect(new ImportAttachmentFetchError('too_large').permanent).toBe(true);
     expect(new ImportAttachmentFetchError('transient').permanent).toBe(false);
+  });
+});
+
+describe('deleteSkippedReservationObjects (§4.3 step 3, object before row)', () => {
+  const A = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const B = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+
+  beforeEach(() => {
+    deleteObjectKeysMock.mockReset();
+  });
+
+  it('deletes nothing and returns nothing for no skipped reservation', async () => {
+    expect(await deleteSkippedReservationObjects([])).toEqual([]);
+    expect(deleteObjectKeysMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes every skipped reservation's object and lets all their rows go", async () => {
+    deleteObjectKeysMock.mockResolvedValue(undefined);
+    expect(await deleteSkippedReservationObjects([A, B])).toEqual([A, B]);
+    expect(deleteObjectKeysMock).toHaveBeenCalledWith([`ticket-attachments/${A}`, `ticket-attachments/${B}`]);
+  });
+
+  it('keeps every row when the object delete fails, so the pending reaper can still find the keys', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    deleteObjectKeysMock.mockRejectedValue(new Error('s3 down'));
+    expect(await deleteSkippedReservationObjects([A, B])).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
   });
 });

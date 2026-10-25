@@ -41,7 +41,7 @@ import {
   storedCommentContent,
   type SourceChanges,
 } from './sourceChanges';
-import type { FetchImportAttachment } from './storeAttachments';
+import { deleteSkippedReservationObjects, type FetchImportAttachment } from './storeAttachments';
 import { chargeWindowBytes, chargeWindowThroughput } from './throughput';
 export type { CommentChangedInSource, SourceChanges } from './sourceChanges';
 export type { ImportAttachmentSkip, ImportAttachmentSkipReason } from './importAttachments';
@@ -989,12 +989,16 @@ export async function importTicket(
     const files = prepared.files;
 
     // Step 3: the comments claim their stored files; the reservations of
-    // files skipped after they were reserved go (nothing was stored for them).
+    // files skipped after they were reserved go. Their objects go first, with
+    // no DB context: an earlier pass may have put one and died before marking
+    // it stored (deleteSkippedReservationObjects). If that delete fails, the
+    // rows stay pending for the reaper, which removes row and object.
+    const deletableSkips = await deleteSkippedReservationObjects(files.skippedReservations);
     const cost = chunk.length + (last ? statusCost : 0);
     const result = await inImportTransaction(descriptor, context, orgId, cost, async (scope) => {
       const merged = await lockImportedTicket(ticketId, t.sourceId);
       if (merged) return { merged };
-      await deleteSkippedReservations(ticketId, principalId, files.skippedReservations);
+      await deleteSkippedReservations(ticketId, principalId, deletableSkips);
       const written = await writeComments(scope, ticketId, chunk, files);
       if (last) await finalStatus(scope, ticketId);
       return { ...written, merged: null };

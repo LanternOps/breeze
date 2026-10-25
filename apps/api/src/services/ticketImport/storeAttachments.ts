@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { MigrationWindowError } from '../migrationWindows';
 import type { ImportedAttachmentClaim } from '../ticketService';
-import { putBytes } from '../ticketAttachmentStorage';
+import { deleteObjectKeys, objectKeyFor, putBytes } from '../ticketAttachmentStorage';
 import {
   fetchedBytesSkip,
   IMPORT_ATTACHMENT_MAX_BYTES,
@@ -15,6 +15,36 @@ import {
  * §4.3 step 2), between its reservation and its claim. It runs with no DB
  * context (F21): a download and a put must never hold a pooled connection.
  */
+
+/**
+ * Deletes the objects of the reservations a chunk skipped for good, before
+ * their rows go (§4.3 step 3; object first, then the row, as spec D9 does for
+ * every s3 delete, so a failure leaves the row and therefore its key
+ * findable). A reservation is usually skipped before anything was put, and
+ * deleting an absent key is a no-op. But an earlier pass may have put the
+ * bytes and died before `markReservationStored`, and the file may since have
+ * gone from the source (a permanent skip on this pass): without this, the row
+ * would go and its object would stay in the bucket with nothing pointing at
+ * it.
+ *
+ * Returns the ids whose rows may now be deleted: all of them, or none when the
+ * delete failed. Then the rows stay pending and unstored, and the pending
+ * reaper removes each row and its object after its grace. Runs with no DB
+ * context, like the store step.
+ */
+export async function deleteSkippedReservationObjects(ids: readonly string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  try {
+    await deleteObjectKeys(ids.map((id) => objectKeyFor(id)));
+    return [...ids];
+  } catch (err) {
+    console.warn('[ticketImport] could not delete the objects of skipped reservations; the pending reaper will', {
+      count: ids.length,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
 
 /**
  * Reads one source file's original bytes, at most `maxBytes` (the module's

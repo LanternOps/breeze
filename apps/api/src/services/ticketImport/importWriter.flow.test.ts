@@ -92,6 +92,7 @@ vi.mock('../ticketAttachmentStorage', () => ({
   selectBackend: vi.fn(() => h.backend),
   objectKeyFor: (id: string) => `ticket-attachments/${id}`,
   putBytes: vi.fn(async (id: string) => ({ backend: 's3', storageKey: `ticket-attachments/${id}`, data: null })),
+  deleteObjectKeys: vi.fn(async () => undefined),
 }));
 vi.mock('./importAttachments', async (orig) => ({
   ...(await orig<typeof import('./importAttachments')>()),

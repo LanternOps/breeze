@@ -439,8 +439,10 @@ export async function isReservationPending(id: string, principalId: string): Pro
 
 /**
  * Deletes this principal's pending reservations `ids` on `ticketId` (§4.3
- * step 3): files that turned out to be permanently skipped, for which nothing
- * was stored. Runs in the chunk transaction, after lockImportedTicket; the
+ * step 3): files that turned out to be permanently skipped. Their objects (an
+ * earlier pass may have put one and died before marking it stored) were
+ * already deleted by `deleteSkippedReservationObjects`, with no DB context,
+ * object first as spec D9 requires. Runs in the chunk transaction, after lockImportedTicket; the
  * ticket lock here is a no-op re-take. Only a pending import row that is not
  * stored matches, so an attached file, a live upload, or a reservation
  * another run of the same ticket stored meanwhile is never deleted.
