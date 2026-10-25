@@ -10,7 +10,7 @@ import { getTableName } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const h = vi.hoisted(() => ({
-  state: { inSystem: false },
+  state: { inSystem: false, ambientContext: undefined as { scope: string } | undefined },
   calls: [] as string[],
   threads: [] as Array<Record<string, unknown>>,
   rows: {} as Record<string, unknown[]>,
@@ -81,8 +81,12 @@ vi.mock('../../db', async () => {
     db: { select, insert, update },
     withDbTransaction: vi.fn((fn: () => unknown) => fn()),
     runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
-    withSystemDbAccessContext: vi.fn(),
-    getCurrentDbAccessContext: vi.fn(() => undefined),
+    withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => {
+      h.calls.push('system-wrapper');
+      h.state.inSystem = true;
+      try { return await fn(); } finally { h.state.inSystem = false; }
+    }),
+    getCurrentDbAccessContext: vi.fn(() => h.state.ambientContext),
   };
 });
 vi.mock('./grantAuthority', async (importOriginal) => ({
@@ -151,6 +155,7 @@ const sqlOf = (where: unknown) => {
 };
 
 beforeEach(() => {
+  h.state.ambientContext = undefined;
   h.calls.length = 0;
   h.threads = [];
   h.rows = {};
@@ -211,6 +216,34 @@ function getTableColumnName(target: unknown): string | undefined {
 }
 
 describe('attachSession', () => {
+  // createSession INSERTs the ai_sessions row inside the request transaction and
+  // then attaches it; a fresh system connection cannot see that uncommitted row
+  // ("AI session … not found", 500 on POST /ai/sessions). The partner-access
+  // policies on wisp_threads / wisp_thread_sessions admit the grantor's own
+  // request, so the attach joins the caller's connection when one is open.
+  it('joins the ambient request context instead of escaping to a new system connection', async () => {
+    h.state.ambientContext = { scope: 'partner' };
+    h.threads = [threadRow];
+    h.rows.ai_sessions = [{ orgId: ORG_A }];
+
+    await attachSession(THREAD, SESSION);
+
+    expect(h.calls).not.toContain('system');
+    expect(h.calls).not.toContain('system-wrapper');
+    const ins = h.inserts.find((i) => i.table === 'wisp_thread_sessions')!;
+    expect(ins.values).toEqual({ threadId: THREAD, sessionId: SESSION, partnerId: PARTNER, orgId: ORG_A });
+  });
+
+  it('opens a system context when no context is ambient (background callers)', async () => {
+    h.state.ambientContext = undefined;
+    h.threads = [threadRow];
+    h.rows.ai_sessions = [{ orgId: ORG_A }];
+
+    await attachSession(THREAD, SESSION);
+
+    expect(h.calls).toContain('system-wrapper');
+  });
+
   it('attachSession writes partner_id from the thread and org_id from the session, and bumps last_session_id', async () => {
     h.threads = [threadRow];
     h.rows.ai_sessions = [{ orgId: ORG_A }];

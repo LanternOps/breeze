@@ -13,7 +13,7 @@
  * this module never takes an id from the model.
  */
 import { and, eq, sql } from 'drizzle-orm';
-import { db, withDbTransaction } from '../../db';
+import { db, getCurrentDbAccessContext, withDbTransaction, withSystemDbAccessContext } from '../../db';
 import { aiSessions } from '../../db/schema/ai';
 import { organizations } from '../../db/schema/orgs';
 import { wispGrants } from '../../db/schema/wisp';
@@ -153,13 +153,29 @@ export async function getOrCreateThread(grantId: string): Promise<WispThread> {
 }
 
 /**
+ * Join the caller's open context, or open a system one when there is none.
+ *
+ * `createSession` INSERTs the `ai_sessions` row inside the request transaction
+ * and attaches it before COMMIT: a fresh system connection (`inSystemContext`
+ * exits the request context first) cannot see that row, so the attach failed
+ * with "AI session … not found" and POST /ai/sessions answered 500 for every
+ * Wisp turn. The partner-access policies on `wisp_threads` and
+ * `wisp_thread_sessions` admit the grantor's own request, so joining the
+ * caller's connection is both sufficient and what the FK to `ai_sessions`
+ * needs.
+ */
+function onCallerConnection<T>(fn: () => Promise<T>): Promise<T> {
+  return getCurrentDbAccessContext() ? fn() : withSystemDbAccessContext(fn, 'wisp.threads.attachSession');
+}
+
+/**
  * Link a session to its thread: (thread_id, session_id, partner_id from the
  * thread, org_id from ai_sessions), and point `last_session_id` at it.
  * Idempotent on the (thread_id, session_id) PK; a session already attached to
  * a DIFFERENT thread still violates `wisp_thread_sessions_session_uq` loudly.
  */
 export async function attachSession(threadId: string, sessionId: string): Promise<void> {
-  await inSystemContext(async () => {
+  await onCallerConnection(async () => {
     const [thread] = await db
       .select({ partnerId: wispThreads.partnerId })
       .from(wispThreads)
