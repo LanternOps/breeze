@@ -347,6 +347,38 @@ describe('the bounded rebind, happy path (#8318 §6.1–§6.4)', () => {
     expect((await readDevice(target.id))!.installIncarnation).toBe(2);
   });
 
+  // Review of wave 1b-2, findings 7 and 9: every node closes the SOURCE
+  // install's socket with 4040 (reconnect) and the target's old install's
+  // with 4001; the target's new current hashes are never broadcast.
+  it('broadcasts revocation of every old hash: 4040 for the source install, 4001 for the target\'s old install', async () => {
+    const { source, target, set } = await arrangeStaged();
+    const subscriber = getRedis()!.duplicate();
+    const messages: Array<{ agentId: string; revokedTokenHashes: string[]; closeCode?: number; closeReason?: string }> = [];
+    subscriber.on('message', (_channel: string, message: string) => messages.push(JSON.parse(message)));
+    await subscriber.subscribe('agent-credential:revoked');
+    try {
+      expect((await confirm(source.agentId, set.tokens.confirmationToken)).status).toBe(200);
+      await sleep(300);
+    } finally {
+      await subscriber.quit();
+    }
+    const forSource = messages.find((m) => m.agentId === source.agentId);
+    const forTarget = messages.find((m) => m.agentId === target.agentId);
+    expect(forSource).toMatchObject({ closeCode: 4040, closeReason: 'Device reattached, reconnect required' });
+    expect([...forSource!.revokedTokenHashes].sort()).toEqual(
+      [sha256(source.agentToken), sha256(source.watchdogToken), sha256(source.helperToken)].sort(),
+    );
+    expect(forTarget).toBeDefined();
+    expect(forTarget).toMatchObject({ closeCode: 4001, closeReason: 'Agent credentials replaced by reattach' });
+    expect([...forTarget!.revokedTokenHashes].sort()).toEqual(
+      [sha256(target.agentToken), sha256(target.watchdogToken), sha256(target.helperToken)].sort(),
+    );
+    const broadcast = new Set(messages.flatMap((m) => m.revokedTokenHashes));
+    for (const current of [set.hashes.stagedTokenHash, set.hashes.stagedWatchdogTokenHash, set.hashes.stagedHelperTokenHash]) {
+      expect(broadcast.has(current)).toBe(false);
+    }
+  });
+
   it('a real-org source is retired without a holding-area exit, and a decommissioned target is restored when asked', async () => {
     const tenant = await seedReattachTenant();
     const source = await seedAgentDevice(tenant.orgB, { rebindProtocolVersion: 1 });

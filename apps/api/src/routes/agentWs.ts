@@ -358,9 +358,26 @@ export const AGENT_CREDENTIAL_RECHECK_UNKNOWN_RETRY_MS = 5_000;
 export type AgentDeviceAuthorization = 'authorized' | 'denied' | 'identity_changed' | 'unknown';
 export const AGENT_CREDENTIAL_SUBSCRIBE_TIMEOUT_MS = 1_000;
 
-type AgentCredentialRevocation = {
+/**
+ * The close codes a revocation may ask for: 4001 (a credential denial, the
+ * default; the agent backs off) or 4040 (reconnect at once: #8318 §6.4, the
+ * install was reattached and its next connection is as the target device).
+ */
+export type AgentCredentialRevocationCloseCode = typeof AGENT_CREDENTIAL_DENIED_CLOSE_CODE | typeof AGENT_IDENTITY_CHANGED_CLOSE_CODE;
+const AGENT_CREDENTIAL_REVOCATION_CLOSE_CODES: ReadonlySet<number> = new Set([
+  AGENT_CREDENTIAL_DENIED_CLOSE_CODE,
+  AGENT_IDENTITY_CHANGED_CLOSE_CODE,
+]);
+const AGENT_CREDENTIAL_REVOKED_CLOSE_REASON = 'Agent credentials revoked';
+const AGENT_CREDENTIAL_REVOCATION_REASON_MAX = 120;
+
+export type AgentCredentialRevocation = {
   agentId: string;
   revokedTokenHashes: string[];
+  /** Default 4001. Anything but 4001/4040 is ignored by every receiver. */
+  closeCode?: AgentCredentialRevocationCloseCode;
+  /** Default 'Agent credentials revoked'; at most 120 characters. */
+  closeReason?: string;
 };
 
 function parseAgentCredentialRevocation(msg: unknown): AgentCredentialRevocation | null {
@@ -373,13 +390,20 @@ function parseAgentCredentialRevocation(msg: unknown): AgentCredentialRevocation
     }
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const { agentId, revokedTokenHashes } = parsed as Record<string, unknown>;
+  const { agentId, revokedTokenHashes, closeCode, closeReason } = parsed as Record<string, unknown>;
   if (typeof agentId !== 'string' || !Array.isArray(revokedTokenHashes)) return null;
   const hashes = revokedTokenHashes.filter(
     (value): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value),
   );
   if (hashes.length === 0) return null;
-  return { agentId, revokedTokenHashes: [...new Set(hashes)] };
+  const event: AgentCredentialRevocation = { agentId, revokedTokenHashes: [...new Set(hashes)] };
+  if (typeof closeCode === 'number' && AGENT_CREDENTIAL_REVOCATION_CLOSE_CODES.has(closeCode)) {
+    event.closeCode = closeCode as AgentCredentialRevocationCloseCode;
+    if (typeof closeReason === 'string' && closeReason.length > 0 && closeReason.length <= AGENT_CREDENTIAL_REVOCATION_REASON_MAX) {
+      event.closeReason = closeReason;
+    }
+  }
+  return event;
 }
 
 /** Apply a cluster revocation only to the socket admitted by a revoked hash. */
@@ -389,7 +413,8 @@ export function handleAgentCredentialRevocation(msg: unknown): boolean {
   return disconnectAgentCredentialGeneration(
     event.agentId,
     event.revokedTokenHashes,
-    'Agent credentials revoked',
+    event.closeReason ?? AGENT_CREDENTIAL_REVOKED_CLOSE_REASON,
+    event.closeCode ?? AGENT_CREDENTIAL_DENIED_CLOSE_CODE,
   ) !== 'not-connected';
 }
 
@@ -397,6 +422,7 @@ export function disconnectAgentCredentialGeneration(
   agentId: string,
   revokedTokenHashes: string[],
   reason: string,
+  closeCode: AgentCredentialRevocationCloseCode = AGENT_CREDENTIAL_DENIED_CLOSE_CODE,
 ): AgentWsDisconnectResult {
   const connection = activeConnections.get(agentId);
   if (!connection?.credentialTokenHash) return 'not-connected';
@@ -404,7 +430,7 @@ export function disconnectAgentCredentialGeneration(
   connection.credentialRevoked = true;
   recordAgentWsCredentialClose('revoked');
   try {
-    connection.ws.close(4001, reason);
+    connection.ws.close(closeCode, reason);
   } catch (error) {
     console.error(`credential revocation close failed for ${agentId.slice(0, 12)}:`, error);
     captureException(error instanceof Error ? error : new Error(String(error)));

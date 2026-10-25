@@ -867,6 +867,52 @@ describe('agent credential revocation cluster signal', () => {
     );
   });
 
+  // #8318 review of wave 1b-2, finding 7: a reattach confirm asks every node
+  // to close the SOURCE install's socket with 4040 (reconnect), not 4001.
+  it('closes with the code the broadcast asks for (4040 reconnect), default 4001, and ignores any other code', async () => {
+    const tokenHash = createHash('sha256').update('reattached-token').digest('hex');
+    const connect = async (agentId: string) => {
+      const handlers = createAgentWsHandlers(agentId, {
+        agentId, siteId: 'site-test', installIncarnation: 1,
+        deviceId: `device-${agentId}`, orgId: 'org-close-code', partnerId: 'partner-close-code',
+        credentialTokenHash: tokenHash,
+      });
+      const ws = wsMock();
+      await connectAgentSocket(handlers, ws, [{
+        status: 'online', agentTokenSuspendedAt: null, agentTokenHash: tokenHash,
+        previousTokenHash: null, previousTokenExpiresAt: null, watchdogTokenHash: null,
+        previousWatchdogTokenHash: null, previousWatchdogTokenExpiresAt: null,
+        pendingTokenHash: null, pendingWatchdogTokenHash: null, pendingTokenExpiresAt: null,
+      }]);
+      return ws;
+    };
+
+    const reattached = await connect('agent-close-4040');
+    expect(handleAgentCredentialRevocation(JSON.stringify({
+      agentId: 'agent-close-4040', revokedTokenHashes: [tokenHash], closeCode: 4040, closeReason: 'Device reattached, reconnect required',
+    }))).toBe(true);
+    expect(reattached.close).toHaveBeenCalledWith(4040, 'Device reattached, reconnect required');
+
+    const forged = await connect('agent-close-forged');
+    expect(handleAgentCredentialRevocation({
+      agentId: 'agent-close-forged', revokedTokenHashes: [tokenHash], closeCode: 1000, closeReason: 'normal',
+    })).toBe(true);
+    expect(forged.close).toHaveBeenCalledWith(4001, 'Agent credentials revoked');
+  });
+
+  it('publishes the close code and reason when asked to', async () => {
+    const { getRedis } = await import('../services/redis');
+    const publish = vi.fn().mockResolvedValue(1);
+    vi.mocked(getRedis).mockReturnValue({ publish } as any);
+    const tokenHash = createHash('sha256').update('reattached-publish').digest('hex');
+    await expect(publishAgentCredentialRevocation({
+      agentId: 'agent-close-publish', revokedTokenHashes: [tokenHash], closeCode: 4040, closeReason: 'Device reattached, reconnect required',
+    })).resolves.toBe('published');
+    expect(JSON.parse(publish.mock.calls[0]![1] as string)).toEqual({
+      agentId: 'agent-close-publish', revokedTokenHashes: [tokenHash], closeCode: 4040, closeReason: 'Device reattached, reconnect required',
+    });
+  });
+
   it('a delayed old-generation event cannot close the newer socket', async () => {
     const oldHash = createHash('sha256').update('old-token').digest('hex');
     const newHash = createHash('sha256').update('new-token').digest('hex');

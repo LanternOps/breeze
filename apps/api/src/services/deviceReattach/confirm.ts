@@ -63,7 +63,11 @@ import {
   type DeviceReattachIntent,
   type DeviceReattachment,
 } from '../../db/schema';
-import { disconnectAgent, disconnectAgentCredentialGeneration, publishAgentCredentialRevocation } from '../../routes/agentWs';
+import {
+  disconnectAgentCredentialGeneration,
+  publishAgentCredentialRevocation,
+  type AgentCredentialRevocationCloseCode,
+} from '../../routes/agentWs';
 import { collectAgentCredentialHashes, sha256Hex } from '../agentCredentialHashes';
 import {
   enforceRebindConfirmCertificateBinding,
@@ -185,6 +189,8 @@ interface CommittedConfirm {
   target: LockedReattachDevice;
   boundary: InstallBoundaryResult;
   revokeCertificateIds: string[];
+  /** The staged agent/watchdog/helper hashes: the target's CURRENT credentials now, never revoked. */
+  stagedHashes: string[];
 }
 
 type ConfirmOutcome =
@@ -462,6 +468,8 @@ async function confirmUnderLocks(
     target,
     boundary,
     revokeCertificateIds,
+    stagedHashes: [intent.stagedTokenHash, intent.stagedWatchdogTokenHash, intent.stagedHelperTokenHash]
+      .filter((hash): hash is string => typeof hash === 'string'),
   };
 }
 
@@ -473,25 +481,35 @@ function report(label: string, err: unknown): void {
 async function afterConfirmCommit(committed: CommittedConfirm): Promise<void> {
   const { intent, source, target, identity } = committed;
 
-  // Every hash of both rows: the target's old install and the source.
-  const revocations = [
-    { agentId: intent.targetAgentId, hashes: collectAgentCredentialHashes(target) },
-    { agentId: intent.sourceAgentId, hashes: collectAgentCredentialHashes(source) },
+  // Every hash of both rows, on every node: the target's OLD install is
+  // denied (4001, back off); the SOURCE install is the one becoming the
+  // target, so its sockets get the prompt reconnect (4040). A hash that is now
+  // the target's current one is never in either list (phase 1 refuses a
+  // staged set that collides; this is belt and braces).
+  const current = new Set(committed.stagedHashes);
+  const revocations: Array<{ agentId: string; hashes: string[]; closeCode: AgentCredentialRevocationCloseCode; reason: string }> = [
+    {
+      agentId: intent.targetAgentId,
+      hashes: collectAgentCredentialHashes(target).filter((hash) => !current.has(hash)),
+      closeCode: 4001,
+      reason: 'Agent credentials replaced by reattach',
+    },
+    {
+      agentId: intent.sourceAgentId,
+      hashes: collectAgentCredentialHashes(source).filter((hash) => !current.has(hash)),
+      closeCode: 4040,
+      reason: 'Device reattached, reconnect required',
+    },
   ];
-  for (const { agentId, hashes } of revocations) {
+  for (const { agentId, hashes, closeCode, reason } of revocations) {
     if (hashes.length === 0) continue;
     try {
-      disconnectAgentCredentialGeneration(agentId, hashes, 'Agent credentials replaced by reattach');
+      disconnectAgentCredentialGeneration(agentId, hashes, reason, closeCode);
     } catch (err) {
       report('local credential disconnect', err);
     }
-    void publishAgentCredentialRevocation({ agentId, revokedTokenHashes: hashes }).catch((err) => report('revocation broadcast', err));
-  }
-  try {
-    // The source install is becoming the target: reconnect, do not back off.
-    disconnectAgent(intent.sourceAgentId, 4040, 'Device reattached, reconnect required');
-  } catch (err) {
-    report('source disconnect', err);
+    void publishAgentCredentialRevocation({ agentId, revokedTokenHashes: hashes, closeCode, closeReason: reason })
+      .catch((err) => report('revocation broadcast', err));
   }
 
   await revokeCertificatesAfterCommit(committed.revokeCertificateIds);
