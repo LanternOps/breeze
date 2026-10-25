@@ -346,6 +346,9 @@ x-api-env: &api-env
   # deployment switches them on (default off). Workspace additionally needs
   # a pgvector-capable Postgres — see POSTGRES_IMAGE_REF in .env.example.
   BREEZE_WORKSPACE_ENABLED: ${BREEZE_WORKSPACE_ENABLED:-false}
+  # Wisp-named alias of the flag above (users see the connector as "Wisp").
+  # NOT the engine flag BREEZE_WISP_ENABLED, which never loads this connector.
+  BREEZE_WISP_CONNECTOR_ENABLED: ${BREEZE_WISP_CONNECTOR_ENABLED:-false}
   BREEZE_AI_AGENTS_ENABLED: ${BREEZE_AI_AGENTS_ENABLED:-false}
   # AI Operator (#5205), both default OFF per decision D2 (internal/test orgs
   # only). Mapped here explicitly because Compose interpolates ONLY what this

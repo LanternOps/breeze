@@ -277,8 +277,9 @@ export async function getWispActivity(
  */
 export async function getWispHome(grantId: string): Promise<Obj> {
   const res = await coreRequest<unknown>(`/wisp/home?grantId=${encodeURIComponent(grantId)}`);
-  const body = isObj(res) && isObj(res.data) ? res.data : res;
-  if (!isObj(body)) throw new Error('wisp home payload malformed');
+  const record = (v: unknown): v is Obj => isObj(v) && !Array.isArray(v);
+  const body = record(res) && 'data' in res ? res.data : res;
+  if (!record(body)) throw new Error('wisp home payload malformed');
   return body;
 }
 

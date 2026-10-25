@@ -252,5 +252,12 @@ describe('getWispHome (W08)', () => {
   it('throws on a non-object body so the screen hides the sections instead of drawing an empty home', async () => {
     coreRequest.mockResolvedValue(null);
     await expect(getWispHome('g1')).rejects.toThrow(/malformed/);
+    // A `data` envelope whose payload is not a record is drift, not an empty home.
+    coreRequest.mockResolvedValue({ data: null });
+    await expect(getWispHome('g1')).rejects.toThrow(/malformed/);
+    coreRequest.mockResolvedValue({ data: [] });
+    await expect(getWispHome('g1')).rejects.toThrow(/malformed/);
+    coreRequest.mockResolvedValue([]);
+    await expect(getWispHome('g1')).rejects.toThrow(/malformed/);
   });
 });

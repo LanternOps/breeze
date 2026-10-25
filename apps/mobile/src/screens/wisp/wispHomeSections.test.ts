@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { WispActivityItem } from '../../services/wisp';
 import {
+  EMPTY_ACTIVITY,
   WISP_ENTITY_KINDS,
   activityGroups,
+  activityLoadMoreCursor,
+  activityPageFailed,
+  activityPageLoaded,
   briefSectionsFromNotification,
   homeSectionsFromPayload,
   linkKindLabel,
@@ -239,6 +243,44 @@ describe('mergeActivityPages', () => {
   });
   it('same at+title with different kind is kept', () => {
     expect(mergeActivityPages([item('x', 't', 'a')], [item('x', 't', 'b')])).toHaveLength(2);
+  });
+});
+
+describe('activity paging state', () => {
+  const page1 = [item('2026-10-24T12:00:00Z', 'a'), item('2026-10-24T11:00:00Z', 'b')];
+  const page2 = [item('2026-10-24T10:00:00Z', 'c')];
+
+  it('a first page replaces the list and records the cursor', () => {
+    const s = activityPageLoaded({ ...EMPTY_ACTIVITY, items: page2, loading: true }, null, {
+      items: page1,
+      nextCursor: 'c1',
+    });
+    expect(s).toEqual({ items: page1, nextCursor: 'c1', loading: false, error: null });
+  });
+
+  it('a cursor page appends (de-duplicated) and advances the cursor', () => {
+    const s = activityPageLoaded({ items: page1, nextCursor: 'c1', loading: true, error: null }, 'c1', {
+      items: [page1[1]!, ...page2],
+      nextCursor: null,
+    });
+    expect(s.items.map((i) => i.title)).toEqual(['a', 'b', 'c']);
+    expect(s.nextCursor).toBeNull();
+  });
+
+  it('a failed page keeps what is shown and offers a retry', () => {
+    const s = activityPageFailed({ items: page1, nextCursor: 'c1', loading: true, error: null }, 500);
+    expect(s).toEqual({ items: page1, nextCursor: 'c1', loading: false, error: 'Could not load activity.' });
+  });
+
+  it('a 404 is "no activity here", never a retry that cannot succeed', () => {
+    const s = activityPageFailed({ items: [], nextCursor: null, loading: true, error: null }, 404);
+    expect(s).toEqual({ items: [], nextCursor: null, loading: false, error: null });
+  });
+
+  it('retry after a failed FIRST page asks for the first page; after a failed later page, the same cursor', () => {
+    expect(activityLoadMoreCursor({ items: [], nextCursor: null, loading: false, error: 'x' })).toBeNull();
+    expect(activityLoadMoreCursor({ items: page1, nextCursor: 'c1', loading: false, error: 'x' })).toBe('c1');
+    expect(activityLoadMoreCursor({ items: page1, nextCursor: 'c2', loading: false, error: null })).toBe('c2');
   });
 });
 

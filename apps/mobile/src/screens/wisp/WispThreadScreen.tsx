@@ -28,7 +28,6 @@ import {
   resumeWispGrant,
   sendWispConcernFeedback,
   snoozeWispConcern,
-  type WispActivityItem,
   type WispConcern,
   type WispCurrentActivity,
   type WispThread,
@@ -40,7 +39,15 @@ import { Composer } from '../chat/components/Composer';
 import { ConversationList } from '../chat/components/ConversationList';
 import { WispConcernSheet } from './WispConcernSheet';
 import { WispActivityTimeline, WispBriefCard, WispLinksList } from './WispHomePanels';
-import { homeSectionsFromPayload, mergeActivityPages, type WispHomeSections } from './wispHomeSections';
+import {
+  activityLoadMoreCursor,
+  activityPageFailed,
+  activityPageLoaded,
+  EMPTY_ACTIVITY,
+  homeSectionsFromPayload,
+  type ActivityState,
+  type WispHomeSections,
+} from './wispHomeSections';
 import {
   concernActionFailureCopy,
   feedbackFailureCopy,
@@ -78,15 +85,6 @@ const LIVE_LINE_POLL_MS = 30_000;
 
 /** W08: page size of the full activity timeline (cursor-paged). */
 const ACTIVITY_PAGE = 20;
-
-type ActivityState = {
-  items: WispActivityItem[];
-  nextCursor: string | null;
-  loading: boolean;
-  error: string | null;
-};
-
-const EMPTY_ACTIVITY: ActivityState = { items: [], nextCursor: null, loading: false, error: null };
 
 const statusOf = errorStatus;
 
@@ -139,6 +137,12 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
   const mounted = useRef(true);
   /** The pushed approval card is opened at most once per (thread, intent). */
   const autoOpenedKey = useRef<string | null>(null);
+  /**
+   * Bumped by every activity request: only the latest one may write. A pull to
+   * refresh (first page) supersedes an in-flight "show earlier" page, so a
+   * stale page can never merge onto the fresh list or rewind the cursor.
+   */
+  const activityRequest = useRef(0);
 
   useEffect(() => {
     mounted.current = true;
@@ -176,8 +180,11 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
       const body = await getWispHome(params.grantId);
       if (mounted.current && gen === generation.current) setHome(homeSectionsFromPayload(body));
     } catch (err) {
-      if (mounted.current && gen === generation.current) setHome(null);
-      if (statusOf(err) !== 404) safeReport(err, 'wisp-thread-home');
+      const status = statusOf(err);
+      // 404 = the home is dark: hide it. Anything else is transient or a bug —
+      // keep the last good brief/links rather than blanking them on a refresh.
+      if (status === 404 && mounted.current && gen === generation.current) setHome(null);
+      if (status !== 404) safeReport(err, 'wisp-thread-home');
     }
   }, [params.grantId]);
 
@@ -185,23 +192,20 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
   const loadActivity = useCallback(
     async (cursor: string | null) => {
       const gen = generation.current;
+      const req = ++activityRequest.current;
+      const current = () => mounted.current && gen === generation.current && req === activityRequest.current;
       setActivity((a) => ({ ...a, loading: true, error: null }));
       try {
         const page = await getWispActivity(params.threadId, {
           limit: ACTIVITY_PAGE,
           ...(cursor ? { cursor } : {}),
         });
-        if (!mounted.current || gen !== generation.current) return;
-        setActivity((a) => ({
-          items: cursor ? mergeActivityPages(a.items, page.items) : page.items,
-          nextCursor: page.nextCursor,
-          loading: false,
-          error: null,
-        }));
+        if (!current()) return;
+        setActivity((a) => activityPageLoaded(a, cursor, page));
       } catch (err) {
-        if (!mounted.current || gen !== generation.current) return;
-        setActivity((a) => ({ ...a, loading: false, error: 'Could not load activity.' }));
-        if (statusOf(err) !== 404) safeReport(err, 'wisp-thread-activity');
+        const status = statusOf(err);
+        if (current()) setActivity((a) => activityPageFailed(a, status));
+        if (status !== 404) safeReport(err, 'wisp-thread-activity');
       }
     },
     [params.threadId],
@@ -660,7 +664,7 @@ export function WispThreadScreen({ route, navigation }: Props): React.JSX.Elemen
           hasMore={activity.nextCursor !== null}
           loading={activity.loading}
           error={activity.error}
-          onLoadMore={() => void loadActivity(activity.error && activity.items.length === 0 ? null : activity.nextCursor)}
+          onLoadMore={() => void loadActivity(activityLoadMoreCursor(activity))}
           theme={theme}
         />
       </ScrollView>

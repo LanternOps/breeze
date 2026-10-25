@@ -211,6 +211,45 @@ export function activityGroups(
   return groups;
 }
 
+/** The screen's cursor-paged activity timeline. */
+export interface ActivityState {
+  items: WispActivityItem[];
+  nextCursor: string | null;
+  loading: boolean;
+  error: string | null;
+}
+
+export const EMPTY_ACTIVITY: ActivityState = { items: [], nextCursor: null, loading: false, error: null };
+
+/** `requestedCursor` null = the first page, which REPLACES the list (a refresh); otherwise append. */
+export function activityPageLoaded(
+  state: ActivityState,
+  requestedCursor: string | null,
+  page: { items: readonly WispActivityItem[]; nextCursor: string | null },
+): ActivityState {
+  return {
+    items: requestedCursor ? mergeActivityPages(state.items, page.items) : [...page.items],
+    nextCursor: page.nextCursor,
+    loading: false,
+    error: null,
+  };
+}
+
+/**
+ * A failed page keeps what is already shown and offers a retry. A 404 (a
+ * server older than the activity route, or a thread gone since) can never
+ * succeed on retry, so it ends paging quietly instead.
+ */
+export function activityPageFailed(state: ActivityState, status: number | undefined): ActivityState {
+  if (status === 404) return { ...state, nextCursor: null, loading: false, error: null };
+  return { ...state, loading: false, error: 'Could not load activity.' };
+}
+
+/** What "Show earlier" / "Try again" asks for: a failed FIRST page retries the first page. */
+export function activityLoadMoreCursor(state: ActivityState): string | null {
+  return state.error && state.items.length === 0 ? null : state.nextCursor;
+}
+
 export function mergeActivityPages(
   existing: readonly WispActivityItem[],
   next: readonly WispActivityItem[],

@@ -697,6 +697,71 @@ describe('loadBuiltinExtensions — deployment enable flag', () => {
     },
   );
 
+  // Wisp W08: `enableEnvAliases` (the workspace built-in's
+  // BREEZE_WISP_CONNECTOR_ENABLED) is a second way in through the REAL loader,
+  // and the disabled line names whichever flag the operator actually set.
+  describe('enable-flag aliases', () => {
+    const ALIAS = 'BREEZE_DEMO_BUILTIN_ALIAS_ENABLED';
+    afterEach(() => {
+      delete process.env[ALIAS];
+    });
+
+    it('loads the built-in when only the alias is "true"', async () => {
+      process.env[ALIAS] = 'true';
+      const warn = captureWarnings();
+      try {
+        const h = createHarness({ builtins: [fixtureBuiltin({ enableEnvAliases: [ALIAS] })] });
+        await h.load();
+        expect(h.registry.get(NAME)).toBeDefined();
+        expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).not.toContain('builtin_extension_disabled');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a built-in without that alias ignores it', async () => {
+      process.env[ALIAS] = 'true';
+      const warn = captureWarnings();
+      try {
+        const h = createHarness({ builtins: [fixtureBuiltin()] });
+        await h.load();
+        expect(h.registry.get(NAME)).toBeUndefined();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('reports a mistyped alias as SET, naming the alias, with the canonical flag and alias list', async () => {
+      process.env[ALIAS] = '1';
+      const warn = captureWarnings();
+      try {
+        const h = createHarness({ builtins: [fixtureBuiltin({ enableEnvAliases: [ALIAS] })] });
+        await h.load();
+        expect(h.registry.get(NAME)).toBeUndefined();
+        const line = warn.mock.calls[0]!.join(' ');
+        expect(line).toContain(`${ALIAS} is SET but is not the exact string`);
+        expect(line).toContain('"observedValue":"1"');
+        expect(line).toContain(`"enableFlag":"${ENABLE_ENV_VAR}"`);
+        expect(line).toContain(`"enableFlagAliases":["${ALIAS}"]`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('with nothing set, reports never-configured and still lists the alias', async () => {
+      const warn = captureWarnings();
+      try {
+        await createHarness({ builtins: [fixtureBuiltin({ enableEnvAliases: [ALIAS] })] }).load();
+        const line = warn.mock.calls[0]!.join(' ');
+        expect(line).toContain('"observedValue":null');
+        expect(line).toContain('opt-in per deployment');
+        expect(line).toContain(`"enableFlagAliases":["${ALIAS}"]`);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
+
   // A previously-enabled deployment left `demo_*` on the database. Without the
   // declaration, the unaccounted-public-tables sweep aborts boot on those
   // tables, and org-deletion cascades skip them.
